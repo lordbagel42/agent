@@ -38,8 +38,10 @@ what the platform accepted, including uncertain or rejected reactions.
 
 Incoming reactions and delivery receipts are recorded; they do not trigger an
 LLM turn yet. Images, attachments, voice, WhatsApp templates, proactive schedules,
-historical imports, long-term memory, Claude subscription auth, Bitwarden, MCP, browser
-use, self-deployment, and a configuration UI are **not implemented**.
+Claude subscription auth, and self-deployment are unavailable. Memory, imports,
+reflection and tool modules are local integration work, not evidence of live
+provider access or permission to activate them. All optional integrations remain
+off unless explicitly configured and separately authorized.
 
 ## Local startup
 
@@ -77,9 +79,10 @@ multiple different June instances against the same default namespace/pool.
 For a separately managed engine, set `RIVET_ENDPOINT`, `RIVET_TOKEN`,
 `RIVET_NAMESPACE`, and `RIVET_POOL` for that engine's existing configuration.
 Back up the engine's actual persistent data directory, not just this checkout.
-This prototype does not encrypt stored conversation data or implement retention,
-deletion, migrations, or backups. Use filesystem permissions and encrypted storage;
-do not load sensitive historical accounts into this increment.
+Rivet conversation data and journals are not encrypted by the optional evidence
+store. Use filesystem permissions and encrypted storage. Backup retention,
+physical erasure and disaster-recovery reconciliation remain operator work;
+do not load sensitive historical accounts merely because offline checks pass.
 
 ## ChatGPT subscription and initial setup
 
@@ -222,6 +225,66 @@ Private operator endpoints require `Authorization: Bearer <operator-token>`:
 There is no automatic resend endpoint for unknown delivery outcomes. Inspect the
 platform before taking a new action. A delivery marked `sent` means the provider
 accepted it, not that the human read it.
+
+## Dormant owner-private memory and reflection
+
+`memory` is absent by default. Activation requires an existing canonical,
+owner-only directory outside repositories, a base64-encoded 32-byte key named
+by `memory.keyEnv`, and `JUNE_ALLOW_MEMORY=1` after privacy/retention review.
+Optional `memory.curated` uses a dedicated directory and separately provisioned
+key. Store actual keys only in the operator's secret mechanism.
+
+Live retention is limited to authenticated owner Slack DMs; imports use the same
+owner-private audience and canonical Slack IDs. Public-thread prompts neither
+read nor ingest retained memory. Historical channel reads do not grant that
+channel access to private memory. Changed records with an existing ID fail
+closed; no audience widening or invented duplicate IDs. Enabling retained memory
+discards legacy working summaries without provenance before the next scoped
+prompt. This is not physical deletion of old journals.
+
+Optional `memory.extraction` and `reflection.model` use explicit API-key
+OpenAI/Anthropic structured-output providers; `JUNE_ALLOW_MEMORY_MODELS=1` is a
+separate provider/privacy gate, not subscription authentication. Extraction sees
+only original inbound source IDs, stages pending claims and cannot accept them.
+Reflection enqueues one idle proposal per evidence set, uses durable timers and
+owner-wide live turn IDs, and never sends a message or changes permissions.
+
+The existing `conversation-v1` workflow remains. Journaled old iterations stay
+on their old path; new iterations persist optional feature choices before use.
+New live/extraction attempts persist intent before provider work and never
+automatically relaunch an interrupted attempt. Unknown live turn occupancy stays
+held until authenticated confirmation of stoppage releases that exact ID.
+Cancellation is not proof of remote cancellation or descendant quiescence.
+
+These routes require the existing owner bearer token, not a console cookie:
+
+- `GET /operator/memory`: bounded evidence, pending claims and curated metadata.
+  Optional `audience` must equal the configured owner-private scope.
+- `POST /operator/memory/proposals/:id/review`: `decision` is `accepted` or
+  `rejected`. Review is an operator action, never a model capability.
+- `POST /operator/memory/forget`: `{sourceId, confirmed:true}` tombstones first,
+  resets working context, revokes old coding approvals/results and requests
+  cancellation of associated jobs/reflections. Retry after interrupted cleanup.
+  In-flight invalidated replies cannot be sent. Already-dispatched work cannot
+  be recalled, and `physicalPurge:false` explicitly excludes journals/backups.
+- `POST /operator/memory/personality/revise` and `/personality/rollback`: explicit
+  UUID command, grounded evidence/explanation and confirmation, when configured.
+- `GET /operator/reflection` and POST `/enqueue`, `/cancel`, `/candidate`,
+  `/reconcile`: metadata, staging and recovery only. Live reconciliation takes
+  `{id, live:true, confirmedStopped:true}`; never use it while a provider runs.
+
+`imports` contains operator-defined selections (`platform`, `account`,
+`conversations`, epoch-millisecond `from`/`to`, `accessTokenEnv`). It additionally
+requires `JUNE_ALLOW_HISTORY_IMPORTS=1` after actual account/scope/consent review.
+`GET /operator/imports` returns exact coverage and its digest. Each
+`POST /operator/imports/:id/start` requires `{confirmed:true,digest,expectedPages}`
+from that review and reads at most one page. A successful-page retry cannot
+advance a second page. Durable progress binds immutable approved coverage before
+credential lookup. Restart never resumes imports; changed coverage requires a
+new selection. `/cancel` aborts the current fetch, not already persisted pages.
+Imported text never enters the live command inbox. See the detailed
+[memory](src/memory/README.md), [import](src/imports/README.md) and
+[reflection](src/reflection/README.md) contracts and their remaining limits.
 
 ## Development checks and limitations
 

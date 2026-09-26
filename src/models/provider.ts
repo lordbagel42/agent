@@ -291,83 +291,113 @@ export function parseReply(
   return reply;
 }
 
-export function createModelProvider({
-  protocol,
-  model,
-  apiKey,
-  baseUrl,
-  fetch: fetchImpl = globalThis.fetch,
-}: {
+export interface JsonProviderOptions {
   protocol: "openai" | "anthropic";
   model: string;
   apiKey: string;
   baseUrl?: string;
   fetch?: typeof globalThis.fetch;
-}): ModelProvider {
-  return {
-    async reply(request: ModelRequest): Promise<CompanionReply> {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-      try {
-        const schema = replyJsonSchema(
-          request.workspaces,
-          request.searchAvailable,
-        );
-        const isOpenAI = protocol === "openai";
-        const url = endpoint(
-          baseUrl ?? (isOpenAI ? OPENAI_BASE_URL : ANTHROPIC_BASE_URL),
-          isOpenAI ? "responses" : "messages",
-        );
-        const init: RequestInit = {
-          method: "POST",
-          headers: isOpenAI
+}
+
+/** Tool-free transport shared by conversation and source-grounded extraction. */
+export function createJsonProvider({
+  protocol,
+  model,
+  apiKey,
+  baseUrl,
+  fetch: fetchImpl = globalThis.fetch,
+}: JsonProviderOptions) {
+  return async (
+    request: {
+      system: string;
+      messages: ModelRequest["messages"];
+      schema: object;
+      name: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<string> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const isOpenAI = protocol === "openai";
+      const url = endpoint(
+        baseUrl ?? (isOpenAI ? OPENAI_BASE_URL : ANTHROPIC_BASE_URL),
+        isOpenAI ? "responses" : "messages",
+      );
+      const init: RequestInit = {
+        method: "POST",
+        headers: isOpenAI
+          ? {
+              authorization: `Bearer ${apiKey}`,
+              "content-type": "application/json",
+            }
+          : {
+              "anthropic-version": "2023-06-01",
+              "content-type": "application/json",
+              "x-api-key": apiKey,
+            },
+        body: JSON.stringify(
+          isOpenAI
             ? {
-                authorization: `Bearer ${apiKey}`,
-                "content-type": "application/json",
-              }
-            : {
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-                "x-api-key": apiKey,
-              },
-          body: JSON.stringify(
-            isOpenAI
-              ? {
-                  model,
-                  instructions: request.system,
-                  input: request.messages,
-                  store: false,
-                  text: {
-                    format: {
-                      type: "json_schema",
-                      name: "companion_reply",
-                      strict: true,
-                      schema,
-                    },
-                  },
-                }
-              : {
-                  model,
-                  max_tokens: 4_096,
-                  system: request.system,
-                  messages: request.messages,
-                  output_config: {
-                    format: { type: "json_schema", schema },
+                model,
+                instructions: request.system,
+                input: request.messages,
+                store: false,
+                text: {
+                  format: {
+                    type: "json_schema",
+                    name: request.name,
+                    strict: true,
+                    schema: request.schema,
                   },
                 },
-          ),
-          redirect: "error",
-          signal: controller.signal,
-        };
-        const payload = await fetchJson(fetchImpl, url, init, controller);
-        return parseReply(
-          isOpenAI ? openAIText(payload) : anthropicText(payload),
-          request.workspaces,
-          request.searchAvailable,
-        );
-      } finally {
-        clearTimeout(timeout);
-      }
+              }
+            : {
+                model,
+                max_tokens: 4_096,
+                system: request.system,
+                messages: request.messages,
+                output_config: {
+                  format: { type: "json_schema", schema: request.schema },
+                },
+              },
+        ),
+        redirect: "error",
+        signal: signal
+          ? AbortSignal.any([signal, controller.signal])
+          : controller.signal,
+      };
+      init.signal?.throwIfAborted();
+      const payload = await fetchJson(fetchImpl, url, init, controller);
+      init.signal?.throwIfAborted();
+      return isOpenAI ? openAIText(payload) : anthropicText(payload);
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+}
+
+export function createModelProvider(
+  options: JsonProviderOptions,
+): ModelProvider {
+  const generate = createJsonProvider(options);
+  return {
+    async reply(request, signal) {
+      return parseReply(
+        await generate(
+          {
+            ...request,
+            schema: replyJsonSchema(
+              request.workspaces,
+              request.searchAvailable,
+            ),
+            name: "companion_reply",
+          },
+          signal,
+        ),
+        request.workspaces,
+        request.searchAvailable,
+      );
     },
   };
 }

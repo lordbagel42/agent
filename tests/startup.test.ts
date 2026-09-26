@@ -181,7 +181,11 @@ describe("runnable June host", () => {
       path,
       JSON.stringify({
         ...config,
-        coding: { enabled: true, workspaces: { june: directory } },
+        coding: {
+          enabled: true,
+          workspaces: { june: directory },
+          isolation: { june: { worktreeRoot: join(directory, "worktrees") } },
+        },
       }),
     );
     const child = spawn(process.execPath, ["--import", "tsx", "src/main.ts"], {

@@ -231,6 +231,7 @@ async function runCodex({
   home,
   prompt,
   timeoutMs,
+  abortSignal,
 }: {
   executable: string;
   arguments_: string[];
@@ -238,7 +239,9 @@ async function runCodex({
   home: string;
   prompt: string;
   timeoutMs: number;
+  abortSignal?: AbortSignal;
 }): Promise<ProcessResult> {
+  abortSignal?.throwIfAborted();
   return await new Promise((resolve) => {
     let child: ChildProcessWithoutNullStreams;
     try {
@@ -296,8 +299,11 @@ async function runCodex({
       }
     }, timeoutMs);
 
+    const onAbort = () => stopProcess(child);
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
     child.once("close", (code, signal) => {
       clearTimeout(timeout);
+      abortSignal?.removeEventListener("abort", onAbort);
       resolve({
         code,
         signal,
@@ -307,7 +313,8 @@ async function runCodex({
       });
     });
 
-    child.stdin.end(prompt, "utf8");
+    if (abortSignal?.aborted) onAbort();
+    else child.stdin.end(prompt, "utf8");
   });
 }
 
@@ -443,7 +450,11 @@ export function createCodexProvider({
   validateOptions({ model, home, executable, timeoutMs });
 
   return {
-    async reply(request: ModelRequest): Promise<CompanionReply> {
+    async reply(
+      request: ModelRequest,
+      signal?: AbortSignal,
+    ): Promise<CompanionReply> {
+      signal?.throwIfAborted();
       let root: string;
       try {
         root = await mkdtemp(join(tmpdir(), "june-codex-"));
@@ -475,7 +486,9 @@ export function createCodexProvider({
           home,
           prompt: codexPrompt(request),
           timeoutMs,
+          abortSignal: signal,
         });
+        signal?.throwIfAborted();
         const events = eventSummary(result.stdout);
         const error = processResultError(result, events);
         if (error !== undefined) {
@@ -494,6 +507,7 @@ export function createCodexProvider({
       } catch {
         throw new ModelError("cleanup_failed", true);
       }
+      signal?.throwIfAborted();
       if (requestFailed) {
         if (requestError instanceof ModelError) {
           throw requestError;

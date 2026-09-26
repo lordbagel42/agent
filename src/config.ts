@@ -3,6 +3,8 @@ import { z } from "zod";
 
 const nonempty = z.string().trim().min(1);
 const envName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/);
+const absolutePath = nonempty.refine(isAbsolute, "Path must be absolute");
+const name = z.string().regex(/^[a-zA-Z0-9_-]+$/);
 const baseUrl = z.url().refine((value) => {
   const url = new URL(value);
   return (
@@ -13,6 +15,15 @@ const baseUrl = z.url().refine((value) => {
     !url.hash
   );
 }, "Use an HTTP(S) base URL without credentials, query, or fragment");
+const decisionModel = z.strictObject({
+  protocol: z.enum(["openai", "anthropic"]),
+  model: nonempty,
+  apiKeyEnv: envName,
+  baseUrl: baseUrl.refine((value) => value.startsWith("https:")).optional(),
+  maxOutputTokens: z.number().int().min(1).max(32768).default(4096),
+  timeoutMs: z.number().int().min(1000).max(300000).default(60000),
+  reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
+});
 const schema = z
   .strictObject({
     host: nonempty.default("127.0.0.1"),
@@ -64,6 +75,17 @@ const schema = z
         signingSecretEnv: envName,
         botTokenEnv: envName,
         searchEnabled: z.boolean().default(false),
+        workspaceUrl: z
+          .url()
+          .refine((value) => {
+            const url = new URL(value);
+            return (
+              url.protocol === "https:" &&
+              /^[a-z0-9-]+\.slack\.com$/.test(url.hostname) &&
+              url.href === `${url.origin}/`
+            );
+          }, "Use the canonical workspace URL returned by Slack auth.test")
+          .optional(),
       })
       .optional(),
     whatsapp: z
@@ -75,6 +97,75 @@ const schema = z
         accessTokenEnv: envName,
       })
       .optional(),
+    memory: z
+      .strictObject({
+        directory: absolutePath,
+        keyEnv: envName,
+        extraction: decisionModel
+          .pick({ protocol: true, model: true, apiKeyEnv: true, baseUrl: true })
+          .optional(),
+        curated: z
+          .strictObject({ directory: absolutePath, keyEnv: envName })
+          .optional(),
+      })
+      .optional(),
+    imports: z
+      .record(
+        name,
+        z
+          .strictObject({
+            platform: z.enum(["slack", "gmail"]),
+            account: nonempty,
+            conversations: z.array(nonempty).min(1).max(1000),
+            from: z.number().int().nonnegative().safe(),
+            to: z.number().int().nonnegative().safe(),
+            accessTokenEnv: envName,
+          })
+          .refine((value) => value.from < value.to, "Invalid import interval"),
+      )
+      .default({}),
+    reflection: z
+      .strictObject({
+        model: decisionModel,
+        idleMs: z.number().int().min(1000).max(86400000).default(300000),
+        deepMs: z.number().int().min(1000).max(86400000).default(3600000),
+        pollMs: z.number().int().min(1000).max(86400000).default(60000),
+        timeoutMs: z.number().int().min(1000).max(300000).default(60000),
+        policy: z
+          .strictObject({
+            totalCapacity: z.number().int().min(2).max(8).default(2),
+            liveReserve: z.number().int().min(1).max(7).default(1),
+            cooldownMs: z
+              .number()
+              .int()
+              .min(1000)
+              .max(86400000)
+              .default(300000),
+            maxNoNewEvidence: z.number().int().min(1).max(10).default(2),
+            maxAttempts: z.number().int().min(1).max(10).default(3),
+            evidenceMaxAgeMs: z
+              .number()
+              .int()
+              .min(1000)
+              .max(31536000000)
+              .default(604800000),
+            quiet: z
+              .strictObject({
+                timeZone: nonempty.default("America/Boise"),
+                startMinute: z.number().int().min(0).max(1439).default(1320),
+                endMinute: z.number().int().min(0).max(1439).default(480),
+              })
+              .prefault({}),
+          })
+          .prefault({}),
+      })
+      .refine(
+        (value) =>
+          value.deepMs >= value.idleMs &&
+          value.policy.liveReserve < value.policy.totalCapacity,
+        "Reflection requires idle/deep ordering and reserved live capacity",
+      )
+      .optional(),
     coding: z
       .strictObject({
         enabled: z.boolean().default(false),
@@ -82,6 +173,21 @@ const schema = z
           .record(
             z.string().regex(/^[a-zA-Z0-9_-]+$/),
             nonempty.refine(isAbsolute, "Workspace must be absolute"),
+          )
+          .default({}),
+        isolation: z
+          .record(
+            name,
+            z.strictObject({
+              worktreeRoot: absolutePath,
+              verifier: z
+                .strictObject({
+                  argv: z.tuple([absolutePath], z.string()),
+                  timeoutMs: z.number().int().min(1000).max(3600000),
+                  env: z.record(envName, z.string()).default({}),
+                })
+                .optional(),
+            }),
           )
           .default({}),
         timeoutMs: z
@@ -100,6 +206,33 @@ const schema = z
         : (config.slack || config.whatsapp) &&
           config.owner.identities.length > 0,
     "Configure a channel and owner identities, or enable channel-free setup mode with coding disabled",
+  )
+  .refine(
+    (config) =>
+      (!!config.memory ||
+        (!config.reflection && !Object.keys(config.imports).length)) &&
+      (!config.memory || !config.slack || !!config.slack.workspaceUrl),
+    "Memory is required for reflection/imports; live Slack memory requires its verified workspace URL",
+  )
+  .refine(
+    (config) =>
+      !config.setupMode ||
+      (!config.reflection &&
+        !config.memory?.extraction &&
+        !Object.keys(config.imports).length),
+    "Setup mode cannot run reflection or historical imports",
+  )
+  .refine(
+    (config) =>
+      !config.coding.enabled ||
+      (Object.keys(config.coding.workspaces).length > 0 &&
+        Object.keys(config.coding.workspaces).every((key) =>
+          Object.hasOwn(config.coding.isolation, key),
+        ) &&
+        Object.keys(config.coding.isolation).every((key) =>
+          Object.hasOwn(config.coding.workspaces, key),
+        )),
+    "Each enabled coding workspace requires its own configured isolation root",
   );
 
 export type Config = z.infer<typeof schema>;

@@ -123,7 +123,7 @@ export interface ModelRequest {
 }
 
 export interface ModelProvider {
-  reply(request: ModelRequest): Promise<CompanionReply>;
+  reply(request: ModelRequest, signal?: AbortSignal): Promise<CompanionReply>;
 }
 
 export interface CodingResult {
