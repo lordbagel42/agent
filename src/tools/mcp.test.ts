@@ -83,11 +83,13 @@ async function fixture(mode = "json", overrides: Partial<McpToolConfig> = {}) {
                   ...(mode === "schema"
                     ? { $ref: "https://evil.invalid/schema" }
                     : {}),
+                  ...(mode === "async-input" ? { $async: true } : {}),
                 },
                 outputSchema: {
                   type: "object",
                   properties: { saved: { type: "boolean" } },
                   required: ["saved"],
+                  ...(mode === "async-output" ? { $async: true } : {}),
                 },
               },
             ],
@@ -108,7 +110,11 @@ async function fixture(mode = "json", overrides: Partial<McpToolConfig> = {}) {
               mode === "oversize" ? "x".repeat(8192) : credential.bearerToken,
           },
         ],
-        structuredContent: { saved: mode === "invalid-output" ? "yes" : true },
+        structuredContent: {
+          saved: ["invalid-output", "async-output"].includes(mode)
+            ? "yes"
+            : true,
+        },
         ...(mode === "tool-error" ? { isError: true } : {}),
       };
     } else throw new Error("Unexpected method");
@@ -199,11 +205,15 @@ test("scope mismatches never release credentials and invalid arguments never cal
   ).toThrow();
 });
 
-test.each(["redirect", "schema"])(
+test.each(["redirect", "schema", "async-input", "async-output"])(
   "%s fails closed before effects",
   async (mode) => {
     const f = await fixture(mode);
-    await expect(f.adapter.execute(action, credential)).rejects.toMatchObject({
+    const input =
+      mode === "async-input"
+        ? { ...action, arguments: { destination: "first", count: "invalid" } }
+        : action;
+    await expect(f.adapter.execute(input, credential)).rejects.toMatchObject({
       outcome: "not_started",
       message: "mcp_not_started",
     });
