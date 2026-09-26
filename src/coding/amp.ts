@@ -57,6 +57,7 @@ export function createAmpRuntime({
       }
 
       let threadId = input.threadId;
+      let report: string | undefined;
       const options: ExecuteOptions["options"] = { cwd: input.cwd };
       if (threadId !== undefined) {
         options.continue = threadId;
@@ -71,10 +72,13 @@ export function createAmpRuntime({
           if (input.signal.aborted) {
             throw new AmpRuntimeError("cancelled");
           }
+          if (!isThreadId(message.session_id)) {
+            throw new AmpRuntimeError("thread_not_reported");
+          }
+          if (threadId !== undefined && message.session_id !== threadId) {
+            throw new AmpRuntimeError("stream_failed");
+          }
           if (threadId === undefined) {
-            if (!isThreadId(message.session_id)) {
-              throw new AmpRuntimeError("thread_not_reported");
-            }
             threadId = message.session_id;
             try {
               await input.onThread(threadId);
@@ -92,7 +96,8 @@ export function createAmpRuntime({
             if (message.is_error) {
               throw new AmpRuntimeError("execution_failed");
             }
-            return { threadId, report: boundedReport(message.result) };
+            // The SDK checks child exit only on natural exhaustion, not return().
+            report = boundedReport(message.result);
           }
         }
       } catch (error) {
@@ -111,7 +116,10 @@ export function createAmpRuntime({
       if (threadId === undefined) {
         throw new AmpRuntimeError("thread_not_reported");
       }
-      throw new AmpRuntimeError("result_not_reported");
+      if (report === undefined) {
+        throw new AmpRuntimeError("result_not_reported");
+      }
+      return { threadId, report };
     },
   };
 }

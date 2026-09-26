@@ -109,6 +109,62 @@ describe("createAmpRuntime", () => {
     });
   });
 
+  it("waits for natural stream settlement and cleanup after a candidate result", async (t) => {
+    const settlement = Promise.withResolvers<void>();
+    const cleanup = Promise.withResolvers<void>();
+    const order: string[] = [];
+    const execute = async function* (): AsyncIterable<StreamMessage> {
+      try {
+        yield systemMessage("T-settling");
+        order.push("result yielded");
+        yield successMessage("T-settling", "Candidate report");
+        order.push("waiting for exit");
+        await settlement.promise;
+        order.push("exited cleanly");
+      } finally {
+        order.push("cleanup started");
+        await cleanup.promise;
+        order.push("cleanup finished");
+      }
+    };
+    let resolved = false;
+    const run = createAmpRuntime({ execute })
+      .run({
+        prompt: "Do the work",
+        cwd: "/workspaces/project",
+        signal: new AbortController().signal,
+        onThread: async () => {},
+      })
+      .then((result) => {
+        resolved = true;
+        return result;
+      });
+    t.onTestFinished(async () => {
+      settlement.resolve();
+      cleanup.resolve();
+      await run;
+    });
+
+    await vi.waitFor(() => expect(order.length).toBeGreaterThanOrEqual(2));
+    expect(order).toEqual(["result yielded", "waiting for exit"]);
+    expect(resolved).toBe(false);
+    settlement.resolve();
+    await vi.waitFor(() => expect(order).toContain("cleanup started"));
+    expect(resolved).toBe(false);
+    cleanup.resolve();
+    await expect(run).resolves.toEqual({
+      threadId: "T-settling",
+      report: "Candidate report",
+    });
+    expect(order).toEqual([
+      "result yielded",
+      "waiting for exit",
+      "exited cleanly",
+      "cleanup started",
+      "cleanup finished",
+    ]);
+  });
+
   it("continues a supplied thread without saving it again", async () => {
     const execute = vi.fn(async function* (
       _options: ExecuteOptions,
@@ -138,6 +194,57 @@ describe("createAmpRuntime", () => {
       signal,
     });
   });
+
+  it.each([
+    ["continued first message", "T-bound", [systemMessage("T-other")]],
+    [
+      "continued later message",
+      "T-bound",
+      [systemMessage("T-bound"), assistantMessage("T-other", "Wrong thread")],
+    ],
+    [
+      "new thread assistant",
+      undefined,
+      [systemMessage("T-bound"), assistantMessage("T-other", "Wrong thread")],
+    ],
+    [
+      "new thread result",
+      undefined,
+      [systemMessage("T-bound"), successMessage("T-other", "Wrong report")],
+    ],
+    [
+      "drift after candidate result",
+      undefined,
+      [
+        successMessage("T-bound", "Candidate report"),
+        assistantMessage("T-other", "Wrong thread"),
+      ],
+    ],
+    [
+      "empty session after binding",
+      undefined,
+      [systemMessage("T-bound"), successMessage("", "Unbound report")],
+    ],
+  ] as const)(
+    "rejects %s without rebinding",
+    async (_name, threadId, messages) => {
+      const execute = async function* (): AsyncIterable<StreamMessage> {
+        yield* messages;
+        yield successMessage("T-bound", "Must not repair a broken binding");
+      };
+      const onThread = vi.fn(async () => {});
+      const run = createAmpRuntime({ execute }).run({
+        prompt: "Do the work",
+        cwd: "/workspaces/project",
+        threadId,
+        signal: new AbortController().signal,
+        onThread,
+      });
+
+      await expect(run).rejects.toBeInstanceOf(AmpRuntimeError);
+      expect(onThread.mock.calls).toEqual(threadId ? [] : [["T-bound"]]);
+    },
+  );
 
   it("rejects an empty continuation thread ID before starting the SDK", async () => {
     const execute = vi.fn(async function* (
@@ -186,12 +293,13 @@ describe("createAmpRuntime", () => {
     expect(result.report).not.toContain("Unrelated intermediate output");
   });
 
-  it("rejects an SDK error result without exposing its output", async () => {
+  it("rejects an SDK error after a candidate result without exposing its output", async () => {
     const sensitiveOutput = "failed with token secret-value";
     const execute = vi.fn(async function* (
       _options: ExecuteOptions,
     ): AsyncIterable<StreamMessage> {
       yield systemMessage("T-error");
+      yield successMessage("T-error", "Candidate report");
       yield errorMessage("T-error", sensitiveOutput);
     });
 
@@ -213,12 +321,13 @@ describe("createAmpRuntime", () => {
     expect(String(error)).not.toContain(sensitiveOutput);
   });
 
-  it("reports an unknown outcome when consuming the SDK stream throws", async () => {
-    const sensitiveOutput = "stderr contained api-key-value";
+  it("rejects when the SDK throws after a candidate result", async () => {
+    const sensitiveOutput = "Amp CLI process exited with code 7: api-key-value";
     const execute = vi.fn(async function* (
       _options: ExecuteOptions,
     ): AsyncIterable<StreamMessage> {
       yield systemMessage("T-stream-error");
+      yield successMessage("T-stream-error", "Candidate report");
       throw new Error(sensitiveOutput);
     });
 
@@ -315,27 +424,54 @@ describe("createAmpRuntime", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("stops consuming output when a run is aborted", async () => {
+  it("does not continue after a late onThread resolves on an aborted run and awaits cleanup", async (t) => {
+    const saving = Promise.withResolvers<void>();
+    const cleanup = Promise.withResolvers<void>();
     let streamContinued = false;
+    let cleanupStarted = false;
     const execute = vi.fn(async function* (
       _options: ExecuteOptions,
     ): AsyncIterable<StreamMessage> {
-      yield systemMessage("T-cancelled");
-      streamContinued = true;
-      yield successMessage("T-cancelled", "Unexpected success");
+      try {
+        yield systemMessage("T-cancelled");
+        streamContinued = true;
+        yield successMessage("T-cancelled", "Unexpected success");
+      } finally {
+        cleanupStarted = true;
+        await cleanup.promise;
+      }
     });
     const controller = new AbortController();
+    const onThread = vi.fn(() => saving.promise);
+    let rejected = false;
 
-    const error = await createAmpRuntime({ execute })
+    const run = createAmpRuntime({ execute })
       .run({
         prompt: "Do the work",
         cwd: "/workspaces/project",
         signal: controller.signal,
-        onThread: async () => {
-          controller.abort();
-        },
+        onThread,
       })
-      .catch((caught: unknown) => caught);
+      .catch((caught: unknown) => {
+        rejected = true;
+        return caught;
+      });
+    t.onTestFinished(async () => {
+      saving.resolve();
+      cleanup.resolve();
+      await run;
+    });
+
+    await vi.waitFor(() =>
+      expect(onThread).toHaveBeenCalledWith("T-cancelled"),
+    );
+    controller.abort();
+    saving.resolve();
+    await vi.waitFor(() => expect(cleanupStarted).toBe(true));
+    expect(rejected).toBe(false);
+    expect(streamContinued).toBe(false);
+    cleanup.resolve();
+    const error = await run;
 
     expect(error).toBeInstanceOf(AmpRuntimeError);
     expect(error).toMatchObject({
@@ -397,6 +533,23 @@ describe("createAmpRuntime", () => {
       code: "cancelled",
       message: "Amp execution was cancelled.",
     });
+  });
+
+  it("rejects cancellation during settlement after a candidate result", async () => {
+    const controller = new AbortController();
+    const execute = async function* (): AsyncIterable<StreamMessage> {
+      yield successMessage("T-cancelled", "Candidate report");
+      controller.abort();
+    };
+
+    await expect(
+      createAmpRuntime({ execute }).run({
+        prompt: "Do the work",
+        cwd: "/workspaces/project",
+        signal: controller.signal,
+        onThread: async () => {},
+      }),
+    ).rejects.toMatchObject({ code: "cancelled" });
   });
 
   it("reports cancellation when an aborted stream ends without output", async () => {
