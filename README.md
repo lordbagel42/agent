@@ -3,9 +3,12 @@
 One personal companion across platforms, with separate execution workers. June
 uses she/her pronouns; her personality is meant to develop with her owner.
 
-**Status: running in the homelab with Slack DMs, conversational replies, and native
-reactions. A signed webhook → real model → Slack reply smoke test is verified.
-Search permissions are pending; coding remains disabled. Not production-hardened.**
+**Status: the homelab service and private console are running, but genuine Slack
+DM delivery is blocked upstream of June's HTTP receiver. A synthetic signed
+webhook → real model → Slack reply smoke test passed; it did not establish real
+Slack event delivery. Events API enablement and URL verification still need an
+authenticated App Management check. Search and coding remain disabled. Not
+production-hardened.**
 TypeScript, Node 24, Rivet actors and journaled workflows. No Temporal and no
 custom workflow engine. See the [architecture](docs/architecture.md) for
 the evidence graph, Git memory, personality, dreaming, and later capabilities.
@@ -139,6 +142,13 @@ scopes `im:history`, `app_mentions:read`, `chat:write`, `reactions:read`, and
 `reactions:write`. Supply its signing secret, bot token, workspace ID, and bot
 user ID. The owner's allowlist uses the **human user's** ID, not the bot's.
 Public-channel interaction currently requires a mention; replies stay threaded.
+
+Verify the Request URL in Slack's App Management Event Subscriptions page and
+save the settings. A manifest containing the URL does not prove that events are
+enabled or that Slack completed URL verification. Keep the signing-secret,
+workspace and human-message checks intact. Confirm delivery with a real human DM;
+API/app-authored messages carrying `bot_id` or `app_id` are intentionally ignored,
+even if their user ID matches the owner.
 
 ### Optional Slack Real-time Search (RTS)
 
