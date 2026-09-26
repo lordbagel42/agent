@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -240,7 +240,58 @@ export function createWorktreeManager(input: WorktreeConfig) {
     return m;
   }
 
+  async function changeLease(change: (lease: string) => Promise<void>) {
+    await roots();
+    const lock = path.join(metadataRoot, "admission-lock");
+    // A crash in this short critical section fails closed for operator review.
+    await mkdir(lock, { mode: 0o700 });
+    try {
+      await change(path.join(metadataRoot, "active"));
+    } finally {
+      await rm(lock, { recursive: true });
+    }
+  }
+
   return {
+    /** Exclusive per-workspace admission. Unknown execution keeps this lease.
+     * Configuration must assign one stable worktree root per repository.
+     */
+    async admit(jobId: string, attempt: number, confirmedStopped = false) {
+      locations(jobId);
+      if (!Number.isSafeInteger(attempt) || attempt < 1)
+        fail("invalid attempt");
+      await changeLease(async (lease) => {
+        if (await exists(lease)) {
+          const owner = (await readJson(path.join(lease, "owner.json"))) as {
+            jobId: string;
+            attempt: number;
+          };
+          if (
+            !confirmedStopped ||
+            owner.jobId !== jobId ||
+            owner.attempt >= attempt
+          )
+            fail("workspace occupied; reconcile its existing execution first");
+          // Only an explicit operator confirmation can release uncertain execution.
+          await rm(lease, { recursive: true });
+        }
+        await mkdir(lease, { mode: 0o700 });
+        await writeNew(path.join(lease, "owner.json"), { jobId, attempt });
+      });
+    },
+
+    async release(jobId: string, attempt: number) {
+      await changeLease(async (lease) => {
+        const owner = (await readJson(path.join(lease, "owner.json"))) as {
+          jobId: string;
+          attempt: number;
+        };
+        if (owner.jobId !== jobId || owner.attempt !== attempt)
+          fail("execution lease ownership mismatch");
+        await rm(lease, { recursive: true });
+      });
+    },
+
     async prepare(jobId: string): Promise<{
       manifest: WorktreeManifest;
       disposition: "created" | "resumed";
@@ -290,14 +341,21 @@ export function createWorktreeManager(input: WorktreeConfig) {
       return { manifest: await owned(jobId), disposition: "created" };
     },
 
-    /** One check per job. Replays return the receipt, never execute again. */
+    /** One check per attempt. Replays are historical, never current evidence. */
     async verify(
       jobId: string,
       signal?: AbortSignal,
+      attempt?: number,
     ): Promise<VerificationResult> {
       const manifest = await owned(jobId);
       const { record } = locations(jobId);
-      const resultPath = path.join(record, "verification.json");
+      if (
+        attempt !== undefined &&
+        (!Number.isSafeInteger(attempt) || attempt < 1)
+      )
+        fail("invalid attempt");
+      const suffix = attempt === undefined ? "" : `-${attempt}`;
+      const resultPath = path.join(record, `verification${suffix}.json`);
       if (await exists(resultPath)) {
         const saved = (await readJson(resultPath)) as VerificationResult;
         if (
@@ -378,10 +436,13 @@ export function createWorktreeManager(input: WorktreeConfig) {
         fail("invalid operator verifier configuration");
       if (signal?.aborted) return result("aborted");
       try {
-        await writeNew(path.join(record, "verification-started.json"), {
-          startedAt: new Date().toISOString(),
-          headCommit,
-        });
+        await writeNew(
+          path.join(record, `verification-started${suffix}.json`),
+          {
+            startedAt: new Date().toISOString(),
+            headCommit,
+          },
+        );
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST")
           return result("needs_review");
