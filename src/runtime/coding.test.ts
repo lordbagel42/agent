@@ -331,6 +331,64 @@ describe("separate coding supervisor", () => {
       .toBe(1);
   });
 
+  it("cancels an unsettled verifier and ignores its late receipt without releasing admission", async (t) => {
+    const { registry, manager } = await fixture(t, {
+      async run() {
+        return { threadId: "T-verified-late", report: "Worker finished." };
+      },
+    });
+    const releaseReceipt = Promise.withResolvers<void>();
+    const verify = manager.verify;
+    let verifying = false;
+    manager.verify = async (...args) => {
+      const receipt = await verify(...args);
+      verifying = true;
+      // Model a verifier that has not acknowledged process settlement yet.
+      await releaseReceipt.promise;
+      return receipt;
+    };
+    const { client } = await setupTest(t, registry);
+    const job = client.job.getOrCreate(["raygen", "verifier-cancelled"]);
+    try {
+      await job.send("commands", {
+        type: "propose",
+        proposal: {
+          id: "verifier-cancelled",
+          source,
+          workspace: "june",
+          goal: "Approved task",
+        },
+      });
+      await job.send("commands", { type: "approve", commandId: "approval" });
+      await expect.poll(() => verifying).toBe(true);
+      await job.cancel();
+      await expect
+        .poll(async () => (await job.snapshot()).status, { timeout: 1000 })
+        .toBe("needs_review");
+      await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+      releaseReceipt.resolve();
+      await expect
+        .poll(
+          async () =>
+            Object.values(
+              (
+                await client.conversation
+                  .getOrCreate(["private", "raygen"])
+                  .snapshot()
+              ).events,
+            ).filter((event) => event.done).length,
+        )
+        .toBe(1);
+      const state = await job.snapshot();
+      expect(state.status).toBe("needs_review");
+      expect(state.verification).toBeUndefined();
+      expect(state.workerClaim).toBe("Worker finished.");
+      await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+    } finally {
+      releaseReceipt.resolve();
+    }
+  });
+
   it("does not promote a historical verifier receipt after the worker changes files", async (t) => {
     const { registry, manager } = await fixture(t, {
       async run(input) {
