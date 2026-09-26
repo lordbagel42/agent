@@ -16,6 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { Evidence } from "../reflection/domain.js";
 import {
@@ -23,6 +24,7 @@ import {
   initialPersonality,
   type PersonalityProposal,
   type PersonalityState,
+  personalityTraits,
   revertPersonality,
   revisePersonality,
   type Trait,
@@ -330,10 +332,17 @@ export class CuratedPersonalityStore {
     this.check();
     const parent = this.head();
     const snapshot = this.load(parent);
+    const grounded = this.evidence.reflectionEvidence(
+      proposal.scope,
+      proposal.evidenceIds,
+      maxAgeMs,
+    );
+    if (grounded.some((e) => !supporting.some((s) => isDeepStrictEqual(s, e))))
+      throw new Error("Personality evidence must match the current ledger");
     const state = revisePersonality(
       snapshot.state,
       proposal,
-      supporting,
+      grounded,
       now,
       maxAgeMs,
     );
@@ -371,7 +380,33 @@ export class CuratedPersonalityStore {
     return this.persist(snapshot, parent);
   }
 
-  /** The ONLY model projection. No full-state/history read API. Historical reads
+  /** Operator-only metadata, deliberately omitting explanations/values that may
+   * refer to forgotten sources. Use these IDs to append a rollback. */
+  ownerHistory(): {
+    commit: string | null;
+    revisions: {
+      id: string;
+      parent: string | null;
+      createdAt: number;
+      reverts?: string;
+    }[];
+  } {
+    this.check();
+    const commit = this.head();
+    return {
+      commit,
+      revisions: this.load(commit).state.revisions.map(
+        ({ id, parent, createdAt, reverts }) => ({
+          id,
+          parent,
+          createdAt,
+          ...(reverts ? { reverts } : {}),
+        }),
+      ),
+    };
+  }
+
+  /** The ONLY model projection. Historical reads
    * and rollbacks check today's ledger, so deleting one supporting source hides
    * the whole trait; never fall back to an older trait on validation failure. */
   effectiveTraits(
@@ -387,9 +422,10 @@ export class CuratedPersonalityStore {
       this.git(["merge-base", "--is-ancestor", commit, head]);
     }
     const snapshot = this.load(commit ?? head);
+    const scoped = personalityTraits(snapshot.state, audience);
     const result: Partial<Record<Trait, string>> = {};
     for (const trait of ["verbosity", "tone", "humor", "interests"] as const) {
-      const value = snapshot.state.revisions.at(-1)?.traits[trait];
+      const value = scoped[trait];
       if (!value || value.scope !== audience || !value.evidenceIds.length)
         continue;
       const valid = value.evidenceIds.every((id) => {

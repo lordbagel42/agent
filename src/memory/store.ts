@@ -1,8 +1,14 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+} from "node:crypto";
 import { chmodSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
+import type { Evidence } from "../reflection/domain.js";
 
 const id = z.string().min(1).max(2048);
 const ids = z
@@ -21,7 +27,34 @@ const sourceSchema = z.strictObject({
   observedAt: timestamp,
   sourceUrl: z.url(),
   text: z.string().max(1_000_000),
+  // Trusted, explicit owner correction only; never inferred from message text.
+  correction: z
+    .strictObject({
+      trait: z.enum(["verbosity", "tone", "humor", "interests"]),
+      value: z.string().min(1).max(2000),
+    })
+    .optional(),
 });
+const citationSchema = z.strictObject({
+  sourceId: id,
+  quote: z.string().min(1).max(4000),
+});
+const proposalInputSchema = z
+  .strictObject({
+    subjectSourceId: id,
+    text: z.string().min(1).max(4000),
+    category: z.enum(["claim", "preference", "commitment", "pattern"]),
+    citations: z.array(citationSchema).min(1).max(20),
+    confidence: z.number().min(0).max(1),
+    validFrom: timestamp.nullable(),
+    validTo: timestamp.nullable(),
+    contradicts: z.array(id).max(20),
+    supersedes: z.array(id).max(20),
+  })
+  .refine(
+    (v) =>
+      v.validFrom === null || v.validTo === null || v.validFrom < v.validTo,
+  );
 const claimSchema = z.strictObject({
   id,
   entity: id,
@@ -31,6 +64,13 @@ const claimSchema = z.strictObject({
   dependsOn: ids,
   contradicts: z.array(id).max(1000),
   supersedes: z.array(id).max(1000),
+  grounding: proposalInputSchema.optional(),
+});
+const proposalSchema = z.strictObject({
+  id,
+  audience: id,
+  claim: claimSchema,
+  status: z.enum(["pending", "accepted", "rejected"]),
 });
 const coverageSchema = z
   .strictObject({
@@ -57,6 +97,7 @@ const stateSchema = z.strictObject({
   claims: z.array(claimSchema),
   tombstones: z.array(id),
   imports: z.array(progressSchema),
+  proposals: z.array(proposalSchema).default([]),
 });
 const pageSchema = z.strictObject({
   sources: z.array(sourceSchema).max(1000),
@@ -67,6 +108,9 @@ const pageSchema = z.strictObject({
 });
 export type Source = z.infer<typeof sourceSchema>;
 export type Claim = z.infer<typeof claimSchema>;
+export type MemoryProposalInput = z.infer<typeof proposalInputSchema>;
+export type MemoryProposal = z.infer<typeof proposalSchema>;
+export type MemoryRetrieval = { sources: Source[]; claims: Claim[] };
 export type ImportCoverage = z.infer<typeof coverageSchema>;
 export type ImportProgress = z.infer<typeof progressSchema>;
 export type ImportPage = z.infer<typeof pageSchema>;
@@ -93,6 +137,35 @@ function insertSource(state: State, source: Source) {
   if (state.claims.some((c) => c.id === source.id))
     throw new Error("Evidence ID already exists");
   state.sources.push(source);
+}
+
+function insertClaim(state: State, claim: Claim): void {
+  if (
+    state.tombstones.includes(claim.id) ||
+    state.sources.some((s) => s.id === claim.id)
+  )
+    throw new Error("Evidence ID unavailable");
+  const previous = state.claims.find((c) => c.id === claim.id);
+  if (previous) {
+    if (!isDeepStrictEqual(previous, claim))
+      throw new Error("Claim IDs are immutable");
+    return;
+  }
+  for (const ref of dependencies(claim)) {
+    const evidence =
+      state.sources.find((s) => s.id === ref) ??
+      state.claims.find((c) => c.id === ref);
+    if (
+      !evidence ||
+      !claim.audiences.every((a) => evidence.audiences.includes(a))
+    )
+      throw new Error("Missing or unauthorized evidence");
+  }
+  for (const ref of [...claim.contradicts, ...claim.supersedes]) {
+    if (!state.claims.some((c) => c.id === ref))
+      throw new Error("Relations require claims");
+  }
+  state.claims.push(claim);
 }
 
 /** Trusted operator boundary, NOT an authorization service. Audience strings must
@@ -140,6 +213,7 @@ export class EvidenceStore {
             claims: [],
             tombstones: [],
             imports: [],
+            proposals: [],
           });
           this.db.exec("COMMIT");
         } catch (error) {
@@ -218,36 +292,204 @@ export class EvidenceStore {
     this.transaction((state) => insertSource(state, source));
   }
 
+  /** Trusted ingestion/deletion path only; not a model-visible existence oracle. */
+  isDeleted(sourceId: string): boolean {
+    parse(id, sourceId);
+    return this.read().tombstones.includes(sourceId);
+  }
+
+  source(audience: string, sourceId: string): Source | undefined {
+    parse(id, sourceId);
+    return this.search(audience, "").sources.find((s) => s.id === sourceId);
+  }
+
   appendClaim(input: Claim): void {
     const claim = parse(claimSchema, input);
-    this.transaction((state) => {
-      if (
-        state.tombstones.includes(claim.id) ||
-        state.sources.some((s) => s.id === claim.id)
-      )
-        throw new Error("Evidence ID unavailable");
-      const previous = state.claims.find((c) => c.id === claim.id);
-      if (previous) {
-        if (!isDeepStrictEqual(previous, claim))
-          throw new Error("Claim IDs are immutable");
-        return;
-      }
-      for (const ref of dependencies(claim)) {
-        const evidence =
-          state.sources.find((s) => s.id === ref) ??
-          state.claims.find((c) => c.id === ref);
-        if (
-          !evidence ||
-          !claim.audiences.every((a) => evidence.audiences.includes(a))
-        )
-          throw new Error("Missing or unauthorized evidence");
-      }
-      for (const ref of [...claim.contradicts, ...claim.supersedes]) {
-        if (!state.claims.some((c) => c.id === ref))
-          throw new Error("Relations require claims");
-      }
-      state.claims.push(claim);
+    this.transaction((state) => insertClaim(state, claim));
+  }
+
+  /** Exact scoped input for extraction, never an unfiltered model context. Reject
+   * rather than truncate oversized batches so citations refer to the actual input. */
+  extractionContext(audience: string, sourceIds: string[]): Source[] {
+    parse(ids, sourceIds);
+    const visible = this.search(audience, "").sources;
+    const sources = sourceIds.map((sourceId) => {
+      const source = visible.find((s) => s.id === sourceId);
+      if (!source) throw new Error("Missing or unauthorized source");
+      return source;
     });
+    if (sources.length > 20 || JSON.stringify(sources).length > 64000)
+      throw new Error("Extraction batch too large");
+    return sources;
+  }
+
+  /** Untrusted extractor output is an array of MemoryProposalInput. Quotes prove
+   * provenance, NOT truth/entailment; only authenticated review accepts a claim.
+   * A subject is a cited author's platform/account ID, never a display name. */
+  stageProposals(
+    audience: string,
+    sourceIds: string[],
+    output: unknown,
+  ): MemoryProposal[] {
+    const inputs = parse(z.array(proposalInputSchema).max(20), output);
+    const sources = this.extractionContext(audience, sourceIds);
+    const proposals = inputs.map((input): MemoryProposal => {
+      const subject = sources.find((s) => s.id === input.subjectSourceId);
+      if (!subject || !input.citations.some((c) => c.sourceId === subject.id))
+        throw new Error("Subject requires cited source");
+      for (const citation of input.citations) {
+        const source = sources.find((s) => s.id === citation.sourceId);
+        if (
+          !source ||
+          !citation.quote.trim() ||
+          !source.text.includes(citation.quote)
+        )
+          throw new Error("Unsupported source quotation");
+      }
+      const grounding = {
+        ...input,
+        citations: [...input.citations].sort(
+          (a, b) =>
+            a.sourceId.localeCompare(b.sourceId) ||
+            a.quote.localeCompare(b.quote),
+        ),
+        contradicts: [...new Set(input.contradicts)].sort(),
+        supersedes: [...new Set(input.supersedes)].sort(),
+      };
+      const proposalId = `proposal:${createHash("sha256")
+        .update(JSON.stringify([audience, grounding]))
+        .digest("hex")}`;
+      return parse(proposalSchema, {
+        id: proposalId,
+        audience,
+        status: "pending",
+        claim: {
+          id: proposalId,
+          entity: JSON.stringify([
+            subject.platform,
+            subject.account,
+            subject.author,
+          ]),
+          text: input.text,
+          audiences: [audience],
+          kind: "evidence",
+          dependsOn: [
+            ...new Set(input.citations.map((c) => c.sourceId)),
+          ].sort(),
+          contradicts: grounding.contradicts,
+          supersedes: grounding.supersedes,
+          grounding,
+        },
+      });
+    });
+    this.transaction((state) => {
+      for (const proposal of proposals) {
+        // Validate against today's state within the write transaction, including
+        // deletion while extraction was in flight. Do not publish pending claims.
+        insertClaim({ ...state, claims: [...state.claims] }, proposal.claim);
+        if (!state.proposals.some((p) => p.id === proposal.id))
+          state.proposals.push(proposal);
+      }
+    });
+    const saved = this.proposals(audience);
+    return proposals.map(
+      (p) => saved.find((s) => s.id === p.id) as MemoryProposal,
+    );
+  }
+
+  proposals(audience: string): MemoryProposal[] {
+    parse(id, audience);
+    return this.read().proposals.filter((p) => p.audience === audience);
+  }
+
+  proposal(audience: string, proposalId: string): MemoryProposal | undefined {
+    parse(id, proposalId);
+    return this.proposals(audience).find((p) => p.id === proposalId);
+  }
+
+  /** Trusted operator action, not a model tool. Repeated identical decisions are
+   * idempotent; rejected proposals cannot silently become accepted on retry. */
+  reviewProposal(
+    audience: string,
+    proposalId: string,
+    decision: "accepted" | "rejected",
+  ): void {
+    parse(id, audience);
+    parse(id, proposalId);
+    parse(z.enum(["accepted", "rejected"]), decision);
+    this.transaction((state) => {
+      const proposal = state.proposals.find(
+        (p) => p.id === proposalId && p.audience === audience,
+      );
+      if (!proposal) throw new Error("Missing or unauthorized proposal");
+      if (proposal.status !== "pending" && proposal.status !== decision)
+        throw new Error("Proposal already reviewed");
+      if (decision === "accepted") insertClaim(state, proposal.claim);
+      proposal.status = decision;
+    });
+  }
+
+  /** Original episodes only: a dream/claim repetition never becomes independent
+   * reflection evidence. Freshness is measured from source observation time. */
+  reflectionEvidence(
+    audience: string,
+    sourceIds: string[],
+    maxAgeMs: number,
+  ): Evidence[] {
+    parse(timestamp, maxAgeMs);
+    return this.extractionContext(audience, sourceIds).map((s) => ({
+      id: s.id,
+      scope: audience,
+      text: s.text,
+      source: s.correction ? "owner-correction" : "episode",
+      observedAt: s.observedAt,
+      expiresAt: parse(timestamp, s.observedAt + maxAgeMs),
+      ...(s.correction ? { correction: s.correction } : {}),
+    }));
+  }
+
+  /** Scope filtering precedes lexical ranking. Bounded JSON data, not executable
+   * instructions; callers must label this untrusted evidence in model context.
+   * Keep contradictory and superseded hypotheses, with their explicit edges. */
+  retrieve(
+    audience: string,
+    query: string,
+    options: { limit?: number; maxCharacters?: number } = {},
+  ): MemoryRetrieval {
+    parse(z.string().max(10000), query);
+    const limit = parse(z.number().int().min(1).max(100), options.limit ?? 12);
+    const budget = parse(
+      z.number().int().min(100).max(100000),
+      options.maxCharacters ?? 16000,
+    );
+    const visible = this.search(audience, "");
+    const words = [
+      ...new Set(query.toLocaleLowerCase().split(/\s+/u).filter(Boolean)),
+    ];
+    const candidates = [
+      ...visible.sources.map((item) => ({ type: "source" as const, item })),
+      ...visible.claims.map((item) => ({ type: "claim" as const, item })),
+    ]
+      .map((entry) => ({
+        ...entry,
+        score: words.filter((word) =>
+          entry.item.text.toLocaleLowerCase().includes(word),
+        ).length,
+      }))
+      .filter((entry) => !words.length || entry.score > 0)
+      .sort((a, b) => b.score - a.score || a.item.id.localeCompare(b.item.id));
+    const result: MemoryRetrieval = { sources: [], claims: [] };
+    let count = 0;
+    for (const candidate of candidates) {
+      if (count >= limit) break;
+      if (candidate.type === "source") result.sources.push(candidate.item);
+      else result.claims.push(candidate.item);
+      if (JSON.stringify(result).length > budget) {
+        if (candidate.type === "source") result.sources.pop();
+        else result.claims.pop();
+      } else count++;
+    }
+    return result;
   }
 
   search(
@@ -310,6 +552,15 @@ export class EvidenceStore {
       }
       state.sources = state.sources.filter((s) => !removed.has(s.id));
       state.claims = state.claims.filter((c) => !removed.has(c.id));
+      state.proposals = state.proposals.filter((p) => {
+        if (
+          !removed.has(p.id) &&
+          !dependencies(p.claim).some((ref) => removed.has(ref))
+        )
+          return true;
+        removed.add(p.id);
+        return false;
+      });
       state.tombstones = [...new Set([...state.tombstones, ...removed])];
     });
   }
@@ -385,6 +636,7 @@ export class EvidenceStore {
       const c = progress.coverage;
       for (const source of page.sources) {
         if (
+          source.correction !== undefined ||
           source.platform !== c.platform ||
           source.account !== c.account ||
           !c.conversations.includes(source.conversation) ||
@@ -418,6 +670,24 @@ export type PageFetcher = (request: {
   cursor: string | null;
   signal?: AbortSignal;
 }) => Promise<ImportPage>;
+
+/** Inject a read-only model adapter: this module never supplies tools, permission
+ * grants, or live accounts. Treat sources as quoted data, not instructions.
+ * Aborted or deleted inputs cannot publish proposals after provider completion. */
+export async function extractMemory(
+  store: EvidenceStore,
+  audience: string,
+  sourceIds: string[],
+  extract: (sources: Source[], signal?: AbortSignal) => Promise<unknown>,
+  signal?: AbortSignal,
+): Promise<MemoryProposal[]> {
+  signal?.throwIfAborted();
+  const selected = [...sourceIds];
+  const sources = store.extractionContext(audience, selected);
+  const output = await extract(sources, signal);
+  signal?.throwIfAborted();
+  return store.stageProposals(audience, selected, output);
+}
 
 /** Read-only ingestion: no tools, actions, instruction replay, or model calls.
  * Rate limits return durable progress instead of sleeping. Call again after
