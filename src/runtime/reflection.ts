@@ -61,6 +61,9 @@ export interface ReflectionRuntimeState {
   invocations: Record<string, "started" | "settled" | "uncertain">;
   candidates: Record<string, ReflectionCandidate>;
   liveActive: number;
+  /** Optional for actors persisted before ID-based occupancy was introduced. */
+  liveTurns?: { id: string; active: boolean }[];
+  legacyLiveActive?: number;
   lastInteractionAt: number;
   epoch: number;
   interruptionEpoch: number;
@@ -115,6 +118,8 @@ export function createReflectionActor(deps: ReflectionDependencies) {
       invocations: {},
       candidates: {},
       liveActive: 0,
+      liveTurns: [],
+      legacyLiveActive: 0,
       lastInteractionAt: 0,
       epoch: 0,
       interruptionEpoch: -1,
@@ -155,7 +160,40 @@ export function createReflectionActor(deps: ReflectionDependencies) {
         c.vars.active.get(id)?.abort();
         return true;
       },
-      /** Call before live model work, and again with remaining occupancy when it settles.
+      /** Stable live turn/attempt IDs. Release only after actual provider settlement
+       * or authenticated confirmation that the old worker/provider has stopped.
+       */
+      occupancy: async (c, id: string, active: boolean) => {
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
+          throw new Error("Wrong reflection owner");
+        if (!id.trim() || typeof active !== "boolean")
+          throw new Error("Invalid reflection occupancy");
+        c.state.legacyLiveActive ??= c.state.liveActive;
+        c.state.liveTurns ??= [];
+        const turns = c.state.liveTurns;
+        const turn = turns.find((entry) => entry.id === id);
+        if (turn && (active || !turn.active)) {
+          // A retry must still await the original state flush, but cannot reopen
+          // a finished ID or advance the interaction epoch again.
+          await c.vars.persist();
+          return;
+        }
+        if (turn) turn.active = false;
+        else turns.push({ id, active });
+        c.state.liveActive =
+          c.state.legacyLiveActive +
+          turns.filter((entry) => entry.active).length;
+        if (active) {
+          c.state.lastInteractionAt = Date.now();
+          c.state.epoch++;
+          c.state.candidates = {};
+        }
+        await c.vars.persist();
+        if (active)
+          for (const controller of c.vars.active.values()) controller.abort();
+        await c.queue.send("wake", { wake: true });
+      },
+      /** Legacy absolute occupancy, separate from ID-based live turns.
        * Only interaction advances the idle epoch; idle is not an owner message.
        */
       trigger: async (
@@ -171,7 +209,10 @@ export function createReflectionActor(deps: ReflectionDependencies) {
           throw new Error("Invalid reflection trigger");
         if (c.state.triggerIds.includes(event.id)) return;
         c.state.triggerIds.push(event.id);
-        c.state.liveActive = event.liveActive;
+        c.state.legacyLiveActive = event.liveActive;
+        c.state.liveActive =
+          event.liveActive +
+          (c.state.liveTurns?.filter((turn) => turn.active).length ?? 0);
         if (event.type === "interaction") {
           c.state.lastInteractionAt = Date.now();
           c.state.epoch++;
@@ -188,6 +229,9 @@ export function createReflectionActor(deps: ReflectionDependencies) {
         invocations: { ...c.state.invocations },
         candidateIds: Object.keys(c.state.candidates),
         liveActive: c.state.liveActive,
+        activeTurnIds: (c.state.liveTurns ?? [])
+          .filter((turn) => turn.active)
+          .map((turn) => turn.id),
         epoch: c.state.epoch,
       }),
       /** Recheck memory on every read, including after actor recovery or forgetting. */
