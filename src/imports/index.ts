@@ -7,7 +7,7 @@ import {
 
 export type { ConnectorConfig } from "./common.js";
 export { createGmailHistoryFetcher } from "./gmail.js";
-export { gmailSourceId, slackSourceId } from "./identity.js";
+export { gmailSourceId, slackSource, slackSourceId } from "./identity.js";
 export { createSlackHistoryFetcher } from "./slack.js";
 
 /** Host-only operator service. No model tools, event dispatch, approvals or sends.

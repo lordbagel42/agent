@@ -87,7 +87,7 @@ export function createGmailHistoryFetcher(
       const gaps: string[] = token
         ? []
         : [
-            `${conversation}: Gmail API search interval; exact lower-bound messages may be excluded by after. Deleted mail, unavailable content, attachments and non-plain-text MIME parts are not imported. Labels and search results can change during pagination; this is not a snapshot.`,
+            `${conversation}: Gmail API search interval; exact lower-bound messages may be excluded by after. Deleted mail and unavailable content are not imported. Attachments, attached messages and non-plain-text MIME content returned by full reads are discarded; separate attachment bodies are never fetched. Labels and search results can change during pagination; this is not a snapshot.`,
           ];
       for (const ref of list.messages ?? []) {
         try {
@@ -131,14 +131,23 @@ export function createGmailHistoryFetcher(
           const text: string[] = [];
           const visit = (part: Part) => {
             if (
-              !part.filename &&
-              part.mimeType === "text/plain" &&
-              part.body?.data
+              part.filename ||
+              part.body?.attachmentId ||
+              part.headers?.some(
+                (h) =>
+                  h.name.toLowerCase() === "content-disposition" &&
+                  /^\s*attachment(?:\s*;|\s*$)/i.test(h.value),
+              )
             )
+              return;
+            const mimeType = part.mimeType?.toLowerCase();
+            if (mimeType === "text/plain" && part.body?.data)
               text.push(
                 Buffer.from(part.body.data, "base64url").toString("utf8"),
               );
-            for (const child of part.parts ?? []) visit(child);
+            // Only body containers; never descend into attached/embedded mail.
+            if (mimeType?.startsWith("multipart/"))
+              for (const child of part.parts ?? []) visit(child);
           };
           visit(payload);
           const headers = (payload.headers ?? []).filter((h) =>
