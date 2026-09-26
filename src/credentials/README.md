@@ -45,9 +45,13 @@ No live vault was accessed.
    enforce the approved origin through redirects/subrequests, never log secrets,
    never persist credentials/browser sessions, and never retry side effects.
    Resolve only on confirmed success. Results and exceptions are not exposed.
-   Keep registry/adapter settings immutable while grants exist; revoke outstanding
-   grants before changing a tool's destination, remote method or recipe. Those
-   implementation details are not separately included in the action fingerprint.
+   The broker snapshots its options and registered execute methods at construction;
+   later caller-side registry or method replacements do not change existing bindings.
+   Adapter-internal settings and callback closures still need trusted immutable
+   destination policy. Across restarts, reject registration drift or use a database
+   namespace bound to the immutable registration digest; revoke outstanding grants
+   before changing a tool's destination, remote method or recipe. Those details
+   are not separately included in the action fingerprint.
    Read-only history-import tokens must be separately provisioned, not borrowed
    from these action credentials. Anonymous null/undefined credentials require an
    explicit trusted host policy; the vault resolver never falls back to anonymous.

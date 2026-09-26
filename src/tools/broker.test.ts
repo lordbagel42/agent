@@ -2,7 +2,12 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { CapabilityBroker, MAX_GRANT_TTL_MS } from "./broker.js";
+import {
+  type BrokerOptions,
+  CapabilityBroker,
+  MAX_GRANT_TTL_MS,
+  type ToolAdapter,
+} from "./broker.js";
 import { createCapabilityRoutes } from "./routes.js";
 
 const action = {
@@ -17,7 +22,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0))
     rmSync(dir, { recursive: true, force: true });
 });
-function setup() {
+function setup(execute?: ToolAdapter["execute"]) {
   const dir = mkdtempSync(join(tmpdir(), "broker-"));
   dirs.push(dir);
   const path = join(dir, "db");
@@ -27,11 +32,13 @@ function setup() {
     resolveCredential: async () => "secret-credential",
     tools: {
       "mail.send": {
-        execute: async (_action: unknown, credential: unknown) => {
-          expect(credential).toBe("secret-credential");
-          calls++;
-          return "secret-credential";
-        },
+        execute:
+          execute ??
+          (async (_action: unknown, credential: unknown) => {
+            expect(credential).toBe("secret-credential");
+            calls++;
+            return "secret-credential";
+          }),
       },
     },
   };
@@ -78,6 +85,66 @@ test("only owner grants; exact arguments and all scopes bind a one-use grant", a
     false,
   );
 });
+test("caller mutation cannot rebind approved adapters or broker authority", async () => {
+  const deliveries: [string, unknown][] = [];
+  class Adapter {
+    #destination = "approved";
+    async execute(_action: unknown, credential: unknown) {
+      deliveries.push([this.#destination, credential]);
+    }
+  }
+  const adapter = new Adapter();
+  const replacement = {
+    async execute(_action: unknown, credential: unknown) {
+      deliveries.push(["replacement", credential]);
+    },
+  };
+  const pending = Promise.withResolvers<unknown>();
+  let resolutions = 0;
+  const options: BrokerOptions = {
+    owner: "owner",
+    tools: { "mail.send": adapter },
+    now: () => 100,
+    resolveCredential: async () => {
+      resolutions++;
+      return pending.promise;
+    },
+  };
+  const broker = new CapabilityBroker(":memory:", options);
+  try {
+    const input = { audience: "worker", action, expiresAt: 200 };
+    const grant = broker.grant("owner", input);
+    const execution = broker.execute("worker", grant, action);
+    adapter.execute = replacement.execute;
+    options.tools["mail.send"] = replacement;
+    pending.resolve("approved-credential");
+    expect((await execution).status).toBe("succeeded");
+    expect(deliveries).toEqual([["approved", "approved-credential"]]);
+
+    options.owner = "replacement";
+    options.tools = { "mail.send": replacement, extra: replacement };
+    options.now = () => 201;
+    options.resolveCredential = async () => "replacement-credential";
+    expect(() => broker.grant("replacement", input)).toThrow(
+      "capability_denied",
+    );
+    expect(() => broker.propose({ ...action, tool: "extra" })).toThrow(
+      "capability_denied",
+    );
+    const next = broker.grant("owner", input);
+    expect((await broker.execute("worker", next, action)).status).toBe(
+      "succeeded",
+    );
+    expect(resolutions).toBe(2);
+    expect(deliveries).toEqual([
+      ["approved", "approved-credential"],
+      ["approved", "approved-credential"],
+    ]);
+  } finally {
+    broker.close();
+  }
+});
+
 test("expired, revoked grants and malformed JSON fail closed", async () => {
   const { broker } = setup();
   for (const args of [
@@ -113,17 +180,16 @@ test("expired, revoked grants and malformed JSON fail closed", async () => {
   broker.close();
 });
 test("durable in-flight intent is unknown on reopen and cannot execute again", async () => {
-  const { broker, path, options } = setup();
+  let started = false;
+  const { broker, path, options } = setup(async () => {
+    started = true;
+    return new Promise(() => {});
+  });
   const grant = broker.grant("owner", {
     audience: "worker",
     action,
     expiresAt: Date.now() + 60_000,
   });
-  let started = false;
-  options.tools["mail.send"].execute = async () => {
-    started = true;
-    return new Promise(() => {});
-  };
   void broker.execute("worker", grant, action);
   await Promise.resolve();
   expect(started).toBe(true);
@@ -168,12 +234,11 @@ test("expiry at execution and revocation while resolving credentials prevent tra
 });
 
 test("transport exception is redacted, persistent unknown and never retried", async () => {
-  const { broker, options, path } = setup();
   let calls = 0;
-  options.tools["mail.send"].execute = async () => {
+  const { broker, options, path } = setup(async () => {
     calls++;
     throw new Error("secret-credential private-payload");
-  };
+  });
   const grant = broker.grant("owner", {
     audience: "worker",
     action,

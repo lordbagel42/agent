@@ -136,11 +136,19 @@ interface LinkRow {
  */
 export class CapabilityBroker {
   readonly #db: DatabaseSync;
-  readonly #options: BrokerOptions;
+  readonly #options: Readonly<BrokerOptions>;
   readonly #active = new Set<string>();
   constructor(path: string, options: BrokerOptions) {
     text(options.owner);
-    this.#options = options;
+    // Capture method identity without cloning class instances or freezing their
+    // lifecycle state. Adapter-internal destination settings remain trusted.
+    const tools = Object.fromEntries(
+      Object.entries(options.tools).map(([name, adapter]) => [
+        name,
+        Object.freeze({ execute: adapter.execute.bind(adapter) }),
+      ]),
+    );
+    this.#options = Object.freeze({ ...options, tools: Object.freeze(tools) });
     this.#db = new DatabaseSync(path);
     this.#db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS capability_grants(id TEXT PRIMARY KEY, audience TEXT NOT NULL, fingerprint TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
@@ -316,6 +324,8 @@ export class CapabilityBroker {
     linkToken?: string,
   ): Promise<Receipt> {
     const action = this.propose(input);
+    const adapter = this.#options.tools[action.tool];
+    if (!adapter) deny();
     let receipt: Receipt;
     this.#db.exec("BEGIN IMMEDIATE");
     try {
@@ -358,8 +368,6 @@ export class CapabilityBroker {
           origin: action.origin,
         }),
       );
-      const adapter = this.#options.tools[action.tool];
-      if (!adapter) deny();
       // Atomic admission after asynchronous credential lookup. A cancellation
       // committed before admission blocks the adapter; later cancellation cannot
       // recall it. The event is intent, not proof the adapter actually ran.
