@@ -21,6 +21,7 @@ export interface HttpDependencies {
   inspectConversation(): Promise<unknown>;
   inspectJob(id: string): Promise<unknown | undefined>;
   resumeJob(id: string, commandId: string): Promise<boolean>;
+  cancelJob?(id: string): Promise<boolean>;
 }
 
 export function createHttpApp(deps: HttpDependencies) {
@@ -129,5 +130,16 @@ export function createHttpApp(deps: HttpDependencies) {
       ? c.json({ queued: true }, 202)
       : c.json({ error: "job_not_resumable" }, 409);
   });
+  if (deps.cancelJob) {
+    const cancel = deps.cancelJob;
+    app.post("/operator/jobs/:id/cancel", async (c) => {
+      const id = c.req.param("id");
+      if (!/^[a-f0-9]{64}$/.test(id))
+        return c.json({ error: "invalid_job_id" }, 400);
+      return (await cancel(id))
+        ? c.json({ cancellationRequested: true }, 202)
+        : c.json({ error: "not_found" }, 404);
+    });
+  }
   return app;
 }

@@ -14,6 +14,8 @@ import type { JuneRegistry } from "./registry.js";
 
 export interface CodingDependencies {
   runtime: CodingRuntime;
+  /** Stable binding to the operator's runtime selection and execution policy. */
+  runtimeId: string;
   workspaces: Record<string, string>;
   timeoutMs: number;
   /** Missing managers fail closed, never fall back to the shared checkout. */
@@ -34,12 +36,14 @@ export interface CodingState {
     | "completed";
   attempts: number;
   commandApprovals: Record<string, number | null>;
+  runtimeId?: string;
   threadId?: string;
   report?: string;
   worktree?: WorktreeManifest;
   workerClaim?: string;
   verification?: VerificationResult;
   cancelRequested?: boolean;
+  revoked?: boolean;
 }
 type Command =
   | { type: "propose"; proposal: JobProposal }
@@ -63,8 +67,10 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
     actions: {
       snapshot: (c): CodingState => c.state,
       // Host must expose this only through authenticated owner/operator ingress.
-      cancel: async (c) => {
-        if (!c.state.proposal || c.state.status === "completed") return;
+      cancel: async (c, revoke = false) => {
+        // Forgetting is permanent, including when it overtakes a queued proposal
+        // or resume. A normal cancellation may later be reconciled by the owner.
+        if (revoke) c.state.revoked = true;
         c.state.cancelRequested = true;
         await c.vars.persist();
         c.vars.controller?.abort();
@@ -85,12 +91,14 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
           await loop.step("propose", async (step) => {
             if (
               step.state.proposal ||
+              step.state.revoked ||
               !command.proposal.source.direct ||
               command.proposal.id !== step.key[1] ||
               !Object.hasOwn(coding.workspaces, command.proposal.workspace)
             )
               return;
             step.state.proposal = command.proposal;
+            step.state.runtimeId = coding.runtimeId;
             step.state.status = "awaiting_approval";
             await step.vars.persist();
           });
@@ -104,6 +112,8 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
           }
           const allowed =
             step.state.proposal &&
+            !step.state.revoked &&
+            step.state.runtimeId === coding.runtimeId &&
             (command.type === "approve"
               ? step.state.status === "awaiting_approval"
               : command.confirmedStopped &&
@@ -158,6 +168,11 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
               // upgrade that approval to new isolation/verification effects.
               if (version < 2)
                 throw new Error("Legacy approval needs reconciliation");
+              if (
+                step.state.revoked ||
+                step.state.runtimeId !== coding.runtimeId
+              )
+                throw new Error("Execution binding needs reconciliation");
               if (!manager) throw new Error("Isolation is not configured");
               if (step.state.cancelRequested) controller.abort();
               signal.throwIfAborted();
@@ -173,6 +188,7 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
                 command.type === "resume" && command.confirmedStopped,
               );
               admitted = true;
+              signal.throwIfAborted();
               const { manifest } = await manager.prepare(proposal.id);
               if (
                 manifest.repositoryRoot !==

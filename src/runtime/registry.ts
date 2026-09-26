@@ -134,7 +134,7 @@ export function createJuneRegistry(deps: Dependencies) {
           await c
             .client<JuneRegistry>()
             .job.getOrCreate([deps.owner.id, id])
-            .cancel();
+            .cancel(true);
       },
     },
     run: workflow(async (ctx) => {

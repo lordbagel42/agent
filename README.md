@@ -198,29 +198,70 @@ templates and personal-account bridges need separate implementations and policy 
 
 ## Coding and operator access
 
-Coding is disabled by default. Enabling it requires both `coding.enabled: true`
-with named, absolute workspace paths and `JUNE_ALLOW_NATIVE_CODING=1`. Amp must be
-installed/authenticated on that dedicated host using its supported setup.
+Coding is disabled by default. Enabling it requires `coding.enabled: true`, an
+explicit `coding.runtime`, named absolute workspace paths, a separate
+`coding.isolation.<workspace>.worktreeRoot` for each, and
+`JUNE_ALLOW_NATIVE_CODING=1`. There is no default runtime or authentication fallback.
+Each isolation policy may name an independent verifier with absolute `argv[0]`,
+bounded `timeoutMs` and nonsecret `env`. A worker report is not verification.
+
+Supported runtime configurations, all dormant until separately authorized:
+
+| `coding.runtime.kind` | Required configuration and authentication |
+| --- | --- |
+| `amp` | Supported Amp installation/login on the dedicated execution host. |
+| `codex` | Dedicated absolute `home` with supported CLI file authentication; optional `model` and absolute `executable`. Separate from the companion's Codex home. |
+| `claude` | `apiKeyEnv` and private `stateDirectory`; optional `model`, `maxTurns` (40 by default), and `allowedTools` (empty by default). API keys only, not Claude subscription tokens. |
+| `pi` | Operator-pinned absolute `executable`, exact `provider`/`model`, private `home`, `agentDir`, `sessionDir`, explicit `path`, and `hostSandboxAcknowledged:true`. Provision Pi's supported `auth.json` in its dedicated directory; only HOME/PATH are passed by this host. |
+
+Provider/session directories must already be canonical, owner-only directories
+outside repositories. Read the [Codex](src/coding/codex.md) and
+[Pi](src/coding/pi.md) contracts before provisioning. No runtime signs in or
+copies another tool's credentials. An API-key environment reference is not proof
+of account identity, provider eligibility, or authorization.
 
 **Native execution is not a sandbox.** The workspace list and worker prompt are
 not filesystem or network isolation. Amp can inherit host access and credentials;
-do not enable it on a shared machine with resources it must not touch. This
-increment does not enforce a separate credential broker or deployment policy.
+the other runtimes' filtered environments do not prevent filesystem access.
+Keep native execution disabled until protected-host acceptance establishes the
+required credential, process and network isolation. This increment does not
+enforce a separate credential broker or deployment policy.
+
+Each proposal durably binds the parsed runtime/execution configuration before
+approval. Changing that configuration cannot resume a saved thread under a new
+adapter, state directory or verifier. Jobs from an older unbound schema require
+manual reconciliation; the host will not invent a binding. The digest does not
+authenticate external credentials, executable contents or native configuration;
+changing those still requires operator review, not automatic resumption.
 
 Ask June privately for a coding task. She returns the scope and an
 `/approve <job-prefix>` command; approval is for local work, not push/deployment.
-After an uncertain result, first inspect the saved Amp thread and workspace and
+After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
 `/resume-stopped <job-prefix>`. Do not resume a job with an unknown live worker.
-If no thread ID was saved, manual investigation is required.
+If a worktree exists but no thread ID was saved, even confirmed-stopped resume
+is rejected: manual reconciliation only, never a replacement session. A failure
+before worktree preparation may be explicitly resumed under the same binding.
+
+The pinned Amp SDK writes a string prompt before output consumption. Awaiting
+`onThread` therefore does **not** prove that the native session was saved before
+work began. Natural iterator exhaustion validates the owned process exit, not
+descendant or remote-tool quiescence. The existing hard-kill fixture interrupts
+after the ID callback; it does not exercise real pre-ID Amp crash/recovery.
+Unknown startup/cancellation retains admission, including without a saved ID.
 
 Private operator endpoints require `Authorization: Bearer <operator-token>`:
 
 - `GET /operator/conversation`: history, events, outbox, and coding proposals.
-- `GET /operator/jobs/<full-job-id>`: job state, saved thread ID, and report.
+- `GET /operator/jobs/<full-job-id>`: job state, saved thread ID, and report;
+  forgotten-source jobs are no longer exposed or resumable.
 - `POST /operator/jobs/<full-job-id>/resume`: JSON `{"confirmedStopped":true}`
   and a UUID `Idempotency-Key` header. Reuse the same key when retrying a request;
   a new deliberate attempt needs a new key. HTTP 202 means queued, not completed.
+- `POST /operator/jobs/<full-job-id>/cancel`: idempotently persists a cancellation
+  request. HTTP 202 is not proof of stoppage and does not release unknown admission.
+  Forgetting permanently revokes a job, even if it overtakes a queued proposal or
+  resume; ordinary cancellation does not grant permission to resume it.
 
 There is no automatic resend endpoint for unknown delivery outcomes. Inspect the
 platform before taking a new action. A delivery marked `sent` means the provider

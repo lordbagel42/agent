@@ -440,6 +440,7 @@ describe("Rivet conversation workflow", () => {
         },
       },
       coding: {
+        runtimeId: "fixture-runtime-v1",
         workspaces: { june: "/unused" },
         timeoutMs: 1000,
         runtime: {

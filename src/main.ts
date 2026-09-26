@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -9,9 +10,16 @@ import { createSlackAdapter } from "./channels/slack.js";
 import { createSlackIngressDiagnostics } from "./channels/slack-ingress.js";
 import { createWhatsAppAdapter } from "./channels/whatsapp.js";
 import { createAmpRuntime } from "./coding/amp.js";
+import { createClaudeRuntime } from "./coding/claude.js";
+import { createCodexRuntime } from "./coding/codex.js";
+import { createPiRuntime } from "./coding/pi.js";
 import { createWorktreeManager } from "./coding/worktree.js";
 import { parseConfig, secret } from "./config.js";
-import type { Channel, ChannelAdapter } from "./core/contracts.js";
+import type {
+  Channel,
+  ChannelAdapter,
+  CodingRuntime,
+} from "./core/contracts.js";
 import { createHttpApp } from "./http/app.js";
 import { createImportRoutes } from "./http/imports.js";
 import { createMemoryRoutes } from "./http/memory.js";
@@ -83,6 +91,7 @@ async function main() {
       await readFile(process.env.JUNE_CONFIG ?? "config.local.json", "utf8"),
     ),
   );
+  let coding: Dependencies["coding"];
   const isolation: NonNullable<Dependencies["coding"]>["isolation"] = {};
   if (config.coding.enabled) {
     startupStage =
@@ -144,12 +153,63 @@ async function main() {
         roots.push(candidate);
       }
       config.coding.workspaces[name] = canonical;
+      policy.worktreeRoot = worktreeRoot;
       isolation[name] = createWorktreeManager({
         repositoryRoot: canonical,
         worktreeRoot,
         verifier: policy.verifier,
       });
     }
+    startupStage = "native coding runtime configuration";
+    const selection = config.coding.runtime;
+    if (!selection) throw new Error("Explicit coding runtime required");
+    let worker: CodingRuntime;
+    switch (selection.kind) {
+      case "amp":
+        worker = createAmpRuntime();
+        break;
+      case "codex":
+        await privateDirectory(selection.home);
+        worker = createCodexRuntime({
+          ...selection,
+          timeoutMs: config.coding.timeoutMs,
+        });
+        break;
+      case "claude":
+        await privateDirectory(selection.stateDirectory);
+        worker = createClaudeRuntime({
+          auth: { type: "api-key", apiKey: secret(selection.apiKeyEnv) },
+          stateDirectory: selection.stateDirectory,
+          model: selection.model,
+          allowedTools: selection.allowedTools,
+          maxTurns: selection.maxTurns,
+        });
+        break;
+      case "pi":
+        for (const path of [
+          selection.home,
+          selection.agentDir,
+          selection.sessionDir,
+        ])
+          await privateDirectory(path);
+        worker = createPiRuntime({
+          ...selection,
+          // Credentials must be provisioned in the dedicated Pi auth.json.
+          // Never inherit service credentials or copy subscription tokens.
+          env: { HOME: selection.home, PATH: selection.path },
+          timeoutMs: config.coding.timeoutMs,
+        });
+    }
+    coding = {
+      ...config.coding,
+      isolation,
+      runtime: worker,
+      // Config contains references to secrets, not their values. Changing the
+      // runtime, session roots or execution policy cannot rebind existing jobs.
+      runtimeId: createHash("sha256")
+        .update(JSON.stringify(config.coding))
+        .digest("hex"),
+    };
   }
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);
@@ -379,9 +439,7 @@ async function main() {
     model,
     memory,
     reflection,
-    coding: config.coding.enabled
-      ? { ...config.coding, isolation, runtime: createAmpRuntime() }
-      : undefined,
+    coding,
   });
   Object.assign(registry.config, {
     startEngine: !process.env.RIVET_ENDPOINT && !process.env.RIVET_ENGINE,
@@ -419,25 +477,39 @@ async function main() {
     },
     inspectConversation: () => june.snapshot(),
     async inspectJob(id) {
-      if (!Object.hasOwn((await june.snapshot()).jobs, id)) return undefined;
+      const state = await june.snapshot();
+      if (!Object.hasOwn(state.jobs, id) || state.forgottenEvents?.includes(id))
+        return undefined;
       return client.job.getOrCreate([config.owner.id, id]).snapshot();
     },
     async resumeJob(id, commandId) {
+      const conversation = await june.snapshot();
       if (
-        !config.coding.enabled ||
-        !Object.hasOwn((await june.snapshot()).jobs, id)
+        !coding ||
+        !Object.hasOwn(conversation.jobs, id) ||
+        conversation.forgottenEvents?.includes(id)
       )
         return false;
       const job = client.job.getOrCreate([config.owner.id, id]);
       const state = await job.snapshot();
+      if (state.revoked || state.runtimeId !== coding.runtimeId) return false;
       if (Object.hasOwn(state.commandApprovals, commandId))
         return state.commandApprovals[commandId] !== null;
-      if (state.status !== "needs_review" || !state.threadId) return false;
+      if (
+        state.status !== "needs_review" ||
+        (state.worktree && !state.threadId)
+      )
+        return false;
       await job.send("commands", {
         type: "resume",
         commandId,
         confirmedStopped: true,
       });
+      return true;
+    },
+    async cancelJob(id) {
+      if (!Object.hasOwn((await june.snapshot()).jobs, id)) return false;
+      await client.job.getOrCreate([config.owner.id, id]).cancel();
       return true;
     },
   });

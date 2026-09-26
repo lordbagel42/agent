@@ -183,6 +183,7 @@ describe("runnable June host", () => {
         ...config,
         coding: {
           enabled: true,
+          runtime: { kind: "amp" },
           workspaces: { june: directory },
           isolation: { june: { worktreeRoot: join(directory, "worktrees") } },
         },

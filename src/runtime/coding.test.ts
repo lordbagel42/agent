@@ -67,6 +67,7 @@ async function fixture(t: TestContext, runtime: CodingRuntime) {
   });
   const coding: CodingDependencies = {
     runtime,
+    runtimeId: "fixture-runtime-v1",
     workspaces: { june: repositoryRoot },
     timeoutMs: 5000,
     isolation: { june: manager },
@@ -100,7 +101,7 @@ async function fixture(t: TestContext, runtime: CodingRuntime) {
     },
     coding,
   });
-  return { registry, sent, manager, repositoryRoot, worktreeRoot };
+  return { registry, sent, manager, repositoryRoot, worktreeRoot, coding };
 }
 
 describe("separate coding supervisor", () => {
@@ -227,6 +228,92 @@ describe("separate coding supervisor", () => {
     expect(threads).toEqual([undefined, "T-saved"]);
   });
 
+  it("rejects approvals and resumes under a different runtime binding without releasing admission", async (t) => {
+    let launches = 0;
+    const { registry, coding, manager } = await fixture(t, {
+      async run(input) {
+        launches++;
+        await input.onThread("T-original-runtime");
+        throw new Error("Unknown completion");
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const job = client.job.getOrCreate(["raygen", "bound-runtime"]);
+    await job.send("commands", {
+      type: "propose",
+      proposal: {
+        id: "bound-runtime",
+        source,
+        workspace: "june",
+        goal: "Task",
+      },
+    });
+    await expect
+      .poll(async () => (await job.snapshot()).runtimeId)
+      .toBe("fixture-runtime-v1");
+    coding.runtimeId = "different-runtime";
+    await job.send("commands", {
+      type: "approve",
+      commandId: "wrong-approval",
+    });
+    await expect
+      .poll(
+        async () => (await job.snapshot()).commandApprovals["wrong-approval"],
+      )
+      .toBeNull();
+    expect(launches).toBe(0);
+    coding.runtimeId = "fixture-runtime-v1";
+    await job.send("commands", {
+      type: "approve",
+      commandId: "original-approval",
+    });
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("needs_review");
+    expect(launches).toBe(1);
+    coding.runtimeId = "different-runtime";
+    await job.send("commands", {
+      type: "resume",
+      commandId: "wrong-resume",
+      confirmedStopped: true,
+    });
+    await expect
+      .poll(async () => (await job.snapshot()).commandApprovals["wrong-resume"])
+      .toBeNull();
+    expect(launches).toBe(1);
+    expect((await job.snapshot()).threadId).toBe("T-original-runtime");
+    await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+  });
+
+  it("keeps revocation when forgetting overtakes a queued proposal", async (t) => {
+    let launches = 0;
+    const { registry } = await fixture(t, {
+      async run() {
+        launches++;
+        throw new Error("Revoked work must not start");
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const job = client.job.getOrCreate(["raygen", "forgotten-proposal"]);
+    await job.cancel(true);
+    await job.send("commands", {
+      type: "propose",
+      proposal: {
+        id: "forgotten-proposal",
+        source,
+        workspace: "june",
+        goal: "Deleted task",
+      },
+    });
+    await job.send("commands", { type: "approve", commandId: "old-approval" });
+    await expect
+      .poll(async () => (await job.snapshot()).commandApprovals["old-approval"])
+      .toBeNull();
+    expect((await job.snapshot()).proposal).toBeNull();
+    expect((await job.snapshot()).revoked).toBe(true);
+    expect(launches).toBe(0);
+  });
+
   it("does not relaunch when a failed resume command is delivered twice", async (t) => {
     const threads: (string | undefined)[] = [];
     const { registry } = await fixture(t, {
@@ -317,6 +404,20 @@ describe("separate coding supervisor", () => {
       .toBe(true);
     expect(launches).toBe(1);
     expect((await job.snapshot()).verification).toBeUndefined();
+    await job.cancel(true);
+    await job.send("commands", {
+      type: "resume",
+      commandId: "revoked-resume",
+      confirmedStopped: true,
+    });
+    await expect
+      .poll(
+        async () => (await job.snapshot()).commandApprovals["revoked-resume"],
+      )
+      .toBeNull();
+    expect(launches).toBe(1);
+    expect((await job.snapshot()).cancelRequested).toBe(true);
+    await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
     await expect
       .poll(
         async () =>

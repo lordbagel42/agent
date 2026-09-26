@@ -169,6 +169,40 @@ const schema = z
     coding: z
       .strictObject({
         enabled: z.boolean().default(false),
+        runtime: z
+          .discriminatedUnion("kind", [
+            z.strictObject({ kind: z.literal("amp") }),
+            z.strictObject({
+              kind: z.literal("codex"),
+              home: absolutePath,
+              model: nonempty.optional(),
+              executable: absolutePath.optional(),
+            }),
+            z.strictObject({
+              kind: z.literal("claude"),
+              apiKeyEnv: envName,
+              stateDirectory: absolutePath,
+              model: nonempty.optional(),
+              allowedTools: z
+                .array(
+                  z.enum(["Read", "Glob", "Grep", "Edit", "Write", "Bash"]),
+                )
+                .default([]),
+              maxTurns: z.number().int().min(1).max(1000).default(40),
+            }),
+            z.strictObject({
+              kind: z.literal("pi"),
+              executable: absolutePath,
+              provider: nonempty,
+              model: nonempty,
+              home: absolutePath,
+              path: nonempty,
+              agentDir: absolutePath,
+              sessionDir: absolutePath,
+              hostSandboxAcknowledged: z.literal(true),
+            }),
+          ])
+          .optional(),
         workspaces: z
           .record(
             z.string().regex(/^[a-zA-Z0-9_-]+$/),
@@ -225,14 +259,15 @@ const schema = z
   .refine(
     (config) =>
       !config.coding.enabled ||
-      (Object.keys(config.coding.workspaces).length > 0 &&
+      (!!config.coding.runtime &&
+        Object.keys(config.coding.workspaces).length > 0 &&
         Object.keys(config.coding.workspaces).every((key) =>
           Object.hasOwn(config.coding.isolation, key),
         ) &&
         Object.keys(config.coding.isolation).every((key) =>
           Object.hasOwn(config.coding.workspaces, key),
         )),
-    "Each enabled coding workspace requires its own configured isolation root",
+    "Enabled coding requires an explicit runtime and an isolation root for every workspace",
   );
 
 export type Config = z.infer<typeof schema>;

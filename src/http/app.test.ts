@@ -249,6 +249,44 @@ describe("webhook and operator HTTP boundary", () => {
     expect(resumes).toEqual([commandId]);
   });
 
+  it("requires bearer authority for idempotent cancellation and does not claim stoppage", async () => {
+    const cancelled: string[] = [];
+    const id = "a".repeat(64);
+    const app = createHttpApp(
+      dependencies({
+        async cancelJob(jobId) {
+          cancelled.push(jobId);
+          return jobId === id;
+        },
+      }),
+    );
+    const url = `/operator/jobs/${id}/cancel`;
+    expect((await app.request(url, { method: "POST" })).status).toBe(401);
+    expect(cancelled).toEqual([]);
+    const headers = { authorization: `Bearer ${token}` };
+    expect(
+      (
+        await app.request("/operator/jobs/short/cancel", {
+          method: "POST",
+          headers,
+        })
+      ).status,
+    ).toBe(400);
+    const response = await app.request(url, { method: "POST", headers });
+    expect(response.status).toBe(202);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ cancellationRequested: true });
+    expect(
+      (
+        await app.request(`/operator/jobs/${"b".repeat(64)}/cancel`, {
+          method: "POST",
+          headers,
+        })
+      ).status,
+    ).toBe(404);
+    expect(cancelled).toEqual([id, "b".repeat(64)]);
+  });
+
   it("reports engine unavailability and rejects oversized payloads", async () => {
     const app = createHttpApp(
       dependencies({

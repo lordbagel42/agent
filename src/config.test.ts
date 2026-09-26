@@ -24,7 +24,67 @@ describe("configuration boundary", () => {
     const config = parseConfig(input);
     expect(config.host).toBe("127.0.0.1");
     expect(config.coding.enabled).toBe(false);
+    expect(config.coding.runtime).toBeUndefined();
     expect(config.coding.workspaces).toEqual({});
+  });
+  it("requires explicit runtime selection and rejects credential or permission shortcuts", () => {
+    const coding = {
+      enabled: true,
+      workspaces: { june: "/srv/repo" },
+      isolation: { june: { worktreeRoot: "/srv/worktrees" } },
+    };
+    expect(() => parseConfig({ ...input, coding })).toThrow();
+    for (const runtime of [
+      { kind: "amp" },
+      { kind: "codex", home: "/private/codex" },
+      {
+        kind: "claude",
+        apiKeyEnv: "CLAUDE_KEY",
+        stateDirectory: "/private/claude",
+      },
+      {
+        kind: "pi",
+        executable: "/opt/pi",
+        provider: "openai",
+        model: "configured-model",
+        home: "/private/pi",
+        path: "/usr/bin",
+        agentDir: "/private/pi/config",
+        sessionDir: "/private/pi/sessions",
+        hostSandboxAcknowledged: true,
+      },
+    ]) {
+      expect(
+        parseConfig({ ...input, coding: { ...coding, runtime } }).coding.runtime
+          ?.kind,
+      ).toBe(runtime.kind);
+      expect(
+        parseConfig({ ...input, coding: { runtime } }).coding.enabled,
+      ).toBe(false);
+      expect(() =>
+        parseConfig({
+          ...input,
+          coding: {
+            ...coding,
+            runtime: { ...runtime, apiKey: "must-not-accept" },
+          },
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      parseConfig({
+        ...input,
+        coding: {
+          ...coding,
+          runtime: {
+            kind: "claude",
+            apiKeyEnv: "CLAUDE_KEY",
+            stateDirectory: "/private/claude",
+            allowedTools: ["*"],
+          },
+        },
+      }),
+    ).toThrow();
   });
   it("rejects unused typo fields and missing channels", () => {
     expect(() => parseConfig({ ...input, models: {} })).toThrow();
