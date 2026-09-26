@@ -33,42 +33,104 @@ and use caller-supplied timestamps. Persist the complete returned state. Treat
 records as immutable; they can share unchanged subtrees. `claim` returns either
 an `attempt` or a denial `reason`. `finish` ignores stale/duplicate attempts.
 
-## Rivet integration outline
+## Rivet actor factory
 
-Use the existing registry's journaled `loop.step` and explicit persistence
-pattern. The following is an outline inside an owning workflow, not another
-scheduler. `input`, `policy`, `decide`, and the single shared process-local
-`executor` are supplied by the host. Store the evaluation receipt under the
-request ID and attempt, then apply `finish` in a separate journaled step.
+`createReflectionActor(deps)` in `../runtime/reflection.ts` returns a mountable
+Rivet actor definition. Mount it once and use key `[ownerId]`, not one actor per
+audience. The separate `reflection-v1` workflow serializes admissions and uses
+Rivet's journaled queue timeout for durable wakeups. It does not modify or mount
+itself in the conversation registry. Future changes to journal operation order
+must use Rivet workflow version gates or a deliberate migration; do not rename
+the workflow to retry already-started calls.
+
+Dependencies are `ownerId`, domain `policy`, raw `decide: DecisionFunction`,
+`retrieve({ownerId, scope, evidenceIds}, signal)`, and positive millisecond
+`idleMs`, `deepMs`, `pollMs`, `timeoutMs` (at most one day; deep >= idle).
+`pollMs` controls eligibility-check granularity, not model call frequency;
+use a production value such as 60 seconds, not the test fixture's 20ms.
+
+`retrieve` returns `{authorized:boolean,evidence:Evidence[]}`. It must check
+the current trusted owner/audience mapping, immutable source versions and
+deletion tombstones, not reuse the enqueue-time snapshot. Canonical host scopes
+are `JSON.stringify(routeEvent(...).key)`; owner imports use
+`JSON.stringify(["private", owner.id])`. Adapt the memory store's
+`reflectionEvidence(scope, evidenceIds, evidenceMaxAgeMs)` after checking owner
+authorization; return `{authorized:false,evidence:[]}` on rejection. The memory
+bridge accepts only original sources (currently at most 20 IDs / 64K), never
+derived claims or dreams as independent evidence. The runtime rejects partial,
+duplicate, stale, future, expired, deleted or wrong-scope evidence. Retrieval
+runs at admission, after the intent flush immediately before the model, after
+the model, and on every candidate read. No raw evidence enters state or journal.
+
+Host actions:
 
 ```ts
-const admitted = await loop.step("admit-reflection", async (step) => {
-  const result = claim(
-    step.state.reflection, id, now, policy, scopedEvidence, liveActive,
-  );
-  step.state.reflection = result.state;
-  await step.vars.persist();
-  return { attempt: result.attempt ?? null, reason: result.reason ?? null };
-});
-if (admitted.attempt === null) return; // Rivet decides whether/when to wake again.
-
-const decision = await loop.step("evaluate-reflection", async () =>
-  executor.evaluate(input, typedEvaluator(decide), abortController.signal),
-);
-// Journal the result. Recheck cancellation and evidence invalidation before
-// accepting a proposal. Never interpret decision.confidence as permission.
-// For normally settled calls, finish with independently ingested evidence:
-// state.reflection = finish(state.reflection, id, admitted.attempt,
-//                          completedAt, trustedNewEvidence, policy);
-// Persist again. Any owner-facing interruption needs the host's separate
-// privacy, quiet-hours, attention and approval/delivery checks.
+enqueue({scope, evidenceIds, kind: "reflection" | "curiosity",
+         mode: "interaction" | "idle" | "deep"}): Promise<{id, accepted}>
+cancel(id): Promise<boolean>
+trigger({id, type: "interaction" | "idle", liveActive}): Promise<void>
+status(): Promise<{reflection, invocations, candidateIds, liveActive, epoch}>
+candidate(id): Promise<ReflectionCandidate | null>
+reconcile(requestId, confirmedStopped): Promise<boolean>
 ```
 
-Serialize all admissions sharing capacity through one owning actor. Never merge
-claims computed from the same old snapshot. Persist cancellation and abort the
-local signal. A cancelling request occupies capacity until `finish` acknowledges
-settlement. On process loss, reconcile journal/worker termination before freeing
-running claims; there is deliberately no automatic lease-expiry retry here.
+These are trusted host APIs, not public authorization endpoints. Authenticate
+the operator before forwarding them, especially `reconcile`. Status includes
+request scope/source IDs but no model text. Only `candidate` releases a model
+rationale, after current evidence checks. For forgetting, use status source IDs
+to cancel all dependent requests; cancellation removes their staged candidates.
+Actor storage, engine inspection and backups must remain private. Deletion of
+the memory store alone does not erase a candidate from actor storage/backups.
+
+- Before live model work, call `trigger` with `type: "interaction"`, a stable
+  ingress-derived event ID, and total owner-wide live occupancy. This resets
+  idle age, invalidates prior candidates and aborts active background work.
+  After the work settles, call `type: "idle"` with a distinct stable completion
+  ID and the remaining occupancy. Duplicate IDs are inert. Serialize occupancy
+  updates through the host; a stale zero must not overwrite a newer live count.
+  Recover lost live-completion hooks explicitly after confirming worker exit.
+- Enqueue source IDs produced by trusted interaction/memory ingestion. Immediate
+  reflection waits for no live work; idle/deep modes additionally wait their
+  delay after both enqueue and the most recent interaction. Idle hooks/timers
+  do not invent evidence, recursively enqueue dreams or repeatedly message the
+  owner. Domain dedupe covers all modes and kinds. Keep tombstones and trigger
+  dedupe IDs when designing retention/compaction.
+- Calls are deliberately serial even if the policy allows more background
+  capacity. Live work preempts them and the domain reserves live capacity.
+  Inject the raw provider, **not** `DecisionExecutor.evaluate` or another wrapper
+  that returns before the underlying provider settles. Cancellation/timeout
+  signals are cooperative; an ignoring provider holds its claim and blocks
+  further background work, but does not block the separate live actor. The
+  workflow abort signal also cancels on shutdown; there is no second scheduler
+  or global timer/controller collection to dispose. Provider transports must
+  honor that signal or the host must terminate their worker.
+- Admission, attempt and a `started` invocation marker are explicitly flushed
+  before a model call. Candidate plus settlement are flushed together before
+  the workflow step completes. On interrupted-step replay, a persisted started
+  marker becomes `uncertain`; no automatic retry or lease-based capacity release
+  occurs. `reconcile(id,true)` cancels the held request only after an operator
+  verifies the old provider/worker stopped. It never clears dedupe or retries.
+  This chooses missed work over duplicate effects at ambiguous crash boundaries.
+- A decision is only a proposal, never a memory/personality write or permission
+  grant. Dream-only support is marked `hypothesisOnly` and cannot yield an
+  interruption candidate. At most one interruption candidate is staged per
+  interaction epoch, across scopes; quiet hours and live occupancy also gate
+  staging/reads. There is **no outbound send**. Any later delivery must use the
+  candidate ID as its own durable dedupe key and recheck audience, attention,
+  quiet hours and approval. Repeated candidate reads are not new send grants.
+- Each settled attempt finishes with no claimed new evidence; model output
+  cannot reset habituation. Fresh trusted ingestion should enqueue a new ID
+  set. Domain attempts/no-new-evidence bounds stop each request. A retrieval
+  rejection cancels work; failures after admission consume the attempt without
+  persisting exception text.
+
+Verification: `pnpm exec vitest run src/runtime/reflection.test.ts
+src/reflection/domain.test.ts` exercises the real disposable engine plus domain
+rules. The runtime test protects audience/deletion checks, duplicate admission,
+cancellation settlement and candidate-read privacy. No paid provider or live
+channel is required. RivetKit 2.3.21 still emits the repository's documented
+native `transaction_closed` shutdown diagnostic; passing checks are not a claim
+of production engine readiness.
 
 ## Semantics and limits
 
