@@ -152,6 +152,7 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
             let launched = false;
             let settled = false;
             let acceptingThread = true;
+            let onAbort: () => void = () => {};
             try {
               // Do not launch an old approval in a shared checkout, nor silently
               // upgrade that approval to new isolation/verification effects.
@@ -200,9 +201,8 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
                   await step.vars.persist();
                 },
               });
-              // A runtime ignoring cancellation must not block this supervisor.
-              // Its lease remains held: an abort is NOT proof the process exited.
-              let onAbort: () => void = () => {};
+              // Neither worker nor verifier settlement may block cancellation.
+              // An abort is NOT proof either process exited; retain its lease.
               const interrupted = new Promise<never>((_, reject) => {
                 onAbort = () => reject(new Error("Execution interrupted"));
                 signal.addEventListener("abort", onAbort, { once: true });
@@ -213,7 +213,6 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
                 interrupted,
               ]).finally(() => {
                 acceptingThread = false;
-                signal.removeEventListener("abort", onAbort);
               });
               signal.throwIfAborted();
               settled = true;
@@ -226,11 +225,10 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
               step.state.workerClaim = result.report;
               await step.vars.persist();
               settled = false;
-              const verification = await manager.verify(
-                proposal.id,
-                signal,
-                approved,
-              );
+              const verification = await Promise.race([
+                manager.verify(proposal.id, signal, approved),
+                interrupted,
+              ]);
               settled = verification.status !== "needs_review";
               step.state.verification = verification;
               step.state.report = verification.replayed
@@ -248,8 +246,9 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
                 "No confirmed completion. Admission, cancellation, worker execution, or verification needs review. Inspect the isolated workspace and saved thread; unknown execution must be confirmed stopped before resuming.";
             } finally {
               acceptingThread = false;
-              // A rejected/aborted runtime has unknown process state. Retain its
-              // durable capacity reservation until explicit reconciliation.
+              signal.removeEventListener("abort", onAbort);
+              // Unknown worker or verifier execution retains durable capacity
+              // until explicit reconciliation, even if it later reports success.
               if (manager && admitted && (!launched || settled)) {
                 try {
                   await manager.release(proposal.id, approved);

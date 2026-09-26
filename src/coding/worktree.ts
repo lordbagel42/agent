@@ -30,6 +30,10 @@ export interface WorktreeManifest {
   baseCommit: string;
 }
 
+/**
+ * Command-outcome evidence only, never release authorization. HEAD is captured
+ * before execution; no immutable content/artifact or verifier digest is bound.
+ */
 export interface VerificationResult {
   status:
     | "passed"
@@ -449,6 +453,12 @@ export function createWorktreeManager(input: WorktreeConfig) {
         throw error;
       }
       const checked = await new Promise<VerificationResult>((resolve) => {
+        // Cancellation may arrive while the durable intent is being written.
+        // Do not start a process merely to kill it after it can cause effects.
+        if (signal?.aborted) {
+          resolve(result("aborted"));
+          return;
+        }
         let stopped: "aborted" | "timed_out" | undefined;
         const child = spawn(
           verifier.argv[0] as string,

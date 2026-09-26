@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { createWorktreeManager } from "./worktree.js";
 
 test("worktree ownership rejects escapes and preserves the shared dirty checkout", async () => {
@@ -139,6 +139,25 @@ test("verification never repeats a command on replay and omits private output", 
     expect(await readFile(path.join(manifest.cwd, "runs"), "utf8")).toBe("1");
     const nextAttempt = await manager.verify("verify-1", undefined, 2);
     expect(nextAttempt).toMatchObject({ status: "passed", replayed: false });
+    expect(await readFile(path.join(manifest.cwd, "runs"), "utf8")).toBe("11");
+    const controller = new AbortController();
+    // Abort during the awaited intent write, after the first preflight check.
+    vi.spyOn(controller.signal, "aborted", "get").mockImplementationOnce(() => {
+      queueMicrotask(() => controller.abort());
+      return false;
+    });
+    expect(
+      await manager.verify("verify-1", controller.signal, 3),
+    ).toMatchObject({
+      status: "aborted",
+      exitCode: null,
+      signal: null,
+    });
+    expect(await readFile(path.join(manifest.cwd, "runs"), "utf8")).toBe("11");
+    expect(await manager.verify("verify-1", undefined, 3)).toMatchObject({
+      status: "aborted",
+      replayed: true,
+    });
     expect(await readFile(path.join(manifest.cwd, "runs"), "utf8")).toBe("11");
   } finally {
     await rm(root, { recursive: true, force: true });
