@@ -6,6 +6,10 @@ import type {
   MessageEvent,
 } from "../core/contracts.js";
 import { createSlackAdapter } from "./slack.js";
+import {
+  createSlackSearch,
+  type SlackPrivateSearchAuthorization,
+} from "./slack-search.js";
 
 const initialNow = 1_800_000_000_000;
 const signingSecret = "search-signing-secret";
@@ -682,4 +686,288 @@ describe("Slack Real-time Search", () => {
     );
     expect(context.fetchMock).toHaveBeenCalledTimes(1);
   }, 15_000);
+});
+
+describe("owner-authorized private Slack search", () => {
+  function privateSetup() {
+    let now = initialNow;
+    let authorization: SlackPrivateSearchAuthorization | undefined = {
+      ownerId: "owner",
+      userId: "U123ABC",
+      teamId,
+      userToken: "xoxp-owner-test-token",
+      grantedScopes: ["search:read.public", "search:read.im"],
+      expiresAt: initialNow + 600_000,
+    };
+    const event: MessageEvent = {
+      type: "message",
+      id: "Ev_private",
+      senderId: "U123ABC",
+      address: {
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "D123ABC",
+      },
+      direct: true,
+      messageId: messageTs,
+      occurredAt: initialNow,
+      text: "/search launch",
+    };
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (url) =>
+      jsonResponse(
+        String(url).endsWith("auth.test")
+          ? { ok: true, team_id: teamId, user_id: "U123ABC" }
+          : results([
+              resultMessage({
+                channel_id: "D456DEF",
+                permalink: permalink.replace("C123ABC", "D456DEF"),
+                content: "private sentinel",
+              }),
+            ]),
+      ),
+    );
+    const engine = createSlackSearch({
+      teamId,
+      botToken: "public-bot-token",
+      fetch: fetchMock,
+      now: () => now,
+      privateSearch: {
+        ownerId: "owner",
+        userId: "U123ABC",
+        getAuthorization: () => authorization,
+      },
+    });
+    return {
+      engine,
+      event,
+      fetchMock,
+      revoke: () => {
+        authorization = undefined;
+      },
+      update: (changes: Partial<SlackPrivateSearchAuthorization>) => {
+        if (authorization) authorization = { ...authorization, ...changes };
+      },
+      advance: (ms: number) => {
+        now += ms;
+      },
+    };
+  }
+
+  it("requires fresh captured ingress, verifies token identity, and spends one DM-bound delivery", async () => {
+    const context = privateSetup();
+    const { engine, event, fetchMock } = context;
+    await expect(engine.search(event, "launch")).resolves.toEqual(
+      authorizationRequired,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    engine.capture(event, undefined);
+    const pending = engine.search(event, "launch");
+    await expect(engine.search(event, "launch")).resolves.toEqual(
+      authorizationRequired,
+    );
+    const result = await pending;
+    expect(result.status).toBe("private_ready");
+    if (result.status !== "private_ready")
+      throw new Error("Expected private result");
+    expect(JSON.stringify(result)).toBe('{"status":"private_ready"}');
+    expect(result).not.toHaveProperty("text");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const call = fetchMock.mock.calls[1];
+    if (!call) throw new Error("Expected search");
+    const request = new Request(...call);
+    expect(request.headers.get("authorization")).toBe(
+      "Bearer xoxp-owner-test-token",
+    );
+    await expect(request.json()).resolves.toEqual({
+      query: "launch",
+      context_channel_id: "D123ABC",
+      content_types: ["messages"],
+      channel_types: ["public_channel", "im"],
+      include_context_messages: false,
+      include_bots: false,
+      limit: 5,
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://slack.com/api/auth.test",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: "POST",
+      headers: { authorization: request.headers.get("authorization") },
+      redirect: "error",
+    });
+    for (const modified of [
+      { ...event, id: "Ev_replay" },
+      { ...event, senderId: "UOTHER" },
+      { ...event, direct: false },
+      { ...event, messageId: "1800000000.000124" },
+      { ...event, occurredAt: initialNow + 1 },
+      { ...event, address: { ...event.address, channel: "whatsapp" as const } },
+      ...["C123ABC", "G123ABC", "DOTHER"].map((conversationId) => ({
+        ...event,
+        address: { ...event.address, conversationId },
+      })),
+      { ...event, address: { ...event.address, threadId: "other" } },
+      { ...event, address: { ...event.address, accountId: "TOTHER" } },
+    ]) {
+      const rejected = privateSetup();
+      rejected.engine.capture(rejected.event, undefined);
+      const guarded = await rejected.engine.search(rejected.event, "launch");
+      if (guarded.status !== "private_ready")
+        throw new Error("Expected private result");
+      expect(guarded.consume(modified)).toBeUndefined();
+      expect(guarded.consume(rejected.event)).toBeUndefined();
+    }
+    context.advance(299_999);
+    expect(
+      result.consume({ ...event, address: { ...event.address } }),
+    ).toContain("private sentinel");
+    expect(result.consume(event)).toBeUndefined();
+    engine.capture(event, undefined);
+    await expect(engine.search(event, "launch")).resolves.toEqual(
+      authorizationRequired,
+    );
+    expect(JSON.stringify(event)).not.toMatch(/sentinel|xoxp|grantedScopes/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { ownerId: "other" },
+    { teamId: "TOTHER" },
+    { userId: "UOTHER" },
+    { userToken: "xoxb-bot" },
+    { expiresAt: initialNow },
+    { grantedScopes: ["search:read.im"] },
+    { grantedScopes: ["search:read.public"] },
+  ])(
+    "rejects unbound or incomplete authorization %j without bot fallback",
+    async (changes) => {
+      const context = privateSetup();
+      context.update(changes);
+      context.engine.capture(context.event, actionToken);
+      await expect(
+        context.engine.search(context.event, "launch"),
+      ).resolves.toEqual(authorizationRequired);
+      expect(context.fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { user_id: "UOTHER" },
+    { team_id: "TOTHER" },
+    { bot_id: "B123" },
+    { ok: false, error: "token_revoked" },
+  ])("rejects actual token identity %j before querying", async (identity) => {
+    const context = privateSetup();
+    context.fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ok: true,
+        team_id: teamId,
+        user_id: "U123ABC",
+        ...identity,
+      }),
+    );
+    context.engine.capture(context.event, undefined);
+    await expect(
+      context.engine.search(context.event, "launch"),
+    ).resolves.toEqual(authorizationRequired);
+    expect(context.fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "before",
+    "identity",
+    "search",
+    "delivery",
+    "expiry",
+    "consent expiry",
+    "scopes",
+  ])("blocks revocation/expiry at %s and does not replay", async (stage) => {
+    const context = privateSetup();
+    const { engine, event, fetchMock } = context;
+    if (stage === "consent expiry")
+      context.update({ expiresAt: initialNow + 60_000 });
+    engine.capture(event, undefined);
+    if (stage === "before") context.revoke();
+    if (stage === "identity" || stage === "search") {
+      const original = fetchMock.getMockImplementation();
+      fetchMock.mockImplementation(async (...args) => {
+        const result = await original?.(...args);
+        if (
+          String(args[0]).endsWith(
+            stage === "identity" ? "auth.test" : "assistant.search.context",
+          )
+        )
+          context.revoke();
+        if (!result) throw new Error("Expected response");
+        return result;
+      });
+    }
+    const result = await engine.search(event, "launch");
+    if (["delivery", "expiry", "consent expiry", "scopes"].includes(stage)) {
+      expect(result.status).toBe("private_ready");
+      if (result.status !== "private_ready")
+        throw new Error("Expected private result");
+      if (stage === "expiry") context.advance(300_000);
+      else if (stage === "consent expiry") context.advance(60_000);
+      else if (stage === "scopes")
+        context.update({ grantedScopes: ["search:read.public"] });
+      else context.revoke();
+      expect(result.consume(event)).toBeUndefined();
+      // Restoring scopes cannot resurrect a rejected delivery.
+      context.update({
+        grantedScopes: ["search:read.public", "search:read.im"],
+      });
+      expect(result.consume(event)).toBeUndefined();
+    } else expect(result).toEqual(authorizationRequired);
+    engine.capture(event, undefined);
+    await expect(engine.search(event, "launch")).resolves.toEqual(
+      authorizationRequired,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(
+      stage === "before" ? 0 : stage === "identity" ? 1 : 2,
+    );
+  });
+
+  it("actively releases unused private output at expiry without more traffic", async () => {
+    vi.useFakeTimers();
+    try {
+      const { engine, event } = privateSetup();
+      engine.capture(event, undefined);
+      const result = await engine.search(event, "launch");
+      if (result.status !== "private_ready")
+        throw new Error("Expected private result");
+      // Leave the injected clock unchanged to distinguish timer cleanup from
+      // the independent consume-time expiry check.
+      vi.advanceTimersByTime(300_000);
+      expect(result.consume(event)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps group/public searches bot-only despite private consent", async () => {
+    const context = privateSetup();
+    const event = {
+      ...context.event,
+      direct: false,
+      address: { ...context.event.address, conversationId: "C123ABC" },
+    };
+    context.engine.capture(event, actionToken);
+    const result = await context.engine.search(event, "launch");
+    expect(result).toEqual({
+      status: "ready",
+      text: "No matching public Slack messages found.",
+    });
+    expect(context.fetchMock).toHaveBeenCalledTimes(1);
+    const call = context.fetchMock.mock.calls[0];
+    if (!call) throw new Error("Expected public search");
+    const request = new Request(...call);
+    expect(request.headers.get("authorization")).toBe(
+      "Bearer public-bot-token",
+    );
+    expect(await request.json()).toMatchObject({
+      action_token: actionToken,
+      channel_types: ["public_channel"],
+    });
+  });
 });
