@@ -3,7 +3,8 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { afterEach, expect, test } from "vitest";
+import { chromium } from "playwright";
+import { afterEach, expect, test, vi } from "vitest";
 import type { ToolAction } from "./broker.js";
 import { BrowserAdapter, type BrowserOperation } from "./browser.js";
 
@@ -11,6 +12,7 @@ const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.reverse()) await close();
   cleanup.length = 0;
+  vi.restoreAllMocks();
 });
 
 async function server(
@@ -238,6 +240,70 @@ test("a duplicated page mutation reaches the server at most once and is never re
     "browser_action_failed",
   );
   expect(writes).toBe(1);
+});
+
+test("cancellation during header lookup prevents dispatch of an admitted mutation", async () => {
+  const controller = new AbortController();
+  let writes = 0;
+  const origin = await server((request, response) => {
+    if (request.method === "POST") {
+      writes++;
+      response.end("done");
+      return;
+    }
+    response.end(
+      `<button onclick="fetch('/write',{method:'POST'})">submit</button>`,
+    );
+  });
+  // Keep real Chromium/networking; schedule cancellation at the asynchronous
+  // metadata boundary, after route admission but before network dispatch.
+  const launch = chromium.launch.bind(chromium);
+  vi.spyOn(chromium, "launch").mockImplementation(async (options) => {
+    const browser = await launch(options);
+    const newContext = browser.newContext.bind(browser);
+    vi.spyOn(browser, "newContext").mockImplementation(async (options) => {
+      const context = await newContext(options);
+      const installRoute = context.route.bind(context);
+      vi.spyOn(context, "route").mockImplementation(
+        (pattern, handler, options) =>
+          installRoute(
+            pattern,
+            async (route, request) => {
+              if (request.method() === "POST") {
+                const allHeaders = request.allHeaders.bind(request);
+                vi.spyOn(request, "allHeaders").mockImplementation(async () => {
+                  const headers = await allHeaders();
+                  controller.abort();
+                  return headers;
+                });
+              }
+              return handler(route, request);
+            },
+            options,
+          ),
+      );
+      return context;
+    });
+    return browser;
+  });
+  const { adapter, action } = setup(origin, {
+    requests: [
+      { url: `${origin}/`, method: "GET" },
+      { url: `${origin}/write`, method: "POST", credential: true },
+    ],
+    steps: [{ kind: "click", selector: "button" }],
+  });
+  await expect(
+    adapter.execute(
+      action,
+      {
+        bearerToken: "fixture-only-token",
+      },
+      controller.signal,
+    ),
+  ).rejects.toThrow("browser_action_failed");
+  expect(controller.signal.aborted).toBe(true);
+  expect(writes).toBe(0);
 });
 
 test("cancellation closes the action and bounded anonymous output remains data", async () => {

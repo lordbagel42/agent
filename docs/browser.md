@@ -60,7 +60,8 @@ explicitly select the supported credential.
 `execute` optionally takes a third `AbortSignal` from trusted host code. `close()`
 permanently stops accepting work and closes active browsers. A deadline (15s by
 default, configurable from 100ms to 60s) also closes the context/browser. Browser
-launch has the same timeout. Cancellation cannot undo a request already sent;
+launch has the same timeout. The worker rechecks cancellation after asynchronous
+request-header lookup, before dispatch. Cancellation cannot undo a request already sent;
 keep the broker receipt unknown and reconcile rather than re-execute. The broker
 owns durable one-use receipts and crash recovery, not this in-memory adapter.
 Broker revocation prevents admission; it does not interrupt an already admitted
@@ -136,7 +137,8 @@ configuration, and external isolation are complementary requirements.
 fixtures with a real Chromium process. It covers account/item/origin/argument
 widening, credential reflection exclusion, fresh cookie state, cross-origin
 redirect/subresource/tab blocking, frame/WebSocket blocking, duplicate mutation
-suppression, and cancellation. No real website or live credential is used.
+suppression, and cancellation (including after admission but before dispatch).
+No real website or live credential is used.
 
 Authoritative APIs consulted:
 
