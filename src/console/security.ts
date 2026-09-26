@@ -7,6 +7,7 @@ import {
 } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { messagePage } from "./view.js";
 
 export interface PrivateRouteSecurity {
   /** Canonical externally visible origin. Never derive this from Host headers. */
@@ -32,8 +33,13 @@ export function privateRoutes(security: PrivateRouteSecurity) {
     throw new Error("Invalid private route security configuration");
   const app = new Hono<PrivateEnv>();
   app.onError((_error, c) =>
-    c.text(
-      "Unavailable. No success has been confirmed. Refresh to inspect state before retrying.",
+    c.html(
+      messagePage(
+        c.get("nonce"),
+        "Service unavailable",
+        "No success has been confirmed. Inspect the host's state before considering another attempt. Do not repeat an uncertain action.",
+        503,
+      ),
       503,
     ),
   );
@@ -50,7 +56,16 @@ export function privateRoutes(security: PrivateRouteSecurity) {
       `default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
     );
     const principal = await security.authenticate(c.req.raw);
-    if (!principal) return c.text("Authentication required.", 401);
+    if (!principal)
+      return c.html(
+        messagePage(
+          nonce,
+          "Authentication required",
+          "Sign in through this host's private session entry point, then open the console or original action link again.",
+          401,
+        ),
+        401,
+      );
     c.set("principal", principal);
     // no-referrer makes native form submissions send Origin: null in browsers.
     // Accept that only with browser-enforced same-origin fetch metadata; the
@@ -66,14 +81,31 @@ export function privateRoutes(security: PrivateRouteSecurity) {
         c.req.header("content-type")?.split(";")[0] !==
           "application/x-www-form-urlencoded")
     )
-      return c.text("Confirmation rejected.", 403);
+      return c.html(
+        messagePage(
+          nonce,
+          "Confirmation rejected",
+          "Use the confirmation form on this private origin. No permission was granted by this request.",
+          403,
+        ),
+        403,
+      );
     await next();
   });
   app.use(
     "*",
     bodyLimit({
       maxSize: 8192,
-      onError: (c) => c.text("Request too large.", 413),
+      onError: (c) =>
+        c.html(
+          messagePage(
+            c.get("nonce"),
+            "Request too large",
+            "This private form accepts only a bounded confirmation request.",
+            413,
+          ),
+          413,
+        ),
     }),
   );
   return app;

@@ -31,6 +31,15 @@ sections explicitly report unavailable. Supply owner-safe configuration, capabil
 job, memory/proposal, reflection, approval and revocation records. No independent
 state store, job runner, approval policy, or invented readiness exists here.
 
+Without action callbacks, the overview explicitly reports read-only access and
+does not render review links. Navigation uses real section anchors and the current
+mount; session navigation uses the configured console path. No scripts or external
+fonts are loaded. Modern CSS `:has()` reveals the submit control only when the
+required consent checkbox is checked; native form validation and the server's
+signed-proof checks remain authoritative. Browsers without `:has()` keep the
+confirmation button disabled. The 10-minute proof lifetime never extends a host
+action or link expiry; include the actual action expiry in the reviewed facts.
+
 Records optionally link to a host action ID. `inspectAction` returns an immutable
 revision and exact human-readable facts: target, scope, expiry, audience and
 consequences. `confirmAction` **must atomically recheck permission and revision and

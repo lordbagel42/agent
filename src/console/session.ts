@@ -6,7 +6,7 @@ import {
   type PrivateRouteSecurity,
   privateRoutes,
 } from "./security.js";
-import { confirmForm, page } from "./view.js";
+import { badge, confirmForm, messagePage, page } from "./view.js";
 
 /** Optional browser bridge for the host's existing Bearer authentication.
  * Mount routes on private ingress only. Tokens stay in server memory for at most
@@ -62,9 +62,13 @@ export function createConsoleSessionBridge(
   routes.get("/login", (c) =>
     c.html(
       page(
-        "Welcome back",
+        "Sign in to June",
         c.get("nonce"),
-        html`<section class="panel"><h2>Unlock your private console</h2><p>Enter the operator token. It stays on this server for a 15-minute session, never in a URL or browser storage. Use only on your trusted private origin.</p><form method="post" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue("login", new URL(c.req.url).pathname, "login")}"><label>Operator token <input name="token" type="password" autocomplete="off" required maxlength="4096"></label><button type="submit">Sign in</button></form></section>`,
+        html`<section class="panel"><div class="panel-body"><h2>Operator authentication</h2><p class="small">Use the token for this trusted private host. It never appears in a URL or browser storage.</p><form method="post" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue("login", new URL(c.req.url).pathname, "login")}"><label class="field" for="operator-token">Operator token</label><input id="operator-token" name="token" type="password" autocomplete="off" required maxlength="4096"><button class="full" type="submit">Sign in</button></form></div><div class="login-note">15-minute session · Token held in server memory<br>Signing in does not grant additional tool permissions.</div></section>`,
+        {
+          narrow: true,
+          description: "Your private workspace. Owner access only.",
+        },
       ),
     ),
   );
@@ -73,20 +77,50 @@ export function createConsoleSessionBridge(
     if (
       !proof.verify("login", new URL(c.req.url).pathname, "login", form.proof)
     )
-      return c.text("Sign-in confirmation rejected.", 403);
+      return c.html(
+        messagePage(
+          c.get("nonce"),
+          "Sign-in confirmation rejected",
+          "Open the private login page again for a fresh form.",
+          403,
+        ),
+        403,
+      );
     if (
       typeof form.token !== "string" ||
       !form.token ||
       form.token.length > 4096 ||
       /[\r\n]/u.test(form.token)
     )
-      return c.text("Sign-in rejected.", 401);
+      return c.html(
+        messagePage(
+          c.get("nonce"),
+          "Sign-in rejected",
+          "The token could not be authenticated. Return to the private login page to try again.",
+          401,
+        ),
+        401,
+      );
     const principal = await authenticateToken(form.token);
-    if (!principal) return c.text("Sign-in rejected.", 401);
+    if (!principal)
+      return c.html(
+        messagePage(
+          c.get("nonce"),
+          "Sign-in rejected",
+          "The token could not be authenticated. Return to the private login page to try again.",
+          401,
+        ),
+        401,
+      );
     prune();
     if (sessions.size >= 64)
-      return c.text(
-        "Session capacity reached. Try again after an existing session expires.",
+      return c.html(
+        messagePage(
+          c.get("nonce"),
+          "Session capacity reached",
+          "Try again after an existing session expires. No new session was created.",
+          503,
+        ),
         503,
       );
     const previous = getCookie(c, cookie);
@@ -105,18 +139,37 @@ export function createConsoleSessionBridge(
       page(
         "Signed in",
         c.get("nonce"),
-        html`<section class="panel"><p>Your private session is active for 15 minutes.</p><p><a href="${consolePath}">Open console →</a></p><p><a href="${new URL(c.req.url).pathname.replace(/\/login$/, "/logout")}">End this session</a></p></section>`,
+        html`<section class="panel"><div class="panel-body">${badge("Active")}<p>Your private session is active for 15 minutes. The host rechecks your token on every request.</p><div class="actions"><a class="button" href="${consolePath}">Open console →</a><a class="button secondary" href="${new URL(c.req.url).pathname.replace(/\/login$/, "/logout")}">End this session</a></div></div></section>`,
+        {
+          narrow: true,
+          description:
+            "Authentication confirmed. Tool permissions are unchanged.",
+        },
       ),
     );
   });
   routes.get("/logout", async (c) => {
     const principal = await authenticate(c.req.raw);
-    if (!principal) return c.text("Authentication required.", 401);
+    if (!principal)
+      return c.html(
+        messagePage(
+          c.get("nonce"),
+          "Authentication required",
+          "There is no authenticated session to end. Open the private login page to sign in.",
+          401,
+        ),
+        401,
+      );
     return c.html(
       page(
         "End this session",
         c.get("nonce"),
-        html`<section class="panel"><p>This revokes this browser's private console session, not tool grants or already-started actions.</p>${confirmForm(proof.issue(principal, new URL(c.req.url).pathname, "logout"), "Sign out")}</section>`,
+        html`<section class="panel"><div class="panel-body"><div class="callout"><strong>Only this browser session will end</strong><p>This does not revoke tool grants or stop already-started actions.</p></div>${confirmForm(proof.issue(principal, new URL(c.req.url).pathname, "logout"), "Sign out")}</div></section>`,
+        {
+          narrow: true,
+          description: "Confirm before revoking this browser's console access.",
+          navigation: [{ label: "← Console", href: consolePath }],
+        },
       ),
     );
   });
@@ -133,7 +186,15 @@ export function createConsoleSessionBridge(
         form.proof,
       )
     )
-      return c.text("Sign-out confirmation rejected.", 403);
+      return c.html(
+        messagePage(
+          c.get("nonce"),
+          "Sign-out confirmation rejected",
+          "Open the session logout page again and review the confirmation.",
+          403,
+        ),
+        403,
+      );
     const id = getCookie(c, cookie);
     if (id) sessions.delete(id);
     deleteCookie(c, cookie, { path: "/", secure });
@@ -141,7 +202,11 @@ export function createConsoleSessionBridge(
       page(
         "Signed out",
         c.get("nonce"),
-        html`<p>This browser session has been revoked.</p>`,
+        html`<section class="panel"><div class="panel-body">${badge("Session ended")}<p>This browser session has been revoked. Tool grants and already-started actions are unchanged.</p><div class="actions"><a class="button secondary" href="${new URL(c.req.url).pathname.replace(/\/logout$/, "/login")}">Return to sign in</a></div></div></section>`,
+        {
+          narrow: true,
+          description: "Private console access is closed for this browser.",
+        },
       ),
     );
   });
