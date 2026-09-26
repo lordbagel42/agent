@@ -85,7 +85,7 @@ export function typedEvaluator(decide: DecisionFunction): DecisionFunction {
   };
 }
 
-function validContext(input: DecisionInput): boolean {
+export function validDecisionContext(input: DecisionInput): boolean {
   return (
     !!input.scope.trim() &&
     !!input.prompt.trim() &&
@@ -129,7 +129,8 @@ export class DecisionExecutor {
     signal?: AbortSignal,
   ): Promise<Decision> {
     if (signal?.aborted) return abstain("cancelled");
-    if (!validContext(input)) return abstain("stale-or-invalid-evidence");
+    if (!validDecisionContext(input))
+      return abstain("stale-or-invalid-evidence");
     if (this.active >= this.capacity) return abstain("capacity");
     const snapshot = structuredClone(input);
     const controller = new AbortController();

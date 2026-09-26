@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createDecisionProvider } from "../models/decision.js";
 import type { Decision, DecisionInput } from "./evaluator.js";
 import { DecisionExecutor, runJury, typedEvaluator } from "./evaluator.js";
 
@@ -25,6 +26,145 @@ const yes: Decision = {
   evidenceIds: ["a"],
   confidence: 1,
 };
+
+describe("decision provider evidence and authority boundaries", () => {
+  it("keeps first-pass inputs private and rejects invented citations and authority in both protocols", async () => {
+    for (const protocol of ["openai", "anthropic"] as const) {
+      let output: unknown = yes;
+      let calls = 0;
+      const decide = createDecisionProvider({
+        protocol,
+        auth: "api-key",
+        model: "local-fake",
+        apiKey: "fake",
+        fetch: async (_url, init) => {
+          calls++;
+          const body = JSON.parse(String(init?.body));
+          const messages = body.input ?? body.messages;
+          expect(messages).toHaveLength(1);
+          expect(JSON.parse(messages[0].content)).toEqual({
+            question: input.question,
+            prompt: input.prompt,
+            now: input.now,
+            evidence: input.evidence,
+          });
+          expect(body.tools).toBeUndefined();
+          expect(body.previous_response_id).toBeUndefined();
+          expect(init?.redirect).toBe("error");
+          return Response.json(
+            protocol === "openai"
+              ? {
+                  status: "completed",
+                  output: [
+                    {
+                      type: "message",
+                      role: "assistant",
+                      status: "completed",
+                      content: [
+                        { type: "output_text", text: JSON.stringify(output) },
+                      ],
+                    },
+                  ],
+                }
+              : {
+                  type: "message",
+                  role: "assistant",
+                  stop_reason: "end_turn",
+                  content: [{ type: "text", text: JSON.stringify(output) }],
+                },
+          );
+        },
+      });
+      const inherited = {
+        ...input,
+        secret: "must not serialize",
+        prior: [{ id: "private-vote", decision: yes }],
+        evidence: input.evidence.map((e) => ({
+          ...e,
+          secret: "private metadata",
+        })),
+      };
+      const signal = new AbortController().signal;
+      expect(await decide(inherited, signal)).toEqual(yes);
+      for (const malformed of [
+        { ...yes, evidenceIds: ["outside-scope"] },
+        { ...yes, permission: "execute" },
+      ]) {
+        output = malformed;
+        expect((await decide(inherited, signal)).answer).toBe("abstain");
+      }
+      expect(calls).toBe(3);
+      expect(
+        (await decide({ ...inherited, scope: "public" }, signal)).answer,
+      ).toBe("abstain");
+      expect((await decide({ ...inherited, now: 200 }, signal)).answer).toBe(
+        "abstain",
+      );
+      expect(calls).toBe(3);
+    }
+  });
+
+  it("does not retry failed requests or start cancelled work and forwards revocation to transport", async () => {
+    let calls = 0;
+    const controller = new AbortController();
+    const decide = createDecisionProvider({
+      protocol: "openai",
+      auth: "api-key",
+      model: "local-fake",
+      apiKey: "fake",
+      fetch: async (_url, init) => {
+        calls++;
+        controller.abort();
+        expect(init?.signal?.aborted).toBe(true);
+        throw new Error("provider secret");
+      },
+    });
+    expect((await decide(input, controller.signal)).rationale).toBe(
+      "cancelled",
+    );
+    expect((await decide(input, controller.signal)).rationale).toBe(
+      "cancelled",
+    );
+    expect(calls).toBe(1);
+    const failing = createDecisionProvider({
+      protocol: "openai",
+      auth: "api-key",
+      model: "local-fake",
+      apiKey: "fake",
+      fetch: async () => {
+        calls++;
+        return new Response("secret", { status: 429 });
+      },
+    });
+    await expect(
+      failing(input, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "rate_limited" });
+    expect(calls).toBe(2);
+
+    let release!: (response: Response) => void;
+    let settled = false;
+    const held = new AbortController();
+    const uncooperative = createDecisionProvider({
+      protocol: "openai",
+      auth: "api-key",
+      model: "local-fake",
+      apiKey: "fake",
+      fetch: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    });
+    const pending = uncooperative(input, held.signal).then((decision) => {
+      settled = true;
+      return decision;
+    });
+    held.abort();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    release(new Response("late transport failure", { status: 500 }));
+    expect((await pending).rationale).toBe("cancelled");
+  });
+});
 
 describe("bounded typed decisions", () => {
   it("validates malformed output, exceptions, unsupported citations and stale context as abstentions", async () => {
