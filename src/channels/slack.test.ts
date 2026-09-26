@@ -155,6 +155,37 @@ describe("createSlackAdapter", () => {
     }
   });
 
+  it("carries opaque correlation across replacement without reading request data", () => {
+    const diagnostics = createSlackIngressDiagnostics();
+    const unreadable: ProxyHandler<Request> = {
+      get() {
+        throw new Error("Diagnostics must not read request properties");
+      },
+    };
+    const original = new Proxy(signedRequest("private-original"), unreadable);
+    const replacement = new Proxy(
+      signedRequest("private-replacement"),
+      unreadable,
+    );
+    const unrelated = new Proxy(signedRequest("private-unrelated"), unreadable);
+    diagnostics.record(original, "arrival");
+    diagnostics.associate(original, replacement);
+    diagnostics.record(replacement, "adapter_received");
+    diagnostics.record(unrelated, "arrival");
+    const snapshot = diagnostics.snapshot();
+    expect(snapshot.counts).toEqual({ arrival: 2, adapter_received: 1 });
+    expect(snapshot.recent.map((entry) => entry.stage)).toEqual([
+      "arrival",
+      "adapter_received",
+      "arrival",
+    ]);
+    expect(snapshot.recent[1]?.requestId).toBe(snapshot.recent[0]?.requestId);
+    expect(snapshot.recent[2]?.requestId).not.toBe(
+      snapshot.recent[0]?.requestId,
+    );
+    expect(JSON.stringify(snapshot)).not.toContain("private-");
+  });
+
   it("bounds private diagnostics and rejects arbitrary metadata at runtime", () => {
     const diagnostics = createSlackIngressDiagnostics();
     const request = signedRequest("private-body");
