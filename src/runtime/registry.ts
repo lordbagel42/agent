@@ -253,11 +253,17 @@ export function createJuneRegistry(deps: Dependencies) {
                     const text =
                       found?.status === "ready"
                         ? found.text
-                        : found?.code === "authorization_required"
-                          ? "I need search permission and a fresh message to look that up. Search access isn't available for this turn."
-                          : found?.code === "rate_limited"
-                            ? "Search is rate-limited right now. Try asking again in a minute."
-                            : "I couldn't search right now. Try asking again shortly.";
+                        : found?.status === "private_ready"
+                          ? (found.consume({
+                              ...event,
+                              address: outbound.address,
+                            }) ??
+                            "I need search permission and a fresh message to look that up. Search access isn't available for this turn.")
+                          : found?.code === "authorization_required"
+                            ? "I need search permission and a fresh message to look that up. Search access isn't available for this turn."
+                            : found?.code === "rate_limited"
+                              ? "Search is rate-limited right now. Try asking again in a minute."
+                              : "I couldn't search right now. Try asking again shortly.";
                     return adapter.send({
                       ...outbound,
                       content: { type: "text", text },

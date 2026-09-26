@@ -313,55 +313,67 @@ describe("Rivet conversation workflow", () => {
     expect(sent).toEqual([]);
   });
 
-  it("sends on-demand search citations without retaining them or showing them to the model", async (t) => {
-    const sent: OutboundMessage[] = [];
-    const requests: ModelRequest[] = [];
-    const searches: string[] = [];
-    const adapter = transport("slack", sent);
-    adapter.search = async (source, query) => {
-      expect(source.id).toBe("Ev1");
-      searches.push(query);
-      return { status: "ready", text: "EPHEMERAL_SEARCH_RESULT_93" };
-    };
-    const registry = createJuneRegistry({
-      owner,
-      channels: { slack: adapter },
-      model: {
-        async reply(request) {
-          requests.push(structuredClone(request));
-          return requests.length === 1
-            ? { text: "", search: "heron" }
-            : { text: "You're welcome." };
+  it.for(["public", "private"] as const)(
+    "sends %s on-demand search citations without retaining them or showing them to the model",
+    async (visibility, t) => {
+      const sent: OutboundMessage[] = [];
+      const requests: ModelRequest[] = [];
+      const searches: string[] = [];
+      const adapter = transport("slack", sent);
+      adapter.search = async (source, query) => {
+        expect(source.id).toBe("Ev1");
+        searches.push(query);
+        if (visibility === "private")
+          return {
+            status: "private_ready",
+            consume(candidate) {
+              expect(candidate).toEqual(source);
+              expect(sent).toHaveLength(0);
+              return "EPHEMERAL_SEARCH_RESULT_93";
+            },
+          };
+        return { status: "ready", text: "EPHEMERAL_SEARCH_RESULT_93" };
+      };
+      const registry = createJuneRegistry({
+        owner,
+        channels: { slack: adapter },
+        model: {
+          async reply(request) {
+            requests.push(structuredClone(request));
+            return requests.length === 1
+              ? { text: "", search: "heron" }
+              : { text: "You're welcome." };
+          },
         },
-      },
-    });
-    const { client } = await setupTest(t, registry);
-    const june = client.conversation.getOrCreate(["private", "raygen"]);
-    const source = { ...message, text: "Find Slack messages about herons." };
-    await june.send("inbox", { type: "event", event: source });
-    await expect.poll(() => sent.length, { timeout: 2500 }).toBe(1);
-    expect(sent[0]?.content).toEqual({
-      type: "text",
-      text: "EPHEMERAL_SEARCH_RESULT_93",
-    });
-    await june.send("inbox", { type: "event", event: source });
-    await june.send("inbox", {
-      type: "event",
-      event: { ...source, id: "Ev2", text: "Thanks!" },
-    });
-    await expect.poll(() => sent.length, { timeout: 2500 }).toBe(2);
-    expect(searches).toEqual(["heron"]);
-    expect(requests[0]).toMatchObject({ searchAvailable: true });
-    expect(JSON.stringify(requests)).not.toContain(
-      "EPHEMERAL_SEARCH_RESULT_93",
-    );
-    expect(JSON.stringify(await june.snapshot())).not.toContain(
-      "EPHEMERAL_SEARCH_RESULT_93",
-    );
-    expect((await june.snapshot()).history[1]?.content).toContain(
-      "not retained",
-    );
-  });
+      });
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", "raygen"]);
+      const source = { ...message, text: "Find Slack messages about herons." };
+      await june.send("inbox", { type: "event", event: source });
+      await expect.poll(() => sent.length, { timeout: 2500 }).toBe(1);
+      expect(sent[0]?.content).toEqual({
+        type: "text",
+        text: "EPHEMERAL_SEARCH_RESULT_93",
+      });
+      await june.send("inbox", { type: "event", event: source });
+      await june.send("inbox", {
+        type: "event",
+        event: { ...source, id: "Ev2", text: "Thanks!" },
+      });
+      await expect.poll(() => sent.length, { timeout: 2500 }).toBe(2);
+      expect(searches).toEqual(["heron"]);
+      expect(requests[0]).toMatchObject({ searchAvailable: true });
+      expect(JSON.stringify(requests)).not.toContain(
+        "EPHEMERAL_SEARCH_RESULT_93",
+      );
+      expect(JSON.stringify(await june.snapshot())).not.toContain(
+        "EPHEMERAL_SEARCH_RESULT_93",
+      );
+      expect((await june.snapshot()).history[1]?.content).toContain(
+        "not retained",
+      );
+    },
+  );
 
   it("deduplicates deliveries and continues a private conversation on WhatsApp", async (t) => {
     const sent: OutboundMessage[] = [];
