@@ -7,7 +7,10 @@ import type {
   SendResult,
 } from "../core/contracts.js";
 import type { SlackIngressDiagnostics } from "./slack-ingress.js";
-import { createSlackSearch } from "./slack-search.js";
+import {
+  createSlackSearch,
+  type SlackPrivateSearchOptions,
+} from "./slack-search.js";
 
 const SIGNATURE_TOLERANCE_SECONDS = 300;
 const SLACK_TEXT_LIMIT = 40_000;
@@ -223,6 +226,7 @@ export function createSlackAdapter({
   teamId,
   botUserId,
   searchEnabled = false,
+  privateSearch,
   ingressDiagnostics,
   fetch: fetchImpl = globalThis.fetch,
   now = () => Date.now(),
@@ -232,12 +236,19 @@ export function createSlackAdapter({
   teamId: string;
   botUserId: string;
   searchEnabled?: boolean;
+  privateSearch?: SlackPrivateSearchOptions;
   ingressDiagnostics?: SlackIngressDiagnostics;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
 }): ChannelAdapter {
   const search = searchEnabled
-    ? createSlackSearch({ teamId, botToken, fetch: fetchImpl, now })
+    ? createSlackSearch({
+        teamId,
+        botToken,
+        fetch: fetchImpl,
+        now,
+        privateSearch,
+      })
     : undefined;
   return {
     channel: "slack",
