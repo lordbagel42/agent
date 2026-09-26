@@ -1,8 +1,14 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { SlackIngressDiagnostics } from "../channels/slack-ingress.js";
+import {
+  type ConsoleSnapshot,
+  createConsoleRoutes,
+} from "../console/routes.js";
+import { createConsoleSessionBridge } from "../console/session.js";
+import { messagePage } from "../console/view.js";
 import type {
   Channel,
   ChannelAdapter,
@@ -16,6 +22,7 @@ export interface HttpDependencies {
   owner: Owner;
   operatorToken: string;
   slackIngressDiagnostics?: SlackIngressDiagnostics;
+  console?: { origin: string; inspect(): Promise<ConsoleSnapshot> };
   submit(scope: Scope, event: ChannelEvent): Promise<void>;
   ready(): Promise<boolean>;
   inspectConversation(): Promise<unknown>;
@@ -29,6 +36,66 @@ export function createHttpApp(deps: HttpDependencies) {
     throw new Error("Operator token must contain at least 32 characters");
   const app = new Hono<{ Variables: { slackRequest?: Request } }>();
   app.onError((_error, c) => c.json({ error: "request_failed" }, 500));
+  const expected = Buffer.from(`Bearer ${deps.operatorToken}`);
+  const authenticate = async (request: Request) => {
+    const supplied = Buffer.from(request.headers.get("authorization") ?? "");
+    return supplied.length === expected.length &&
+      timingSafeEqual(supplied, expected)
+      ? deps.owner.id
+      : undefined;
+  };
+  if (deps.console) {
+    const security = {
+      origin: deps.console.origin,
+      csrfSecret: randomBytes(32).toString("base64url"),
+      authenticate,
+    };
+    const sessions = createConsoleSessionBridge(security, "/console");
+    let windowStart = 0;
+    let loginAttempts = 0;
+    app.use("/console/session/login", async (c, next) => {
+      if (c.req.method === "POST") {
+        if (Date.now() - windowStart >= 60_000) {
+          windowStart = Date.now();
+          loginAttempts = 0;
+        }
+        if (++loginAttempts > 10) {
+          const nonce = randomBytes(18).toString("base64url");
+          c.header("Cache-Control", "no-store, private");
+          c.header("Referrer-Policy", "no-referrer");
+          c.header("X-Content-Type-Options", "nosniff");
+          c.header("X-Frame-Options", "DENY");
+          c.header("X-Robots-Tag", "noindex, nofollow, noarchive");
+          c.header(
+            "Content-Security-Policy",
+            `default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+          );
+          c.header("Retry-After", "60");
+          return c.html(
+            messagePage(
+              nonce,
+              "Too many sign-in attempts",
+              "Wait one minute, then return to the private sign-in page. No new session was created.",
+              429,
+            ),
+            429,
+          );
+        }
+      }
+      await next();
+    });
+    // Session routes must precede console authentication. Cookies authorize only
+    // this read-only surface, never the Bearer-only operator mutation endpoints.
+    app.route("/console/session", sessions.routes);
+    app.route(
+      "/console",
+      createConsoleRoutes({
+        security: { ...security, authenticate: sessions.authenticate },
+        inspect: deps.console.inspect,
+        // No action inspection/confirmation callbacks until domain guarantees exist.
+      }),
+    );
+  }
   app.use("/webhooks/slack", async (c, next) => {
     if (c.req.method === "POST" && deps.slackIngressDiagnostics) {
       c.set("slackRequest", c.req.raw);
@@ -85,14 +152,9 @@ export function createHttpApp(deps: HttpDependencies) {
       },
     );
   }
-  const expected = Buffer.from(`Bearer ${deps.operatorToken}`);
   app.use("/operator/*", async (c, next) => {
     c.header("cache-control", "no-store");
-    const supplied = Buffer.from(c.req.header("authorization") ?? "");
-    if (
-      supplied.length !== expected.length ||
-      !timingSafeEqual(supplied, expected)
-    ) {
+    if (!(await authenticate(c.req.raw))) {
       return c.json({ error: "unauthorized" }, 401);
     }
     await next();

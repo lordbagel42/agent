@@ -217,6 +217,7 @@ describe("runnable June host", () => {
       JSON.stringify({
         port,
         setupMode: true,
+        console: { origin: `http://127.0.0.1:${port}` },
         owner: { id: "raygen", identities: [] },
         model: {
           protocol: "codex",
@@ -264,6 +265,21 @@ describe("runnable June host", () => {
         (await fetch(`${url}/webhooks/${channel}`, { method: "POST" })).status,
       ).toBe(404);
     expect((await fetch(`${url}/operator/conversation`)).status).toBe(401);
+    expect((await fetch(`${url}/console`)).status).toBe(401);
+    const overview = await fetch(`${url}/console`, {
+      headers: { authorization: `Bearer ${operatorToken}` },
+    });
+    expect(overview.status).toBe(200);
+    const html = await overview.text();
+    expect(html).toContain("0 durable events");
+    expect(html).toContain("0 proposals");
+    for (const privateValue of [
+      operatorToken,
+      directory,
+      "/must-not-run-before-sign-in",
+      "<form",
+    ])
+      expect(html).not.toContain(privateValue);
     expect(output).toContain("setup mode");
     expect(output).not.toContain(operatorToken);
   });

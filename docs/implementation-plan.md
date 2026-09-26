@@ -33,17 +33,24 @@ combined verification. Thread links below identify the sole write owner.
 
 | Stream | Write ownership | State |
 | --- | --- | --- |
-| [Integration](https://ampcode.com/threads/T-01a0dd16-aab2-70fe-8983-280847bfa35e) | `main`, `config`, `core/*`, `http/app*`, `runtime/registry*`, `runtime/delivery*`, integration tests, root dependencies/config examples, aggregate docs | Contract review; awaiting module commits |
-| [Slack ingress](https://ampcode.com/threads/T-01a0dd1f-5138-710a-a537-ca6154935026) | `channels/slack*` diagnostics and adapter | Metadata-only diagnostics API agreed; real DM ingress unproven |
-| [Memory/personality](https://ampcode.com/threads/T-01a0dd1f-7dd6-70e6-b555-b3918b0821e8) | `memory/*`, `reflection/personality*` | Bounded retrieval, staged extraction, deletion and curated review |
-| [History imports](https://ampcode.com/threads/T-01a0dd1f-a307-761a-8c89-a24038c3e5c3) | `imports/*` | Read-only Slack/Gmail connectors and resumable service |
-| [Credentials/capabilities](https://ampcode.com/threads/T-01a0dd1f-c104-759a-ba65-0d57d9607a60) | `tools/broker*`, `credentials/*`, separate capability routes | Scoped resolver, short-lived grants, reconciliation |
-| [MCP](https://ampcode.com/threads/T-01a0dd1f-ec56-728b-a5c9-15577c67a266) | `tools/mcp*` | Fixed Streamable HTTP endpoints and tools |
-| [Browser](https://ampcode.com/threads/T-01a0dd20-007c-75cf-8dbb-da0673c71c00) | `tools/browser*` | Fixed recipes, fresh contexts, exact request policy |
-| [Console/action links](https://ampcode.com/threads/T-01a0dd20-17b9-72be-a2e6-63e1a53ffc38) | `links/*`, separate console/router modules | Private authentication, inert GET, explicit bound POST |
-| [Reflection workflow](https://ampcode.com/threads/T-01a0dd20-30dd-7474-99aa-e99d99b5c7ec) | `reflection/domain*`, `runtime/reflection*` | Owner actor, durable timers, cancellation, evidence revalidation |
-| [Typed deliberation](https://ampcode.com/threads/T-01a0dd20-5145-73ce-a3cf-3d5953e0d3e4) | `reflection/evaluator*`, `models/decision*` | API-provider decisions and juries; no invented Jev endpoint |
-| [Coding supervisor](https://ampcode.com/threads/T-01a0dd20-7313-770b-bbb3-cda9e860be64) | `runtime/coding*`, `coding/worktree*` | Fail-closed worktrees, workspace reservation, cancellation, verification |
+| [Integration](https://ampcode.com/threads/T-01a0dd16-aab2-70fe-8983-280847bfa35e) | `main`, `config`, `core/*`, `http/app*`, `runtime/registry*`, `runtime/delivery*`, integration tests, root dependencies/config examples, aggregate docs | Shared wiring underway; initial 153 combined focused checks pass |
+| [Slack ingress](https://ampcode.com/threads/T-01a0dd2a-9ad5-77c9-999f-d0b7ef1d453f) | `channels/slack.ts`, existing test, diagnostics | Integrated with private HTTP snapshots and lengthless-body correlation; not deployed; real DM ingress unproven |
+| [Memory/personality](https://ampcode.com/threads/T-01a0dd2a-af57-72dd-bb92-2eb528286788) | `memory/*`, `reflection/personality*` | Reviewed and picked, including canonical Slack coverage; host wiring underway |
+| [History imports](https://ampcode.com/threads/T-01a0dd31-0586-772f-a9a6-88e9ba842430) | `imports/*` | Baseline picked; shared Slack source builder and Gmail attachment-subtree fix pending |
+| [Credentials/capabilities](https://ampcode.com/threads/T-01a0dd2a-c5b2-77c8-a444-1c5ab53831ef) | `tools/broker*`, `credentials/*`, separate capability routes | Fix for mutable registration after async credential lookup ready for review |
+| [MCP](https://ampcode.com/threads/T-01a0dd2a-e9d9-749e-9f33-8666be803fe3) | `tools/mcp*` | Review reproduced async-schema bypass and premature cleanup; fixes required |
+| [Browser](https://ampcode.com/threads/T-01a0dd2b-02ff-74bd-b545-25b4363c4c0d) | `tools/browser*` | Post-cancellation dispatch race fixed; awaiting combined integration |
+| [Console/action links](https://ampcode.com/threads/T-01a0dd31-16b9-7100-a38a-163623e5e477) | `links/*`, separate console/router modules | Private session/form and immutable review checks under review |
+| [Reflection workflow](https://ampcode.com/threads/T-01a0dd31-2c8d-7109-9b5b-18124d8442ee) | `reflection/domain*`, `runtime/reflection*` | Completed draft undergoing final review/commit; no outbound messages |
+| [Typed deliberation](https://ampcode.com/threads/T-01a0dd31-3cef-724e-a440-170cc39bb6b7) | `reflection/evaluator*`, `models/decision*` | Reviewed and picked; raw provider settlement verified offline |
+| [Coding supervisor](https://ampcode.com/threads/T-01a0dd31-52de-76f8-b656-9f40042f677c) | `runtime/coding*`, `coding/worktree*`, recovery worker fixture | Picked; combined hard-kill test passes; shared config/cancel wiring pending |
+| [Codex worker](https://ampcode.com/threads/T-01a0dd31-6b3b-702e-943a-d6356e6edcf6) | `coding/codex*` | Supported app-server runtime and shutdown checks |
+| [Claude worker](https://ampcode.com/threads/T-01a0dd31-82b1-7609-93dc-cfb3d08e93b2) | `coding/claude*` | Supported API-key SDK; tools denied by default |
+| [Pi worker](https://ampcode.com/threads/T-01a0dd31-96dd-713d-b94d-0da3ac0e19d3) | `coding/pi*` | Operator-pinned RPC runtime; host sandbox prerequisite |
+| [Private Slack RTS](https://ampcode.com/threads/T-01a0dd31-a8af-758c-ac80-5ec5bbb7f365) | `channels/slack-search*` | One-use volatile result contract agreed; actual user OAuth grant required |
+| [Rivet reliability](https://ampcode.com/threads/T-01a0dd31-bb56-71ce-a99e-d74eb241a7ca) | Disposable reproductions only | Sleep/wake/alarm investigation; no dependency upgrade presumed safe |
+| [Jev observations](https://ampcode.com/threads/T-01a0dd31-dbeb-745e-8c65-43a123126cda) | `models/jev*` | Separate typed observations, not fabricated rationale/citations |
+| [Release supervisor](https://ampcode.com/threads/T-01a0dd31-ef99-7488-a4ad-f31b4ddd72da) | `deployment/*` | Independent artifact/verification authority; no activation in June process |
 
 Shared host boundaries:
 

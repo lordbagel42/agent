@@ -73,6 +73,102 @@ function dependencies(
 }
 
 describe("webhook and operator HTTP boundary", () => {
+  it("confines browser sessions to the optional read-only console, never operator mutations", async () => {
+    const unmounted = createHttpApp(dependencies());
+    expect((await unmounted.request("/console")).status).toBe(404);
+    expect((await unmounted.request("/console/session/login")).status).toBe(
+      404,
+    );
+    let inspections = 0;
+    let resumes = 0;
+    const deps = dependencies({
+      console: {
+        origin: "https://june.example",
+        async inspect() {
+          inspections++;
+          return { observedAt: "now", sections: {} };
+        },
+      },
+      async resumeJob() {
+        resumes++;
+        return true;
+      },
+    });
+    const app = createHttpApp(deps);
+    expect((await app.request("/console")).status).toBe(401);
+    expect(inspections).toBe(0);
+    const loginPage = await app.request("/console/session/login");
+    const proof = (await loginPage.text()).match(
+      /name="proof" value="([^"]+)"/,
+    )?.[1];
+    expect(proof).toBeTruthy();
+    const login = await app.request("/console/session/login", {
+      method: "POST",
+      headers: {
+        origin: "https://june.example",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ proof: proof ?? "", token }),
+    });
+    expect(login.status).toBe(200);
+    expect(await login.text()).not.toContain(token);
+    const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
+    expect(cookie).not.toBe("");
+    const overview = await app.request("/console", { headers: { cookie } });
+    expect(overview.status).toBe(200);
+    expect(overview.headers.get("cache-control")).toContain("no-store");
+    expect(await overview.text()).not.toContain("<form");
+    expect(inspections).toBe(1);
+    expect(
+      (await app.request("/operator/conversation", { headers: { cookie } }))
+        .status,
+    ).toBe(401);
+    expect(
+      (
+        await app.request(`/operator/jobs/${"a".repeat(64)}/resume`, {
+          method: "POST",
+          headers: {
+            cookie,
+            "content-type": "application/json",
+            "idempotency-key": "73f9ac38-c99b-4c42-8aa8-a49de85862bf",
+          },
+          body: JSON.stringify({ confirmedStopped: true }),
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await app.request("/console/actions/anything", {
+          method: "POST",
+          headers: {
+            cookie,
+            origin: "https://june.example",
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ confirmed: "yes" }),
+        })
+      ).status,
+    ).toBe(404);
+    expect(
+      (await app.request("/actions/anything", { headers: { cookie } })).status,
+    ).toBe(404);
+    expect(resumes).toBe(0);
+    expect(
+      (await createHttpApp(deps).request("/console", { headers: { cookie } }))
+        .status,
+    ).toBe(401);
+    for (let i = 0; i < 9; i++)
+      expect(
+        (await app.request("/console/session/login", { method: "POST" }))
+          .status,
+      ).toBe(403);
+    const limited = await app.request("/console/session/login", {
+      method: "POST",
+    });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("cache-control")).toContain("no-store");
+  });
+
   it("keeps correlated lengthless ingress diagnostics private and records failed durable submission without content", async () => {
     const diagnostics = createSlackIngressDiagnostics();
     const app = createHttpApp(

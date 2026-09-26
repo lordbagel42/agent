@@ -31,6 +31,8 @@ into June or tested with a real account.
 - Separate, approval-gated Amp jobs, saved thread IDs, and explicit recovery of
   uncertain runs. June reports worker results as reported, not verified.
 - Headless configuration, health check, and bearer-protected inspection API.
+- Optional owner-private, read-only browser console using the existing operator
+  credential. It cannot approve actions or change configuration.
 
 June can reply with text, a native reaction, both, or intentional silence. A light
 acknowledgment no longer forces an extra text message. Delivery history records
@@ -38,7 +40,8 @@ what the platform accepted, including uncertain or rejected reactions.
 
 Incoming reactions and delivery receipts are recorded; they do not trigger an
 LLM turn yet. Images, attachments, voice, WhatsApp templates, proactive schedules,
-Claude subscription auth, and self-deployment are unavailable. Memory, imports,
+Claude subscription auth, self-deployment, and configuration changes from the
+console are unavailable. Memory, imports,
 reflection and tool modules are local integration work, not evidence of live
 provider access or permission to activate them. All optional integrations remain
 off unless explicitly configured and separately authorized.
@@ -326,6 +329,51 @@ new selection. `/cancel` aborts the current fetch, not already persisted pages.
 Imported text never enters the live command inbox. See the detailed
 [memory](src/memory/README.md), [import](src/imports/README.md) and
 [reflection](src/reflection/README.md) contracts and their remaining limits.
+
+## Private read-only console
+
+The console is absent unless configuration explicitly includes a fixed browser
+origin, for example:
+
+```json
+"console": { "origin": "http://127.0.0.1:3080" }
+```
+
+Use an authenticated SSH tunnel from your computer to the existing private HTTP
+listener. Keep the forwarding socket on loopback; use the actual service address,
+not an assumed loopback listener on the remote host. For the existing homelab
+listener, the forwarding shape is:
+
+```sh
+ssh -N -L 127.0.0.1:3080:192.168.0.215:3080 <authorized-ssh-host>
+```
+
+Open `http://127.0.0.1:3080/console/session/login` on that computer. The hostname
+and port must match the configured origin. Enter the existing operator token
+through the password form, not a URL. An explicitly configured private HTTPS
+origin is also supported. Non-loopback HTTP origins are rejected. Never publish
+`/console`, `/console/session/*` or `/operator/*` through the Slack proxy, a
+development portal, or any public ingress. Disable access/body logging for these
+private routes, and do not place untrusted content on the same origin.
+
+The server exchanges the token for a 15-minute HttpOnly, SameSite=Strict session;
+HTTPS cookies are Secure. Restarting the host revokes sessions. Login POSTs are
+limited to ten per minute across this owner-only host. Sign out at
+`/console/session/logout`. Browser cookies authorize only the console, not the
+Bearer-only operator API. Existing operator clients are unchanged.
+
+The overview shows selected configuration facts, content-free Slack ingress
+counts, durable event counts, capability gates and saved proposal counts. It
+does not show credentials, conversation text, job goals/reports, provider paths,
+or infer provider health from configuration. Unconnected memory, reflection,
+approval and revocation sections remain unavailable. No action callbacks or
+opaque-link routes are mounted; viewing the page cannot approve or run work.
+
+Enabling this surface does not migrate state, enable providers or grant deployment
+authority. To roll back to a release predating the console, restore its config or
+remove the optional `console` field before restart; the older parser rejects
+unknown keys. Preserve current durable state and reconcile unknown effects rather
+than restoring an old data snapshot blindly.
 
 ## Development checks and limitations
 
