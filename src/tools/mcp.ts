@@ -194,6 +194,16 @@ export class McpToolAdapter implements ToolAdapter {
     const timer = setTimeout(() => controller.abort(), config.timeoutMs);
     let dispatched = false;
     let remainingBytes = config.maxResponseBytes ?? 1048576;
+    // SDK close rejects requests immediately; it does not await transport I/O.
+    const pending = new Set<Promise<unknown>>();
+    const track = <T>(work: Promise<T>): Promise<T> => {
+      pending.add(work);
+      void work.then(
+        () => pending.delete(work),
+        () => pending.delete(work),
+      );
+      return work;
+    };
     const transport = new StreamableHTTPClientTransport(new URL(config.url), {
       reconnectionOptions: {
         maxRetries: 0,
@@ -201,62 +211,93 @@ export class McpToolAdapter implements ToolAdapter {
         maxReconnectionDelay: 1000,
         reconnectionDelayGrowFactor: 1,
       },
-      fetch: async (input, init) => {
-        const target = input instanceof Request ? input.url : String(input);
-        if (target !== config.url) throw new Error();
-        // Unsolicited server streams are unnecessary; never open one.
-        if (init?.method === "GET") return new Response(null, { status: 405 });
-        const headers = new Headers(init?.headers);
-        headers.set("authorization", `Bearer ${token}`);
-        const signal = AbortSignal.any([
-          controller.signal,
-          ...(init?.signal ? [init.signal] : []),
-        ]);
-        signal.throwIfAborted();
-        if (typeof init?.body === "string") {
-          const message = JSON.parse(init.body);
-          if (message.method === "tools/call") {
-            if (dispatched) throw new Error();
-            dispatched = true;
-          }
-        }
-        const response = await this.#fetch(input, {
-          ...init,
-          headers,
-          signal,
-          redirect: "error",
-          credentials: "omit",
-        });
-        if (!response.body) return response;
-        // Bound bytes before SDK JSON/SSE parsing, across the whole operation.
-        const reader = response.body.getReader();
-        const body = new ReadableStream<Uint8Array>({
-          async pull(stream) {
-            try {
-              const chunk = await reader.read();
-              if (chunk.done) {
-                stream.close();
-                reader.releaseLock();
-                return;
+      fetch: (input, init) =>
+        track(
+          (async () => {
+            const target = input instanceof Request ? input.url : String(input);
+            if (target !== config.url) throw new Error();
+            // Unsolicited server streams are unnecessary; never open one.
+            if (init?.method === "GET")
+              return new Response(null, { status: 405 });
+            const headers = new Headers(init?.headers);
+            headers.set("authorization", `Bearer ${token}`);
+            const signal = AbortSignal.any([
+              controller.signal,
+              ...(init?.signal ? [init.signal] : []),
+            ]);
+            signal.throwIfAborted();
+            if (typeof init?.body === "string") {
+              const message = JSON.parse(init.body);
+              if (message.method === "tools/call") {
+                if (dispatched) throw new Error();
+                dispatched = true;
               }
-              remainingBytes -= chunk.value.byteLength;
-              if (remainingBytes < 0) {
-                controller.abort();
-                await reader.cancel();
-                throw new Error();
-              }
-              stream.enqueue(chunk.value);
-            } catch {
-              stream.error(new Error("mcp_transport_failed"));
             }
-          },
-          cancel: () => reader.cancel(),
-        });
-        return new Response(body, {
-          status: response.status,
-          headers: response.headers,
-        });
-      },
+            const response = await this.#fetch(input, {
+              ...init,
+              headers,
+              signal,
+              redirect: "error",
+              credentials: "omit",
+            });
+            // A fetch can settle after abort. Dispose its late body before draining.
+            if (signal.aborted) {
+              await response.body?.cancel();
+              signal.throwIfAborted();
+            }
+            if (!response.body) return response;
+            // Bound bytes before SDK JSON/SSE parsing, across the whole operation.
+            const reader = response.body.getReader();
+            let cancellation: Promise<void> | undefined;
+            const finish = () => {
+              signal.removeEventListener("abort", cancelBody);
+              reader.releaseLock();
+            };
+            // A second reader.cancel() may resolve before the first cancellation
+            // finishes. Keep the original promise, including underlying cleanup.
+            const cancel = () =>
+              (cancellation ??= track(
+                reader
+                  .cancel()
+                  .catch(() => {})
+                  .finally(finish),
+              ));
+            const cancelBody = () => {
+              void cancel();
+            };
+            signal.addEventListener("abort", cancelBody, { once: true });
+            const body = new ReadableStream<Uint8Array>({
+              pull: (stream) =>
+                track(
+                  (async () => {
+                    try {
+                      const chunk = await reader.read();
+                      if (chunk.done) {
+                        stream.close();
+                        if (!cancellation) finish();
+                        return;
+                      }
+                      remainingBytes -= chunk.value.byteLength;
+                      if (remainingBytes < 0) {
+                        controller.abort();
+                        await cancel();
+                        throw new Error();
+                      }
+                      stream.enqueue(chunk.value);
+                    } catch {
+                      stream.error(new Error("mcp_transport_failed"));
+                      await cancel();
+                    }
+                  })(),
+                ),
+              cancel,
+            });
+            return new Response(body, {
+              status: response.status,
+              headers: response.headers,
+            });
+          })(),
+        ),
     });
     const client = new Client(
       { name: "june", version: "0.1.0" },
@@ -281,7 +322,7 @@ export class McpToolAdapter implements ToolAdapter {
         },
       },
     );
-    // Abort closes outstanding SDK requests as well as underlying fetch streams.
+    // Abort rejects SDK requests and requests cancellation of transport I/O.
     const abort = () => void client.close().catch(() => {});
     controller.signal.addEventListener("abort", abort, { once: true });
     const options = { signal: controller.signal, timeout: config.timeoutMs };
@@ -332,6 +373,9 @@ export class McpToolAdapter implements ToolAdapter {
       clearTimeout(timer);
       controller.signal.removeEventListener("abort", abort);
       await client.close().catch(() => {});
+      // Closing the SDK is only an abort request. Keep this operation active
+      // until every fetch, read, and body cancellation has actually settled.
+      while (pending.size) await Promise.allSettled(pending);
       token = "";
       this.#active.delete(controller);
       finished.resolve();
