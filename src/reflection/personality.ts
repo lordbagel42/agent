@@ -28,6 +28,10 @@ export interface PersonalityRevision {
   parent: string | null;
   createdAt: number;
   traits: Partial<Record<Trait, TraitValue>>;
+  scopedTraits?: {
+    scope: string;
+    traits: Partial<Record<Trait, TraitValue>>;
+  }[];
   explanation: string;
   proposal?: PersonalityProposal;
   reverts?: string;
@@ -40,6 +44,32 @@ export const initialPersonality = (): PersonalityState => ({
   charter: CHARTER,
   revisions: [],
 });
+
+/** Legacy snapshots had one slot per trait; retain their surviving scope only. */
+function scopes(
+  revision: PersonalityRevision | undefined,
+): NonNullable<PersonalityRevision["scopedTraits"]> {
+  if (revision?.scopedTraits) return structuredClone(revision.scopedTraits);
+  const result: NonNullable<PersonalityRevision["scopedTraits"]> = [];
+  for (const [trait, value] of Object.entries(revision?.traits ?? {})) {
+    let scoped = result.find((s) => s.scope === value.scope);
+    if (!scoped) {
+      scoped = { scope: value.scope, traits: {} };
+      result.push(scoped);
+    }
+    scoped.traits[trait as Trait] = structuredClone(value);
+  }
+  return result;
+}
+
+export function personalityTraits(
+  state: PersonalityState,
+  scope: string,
+): Partial<Record<Trait, TraitValue>> {
+  return (
+    scopes(state.revisions.at(-1)).find((s) => s.scope === scope)?.traits ?? {}
+  );
+}
 
 export function proposeRevision(
   value: unknown,
@@ -84,6 +114,7 @@ export function proposeRevision(
     !Array.isArray(p.evidenceIds) ||
     !p.evidenceIds.length ||
     p.evidenceIds.length > 100 ||
+    new Set(p.evidenceIds).size !== p.evidenceIds.length ||
     !p.evidenceIds.every((id) => typeof id === "string")
   )
     return bad();
@@ -130,12 +161,18 @@ export function revisePersonality(
   if (state.revisions.some((r) => r.id === p.id))
     throw new Error("Duplicate revision");
   const head = state.revisions.at(-1);
+  const scopedTraits = scopes(head);
+  let scoped = scopedTraits.find((s) => s.scope === p.scope);
+  if (!scoped) {
+    scoped = { scope: p.scope, traits: {} };
+    scopedTraits.push(scoped);
+  }
   if (
-    head?.traits[p.trait]?.basis === "owner-correction" &&
+    scoped.traits[p.trait]?.basis === "owner-correction" &&
     p.basis !== "owner-correction"
   )
     throw new Error("Inferred style cannot override an owner correction");
-  const traits = structuredClone(head?.traits ?? {});
+  const traits = scoped.traits;
   traits[p.trait] = {
     value: p.value,
     basis: p.basis,
@@ -151,6 +188,7 @@ export function revisePersonality(
         parent: head?.id ?? null,
         createdAt: now,
         traits,
+        scopedTraits,
         explanation: p.explanation,
         proposal: p,
       },
@@ -187,6 +225,7 @@ export function revertPersonality(
         createdAt: now,
         explanation,
         traits: structuredClone(previous?.traits ?? {}),
+        scopedTraits: scopes(previous),
         reverts: target,
       },
     ],
