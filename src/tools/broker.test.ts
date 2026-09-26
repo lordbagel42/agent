@@ -2,7 +2,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { CapabilityBroker } from "./broker.js";
+import { CapabilityBroker, MAX_GRANT_TTL_MS } from "./broker.js";
+import { createCapabilityRoutes } from "./routes.js";
 
 const action = {
   tool: "mail.send",
@@ -200,6 +201,11 @@ test("owner can audit a revoked consumed grant without replay or payload access"
   broker.revoke("owner", grant);
   expect(broker.audit("owner", grant)).toEqual(receipt);
   expect(() => broker.audit("worker", grant)).toThrow();
+  expect(broker.matchesGrant("owner", grant, action)).toBe(true);
+  expect(
+    broker.matchesGrant("owner", grant, { ...action, arguments: {} }),
+  ).toBe(false);
+  expect(() => broker.matchesGrant("worker", grant, action)).toThrow();
   broker.close();
 });
 
@@ -240,5 +246,118 @@ test("argument canonicalization rejects unsafe types and snapshots caller mutati
   const execution = broker.execute("worker", grant, proposed);
   proposed.arguments = { changed: true };
   expect((await execution).status).toBe("succeeded");
+  broker.close();
+});
+
+test("short grants, cancellation and owner reconciliation never reopen a consumed effect", async () => {
+  const { broker, options, path, calls } = setup();
+  broker.close();
+  const timed = new CapabilityBroker(path, { ...options, now: () => 100 });
+  expect(() =>
+    timed.grant("owner", {
+      audience: "worker",
+      action,
+      expiresAt: 101 + MAX_GRANT_TTL_MS,
+    }),
+  ).toThrow();
+  const grant = timed.grant("owner", {
+    audience: "worker",
+    action,
+    expiresAt: 100 + MAX_GRANT_TTL_MS,
+  });
+  const execution = timed.execute("worker", grant, action);
+  const reconciliation = { confirmedStopped: true, outcome: "failed" };
+  expect(() => timed.reconcile("owner", grant, reconciliation)).toThrow();
+  expect(timed.cancel("owner", grant)?.status).toBe("unknown");
+  expect((await execution).status).toBe("unknown");
+  expect(calls()).toBe(0);
+  expect(() => timed.reconcile("worker", grant, reconciliation)).toThrow();
+  expect(() =>
+    timed.reconcile("owner", grant, {
+      ...reconciliation,
+      confirmedStopped: false,
+    }),
+  ).toThrow();
+  expect(timed.reconcile("owner", grant, reconciliation).status).toBe("failed");
+  await expect(timed.execute("worker", grant, action)).rejects.toThrow();
+  expect(timed.auditEvents("owner").map((event) => event.event)).toEqual([
+    "granted",
+    "execution_claimed",
+    "revoked",
+    "reconciled_failed",
+  ]);
+  expect(() => timed.auditEvents("worker")).toThrow();
+  expect(JSON.stringify(timed.auditEvents("owner"))).not.toMatch(
+    /secret|private-payload/,
+  );
+  timed.close();
+  const reopened = new CapabilityBroker(path, options);
+  expect(reopened.audit("owner", grant)?.status).toBe("failed");
+  await expect(reopened.execute("worker", grant, action)).rejects.toThrow();
+  reopened.close();
+});
+
+test("independent owner routes reject unauthenticated/cross-origin writes and principal substitution", async () => {
+  const { broker, calls } = setup();
+  const token = "t".repeat(32);
+  const app = createCapabilityRoutes({
+    broker,
+    owner: "owner",
+    operatorToken: token,
+    consoleOrigin: "https://console.example",
+  });
+  const body = JSON.stringify({
+    audience: "worker",
+    action,
+    expiresAt: Date.now() + 60_000,
+  });
+  expect((await app.request("/grants", { method: "POST", body })).status).toBe(
+    401,
+  );
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+  expect(
+    (
+      await app.request("/grants", {
+        method: "POST",
+        body,
+        headers: { ...headers, origin: "https://attacker.example" },
+      })
+    ).status,
+  ).toBe(403);
+  const grantResponse = await app.request("/grants", {
+    method: "POST",
+    body,
+    headers,
+  });
+  expect(grantResponse.status).toBe(400);
+  const grantId = broker.grant("owner", JSON.parse(body));
+  const response = await app.request(`/grants/${grantId}/execute`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(action),
+  });
+  expect(response.status).toBe(400);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(calls()).toBe(0);
+  expect(
+    (await app.request(`/grants/${grantId}/execute`, { headers })).status,
+  ).toBe(404);
+  const ownerGrant = await app.request("/grants", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ ...JSON.parse(body), audience: "owner" }),
+  });
+  expect(ownerGrant.status).toBe(201);
+  const ownerId = (await ownerGrant.json()).grantId;
+  const success = await app.request(`/grants/${ownerId}/execute`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(action),
+  });
+  expect((await success.json()).status).toBe("succeeded");
+  expect(calls()).toBe(1);
   broker.close();
 });
