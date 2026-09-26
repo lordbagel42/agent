@@ -38,6 +38,7 @@ function compileSchema(schema: object) {
         [
           "$ref",
           "$dynamicRef",
+          "$async",
           "pattern",
           "patternProperties",
           "format",
@@ -48,7 +49,7 @@ function compileSchema(schema: object) {
     }
   }
   visit(schema, 0);
-  return new Ajv2020({
+  const validate = new Ajv2020({
     strict: true,
     allErrors: false,
     // No coercion, defaults, or removal: granted arguments must not change.
@@ -56,6 +57,10 @@ function compileSchema(schema: object) {
     useDefaults: false,
     removeAdditional: false,
   }).compile(schema);
+  // An async Ajv validator returns a truthy Promise, not a validation verdict.
+  // Enforce the same synchronous contract for input, output, and SDK callbacks.
+  if ("$async" in validate) throw new Error();
+  return (input: unknown): boolean => validate(input) === true;
 }
 
 /** Streamable HTTP MCP adapter; one statically registered broker tool per instance.

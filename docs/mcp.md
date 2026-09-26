@@ -67,8 +67,9 @@ for offline tests, never a user-configurable transport bypass.
   enforced on decoded bytes before SDK JSON/SSE parsing. At most 16 discovery
   pages and 256 distinct tools; duplicate names fail closed.
 - Strict JSON Schema 2020-12 validation with non-mutating Ajv. Unsupported schemas
-  fail closed: no references, regular-expression keywords, or formats; schema
-  size/depth/node limits are 32 KiB/16/2000. These conservative limits reduce
+  fail closed: no references, `$async`, regular-expression keywords, or formats;
+  compiled input/output validators must be synchronous and return `true` to pass.
+  Schema size/depth/node limits are 32 KiB/16/2000. These conservative limits reduce
   untrusted compiler work; they are not a process-isolation or hard CPU guarantee.
   Operators should review server schemas before enabling a tool. Structured output
   is validated when an output schema is advertised, including paginated discovery.
