@@ -270,6 +270,8 @@ export class BrowserAdapter implements ToolAdapter {
           if (count > rule.maxUses) throw new Error();
           used.set(index, count);
           const headers = await request.allHeaders();
+          // Cancellation may arrive while request metadata is being retrieved.
+          if (stopped) throw new Error();
           delete headers.authorization;
           delete headers["proxy-authorization"];
           if (rule.credential) headers.authorization = `Bearer ${secret}`;
