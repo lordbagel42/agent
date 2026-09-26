@@ -1,0 +1,341 @@
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+
+export type Json =
+  | null
+  | boolean
+  | number
+  | string
+  | Json[]
+  | { [key: string]: Json };
+export interface ToolAction {
+  tool: string;
+  account: string;
+  item: string;
+  /** Exact canonical HTTPS origin; no paths, userinfo, or redirects. */
+  origin: string;
+  arguments: Json;
+}
+export interface Receipt {
+  id: string;
+  grantId: string;
+  status: "unknown" | "succeeded";
+  startedAt: number;
+}
+/** Trusted code, not model-provided code. Enforce destination/redirect policy here.
+ * Never return or log credentials, including errors. Results are intentionally discarded.
+ * Resolve only on confirmed success; throw on rejection or ambiguous outcomes.
+ * Do not internally retry side effects. Revocation cannot recall a started operation.
+ * This is an authorization boundary, NOT a process/network sandbox. */
+export interface ToolAdapter {
+  execute(action: ToolAction, credential: unknown): Promise<unknown>;
+}
+export interface BrokerOptions {
+  owner: string;
+  tools: Record<string, ToolAdapter>;
+  resolveCredential(
+    scope: Readonly<Pick<ToolAction, "account" | "item" | "origin">>,
+  ): Promise<unknown>;
+  now?: () => number;
+}
+
+function deny(): never {
+  throw new Error("capability_denied");
+}
+function text(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !value.length ||
+    value.length > 512 ||
+    [...value].some((character) => character.charCodeAt(0) < 32)
+  )
+    deny();
+  return value;
+}
+/** Strict JSON only; reject lossy encodings, prototypes, getters, and oversized input. */
+function canonical(value: unknown, depth = 0): string {
+  if (depth > 32) deny();
+  if (value === null || typeof value === "boolean" || typeof value === "string")
+    return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (
+      !Number.isFinite(value) ||
+      Object.is(value, -0) ||
+      (Number.isInteger(value) && !Number.isSafeInteger(value))
+    )
+      deny();
+    return JSON.stringify(value);
+  }
+  if (typeof value !== "object") deny();
+  if (Object.getOwnPropertySymbols(value).length) deny();
+  if (Array.isArray(value)) {
+    if (
+      value.length > 10000 ||
+      Object.getOwnPropertyNames(value).length !== value.length + 1 ||
+      Object.keys(value).length !== value.length
+    )
+      deny();
+    return `[${Array.from({ length: value.length }, (_, i) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+      if (!descriptor || !("value" in descriptor)) deny();
+      return canonical(descriptor.value, depth + 1);
+    }).join(",")}]`;
+  }
+  if (
+    Object.getPrototypeOf(value) !== Object.prototype &&
+    Object.getPrototypeOf(value) !== null
+  )
+    deny();
+  const keys = Object.getOwnPropertyNames(value).sort();
+  if (keys.length > 10000) deny();
+  return `{${keys
+    .map((key) => {
+      if (["__proto__", "constructor", "prototype"].includes(key)) deny();
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !("value" in descriptor)) deny();
+      return `${JSON.stringify(key)}:${canonical(descriptor.value, depth + 1)}`;
+    })
+    .join(",")}}`;
+}
+function object(value: unknown): Record<string, unknown> {
+  const encoded = canonical(value);
+  if (encoded.length > 65536) deny();
+  const result: unknown = JSON.parse(encoded);
+  if (!result || typeof result !== "object" || Array.isArray(result)) deny();
+  return result as Record<string, unknown>;
+}
+function keys(value: Record<string, unknown>, expected: string[]) {
+  if (Object.keys(value).sort().join(",") !== expected.sort().join(",")) deny();
+}
+function digest(value: string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+interface GrantRow {
+  id: string;
+  audience: string;
+  fingerprint: string;
+  expires: number;
+  revoked: number;
+}
+interface LinkRow {
+  grant_id: string;
+  expires: number;
+  revoked: number;
+}
+
+/** Caller identity must come from trusted authentication, NEVER request JSON/model output.
+ * Give models only propose/execute wrappers, not the broker or owner routes.
+ * Persist on a private local filesystem; SQLite contains identifiers and digests, not payloads.
+ */
+export class CapabilityBroker {
+  readonly #db: DatabaseSync;
+  readonly #options: BrokerOptions;
+  constructor(path: string, options: BrokerOptions) {
+    text(options.owner);
+    this.#options = options;
+    this.#db = new DatabaseSync(path);
+    this.#db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+      CREATE TABLE IF NOT EXISTS capability_grants(id TEXT PRIMARY KEY, audience TEXT NOT NULL, fingerprint TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS capability_receipts(id TEXT PRIMARY KEY, grantId TEXT NOT NULL UNIQUE, status TEXT NOT NULL, startedAt INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS capability_links(digest TEXT PRIMARY KEY, grant_id TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);`);
+  }
+  close(): void {
+    this.#db.close();
+  }
+  #now() {
+    return (this.#options.now ?? Date.now)();
+  }
+  #owner(principal: string) {
+    if (text(principal) !== this.#options.owner) deny();
+  }
+  #expiry(value: unknown): number {
+    if (
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value <= this.#now()
+    )
+      deny();
+    return value;
+  }
+  propose(input: unknown): ToolAction {
+    const value = object(input);
+    keys(value, ["tool", "account", "item", "origin", "arguments"]);
+    const origin = text(value.origin);
+    let url: URL;
+    try {
+      url = new URL(origin);
+    } catch {
+      return deny();
+    }
+    if (url.protocol !== "https:" || url.origin !== origin) deny();
+    const tool = text(value.tool);
+    if (!Object.hasOwn(this.#options.tools, tool)) deny();
+    return {
+      tool,
+      account: text(value.account),
+      item: text(value.item),
+      origin,
+      arguments: value.arguments as Json,
+    };
+  }
+  grant(principal: string, input: unknown): string {
+    this.#owner(principal);
+    const value = object(input);
+    keys(value, ["audience", "action", "expiresAt"]);
+    const action = this.propose(value.action);
+    const id = randomUUID();
+    this.#db
+      .prepare(
+        "INSERT INTO capability_grants(id,audience,fingerprint,expires) VALUES(?,?,?,?)",
+      )
+      .run(
+        id,
+        text(value.audience),
+        digest(canonical(action)),
+        this.#expiry(value.expiresAt),
+      );
+    return id;
+  }
+  revoke(principal: string, grantId: string): void {
+    this.#owner(principal);
+    this.#db
+      .prepare("UPDATE capability_grants SET revoked=1 WHERE id=?")
+      .run(text(grantId));
+  }
+  #grant(principal: string, id: string): GrantRow {
+    const row = this.#db
+      .prepare("SELECT * FROM capability_grants WHERE id=?")
+      .get(text(id)) as unknown as GrantRow | undefined;
+    if (
+      !row ||
+      row.audience !== text(principal) ||
+      row.revoked ||
+      row.expires <= this.#now()
+    )
+      deny();
+    return row;
+  }
+  #receipt(id: string): Receipt | undefined {
+    return this.#db
+      .prepare("SELECT * FROM capability_receipts WHERE grantId=?")
+      .get(id) as unknown as Receipt | undefined;
+  }
+  /** Owner-only read, including expired/revoked grants; never reopens execution. */
+  audit(principal: string, grantId: string): Receipt | undefined {
+    this.#owner(principal);
+    return this.#receipt(text(grantId));
+  }
+  async execute(
+    principal: string,
+    grantId: string,
+    input: unknown,
+    linkToken?: string,
+  ): Promise<Receipt> {
+    const action = this.propose(input);
+    let receipt: Receipt;
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      if (
+        linkToken !== undefined &&
+        this.#link(principal, linkToken).grant_id !== grantId
+      )
+        deny();
+      const grant = this.#grant(principal, grantId);
+      if (grant.fingerprint !== digest(canonical(action))) deny();
+      const existing = this.#receipt(grantId);
+      if (existing) {
+        this.#db.exec("COMMIT");
+        return existing;
+      }
+      // Unknown is the durable intent: a crash at ANY later point is never retried.
+      receipt = {
+        id: randomUUID(),
+        grantId,
+        status: "unknown",
+        startedAt: this.#now(),
+      };
+      this.#db
+        .prepare(
+          "INSERT INTO capability_receipts(id,grantId,status,startedAt) VALUES(?,?,?,?)",
+        )
+        .run(receipt.id, grantId, receipt.status, receipt.startedAt);
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+    try {
+      const credential = await this.#options.resolveCredential(
+        Object.freeze({
+          account: action.account,
+          item: action.item,
+          origin: action.origin,
+        }),
+      );
+      // Re-check revocation/expiry after asynchronous credential resolution.
+      this.#grant(principal, grantId);
+      if (linkToken !== undefined) this.#link(principal, linkToken);
+      const adapter = this.#options.tools[action.tool];
+      if (!adapter) deny();
+      await adapter.execute(action, credential);
+      this.#db
+        .prepare(
+          "UPDATE capability_receipts SET status='succeeded' WHERE grantId=?",
+        )
+        .run(grantId);
+      receipt.status = "succeeded";
+    } catch {
+      /* Never expose errors, credentials, or ambiguous transport payloads. */
+    }
+    return receipt;
+  }
+  issueLink(principal: string, grantId: string, expiresAt: number): string {
+    this.#owner(principal);
+    const row = this.#db
+      .prepare("SELECT * FROM capability_grants WHERE id=?")
+      .get(text(grantId)) as unknown as GrantRow | undefined;
+    const expires = this.#expiry(expiresAt);
+    if (!row || row.revoked || expires > row.expires) deny();
+    const token = randomBytes(32).toString("base64url");
+    this.#db
+      .prepare(
+        "INSERT INTO capability_links(digest,grant_id,expires) VALUES(?,?,?)",
+      )
+      .run(digest(token), grantId, expires);
+    return token;
+  }
+  #token(token: string) {
+    if (typeof token !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(token))
+      deny();
+    return digest(token);
+  }
+  #link(principal: string, token: string): LinkRow {
+    const row = this.#db
+      .prepare("SELECT * FROM capability_links WHERE digest=?")
+      .get(this.#token(token)) as unknown as LinkRow | undefined;
+    if (!row || row.revoked || row.expires <= this.#now()) deny();
+    this.#grant(principal, row.grant_id);
+    return row;
+  }
+  inspectLink(
+    principal: string,
+    token: string,
+  ): {
+    grantId: string;
+    expiresAt: number;
+    status: "ready" | Receipt["status"];
+  } {
+    const row = this.#link(principal, token);
+    return {
+      grantId: row.grant_id,
+      expiresAt: row.expires,
+      status: this.#receipt(row.grant_id)?.status ?? "ready",
+    };
+  }
+  revokeLink(principal: string, token: string): void {
+    this.#owner(principal);
+    this.#db
+      .prepare("UPDATE capability_links SET revoked=1 WHERE digest=?")
+      .run(this.#token(token));
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "host": "127.0.0.1",
+  "port": 3080,
+  "owner": {
+    "id": "raygen",
+    "identities": [
+      {
+        "channel": "slack",
+        "accountId": "T_REPLACE_ME",
+        "senderId": "U_REPLACE_ME"
+      }
+    ]
+  },
+  "model": {
+    "protocol": "openai",
+    "model": "YOUR_MODEL_ID",
+    "apiKeyEnv": "MODEL_API_KEY"
+  },
+  "slack": {
+    "teamId": "T_REPLACE_ME",
+    "botUserId": "U_BOT_REPLACE_ME",
+    "signingSecretEnv": "SLACK_SIGNING_SECRET",
+    "botTokenEnv": "SLACK_BOT_TOKEN"
+  },
+  "coding": {
+    "enabled": false,
+    "workspaces": {},
+    "timeoutMs": 3600000
+  }
+}

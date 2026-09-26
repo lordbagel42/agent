@@ -1,0 +1,44 @@
+{
+  "display_information": {
+    "name": "June",
+    "description": "Raygen's personal companion, hosted in the homelab.",
+    "long_description": "June is a personal companion hosted in Raygen's homelab. She responds to DMs and mentions with conversational replies and native reactions. Optional on-demand search uses Slack's Real-time Search API and returns source links without retaining retrieved content. Keyword search is supported; semantic search depends on Slack AI Search availability and requires a Business+ or Enterprise+ plan. User scopes are requested for planned private-channel and direct-message search, requiring separate user authorization. Historical imports are not enabled."
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": false,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "June",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "im:history",
+        "app_mentions:read",
+        "chat:write",
+        "reactions:read",
+        "reactions:write",
+        "search:read.public"
+      ],
+      "user": ["search:read.public", "search:read.private", "search:read.im"]
+    }
+  },
+  "settings": {
+    "socket_mode_enabled": false,
+    "event_subscriptions": {
+      "request_url": "https://june-slack.bagelindustries.com/webhooks/slack",
+      "bot_events": [
+        "message.im",
+        "app_mention",
+        "reaction_added",
+        "reaction_removed"
+      ]
+    },
+    "token_rotation_enabled": false
+  }
+}

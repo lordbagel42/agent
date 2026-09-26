@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+config.local.json
+.rivet/
+.data/
+coverage/
+dist/
+*.log
+.slack/*
+!.slack/hooks.json

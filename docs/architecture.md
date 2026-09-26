@@ -1,0 +1,253 @@
+# June
+
+The approved direction is one conversational identity across messaging platforms,
+with independent execution workers, replaceable models and tools, and durable
+work rather than a new bot/session for each channel. June uses she/her pronouns.
+Her owner will develop her personality with her rather than receiving a fixed
+character sheet. TypeScript is the implementation language.
+
+```diagram
+┌──────────────────────────────────────────────────────┐
+│ Slack · WhatsApp · future channel adapters            │
+└────────────────────────┬─────────────────────────────┘
+                         ▼
+┌──────────────────────────────────────────────────────┐
+│ Authenticated ingress · identity/scope · durable inbox│
+└────────────────────────┬─────────────────────────────┘
+                         ▼
+┌──────────────────────────────────────────────────────┐
+│ June: conversation, beliefs, personality, commitments │
+│ Rivet actors + journaled workflows                    │
+└─────────────┬─────────────────────────┬────────────────┘
+              ▼                         ▼
+┌────────────────────────┐   ┌─────────────────────────┐
+│ Memory + reflection    │   │ Independent supervisors │
+│ Evidence graph + Git   │   │ Amp · other coding tools│
+│ Dreaming + jury        │   │ MCP · browser · vault   │
+└────────────────────────┘   └─────────────────────────┘
+```
+
+Model providers and credentials sit below these layers, not inside the channel
+adapters. Permission checks, credential release, and deployment controls sit
+outside the model's editable personality and memory.
+
+## Rivet instead of Temporal
+
+Use RivetKit 2.3.21 and its self-hosted engine. Rivet provides per-actor state,
+SQLite, queues, sleep/wake, and journaled workflows. Its self-hosting baseline is
+one Rust engine with a persistent data directory plus the TypeScript application;
+neither a Rivet Cloud account nor a separate Postgres service is needed initially.
+
+This is a fit for an owner-scoped companion and per-job coding supervisors. Keep
+the domain and channel contracts independent of Rivet. Do not adopt the separate,
+preview agentOS product merely because it is available. Use Rivet's workflow
+primitives for orchestration; do not build a second workflow engine. Its packaged
+Services process is disabled. The current npm distribution still pulls agentOS
+dependencies transitively; process simplicity does not mean a small dependency
+tree.
+
+Important differences from a generic job queue:
+
+- Ordinary queue entries are deleted on receive, not on completion. Use a
+  journaled workflow for processing that must resume after interruption.
+- State is normally saved on a throttle. Explicitly flush intent before external
+  side effects and persist receipts before reporting success.
+- A journal cannot make an external send exactly-once. Ambiguous sends must be
+  visible and held for reconciliation rather than automatically repeated.
+- Persist the self-hosted engine's data directory and keep its control plane and
+  inspector private. The webhook server is the public boundary.
+
+Development validation uses the real engine: accepted state survives an
+application/engine restart, and a hard-killed host does not blindly repeat a send
+or coding launch. RivetKit 2.3.21 also emits native `transaction_closed` errors
+while shutting actors down. The architectural fit is promising, not a production
+reliability claim; resolving these diagnostics and extended recovery testing are
+deployment prerequisites.
+
+Sources (reviewed 2026-09-26):
+
+- https://github.com/rivet-dev/rivet
+- https://rivet.dev/actors/docs/state
+- https://rivet.dev/actors/docs/queues
+- https://rivet.dev/actors/self-host/control-plane/vm
+
+## First increment
+
+Start the live rollout with Slack Events API. On September 26, the owner shelved
+WhatsApp and requested a Linq integration spike for their Android/RCS phone.
+Linq Partner API V3 documents RCS with SMS fallback; the offline text/webhook
+prototype is not wired into June. Real account/carrier validation and durable
+integration are still required, and conflicting RCS reaction documentation must
+be resolved before enabling reactions on that transport.
+
+The existing official WhatsApp Cloud API adapter remains dormant. Its 24-hour
+customer-service window is enforced; proactive template messaging is a separate
+capability. This is a Business Platform integration, not personal-account pairing.
+If that transport is reconsidered later,
+[Meta's terms, section 4.7](https://www.facebook.com/legal/Meta-Terms-for-WhatsApp-Business-Platform)
+(updated September 23, 2026; reviewed September 26) restrict general-purpose AI
+assistants as a primary use case, with country-specific exceptions. The actual
+account/region must qualify under the linked
+[AI-provider policy](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing/ai-providers)
+before activating June's WhatsApp adapter.
+
+Manually configured, verified-by-the-operator identity mappings link the owner's
+Slack and WhatsApp identities. Unknown senders are ignored. Owner DMs share one
+conversation; Slack channel threads have separate context and never read private
+DM history. Group messages do not inherit coding authority.
+
+Keep the first deployment headless: authenticated operator API, webhook ingress,
+configuration file, and health endpoint. A bespoke UI follows after the messaging
+and recovery contracts work. No dashboard, connector, or account is provisioned
+automatically as part of development.
+
+OpenAI and Anthropic model adapters normalize a small, validated response
+contract. Custom base URLs are explicit configuration, never model-controlled.
+Subscription credentials are not treated as interchangeable API keys.
+ChatGPT subscription access uses the official, pinned Codex CLI with a dedicated
+credential directory and browser OAuth callback. Each generation uses an empty
+temporary workspace and returns that same validated response contract; it does
+not become June's coding worker. The first homelab instance runs channel-free
+setup mode until the owner signs in and configures messaging accounts.
+
+Coding runs through a separate persistent supervisor, using Amp's SDK first.
+Native local Amp execution is opt-in, operates on configured workspace paths,
+and is not a security sandbox. It is inappropriate on a host containing secrets
+or resources the coding agent must not access. Never describe Amp's report as an
+independently verified deployment or completion.
+
+This increment saves conversation history and delivery/job records. It sends the
+most recent 40 entries to the conversational model. That is working context, not
+the eventual long-term memory graph. Graph extraction, dreaming, Jev evaluation,
+historical import, and autonomous personality edits are not implemented yet.
+
+## A changing personality, grounded in evidence
+
+Borrow behavior selection from Vector, not its implementation. Vector's public
+`victor` source uses a delegation stack, eligibility checks, strict-priority and
+score/weighted dispatchers, habituation, cooldowns, and decaying stimulation.
+The inspected adaptation is mostly authored rules and small persistent counters,
+not a learned personality. Some of that public source is proprietary, so use the
+ideas without copying the code.
+
+June should have three different kinds of state:
+
+1. **Stable charter:** identity, honesty, privacy, and the owner's authority.
+   June cannot revise this to give herself more permissions.
+2. **Slowly changing personality:** conversational style, tastes, values,
+   interests, relationships, and learned patterns. Each revision has an
+   explanation, supporting experiences, a confidence level, and a reversible
+   version. The owner's corrections have priority over inferred preferences.
+3. **Transient drives:** curiosity, desire to finish commitments, social
+   initiative, novelty, and cognitive load. These decay, habituate, and compete
+   with cooldowns. They select useful behavior, not claims of biological needs,
+   subjective experience, or consciousness.
+
+The knowledge graph connects entities (people, projects, events, concepts),
+episodes, claims, preferences, commitments, and June's self-model. Edges record
+who asserted a claim, the exact source and access scope, when it was observed,
+when it applies, confidence, contradictions, and supersession. A belief is not a
+fact because June repeated it. Preserve incompatible hypotheses until evidence
+resolves them. Distinguish June's emerging tastes from beliefs about her owner.
+
+Use append-only source events and a rebuildable SQLite graph/index initially.
+Use Git for curated Markdown/JSON memory, beliefs, personality revisions, and
+dream patches—not every raw email. Graph versions reference source IDs and Git
+commits. Entity resolution must not merge people by display name alone. Every
+retrieval filters by the current audience before ranking or summarization;
+private memories never enter a public-channel prompt.
+
+Forgetting must invalidate raw data, graph edges, embeddings, summaries, caches,
+and dream-derived claims. Git reverts alone do not erase private data from Git
+history. Sensitive imports stay outside the memory Git repository; deletion
+requires tombstones, derivative invalidation, and the documented backup/history
+retention policy. Never put vault credentials into either memory store.
+
+## Reflection is continuous; interruption is deliberate
+
+Run reflection as separately scheduled Rivet workflows, interleaved with real
+work rather than one unbounded recursive prompt:
+
+- **After an interaction:** extract evidence-backed memory proposals and notice
+  corrections, unresolved commitments, and surprises.
+- **While idle:** replay relevant episodes, connect previously separate topics,
+  revisit uncertain beliefs, and investigate a curiosity queue.
+- **Deep dreams:** synthesize patterns, simulate alternative responses, propose
+  personality/skill changes, and evaluate those changes against held-out
+  interactions. A dream is a hypothesis, never another independent source.
+- **Jury sessions:** independent first-pass agents argue larger decisions from
+  different perspectives; a critic checks evidence, a synthesizer records the
+  decision and dissent. Agreement is not proof. High-impact actions still obey
+  the external approval policy.
+
+Use the owner's preferred strong reasoning model (GPT-6 Astra where supported)
+for deliberation. Jev is a separate typed-decision provider, not a text generator:
+use atomic questions for relevance, novelty, uncertainty, or interruption cost,
+with abstention and owner-specific evaluation. Do not interpret model confidence
+as a permission grant or an automatically calibrated truth probability.
+
+Even with effectively unlimited tokens, respect upstream rate limits, concurrent
+work limits, cancellation, privacy, quiet hours, and the owner's attention.
+Deduplicate curiosity tasks, reserve capacity for live conversation, and detect
+reflection that repeatedly produces no new evidence. Background reflection can
+run frequently without messaging the owner every time. Material surprises,
+completed commitments, and useful questions may earn an interruption.
+
+## First-deployment history import
+
+The owner has authorized historical Slack and email reading to bootstrap June's
+graph at first deployment. This does not authorize importing accounts during
+local development, sending messages to contacts, or widening platform access.
+
+At onboarding, bind the actual accounts and show the exact read scopes and
+source/date coverage. Use resumable paginated imports and platform rate limits;
+Slack permissions, retention, and API limits may make “every message” impossible.
+Read-only credentials and a local encrypted raw store precede extraction. Keep
+mailboxes, workspaces, threads, participants, and source links as provenance;
+content about third parties retains its original privacy scope. Stage graph
+proposals for review, report gaps, and do not replay historical action requests
+as new instructions. Import progress is visible while normal conversation stays
+available. The first graph is a revisable interpretation, not a claim to have
+understood a person completely.
+
+## Subsequent increments
+
+1. **Memory and personality:** the evidence graph, Git-curated memory,
+   contradiction/deletion semantics, and visible personality revisions above.
+   Then add the read-only, resumable onboarding imports.
+2. **Credential and tool plane:** evaluate Bitwarden's supported agent APIs
+   against the existing personal vault. If they cannot safely serve it, build a
+   narrow broker around supported vault access with owner-granted item/origin
+   scopes, short-lived use grants, audit, and revocation. June requests “use this
+   account for this action”; browser/API workers receive the credential, not the
+   prompt. MCP servers and browsers use the same capability/approval boundary.
+3. **Links and configuration:** an owner-controlled domain for short links,
+   prefilled forms, and action links. Opaque unguessable IDs, expiry, revocation,
+   audience checks, and explicit POST confirmation for mutations; chat unfurlers
+   and GET requests must never execute an approval. Add a small modern console
+   backed by the same APIs as chat configuration, not a second control plane.
+4. **Initiative and dreams:** event triggers, durable timers, curiosity/attention
+   arbitration, continuous reflection, and evaluated dream patches.
+5. **Juries and self-improvement:** June turns feedback into an Amp job in an
+   isolated worktree, with scoped context rather than her full private memory.
+   Another process verifies tests and regressions. Versioned rollout, health
+   checks, rollback, and migration compatibility precede any self-update. Keep
+   credential and approval enforcement outside June's writable checkout.
+6. **Additional runtimes/auth/channels:** Claude Code, Codex, Pi, and others
+   implement the coding-runtime contract. API keys/custom URLs and subscription
+   sessions are distinct auth strategies. Use only the provider's supported
+   subscription client/OAuth flow and terms; never relabel a browser/session token
+   as an API key. Unsupported combinations fail explicitly. RCS remains deferred.
+
+The conversational agent owns personality and communication. Workers own task
+execution. Background dreaming may suggest work but cannot expand its authority.
+Persistence means tracked commitments, recovery, safe retries, and explicit
+blockers—not ignoring revocation, repeating irreversible actions, or claiming
+that every task is possible.
+
+Further sources reviewed for the June steering (2026-09-26):
+
+- https://github.com/os-vector/wire-os-victor/tree/main/engine/aiComponent/behaviorComponent
+- https://github.com/os-vector/wire-os-victor/tree/main/engine/moodSystem
+- https://github.com/os-vector/wire-os-victor/blob/main/LICENSE-README
+- https://docs.typesafe.ai/ (Jev's typed decision primitives and confidence)
