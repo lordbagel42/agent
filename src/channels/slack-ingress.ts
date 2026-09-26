@@ -31,6 +31,7 @@ interface Observation {
 
 export interface SlackIngressDiagnostics {
   record(request: Request, stage: SlackIngressStage): void;
+  associate(original: Request, replacement: Request): void;
   snapshot(): {
     startedAt: number;
     counts: Partial<Record<SlackIngressStage, number>>;
@@ -40,7 +41,8 @@ export interface SlackIngressDiagnostics {
 
 /**
  * Process-local diagnostics, not an audit log or proof of model processing.
- * Keep the same Request object through HTTP and adapter hooks for correlation.
+ * Record arrival before body limiting; associate any middleware replacement
+ * before recording its stages so HTTP and adapter hooks share a correlation ID.
  * Never read its URL, headers or body: even provider IDs can carry private data.
  * Only expose snapshots through the authenticated operator API.
  */
@@ -64,6 +66,10 @@ export function createSlackIngressDiagnostics(): SlackIngressDiagnostics {
       );
       recent.push({ requestId, at: Date.now(), stage });
       if (recent.length > 256) recent.shift();
+    },
+    associate(original, replacement) {
+      const requestId = requests.get(original);
+      if (requestId !== undefined) requests.set(replacement, requestId);
     },
     snapshot() {
       return {
