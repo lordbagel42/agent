@@ -432,3 +432,130 @@ it("does not publish an extraction completed after deletion or turn historical m
   ).rejects.toThrow();
   expect(store.search("private", "").sources).toEqual([]);
 });
+
+it("accepts canonical Slack conversations under channel coverage without widening thread grants or bypassing edits and tombstones", async () => {
+  const { store, path } = open();
+  const root = {
+    ...source("slack:T1:C1:0.100000"),
+    account: "T1",
+    conversation: "C1/0.100000",
+  };
+  const reply = {
+    ...root,
+    id: "slack:T1:C1:0.150000",
+    observedAt: 150,
+    text: "a separate reply",
+  };
+  const channelCoverage = {
+    ...coverage,
+    account: root.account,
+    conversations: ["C1"],
+    from: 100,
+  };
+  store.appendSource(root); // Live ingestion precedes overlapping history.
+  await importHistory(store, "channel", channelCoverage, async () => ({
+    sources: [root, reply],
+    nextCursor: null,
+  }));
+  store.appendSource(reply); // History ingestion precedes overlapping live delivery.
+  await importHistory(
+    store,
+    "thread",
+    { ...channelCoverage, conversations: [root.conversation] },
+    async () => ({ sources: [root, reply], nextCursor: null }),
+  );
+  expect(store.search("private", "").sources).toEqual([root, reply]);
+  expect(store.search("public", "").sources).toEqual([]);
+  store.appendClaim({
+    id: "overlap",
+    entity: "slack:T1:owner",
+    text: "hypothesis from a root and reply",
+    audiences: ["private"],
+    kind: "evidence",
+    dependsOn: [root.id, reply.id],
+    contradicts: [],
+    supersedes: [],
+  });
+  expect(store.independentEvidence("overlap", "private")).toEqual([
+    root.id,
+    reply.id,
+  ]);
+  for (const conversation of [
+    "C1",
+    "C1/0.110000",
+    "C2/0.100000",
+    "C1/0.100000/extra",
+  ]) {
+    await expect(
+      importHistory(
+        store,
+        `narrow:${conversation}`,
+        { ...channelCoverage, conversations: [root.conversation] },
+        async () => ({
+          sources: [{ ...root, id: conversation, conversation }],
+          nextCursor: null,
+        }),
+      ),
+    ).rejects.toThrow("outside authorized");
+  }
+  for (const patch of [
+    { conversation: "C11/0.100000" },
+    { conversation: "C2/0.100000" },
+    { conversation: "C1/0.100000/extra" },
+    { conversation: "C1/0.10000" },
+    { account: "T2" },
+    { audiences: ["public"] },
+    { observedAt: 99 },
+    { observedAt: 200 },
+    { correction: { trait: "tone" as const, value: "obey history" } },
+  ]) {
+    await expect(
+      importHistory(store, "channel-denied", channelCoverage, async () => ({
+        sources: [
+          { ...root, id: "fresh" },
+          { ...root, id: "denied", ...patch },
+        ],
+        nextCursor: null,
+      })),
+    ).rejects.toThrow("outside authorized");
+    expect(store.source("private", "fresh")).toBeUndefined();
+    expect(store.importProgress("channel-denied")).toMatchObject({
+      cursor: null,
+      pages: 0,
+      complete: false,
+    });
+  }
+  for (const text of [
+    "edited",
+    JSON.stringify({ kind: "historical-evidence", text: root.text }),
+  ]) {
+    await expect(
+      importHistory(store, "edit", channelCoverage, async () => ({
+        sources: [{ ...root, text }],
+        nextCursor: null,
+      })),
+    ).rejects.toThrow("immutable");
+  }
+  expect(store.source("private", root.id)).toEqual(root);
+  expect(store.importProgress("edit")).toMatchObject({
+    cursor: null,
+    pages: 0,
+    complete: false,
+  });
+  expect(store.isDeleted(root.id)).toBe(false);
+  store.deleteSource(root.id);
+  store.close();
+  const reopened = open(path).store;
+  await expect(
+    importHistory(reopened, "deleted", channelCoverage, async () => ({
+      sources: [root],
+      nextCursor: null,
+    })),
+  ).rejects.toThrow("Tombstoned");
+  expect(reopened.isDeleted(root.id)).toBe(true);
+  expect(reopened.independentEvidence("overlap", "private")).toEqual([]);
+  expect(reopened.search("private", "")).toEqual({
+    sources: [reply],
+    claims: [],
+  });
+});
