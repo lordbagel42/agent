@@ -68,8 +68,9 @@ Host actions:
 enqueue({scope, evidenceIds, kind: "reflection" | "curiosity",
          mode: "interaction" | "idle" | "deep"}): Promise<{id, accepted}>
 cancel(id): Promise<boolean>
+occupancy(id: string, active: boolean): Promise<void>
 trigger({id, type: "interaction" | "idle", liveActive}): Promise<void>
-status(): Promise<{reflection, invocations, candidateIds, liveActive, epoch}>
+status(): Promise<{reflection, invocations, candidateIds, liveActive, activeTurnIds, epoch}>
 candidate(id): Promise<ReflectionCandidate | null>
 reconcile(requestId, confirmedStopped): Promise<boolean>
 ```
@@ -82,19 +83,31 @@ to cancel all dependent requests; cancellation removes their staged candidates.
 Actor storage, engine inspection and backups must remain private. Deletion of
 the memory store alone does not erase a candidate from actor storage/backups.
 
-- Before live model work, call `trigger` with `type: "interaction"`, a stable
-  ingress-derived event ID, and total owner-wide live occupancy. This resets
-  idle age, invalidates prior candidates and aborts active background work.
-  After the work settles, call `type: "idle"` with a distinct stable completion
-  ID and the remaining occupancy. Duplicate IDs are inert. Serialize occupancy
-  updates through the host; a stale zero must not overwrite a newer live count.
-  Recover lost live-completion hooks explicitly after confirming worker exit.
+- Before live model work, await `occupancy(turnAttemptId, true)` with a stable,
+  owner-wide unique turn/attempt ID. The owner actor derives occupancy from
+  durable active IDs, so overlapping conversation actors never read/modify/write
+  an absolute count. A first start resets idle age, advances the interaction
+  epoch, invalidates candidates and aborts background work. Duplicate starts are
+  inert. After the actual provider/worker settles, await `occupancy(id, false)`
+  with the same ID. Duplicate or unmatched finishes cannot release another
+  turn; finished IDs remain tombstoned and cannot reopen on replay, even if the
+  finish arrived before the start. A new deliberate attempt needs a new ID.
+  Unknown-after-crash turns remain active until authenticated reconciliation
+  confirms the old provider/worker stopped and releases that exact ID. Use
+  `status().activeTurnIds` for inspection; there is no automatic lease expiry.
+- `trigger` remains a legacy/operator API. Its absolute `liveActive` is a
+  separate hold added to ID-based occupancy; a legacy zero cannot clear tracked
+  turns. Do not report the same turn through both APIs. Legacy interaction
+  events still reset idle age/epoch and invalidate candidates; idle events do
+  not. Duplicate event IDs are inert. Older persisted absolute occupancy is
+  retained as a legacy hold when first using the ID-based action; clear it only
+  after confirming the old live work stopped.
 - Enqueue source IDs produced by trusted interaction/memory ingestion. Immediate
   reflection waits for no live work; idle/deep modes additionally wait their
   delay after both enqueue and the most recent interaction. Idle hooks/timers
   do not invent evidence, recursively enqueue dreams or repeatedly message the
-  owner. Domain dedupe covers all modes and kinds. Keep tombstones and trigger
-  dedupe IDs when designing retention/compaction.
+  owner. Domain dedupe covers all modes and kinds. Keep request/finished-turn
+  tombstones and trigger dedupe IDs when designing retention/compaction.
 - Calls are deliberately serial even if the policy allows more background
   capacity. Live work preempts them and the domain reserves live capacity.
   Inject the raw provider, **not** `DecisionExecutor.evaluate` or another wrapper
@@ -127,10 +140,11 @@ the memory store alone does not erase a candidate from actor storage/backups.
 Verification: `pnpm exec vitest run src/runtime/reflection.test.ts
 src/reflection/domain.test.ts` exercises the real disposable engine plus domain
 rules. The runtime test protects audience/deletion checks, duplicate admission,
-cancellation settlement and candidate-read privacy. No paid provider or live
-channel is required. RivetKit 2.3.21 still emits the repository's documented
-native `transaction_closed` shutdown diagnostic; passing checks are not a claim
-of production engine readiness.
+cancellation settlement, candidate-read privacy, overlapping live turn IDs and
+duplicate/unmatched finishes. No paid provider or live channel is required.
+RivetKit 2.3.21 still emits the repository's documented native
+`transaction_closed` shutdown diagnostic; passing checks are not a claim of
+production engine readiness.
 
 ## Semantics and limits
 
