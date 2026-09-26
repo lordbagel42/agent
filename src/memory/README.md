@@ -15,11 +15,24 @@ trusted host APIs, not autonomous model tools.
 - `new CuratedPersonalityStore(root, key, evidence, {initialize: true})` requires
   a dedicated **unused** absolute directory outside all repositories. Omit the
   initialization option when reopening. Use a separately provisioned 32-byte key.
-- The host owns source ingestion and canonical IDs. Slack live and history use
-  `slackSourceId(workspace, channel, ts)` from the import connector: no event ID,
-  job ID, audience, or thread suffix. A changed envelope under an existing ID is
-  an immutable-source conflict, not a second independent observation. Handle
-  overlapping live/history records explicitly; never overwrite or widen scope.
+- The host owns source ingestion. Slack live and history must use the same
+  `slackSource(...)` builder from the import connector, not separate Source
+  constructions. Its input is
+  `{workspace, channel, ts, threadTs?, author, text, workspaceUrl, audiences}`.
+  It uses `slackSourceId(workspace, channel, ts)` with no event ID,
+  job ID, audience, or thread suffix. Conversation is `channel/(threadTs ?? ts)`
+  for **both roots and replies**. Text is the original plain message text, not
+  a JSON history envelope or mention-stripped conversational input. Workspace,
+  permalink base, author, timestamp and audiences must be identical, derived
+  from trusted account/routing configuration and original message fields.
+  Acquisition method and import progress belong to the import job, not Source.
+- Identical live/history records deduplicate in either order and contribute one
+  original evidence ID. A changed text, audience, URL or other field under an
+  existing ID is an immutable-source conflict, not another observation. Surface
+  the conflict; never silently skip an existing ID, overwrite it, widen scope,
+  or invent a new ID for a changed envelope. A ledger containing an older
+  noncanonical representation needs explicit reconciliation before replay;
+  this module does not automatically rewrite it or discard its derivatives.
 - `source(audience, sourceId)` reads one authorized source, or `undefined`.
   `isDeleted(sourceId)` is only for trusted ingestion/replay filtering; it is
   not a model-visible existence oracle. Tombstones must outlive replayable data.
@@ -30,6 +43,27 @@ trusted host APIs, not autonomous model tools.
   remain explicit edges, not silently resolved facts. Label all returned data as
   untrusted evidence, never instructions. Do not cache across deletion or scope
   changes. RTS results do not belong in this ledger.
+
+## Import coverage and edits
+
+`persistPage(expectedProgress, page, now)` checks coverage and persists sources
+and the cursor atomically. A bare Slack channel grant such as `C123` includes
+canonical `C123/root-ts` conversations, including replies. An exact thread grant
+such as `C123/1710000000.100000` includes only that conversation, not the channel
+or sibling threads. Prefix matches, malformed thread suffixes, other accounts,
+audiences outside the grant, and observations outside `[from,to)` are rejected.
+Other platforms retain exact conversation matching. This is a coverage check,
+not a claim that a connector fetched every reply or bypassed platform retention.
+
+Edits and deletion remain different cases. An edited immutable source fails
+insertion without modifying the old source, its derivatives, or page progress;
+the host must report/reconcile it, not silently retain it as current truth.
+`deleteSource(id)` is a trusted logical invalidation with a permanent replay
+tombstone. A tombstoned record also rejects the entire page without advancing
+its cursor. The host may filter known tombstones before persistence and record a
+content-free gap, but must not treat arbitrary insertion failures as deletion or
+silently skip nondeleted conflicts. An in-flight deletion may require refetching
+and refiltering the same page. Imports cannot set `Source.correction`.
 
 ## Source-grounded extraction and review
 
@@ -46,7 +80,7 @@ of at most 20 objects with **exactly** this shape:
 
 ```ts
 {
-  subjectSourceId: string; // the cited author's identity, not a display name
+  subjectSourceId: string; // a cited Source.id, not an author ID or display name
   text: string;
   category: "claim" | "preference" | "commitment" | "pattern";
   citations: { sourceId: string; quote: string }[];
@@ -60,8 +94,9 @@ of at most 20 objects with **exactly** this shape:
 
 The result goes to `stageProposals(audience, sourceIds, output)`. It checks exact
 source quotations and current dependencies, derives scope and stable entity IDs,
-and atomically persists encrypted pending proposals. Quotes establish provenance,
-not semantic entailment: human review remains necessary. Identical proposals
+and atomically persists encrypted pending proposals. The subject's entity ID is
+derived from that source's platform, account and author. Quotes establish
+provenance, not semantic entailment: human review remains necessary. Identical proposals
 deduplicate; acceptance/rejection is not reset by extractor retries. The async
 helper awaits actual provider settlement; abort/deletion prevents later staging.
 

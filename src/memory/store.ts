@@ -325,7 +325,8 @@ export class EvidenceStore {
 
   /** Untrusted extractor output is an array of MemoryProposalInput. Quotes prove
    * provenance, NOT truth/entailment; only authenticated review accepts a claim.
-   * A subject is a cited author's platform/account ID, never a display name. */
+   * subjectSourceId names a cited Source; its platform/account/author identifies
+   * the subject, never a display name supplied by the extractor. */
   stageProposals(
     audience: string,
     sourceIds: string[],
@@ -635,11 +636,19 @@ export class EvidenceStore {
         throw new Error("Import cursor did not advance");
       const c = progress.coverage;
       for (const source of page.sources) {
+        // Slack roots and replies share a canonical channel/root-ts conversation
+        // across live/history ingestion. A channel grant includes its threads;
+        // a thread grant must never widen to sibling threads or the channel.
+        const slackChannel =
+          c.platform === "slack"
+            ? /^([CGD][A-Z0-9]+)\/\d+\.\d{6}$/.exec(source.conversation)?.[1]
+            : undefined;
         if (
           source.correction !== undefined ||
           source.platform !== c.platform ||
           source.account !== c.account ||
-          !c.conversations.includes(source.conversation) ||
+          (!c.conversations.includes(source.conversation) &&
+            !(slackChannel && c.conversations.includes(slackChannel))) ||
           source.observedAt < c.from ||
           source.observedAt >= c.to ||
           !source.audiences.every((a) => c.audiences.includes(a))
