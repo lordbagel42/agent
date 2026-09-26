@@ -6,6 +6,7 @@ import type {
   OutboundMessage,
   SendResult,
 } from "../core/contracts.js";
+import type { SlackIngressDiagnostics } from "./slack-ingress.js";
 import { createSlackSearch } from "./slack-search.js";
 
 const SIGNATURE_TOLERANCE_SECONDS = 300;
@@ -222,6 +223,7 @@ export function createSlackAdapter({
   teamId,
   botUserId,
   searchEnabled = false,
+  ingressDiagnostics,
   fetch: fetchImpl = globalThis.fetch,
   now = () => Date.now(),
 }: {
@@ -230,6 +232,7 @@ export function createSlackAdapter({
   teamId: string;
   botUserId: string;
   searchEnabled?: boolean;
+  ingressDiagnostics?: SlackIngressDiagnostics;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
 }): ChannelAdapter {
@@ -241,10 +244,12 @@ export function createSlackAdapter({
     capabilities: { text: true, reactions: true, threads: true },
     ...(search === undefined ? {} : { search: search.search }),
     async receive(request: Request) {
+      ingressDiagnostics?.record(request, "adapter_received");
       let rawBody: Uint8Array;
       try {
         rawBody = new Uint8Array(await request.arrayBuffer());
       } catch {
+        ingressDiagnostics?.record(request, "body_read_failed");
         return { response: new Response(null, { status: 400 }), events: [] };
       }
 
@@ -257,27 +262,34 @@ export function createSlackAdapter({
           now: now(),
         })
       ) {
+        ingressDiagnostics?.record(request, "signature_rejected");
         return { response: new Response(null, { status: 401 }), events: [] };
       }
+      ingressDiagnostics?.record(request, "signature_verified");
 
       let payload: unknown;
       try {
         payload = JSON.parse(new TextDecoder().decode(rawBody));
       } catch {
+        ingressDiagnostics?.record(request, "payload_invalid");
         return { response: new Response(null, { status: 400 }), events: [] };
       }
       if (!isJsonObject(payload)) {
+        ingressDiagnostics?.record(request, "payload_invalid");
         return { response: new Response(null, { status: 400 }), events: [] };
       }
 
       if (payload.team_id !== undefined && payload.team_id !== teamId) {
+        ingressDiagnostics?.record(request, "workspace_rejected");
         return { response: new Response(null, { status: 403 }), events: [] };
       }
 
       if (payload.type === "url_verification") {
         if (typeof payload.challenge !== "string") {
+          ingressDiagnostics?.record(request, "challenge_invalid");
           return { response: new Response(null, { status: 400 }), events: [] };
         }
+        ingressDiagnostics?.record(request, "challenge_answered");
         return {
           response: new Response(payload.challenge, {
             status: 200,
@@ -288,13 +300,19 @@ export function createSlackAdapter({
       }
 
       if (payload.type !== "event_callback") {
+        ingressDiagnostics?.record(request, "callback_ignored");
         return { response: new Response(null, { status: 200 }), events: [] };
       }
       if (payload.team_id !== teamId) {
+        ingressDiagnostics?.record(request, "workspace_rejected");
         return { response: new Response(null, { status: 403 }), events: [] };
       }
 
       const events = normalizeEvent(payload, teamId, botUserId);
+      ingressDiagnostics?.record(
+        request,
+        events.length === 0 ? "normalization_ignored" : "normalized",
+      );
       if (
         search !== undefined &&
         isJsonObject(payload.event) &&

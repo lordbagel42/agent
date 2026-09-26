@@ -2,6 +2,10 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { OutboundMessage } from "../core/contracts.js";
 import { createSlackAdapter } from "./slack.js";
+import {
+  createSlackIngressDiagnostics,
+  type SlackIngressStage,
+} from "./slack-ingress.js";
 
 const signingSecret = "slack-signing-secret";
 const now = 1_800_000_000_000;
@@ -82,6 +86,91 @@ function jsonResponse(
 }
 
 describe("createSlackAdapter", () => {
+  it("diagnoses rejection without relaxing signature or workspace enforcement", async () => {
+    const ingressDiagnostics = createSlackIngressDiagnostics();
+    const adapter = createSlackAdapter({
+      signingSecret,
+      botToken: "test-bot-token",
+      teamId,
+      botUserId,
+      ingressDiagnostics,
+      now: () => now,
+    });
+    const payload = {
+      type: "event_callback",
+      event_id: "private-event-id",
+      event_time: now / 1_000,
+      event: {
+        type: "message",
+        user: "private-user",
+        channel: "private-channel",
+        channel_type: "im",
+        ts: "private-message-id",
+        text: "private-message-text",
+        action_token: "private-action-token",
+      },
+    };
+    const unsigned = new Request("https://example.com/webhooks/slack", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, team_id: teamId }),
+    });
+    expect((await adapter.receive(unsigned)).response.status).toBe(401);
+    expect(
+      ingressDiagnostics.snapshot().recent.map((entry) => entry.stage),
+    ).toEqual(["adapter_received", "signature_rejected"]);
+
+    for (const workspace of [undefined, null, "E_ENTERPRISE", "T_OTHER"]) {
+      const result = await adapter.receive(
+        signedRequest(JSON.stringify({ ...payload, team_id: workspace })),
+      );
+      expect(result.response.status).toBe(403);
+      expect(result.events).toEqual([]);
+    }
+    const valid = signedRequest(
+      JSON.stringify({ ...payload, team_id: teamId }),
+    );
+    ingressDiagnostics.record(valid, "arrival");
+    const accepted = await adapter.receive(valid);
+    expect(accepted.events).toHaveLength(1);
+    const snapshot = ingressDiagnostics.snapshot();
+    expect(snapshot.counts).toEqual({
+      arrival: 1,
+      adapter_received: 6,
+      signature_rejected: 1,
+      signature_verified: 5,
+      workspace_rejected: 4,
+      normalized: 1,
+    });
+    expect(
+      new Set(snapshot.recent.slice(-4).map((entry) => entry.requestId)).size,
+    ).toBe(1);
+    for (const sensitive of [
+      "private-",
+      signingSecret,
+      teamId,
+      botUserId,
+      valid.headers.get("x-slack-signature"),
+    ]) {
+      expect(JSON.stringify(snapshot)).not.toContain(sensitive);
+    }
+  });
+
+  it("bounds private diagnostics and rejects arbitrary metadata at runtime", () => {
+    const diagnostics = createSlackIngressDiagnostics();
+    const request = signedRequest("private-body");
+    diagnostics.record(request, "private-token" as SlackIngressStage);
+    for (let i = 0; i < 300; i++) diagnostics.record(request, "arrival");
+    const snapshot = diagnostics.snapshot();
+    expect(snapshot.counts).toEqual({ arrival: 300 });
+    expect(snapshot.recent).toHaveLength(256);
+    expect(request.bodyUsed).toBe(false);
+    expect(JSON.stringify(snapshot)).not.toContain("private-");
+    snapshot.counts.arrival = 0;
+    for (const entry of snapshot.recent) entry.requestId = "private-injected";
+    expect(diagnostics.snapshot().counts.arrival).toBe(300);
+    expect(JSON.stringify(diagnostics.snapshot())).not.toContain("private-");
+  });
+
   it("answers an authenticated URL verification challenge", async () => {
     const adapter = createSlackAdapter({
       signingSecret,
