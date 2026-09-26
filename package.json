@@ -19,9 +19,14 @@
   },
   "dependencies": {
     "@ampcode/sdk": "0.1.0-20260918210405-g81edbf0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.283",
+    "@anthropic-ai/sdk": "0.128.0",
     "@hono/node-server": "2.1.1",
+    "@modelcontextprotocol/sdk": "1.30.1",
     "@openai/codex": "0.157.1",
+    "ajv": "8.20.0",
     "hono": "4.13.9",
+    "playwright": "1.63.0",
     "rivetkit": "2.3.21",
     "zod": "4.6.5"
   },
