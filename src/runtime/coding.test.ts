@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it, type TestContext } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
+import { createWorktreeManager } from "../coding/worktree.js";
 import type {
   CodingRuntime,
   MessageEvent,
   OutboundMessage,
 } from "../core/contracts.js";
+import type { CodingDependencies } from "./coding.js";
 import { createJuneRegistry } from "./registry.js";
 
 const owner = {
@@ -21,7 +27,50 @@ const source: MessageEvent = {
   direct: true,
   text: "Fix the reaction handling in June.",
 };
-function fixture(runtime: CodingRuntime) {
+async function fixture(t: TestContext, runtime: CodingRuntime) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "june-supervisor-"));
+  t.onTestFinished(() => rm(root, { recursive: true, force: true }));
+  const repositoryRoot = path.join(root, "repo");
+  const worktreeRoot = path.join(root, "worktrees");
+  await mkdir(repositoryRoot);
+  await mkdir(worktreeRoot);
+  execFileSync("git", ["init"], { cwd: repositoryRoot, stdio: "pipe" });
+  execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "fixture",
+    ],
+    { cwd: repositoryRoot, stdio: "pipe" },
+  );
+  await writeFile(
+    path.join(repositoryRoot, "private"),
+    "shared checkout secret",
+  );
+  const manager = createWorktreeManager({
+    repositoryRoot,
+    worktreeRoot,
+    verifier: {
+      argv: [
+        process.execPath,
+        "-e",
+        "require('node:fs').writeFileSync('verified', 'separate-process')",
+      ],
+      timeoutMs: 5000,
+    },
+  });
+  const coding: CodingDependencies = {
+    runtime,
+    workspaces: { june: repositoryRoot },
+    timeoutMs: 5000,
+    isolation: { june: manager },
+  };
   const sent: OutboundMessage[] = [];
   const registry = createJuneRegistry({
     owner,
@@ -49,19 +98,15 @@ function fixture(runtime: CodingRuntime) {
         };
       },
     },
-    coding: {
-      runtime,
-      workspaces: { june: "/workspaces/june" },
-      timeoutMs: 5000,
-    },
+    coding,
   });
-  return { registry, sent };
+  return { registry, sent, manager, repositoryRoot, worktreeRoot };
 }
 
 describe("separate coding supervisor", () => {
   it("requires a private approval, then reports the worker result without pretending it verified it", async (t) => {
     const launches: { prompt: string; cwd: string }[] = [];
-    const { registry, sent } = fixture({
+    const { registry, sent, repositoryRoot, worktreeRoot } = await fixture(t, {
       async run(input) {
         launches.push({ prompt: input.prompt, cwd: input.cwd });
         await input.onThread("T-coding-worker");
@@ -105,7 +150,15 @@ describe("separate coding supervisor", () => {
       )
       .toBe(true);
     expect(launches).toHaveLength(1);
-    expect(launches[0]?.cwd).toBe("/workspaces/june");
+    const cwd = launches[0]?.cwd ?? "";
+    expect(cwd.startsWith(`${worktreeRoot}/job-`)).toBe(true);
+    expect(await readFile(path.join(cwd, "verified"), "utf8")).toBe(
+      "separate-process",
+    );
+    await expect(readFile(path.join(cwd, "private"))).rejects.toThrow();
+    expect(await readFile(path.join(repositoryRoot, "private"), "utf8")).toBe(
+      "shared checkout secret",
+    );
     expect(launches[0]?.prompt).toContain(
       "Fix reaction handling. Run its tests.",
     );
@@ -128,7 +181,7 @@ describe("separate coding supervisor", () => {
 
   it("holds an interrupted worker for review and resumes only a confirmed-stopped saved thread", async (t) => {
     const threads: (string | undefined)[] = [];
-    const { registry } = fixture({
+    const { registry } = await fixture(t, {
       async run(input) {
         threads.push(input.threadId);
         if (threads.length === 1) {
@@ -176,7 +229,7 @@ describe("separate coding supervisor", () => {
 
   it("does not relaunch when a failed resume command is delivered twice", async (t) => {
     const threads: (string | undefined)[] = [];
-    const { registry } = fixture({
+    const { registry } = await fixture(t, {
       async run(input) {
         threads.push(input.threadId);
         await input.onThread("T-saved");
@@ -225,5 +278,100 @@ describe("separate coding supervisor", () => {
       "resume-1": 2,
       "resume-2": 3,
     });
+  });
+
+  it("cancels an uncooperative runtime without releasing uncertain execution capacity", async (t) => {
+    let launches = 0;
+    let lateThread: ((thread: string) => Promise<void>) | undefined;
+    const { registry, manager } = await fixture(t, {
+      async run(input) {
+        launches++;
+        lateThread = input.onThread;
+        await input.onThread("T-cancelled");
+        return new Promise<never>(() => {});
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const job = client.job.getOrCreate(["raygen", "cancelled"]);
+    await job.send("commands", {
+      type: "propose",
+      proposal: {
+        id: "cancelled",
+        source,
+        workspace: "june",
+        goal: "Approved task",
+      },
+    });
+    await job.send("commands", { type: "approve", commandId: "approval" });
+    await expect.poll(() => launches).toBe(1);
+    await job.cancel();
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("needs_review");
+    await lateThread?.("T-late-untrusted");
+    expect((await job.snapshot()).threadId).toBe("T-cancelled");
+    await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+    await job.send("commands", { type: "approve", commandId: "approval" });
+    await expect
+      .poll(async () => (await job.snapshot()).cancelRequested)
+      .toBe(true);
+    expect(launches).toBe(1);
+    expect((await job.snapshot()).verification).toBeUndefined();
+    await expect
+      .poll(
+        async () =>
+          Object.values(
+            (
+              await client.conversation
+                .getOrCreate(["private", "raygen"])
+                .snapshot()
+            ).events,
+          ).filter((event) => event.done).length,
+      )
+      .toBe(1);
+  });
+
+  it("does not promote a historical verifier receipt after the worker changes files", async (t) => {
+    const { registry, manager } = await fixture(t, {
+      async run(input) {
+        await writeFile(path.join(input.cwd, "later-change"), "unchecked");
+        return { threadId: "T-worker", report: "Everything passes!" };
+      },
+    });
+    await manager.prepare("historical");
+    await manager.verify("historical", undefined, 1);
+    const { client } = await setupTest(t, registry);
+    const job = client.job.getOrCreate(["raygen", "historical"]);
+    await job.send("commands", {
+      type: "propose",
+      proposal: {
+        id: "historical",
+        source,
+        workspace: "june",
+        goal: "Approved change",
+      },
+    });
+    await job.send("commands", { type: "approve", commandId: "approval" });
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("needs_review");
+    const state = await job.snapshot();
+    expect(state.verification).toMatchObject({ passed: true, replayed: true });
+    expect(state.report).toContain(
+      "current workspace changes are not verified",
+    );
+    expect(state.workerClaim).toBe("Everything passes!");
+    await expect
+      .poll(
+        async () =>
+          Object.values(
+            (
+              await client.conversation
+                .getOrCreate(["private", "raygen"])
+                .snapshot()
+            ).events,
+          ).filter((event) => event.done).length,
+      )
+      .toBe(1);
   });
 });

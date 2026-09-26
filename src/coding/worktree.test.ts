@@ -59,6 +59,15 @@ test("worktree ownership rejects escapes and preserves the shared dirty checkout
       ),
     ).rejects.toThrow("symlinks");
     const created = await manager.prepare("approved-1");
+    await manager.admit("approved-1", 1);
+    await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+    await expect(manager.admit("approved-1", 2)).rejects.toThrow("occupied");
+    await expect(manager.admit("other-job", 2, true)).rejects.toThrow(
+      "occupied",
+    );
+    await manager.admit("approved-1", 2, true);
+    await expect(manager.release("approved-1", 1)).rejects.toThrow("ownership");
+    await manager.release("approved-1", 2);
     expect(created.manifest.baseCommit).toBe(base);
     expect(
       await readFile(path.join(created.manifest.cwd, "tracked"), "utf8"),
@@ -117,6 +126,7 @@ test("verification never repeats a command on replay and omits private output", 
     const first = await manager.verify("verify-1");
     expect(first.status).toBe("passed");
     expect(JSON.stringify(first)).not.toContain("private-output");
+    await writeFile(path.join(manifest.cwd, "later-change"), "not checked");
     expect((await manager.verify("verify-1")).replayed).toBe(true);
     expect(await readFile(path.join(manifest.cwd, "runs"), "utf8")).toBe("1");
     const metadata = path.join(
@@ -127,6 +137,9 @@ test("verification never repeats a command on replay and omits private output", 
     await rm(path.join(metadata, "verification.json"));
     expect((await manager.verify("verify-1")).status).toBe("needs_review");
     expect(await readFile(path.join(manifest.cwd, "runs"), "utf8")).toBe("1");
+    const nextAttempt = await manager.verify("verify-1", undefined, 2);
+    expect(nextAttempt).toMatchObject({ status: "passed", replayed: false });
+    expect(await readFile(path.join(manifest.cwd, "runs"), "utf8")).toBe("11");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
