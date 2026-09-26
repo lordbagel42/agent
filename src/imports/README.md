@@ -56,8 +56,12 @@ from trusted host identity, not a request-supplied audience value.
   restricted to identity/date/labels precedes body retrieval; out-of-scope
   candidates never have bodies fetched. One message per page (list, metadata,
   full), at least one second between pages. Plain-text MIME bodies and selected
-  original participant headers are retained; HTML, attachments and external
-  bodies are not downloaded. Label changes/deletions can create reported gaps.
+  original participant headers are retained. Full reads can return HTML and
+  attachment content; these are discarded, not retained. Parts with filenames,
+  attachment dispositions or external attachment IDs are pruned before traversing
+  children. Only multipart body containers are traversed, never attached/embedded
+  messages (`message/rfc822`). Separate attachment bodies are never fetched.
+  Label changes/deletions can create reported gaps.
 
 Provider pagination is not a snapshot or proof of completeness. `complete`
 means traversal finished, not gap-free history. Invalid/expired cursors and
@@ -68,23 +72,49 @@ registered jobs sharing an account are serialized and share persisted cooldowns.
 The host must serialize/rate-limit accounts across service instances and respect
 `notBefore` (do not busy-poll).
 
-Source IDs use original platform/account/message identity, not job IDs. Replays
-deduplicate. Exported `slackSourceId(workspace, channel, ts)` returns
-`slack:${workspace}:${channel}:${ts}`; use the same helper for live ingress.
-`gmailSourceId(account, messageId)` returns `gmail:${account}:${messageId}`.
-An overlapping import with a different audience/conversation or an
-edited source fails the store's immutable-source check rather than overwriting
-or counting a second independent source. Channel+thread selections in one Slack
-job skip the duplicate thread root. Select non-overlapping jobs where possible.
+## Canonical sources and live overlap
 
-Baseline `Source` has no metadata field: `text` contains a JSON evidence envelope
-with original text, thread/message IDs and method; Slack observed authors and
-Gmail original From/To/Cc/Bcc/Reply-To headers preserve participant provenance
-without display-name entity merging. Account/conversation/audiences/date/link
-remain first-class encrypted Source fields. Treat **all envelope content as
-untrusted evidence**, never instructions. Graph extraction/review is a later
-stage, not performed here. Store/key provisioning and authenticated HTTP routing
-must be wired by the host; use a private encrypted store outside Git.
+Both live Slack ingestion and this historical connector must call the exported
+`slackSource({workspace, channel, ts, threadTs?, author, text, workspaceUrl,
+audiences}): Source` from `identity.ts` (also exported by `index.ts`).
+
+* `id` is `slack:${workspace}:${channel}:${ts}`, using `slackSourceId` without
+  job, thread or audience suffixes.
+* `conversation` is `${channel}/${threadTs ?? ts}` for **all** messages,
+  including roots without `thread_ts`. Thread pages retain their root even when
+  channel coverage overlaps. The store deduplicates identical evidence.
+* `observedAt` is the original Slack timestamp floored exactly to milliseconds
+  with integer arithmetic, never event delivery time or a rounded float.
+* `workspaceUrl` is the authenticated `https://<workspace>.slack.com/` base
+  returned by `auth.test`, including its trailing slash; the permalink appends
+  `archives/<channel>/p<ts without dot>`. Live ingestion must use the same base.
+* `author` is the original `user`, falling back to `bot_id` then `unknown`.
+  `audiences` are copied from trusted host routing and must match in both paths.
+* `text` is the untouched plain message text, including mentions and whitespace
+  (empty when absent), never a JSON envelope. Do not unwrap JSON-looking text,
+  strip mentions, or add method, history-kind, participant or correction fields.
+
+Bare-channel coverage accepts canonical channel/thread conversations; exact
+thread coverage remains exact. This requires the memory store's Slack coverage
+support, not alternate source IDs or conversation rewrites. An overlapping
+import with changed text, audience, URL or other fields fails the immutable-source
+check atomically without advancing its cursor. Never skip an existing ID to hide
+that conflict. Older noncanonical ledger entries require explicit reconciliation;
+there is no automatic rewriting or JSON-envelope migration.
+
+Tombstones also reject a whole page without cursor advancement. The trusted host
+may filter only `isDeleted` records and record content-free gaps; a concurrent
+deletion requires refiltering/retrying that same page, not skipping conflicts.
+The connector does not inspect the ledger or bypass either check.
+
+`gmailSourceId(account, messageId)` remains `gmail:${account}:${messageId}`.
+Gmail alone retains a JSON evidence envelope with inline body text, thread/message
+IDs, method and selected original From/To/Cc/Bcc/Reply-To headers. It does not merge
+people by display name. Account/conversation/audiences/date/link are first-class
+encrypted Source fields on both platforms. Treat **all source content as untrusted
+evidence**, never instructions. Graph extraction/review is a later stage, not
+performed here. Store/key provisioning and authenticated HTTP routing belong to
+the host; use a private encrypted store outside Git.
 
 Authoritative references used (no account reads during development):
 

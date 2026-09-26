@@ -9,7 +9,7 @@ import {
   nextCursor,
   readCursor,
 } from "./common.js";
-import { slackSourceId } from "./identity.js";
+import { slackSource } from "./identity.js";
 
 const timestamp = z.string().regex(/^\d+\.\d{6}$/);
 const responseSchema = z.object({
@@ -121,40 +121,30 @@ export function createSlackHistoryFetcher(
         gaps.push(`${conversation}: Slack reports retention-limited history.`);
       const sources: Source[] = [];
       for (const message of data.messages) {
-        const observedAt = Number(BigInt(message.ts.replace(".", "")) / 1000n);
-        if (observedAt < coverage.from || observedAt >= coverage.to) continue;
+        const source = slackSource({
+          workspace: coverage.account,
+          channel,
+          ts: message.ts,
+          threadTs: message.thread_ts,
+          author: message.user ?? message.bot_id ?? "unknown",
+          text: message.text ?? "",
+          workspaceUrl: identity.url,
+          audiences: coverage.audiences,
+        });
         if (
-          thread &&
-          message.ts === thread &&
-          coverage.conversations.includes(channel)
+          source.observedAt < coverage.from ||
+          source.observedAt >= coverage.to
         )
           continue;
-        if (thread && message.ts !== thread && message.thread_ts !== thread)
+        if (thread && source.conversation !== conversation)
           throw new Error("Slack returned a different thread");
         if (!thread && message.thread_ts && message.thread_ts !== message.ts)
           continue;
-        const author = message.user ?? message.bot_id ?? "unknown";
         if (!message.text)
           gaps.push(
             `${conversation}/${message.ts}: no plain text; non-text content omitted.`,
           );
-        sources.push({
-          id: slackSourceId(coverage.account, channel, message.ts),
-          platform: "slack",
-          account: coverage.account,
-          conversation,
-          audiences: [...coverage.audiences],
-          author,
-          observedAt,
-          sourceUrl: `${identity.url}archives/${channel}/p${message.ts.replace(".", "")}`,
-          text: JSON.stringify({
-            kind: "historical-evidence",
-            text: message.text ?? "",
-            participants: [author],
-            thread: message.thread_ts ?? message.ts,
-            method,
-          }),
-        });
+        sources.push(source);
       }
       const next = data.response_metadata?.next_cursor ?? "";
       if (data.has_more && !next)
