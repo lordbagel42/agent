@@ -29,7 +29,14 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function fixture(mode = "json", overrides: Partial<McpToolConfig> = {}) {
+async function fixture(
+  mode = "json",
+  overrides: Partial<McpToolConfig> = {},
+  transformResponse?: (
+    response: Response,
+    init?: RequestInit,
+  ) => Promise<Response>,
+) {
   const calls: unknown[] = [];
   const auth: (string | undefined)[] = [];
   let requests = 0;
@@ -141,10 +148,11 @@ async function fixture(mode = "json", overrides: Partial<McpToolConfig> = {}) {
         expect(init?.redirect).toBe("error");
         expect(init?.credentials).toBe("omit");
         // Test-only loopback rewrite: production enforces HTTPS without this hook.
-        return fetch(
+        const response = await fetch(
           `http://127.0.0.1:${(server.address() as AddressInfo).port}/rpc`,
           init,
         );
+        return transformResponse ? transformResponse(response, init) : response;
       },
     },
   );
@@ -263,3 +271,78 @@ test("shutdown cancels a pending effect without claiming it stopped remotely", a
   });
   expect(f.calls).toHaveLength(1);
 });
+
+test.each(["fetch", "oversized-body"])(
+  "shutdown drains held %s and body cancellation before settling",
+  async (mode) => {
+    const held = Promise.withResolvers<void>();
+    const releaseFetch = Promise.withResolvers<void>();
+    const cancelling = Promise.withResolvers<void>();
+    const releaseCancel = Promise.withResolvers<void>();
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let cancelled = false;
+    const f = await fixture(
+      "json",
+      { maxResponseBytes: 4096 },
+      async (response, init) => {
+        if (
+          typeof init?.body !== "string" ||
+          JSON.parse(init.body).method !== "tools/call"
+        )
+          return response;
+        await response.body?.cancel();
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            bodyController = controller;
+            if (mode === "oversized-body")
+              controller.enqueue(new Uint8Array(8192));
+          },
+          cancel() {
+            cancelled = true;
+            cancelling.resolve();
+            return releaseCancel.promise;
+          },
+        });
+        held.resolve();
+        // Deliberately ignore AbortSignal: SDK cancellation is not fetch settlement.
+        if (mode === "fetch") await releaseFetch.promise;
+        return new Response(body, {
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    );
+    let executed = false;
+    let closed = false;
+    const result = f.adapter
+      .execute(action, credential)
+      .catch((error: unknown) => error)
+      .finally(() => {
+        executed = true;
+      });
+    await held.promise;
+    if (mode === "oversized-body") await cancelling.promise;
+    const closing = f.adapter.close().then(() => {
+      closed = true;
+    });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(closed).toBe(false);
+      expect(executed).toBe(false);
+      if (mode === "fetch") {
+        releaseFetch.resolve();
+        await cancelling.promise;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(closed).toBe(false);
+        expect(executed).toBe(false);
+      }
+    } finally {
+      releaseFetch.resolve();
+      releaseCancel.resolve();
+      if (!cancelled) bodyController?.close();
+      await closing;
+    }
+    expect(await result).toMatchObject({ outcome: "unknown" });
+    expect(cancelled).toBe(true);
+    expect(f.calls).toHaveLength(1);
+  },
+);

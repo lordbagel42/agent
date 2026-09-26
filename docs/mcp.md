@@ -45,7 +45,9 @@ privacy contract; it is not yet a model-facing result retrieval API. This also
 prevents a server from echoing released credentials into model context.
 
 Call `await adapter.close()` during application shutdown, before closing the
-broker. It rejects new work, aborts active requests, and waits for local cleanup.
+broker. It rejects new work, requests abort, and drains actual fetches, body reads,
+and body cancellation promises, including bodies returned after abort. Neither
+execution nor shutdown settles merely because the SDK reports a closed transport.
 No credentials are persisted or logged. Tokens exist in operation-local memory
 and HTTP Authorization headers; JavaScript cannot guarantee memory zeroization.
 The optional second constructor argument is trusted fetch dependency injection
@@ -60,9 +62,13 @@ for offline tests, never a user-configurable transport bypass.
   Bearer-token authentication only; no OAuth discovery, refresh, or upscoping.
   No stdio/legacy SSE transport, sampling, elicitation, roots, or required tasks.
   Optional GET event streams are not opened. Session deletion is best-effort
-  within the operation deadline; servers must expire abandoned sessions.
-- One total deadline (default 30 seconds, configurable 1–120000 ms), including
-  initialization, discovery, call, and session cleanup. Progress cannot extend it.
+  within the operation deadline; servers must expire abandoned sessions. Failure
+  to delete a session does not invalidate an already validated successful tool reply.
+- One cancellation deadline (default 30 seconds, configurable 1–120000 ms),
+  covering initialization, discovery, call, and session deletion. Progress cannot
+  extend it. Draining continues until transport cleanup actually settles; a
+  transport that ignores cancellation can delay execution/shutdown beyond this
+  deadline. This is not a hard wall-clock bound or proof of remote cancellation.
   The default aggregate response budget is 1 MiB (configurable 1 KiB–4 MiB),
   enforced on decoded bytes before SDK JSON/SSE parsing. At most 16 discovery
   pages and 256 distinct tools; duplicate names fail closed.
@@ -96,8 +102,10 @@ MCP HTTP servers. A trusted test fetch rewrites the fixed HTTPS fixture endpoint
 to loopback; no personal server is contacted and TLS interoperability is not
 tested. Checks exercise the official client handshake, paginated discovery,
 JSON/SSE responses, exact arguments, scope/redirect/schema rejection, credential
-non-disclosure, output limits, timeout/shutdown, and durable broker no-replay
-behavior after ambiguous effects.
+non-disclosure, output limits, timeout/shutdown, rejection of asynchronous schemas,
+and durable broker no-replay behavior after ambiguous effects. Shutdown regressions
+hold a fetch past abort and hold body cancellation pending, then verify execution
+and `close()` wait for actual settlement rather than just the SDK close event.
 
 Authoritative SDK documentation:
 
