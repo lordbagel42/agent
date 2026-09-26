@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createSlackAdapter } from "../channels/slack.js";
+import { createSlackIngressDiagnostics } from "../channels/slack-ingress.js";
 import type { ChannelEvent } from "../core/contracts.js";
 import { createHttpApp, type HttpDependencies } from "./app.js";
 
@@ -49,6 +50,7 @@ function dependencies(
         botToken: "unused",
         teamId: "T1",
         botUserId: "B1",
+        ingressDiagnostics: overrides.slackIngressDiagnostics,
         now: () => now,
       }),
     },
@@ -71,6 +73,57 @@ function dependencies(
 }
 
 describe("webhook and operator HTTP boundary", () => {
+  it("keeps correlated lengthless ingress diagnostics private and records failed durable submission without content", async () => {
+    const diagnostics = createSlackIngressDiagnostics();
+    const app = createHttpApp(
+      dependencies({
+        slackIngressDiagnostics: diagnostics,
+        async submit() {
+          throw new Error("private storage error");
+        },
+      }),
+    );
+    const request = signed();
+    expect(request.headers.has("content-length")).toBe(false);
+    expect((await app.request(request)).status).toBe(503);
+    const snapshot = diagnostics.snapshot();
+    expect(snapshot.recent.map((entry) => entry.stage)).toEqual([
+      "arrival",
+      "adapter_received",
+      "signature_verified",
+      "normalized",
+      "owner_accepted",
+      "submission_started",
+      "submission_failed",
+    ]);
+    expect(new Set(snapshot.recent.map((entry) => entry.requestId)).size).toBe(
+      1,
+    );
+    expect((await app.request("/operator/ingress/slack")).status).toBe(401);
+    const inspected = await app.request("/operator/ingress/slack", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(inspected.headers.get("cache-control")).toBe("no-store");
+    expect(await inspected.json()).toEqual(snapshot);
+    for (const secret of [
+      token,
+      payload.event.text,
+      "private storage error",
+      "Ev1",
+      "U1",
+      "D1",
+    ])
+      expect(JSON.stringify(snapshot)).not.toContain(secret);
+    const oversized = signed("x".repeat(1_048_577));
+    expect((await app.request(oversized)).status).toBe(413);
+    const rejected = diagnostics.snapshot().recent.slice(-2);
+    expect(rejected.map((entry) => entry.stage)).toEqual([
+      "arrival",
+      "body_too_large",
+    ]);
+    expect(new Set(rejected.map((entry) => entry.requestId)).size).toBe(1);
+  });
+
   it("does not acknowledge a verified webhook until durable submission resolves", async () => {
     const committed = Promise.withResolvers<void>();
     const received = Promise.withResolvers<ChannelEvent>();

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import { createClient } from "rivetkit/client";
 import { createSlackAdapter } from "./channels/slack.js";
+import { createSlackIngressDiagnostics } from "./channels/slack-ingress.js";
 import { createWhatsAppAdapter } from "./channels/whatsapp.js";
 import { createAmpRuntime } from "./coding/amp.js";
 import { parseConfig, secret } from "./config.js";
@@ -47,12 +48,16 @@ async function main() {
           apiKey: secret(config.model.apiKeyEnv),
         });
   const channels: Partial<Record<Channel, ChannelAdapter>> = {};
+  const slackIngressDiagnostics = config.slack
+    ? createSlackIngressDiagnostics()
+    : undefined;
   if (config.slack) {
     startupStage = "Slack credentials";
     channels.slack = createSlackAdapter({
       ...config.slack,
       signingSecret: secret(config.slack.signingSecretEnv),
       botToken: secret(config.slack.botTokenEnv),
+      ingressDiagnostics: slackIngressDiagnostics,
     });
   }
   if (config.whatsapp) {
@@ -93,6 +98,7 @@ async function main() {
     owner: config.owner,
     channels,
     operatorToken,
+    slackIngressDiagnostics,
     async submit(scope, event) {
       await client.conversation
         .getOrCreate(scope.key)
