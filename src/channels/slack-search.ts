@@ -14,6 +14,31 @@ type UnavailableCode = Extract<
   { status: "unavailable" }
 >["code"];
 
+/**
+ * Supplied by trusted OAuth/credential code after admin installation and user
+ * consent. Scopes must be the actual OAuth grant, never a manifest/model claim.
+ */
+export interface SlackPrivateSearchAuthorization {
+  ownerId: string;
+  teamId: string;
+  userId: string;
+  userToken: string;
+  grantedScopes: readonly string[];
+  expiresAt: number;
+}
+
+export interface SlackPrivateSearchOptions {
+  /** Operator-verified owner identity, independent of the OAuth grant. */
+  ownerId: string;
+  userId: string;
+  /**
+   * Synchronous current authority; return undefined on revocation. The host must
+   * keep this in sync with consent, not capture a static startup credential.
+   * Never log returned credentials or expose them to model/history/import code.
+   */
+  getAuthorization(): SlackPrivateSearchAuthorization | undefined;
+}
+
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -70,7 +95,10 @@ function escapeText(value: string, limit: number): string {
   return text;
 }
 
-function safePermalink(message: JsonObject): string | undefined {
+function safePermalink(
+  message: JsonObject,
+  privateSearch: boolean,
+): string | undefined {
   if (
     typeof message.permalink !== "string" ||
     message.permalink.length > 256 ||
@@ -82,11 +110,12 @@ function safePermalink(message: JsonObject): string | undefined {
   // Match the original string, not a URL parser's normalized path. No ports,
   // credentials, escaping, query/fragment, redirects, or non-message surfaces.
   const match =
-    /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.slack\.com\/archives\/(C[A-Z0-9]+)\/p(\d+)$/.exec(
+    /^https:\/\/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.slack\.com\/archives\/([CGD][A-Z0-9]+)\/p(\d+)$/.exec(
       message.permalink,
     );
   if (
     !match ||
+    (!privateSearch && !match[1]?.startsWith("C")) ||
     match[1] !== message.channel_id ||
     match[2] !== message.message_ts.replace(".", "")
   )
@@ -97,6 +126,7 @@ function safePermalink(message: JsonObject): string | undefined {
 function formatResults(
   payload: JsonObject,
   teamId: string,
+  privateSearch = false,
 ): ChannelSearchResult {
   if (!isObject(payload.results) || !Array.isArray(payload.results.messages)) {
     return unavailable();
@@ -114,7 +144,7 @@ function formatResults(
       !message.content.trim()
     )
       continue;
-    const link = safePermalink(message);
+    const link = safePermalink(message, privateSearch);
     if (!link) continue;
 
     const label = `${escapeText(message.channel_name, 45)} — ${escapeText(message.author_name, 45)}`;
@@ -131,7 +161,9 @@ function formatResults(
     text:
       snippets.length > 0
         ? snippets.join("\n\n")
-        : "No matching public Slack messages found.",
+        : privateSearch
+          ? "No matching Slack messages found in the authorized search scope."
+          : "No matching public Slack messages found.",
   };
 }
 
@@ -164,17 +196,63 @@ export function createSlackSearch({
   botToken,
   fetch: fetchImpl,
   now,
+  privateSearch,
 }: {
   teamId: string;
   botToken: string;
   fetch: typeof globalThis.fetch;
   now: () => number;
+  privateSearch?: SlackPrivateSearchOptions;
 }) {
+  function authorization(event: MessageEvent) {
+    if (
+      !privateSearch ||
+      !event.direct ||
+      !/^D[A-Z0-9]+$/.test(event.address.conversationId) ||
+      event.address.channel !== "slack" ||
+      event.address.accountId !== teamId ||
+      event.senderId !== privateSearch.userId
+    )
+      return undefined;
+    try {
+      const grant = privateSearch.getAuthorization();
+      if (
+        !grant ||
+        grant.ownerId !== privateSearch.ownerId ||
+        grant.teamId !== teamId ||
+        grant.userId !== privateSearch.userId ||
+        !grant.userToken.startsWith("xoxp-") ||
+        !Number.isFinite(grant.expiresAt) ||
+        grant.expiresAt <= now() ||
+        !grant.grantedScopes.includes("search:read.public")
+      )
+        return undefined;
+      const channelTypes = ["public_channel"];
+      for (const [scope, type] of [
+        ["search:read.private", "private_channel"],
+        ["search:read.im", "im"],
+        ["search:read.mpim", "mpim"],
+      ] as const) {
+        if (grant.grantedScopes.includes(scope)) channelTypes.push(type);
+      }
+      if (channelTypes.length === 1) return undefined;
+      return {
+        ...grant,
+        grantedScopes: [...grant.grantedScopes],
+        channelTypes,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
   const grants = new Map<
     string,
     {
       binding: string;
       token?: string;
+      privateAuthorization?: string;
+      spent: boolean;
       expiresAt: number;
       timer: ReturnType<typeof setTimeout>;
     }
@@ -197,10 +275,15 @@ export function createSlackSearch({
       // Use the signed event time, not delivery time: a retry cannot revive an
       // expired entry after its tombstone is removed. Reject clock-future events.
       const expiresAt = event.occurredAt + GRANT_TTL_MS;
+      const privateGrant =
+        privateSearch && event.direct ? authorization(event) : undefined;
       if (
-        typeof token !== "string" ||
-        !token.trim() ||
-        token.length > MAX_TOKEN_LENGTH ||
+        (privateSearch && event.direct
+          ? !privateGrant
+          : typeof token !== "string" ||
+            !token.trim() ||
+            token.length > MAX_TOKEN_LENGTH) ||
+        !Number.isFinite(event.occurredAt) ||
         event.occurredAt > time ||
         expiresAt <= time ||
         grants.has(event.id) ||
@@ -212,7 +295,15 @@ export function createSlackSearch({
       // Active expiry also releases unused tokens when no more traffic arrives.
       const timer = setTimeout(() => grants.delete(id), expiresAt - time);
       timer.unref();
-      grants.set(id, { binding: binding(event), token, expiresAt, timer });
+      grants.set(id, {
+        binding: binding(event),
+        ...(privateGrant
+          ? { privateAuthorization: JSON.stringify(privateGrant) }
+          : { token: token as string }),
+        spent: false,
+        expiresAt,
+        timer,
+      });
     },
 
     async search(
@@ -224,7 +315,9 @@ export function createSlackSearch({
       if (
         event.address.channel !== "slack" ||
         event.address.accountId !== teamId ||
-        !grant?.token ||
+        !grant ||
+        grant.spent ||
+        (!grant.token && !grant.privateAuthorization) ||
         grant.binding !== binding(event)
       )
         return unavailable("authorization_required");
@@ -234,26 +327,66 @@ export function createSlackSearch({
       if (!trimmed || Array.from(trimmed).length > 500) return unavailable();
 
       const token = grant.token;
+      const privateGrant = grant.privateAuthorization
+        ? authorization(event)
+        : undefined;
+      const privateBinding = grant.privateAuthorization;
+      const eventBinding = grant.binding;
+      const authorized = (candidate: MessageEvent) =>
+        now() < grant.expiresAt &&
+        binding(candidate) === eventBinding &&
+        JSON.stringify(authorization(candidate)) === privateBinding;
       // Spend before the first await, even if the request fails. Keep a tokenless
       // tombstone until expiry, and never evict one to make room for a new grant.
+      grant.spent = true;
       delete grant.token;
+      delete grant.privateAuthorization;
+      if (privateBinding && (!privateGrant || !authorized(event)))
+        return unavailable("authorization_required");
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       try {
+        if (privateGrant) {
+          // OAuth grant metadata is not enough: verify the token's actual user
+          // and workspace. No identity/grant discovery calls at construction.
+          const identityResponse = await fetchImpl(
+            "https://slack.com/api/auth.test",
+            {
+              method: "POST",
+              headers: { authorization: `Bearer ${privateGrant.userToken}` },
+              signal: controller.signal,
+              redirect: "error",
+            },
+          );
+          if (identityResponse.status === 429)
+            return unavailable("rate_limited");
+          if (!identityResponse.ok)
+            return unavailable("authorization_required");
+          const identity: unknown = await identityResponse.json();
+          if (
+            !isObject(identity) ||
+            identity.ok !== true ||
+            identity.team_id !== teamId ||
+            identity.user_id !== privateGrant.userId ||
+            identity.bot_id !== undefined ||
+            !authorized(event)
+          )
+            return unavailable("authorization_required");
+        }
         const response = await fetchImpl(
           "https://slack.com/api/assistant.search.context",
           {
             method: "POST",
             headers: {
-              authorization: `Bearer ${botToken}`,
+              authorization: `Bearer ${privateGrant?.userToken ?? botToken}`,
               "content-type": "application/json",
             },
             body: JSON.stringify({
               query: trimmed,
-              action_token: token,
+              ...(privateGrant ? {} : { action_token: token }),
               context_channel_id: event.address.conversationId,
               content_types: ["messages"],
-              channel_types: ["public_channel"],
+              channel_types: privateGrant?.channelTypes ?? ["public_channel"],
               include_context_messages: false,
               include_bots: false,
               limit: RESULT_LIMIT,
@@ -270,9 +403,32 @@ export function createSlackSearch({
         const payload: unknown = await response.json();
         if (!isObject(payload) || typeof payload.ok !== "boolean")
           return unavailable();
-        return payload.ok
-          ? formatResults(payload, teamId)
-          : slackError(payload.error);
+        if (!payload.ok) return slackError(payload.error);
+        if (privateGrant && !authorized(event))
+          return unavailable("authorization_required");
+        const result = formatResults(payload, teamId, Boolean(privateGrant));
+        if (privateGrant && result.status === "ready") {
+          let text: string | undefined = result.text;
+          const expiry = setTimeout(() => {
+            text = undefined;
+          }, Math.min(grant.expiresAt, privateGrant.expiresAt) - now());
+          expiry.unref();
+          return {
+            status: "private_ready",
+            // The host supplies the ACTUAL outbound address, then sends without
+            // awaiting or persisting in between. Even a rejected attempt spends
+            // this closure; revocation cannot be undone by retrying delivery.
+            consume(candidate) {
+              const value = text;
+              text = undefined;
+              clearTimeout(expiry);
+              return value !== undefined && authorized(candidate)
+                ? value
+                : undefined;
+            },
+          };
+        }
+        return result;
       } catch {
         // Never expose exceptions, HTTP bodies, queries, or tokens to callers.
         return unavailable();
