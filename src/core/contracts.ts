@@ -63,6 +63,12 @@ export type SendResult =
 export type ChannelSearchResult =
   | { status: "ready"; text: string }
   | {
+      status: "private_ready";
+      /** Keeps snippets inside a one-use closure. The transport rechecks the
+       * current grant and exact destination immediately before sending. */
+      consume(event: MessageEvent): string | undefined;
+    }
+  | {
       status: "unavailable";
       code: "authorization_required" | "rate_limited" | "unavailable";
     };
