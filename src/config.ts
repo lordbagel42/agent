@@ -18,6 +18,19 @@ const schema = z
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    console: z
+      .strictObject({
+        origin: z.url().refine((value) => {
+          const url = new URL(value);
+          return (
+            url.origin === value &&
+            (url.protocol === "https:" ||
+              (url.protocol === "http:" &&
+                ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
+          );
+        }, "Use a canonical private HTTPS origin, or loopback HTTP for an SSH tunnel"),
+      })
+      .optional(),
     setupMode: z.boolean().default(false),
     owner: z.strictObject({
       id: z.string().regex(/^[a-zA-Z0-9_-]+$/),

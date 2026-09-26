@@ -25,6 +25,21 @@ describe("configuration boundary", () => {
     expect(config.host).toBe("127.0.0.1");
     expect(config.coding.enabled).toBe(false);
     expect(config.coding.workspaces).toEqual({});
+    expect(config.console).toBeUndefined();
+  });
+  it("requires a fixed HTTPS or loopback console origin without URL credentials", () => {
+    for (const origin of ["http://127.0.0.1:3080", "https://june.example"])
+      expect(parseConfig({ ...input, console: { origin } }).console).toEqual({
+        origin,
+      });
+    for (const origin of [
+      "http://192.168.0.215:3080",
+      "https://user:secret@june.example",
+      "https://june.example/console",
+      "https://june.example/",
+      "https://june.example?token=secret",
+    ])
+      expect(() => parseConfig({ ...input, console: { origin } })).toThrow();
   });
   it("rejects unused typo fields and missing channels", () => {
     expect(() => parseConfig({ ...input, models: {} })).toThrow();

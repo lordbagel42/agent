@@ -99,6 +99,94 @@ async function main() {
     channels,
     operatorToken,
     slackIngressDiagnostics,
+    console: config.console
+      ? {
+          origin: config.console.origin,
+          async inspect() {
+            // Project only allowlisted facts. Never serialize config, messages,
+            // job goals/reports, provider paths or arbitrary actor state to HTML.
+            const state = await june.snapshot().catch(() => undefined);
+            const ingress = slackIngressDiagnostics?.snapshot();
+            return {
+              observedAt: new Date().toISOString(),
+              sections: {
+                configuration: {
+                  status: "available",
+                  detail:
+                    "Read-only host configuration. Credentials are never shown.",
+                  records: [
+                    {
+                      title: "Companion model",
+                      status: "configured",
+                      detail: `${config.model.protocol} · ${config.model.model}. Configuration is not proof of provider authentication or availability.`,
+                    },
+                    {
+                      title: "Messaging",
+                      status: config.setupMode ? "setup mode" : "configured",
+                      detail: `${Object.keys(channels).join(", ") || "No channels"} · ${config.owner.identities.length} allowed owner identities.`,
+                    },
+                    {
+                      title: "Private conversation",
+                      status: state ? "observed" : "unavailable",
+                      detail: state
+                        ? `${Object.keys(state.events).length} durable events · ${Object.values(state.events).filter((event) => !event.done).length} not finished. Message content is not displayed.`
+                        : "The runtime snapshot could not be read. No state is confirmed.",
+                    },
+                    {
+                      title: "Slack ingress",
+                      status: ingress ? "observed" : "not configured",
+                      detail: ingress
+                        ? `Since ${new Date(ingress.startedAt).toISOString()}: ${ingress.counts.arrival ?? 0} arrivals · ${ingress.counts.signature_verified ?? 0} verified · ${ingress.counts.submission_succeeded ?? 0} submitted. Process-local counts do not prove a reply.`
+                        : "No Slack adapter is mounted.",
+                    },
+                  ],
+                },
+                capabilities: {
+                  status: "available",
+                  detail:
+                    "Availability follows host configuration, not model claims.",
+                  records: [
+                    {
+                      title: "Native coding",
+                      status: config.coding.enabled ? "configured" : "disabled",
+                      detail:
+                        "Separate approval and host isolation are required. This console cannot start, resume or cancel jobs.",
+                    },
+                    {
+                      title: "Public Slack search",
+                      status: config.slack?.searchEnabled
+                        ? "configured"
+                        : "disabled",
+                      detail:
+                        "Requires a current user request and Slack authorization. Private search is not connected.",
+                    },
+                    {
+                      title: "Imports, tools and deployment",
+                      status: "not connected",
+                      detail:
+                        "No import, tool broker, browser or release authority is mounted in this host.",
+                    },
+                  ],
+                },
+                jobs: {
+                  status: state ? "available" : "unavailable",
+                  detail:
+                    "Only the owner's saved proposal count is inspected. Worker execution and settlement are not inferred.",
+                  records: state
+                    ? [
+                        {
+                          title: "Coding proposals",
+                          status: "recorded",
+                          detail: `${Object.keys(state.jobs).length} proposals in the private conversation. Detailed job inspection remains in the authenticated operator API.`,
+                        },
+                      ]
+                    : [],
+                },
+              },
+            };
+          },
+        }
+      : undefined,
     async submit(scope, event) {
       await client.conversation
         .getOrCreate(scope.key)
