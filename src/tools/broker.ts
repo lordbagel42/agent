@@ -19,8 +19,15 @@ export interface ToolAction {
 export interface Receipt {
   id: string;
   grantId: string;
-  status: "unknown" | "succeeded";
+  status: "unknown" | "succeeded" | "failed";
   startedAt: number;
+}
+export const MAX_GRANT_TTL_MS = 5 * 60_000;
+export interface CapabilityAuditEvent {
+  sequence: number;
+  grantId: string;
+  event: string;
+  at: number;
 }
 /** Trusted code, not model-provided code. Enforce destination/redirect policy here.
  * Never return or log credentials, including errors. Results are intentionally discarded.
@@ -130,6 +137,7 @@ interface LinkRow {
 export class CapabilityBroker {
   readonly #db: DatabaseSync;
   readonly #options: BrokerOptions;
+  readonly #active = new Set<string>();
   constructor(path: string, options: BrokerOptions) {
     text(options.owner);
     this.#options = options;
@@ -137,6 +145,7 @@ export class CapabilityBroker {
     this.#db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS capability_grants(id TEXT PRIMARY KEY, audience TEXT NOT NULL, fingerprint TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS capability_receipts(id TEXT PRIMARY KEY, grantId TEXT NOT NULL UNIQUE, status TEXT NOT NULL, startedAt INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS capability_audit(sequence INTEGER PRIMARY KEY AUTOINCREMENT, grantId TEXT NOT NULL, event TEXT NOT NULL, at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS capability_links(digest TEXT PRIMARY KEY, grant_id TEXT NOT NULL, expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);`);
   }
   close(): void {
@@ -148,11 +157,28 @@ export class CapabilityBroker {
   #owner(principal: string) {
     if (text(principal) !== this.#options.owner) deny();
   }
+  #event(grantId: string, event: string) {
+    this.#db
+      .prepare("INSERT INTO capability_audit(grantId,event,at) VALUES(?,?,?)")
+      .run(grantId, event, this.#now());
+  }
+  #transaction<T>(operation: () => T): T {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      this.#db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
   #expiry(value: unknown): number {
     if (
       typeof value !== "number" ||
       !Number.isSafeInteger(value) ||
-      value <= this.#now()
+      value <= this.#now() ||
+      value > this.#now() + MAX_GRANT_TTL_MS
     )
       deny();
     return value;
@@ -184,23 +210,71 @@ export class CapabilityBroker {
     keys(value, ["audience", "action", "expiresAt"]);
     const action = this.propose(value.action);
     const id = randomUUID();
-    this.#db
-      .prepare(
-        "INSERT INTO capability_grants(id,audience,fingerprint,expires) VALUES(?,?,?,?)",
-      )
-      .run(
-        id,
-        text(value.audience),
-        digest(canonical(action)),
-        this.#expiry(value.expiresAt),
-      );
-    return id;
+    return this.#transaction(() => {
+      this.#db
+        .prepare(
+          "INSERT INTO capability_grants(id,audience,fingerprint,expires) VALUES(?,?,?,?)",
+        )
+        .run(
+          id,
+          text(value.audience),
+          digest(canonical(action)),
+          this.#expiry(value.expiresAt),
+        );
+      this.#event(id, "granted");
+      return id;
+    });
   }
   revoke(principal: string, grantId: string): void {
     this.#owner(principal);
-    this.#db
-      .prepare("UPDATE capability_grants SET revoked=1 WHERE id=?")
-      .run(text(grantId));
+    this.#transaction(() => {
+      const changed = this.#db
+        .prepare(
+          "UPDATE capability_grants SET revoked=1 WHERE id=? AND revoked=0",
+        )
+        .run(text(grantId));
+      if (changed.changes) this.#event(grantId, "revoked");
+    });
+  }
+  /** Stops future admission, including pending credential lookup. Cannot undo an effect. */
+  cancel(principal: string, grantId: string): Receipt | undefined {
+    this.revoke(principal, grantId);
+    return this.audit(principal, grantId);
+  }
+  /** Owner must independently verify the previous worker stopped and the external outcome.
+   * This only annotates a consumed intent; it never authorizes another execution. */
+  reconcile(principal: string, grantId: string, input: unknown): Receipt {
+    this.#owner(principal);
+    const value = object(input);
+    keys(value, ["confirmedStopped", "outcome"]);
+    if (
+      value.confirmedStopped !== true ||
+      (value.outcome !== "succeeded" && value.outcome !== "failed") ||
+      this.#active.has(grantId)
+    )
+      deny();
+    return this.#transaction(() => {
+      const receipt = this.#receipt(text(grantId));
+      if (receipt?.status !== "unknown") deny();
+      this.#db
+        .prepare("UPDATE capability_receipts SET status=? WHERE grantId=?")
+        .run(value.outcome as string, grantId);
+      this.#db
+        .prepare("UPDATE capability_grants SET revoked=1 WHERE id=?")
+        .run(grantId);
+      this.#event(grantId, `reconciled_${value.outcome}`);
+      return { ...receipt, status: value.outcome as "succeeded" | "failed" };
+    });
+  }
+  /** Paginated metadata only: no action arguments, credential values, or error text. */
+  auditEvents(principal: string, after = 0): CapabilityAuditEvent[] {
+    this.#owner(principal);
+    if (!Number.isSafeInteger(after) || after < 0) deny();
+    return this.#db
+      .prepare(
+        "SELECT * FROM capability_audit WHERE sequence>? ORDER BY sequence LIMIT 100",
+      )
+      .all(after) as unknown as CapabilityAuditEvent[];
   }
   #grant(principal: string, id: string): GrantRow {
     const row = this.#db
@@ -224,6 +298,16 @@ export class CapabilityBroker {
   audit(principal: string, grantId: string): Receipt | undefined {
     this.#owner(principal);
     return this.#receipt(text(grantId));
+  }
+  /** Trusted named-action lookup only, not authorization. Includes revoked/expired
+   * grants so operators can reconcile them without persisting action payloads. */
+  matchesGrant(principal: string, grantId: string, input: unknown): boolean {
+    this.#owner(principal);
+    const action = this.propose(input);
+    const row = this.#db
+      .prepare("SELECT fingerprint FROM capability_grants WHERE id=?")
+      .get(text(grantId));
+    return row?.fingerprint === digest(canonical(action));
   }
   async execute(
     principal: string,
@@ -259,11 +343,13 @@ export class CapabilityBroker {
           "INSERT INTO capability_receipts(id,grantId,status,startedAt) VALUES(?,?,?,?)",
         )
         .run(receipt.id, grantId, receipt.status, receipt.startedAt);
+      this.#event(grantId, "execution_claimed");
       this.#db.exec("COMMIT");
     } catch (error) {
       this.#db.exec("ROLLBACK");
       throw error;
     }
+    this.#active.add(grantId);
     try {
       const credential = await this.#options.resolveCredential(
         Object.freeze({
@@ -272,20 +358,31 @@ export class CapabilityBroker {
           origin: action.origin,
         }),
       );
-      // Re-check revocation/expiry after asynchronous credential resolution.
-      this.#grant(principal, grantId);
-      if (linkToken !== undefined) this.#link(principal, linkToken);
       const adapter = this.#options.tools[action.tool];
       if (!adapter) deny();
+      // Atomic admission after asynchronous credential lookup. A cancellation
+      // committed before admission blocks the adapter; later cancellation cannot
+      // recall it. The event is intent, not proof the adapter actually ran.
+      this.#transaction(() => {
+        this.#grant(principal, grantId);
+        if (linkToken !== undefined) this.#link(principal, linkToken);
+        if (this.#receipt(grantId)?.status !== "unknown") deny();
+        this.#event(grantId, "adapter_admitted");
+      });
       await adapter.execute(action, credential);
-      this.#db
-        .prepare(
-          "UPDATE capability_receipts SET status='succeeded' WHERE grantId=?",
-        )
-        .run(grantId);
+      this.#transaction(() => {
+        this.#db
+          .prepare(
+            "UPDATE capability_receipts SET status='succeeded' WHERE grantId=? AND status='unknown'",
+          )
+          .run(grantId);
+        this.#event(grantId, "adapter_succeeded");
+      });
       receipt.status = "succeeded";
     } catch {
       /* Never expose errors, credentials, or ambiguous transport payloads. */
+    } finally {
+      this.#active.delete(grantId);
     }
     return receipt;
   }
