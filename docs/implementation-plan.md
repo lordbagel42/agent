@@ -16,10 +16,53 @@ Spec: [architecture.md](architecture.md).
 - Never silently retry an externally ambiguous send or coding launch.
 - Keep engine/operator endpoints private; never log credentials or message bodies.
 - Native Amp access is explicitly opt-in and is not advertised as sandboxed.
-- Test behavior before implementation; formatter, linter, typecheck, and full
-  tests must pass before any commit. No push authorization. The owner subsequently
-  authorized a scoped `pulumi-homelab` deployment, ChatGPT browser sign-in, Slack
-  installation, a hello DM, live messaging checks, and search permission requests.
+- Follow the current minimal-testing policy in `AGENTS.md`: new tests only for
+  core permission, privacy, or duplicate-effect invariants. Keep existing tests;
+  run formatter, linter, typechecker, and relevant combined checks before commits.
+  No push authorization. The owner previously authorized a scoped
+  `pulumi-homelab` deployment, ChatGPT browser sign-in, Slack installation, a hello
+  DM, live messaging checks, and search permission requests. Do not repeat sends.
+
+## LEGION integration board (2026-09-26)
+
+Parallel worktrees start from local checkpoint
+`ba4c19725e2834ab379d9cd962a741fc68655e96`, not `origin/main`. The integration
+checkout is `/home/raygen/Projects/agent`. No worker pushes or deploys independently.
+Module presence is not completion: each stream needs review, host wiring, and
+combined verification. Thread links below identify the sole write owner.
+
+| Stream | Write ownership | State |
+| --- | --- | --- |
+| [Integration](https://ampcode.com/threads/T-01a0dd16-aab2-70fe-8983-280847bfa35e) | `main`, `config`, `core/*`, `http/app*`, `runtime/registry*`, `runtime/delivery*`, integration tests, root dependencies/config examples, aggregate docs | Contract review; awaiting module commits |
+| [Slack ingress](https://ampcode.com/threads/T-01a0dd1f-5138-710a-a537-ca6154935026) | `channels/slack*` diagnostics and adapter | Metadata-only diagnostics API agreed; real DM ingress unproven |
+| [Memory/personality](https://ampcode.com/threads/T-01a0dd1f-7dd6-70e6-b555-b3918b0821e8) | `memory/*`, `reflection/personality*` | Bounded retrieval, staged extraction, deletion and curated review |
+| [History imports](https://ampcode.com/threads/T-01a0dd1f-a307-761a-8c89-a24038c3e5c3) | `imports/*` | Read-only Slack/Gmail connectors and resumable service |
+| [Credentials/capabilities](https://ampcode.com/threads/T-01a0dd1f-c104-759a-ba65-0d57d9607a60) | `tools/broker*`, `credentials/*`, separate capability routes | Scoped resolver, short-lived grants, reconciliation |
+| [MCP](https://ampcode.com/threads/T-01a0dd1f-ec56-728b-a5c9-15577c67a266) | `tools/mcp*` | Fixed Streamable HTTP endpoints and tools |
+| [Browser](https://ampcode.com/threads/T-01a0dd20-007c-75cf-8dbb-da0673c71c00) | `tools/browser*` | Fixed recipes, fresh contexts, exact request policy |
+| [Console/action links](https://ampcode.com/threads/T-01a0dd20-17b9-72be-a2e6-63e1a53ffc38) | `links/*`, separate console/router modules | Private authentication, inert GET, explicit bound POST |
+| [Reflection workflow](https://ampcode.com/threads/T-01a0dd20-30dd-7474-99aa-e99d99b5c7ec) | `reflection/domain*`, `runtime/reflection*` | Owner actor, durable timers, cancellation, evidence revalidation |
+| [Typed deliberation](https://ampcode.com/threads/T-01a0dd20-5145-73ce-a3cf-3d5953e0d3e4) | `reflection/evaluator*`, `models/decision*` | API-provider decisions and juries; no invented Jev endpoint |
+| [Coding supervisor](https://ampcode.com/threads/T-01a0dd20-7313-770b-bbb3-cda9e860be64) | `runtime/coding*`, `coding/worktree*` | Fail-closed worktrees, workspace reservation, cancellation, verification |
+
+Shared host boundaries:
+
+- Audience/scope comes from authenticated `routeEvent`: the canonical value is
+  `JSON.stringify(scope.key)`. Owner-only APIs use the configured owner, not a
+  request-provided principal. Imported data cannot create live inbox commands.
+- Features remain absent/disabled by default. Config names secret environment
+  variables; actual credentials remain in trusted adapters, never model context.
+- Preserve existing `conversation-v1` journal names and send intents. Introduce
+  `loop.getVersion("memory-dispatch", 2)` before queue receive; only new-version
+  iterations gain new steps. Persist optional dispatch choices inside steps.
+- Memory retrieval filters audience before matching and is bounded. Revalidate
+  deletion before reflection output or personality can influence a new prompt.
+  Search snippets and action tokens remain volatile and outside evidence stores.
+- New routes share private operator authentication and body limits; browser forms
+  also require exact origin and signed confirmation. No public inspector/console.
+- Integration owns module shutdown ordering, dependency pins, recovery checks,
+  deployment review, and activation. Known Rivet shutdown diagnostics remain a
+  limitation, not evidence of hardened production behavior.
 
 ## Work and ownership
 
