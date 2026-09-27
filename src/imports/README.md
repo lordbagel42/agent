@@ -14,7 +14,8 @@ Signatures: `start(id: string): Promise<ImportProgress>`;
 `status(id: string)` and `cancel(id: string)` return
 `{ running, progress, notBefore, cooldownReason, coolingDown, budget, lastConflict }`. `progress`
 is the selection's durable progress (or undefined); the top-level cooldown is
-the maximum persisted deadline across registered selections for that account.
+the maximum deadline across all persisted jobs for the same platform/account,
+including completed or no-longer-configured jobs.
 `coolingDown` compares the current clock with that deadline, not provider health.
 `budget` is `{ limits: ImportBudget, lastRejection: keyof ImportBudget | null }`.
 Cancellation has no durable flag in the baseline store: it discards in-flight
@@ -110,7 +111,9 @@ means traversal finished, not gap-free history. Invalid/expired cursors and
 permission failures leave progress unchanged and require operator attention;
 never automatically broaden coverage. 429/503 and Gmail 403 rate-limit reasons
 return durable retry boundaries; other errors stop the job. Within a service,
-registered jobs sharing an account are serialized and share persisted cooldowns.
+jobs sharing a platform/account are serialized and share persisted cooldowns,
+including cooldowns from completed or no-longer-configured jobs after restart.
+Unrelated accounts remain independent; replacing a selection does not reset pacing.
 The host must serialize/rate-limit accounts across service instances and respect
 `notBefore` (do not busy-poll).
 

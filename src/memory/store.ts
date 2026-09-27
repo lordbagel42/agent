@@ -1048,6 +1048,25 @@ export class EvidenceStore {
     return this.read().imports.find((p) => p.id === jobId);
   }
 
+  /** Includes jobs no longer configured, so reauthorization cannot reset pacing. */
+  importCooldown(platform: string, account: string) {
+    let cooldown: Pick<ImportProgress, "notBefore" | "cooldownReason"> = {
+      notBefore: 0,
+    };
+    for (const progress of this.read().imports) {
+      if (
+        progress.coverage.platform === platform &&
+        progress.coverage.account === account &&
+        progress.notBefore > cooldown.notBefore
+      )
+        cooldown = {
+          notBefore: progress.notBefore,
+          cooldownReason: progress.cooldownReason,
+        };
+    }
+    return cooldown;
+  }
+
   beginImport(jobId: string, input: ImportCoverage): void {
     parse(id, jobId);
     const coverage = parse(coverageSchema, input);

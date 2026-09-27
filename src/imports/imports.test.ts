@@ -678,6 +678,105 @@ describe("history privacy boundaries", () => {
     }
   });
 
+  it.each([true, false])(
+    "retains account cooldown when restart removes the original job (rateLimited=%s)",
+    async (rateLimited) => {
+      const directory = mkdtempSync(join(tmpdir(), "june-import-cooldown-"));
+      const path = join(directory, "evidence.sqlite");
+      const key = new Uint8Array(32);
+      let store = new EvidenceStore(path, key);
+      let now = 1000;
+      try {
+        const original = new HistoryImports(
+          store,
+          {
+            old: {
+              coverage: slack,
+              fetchPage: async () => ({
+                sources: [],
+                nextCursor: null,
+                rateLimited,
+                retryAfterMs: 7000,
+              }),
+            },
+          },
+          () => now,
+        );
+        await original.start("old");
+        const replacement = { ...slack, conversations: ["C2"] };
+        store.beginImport("replacement", replacement);
+        const earlier = store.importProgress("replacement");
+        if (!earlier) throw new Error("Missing fixture progress");
+        // A pre-fix job can retain a shorter deadline than its account.
+        store.persistPage(
+          earlier,
+          {
+            sources: [],
+            nextCursor: null,
+            rateLimited: true,
+            retryAfterMs: 3000,
+          },
+          now,
+        );
+        store.close();
+        store = new EvidenceStore(path, key);
+        const fetched: string[] = [];
+        const replacements = new HistoryImports(
+          store,
+          Object.fromEntries(
+            Object.entries({
+              replacement,
+              otherAccount: { ...slack, account: "T2" },
+              otherPlatform: { ...slack, platform: "gmail" },
+            }).map(([id, coverage]) => [
+              id,
+              {
+                coverage,
+                fetchPage: async () => {
+                  fetched.push(id);
+                  return { sources: [], nextCursor: null, retryAfterMs: 60000 };
+                },
+              },
+            ]),
+          ),
+          () => now++,
+        );
+        expect(replacements.status("replacement")).toMatchObject({
+          notBefore: 8000,
+          cooldownReason: rateLimited ? "rate_limit" : "pacing",
+          coolingDown: true,
+        });
+        expect(store.importProgress("replacement")?.notBefore).toBe(4000);
+        now = 2000;
+        await replacements.start("otherAccount");
+        await replacements.start("otherPlatform");
+        // Crossing the job deadline during start must not bypass the account's.
+        now = 3999;
+        expect((await replacements.start("replacement")).pages).toBe(0);
+        expect(fetched).toEqual(["otherAccount", "otherPlatform"]);
+        now = 7999;
+        expect(await replacements.start("replacement")).toMatchObject({
+          cursor: null,
+          pages: 0,
+          complete: false,
+          notBefore: 8000,
+          cooldownReason: rateLimited ? "rate_limit" : "pacing",
+        });
+        expect(fetched).toEqual(["otherAccount", "otherPlatform"]);
+        now = 8000;
+        expect((await replacements.start("replacement")).pages).toBe(1);
+        expect(fetched).toEqual([
+          "otherAccount",
+          "otherPlatform",
+          "replacement",
+        ]);
+      } finally {
+        store.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("cancellation cannot persist a page even when transport ignores abort", async () => {
     const store = new EvidenceStore(":memory:", new Uint8Array(32));
     let release: (() => void) | undefined;

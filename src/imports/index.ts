@@ -48,22 +48,15 @@ export class HistoryImports {
     const selection = this.selection(id);
     const progress = this.store.importProgress(id);
     const conflictAtPage = this.conflicts.get(id);
-    let cooldown = progress;
-    for (const [otherId, other] of this.selections) {
-      if (
-        other.coverage.platform !== selection.coverage.platform ||
-        other.coverage.account !== selection.coverage.account
-      )
-        continue;
-      const saved = this.store.importProgress(otherId);
-      if (saved && saved.notBefore > (cooldown?.notBefore ?? 0))
-        cooldown = saved;
-    }
-    const notBefore = cooldown?.notBefore ?? 0;
+    const cooldown = this.store.importCooldown(
+      selection.coverage.platform,
+      selection.coverage.account,
+    );
+    const notBefore = cooldown.notBefore;
     const cooldownReason =
-      notBefore > 0 && cooldown?.cooldownReason === undefined
+      notBefore > 0 && cooldown.cooldownReason === undefined
         ? "unknown"
-        : (cooldown?.cooldownReason ?? null);
+        : (cooldown.cooldownReason ?? null);
     return {
       running: this.active.has(id),
       progress,
@@ -91,7 +84,7 @@ export class HistoryImports {
     const selection = this.selection(id);
     if (this.active.has(id)) throw new Error("Import already running");
     this.store.beginImport(id, selection.coverage);
-    const { progress, notBefore, cooldownReason } = this.status(id);
+    const progress = this.store.importProgress(id);
     if (!progress) throw new Error("Missing import progress");
     for (const [otherId, other] of this.selections) {
       if (
@@ -102,11 +95,17 @@ export class HistoryImports {
       if (this.active.has(otherId))
         throw new Error("Account import already running");
     }
+    const { notBefore, cooldownReason } = this.store.importCooldown(
+      selection.coverage.platform,
+      selection.coverage.account,
+    );
     const now = this.now();
+    // Do not let importHistory's later clock read bypass a longer account wait.
+    if (now < progress.notBefore) return progress;
     const controller = new AbortController();
     this.active.set(id, controller);
     try {
-      if (!progress.complete && now >= progress.notBefore && now < notBefore) {
+      if (!progress.complete && now < notBefore) {
         this.store.persistPage(
           progress,
           {
