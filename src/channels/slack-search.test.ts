@@ -95,6 +95,7 @@ function setup(response: unknown = results(), enabled = true) {
     botToken: "search-bot-token",
     teamId,
     botUserId: "U_BOT",
+    ownerUserIds: ["U123ABC"],
     searchEnabled: enabled,
     fetch: fetchMock,
     now: () => now,
@@ -146,7 +147,11 @@ describe("Slack Real-time Search", () => {
 
   it.each([
     ["DM", {}, "D123ABC"],
-    ["mention", { type: "app_mention", channel: "C123ABC" }, "C123ABC"],
+    [
+      "mention",
+      { type: "app_mention", channel: "C123ABC", channel_type: "channel" },
+      "C123ABC",
+    ],
   ])(
     "uses a signed %s grant once with a public-only JSON request",
     async (_name, rawEvent, channel) => {
@@ -196,6 +201,7 @@ describe("Slack Real-time Search", () => {
         "direct",
         "id",
         "messageId",
+        "metadata",
         "occurredAt",
         "senderId",
         "text",
@@ -364,22 +370,35 @@ describe("Slack Real-time Search", () => {
 
   it("does not replace a grant or extend its local five-minute lifetime on duplicate delivery", async () => {
     const context = setup();
-    const event = await receiveMessage(context);
+    const mentioned = {
+      channel: "C123ABC",
+      channel_type: "channel",
+      text: "<@U_BOT> search for launch status",
+    };
+    const event = await receiveMessage(context, payload(mentioned));
     context.advance(240_000);
-    await receiveMessage(
+    const duplicate = await receiveMessage(
       context,
-      payload({ action_token: "replacement-token" }),
+      payload(
+        {
+          ...mentioned,
+          type: "app_mention",
+          action_token: "replacement-token",
+        },
+        { event_id: "Ev_different_callback" },
+      ),
     );
+    expect(duplicate.id).toBe(event.id);
     await search(context.adapter, event);
     const body = context.fetchMock.mock.calls[0]?.[1]?.body;
     expect(JSON.parse(String(body)).action_token).toBe(actionToken);
-    await receiveMessage(context);
-    await expect(search(context.adapter, event)).resolves.toEqual(
+    await receiveMessage(context, payload(mentioned));
+    await expect(search(context.adapter, duplicate)).resolves.toEqual(
       authorizationRequired,
     );
     context.advance(60_000);
     // A freshly signed retry cannot revive the old event after the cache TTL.
-    await receiveMessage(context);
+    await receiveMessage(context, payload(mentioned));
     await expect(search(context.adapter, event)).resolves.toEqual(
       authorizationRequired,
     );
@@ -420,11 +439,17 @@ describe("Slack Real-time Search", () => {
     const first = await receiveMessage(context);
     await search(context.adapter, first);
     for (let index = 1; index < 256; index++) {
-      await receiveMessage(context, payload({}, { event_id: `Ev_${index}` }));
+      await receiveMessage(
+        context,
+        payload(
+          { ts: `1800000000.${String(index + 1_000).padStart(6, "0")}` },
+          { event_id: `Ev_${index}` },
+        ),
+      );
     }
     const overflow = await receiveMessage(
       context,
-      payload({}, { event_id: "Ev_overflow" }),
+      payload({ ts: "1800000000.999999" }, { event_id: "Ev_overflow" }),
     );
     await receiveMessage(context);
     await expect(search(context.adapter, first)).resolves.toEqual(

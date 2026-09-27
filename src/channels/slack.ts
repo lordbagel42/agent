@@ -3,9 +3,15 @@ import type {
   Address,
   ChannelAdapter,
   ChannelEvent,
+  MessageMetadata,
   OutboundMessage,
   SendResult,
 } from "../core/contracts.js";
+import {
+  createSlackContext,
+  slackMessageId,
+  slackMetadata,
+} from "./slack-context.js";
 import type { SlackIngressDiagnostics } from "./slack-ingress.js";
 import {
   createSlackSearch,
@@ -17,6 +23,7 @@ const SLACK_TEXT_LIMIT = 40_000;
 const FETCH_TIMEOUT_MS = 10_000;
 const MIN_RETRY_AFTER_MS = 1_000;
 const MAX_RETRY_AFTER_MS = 300_000;
+const CHANNEL_LOOKUP_TIMEOUT_MS = 750;
 
 type JsonObject = Record<string, unknown>;
 
@@ -103,11 +110,14 @@ function slackAddress(
   };
 }
 
-function normalizeEvent(
+async function normalizeEvent(
   payload: JsonObject,
   teamId: string,
   botUserId: string,
-): ChannelEvent[] {
+  ownerUserIds: ReadonlySet<string>,
+  participateInOwnerChannels: boolean,
+  context: ReturnType<typeof createSlackContext>,
+): Promise<ChannelEvent[]> {
   if (!nonEmptyString(payload.event_id) || !isJsonObject(payload.event)) {
     return [];
   }
@@ -118,17 +128,73 @@ function normalizeEvent(
   }
 
   const event = payload.event;
-  if (event.type === "message") {
+  // No lookup or action-token capture may precede the configured owner check.
+  if (!isHumanEvent(event, botUserId) || !ownerUserIds.has(event.user)) {
+    return [];
+  }
+  if (event.type === "message" || event.type === "app_mention") {
     if (
-      event.channel_type !== "im" ||
-      !isHumanEvent(event, botUserId) ||
-      event.subtype === "message_changed" ||
-      event.subtype === "message_deleted" ||
+      (event.subtype !== undefined &&
+        event.subtype !== "file_share" &&
+        event.subtype !== "me_message" &&
+        event.subtype !== "thread_broadcast") ||
       event.hidden === true ||
       !nonEmptyString(event.channel) ||
       !nonEmptyString(event.ts) ||
-      typeof event.text !== "string"
+      typeof event.text !== "string" ||
+      event.channel_type === "mpim"
     ) {
+      return [];
+    }
+
+    let channelType: MessageMetadata["channelType"];
+    if (
+      event.channel_type === "im" ||
+      event.channel_type === "channel" ||
+      event.channel_type === "group"
+    ) {
+      channelType = event.channel_type;
+    }
+    let channelName: string | undefined;
+    if (event.type === "app_mention" && channelType === undefined) {
+      // app_mention is a channel event, but legacy G IDs can also be MPIMs.
+      // Fail closed on that ambiguity; public C mentions need no extra grant.
+      if (event.channel.startsWith("C")) channelType = "channel";
+      else if (event.channel.startsWith("G")) {
+        const info = await context.conversation(
+          event.channel,
+          AbortSignal.timeout(CHANNEL_LOOKUP_TIMEOUT_MS),
+        );
+        channelType = info?.type;
+        channelName = info?.name;
+      }
+    }
+    if (
+      channelType !== "im" &&
+      channelType !== "channel" &&
+      channelType !== "group"
+    )
+      return [];
+    if (event.type === "app_mention" && channelType === "im") return [];
+
+    const mentioned =
+      event.type === "app_mention" || event.text.includes(`<@${botUserId}>`);
+    if (channelType !== "im" && !mentioned) {
+      if (!participateInOwnerChannels) return [];
+      // Never authorize by an ID, event-supplied name, text, or stale name cache.
+      const info = await context.conversation(
+        event.channel,
+        AbortSignal.timeout(CHANNEL_LOOKUP_TIMEOUT_MS),
+      );
+      if (
+        (info?.type !== "channel" && info?.type !== "group") ||
+        !info.name?.toLowerCase().includes("raygen")
+      )
+        return [];
+      channelType = info.type;
+      channelName = info.name;
+    }
+    if (channelType !== "im" && event.channel.startsWith("D")) {
       return [];
     }
 
@@ -137,41 +203,18 @@ function normalizeEvent(
       : undefined;
     return [
       {
-        id: payload.event_id,
+        id: slackMessageId(teamId, event.channel, event.ts),
         type: "message",
         address: slackAddress(teamId, event.channel, threadId),
         occurredAt,
         messageId: event.ts,
         senderId: event.user,
-        direct: true,
+        direct: channelType === "im",
         text: event.text,
-      },
-    ];
-  }
-
-  if (event.type === "app_mention") {
-    if (
-      !isHumanEvent(event, botUserId) ||
-      !nonEmptyString(event.channel) ||
-      !nonEmptyString(event.ts) ||
-      typeof event.text !== "string"
-    ) {
-      return [];
-    }
-
-    const threadId = nonEmptyString(event.thread_ts)
-      ? event.thread_ts
-      : event.ts;
-    return [
-      {
-        id: payload.event_id,
-        type: "message",
-        address: slackAddress(teamId, event.channel, threadId),
-        occurredAt,
-        messageId: event.ts,
-        senderId: event.user,
-        direct: false,
-        text: event.text,
+        metadata: {
+          ...slackMetadata(event, channelType),
+          ...(channelName ? { channelName } : {}),
+        },
       },
     ];
   }
@@ -225,6 +268,9 @@ export function createSlackAdapter({
   botToken,
   teamId,
   botUserId,
+  ownerUserIds = [],
+  participateInOwnerChannels = false,
+  contextEnabled = false,
   searchEnabled = false,
   privateSearch,
   ingressDiagnostics,
@@ -235,12 +281,27 @@ export function createSlackAdapter({
   botToken: string;
   teamId: string;
   botUserId: string;
+  /** Verified human Slack IDs for this team. Empty/missing fails closed. */
+  ownerUserIds?: readonly string[];
+  /** Also accept owner messages in channels whose current name contains raygen. */
+  participateInOwnerChannels?: boolean;
+  /** Same-channel/thread reads, including the enriched initiating message. */
+  contextEnabled?: boolean;
   searchEnabled?: boolean;
   privateSearch?: SlackPrivateSearchOptions;
   ingressDiagnostics?: SlackIngressDiagnostics;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
 }): ChannelAdapter {
+  const owners = new Set(ownerUserIds);
+  const context = createSlackContext({
+    teamId,
+    botToken,
+    botUserId,
+    ownerUserIds: owners,
+    fetch: fetchImpl,
+    now,
+  });
   const search = searchEnabled
     ? createSlackSearch({
         teamId,
@@ -254,6 +315,7 @@ export function createSlackAdapter({
     channel: "slack",
     capabilities: { text: true, reactions: true, threads: true },
     ...(search === undefined ? {} : { search: search.search }),
+    ...(contextEnabled ? { context: context.context } : {}),
     async receive(request: Request) {
       ingressDiagnostics?.record(request, "adapter_received");
       let rawBody: Uint8Array;
@@ -319,7 +381,14 @@ export function createSlackAdapter({
         return { response: new Response(null, { status: 403 }), events: [] };
       }
 
-      const events = normalizeEvent(payload, teamId, botUserId);
+      const events = await normalizeEvent(
+        payload,
+        teamId,
+        botUserId,
+        owners,
+        participateInOwnerChannels,
+        context,
+      );
       ingressDiagnostics?.record(
         request,
         events.length === 0 ? "normalization_ignored" : "normalized",

@@ -33,14 +33,19 @@ function signedRequest(
   });
 }
 
-function makeAdapter(fetchImpl: typeof globalThis.fetch = globalThis.fetch) {
+function makeAdapter(
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+  options: Partial<Parameters<typeof createSlackAdapter>[0]> = {},
+) {
   return createSlackAdapter({
     signingSecret,
     botToken: "test-bot-token",
     teamId,
     botUserId,
+    ownerUserIds: ["U_HUMAN"],
     fetch: fetchImpl,
     now: () => now,
+    ...options,
   });
 }
 
@@ -93,6 +98,7 @@ describe("createSlackAdapter", () => {
       botToken: "test-bot-token",
       teamId,
       botUserId,
+      ownerUserIds: ["private-user"],
       ingressDiagnostics,
       now: () => now,
     });
@@ -326,44 +332,49 @@ describe("createSlackAdapter", () => {
     expect(result.events).toEqual([]);
   });
 
-  it("normalizes a human direct message without parsing Slack timestamp IDs", async () => {
-    const body = eventBody(
-      {
-        type: "message",
-        user: "U_HUMAN",
-        text: "keep my IDs exact",
-        channel: "D123",
-        channel_type: "im",
-        ts: "1712345678.000200",
-        thread_ts: "1712345000.000100",
-      },
-      { eventId: "Ev_dm_1", eventTime: 1_712_345_678 },
-    );
-
-    const result = await makeAdapter().receive(signedRequest(body));
-
-    expect(result.response.status).toBe(200);
-    expect(result.events).toEqual([
-      {
-        id: "Ev_dm_1",
-        type: "message",
-        address: {
-          channel: "slack",
-          accountId: teamId,
-          conversationId: "D123",
-          threadId: "1712345000.000100",
+  it.each([undefined, "me_message", "file_share", "thread_broadcast"])(
+    "normalizes a human direct message (%s) without parsing Slack timestamp IDs",
+    async (subtype) => {
+      const body = eventBody(
+        {
+          type: "message",
+          subtype,
+          user: "U_HUMAN",
+          text: "keep my IDs exact",
+          channel: "D123",
+          channel_type: "im",
+          ts: "1712345678.000200",
+          thread_ts: "1712345000.000100",
         },
-        occurredAt: 1_712_345_678_000,
-        messageId: "1712345678.000200",
-        senderId: "U_HUMAN",
-        direct: true,
-        text: "keep my IDs exact",
-      },
-    ]);
-  });
+        { eventId: "Ev_dm_1", eventTime: 1_712_345_678 },
+      );
+
+      const result = await makeAdapter().receive(signedRequest(body));
+
+      expect(result.response.status).toBe(200);
+      expect(result.events).toEqual([
+        {
+          id: "slack:T_CONFIGURED:D123:1712345678.000200",
+          type: "message",
+          address: {
+            channel: "slack",
+            accountId: teamId,
+            conversationId: "D123",
+            threadId: "1712345000.000100",
+          },
+          occurredAt: 1_712_345_678_000,
+          messageId: "1712345678.000200",
+          senderId: "U_HUMAN",
+          direct: true,
+          text: "keep my IDs exact",
+          metadata: { channelType: "im", threadTs: "1712345000.000100" },
+        },
+      ]);
+    },
+  );
 
   it.each([
-    ["starts a new thread", undefined, "1712345678.000300"],
+    ["leaves top-level placement to the model", undefined, undefined],
     ["keeps the existing root", "1712345000.000100", "1712345000.000100"],
   ])(
     "normalizes an app mention and %s",
@@ -385,7 +396,7 @@ describe("createSlackAdapter", () => {
       expect(result.response.status).toBe(200);
       expect(result.events).toEqual([
         {
-          id: `Ev_mention_${threadTs ?? "root"}`,
+          id: "slack:T_CONFIGURED:C123:1712345678.000300",
           type: "message",
           address: {
             channel: "slack",
@@ -398,10 +409,202 @@ describe("createSlackAdapter", () => {
           senderId: "U_HUMAN",
           direct: false,
           text: "<@U_BOT> status?",
+          metadata: { channelType: "channel", threadTs },
         },
       ]);
     },
   );
+
+  it("checks the human owner and surface before any channel-name lookup", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>();
+    const adapter = makeAdapter(fetchMock, {
+      participateInOwnerChannels: true,
+      contextEnabled: true,
+    });
+    const event = {
+      type: "message",
+      user: "U_HUMAN",
+      channel: "C123",
+      channel_type: "channel",
+      ts: "1712345678.000001",
+      text: "hello",
+    };
+    for (const override of [
+      { user: "U_STRANGER" },
+      { user: "U_STRANGER", type: "app_mention" },
+      { user: "U_STRANGER", channel_type: "im", channel: "D123" },
+      { user: botUserId },
+      { bot_id: "B123" },
+      { app_id: "A123" },
+      { subtype: "bot_message" },
+      { channel_type: "mpim", channel: "G123" },
+      { channel_type: "mpim", channel: "G123", type: "app_mention" },
+      { subtype: "message_changed" },
+      { subtype: "message_deleted" },
+      { subtype: "channel_join" },
+      { hidden: true },
+    ]) {
+      const result = await adapter.receive(
+        signedRequest(eventBody({ ...event, ...override })),
+      );
+      expect(result.events).toEqual([]);
+    }
+    const unconfigured = makeAdapter(fetchMock, { ownerUserIds: [] });
+    expect(
+      (await unconfigured.receive(signedRequest(eventBody(event)))).events,
+    ).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("requires channel proof for legacy group mentions that could be group DMs", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>();
+    const adapter = makeAdapter(fetchMock);
+    const mention = {
+      type: "app_mention",
+      user: "U_HUMAN",
+      channel: "G123",
+      ts: "1712345678.000001",
+      text: "<@U_BOT> hello",
+    };
+    for (const [response, accepted] of [
+      [{ ok: false, error: "missing_scope" }, false],
+      [
+        {
+          ok: true,
+          channel: { id: "G123", is_mpim: true, name: "raygen-group-dm" },
+        },
+        false,
+      ],
+      [
+        {
+          ok: true,
+          channel: {
+            id: "G123",
+            is_group: true,
+            is_private: true,
+            is_mpim: false,
+            name: "private-project",
+          },
+        },
+        true,
+      ],
+    ] as const) {
+      fetchMock.mockResolvedValueOnce(jsonResponse(response));
+      const { events } = await adapter.receive(
+        signedRequest(eventBody(mention)),
+      );
+      expect(events).toHaveLength(accepted ? 1 : 0);
+      if (accepted)
+        expect(events[0]).toMatchObject({
+          direct: false,
+          metadata: { channelType: "group", channelName: "private-project" },
+        });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("allows unmentioned owner messages only by the current Slack channel name", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>();
+    const adapter = makeAdapter(fetchMock, {
+      participateInOwnerChannels: true,
+    });
+    const event = {
+      type: "message",
+      user: "U_HUMAN",
+      channel: "C123",
+      channel_type: "channel",
+      ts: "1712345678.000001",
+      text: "the text says raygen but cannot grant access",
+      channel_name: "raygen-not-authoritative",
+    };
+    for (const [channel, allowed] of [
+      [
+        {
+          id: "C123",
+          name: "project-raygen-chat",
+          is_channel: true,
+          is_mpim: false,
+        },
+        true,
+      ],
+      [
+        { id: "C123", name: "general", is_channel: true, is_mpim: false },
+        false,
+      ],
+      [{ id: "C123", name: "raygen", is_mpim: true }, false],
+      [{ id: "C_OTHER", name: "raygen", is_channel: true }, false],
+      [undefined, false],
+    ] as const) {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(
+          channel
+            ? { ok: true, channel }
+            : { ok: false, error: "missing_scope" },
+        ),
+      );
+      const { events } = await adapter.receive(signedRequest(eventBody(event)));
+      expect(events).toHaveLength(allowed ? 1 : 0);
+      if (allowed) {
+        expect(events[0]).toMatchObject({
+          direct: false,
+          metadata: {
+            channelType: "channel",
+            channelName: "project-raygen-chat",
+          },
+        });
+        expect(events[0]?.address.threadId).toBeUndefined();
+      }
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    for (const call of fetchMock.mock.calls) {
+      const request = new Request(...call);
+      expect(request.url).toBe("https://slack.com/api/conversations.info");
+      await expect(request.json()).resolves.toEqual({ channel: "C123" });
+      expect(request.redirect).toBe("error");
+    }
+  });
+
+  it("gives both callback types and retries the same durable identity without dropping retries", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>();
+    const adapter = makeAdapter(fetchMock, {
+      participateInOwnerChannels: true,
+    });
+    const identities: unknown[] = [];
+    for (const [type, eventId] of [
+      ["message", "Ev_message"],
+      ["app_mention", "Ev_mention"],
+      ["message", "Ev_retry"],
+    ]) {
+      const { events } = await adapter.receive(
+        signedRequest(
+          eventBody(
+            {
+              type,
+              user: "U_HUMAN",
+              channel: "C123",
+              channel_type: "channel",
+              ts: "1712345678.000001",
+              text: "<@U_BOT> hello",
+            },
+            { eventId },
+          ),
+        ),
+      );
+      expect(events).toHaveLength(1);
+      identities.push({ id: events[0]?.id, address: events[0]?.address });
+    }
+    expect(identities).toEqual(
+      Array(3).fill({
+        id: "slack:T_CONFIGURED:C123:1712345678.000001",
+        address: {
+          channel: "slack",
+          accountId: teamId,
+          conversationId: "C123",
+        },
+      }),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
   it.each([
     [
