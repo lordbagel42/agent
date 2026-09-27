@@ -437,6 +437,43 @@ or infer provider health from configuration. Unconnected memory, reflection,
 approval and revocation sections remain unavailable. No action callbacks or
 opaque-link routes are mounted; viewing the page cannot approve or run work.
 
+### Token intelligence
+
+`/console/usage` is an owner-session-only dashboard with rolling 24-hour, 7-day,
+and 30-day windows, model filtering, UTC input/output charts, cache and reasoning
+breakdowns, stage attribution, latency percentiles, measurement coverage, and the
+latest 100 attempts. `/console/usage/export` exports the same filtered snapshot
+and aggregates as JSON; both routes are private and no-store.
+
+The host creates `usage.sqlite` inside `RIVETKIT_STORAGE_PATH`, with private file
+permissions. This additive SQLite/WAL ledger is independent of forward-only
+conversation journals. It stores random attempt IDs, configured provider/model
+names, stages, timestamps, wall time, outcomes, and numeric usage counters only.
+It never stores prompts, replies, raw provider responses, credentials, user IDs,
+or conversation IDs. Keep the storage directory private and persistent.
+
+Codex, OpenAI Responses, and Anthropic Messages report usage at the transport
+boundary; fast, deep, synthesis, memory extraction, and reflection are attributed
+separately. Cache reads/writes are subsets of input, and reasoning is a subset of
+output. Anthropic input is normalized to include its separately reported cache
+counts; when either cache field is missing, the normalized input total is unknown.
+Codex 0.157.1 reports cumulative counts for its fresh ephemeral invocation,
+not a resumed conversation; its all-zero fallback is treated as unavailable.
+Individual zero detail counters may still be provider defaults, not independently
+verified zero usage. Native coding workers, external observer services, and
+non-model tools are not included. Latency is host wall time, not tokens/second.
+
+Intent is written before a provider operation and settlement after it. An
+interrupted call remains unresolved; a telemetry settlement failure never turns
+a successful model operation into a retry. Failed calls may consume tokens.
+There is no historical backfill or guarantee of continuous observation. Missing
+counters remain unknown rather than zero. The dashboard does not call models.
+
+ChatGPT subscription activity is distinct from API activity. Billing, remaining
+quota, subscription fees, and dollar estimates are unavailable: no invoice API or
+verified rate card is connected. Token counts are neither a bill nor a promise
+of free or unlimited use.
+
 Enabling this surface does not migrate state, enable providers or grant deployment
 authority. To roll back to a release predating the console, restore its config or
 remove the optional `console` field before restart; the older parser rejects

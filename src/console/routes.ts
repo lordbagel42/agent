@@ -1,10 +1,12 @@
 import { html } from "hono/html";
+import type { UsageSnapshot } from "../models/usage.js";
 import {
   binding,
   confirmations,
   type PrivateRouteSecurity,
   privateRoutes,
 } from "./security.js";
+import { usagePage } from "./usage.js";
 import { badge, confirmForm, messagePage, metadata, page } from "./view.js";
 
 export const consoleSections = [
@@ -43,6 +45,11 @@ export interface ConsoleAction {
 export interface ConsoleDependencies {
   security: PrivateRouteSecurity;
   inspect(principal: string): Promise<ConsoleSnapshot>;
+  usage?(
+    principal: string,
+    days: number,
+    model: string,
+  ): Promise<UsageSnapshot>;
   inspectAction?(
     principal: string,
     id: string,
@@ -58,6 +65,40 @@ export interface ConsoleDependencies {
 export function createConsoleRoutes(deps: ConsoleDependencies) {
   const app = privateRoutes(deps.security);
   const proof = confirmations(deps.security.csrfSecret);
+  app.get("/usage/:export?", async (c) => {
+    if (
+      !deps.usage ||
+      (c.req.param("export") && c.req.param("export") !== "export")
+    )
+      return c.html(
+        messagePage(
+          c.get("nonce"),
+          "Usage unavailable",
+          "The host has not connected a usage ledger. No usage or spending can be confirmed.",
+          404,
+        ),
+        404,
+      );
+    const days = Number(c.req.query("days") ?? 7);
+    const snapshot = await deps.usage(
+      c.get("principal"),
+      [1, 7, 30].includes(days) ? days : 7,
+      (c.req.query("model") ?? "").slice(0, 256),
+    );
+    if (c.req.param("export")) {
+      c.header("Content-Disposition", 'attachment; filename="june-usage.json"');
+      return c.json({
+        ...snapshot,
+        billing: "unavailable",
+        estimates: "unavailable",
+        history:
+          "Only instrumented calls; absent counters are unknown, not zero.",
+        recentLimit: 100,
+      });
+    }
+    const base = new URL(c.req.url).pathname.replace(/\/usage\/?$/, "");
+    return c.html(usagePage(snapshot, c.get("nonce"), base));
+  });
   app.get("/", async (c) => {
     const snapshot = await deps.inspect(c.get("principal"));
     // Absolute path preserves nesting whether mounted with or without a trailing slash.
@@ -77,6 +118,7 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
             "Inspect configuration, work, and permissions. Changes always start with a review.",
           navigation: [
             { label: "Overview", href: base || "/", current: true },
+            { label: "Token intelligence", href: `${base}/usage` },
             ...consoleSections.map((name) => ({
               label: `${name[0]?.toUpperCase()}${name.slice(1)}`,
               href: `#${name}`,

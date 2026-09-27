@@ -834,6 +834,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                 model.reply(
                                   {
                                     ...modelRequest,
+                                    usageStage:
+                                      phase === "reply" ? "fast" : phase,
                                     system:
                                       modelRequest.system +
                                       (version < 3 ? memory : ""),

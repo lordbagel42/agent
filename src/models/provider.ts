@@ -4,6 +4,12 @@ import type {
   ModelProvider,
   ModelRequest,
 } from "../core/contracts.js";
+import {
+  observeUsage,
+  tokenUsage,
+  type UsageLedger,
+  type UsageStage,
+} from "./usage.js";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
@@ -374,6 +380,7 @@ export function parseReply(
 }
 
 export interface JsonProviderOptions {
+  usage?: UsageLedger;
   protocol: "openai" | "anthropic";
   model: string;
   apiKey: string;
@@ -388,6 +395,7 @@ export interface JsonProviderOptions {
 
 /** Tool-free transport shared by conversation and source-grounded extraction. */
 export function createJsonProvider({
+  usage,
   protocol,
   model,
   apiKey,
@@ -415,78 +423,92 @@ export function createJsonProvider({
       messages: ModelRequest["messages"];
       schema: object;
       name: string;
+      usageStage?: UsageStage;
     },
     signal?: AbortSignal,
   ): Promise<string> => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const isOpenAI = protocol === "openai";
-      // Source metadata belongs to the host, not either API's message schema.
-      const messages = request.messages.map(({ role, content }) => ({
-        role,
-        content,
-      }));
-      const url = endpoint(
-        baseUrl ?? (isOpenAI ? OPENAI_BASE_URL : ANTHROPIC_BASE_URL),
-        isOpenAI ? "responses" : "messages",
-      );
-      const init: RequestInit = {
-        method: "POST",
-        headers: isOpenAI
-          ? {
-              authorization: `Bearer ${apiKey}`,
-              "content-type": "application/json",
-            }
-          : {
-              "anthropic-version": "2023-06-01",
-              "content-type": "application/json",
-              "x-api-key": apiKey,
-            },
-        body: JSON.stringify(
-          isOpenAI
-            ? {
-                model,
-                instructions: request.system,
-                input: messages,
-                store: false,
-                ...(maxOutputTokens === undefined
-                  ? {}
-                  : { max_output_tokens: maxOutputTokens }),
-                ...(reasoningEffort === undefined
-                  ? {}
-                  : { reasoning: { effort: reasoningEffort } }),
-                text: {
-                  format: {
-                    type: "json_schema",
-                    name: request.name,
-                    strict: true,
-                    schema: request.schema,
+    signal?.throwIfAborted();
+    return observeUsage(
+      usage,
+      { provider: protocol, model, stage: request.usageStage ?? "fast" },
+      async (report) => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const isOpenAI = protocol === "openai";
+          // Source metadata belongs to the host, not either API's message schema.
+          const messages = request.messages.map(({ role, content }) => ({
+            role,
+            content,
+          }));
+          const url = endpoint(
+            baseUrl ?? (isOpenAI ? OPENAI_BASE_URL : ANTHROPIC_BASE_URL),
+            isOpenAI ? "responses" : "messages",
+          );
+          const init: RequestInit = {
+            method: "POST",
+            headers: isOpenAI
+              ? {
+                  authorization: `Bearer ${apiKey}`,
+                  "content-type": "application/json",
+                }
+              : {
+                  "anthropic-version": "2023-06-01",
+                  "content-type": "application/json",
+                  "x-api-key": apiKey,
+                },
+            body: JSON.stringify(
+              isOpenAI
+                ? {
+                    model,
+                    instructions: request.system,
+                    input: messages,
+                    store: false,
+                    ...(maxOutputTokens === undefined
+                      ? {}
+                      : { max_output_tokens: maxOutputTokens }),
+                    ...(reasoningEffort === undefined
+                      ? {}
+                      : { reasoning: { effort: reasoningEffort } }),
+                    text: {
+                      format: {
+                        type: "json_schema",
+                        name: request.name,
+                        strict: true,
+                        schema: request.schema,
+                      },
+                    },
+                  }
+                : {
+                    model,
+                    max_tokens: maxOutputTokens ?? 4_096,
+                    system: request.system,
+                    messages,
+                    output_config: {
+                      format: { type: "json_schema", schema: request.schema },
+                    },
                   },
-                },
-              }
-            : {
-                model,
-                max_tokens: maxOutputTokens ?? 4_096,
-                system: request.system,
-                messages,
-                output_config: {
-                  format: { type: "json_schema", schema: request.schema },
-                },
-              },
-        ),
-        redirect: "error",
-        signal: signal
-          ? AbortSignal.any([signal, controller.signal])
-          : controller.signal,
-      };
-      init.signal?.throwIfAborted();
-      const payload = await fetchJson(fetchImpl, url, init, controller);
-      init.signal?.throwIfAborted();
-      return isOpenAI ? openAIText(payload) : anthropicText(payload);
-    } finally {
-      clearTimeout(timeout);
-    }
+            ),
+            redirect: "error",
+            signal: signal
+              ? AbortSignal.any([signal, controller.signal])
+              : controller.signal,
+          };
+          init.signal?.throwIfAborted();
+          const payload = await fetchJson(fetchImpl, url, init, controller);
+          report(
+            tokenUsage(
+              protocol,
+              isJsonObject(payload) ? payload.usage : undefined,
+            ),
+          );
+          init.signal?.throwIfAborted();
+          return isOpenAI ? openAIText(payload) : anthropicText(payload);
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+    );
   };
 }
 

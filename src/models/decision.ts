@@ -6,8 +6,10 @@ import {
   validDecisionContext,
 } from "../reflection/evaluator.js";
 import { ModelError } from "./provider.js";
+import { observeUsage, tokenUsage, type UsageLedger } from "./usage.js";
 
 export interface DecisionProviderOptions {
+  usage?: UsageLedger;
   protocol: "openai" | "anthropic";
   auth: "api-key";
   /** Explicit provider model ID, not a marketing name or an assumed alias. */
@@ -98,6 +100,7 @@ async function readPayload(response: Response): Promise<unknown> {
  * API-key auth only: Codex subscription and Jev are deliberately not aliases for this protocol.
  */
 export function createDecisionProvider({
+  usage,
   protocol,
   auth,
   model,
@@ -179,103 +182,119 @@ export function createDecisionProvider({
           }),
     });
     if (Buffer.byteLength(context) > 262_144) return abstain("input-budget");
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    const combined = AbortSignal.any([signal, controller.signal]);
-    const system = `${instructions}\n${roles[role]}`;
-    const messages = [{ role: "user", content: context }];
-    try {
-      const response = await fetchImpl(endpoint, {
-        method: "POST",
-        redirect: "error",
-        signal: combined,
-        headers:
-          protocol === "openai"
-            ? {
-                authorization: `Bearer ${apiKey}`,
-                "content-type": "application/json",
-              }
-            : {
-                "x-api-key": apiKey,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-              },
-        body: JSON.stringify(
-          protocol === "openai"
-            ? {
-                model,
-                instructions: system,
-                input: messages,
-                store: false,
-                max_output_tokens: maxOutputTokens,
-                ...(reasoningEffort
-                  ? { reasoning: { effort: reasoningEffort } }
-                  : {}),
-                text: {
-                  format: {
-                    type: "json_schema",
-                    name: "reflection_decision",
-                    strict: true,
-                    schema,
+    return observeUsage(
+      usage,
+      { provider: protocol, model, stage: "reflection" },
+      async (report) => {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        const combined = AbortSignal.any([signal, controller.signal]);
+        const system = `${instructions}\n${roles[role]}`;
+        const messages = [{ role: "user", content: context }];
+        try {
+          const response = await fetchImpl(endpoint, {
+            method: "POST",
+            redirect: "error",
+            signal: combined,
+            headers:
+              protocol === "openai"
+                ? {
+                    authorization: `Bearer ${apiKey}`,
+                    "content-type": "application/json",
+                  }
+                : {
+                    "x-api-key": apiKey,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
                   },
-                },
-              }
-            : {
-                model,
-                system,
-                messages,
-                max_tokens: maxOutputTokens,
-                output_config: { format: { type: "json_schema", schema } },
-              },
-        ),
-      });
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new ModelError(
-          response.status === 401 || response.status === 403
-            ? "authentication_failed"
-            : response.status === 429
-              ? "rate_limited"
-              : "decision_request_failed",
-          response.status === 429 || response.status >= 500,
-        );
-      }
-      const payload = await readPayload(response);
-      let text: string;
-      if (protocol === "openai") {
-        const parsed = openAIEnvelope.safeParse(payload);
-        if (!parsed.success) return abstain("incomplete-or-invalid-response");
-        text = parsed.data.output
-          .flatMap((item) =>
-            item.type === "message"
-              ? item.content.map((block) => block.text)
-              : [],
+            body: JSON.stringify(
+              protocol === "openai"
+                ? {
+                    model,
+                    instructions: system,
+                    input: messages,
+                    store: false,
+                    max_output_tokens: maxOutputTokens,
+                    ...(reasoningEffort
+                      ? { reasoning: { effort: reasoningEffort } }
+                      : {}),
+                    text: {
+                      format: {
+                        type: "json_schema",
+                        name: "reflection_decision",
+                        strict: true,
+                        schema,
+                      },
+                    },
+                  }
+                : {
+                    model,
+                    system,
+                    messages,
+                    max_tokens: maxOutputTokens,
+                    output_config: { format: { type: "json_schema", schema } },
+                  },
+            ),
+          });
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw new ModelError(
+              response.status === 401 || response.status === 403
+                ? "authentication_failed"
+                : response.status === 429
+                  ? "rate_limited"
+                  : "decision_request_failed",
+              response.status === 429 || response.status >= 500,
+            );
+          }
+          const payload = await readPayload(response);
+          report(
+            tokenUsage(
+              protocol,
+              payload && typeof payload === "object" && "usage" in payload
+                ? payload.usage
+                : undefined,
+            ),
+          );
+          let text: string;
+          if (protocol === "openai") {
+            const parsed = openAIEnvelope.safeParse(payload);
+            if (!parsed.success)
+              return abstain("incomplete-or-invalid-response");
+            text = parsed.data.output
+              .flatMap((item) =>
+                item.type === "message"
+                  ? item.content.map((block) => block.text)
+                  : [],
+              )
+              .join("");
+          } else {
+            const parsed = anthropicEnvelope.safeParse(payload);
+            if (!parsed.success)
+              return abstain("incomplete-or-invalid-response");
+            text = parsed.data.content.map((block) => block.text).join("");
+          }
+          const value: unknown = JSON.parse(text);
+          // Strict structured outputs require all fields; null means absent confidence.
+          if (
+            value &&
+            typeof value === "object" &&
+            "confidence" in value &&
+            value.confidence === null
           )
-          .join("");
-      } else {
-        const parsed = anthropicEnvelope.safeParse(payload);
-        if (!parsed.success) return abstain("incomplete-or-invalid-response");
-        text = parsed.data.content.map((block) => block.text).join("");
-      }
-      const value: unknown = JSON.parse(text);
-      // Strict structured outputs require all fields; null means absent confidence.
-      if (
-        value &&
-        typeof value === "object" &&
-        "confidence" in value &&
-        value.confidence === null
-      )
-        delete value.confidence;
-      if (combined.aborted)
-        return abstain(signal.aborted ? "cancelled" : "timeout");
-      return validateDecision(value, snapshot);
-    } catch (error) {
-      if (combined.aborted)
-        return abstain(signal.aborted ? "cancelled" : "timeout");
-      if (error instanceof ModelError) throw error;
-      throw new ModelError("decision_provider_failed", false);
-    } finally {
-      clearTimeout(timeout);
-    }
+            delete value.confidence;
+          if (combined.aborted)
+            return abstain(signal.aborted ? "cancelled" : "timeout");
+          return validateDecision(value, snapshot);
+        } catch (error) {
+          if (combined.aborted)
+            return abstain(signal.aborted ? "cancelled" : "timeout");
+          if (error instanceof ModelError) throw error;
+          throw new ModelError("decision_provider_failed", false);
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+    );
   };
 }

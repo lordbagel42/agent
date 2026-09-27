@@ -37,6 +37,7 @@ import { createCodexProvider } from "./models/codex.js";
 import { createDecisionProvider } from "./models/decision.js";
 import { createMemoryExtractor } from "./models/extraction.js";
 import { createModelProvider } from "./models/provider.js";
+import { UsageLedger } from "./models/usage.js";
 import { freshEvidence } from "./reflection/domain.js";
 import { createLifecycle } from "./runtime/lifecycle.js";
 import {
@@ -248,12 +249,18 @@ async function main() {
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);
   if (operatorToken.length < 32) throw new Error("Short operator token");
+  startupStage = "private usage ledger";
+  process.env.RIVETKIT_STORAGE_PATH ??= resolve(".data");
+  const usage = new UsageLedger(
+    join(process.env.RIVETKIT_STORAGE_PATH, "usage.sqlite"),
+  );
   startupStage = "model credentials";
   const provider = (selection: typeof config.model) =>
     selection.protocol === "codex"
-      ? createCodexProvider(selection)
+      ? createCodexProvider({ ...selection, usage })
       : createModelProvider({
           ...selection,
+          usage,
           apiKey: secret(selection.apiKeyEnv),
         });
   const model = provider(config.model);
@@ -327,6 +334,7 @@ async function main() {
       config.memory.extraction &&
       createMemoryExtractor({
         ...config.memory.extraction,
+        usage,
         apiKey: secret(config.memory.extraction.apiKeyEnv),
       });
     memory = {
@@ -437,6 +445,7 @@ async function main() {
           ownerId: config.owner.id,
           decide: createDecisionProvider({
             ...config.reflection.model,
+            usage,
             auth: "api-key",
             apiKey: secret(config.reflection.model.apiKeyEnv),
           }),
@@ -493,7 +502,6 @@ async function main() {
     });
   }
   startupStage = "Rivet configuration/startup";
-  process.env.RIVETKIT_STORAGE_PATH ??= resolve(".data");
   process.env.RIVET_INSPECTOR_DISABLE ??= "1";
   const registry = createJuneRegistry({
     owner: config.owner,
@@ -554,6 +562,9 @@ async function main() {
     console: config.console
       ? {
           origin: config.console.origin,
+          async usage(_principal, days, model) {
+            return usage.snapshot(days, model);
+          },
           async inspect() {
             // Project only allowlisted facts. Never serialize config, messages,
             // job goals/reports, provider paths or arbitrary actor state to HTML.

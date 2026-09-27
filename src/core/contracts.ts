@@ -152,6 +152,8 @@ export interface CompanionReply {
 export interface ModelRequest {
   system: string;
   messages: ConversationMessage[];
+  /** Host-only accounting label, never part of a provider prompt. */
+  usageStage?: "fast" | "deep" | "synthesis";
   /** Only these configured workspace names may be delegated. */
   workspaces: string[];
   searchAvailable?: boolean;

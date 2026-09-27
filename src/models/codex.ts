@@ -17,6 +17,12 @@ import type {
   ModelRequest,
 } from "../core/contracts.js";
 import { ModelError, parseReply, replyJsonSchema } from "./provider.js";
+import {
+  observeUsage,
+  type TokenUsage,
+  tokenUsage,
+  type UsageLedger,
+} from "./usage.js";
 
 const DEFAULT_TIMEOUT_MS = 75_000;
 const MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
@@ -93,6 +99,7 @@ interface EventSummary {
   failed: boolean;
   malformed: boolean;
   unexpectedTool: boolean;
+  usage?: TokenUsage;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -104,6 +111,7 @@ function invalidConfiguration(): never {
 }
 
 export interface CodexProviderOptions {
+  usage?: UsageLedger;
   model: string;
   home: string;
   executable?: string;
@@ -374,6 +382,7 @@ function eventSummary(output: Buffer): EventSummary {
 
     if (event.type === "turn.completed") {
       summary.completed = true;
+      summary.usage = tokenUsage("codex", event.usage);
     } else if (event.type === "turn.failed") {
       summary.failed = true;
     } else if (event.type.startsWith("item.")) {
@@ -456,6 +465,7 @@ function processResultError(
 }
 
 export function createCodexProvider({
+  usage,
   model,
   home,
   executable = "codex",
@@ -478,73 +488,80 @@ export function createCodexProvider({
       signal?: AbortSignal,
     ): Promise<CompanionReply> {
       signal?.throwIfAborted();
-      let root: string;
-      try {
-        root = await mkdtemp(join(tmpdir(), "june-codex-"));
-      } catch {
-        throw new ModelError("provider_unavailable", true);
-      }
+      return observeUsage(
+        usage,
+        { provider: "codex", model, stage: request.usageStage ?? "fast" },
+        async (report) => {
+          let root: string;
+          try {
+            root = await mkdtemp(join(tmpdir(), "june-codex-"));
+          } catch {
+            throw new ModelError("provider_unavailable", true);
+          }
 
-      let reply: CompanionReply | undefined;
-      let requestFailed = false;
-      let requestError: unknown;
-      try {
-        await chmod(root, 0o700);
-        const workspace = join(root, "workspace");
-        const schemaPath = join(root, "reply-schema.json");
-        const answerPath = join(root, "reply.json");
-        await mkdir(workspace, { mode: 0o700 });
-        await writeFile(
-          schemaPath,
-          JSON.stringify(replyJsonSchema(request.workspaces, request)),
-          { flag: "wx", mode: 0o600 },
-        );
+          let reply: CompanionReply | undefined;
+          let requestFailed = false;
+          let requestError: unknown;
+          try {
+            await chmod(root, 0o700);
+            const workspace = join(root, "workspace");
+            const schemaPath = join(root, "reply-schema.json");
+            const answerPath = join(root, "reply.json");
+            await mkdir(workspace, { mode: 0o700 });
+            await writeFile(
+              schemaPath,
+              JSON.stringify(replyJsonSchema(request.workspaces, request)),
+              { flag: "wx", mode: 0o600 },
+            );
 
-        const result = await runCodex({
-          executable,
-          arguments_: codexArguments({
-            model,
-            schemaPath,
-            answerPath,
-            reasoningEffort,
-            serviceTier,
-          }),
-          cwd: workspace,
-          home,
-          prompt: codexPrompt(request),
-          timeoutMs,
-          abortSignal: signal,
-        });
-        signal?.throwIfAborted();
-        const events = eventSummary(result.stdout);
-        const error = processResultError(result, events);
-        if (error !== undefined) {
-          throw error;
-        }
+            const result = await runCodex({
+              executable,
+              arguments_: codexArguments({
+                model,
+                schemaPath,
+                answerPath,
+                reasoningEffort,
+                serviceTier,
+              }),
+              cwd: workspace,
+              home,
+              prompt: codexPrompt(request),
+              timeoutMs,
+              abortSignal: signal,
+            });
+            const events = eventSummary(result.stdout);
+            if (events.usage) report(events.usage);
+            signal?.throwIfAborted();
+            const error = processResultError(result, events);
+            if (error !== undefined) {
+              throw error;
+            }
 
-        const answer = await readAnswer(answerPath);
-        reply = parseReply(answer, request.workspaces, request);
-      } catch (error) {
-        requestFailed = true;
-        requestError = error;
-      }
+            const answer = await readAnswer(answerPath);
+            reply = parseReply(answer, request.workspaces, request);
+          } catch (error) {
+            requestFailed = true;
+            requestError = error;
+          }
 
-      try {
-        await rm(root, { recursive: true, force: true });
-      } catch {
-        throw new ModelError("cleanup_failed", true);
-      }
-      signal?.throwIfAborted();
-      if (requestFailed) {
-        if (requestError instanceof ModelError) {
-          throw requestError;
-        }
-        throw new ModelError("provider_unavailable", true);
-      }
-      if (reply === undefined) {
-        throw new ModelError("malformed_response", false);
-      }
-      return reply;
+          try {
+            await rm(root, { recursive: true, force: true });
+          } catch {
+            throw new ModelError("cleanup_failed", true);
+          }
+          signal?.throwIfAborted();
+          if (requestFailed) {
+            if (requestError instanceof ModelError) {
+              throw requestError;
+            }
+            throw new ModelError("provider_unavailable", true);
+          }
+          if (reply === undefined) {
+            throw new ModelError("malformed_response", false);
+          }
+          return reply;
+        },
+      );
     },
   };
 }

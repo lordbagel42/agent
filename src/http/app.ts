@@ -4,6 +4,7 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { SlackIngressDiagnostics } from "../channels/slack-ingress.js";
 import {
+  type ConsoleDependencies,
   type ConsoleSnapshot,
   createConsoleRoutes,
 } from "../console/routes.js";
@@ -34,7 +35,11 @@ export interface HttpDependencies {
     read?: ReturnType<typeof createDeploymentReader>;
   };
   slackIngressDiagnostics?: SlackIngressDiagnostics;
-  console?: { origin: string; inspect(): Promise<ConsoleSnapshot> };
+  console?: {
+    origin: string;
+    inspect(): Promise<ConsoleSnapshot>;
+    usage?: ConsoleDependencies["usage"];
+  };
   submit(scope: Scope, event: ChannelEvent): Promise<void>;
   ready(): Promise<boolean>;
   inspectConversation(): Promise<unknown>;
@@ -154,6 +159,7 @@ export function createHttpApp(deps: HttpDependencies) {
       createConsoleRoutes({
         security: { ...security, authenticate: sessions.authenticate },
         inspect: deps.console.inspect,
+        usage: deps.console.usage,
         // No action inspection/confirmation callbacks until domain guarantees exist.
       }),
     );
