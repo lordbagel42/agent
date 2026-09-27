@@ -152,6 +152,8 @@ export interface CompanionReply {
   release?: { action: "inspect"; revision: string | null };
   /** One owner-private MCP call; host resolves credentials and permissions. */
   mcp?: { connection: string; tool: string; argumentsJson: string };
+  /** Owner-private read-only timings: "recent" or one ping UUIDv4. */
+  latency?: string;
   /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */
   replyInThread?: boolean;
 }
@@ -168,6 +170,7 @@ export interface ModelRequest {
   webSearchAvailable?: boolean;
   releaseAvailable?: boolean;
   mcpAvailable?: boolean;
+  latencyAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   socialAvailable?: boolean;
 }

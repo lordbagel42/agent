@@ -578,6 +578,7 @@ async function main() {
           runningRevision: release?.revision,
         })
       : undefined,
+    runningRevision: release?.revision,
     deploymentStatus: readDeployment
       ? async () => {
           const feed = await readDeployment(config.owner.id).catch(

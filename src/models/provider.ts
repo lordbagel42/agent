@@ -64,6 +64,12 @@ const companionReplySchema = z.strictObject({
       argumentsJson: z.string().max(4000),
     })
     .optional(),
+  latency: z
+    .union([
+      z.literal("recent"),
+      z.uuid({ version: "v4" }).transform((value) => value.toLowerCase()),
+    ])
+    .optional(),
   replyInThread: z.boolean().optional(),
 });
 
@@ -80,6 +86,7 @@ export type ReplyCapabilities = Pick<
   | "webSearchAvailable"
   | "releaseAvailable"
   | "mcpAvailable"
+  | "latencyAvailable"
   | "replyPlacementAvailable"
   | "socialAvailable"
 >;
@@ -102,6 +109,7 @@ export function replyJsonSchema(
     webSearchAvailable,
     releaseAvailable,
     mcpAvailable,
+    latencyAvailable,
     replyPlacementAvailable,
     socialAvailable,
   } = replyCapabilities(capabilities);
@@ -224,6 +232,15 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(latencyAvailable
+        ? {
+            latency: {
+              type: ["string", "null"],
+              description:
+                "Owner-private read-only latency report: recent for the last five retained messages, or an exact ping UUIDv4. Leave text empty and other action directives unset. The host sends the timing report directly, without another model call or any new probe.",
+            },
+          }
+        : {}),
       ...(replyPlacementAvailable
         ? {
             replyInThread: {
@@ -243,6 +260,7 @@ export function replyJsonSchema(
       ...(searchAvailable ? ["search"] : []),
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
+      ...(latencyAvailable ? ["latency"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
       ...(socialAvailable ? ["social"] : []),
     ],
@@ -413,6 +431,7 @@ export function parseReply(
     webSearchAvailable,
     releaseAvailable,
     mcpAvailable,
+    latencyAvailable,
     replyPlacementAvailable,
     socialAvailable,
   } = replyCapabilities(capabilities);
@@ -435,6 +454,7 @@ export function parseReply(
     "webSearch",
     "release",
     "mcp",
+    "latency",
     "replyInThread",
     "social",
   ]) {
@@ -459,6 +479,7 @@ export function parseReply(
     (reply.release !== undefined && !releaseAvailable) ||
     (reply.social !== undefined && !socialAvailable) ||
     (reply.mcp !== undefined && !mcpAvailable) ||
+    (reply.latency !== undefined && !latencyAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);
@@ -469,6 +490,7 @@ export function parseReply(
     Number(reply.webSearch !== undefined) +
     Number(reply.release !== undefined) +
     Number(reply.social !== undefined) +
+    Number(reply.latency !== undefined) +
     Number(reply.escalate === true);
   if (
     directiveCount > 1 ||
@@ -478,7 +500,8 @@ export function parseReply(
       reply.webSearch !== undefined ||
       reply.release !== undefined ||
       reply.social !== undefined ||
-      reply.mcp !== undefined) &&
+      reply.mcp !== undefined ||
+      reply.latency !== undefined) &&
       reply.text.trim().length > 0)
   ) {
     throw new ModelError("invalid_response", false);

@@ -163,6 +163,54 @@ export function createLatencyDiagnostics() {
         traces: [...traces.values()].map(({ trace }) => structuredClone(trace)),
       };
     },
+    /** Called only by the owner-private host action. The requested summary is
+     * normal reply content; raw observations remain volatile and prompt-free. */
+    report(query: string, event: MessageEvent, revision?: string) {
+      const probe = latencyProbe(`ping ${query}`);
+      if (query !== "recent" && !probe)
+        return "Use recent or an exact ping UUIDv4 for latency diagnostics.";
+      const retained = [...traces.entries()]
+        .filter(
+          ([id, { trace }]) =>
+            id !== key(event) && (!probe || trace.probe === probe),
+        )
+        .map(([, { trace }]) => trace);
+      const header = `Latency diagnostics — revision ${revision ?? "unknown"}; process startedAt ${startedAt}.`;
+      if (probe && retained.length > 1)
+        return `${header}\nMultiple retained messages used that probe UUID. The measurement is ambiguous; do not resend it.`;
+      const selected = retained.slice(-5).reverse();
+      const ms = (value: number | undefined) =>
+        value === undefined ? "unobserved" : `${value.toFixed(1)}ms`;
+      const rows = selected.map((trace) => {
+        const time = (stage: LatencyStage) =>
+          trace.observations.find((o) => o.stage === stage)?.ms;
+        const span = (start: LatencyStage, end: LatencyStage) => {
+          const a = time(start),
+            b = time(end);
+          return a === undefined || b === undefined ? undefined : b - a;
+        };
+        const sent = trace.deliveries.find(
+          (d) => d.kind === "text" && d.status === "sent",
+        );
+        const state =
+          time("finished") !== undefined && time("released") !== undefined
+            ? "released"
+            : "incomplete";
+        return [
+          `${new Date(trace.receivedAt).toISOString()} ${trace.channel} ${trace.threaded ? "thread" : "top-level"}; ${state}${trace.probe ? `; probe ${trace.probe}; pong ${sent?.pong === true ? "accepted" : "not confirmed"}` : ""}`,
+          `Slack E2E ${ms(sent?.platformMs)}; host text ${ms(time("text_sent"))}; HTTP ack ${ms(time("http_ack"))}; typing ack ${ms(time("typing_accepted"))}; textual ack ${ms(time("ack_sent"))}.`,
+          `Queue ${ms(span("submission_started", "dequeued"))}; context ${ms(span("context_started", "context_ready"))}; provider fast/deep/synthesis ${ms(span("fast_started", "fast_finished"))}/${ms(span("deep_started", "deep_finished"))}/${ms(span("synthesis_started", "synthesis_finished"))}; send ${ms(span("text_started", "text_sent"))}.`,
+        ].join("\n");
+      });
+      return [
+        header,
+        selected.length
+          ? `${selected.length} retained sample(s), newest first, excluding this request:`
+          : "No matching retained samples. Missing is not proof no reply occurred; do not resend a probe.",
+        ...rows,
+        "Times are first spans, not additive totals. Provider includes process/transport, not TTFT or inference alone; acknowledgments overlap. E2E means Slack timestamp delta, not human read time. At most 128 volatile traces; restarts/eviction lose data. Model settings and cold-provider state are not measured; do not infer a speedup from one sample.",
+      ].join("\n\n");
+    },
   };
 }
 

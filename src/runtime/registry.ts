@@ -55,6 +55,7 @@ export interface Dependencies {
     request: NonNullable<CompanionReply["release"]>,
   ) => Promise<string>;
   latency?: LatencyDiagnostics;
+  runningRevision?: string;
   lifecycle?: {
     enter(signal: AbortSignal): Promise<() => void>;
     fail(): void;
@@ -919,6 +920,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                 mcpAvailable:
                                   phase !== "synthesis" &&
                                   deps.mcpAvailable === true,
+                                latencyAvailable:
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.latency,
                                 replyPlacementAvailable:
                                   (version < 4 || version >= 6) &&
                                   phase === "reply" &&
@@ -953,7 +958,7 @@ export function createJuneRegistry(deps: Dependencies) {
                           }
                           const probe = latencyProbe(event.text);
                           if (probe)
-                            modelRequest.system += `\nThis is an owner latency probe. Respond with text exactly "pong ${probe}" and no reaction, search, coding, or escalation.`;
+                            modelRequest.system += `\nThis is an owner latency probe. Respond with text exactly "pong ${probe}" and no reaction, search, latency lookup, release action, coding, or escalation.`;
                           deps.latency?.mark(event, "context_ready");
                           if (version >= 2) {
                             step.state.modelInvocations ??= {};
@@ -1007,6 +1012,26 @@ export function createJuneRegistry(deps: Dependencies) {
                                             "Release status unavailable; no deployment action was taken.",
                                         )
                                     : "Release tools require an available integration and an owner-private turn.",
+                              };
+                            } else if (generated.latency !== undefined) {
+                              // Same guarded model step and normal outbox: no new
+                              // journal layout, paid pass, replay read or probe send.
+                              generated = {
+                                text:
+                                  scope.private &&
+                                  modelRequest.latencyAvailable &&
+                                  !signal.aborted &&
+                                  valid(step.state) &&
+                                  deps.latency
+                                    ? deps.latency.report(
+                                        generated.latency,
+                                        event,
+                                        deps.runningRevision,
+                                      )
+                                    : "Latency diagnostics are only available in an owner-private conversation.",
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
                               };
                             }
                           } finally {

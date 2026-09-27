@@ -48,6 +48,7 @@ it("keeps private/unscoped history and config out of a channel named after the o
       reflectionAvailable: true,
       puckAvailable: true,
       webSearchProvider: "PRIVATE-disabled-provider",
+      latencyAvailable: true,
     },
     memory: {
       audience: '["private","PRIVATE-owner-id"]',
@@ -91,6 +92,7 @@ it("keeps private/unscoped history and config out of a channel named after the o
   });
   expect(JSON.stringify(request)).not.toContain("PRIVATE");
   expect(request.workspaces).toEqual([]);
+  expect(request.latencyAvailable).toBe(false);
   expect(request.messages).toHaveLength(1);
   expect(JSON.parse(request.messages[0]?.content ?? "").text).toBe(event.text);
 });
@@ -156,7 +158,11 @@ it("requires exact owner identity, private audience and enabled memory rather th
     ...input,
     event: privateEvent,
     history: [{ role: "user", content: event.text, source: privateEvent }],
-    capabilities: { memoryAvailable: true, workspaces: ["permitted"] },
+    capabilities: {
+      memoryAvailable: true,
+      latencyAvailable: true,
+      workspaces: ["permitted"],
+    },
     memory: {
       audience: '["private","PRIVATE-owner-id"]',
       text: "PRIVATE-scoped-evidence",
@@ -165,6 +171,7 @@ it("requires exact owner identity, private audience and enabled memory rather th
   const allowed = buildModelRequest(privateInput);
   expect(allowed.system).toContain("PRIVATE-scoped-evidence");
   expect(allowed.workspaces).toEqual(["permitted"]);
+  expect(allowed.latencyAvailable).toBe(true);
   for (const override of [
     { capabilities: {} },
     {
@@ -175,6 +182,11 @@ it("requires exact owner identity, private audience and enabled memory rather th
     },
     { event: { ...privateEvent, metadata: { channelType: "group" as const } } },
   ]) {
+    // An invalid memory audience removes that evidence, not an independent
+    // private diagnostics grant. A disabled capability or group turn removes it.
+    expect(
+      buildModelRequest({ ...privateInput, ...override }).latencyAvailable,
+    ).toBe("memory" in override);
     expect(
       buildModelRequest({ ...privateInput, ...override }).system,
     ).not.toContain("PRIVATE-scoped-evidence");

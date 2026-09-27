@@ -3,11 +3,32 @@
 `GET /operator/latency` uses the existing owner bearer credential. Never expose
 it publicly. It holds at most 128 process-local traces, each with at most 128
 stage observations and 16 delivery observations. Restart and eviction lose
-observations; absence does not mean no work occurred. Nothing is added to Rivet
-journals or usage accounting. Replayed sends/models are not reissued to measure
+observations; absence does not mean no work occurred. Raw observations are not
+added to Rivet journals or usage accounting. Replayed sends/models are not reissued to measure
 them. Content, platform IDs, names, URLs, credentials, and provider errors are
 not retained. A random trace ID correlates stages; only an exact `ping <UUIDv4>`
 message additionally exposes that nonsecret probe UUID.
+
+## June can inspect her timings privately
+
+In an owner-private conversation, ask June to "show your recent reply timings"
+or "check the timing for ping <UUID>". Her output schema and instructions expose
+the read-only `latency` action (`"recent"` or a UUIDv4). It is unavailable in
+channels, group conversations, and synthesis passes; the host independently
+checks private scope before reading diagnostics.
+
+The host sends up to five recent samples (or the requested probe), excluding
+the request in progress, through the ordinary durable reply/outbox. This needs
+no additional model invocation, external tool call, ping, or credential in the
+prompt. It neither changes settings nor retries original work. June sees the
+report in subsequent conversation history; she does not receive a same-turn
+synthesis pass and must not invent an interpretation before seeing the report.
+The requested human-readable report is ordinary conversation content and is
+retained as such. Raw diagnostic observations remain process-local.
+
+Reports include revision/process identity, missing/ambiguous/incomplete states,
+queue/context/provider/send spans and separate acknowledgments. They do not
+establish provider-only inference time, live model settings, or a cold cache.
 
 ## Genuine Slack ping/pong
 
@@ -96,7 +117,7 @@ and no concurrent turns. Record the running revision, sample count and failures.
 First actor use is not proof of a cold provider cache; Codex starts a new child
 for every invocation. Never restart production merely to label a sample cold.
 The recovered 8.615 s human ping on `fea6f41` used the previous model policy;
-it is one baseline observation, not evidence for later no-thinking/fast settings
+it is one baseline observation, not evidence for later model settings
 or an end-to-end improvement. Start a new comparison at a settings transition.
 
 ## Disposable local pipeline
