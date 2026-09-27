@@ -36,6 +36,7 @@ function fixture(
     typeof createPersonalityPreview
   >[0]["readCandidate"],
   now = 200,
+  evidenceMaxAgeMs = 1000,
 ) {
   const store = new EvidenceStore(":memory:", randomBytes(32));
   t.onTestFinished(() => store.close());
@@ -107,7 +108,7 @@ function fixture(
             })
           : null),
     now: () => state.now,
-    evidenceMaxAgeMs: 1000,
+    evidenceMaxAgeMs,
     decide: async (input, signal) => {
       state.calls.push(structuredClone(input));
       return state.decide(input, signal);
@@ -229,6 +230,7 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
     t,
     (id) => client.personality.getOrCreate([owner.id]).evaluationCandidate(id),
     Date.now(),
+    7 * 24 * 60 * 60 * 1000,
   );
   const root = await mkdtemp(join(tmpdir(), "june-preview-"));
   const curated = new CuratedPersonalityStore(
@@ -354,6 +356,52 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
   expect(sent).toHaveLength(1);
   expect(sent[0]?.address.conversationId).toBe("D1");
   expect(JSON.stringify(sent[0])).toContain("candidateDigest");
+  const comparisonRequest = { ...actualRequest, mode: "compare" as const };
+  action = { text: "", personalityEvaluate: comparisonRequest };
+  const compared = await deliver();
+  expect(state.calls).toHaveLength(6);
+  expect(JSON.stringify(compared)).not.toContain("PRIVATE");
+  expect(sent).toHaveLength(2);
+  expect(sent[1]?.address.conversationId).toBe("D1");
+  const content = sent[1]?.content;
+  if (content?.type !== "text") throw new Error("Missing comparison report");
+  const report = content.text;
+  expect(report).toContain('"status":"comparison"');
+  expect(report).toContain("A receipt is not approval");
+  const evaluationId = report.match(/"evaluationId":"([^"]+)"/)?.[1];
+  expect(evaluationId).toBeDefined();
+  expect(curated.readEvaluation(scope, evaluationId ?? "")).toMatchObject({
+    candidateId: proposal.id,
+    expectedVersion: 0,
+    status: "complete",
+    pairs: [
+      {
+        evidenceId: "held-two",
+        current: "no",
+        candidate: "no",
+        outcome: "neither",
+      },
+      {
+        evidenceId: "held-one",
+        current: "yes",
+        candidate: "yes",
+        outcome: "both",
+      },
+    ],
+  });
+  expect(() =>
+    parseReply(
+      JSON.stringify({
+        text: "",
+        personalityEvaluate: {
+          ...comparisonRequest,
+          candidateDigest: "forged",
+        },
+      }),
+      [],
+      { personalityEvaluateAvailable: true },
+    ),
+  ).toThrow();
   for (const extra of [
     {
       direct: false,
@@ -369,16 +417,20 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
   ]) {
     await deliver(extra);
     expect(requests.at(-1)?.personalityEvaluateAvailable).toBe(false);
-    expect(state.calls).toHaveLength(2);
+    expect(state.calls).toHaveLength(6);
   }
-  action = { text: "", personalityEvaluate: actualRequest, reaction: "wave" };
+  action = {
+    text: "",
+    personalityEvaluate: comparisonRequest,
+    reaction: "wave",
+  };
   await deliver();
-  expect(state.calls).toHaveLength(2);
-  action = { text: "", personalityEvaluate: actualRequest };
+  expect(state.calls).toHaveLength(6);
+  action = { text: "", personalityEvaluate: comparisonRequest };
   web = true;
   await deliver();
   expect(requests.at(-1)?.personalityEvaluateAvailable).toBe(false);
-  expect(state.calls).toHaveLength(2);
+  expect(state.calls).toHaveLength(6);
   await deliver({
     text: `!personality reject ${JSON.stringify({ proposalId: proposal.id })}`,
     personalityCommandEligible: true,
@@ -386,7 +438,7 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
   expect(await service.preview(actualRequest)).toEqual({
     status: "unavailable",
   });
-  expect(state.calls).toHaveLength(2);
+  expect(state.calls).toHaveLength(6);
   expect(await client.personality.getOrCreate([owner.id]).read()).toEqual(
     profile,
   );
@@ -433,5 +485,5 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
   );
   if (!beforeForgetting) throw new Error("Missing pre-forgetting snapshot");
   expect(await service.isCurrent(beforeForgetting)).toBe(false);
-  expect(state.calls).toHaveLength(2);
+  expect(state.calls).toHaveLength(6);
 });

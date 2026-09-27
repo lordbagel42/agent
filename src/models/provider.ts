@@ -956,10 +956,16 @@ export function replyJsonSchema(
                   description:
                     "1–4 distinct original interaction source IDs, not proposal support IDs. Never invent IDs.",
                 },
+                mode: {
+                  type: ["string", "null"],
+                  enum: ["compare", null],
+                  description:
+                    "compare judges both current and candidate on identical inputs and returns a host receipt; null previews the candidate alone.",
+                },
               },
-              required: ["candidateId", "heldOutSourceIds"],
+              required: ["candidateId", "heldOutSourceIds", "mode"],
               description:
-                "Owner-private advisory suitability preview only. No profile mutation, promotion, tools or simulated message delivery. Leave text empty and all other actions unset.",
+                "Owner-private advisory suitability evaluation only. No profile mutation, promotion, tools or simulated message delivery. Leave text empty and all other actions unset.",
             },
           }
         : {}),

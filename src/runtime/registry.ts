@@ -77,6 +77,10 @@ import {
   isPersonalityCommand,
   previewPersonality,
 } from "./personality.js";
+import {
+  createPersonalityComparison,
+  personalityComparisonLimitations,
+} from "./personality-comparison.js";
 import type { createPersonalityPreview } from "./personality-evaluation-preview.js";
 import { createPriorityAdmission } from "./priority.js";
 import { buildModelRequest, type PromptInput } from "./prompt.js";
@@ -219,6 +223,13 @@ type Inbox =
 
 export function createJuneRegistry(deps: Dependencies) {
   const priority = createPriorityAdmission();
+  const comparePersonality =
+    deps.personalityEvaluation && deps.memory?.personality
+      ? createPersonalityComparison({
+          preview: deps.personalityEvaluation,
+          proposals: deps.memory.personality,
+        })
+      : undefined;
   const personality = (audience: string) =>
     deps.memory?.personality?.effectiveTraits(audience) ?? {};
   const personalityDigest = (audience: string) =>
@@ -2980,13 +2991,22 @@ export function createJuneRegistry(deps: Dependencies) {
                                   modelRequest,
                                 );
                                 if (checked.personalityEvaluate) {
-                                  const result =
-                                    await deps.personalityEvaluation.preview(
-                                      checked.personalityEvaluate,
-                                      signal,
-                                    );
+                                  const comparing =
+                                    checked.personalityEvaluate.mode ===
+                                    "compare";
+                                  const result = comparing
+                                    ? ((await comparePersonality?.(
+                                        checked.personalityEvaluate,
+                                        signal,
+                                      )) ?? { status: "unavailable" })
+                                    : await deps.personalityEvaluation.preview(
+                                        checked.personalityEvaluate,
+                                        signal,
+                                      );
                                   if (!signal.aborted && valid(step.state))
-                                    text = `Owner-private held-out personality preview: ${JSON.stringify(result)}\nAdvisory suitability judgments, not simulated replies or calibrated quality. Abstain means unknown. No profile mutation, promotion, or message to another recipient. Evidence and rationale omitted.`;
+                                    text = comparing
+                                      ? `Owner-private held-out personality comparison: ${JSON.stringify(result)}\n${personalityComparisonLimitations}`
+                                      : `Owner-private held-out personality preview: ${JSON.stringify(result)}\nAdvisory suitability judgments, not simulated replies or calibrated quality. Abstain means unknown. No profile mutation, promotion, or message to another recipient. Evidence and rationale omitted.`;
                                 }
                               }
                               generated = {

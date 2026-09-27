@@ -397,3 +397,33 @@ proof of statistical independence or that a provider has never seen the text.
 Judgments are advisory, not calibrated scores; abstention means unknown. Verify
 offline with `src/runtime/personality-evaluation-preview.test.ts` and the
 existing evaluator tests, using fake providers and disposable stores/engine.
+
+## Candidate versus current personality
+
+In an owner-private conversation, ask June to compare a pending personality
+candidate with the current profile and provide 1–4 original held-out source IDs.
+The `personalityEvaluate` action with `mode: "compare"` uses the same snapshot,
+fixed suitability rubric and reflection evaluator for both profiles. It excludes
+the candidate's supporting sources. This evaluates style suitability, not
+generated replies or measured behavior; it does not promote either profile.
+
+The host reports exact SHA-256 profile digests (canonical `{version, style}`),
+the expected current version, paired yes/no/abstain outcomes, a trusted receipt
+ID and explicit limitations. Candidate-only/current-only suitability, both,
+neither and unknown are distinct. Any abstention makes that pair unknown and the
+receipt incomplete, never a win or a negative vote. The evaluator sees no prior
+answers; both passes share the preview service's settlement-aware limiter.
+
+`CuratedPersonalityStore.recordEvaluation` is a trusted host-only write after
+comparison and context revalidation. `readEvaluation(scope, evaluationId, now)`
+returns only live, same-scope metadata receipts. A receipt binds the candidate
+ID, current version, both profile digests, and the exact ordered held-out
+evidence digest. It expires within 15 minutes (earlier if the candidate or a
+source expires); source forgetting or candidate invalidation makes it
+unavailable. No interaction text, profile values, model rationale or confidence
+is persisted in a receipt. At most 100 unexpired receipts are retained in the
+latest encrypted curated snapshot; older encrypted history follows the store's
+existing retention/backup limitations. Approval must independently recheck the
+live profile digests, the personality actor's terminal decision ledger, and owner
+authorization. Curated staging status is not approval status. Neither a receipt
+nor a favorable judgment grants publication authority.

@@ -5,6 +5,7 @@ import {
   createHash,
   createHmac,
   randomBytes,
+  randomUUID,
 } from "node:crypto";
 import {
   existsSync,
@@ -36,6 +37,11 @@ import {
   revisePersonality,
   type Trait,
 } from "../reflection/personality.js";
+import {
+  type PersonalityComparisonReceipt,
+  personalityComparisonSchema,
+  personalityHeldOutDigest,
+} from "../reflection/personality-comparison.js";
 import type { EvidenceStore } from "./store.js";
 
 const format = "june-curated-v1";
@@ -53,6 +59,10 @@ type Snapshot = {
   provenance: Provenance[];
   globalProposals?: GlobalPersonalityProposal[];
   rejectedReflectionCandidates?: { scope: string; id: string }[];
+  globalEvaluations?: {
+    scope: string;
+    receipt: PersonalityComparisonReceipt;
+  }[];
 };
 
 /** Reject symlinks in every existing path component, not just the leaf. */
@@ -767,6 +777,122 @@ export class CuratedPersonalityStore {
           ? references.size - protectedSnapshots.files
           : null,
     };
+  }
+
+  /** Trusted host execution only, never an HTTP/model payload. This records an
+   * advisory comparison, not acceptance or authority to publish a profile. */
+  recordEvaluation(
+    scope: string,
+    input: Omit<PersonalityComparisonReceipt, "evaluationId" | "expiresAt">,
+    now = Date.now(),
+  ): PersonalityComparisonReceipt {
+    this.check();
+    const parent = this.head();
+    const snapshot = this.load(parent);
+    const proposal = this.pendingGlobalProposal(scope, input.candidateId, now);
+    if (!proposal || input.evaluatedAt !== now)
+      throw new Error("Unavailable comparison context");
+    const evidence = this.evidence.reflectionEvidence(
+      scope,
+      input.heldOutSourceIds,
+      input.evidenceMaxAgeMs,
+    );
+    const receipt = personalityComparisonSchema.parse({
+      ...input,
+      evaluationId: randomUUID(),
+      expiresAt: Math.min(
+        now + 15 * 60 * 1000,
+        proposal.expiresAt,
+        ...evidence.map((e) => e.expiresAt),
+      ),
+    });
+    if (!this.evaluationCurrent(scope, receipt, now))
+      throw new Error("Unavailable comparison context");
+    // Bounded history. Old encrypted snapshots remain subject to the curated
+    // store's backup/retention policy; reads never reopen an old receipt.
+    snapshot.globalEvaluations = [
+      ...(snapshot.globalEvaluations ?? [])
+        .filter((entry) => entry.receipt.expiresAt > now)
+        .slice(-99),
+      { scope, receipt },
+    ];
+    for (const id of receipt.heldOutSourceIds) {
+      const current = this.provenance(scope, id);
+      const previous = snapshot.provenance.find(
+        (p) => p.scope === scope && p.id === id,
+      );
+      if (previous && !isDeepStrictEqual(previous, current))
+        throw new Error("Personality provenance changed");
+      if (!previous) snapshot.provenance.push(current);
+    }
+    this.persist(snapshot, parent);
+    return structuredClone(receipt);
+  }
+
+  /** Owner-scope lookup with live source/candidate payload revalidation. The
+   * approval path must also check the actor's authoritative terminal decisions
+   * and live profile digests; curated staging status is not approval status. */
+  readEvaluation(
+    scope: string,
+    evaluationId: string,
+    now = Date.now(),
+  ): PersonalityComparisonReceipt | undefined {
+    this.check();
+    const receipt = this.load(this.head()).globalEvaluations?.find(
+      (entry) =>
+        entry.scope === scope && entry.receipt.evaluationId === evaluationId,
+    )?.receipt;
+    return receipt && this.evaluationCurrent(scope, receipt, now)
+      ? structuredClone(receipt)
+      : undefined;
+  }
+
+  private evaluationCurrent(
+    scope: string,
+    receipt: PersonalityComparisonReceipt,
+    now: number,
+  ): boolean {
+    try {
+      personalityComparisonSchema.parse(receipt);
+      const proposal = this.pendingGlobalProposal(
+        scope,
+        receipt.candidateId,
+        now,
+      );
+      if (
+        !proposal ||
+        proposal.expectedVersion !== receipt.expectedVersion ||
+        now < receipt.evaluatedAt ||
+        now >= receipt.expiresAt ||
+        receipt.heldOutSourceIds.some(
+          (id) =>
+            proposal.sourceIds.includes(id) ||
+            proposal.evidenceIds.includes(id),
+        )
+      )
+        return false;
+      const evidence = this.evidence.reflectionEvidence(
+        scope,
+        receipt.heldOutSourceIds,
+        receipt.evidenceMaxAgeMs,
+      );
+      return (
+        evidence.length === receipt.heldOutSourceIds.length &&
+        evidence.every((entry, index) => {
+          const source = this.evidence.source(scope, entry.id);
+          return (
+            entry.id === receipt.heldOutSourceIds[index] &&
+            entry.source !== "dream" &&
+            !!source &&
+            !(source.platform === "slack" && source.text.startsWith("##")) &&
+            freshEvidence(entry, scope, now, receipt.evidenceMaxAgeMs)
+          );
+        }) &&
+        personalityHeldOutDigest(evidence) === receipt.heldOutDigest
+      );
+    } catch {
+      return false;
+    }
   }
 
   /** The ONLY model projection. Historical reads

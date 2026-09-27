@@ -19,6 +19,7 @@ export const personalityEvaluateSchema = z.strictObject({
     .min(1)
     .max(4)
     .refine((ids) => new Set(ids).size === ids.length),
+  mode: z.literal("compare").nullish(),
 });
 export type PersonalityEvaluateInput = z.infer<
   typeof personalityEvaluateSchema
