@@ -56,8 +56,10 @@ const registry = createJuneRegistry({
   },
   model: {
     async reply(request) {
-      if (request.system.includes("Coding completion"))
+      if (request.system.includes("Coding completion")) {
         process.send?.({ kind: "coding-report", text: request.system });
+        return { text: "" };
+      }
       return { text: "The heron is remembered." };
     },
   },
@@ -88,8 +90,18 @@ const registry = createJuneRegistry({
               }
             : { status: "sent", messageId: "fixture-after-backoff" };
         }
-        process.send?.({ kind: "send", id: message.id });
-        if (process.env.FIXTURE_PHASE === "interrupt")
+        const notification =
+          message.content.type === "text" &&
+          message.content.text.startsWith("Coding job crash-job:");
+        process.send?.({
+          kind: notification ? "notification" : "send",
+          id: message.id,
+        });
+        if (
+          process.env.FIXTURE_PHASE === "interrupt" ||
+          (notification &&
+            process.env.FIXTURE_PHASE === "interrupt-notification")
+        )
           await new Promise<never>(() => {});
         return { status: "sent", messageId: "fixture-outbound" };
       },

@@ -12,7 +12,7 @@ import { freeEnginePort, stopTestEngine } from "./rivet.js";
 
 it.for(["before-session", "after-session"])(
   "recovers a hard-killed host (%s) without repeating an ambiguous send or native launch",
-  { timeout: 60_000 },
+  { timeout: 90_000 },
   async (boundary, t) => {
     const directory = await mkdtemp(join(tmpdir(), "june-crash-"));
     const port = await freeEnginePort();
@@ -160,7 +160,7 @@ it.for(["before-session", "after-session"])(
     const exited = once(first, "exit");
     first.kill("SIGKILL");
     await exited;
-    start("recover");
+    const second = start("interrupt-notification");
     await expect
       .poll(async () => (await job.snapshot()).status, { timeout: 30_000 })
       .toBe("needs_review");
@@ -296,6 +296,67 @@ it.for(["before-session", "after-session"])(
       messages.filter(
         (message) => message.kind === "send" && message.id === uncertainSend,
       ),
+    ).toHaveLength(1);
+
+    // Kill again after the job's fallback notification reaches the fake channel,
+    // before a receipt can be saved. Restart and duplicate completion must not
+    // dispatch another message or turn an unknown delivery into confirmed sent.
+    await expect
+      .poll(
+        () =>
+          messages.filter((message) => message.kind === "notification").length,
+      )
+      .toBe(1);
+    const notificationId = messages.find(
+      (message) => message.kind === "notification",
+    )?.id;
+    const notification = Object.values((await june.snapshot()).deliveries).find(
+      (delivery) => delivery.message.id === notificationId,
+    );
+    expect(notification?.message.address).toEqual(source.address);
+    expect(notification?.phase).toBe("sending");
+    if (notification?.message.content.type !== "text")
+      throw new Error("No coding notification intent");
+    expect(notification.message.content.text).toContain("needs_review");
+    expect(notification.message.content.text).toContain(
+      "not independently verified",
+    );
+    const secondExit = once(second, "exit");
+    second.kill("SIGKILL");
+    await secondExit;
+    start("recover");
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).deliveries).find(
+            (delivery) => delivery.message.id === notificationId,
+          )?.result,
+        { timeout: 30_000 },
+      )
+      .toEqual({ status: "unknown", code: "interrupted_send" });
+    await june.send("inbox", {
+      type: "job_result",
+      jobId: "crash-job",
+      attempt: 1,
+      source,
+      text: notification.message.content.text,
+    });
+    await june.send("inbox", {
+      type: "event",
+      event: { ...source, id: "after-duplicate", messageId: "123.999" },
+    });
+    await expect
+      .poll(async () =>
+        Object.values((await june.snapshot()).events).some(
+          ({ event, done }) => event.id === "after-duplicate" && done,
+        ),
+      )
+      .toBe(true);
+    expect(
+      messages.filter((message) => message.kind === "notification"),
+    ).toHaveLength(1);
+    expect(
+      messages.filter((message) => message.kind === "coding"),
     ).toHaveLength(1);
   },
 );

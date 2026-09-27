@@ -84,6 +84,7 @@ async function fixture(
     reply?: () => CompanionReply;
     disabled?: boolean;
     send?: (message: OutboundMessage) => Promise<SendResult>;
+    completionText?: string;
   },
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "june-supervisor-"));
@@ -161,7 +162,9 @@ async function fixture(
         modelRequests.push(structuredClone(request));
         if (request.system.includes("Coding completion"))
           return {
-            text: "The worker reports the change; its claims are not independently verified.",
+            text:
+              options?.completionText ??
+              "The worker reports the change; its claims are not independently verified.",
           };
         if (request.system.includes("Execution completion"))
           return { text: "Scope ready for approval." };
@@ -1261,6 +1264,106 @@ describe("separate coding supervisor", () => {
       (await client.job.getOrCreate(["raygen", changedId]).snapshot()).status,
     ).toBe("awaiting_approval");
   });
+
+  it.for([false, true])(
+    "notifies the requester once despite silent synthesis and duplicate completion (unknown=%s)",
+    async (unknown, t) => {
+      let launches = 0;
+      const { registry, sent, modelRequests } = await fixture(
+        t,
+        {
+          async run(input) {
+            launches++;
+            await input.onThread("T-notification");
+            if (unknown) throw new Error("Uncertain worker completion");
+            return { threadId: "T-notification", report: "Worker says done." };
+          },
+        },
+        undefined,
+        { completionText: " \n " },
+      );
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", "raygen"]);
+      await june.send("inbox", { type: "event", event: source });
+      await expect
+        .poll(async () => Object.keys((await june.snapshot()).jobs).length, {
+          timeout: 15000,
+        })
+        .toBe(1);
+      const id = Object.keys((await june.snapshot()).jobs)[0];
+      if (!id) throw new Error("No coding proposal");
+      // A later approval from another linked DM must not relocate the result.
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "approval-elsewhere",
+          messageId: "456.789",
+          address: { ...source.address, conversationId: "D2" },
+          text: `/approve ${id}`,
+        },
+      });
+      const notifications = () =>
+        sent.filter(
+          (message) =>
+            message.content.type === "text" &&
+            message.content.text.startsWith(`Coding job ${id.slice(0, 12)}:`),
+        );
+      await expect.poll(() => notifications().length).toBe(1);
+      const notification = notifications()[0];
+      if (notification?.content.type !== "text")
+        throw new Error("No completion notification");
+      expect(notification.address).toEqual(source.address);
+      expect(notification.content.text).toContain(
+        unknown
+          ? "No confirmed completion"
+          : "Separate operator verifier: passed",
+      );
+      expect(notification.content.text).toContain(
+        "Worker claims (not independently verified)",
+      );
+      if (unknown)
+        expect(notification.content.text).not.toContain("verifier: passed");
+      const result = {
+        type: "job_result" as const,
+        jobId: id,
+        attempt: 1,
+        source,
+        text: notification.content.text,
+      };
+      await june.send("inbox", result);
+      await june.send("inbox", result);
+      // A later event proves both duplicate queue entries have been consumed.
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "after-duplicates",
+          messageId: "789.012",
+          text: `/approve ${id}`,
+        },
+      });
+      await expect
+        .poll(async () =>
+          Object.values((await june.snapshot()).events).some(
+            ({ event, done }) => event.id === "after-duplicates" && done,
+          ),
+        )
+        .toBe(true);
+      expect(notifications()).toHaveLength(1);
+      expect(launches).toBe(1);
+      expect(
+        modelRequests.filter((request) =>
+          request.system.includes("Coding completion"),
+        ),
+      ).toHaveLength(1);
+      expect(
+        Object.values((await june.snapshot()).deliveries).filter(
+          (delivery) => delivery.message.id === notification.id,
+        ),
+      ).toMatchObject([{ attempts: 1, result: { status: "sent" } }]);
+    },
+  );
 
   it("holds an interrupted worker for review and resumes only a confirmed-stopped saved thread", async (t) => {
     const threads: (string | undefined)[] = [];

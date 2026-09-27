@@ -476,6 +476,13 @@ otherwise unresolved review. These are current blockers, not a reconstruction of
 the original failure. A match or absent recovery reason is not permission to
 resume or evidence of provider health. Inspection never repairs/rebinds a job.
 
+When an attempt settles, June queues one result notification to the requesting
+DM through the durable outbox, even if her model returns no summary. Duplicate
+completion and restart reuse that notification; an uncertain send stays unknown
+and is not repeated automatically. A separately approved resume can produce a
+new attempt notification. Forgotten-source results remain suppressed. Worker
+claims and unknown outcomes are not independent verification or deployment proof.
+
 After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
 `/resume-stopped <job-prefix>`. Do not resume a job with an unknown live worker.
