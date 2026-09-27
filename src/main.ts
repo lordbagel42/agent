@@ -21,6 +21,7 @@ import type {
   Channel,
   ChannelAdapter,
   CodingRuntime,
+  ModelProvider,
 } from "./core/contracts.js";
 import {
   createDeploymentReader,
@@ -37,7 +38,7 @@ import {
 } from "./imports/index.js";
 import { CuratedPersonalityStore } from "./memory/curated.js";
 import { EvidenceStore, extractMemory } from "./memory/store.js";
-import { createCodexProvider } from "./models/codex.js";
+import { createHotCodexProvider } from "./models/codex-hot.js";
 import { createDecisionProvider } from "./models/decision.js";
 import { createMemoryExtractor } from "./models/extraction.js";
 import { createModelProvider } from "./models/provider.js";
@@ -56,6 +57,7 @@ import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
 import { createTavilyWebSearchProvider } from "./tools/web-search.js";
 
 let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
+const hotProviders: ReturnType<typeof createHotCodexProvider>[] = [];
 
 function within(parent: string, child: string) {
   const path = relative(parent, child);
@@ -263,16 +265,28 @@ async function main() {
     join(process.env.RIVETKIT_STORAGE_PATH, "usage.sqlite"),
   );
   startupStage = "model credentials";
-  const provider = (selection: typeof config.model) =>
-    selection.protocol === "codex"
-      ? createCodexProvider({ ...selection, usage })
-      : createModelProvider({
-          ...selection,
-          usage,
-          apiKey: secret(selection.apiKeyEnv),
-        });
+  const provider = (selection: typeof config.model): ModelProvider => {
+    if (config.setupMode)
+      return {
+        reply: async () => {
+          throw new Error("Inference disabled in setup mode");
+        },
+      };
+    if (selection.protocol === "codex") {
+      const hot = createHotCodexProvider({ ...selection, usage });
+      hotProviders.push(hot);
+      return hot;
+    }
+    return createModelProvider({
+      ...selection,
+      usage,
+      apiKey: secret(selection.apiKeyEnv),
+    });
+  };
   const model = provider(config.model);
   const deepModel = config.deepModel && provider(config.deepModel);
+  startupStage = "hot Codex initialization";
+  await Promise.all(hotProviders.map((provider) => provider.ready()));
   startupStage = "private MCP connections";
   let connections: McpConnections | undefined;
   let slackMcp: ReturnType<typeof createSlackMcpOAuth> | undefined;
@@ -579,6 +593,10 @@ async function main() {
       config.executionEnabled && !config.setupMode
         ? { model: deepModel ?? model }
         : undefined,
+    modelStatus: hotProviders.length
+      ? () =>
+          `Model runtime snapshot at ${new Date().toISOString()}: ${JSON.stringify(hotProviders.map((provider) => provider.inspect()))}. Idle means unused; upstream prewarm completion is not observable. No restart or configuration change was performed.`
+      : undefined,
     models,
     webSearch,
     lifecycle,
@@ -867,9 +885,13 @@ async function main() {
   let stopping: Promise<void> | undefined;
   const shutdown = () =>
     (stopping ??= (async () => {
-      await new Promise<void>((done) => server.close(() => done()));
-      await client.dispose();
-      await registry.shutdown();
+      try {
+        await new Promise<void>((done) => server.close(() => done()));
+        await client.dispose();
+        await registry.shutdown();
+      } finally {
+        await Promise.all(hotProviders.map((provider) => provider.close()));
+      }
       await connections?.close();
       memory?.personality?.close();
       memory?.store.close();
@@ -897,7 +919,8 @@ async function main() {
   });
 }
 
-await main().catch(() => {
+await main().catch(async () => {
+  await Promise.allSettled(hotProviders.map((provider) => provider.close()));
   // Provider/transport exceptions can contain credentials or message bodies.
   console.error(`June startup failed at ${startupStage}.`);
   process.exitCode = 1;

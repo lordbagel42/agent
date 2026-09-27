@@ -478,6 +478,7 @@ export class McpConnections {
                 releaseAvailable: false,
                 latencyAvailable: false,
                 analyticsAvailable: false,
+                modelStatusAvailable: false,
                 socialAvailable: false,
                 usageStage: "synthesis",
                 system:

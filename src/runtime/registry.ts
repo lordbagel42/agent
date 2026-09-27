@@ -56,6 +56,7 @@ export interface Dependencies {
   models?: PromptInput["models"];
   webSearch?: WebSearchProvider;
   mcpAvailable?: boolean;
+  modelStatus?: () => string;
   deploymentStatus?: () => Promise<string | undefined>;
   release?: (
     request: NonNullable<CompanionReply["release"]>,
@@ -1001,6 +1002,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                   : {}),
                               },
                               capabilities: {
+                                modelStatusAvailable:
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.modelStatus,
                                 releaseAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -1271,6 +1276,21 @@ export function createJuneRegistry(deps: Dependencies) {
                                 ...(generated.replyInThread !== undefined
                                   ? { replyInThread: generated.replyInThread }
                                   : {}),
+                              };
+                            }
+                            if (generated.modelStatus) {
+                              generated = {
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                                text:
+                                  !signal.aborted &&
+                                  valid(step.state) &&
+                                  modelRequest.modelStatusAvailable &&
+                                  scope.private &&
+                                  deps.modelStatus
+                                    ? deps.modelStatus()
+                                    : "Model runtime inspection requires an owner-private turn.",
                               };
                             }
                           } finally {

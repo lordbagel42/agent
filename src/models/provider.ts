@@ -95,6 +95,7 @@ const companionReplySchema = z.strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
     })
     .optional(),
+  modelStatus: z.boolean().optional(),
 });
 
 type JsonObject = Record<string, unknown>;
@@ -109,6 +110,7 @@ export type ReplyCapabilities = Pick<
   | "escalationAvailable"
   | "webSearchAvailable"
   | "releaseAvailable"
+  | "modelStatusAvailable"
   | "mcpAvailable"
   | "latencyAvailable"
   | "analyticsAvailable"
@@ -134,6 +136,7 @@ export function replyJsonSchema(
     escalationAvailable,
     webSearchAvailable,
     releaseAvailable,
+    modelStatusAvailable,
     mcpAvailable,
     latencyAvailable,
     analyticsAvailable,
@@ -207,6 +210,15 @@ export function replyJsonSchema(
                 },
                 required: ["agent", "action", "task"],
               },
+            },
+          }
+        : {}),
+      ...(modelStatusAvailable
+        ? {
+            modelStatus: {
+              type: ["boolean", "null"],
+              description:
+                "Read-only model runtime inspection. Set true with empty text and no other actions.",
             },
           }
         : {}),
@@ -320,6 +332,7 @@ export function replyJsonSchema(
       "reaction",
       ...(executionAvailable ? ["execution"] : []),
       ...(releaseAvailable ? ["release"] : []),
+      ...(modelStatusAvailable ? ["modelStatus"] : []),
       ...(mcpAvailable ? ["mcp"] : []),
       ...(searchAvailable ? ["search"] : []),
       ...(escalationAvailable ? ["escalate"] : []),
@@ -495,6 +508,7 @@ export function parseReply(
     escalationAvailable,
     webSearchAvailable,
     releaseAvailable,
+    modelStatusAvailable,
     mcpAvailable,
     latencyAvailable,
     analyticsAvailable,
@@ -521,6 +535,7 @@ export function parseReply(
     "escalate",
     "webSearch",
     "release",
+    "modelStatus",
     "mcp",
     "latency",
     "analytics",
@@ -546,6 +561,7 @@ export function parseReply(
     (reply.escalate !== undefined && !escalationAvailable) ||
     (reply.webSearch !== undefined && !webSearchAvailable) ||
     (reply.release !== undefined && !releaseAvailable) ||
+    (reply.modelStatus !== undefined && !modelStatusAvailable) ||
     (reply.social !== undefined && !socialAvailable) ||
     (reply.mcp !== undefined && !mcpAvailable) ||
     (reply.latency !== undefined && !latencyAvailable) ||
@@ -556,6 +572,7 @@ export function parseReply(
     throw new ModelError("invalid_response", false);
   }
   const directiveCount =
+    Number(reply.modelStatus === true) +
     Number(reply.mcp !== undefined) +
     Number(reply.execution !== undefined) +
     Number(reply.search !== undefined) +
@@ -570,6 +587,7 @@ export function parseReply(
     (directiveCount > 0 &&
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
     ((reply.search !== undefined ||
+      reply.modelStatus === true ||
       reply.webSearch !== undefined ||
       reply.release !== undefined ||
       reply.social !== undefined ||

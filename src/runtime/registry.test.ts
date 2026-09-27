@@ -379,6 +379,55 @@ describe("Rivet conversation workflow", () => {
     },
   );
 
+  it("lets June inspect the model pool only in an owner-private turn", async (t) => {
+    const sent: OutboundMessage[] = [];
+    let inspections = 0;
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack: transport("slack", sent) },
+      model: {
+        async reply(request) {
+          if (request.modelStatusAvailable) {
+            expect(request.system).toContain("modelStatus");
+            return parseReply('{"text":"","modelStatus":true}', [], request);
+          }
+          expect(() =>
+            parseReply('{"text":"","modelStatus":true}', [], request),
+          ).toThrow();
+          return { text: "", modelStatus: true };
+        },
+      },
+      modelStatus: () => {
+        inspections++;
+        return "Hot Codex: idle 2, active 1; prewarm completion unknown.";
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const privateChat = client.conversation.getOrCreate(["private", "raygen"]);
+    await privateChat.send("inbox", { type: "event", event: message });
+    await expect.poll(() => sent.length).toBe(1);
+    expect(JSON.stringify(sent[0]?.content)).toContain("idle 2, active 1");
+    const publicChat = client.conversation.getOrCreate([
+      "slack",
+      "T1",
+      "C1",
+      "",
+    ]);
+    await publicChat.send("inbox", {
+      type: "event",
+      event: {
+        ...message,
+        id: "pool-public",
+        direct: false,
+        botMentioned: true,
+        address: { ...message.address, conversationId: "C1" },
+      },
+    });
+    await expect.poll(() => sent.length).toBe(2);
+    expect(JSON.stringify(sent[1]?.content)).not.toContain("idle 2");
+    expect(inspections).toBe(1);
+  });
+
   it("dispatches release tools only in owner-private turns and journals the result", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];

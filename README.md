@@ -123,6 +123,19 @@ It rejects substantive tool events and validates the final JSON. These controls
 are not a claim that Codex exposes a strict zero-tool mode or an OS security
 boundary. The companion model does not replace the separately approved Amp worker.
 
+All Codex inference uses a persistent official app-server holding three
+unused ephemeral threads per configured provider. Each reply consumes a thread
+once; completed threads are unloaded before replacement. There is no per-reply
+exec fallback or opt-in flag. This requires an auth-only Codex home with no nonempty `config.toml`, `AGENTS.md`,
+or `AGENTS.override.md`, and no nonempty `/etc/codex/{config,managed_config,requirements}.toml`.
+Unsupported managed requirements/configuration layers and changed effective
+safety/provider settings fail closed before thread prewarm; policy is never overridden.
+Operator-owned configuration must remain stable while the provider runs. Authentication
+continues through the existing official login; do not copy credentials to enable it.
+June can inspect sanitized pool state in an owner-private conversation using the
+discoverable `modelStatus` output action. She cannot restart or reconfigure it.
+See [hot Codex design and measurements](docs/hot-codex.md) for limits and evidence.
+
 For initial provisioning without channel credentials, set `setupMode: true`,
 remove `slack` and `whatsapp`, set `owner.identities` to `[]`, and keep coding
 disabled. This runs the private health/operator service only; it cannot receive

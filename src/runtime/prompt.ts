@@ -18,6 +18,7 @@ export interface PromptCapabilities {
   searchAvailable?: boolean;
   webSearchAvailable?: boolean;
   releaseAvailable?: boolean;
+  modelStatusAvailable?: boolean;
   mcpAvailable?: boolean;
   webSearchProvider?: string;
   latencyAvailable?: boolean;
@@ -287,6 +288,9 @@ export function buildModelRequest({
     releaseAvailable
       ? "Deployment tracking is available in this owner-private turn. Set release to {action: 'inspect', revision: '<exact 40-character lowercase SHA>'}, or use revision: null for recent controller events. Inspect progress, checks, blockers, whether that revision was historically verified healthy, and its exact match to the running process. No release request step is needed or available: the independent controller already follows trusted lordbagel42/agent main. Leave text empty and all other actions unset/null; the host sends evidence directly. This is read-only, not activation or approval. No automatic follow-up is scheduled; inspect again when asked. A healthy/reconciled event establishes historical controller verification, not current health. Only the loaded runningRevision establishes process identity; a different SHA does not establish commit ancestry. Missing or aged-out evidence means unknown. Never infer current deployment from the inspected SHA, main, a coding receipt, or lastHealthyRevision. Historical receipts are not fresh status. Failed/blocked/unknown checks require the reported owner/operator action, never self-approval."
       : "Deployment inspection is unavailable in this invocation. Do not claim to inspect, approve, or activate a release.",
+    privateTurn && capabilities.modelStatusAvailable
+      ? "You can inspect your model runtime in this owner-private turn: set modelStatus true with empty text and all other actions unset/null. The host returns a current sanitized pool snapshot directly. Idle threads are unused, not proof prewarm succeeded. This is read-only and cannot restart, reconfigure, or retry inference."
+      : "Model runtime inspection is unavailable in this invocation.",
     "Return only the requested JSON, using only fields and actions permitted by the output schema. Unavailable optional fields must be omitted (or null/false only where the schema allows).",
   ].join("\n\n");
 
@@ -297,6 +301,8 @@ export function buildModelRequest({
     searchAvailable,
     webSearchAvailable,
     releaseAvailable,
+    modelStatusAvailable:
+      privateTurn && capabilities.modelStatusAvailable === true,
     mcpAvailable: privateTurn && capabilities.mcpAvailable === true,
     latencyAvailable,
     analyticsAvailable,

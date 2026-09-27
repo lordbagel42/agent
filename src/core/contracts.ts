@@ -158,6 +158,8 @@ export interface CompanionReply {
   webSearch?: string;
   /** Owner-private release tracking; never activation or approval authority. */
   release?: { action: "inspect"; revision: string | null };
+  /** Owner-private read-only inspection of model runtime health. */
+  modelStatus?: boolean;
   /** One owner-private MCP call; host resolves credentials and permissions. */
   mcp?: { connection: string; tool: string; argumentsJson: string };
   /** Owner-private read-only timings: "recent" or one ping UUIDv4. */
@@ -179,6 +181,7 @@ export interface ModelRequest {
   escalationAvailable?: boolean;
   webSearchAvailable?: boolean;
   releaseAvailable?: boolean;
+  modelStatusAvailable?: boolean;
   mcpAvailable?: boolean;
   latencyAvailable?: boolean;
   analyticsAvailable?: boolean;

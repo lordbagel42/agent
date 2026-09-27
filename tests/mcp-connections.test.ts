@@ -134,6 +134,8 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.analyticsAvailable = true;
   let evidence = "";
   let synthesis: ModelRequest | undefined;
+  let modelStatusAvailable: boolean | undefined;
+  f.request.modelStatusAvailable = true;
   await f.store
     .wrap({
       reply: async (request) => {
@@ -148,6 +150,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
           };
         evidence = request.system;
         synthesis = request;
+        modelStatusAvailable = request.modelStatusAvailable;
         return { text: "summarized answer" };
       },
     })
@@ -169,6 +172,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   ).toThrow();
   expect(f.request.analyticsAvailable).toBe(true);
   expect(evidence).toContain("private result [credential redacted]");
+  expect(modelStatusAvailable).toBe(false);
   expect(evidence).not.toContain("private-token");
   expect(JSON.stringify(f.store.list())).not.toContain("private-token");
   expect(
