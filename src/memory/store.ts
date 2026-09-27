@@ -335,6 +335,11 @@ export class EvidenceStore {
     return this.read().tombstones.includes(sourceId);
   }
 
+  /** Monotonic privacy revision, including deletions completed before restart. */
+  deletionRevision(): number {
+    return this.read().tombstones.length;
+  }
+
   source(audience: string, sourceId: string): Source | undefined {
     parse(id, sourceId);
     return this.search(audience, "").sources.find((s) => s.id === sourceId);

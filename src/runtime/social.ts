@@ -41,16 +41,70 @@ export class SocialPermissions {
       botUserId: string;
       slack: ChannelAdapter;
       now?: () => number;
+      deletionRevision?: () => number;
     },
   ) {
     mkdirSync(dirname(options.file), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(options.file);
     chmodSync(options.file, 0o600);
     this.db.exec(`CREATE TABLE IF NOT EXISTS social_proposals (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS social_deliveries (id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS social_deliveries (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS social_privacy (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL);`);
+    this.forget();
   }
   close() {
     this.db.close();
+  }
+  /** Frozen prose has no complete provenance (including legacy rows). Revoke
+   * and redact it conservatively, retaining IDs so replay cannot recreate it.
+   * Reconcile against the evidence ledger on reads as well as the host callback:
+   * a crash between tombstoning evidence and cleanup must still fail closed. */
+  forget() {
+    const revision = this.options.deletionRevision?.() ?? 0;
+    const saved = this.db
+      .prepare("SELECT revision FROM social_privacy WHERE id = 1")
+      .get();
+    if (revision <= Number(saved?.revision ?? 0)) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of this.db
+        .prepare("SELECT value FROM social_proposals")
+        .all()) {
+        const proposal = JSON.parse(String(row.value)) as Proposal;
+        proposal.status = "revoked";
+        if (proposal.action.kind === "outreach") proposal.action.text = "";
+        else {
+          proposal.action.topic = "";
+          proposal.action.sharedContext = "";
+        }
+        this.save(proposal);
+      }
+      for (const row of this.db
+        .prepare("SELECT id, value FROM social_deliveries")
+        .all()) {
+        const delivery = JSON.parse(String(row.value)) as Delivery;
+        this.redact(delivery);
+        this.db
+          .prepare("UPDATE social_deliveries SET value = ? WHERE id = ?")
+          .run(JSON.stringify(delivery), String(row.id));
+      }
+      this.db
+        .prepare("INSERT OR REPLACE INTO social_privacy VALUES (1, ?)")
+        .run(revision);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  private redact(delivery: Delivery) {
+    delivery.message.content = { type: "text", text: "" };
+    delivery.phase = "settled";
+    delivery.result = {
+      status: "rejected",
+      code: "forgotten",
+      retryable: false,
+    };
   }
   private now() {
     return this.options.now?.() ?? Date.now();
@@ -70,12 +124,14 @@ export class SocialPermissions {
     );
   }
   private rows(): Proposal[] {
+    this.forget();
     return this.db
       .prepare("SELECT value FROM social_proposals")
       .all()
       .map((row) => JSON.parse(String(row.value)) as Proposal);
   }
   private get(id: string): Proposal | undefined {
+    this.forget();
     const row = this.db
       .prepare("SELECT value FROM social_proposals WHERE id = ?")
       .get(id);
@@ -133,6 +189,8 @@ export class SocialPermissions {
     address: Address,
     text: string,
   ): Promise<SendResult> {
+    this.forget();
+    const revision = this.options.deletionRevision?.() ?? 0;
     const row = this.db
       .prepare("SELECT value FROM social_deliveries WHERE id = ?")
       .get(id);
@@ -151,11 +209,19 @@ export class SocialPermissions {
     return deliver(
       delivery,
       async () => {
+        this.forget();
+        if (revision !== (this.options.deletionRevision?.() ?? 0))
+          this.redact(delivery);
         this.db
           .prepare("INSERT OR REPLACE INTO social_deliveries VALUES (?, ?)")
           .run(id, JSON.stringify(delivery));
       },
-      (message) => this.options.slack.send(message),
+      async (message) => {
+        this.forget();
+        if (revision !== (this.options.deletionRevision?.() ?? 0))
+          return { status: "rejected", code: "forgotten", retryable: false };
+        return this.options.slack.send(message);
+      },
     );
   }
   async decide(event: MessageEvent): Promise<string> {

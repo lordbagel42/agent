@@ -108,6 +108,7 @@ interface ConversationState {
   webInvocations?: Record<string, "started" | "settled" | "uncertain">;
   agents?: Record<string, string>;
   jobAgents?: Record<string, { agentId: string; requestId: string }>;
+  deletionRevision?: number;
 }
 
 type Inbox =
@@ -149,6 +150,13 @@ export function createJuneRegistry(deps: Dependencies) {
       (id) => !deps.memory?.store.isDeleted(id),
     );
   function prune(state: ConversationState, audience: string) {
+    const revision = deps.memory?.store.deletionRevision() ?? 0;
+    if ((state.deletionRevision ?? 0) !== revision) {
+      // Social excerpts can be copied into guest history without memory source
+      // IDs. Legacy history cannot prove independence either.
+      state.history = [];
+      state.deletionRevision = revision;
+    }
     // Never assign read proxies back into actor state: each action has a fresh
     // proxy cache, so filter/reassignment nests wrappers on every snapshot.
     for (const [index, entry] of [...state.history.entries()].reverse()) {
@@ -273,6 +281,7 @@ export function createJuneRegistry(deps: Dependencies) {
             }
             releasePriority = await priority.enter(ownerTurn, ctx.abortSignal);
             let grantFingerprint: string | undefined;
+            let deletionRevision = deps.memory?.store.deletionRevision() ?? 0;
             const audience = JSON.stringify(scope.key);
             const eventId = createHash("sha256")
               .update(
@@ -286,6 +295,11 @@ export function createJuneRegistry(deps: Dependencies) {
               )
               .digest("hex");
             const valid = (state: ConversationState) => {
+              if (
+                deletionRevision !==
+                (deps.memory?.store.deletionRevision() ?? 0)
+              )
+                return false;
               // Legacy journals keep their recorded step order, but unfinished
               // callbacks must not dispatch effects for opted-out Slack input.
               if (
@@ -330,6 +344,7 @@ export function createJuneRegistry(deps: Dependencies) {
             ]);
             const accepted = await loop.step("record-event", async (step) => {
               if (step.state.events[eventId]?.done) return false;
+              prune(step.state, audience);
               if (!step.state.events[eventId]) {
                 // Older Slack versions keyed turns by callback ID. A delayed
                 // callback with the new stable message ID is still the same turn.
@@ -387,9 +402,12 @@ export function createJuneRegistry(deps: Dependencies) {
               social?: boolean;
               grantFingerprint?: string;
               execution?: boolean;
+              deletionRevision?: number;
             } =
               version >= 2
                 ? await loop.step("turn-plan", async () => ({
+                    deletionRevision:
+                      deps.memory?.store.deletionRevision() ?? 0,
                     memory: !!deps.memory && scope.private,
                     extraction: !!deps.memory?.extract && scope.private,
                     reflection: ownerTurn && !!deps.reflection,
@@ -439,6 +457,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     search: !!deps.channels[event.address.channel]?.search,
                   };
             grantFingerprint = plan.grantFingerprint;
+            deletionRevision = plan.deletionRevision ?? 0;
             if (version >= 2) {
               await loop.step("memory-ingest", async (step) => {
                 if (
@@ -876,6 +895,15 @@ export function createJuneRegistry(deps: Dependencies) {
                               ...new Map(
                                 context
                                   .filter(({ source, content }) => {
+                                    // Copies in Slack (approval previews or past
+                                    // replies) lack original evidence provenance.
+                                    // After forgetting, only enrich this input;
+                                    // use fresh local history for continuity.
+                                    if (
+                                      deletionRevision > 0 &&
+                                      source?.id !== event.id
+                                    )
+                                      return false;
                                     if (
                                       !source ||
                                       (source.address.channel === "slack" &&

@@ -495,6 +495,15 @@ These routes require the existing owner bearer token, not a console cookie:
 - `POST /operator/memory/forget`: `{sourceId, confirmed:true}` tombstones first,
   resets working context, revokes old coding approvals/results and requests
   cancellation of associated jobs/reflections. Retry after interrupted cleanup.
+  Social records lack complete evidence provenance, so each deletion also
+  revokes all existing social grants/pending outreach and redacts their frozen
+  prose and delivery payloads, retaining content-free replay IDs. Copied owner
+  and guest working history is reset; unrelated evidence remains retrievable
+  and new social requests can be approved normally. Durable deletion revisions
+  enforce this even after a crash before cleanup.
+  After any deletion, unprovenanced platform history is no longer supplied to
+  models (it may contain copies of forgotten text); current-message enrichment
+  and fresh local conversation history remain available.
   In-flight invalidated replies cannot be sent. Already-dispatched work cannot
   be recalled, and `physicalPurge:false` explicitly excludes journals/backups.
 - `POST /operator/memory/personality/revise` and `/personality/rollback`: explicit

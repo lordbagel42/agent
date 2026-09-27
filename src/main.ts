@@ -579,6 +579,7 @@ async function main() {
           teamId: config.slack.teamId,
           botUserId: config.slack.botUserId,
           slack: channels.slack,
+          deletionRevision: () => memory?.store.deletionRevision() ?? 0,
         })
       : undefined;
   process.env.RIVET_INSPECTOR_DISABLE ??= "1";
@@ -836,6 +837,7 @@ async function main() {
         ...memory,
         audience,
         async forget(scope, sourceId) {
+          social?.forget();
           await client.conversation
             .getOrCreate(JSON.parse(scope))
             .forget(sourceId);
