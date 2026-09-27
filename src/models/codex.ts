@@ -103,17 +103,25 @@ function invalidConfiguration(): never {
   throw new ModelError("invalid_configuration", false);
 }
 
+export interface CodexProviderOptions {
+  model: string;
+  home: string;
+  executable?: string;
+  timeoutMs?: number;
+  /** Select a level advertised for this model by Codex model discovery. */
+  reasoningEffort?: "low" | "medium" | "high";
+  /** Fast maps to priority when supported; default explicitly selects standard routing. */
+  serviceTier?: "fast" | "default";
+}
+
 function validateOptions({
   model,
   home,
   executable,
   timeoutMs,
-}: {
-  model: string;
-  home: string;
-  executable: string;
-  timeoutMs: number;
-}): void {
+  reasoningEffort,
+  serviceTier,
+}: CodexProviderOptions & { executable: string; timeoutMs: number }): void {
   if (
     model.trim().length === 0 ||
     model.includes("\0") ||
@@ -123,7 +131,10 @@ function validateOptions({
     executable.includes("\0") ||
     !Number.isInteger(timeoutMs) ||
     timeoutMs <= 0 ||
-    timeoutMs > MAX_TIMER_MS
+    timeoutMs > MAX_TIMER_MS ||
+    (reasoningEffort !== undefined &&
+      !["low", "medium", "high"].includes(reasoningEffort)) ||
+    (serviceTier !== undefined && !["fast", "default"].includes(serviceTier))
   ) {
     invalidConfiguration();
   }
@@ -147,8 +158,9 @@ function codexArguments({
   model,
   schemaPath,
   answerPath,
-}: {
-  model: string;
+  reasoningEffort,
+  serviceTier,
+}: Pick<CodexProviderOptions, "model" | "reasoningEffort" | "serviceTier"> & {
   schemaPath: string;
   answerPath: string;
 }): string[] {
@@ -175,6 +187,13 @@ function codexArguments({
     "--enable",
     "skip_host_skill_discovery",
   ];
+  // Codex 0.157.1 supports these overrides, but has no hard output-token cap.
+  if (reasoningEffort !== undefined) {
+    arguments_.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
+  }
+  if (serviceTier !== undefined) {
+    arguments_.push("-c", `service_tier="${serviceTier}"`);
+  }
   for (const feature of DISABLED_FEATURES) {
     arguments_.push("--disable", feature);
   }
@@ -441,13 +460,17 @@ export function createCodexProvider({
   home,
   executable = "codex",
   timeoutMs = DEFAULT_TIMEOUT_MS,
-}: {
-  model: string;
-  home: string;
-  executable?: string;
-  timeoutMs?: number;
-}): ModelProvider {
-  validateOptions({ model, home, executable, timeoutMs });
+  reasoningEffort,
+  serviceTier,
+}: CodexProviderOptions): ModelProvider {
+  validateOptions({
+    model,
+    home,
+    executable,
+    timeoutMs,
+    reasoningEffort,
+    serviceTier,
+  });
 
   return {
     async reply(
@@ -473,15 +496,19 @@ export function createCodexProvider({
         await mkdir(workspace, { mode: 0o700 });
         await writeFile(
           schemaPath,
-          JSON.stringify(
-            replyJsonSchema(request.workspaces, request.searchAvailable),
-          ),
+          JSON.stringify(replyJsonSchema(request.workspaces, request)),
           { flag: "wx", mode: 0o600 },
         );
 
         const result = await runCodex({
           executable,
-          arguments_: codexArguments({ model, schemaPath, answerPath }),
+          arguments_: codexArguments({
+            model,
+            schemaPath,
+            answerPath,
+            reasoningEffort,
+            serviceTier,
+          }),
           cwd: workspace,
           home,
           prompt: codexPrompt(request),
@@ -496,7 +523,7 @@ export function createCodexProvider({
         }
 
         const answer = await readAnswer(answerPath);
-        reply = parseReply(answer, request.workspaces, request.searchAvailable);
+        reply = parseReply(answer, request.workspaces, request);
       } catch (error) {
         requestFailed = true;
         requestError = error;

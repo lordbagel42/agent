@@ -8,6 +8,7 @@ import type {
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const REQUEST_TIMEOUT_MS = 30_000;
+const MAX_TIMER_MS = 2_147_483_647;
 
 export class ModelError extends Error {
   readonly code: string;
@@ -21,6 +22,12 @@ export class ModelError extends Error {
   }
 }
 
+const searchQuerySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => Array.from(value).length <= 500);
+
 const companionReplySchema = z.strictObject({
   text: z.string().refine((text) => Array.from(text).length <= 3_500),
   coding: z
@@ -30,12 +37,10 @@ const companionReplySchema = z.strictObject({
     })
     .optional(),
   reaction: z.string().optional(),
-  search: z
-    .string()
-    .trim()
-    .min(1)
-    .refine((value) => Array.from(value).length <= 500)
-    .optional(),
+  search: searchQuerySchema.optional(),
+  escalate: z.boolean().optional(),
+  webSearch: searchQuerySchema.optional(),
+  replyInThread: z.boolean().optional(),
 });
 
 type JsonObject = Record<string, unknown>;
@@ -44,7 +49,32 @@ function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function replyJsonSchema(workspaces: string[], searchAvailable = false) {
+export type ReplyCapabilities = Pick<
+  ModelRequest,
+  | "searchAvailable"
+  | "escalationAvailable"
+  | "webSearchAvailable"
+  | "replyPlacementAvailable"
+>;
+
+function replyCapabilities(
+  capabilities: ReplyCapabilities | boolean,
+): ReplyCapabilities {
+  return typeof capabilities === "boolean"
+    ? { searchAvailable: capabilities }
+    : capabilities;
+}
+
+export function replyJsonSchema(
+  workspaces: string[],
+  capabilities: ReplyCapabilities | boolean = false,
+) {
+  const {
+    searchAvailable,
+    escalationAvailable,
+    webSearchAvailable,
+    replyPlacementAvailable,
+  } = replyCapabilities(capabilities);
   const permittedWorkspaces = [...new Set(workspaces)];
   const coding =
     permittedWorkspaces.length === 0
@@ -78,7 +108,34 @@ export function replyJsonSchema(workspaces: string[], searchAvailable = false) {
             search: {
               type: ["string", "null"],
               description:
-                "One on-demand search query, 1–500 Unicode characters. When set, leave text empty and coding/reaction null.",
+                "One current-channel search query, 1–500 Unicode characters, not a public web search. When set, leave text empty and other action directives unset. The host performs the lookup.",
+            },
+          }
+        : {}),
+      ...(escalationAvailable
+        ? {
+            escalate: {
+              type: ["boolean", "null"],
+              description:
+                "Reply directly to casual or straightforward turns. Set true only when this turn needs the configured deeper model. Text may be empty or a brief context-sensitive acknowledgment, not a final answer or claim of completed work. Leave other action directives unset. The host durably sends any acknowledgment and calls the deeper model once; it cannot escalate again. Use false or null for a direct reply.",
+            },
+          }
+        : {}),
+      ...(webSearchAvailable
+        ? {
+            webSearch: {
+              type: ["string", "null"],
+              description:
+                "One public web query, 1–500 Unicode characters, never a private Slack-history search. Do not include private conversation details or secrets in a public query. When set, leave text empty and other action directives unset. The host performs the lookup.",
+            },
+          }
+        : {}),
+      ...(replyPlacementAvailable
+        ? {
+            replyInThread: {
+              type: ["boolean", "null"],
+              description:
+                "For top-level Slack input only: true replies in a thread, false replies at channel level, null uses the host default. Existing threads always stay in their thread. May accompany any otherwise valid reply or directive.",
             },
           }
         : {}),
@@ -88,6 +145,9 @@ export function replyJsonSchema(workspaces: string[], searchAvailable = false) {
       "coding",
       "reaction",
       ...(searchAvailable ? ["search"] : []),
+      ...(escalationAvailable ? ["escalate"] : []),
+      ...(webSearchAvailable ? ["webSearch"] : []),
+      ...(replyPlacementAvailable ? ["replyInThread"] : []),
     ],
   };
 }
@@ -248,8 +308,14 @@ function anthropicText(payload: unknown): string {
 export function parseReply(
   text: string,
   workspaces: string[],
-  searchAvailable = false,
+  capabilities: ReplyCapabilities | boolean = false,
 ): CompanionReply {
+  const {
+    searchAvailable,
+    escalationAvailable,
+    webSearchAvailable,
+    replyPlacementAvailable,
+  } = replyCapabilities(capabilities);
   let value: unknown;
   try {
     value = JSON.parse(text) as unknown;
@@ -261,14 +327,15 @@ export function parseReply(
   }
 
   const normalized = { ...value };
-  if (normalized.coding === null) {
-    delete normalized.coding;
-  }
-  if (normalized.reaction === null) {
-    delete normalized.reaction;
-  }
-  if (normalized.search === null) {
-    delete normalized.search;
+  for (const key of [
+    "coding",
+    "reaction",
+    "search",
+    "escalate",
+    "webSearch",
+    "replyInThread",
+  ]) {
+    if (normalized[key] === null) delete normalized[key];
   }
 
   const parsed = companionReplySchema.safeParse(normalized);
@@ -283,8 +350,23 @@ export function parseReply(
     throw new ModelError("invalid_response", false);
   }
   if (
-    reply.search !== undefined &&
-    (!searchAvailable || reply.text.trim() || reply.coding || reply.reaction)
+    (reply.search !== undefined && !searchAvailable) ||
+    (reply.escalate !== undefined && !escalationAvailable) ||
+    (reply.webSearch !== undefined && !webSearchAvailable) ||
+    (reply.replyInThread !== undefined && !replyPlacementAvailable)
+  ) {
+    throw new ModelError("invalid_response", false);
+  }
+  const directiveCount =
+    Number(reply.search !== undefined) +
+    Number(reply.webSearch !== undefined) +
+    Number(reply.escalate === true);
+  if (
+    directiveCount > 1 ||
+    (directiveCount > 0 &&
+      (reply.coding !== undefined || reply.reaction !== undefined)) ||
+    ((reply.search !== undefined || reply.webSearch !== undefined) &&
+      reply.text.trim().length > 0)
   ) {
     throw new ModelError("invalid_response", false);
   }
@@ -296,6 +378,11 @@ export interface JsonProviderOptions {
   model: string;
   apiKey: string;
   baseUrl?: string;
+  /** Responses max_output_tokens or Messages max_tokens; includes reasoning. */
+  maxOutputTokens?: number;
+  timeoutMs?: number;
+  /** OpenAI Responses only; select an effort supported by the configured model. */
+  reasoningEffort?: "low" | "medium" | "high";
   fetch?: typeof globalThis.fetch;
 }
 
@@ -305,8 +392,23 @@ export function createJsonProvider({
   model,
   apiKey,
   baseUrl,
+  maxOutputTokens,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  reasoningEffort,
   fetch: fetchImpl = globalThis.fetch,
 }: JsonProviderOptions) {
+  if (
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > MAX_TIMER_MS ||
+    (maxOutputTokens !== undefined &&
+      (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0)) ||
+    (reasoningEffort !== undefined &&
+      (protocol !== "openai" ||
+        !["low", "medium", "high"].includes(reasoningEffort)))
+  ) {
+    throw new ModelError("invalid_configuration", false);
+  }
   return async (
     request: {
       system: string;
@@ -317,9 +419,14 @@ export function createJsonProvider({
     signal?: AbortSignal,
   ): Promise<string> => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const isOpenAI = protocol === "openai";
+      // Source metadata belongs to the host, not either API's message schema.
+      const messages = request.messages.map(({ role, content }) => ({
+        role,
+        content,
+      }));
       const url = endpoint(
         baseUrl ?? (isOpenAI ? OPENAI_BASE_URL : ANTHROPIC_BASE_URL),
         isOpenAI ? "responses" : "messages",
@@ -341,8 +448,14 @@ export function createJsonProvider({
             ? {
                 model,
                 instructions: request.system,
-                input: request.messages,
+                input: messages,
                 store: false,
+                ...(maxOutputTokens === undefined
+                  ? {}
+                  : { max_output_tokens: maxOutputTokens }),
+                ...(reasoningEffort === undefined
+                  ? {}
+                  : { reasoning: { effort: reasoningEffort } }),
                 text: {
                   format: {
                     type: "json_schema",
@@ -354,9 +467,9 @@ export function createJsonProvider({
               }
             : {
                 model,
-                max_tokens: 4_096,
+                max_tokens: maxOutputTokens ?? 4_096,
                 system: request.system,
-                messages: request.messages,
+                messages,
                 output_config: {
                   format: { type: "json_schema", schema: request.schema },
                 },
@@ -387,16 +500,13 @@ export function createModelProvider(
         await generate(
           {
             ...request,
-            schema: replyJsonSchema(
-              request.workspaces,
-              request.searchAvailable,
-            ),
+            schema: replyJsonSchema(request.workspaces, request),
             name: "companion_reply",
           },
           signal,
         ),
         request.workspaces,
-        request.searchAvailable,
+        request,
       );
     },
   };
