@@ -185,6 +185,8 @@ export interface CompanionReply {
   inspection?: "memory" | "imports" | "reflection" | "native-coding";
   /** One owner-private query of retained evidence, never a permission grant. */
   recall?: string;
+  /** Owner-private bounded view of unaccepted memory claims; never review. */
+  pendingMemory?: true;
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */
@@ -220,6 +222,7 @@ export interface ModelRequest {
   analyticsAvailable?: boolean;
   inspectionAvailable?: boolean;
   recallAvailable?: boolean;
+  pendingMemoryAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   socialAvailable?: boolean;

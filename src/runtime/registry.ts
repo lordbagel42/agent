@@ -22,6 +22,7 @@ import {
   isMemoryCorrectionCommand,
 } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
+import { pendingMemoryView } from "../memory/pending.js";
 import type { EvidenceStore, Source } from "../memory/store.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type {
@@ -436,6 +437,7 @@ export function createJuneRegistry(deps: Dependencies) {
             const plan: {
               memory: boolean;
               recall?: boolean;
+              pendingMemory?: boolean;
               extraction: boolean;
               reflection: boolean;
               workspaces: string[];
@@ -454,6 +456,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       deps.memory?.store.deletionRevision() ?? 0,
                     memory: !!deps.memory && scope.private,
                     recall: !!deps.memory && scope.private,
+                    pendingMemory: !!deps.memory && scope.private,
                     extraction: !!deps.memory?.extract && scope.private,
                     reflection: ownerTurn && !!deps.reflection,
                     workspaces:
@@ -1215,6 +1218,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                   !!plan.recall &&
                                   scope.private &&
                                   !!deps.memory,
+                                pendingMemoryAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  !!plan.pendingMemory &&
+                                  scope.private &&
+                                  !!deps.memory,
                                 dashboardLoginAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -1550,6 +1559,57 @@ export function createJuneRegistry(deps: Dependencies) {
                                 } catch {
                                   text =
                                     "Memory recall is unavailable; no evidence can be inferred from this failure.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (generated.pendingMemory !== undefined) {
+                              let text =
+                                "Pending memory claims require an owner-private conversation and available memory.";
+                              if (
+                                scope.private &&
+                                modelRequest.pendingMemoryAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                deps.memory
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  if (checked.pendingMemory) {
+                                    const view = pendingMemoryView(
+                                      deps.memory.store,
+                                      audience,
+                                      deps.dashboardLogin?.redact,
+                                    );
+                                    // Bind this copied claim text before journaling or
+                                    // delivery, so deletion invalidates retries/history.
+                                    step.state.memoryContexts ??= {};
+                                    step.state.memoryContexts[eventId] ??= {
+                                      sourceIds: [],
+                                      personality: personalityDigest(audience),
+                                    };
+                                    const reference =
+                                      step.state.memoryContexts[eventId];
+                                    reference.sourceIds = [
+                                      ...new Set([
+                                        ...reference.sourceIds,
+                                        ...view.sourceIds,
+                                      ]),
+                                    ];
+                                    await step.vars.persist();
+                                    text = view.text;
+                                  }
+                                } catch {
+                                  text =
+                                    "Pending memory claims are unavailable; no review or other action was taken.";
                                 }
                               }
                               generated = {

@@ -233,6 +233,32 @@ Operator APIs:
   The host must also suppress associated conversation history, in-flight context,
   reflection candidates, and any external summaries/caches before future prompts.
 
+### June's private pending-review view
+
+With memory enabled, the authenticated owner can privately ask “Which memory
+claims are awaiting review?” June uses `{"text":"","pendingMemory":true}`.
+The host sends the result directly, without a second model pass: at most six
+complete pending claims within 3,000 serialized display characters, plus a fixed
+explanation and omitted count. Oversized claims are omitted, never clipped for
+confirmation. The existing operator view remains available for those claims.
+
+Rows include complete proposal/source IDs, claim text, category, estimated
+confidence, validity times, and contradiction/supersession IDs. Confidence is
+uncalibrated; null means unknown. Pending claims remain unaccepted hypotheses,
+not truth, permissions, or instructions. Source bodies, quotations, URLs, account
+fields, and authors are not projected. JSON escapes mention/markup delimiters
+and URL slashes in displayed values; live platform rendering is not verified.
+The view itself never accepts or rejects a proposal; review remains a separate
+authenticated operation. Rejection does not delete the source evidence.
+
+The view is unavailable in public/guest turns, disabled memory, worker results,
+and search/MCP synthesis. Scope comes only from routing, and availability is
+frozen in the turn plan. Returned claims carry original source provenance into
+the normal reply/history path so forgetting invalidates copied content and
+pending retries. Listing never mutates proposals or starts extraction/imports.
+General `inspection: "memory"` stays metadata-only. This local capability does
+not activate memory, create imports, or prove live provider access.
+
 ## Reflection and personality
 
 `reflectionEvidence(audience, sourceIds, maxAgeMs): Evidence[]` returns original

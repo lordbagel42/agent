@@ -222,6 +222,40 @@ test.each([
   },
 );
 
+test("pending memory cannot accompany MCP side effects from custom providers or catalog rounds", async () => {
+  const f = await fixture();
+  for (const permission of ["read", "approval"] as const) {
+    f.store.permit(f.id, f.connection().revision, "lookup", permission);
+    for (const catalogFirst of [false, true]) {
+      let calls = 0;
+      await expect(
+        f.store
+          .wrap({
+            async reply() {
+              if (catalogFirst && calls++ === 0)
+                return {
+                  text: "",
+                  mcpCatalog: { connection: null, tool: null, offset: 0 },
+                };
+              return {
+                text: "",
+                pendingMemory: true,
+                mcp: {
+                  connection: f.id,
+                  tool: "lookup",
+                  argumentsJson: '{"id":"record-9"}',
+                },
+              };
+            },
+          })
+          .reply({ ...f.request, pendingMemoryAvailable: true }),
+      ).rejects.toThrow();
+      expect(f.calls).toEqual([]);
+      expect(f.store.proposals()).toEqual([]);
+    }
+  }
+});
+
 test("dashboard credentials from MCP results never reach the synthesis provider", async () => {
   const f = await fixture();
   const links = createConsoleLoginLinks("https://june.example");

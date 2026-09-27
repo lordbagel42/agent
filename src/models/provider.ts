@@ -119,6 +119,7 @@ const companionReplySchema = z.strictObject({
     .enum(["memory", "imports", "reflection", "native-coding"])
     .optional(),
   recall: searchQuerySchema.optional(),
+  pendingMemory: z.literal(true).optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -148,6 +149,7 @@ export type ReplyCapabilities = Pick<
   | "analyticsAvailable"
   | "inspectionAvailable"
   | "recallAvailable"
+  | "pendingMemoryAvailable"
   | "dashboardLoginAvailable"
   | "replyPlacementAvailable"
   | "socialAvailable"
@@ -179,6 +181,7 @@ export function replyJsonSchema(
     analyticsAvailable,
     inspectionAvailable,
     recallAvailable,
+    pendingMemoryAvailable,
     dashboardLoginAvailable,
     replyPlacementAvailable,
     socialAvailable,
@@ -316,6 +319,16 @@ export function replyJsonSchema(
               type: ["string", "null"],
               description:
                 "One owner-private retained-memory query, 1–500 Unicode characters. The host returns bounded evidence with provenance directly. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
+            },
+          }
+        : {}),
+      ...(pendingMemoryAvailable
+        ? {
+            pendingMemory: {
+              type: ["boolean", "null"],
+              enum: [true, null],
+              description:
+                "Show bounded owner-private pending memory claims and source IDs awaiting review. Read-only, not acceptance or evidence of truth. Leave text empty and all other actions unset.",
             },
           }
         : {}),
@@ -461,6 +474,7 @@ export function replyJsonSchema(
       ...(analyticsAvailable ? ["analytics"] : []),
       ...(inspectionAvailable ? ["inspection"] : []),
       ...(recallAvailable ? ["recall"] : []),
+      ...(pendingMemoryAvailable ? ["pendingMemory"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
       ...(socialAvailable ? ["social"] : []),
@@ -639,6 +653,7 @@ export function parseReply(
     analyticsAvailable,
     inspectionAvailable,
     recallAvailable,
+    pendingMemoryAvailable,
     dashboardLoginAvailable,
     replyPlacementAvailable,
     socialAvailable,
@@ -672,6 +687,7 @@ export function parseReply(
     "analytics",
     "inspection",
     "recall",
+    "pendingMemory",
     "dashboardLogin",
     "replyInThread",
     "social",
@@ -705,6 +721,7 @@ export function parseReply(
     (reply.analytics !== undefined && !analyticsAvailable) ||
     (reply.inspection !== undefined && !inspectionAvailable) ||
     (reply.recall !== undefined && !recallAvailable) ||
+    (reply.pendingMemory !== undefined && !pendingMemoryAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
@@ -726,6 +743,7 @@ export function parseReply(
     Number(reply.analytics !== undefined) +
     Number(reply.inspection !== undefined) +
     Number(reply.recall !== undefined) +
+    Number(reply.pendingMemory === true) +
     Number(reply.dashboardLogin === true) +
     Number(reply.escalate === true);
   if (
@@ -744,6 +762,7 @@ export function parseReply(
       reply.analytics !== undefined ||
       reply.inspection !== undefined ||
       reply.recall !== undefined ||
+      reply.pendingMemory === true ||
       reply.dashboardLogin === true ||
       reply.latency !== undefined) &&
       reply.text.trim().length > 0)
