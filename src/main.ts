@@ -46,6 +46,7 @@ import { createMemoryExtractor } from "./models/extraction.js";
 import { createModelProvider } from "./models/provider.js";
 import { UsageLedger } from "./models/usage.js";
 import { freshEvidence } from "./reflection/domain.js";
+import { DiagnosticLog } from "./runtime/diagnostics.js";
 import { createInspectionReader } from "./runtime/inspection.js";
 import { createLatencyDiagnostics } from "./runtime/latency.js";
 import { createLifecycle } from "./runtime/lifecycle.js";
@@ -543,9 +544,22 @@ async function main() {
         }
       : undefined;
   const channels: Partial<Record<Channel, ChannelAdapter>> = {};
-  const latency = createLatencyDiagnostics();
+  startupStage = "private diagnostic log";
+  let diagnosticLog: DiagnosticLog | undefined;
+  try {
+    diagnosticLog = new DiagnosticLog(
+      join(process.env.RIVETKIT_STORAGE_PATH, "diagnostics", "logs.sqlite"),
+      release?.revision,
+    );
+  } catch {
+    // A telemetry-only fault must not prevent messaging or weaken file privacy.
+    console.error(
+      "June persistent diagnostics unavailable; using volatile observations only.",
+    );
+  }
+  const latency = createLatencyDiagnostics(diagnosticLog);
   const slackIngressDiagnostics = config.slack
-    ? createSlackIngressDiagnostics()
+    ? createSlackIngressDiagnostics((entry) => diagnosticLog?.ingress(entry))
     : undefined;
   const slackThreads = config.slack
     ? new SlackThreads(
@@ -928,6 +942,7 @@ async function main() {
   let stopping: Promise<void> | undefined;
   const shutdown = () =>
     (stopping ??= (async () => {
+      diagnosticLog?.lifecycle("process_stopping");
       try {
         await new Promise<void>((done) => server.close(() => done()));
         await client.dispose();
@@ -944,9 +959,12 @@ async function main() {
       // handling we own that final step too; native runtime handles may remain.
     })().then(
       () => {
+        diagnosticLog?.lifecycle("process_stopped");
+        diagnosticLog?.close();
         process.exit(process.exitCode ?? 0);
       },
       () => {
+        diagnosticLog?.lifecycle("shutdown_failed");
         console.error("June could not finish a graceful shutdown.");
         process.exit(1);
       },
@@ -956,6 +974,7 @@ async function main() {
       void shutdown();
     });
   server.once("error", () => {
+    diagnosticLog?.lifecycle("http_listener_failed");
     console.error("June HTTP listener failed; check host and port.");
     process.exitCode = 1;
     void shutdown();

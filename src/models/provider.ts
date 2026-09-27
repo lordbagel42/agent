@@ -104,6 +104,7 @@ const companionReplySchema = z.strictObject({
   latency: z
     .union([
       z.literal("recent"),
+      z.literal("logs"),
       z.uuid({ version: "v4" }).transform((value) => value.toLowerCase()),
     ])
     .optional(),
@@ -394,7 +395,7 @@ export function replyJsonSchema(
             latency: {
               type: ["string", "null"],
               description:
-                "Owner-private read-only latency report: recent for the last five retained messages, or an exact ping UUIDv4. Leave text empty and other action directives unset. The host sends the timing report directly, without another model call or any new probe.",
+                "Owner-private read-only diagnostics: logs for persistent lifecycle/Slack ingress logs, recent for the last five retained timing traces (including previous processes), or an exact ping UUIDv4. Leave text empty and other actions unset. The host sends the report directly, without another model call or any new probe. Never share logs with other users or in shared channels.",
             },
           }
         : {}),

@@ -1,21 +1,50 @@
 # Measuring reply latency
 
 `GET /operator/latency` uses the existing owner bearer credential. Never expose
-it publicly. It holds at most 128 process-local traces, each with at most 128
-stage observations and 16 delivery observations. Restart and eviction lose
-observations; absence does not mean no work occurred. Raw observations are not
+it publicly. Its live view holds at most 128 process-local traces, each with at most
+128 stage observations and 16 delivery observations. Production also saves every
+observed stage/delivery to `RIVETKIT_STORAGE_PATH/diagnostics/logs.sqlite` (normally
+`/var/lib/june/rivet/diagnostics/logs.sqlite`), outside release directories.
+`GET /operator/logs` returns the latest 128 persisted traces and 100 redacted
+lifecycle/Slack ingress events, including previous processes. Both routes require
+the owner operator credential; do not share it or route these endpoints publicly.
+Raw observations are not
 added to Rivet journals or usage accounting. Replayed sends/models are not reissued to measure
 them. Content, platform IDs, names, URLs, credentials, and provider errors are
 not retained. A random trace ID correlates stages; only an exact `ping <UUIDv4>`
 message additionally exposes that nonsecret probe UUID.
 
+SQLite is already part of June's Node runtime: no new dependency, daemon, external
+account, network export or extra model pass is required. WAL with `synchronous=NORMAL`
+commits each update before returning, without an fsync per stage. Committed records
+survive June process crashes/restarts, including abrupt termination. **Host/OS
+crashes, power loss or disk failure can still lose recent records.** This is not an
+audit log or backup. OTel alone would not supply durable storage; a collector with
+persistent queues and a backend would add operational overhead for this single host.
+
+The private directory is mode 0700 and SQLite file is 0600. The log refuses a
+nonprivate/noncanonical directory. If initialization fails, June emits a fixed
+warning and continues with volatile observations; `/operator/logs` reports
+`unavailable: true`. It never relaxes permissions or deletes a corrupt database
+to recover. Retention is 30 days with caps of 10,000 traces
+and 20,000 events; pruning runs at startup and every 128 writes (up to 128 extra
+rows between passes). Reads enforce the age limit even before pruning. SQLite
+reuses freed pages; retention does not guarantee physical erasure from disk/backups.
+Storage failures emit one fixed warning and increment a process-local counter;
+they never retry a model call or delivery. Check `writeFailures` in `/operator/logs`.
+No attempt is made to recover observations from before this feature was enabled.
+
 ## June can inspect her timings privately
 
 In an owner-private conversation, ask June to "show your recent reply timings"
-or "check the timing for ping <UUID>". Her output schema and instructions expose
-the read-only `latency` action (`"recent"` or a UUIDv4). It is unavailable in
+or "check the timing for ping <UUID>", including after a restart. Ask "show your
+logs" for recent lifecycle and Slack ingress records. Her output schema and
+instructions expose the read-only `latency` action (`"logs"`, `"recent"` or a UUIDv4).
+Only the configured owner's linked user accounts may request it privately. It is unavailable in
 channels, group conversations, and synthesis passes; the host independently
-checks private scope before reading diagnostics.
+checks private scope before reading diagnostics. Another user's DM is not an owner
+DM. June is instructed never to relay logs to another user or a shared channel,
+even if the owner asks there. No general filesystem, SQL or external log access is granted.
 
 The host sends up to five recent samples (or the requested probe), excluding
 the request in progress, through the ordinary durable reply/outbox. This needs
@@ -24,7 +53,9 @@ prompt. It neither changes settings nor retries original work. June sees the
 report in subsequent conversation history; she does not receive a same-turn
 synthesis pass and must not invent an interpretation before seeing the report.
 The requested human-readable report is ordinary conversation content and is
-retained as such. Raw diagnostic observations remain process-local.
+retained as such. Raw observations remain in the private diagnostic database, not
+conversation history. Historical traces retain their original process UUID,
+start time and release revision; they never reconnect to the new process's clocks.
 
 Reports include revision/process identity, missing/ambiguous/incomplete states,
 queue/context/provider/send spans and separate acknowledgments. They do not
@@ -93,7 +124,10 @@ If a watch is interrupted by a restart or failed read, it captures only the last
 same-process observations with `outcome: interrupted` and a fixed reason. It
 also retains partial traces evicted while watching; `unavailable` lists UUIDs
 whose current state could not be confirmed. Such evidence is incomplete, not
-permission to resend. A restart's lost observations cannot be recovered later.
+permission to resend. The watcher intentionally stays process-pinned; after a
+restart, read persisted evidence through June or `/operator/logs` instead of
+adopting a new process for the same measurement. Only stages recorded before the
+interruption can be recovered; replay does not manufacture missing stages.
 
 ### Prepare a serial comparison
 
@@ -175,7 +209,7 @@ over SSH is not a live June turn, even with the actual model and login.
   result arrived, validated means the answer passed provider validation and is
   ready to return, and retired means provider resource cleanup completed.
   Retirement may arrive after model return, text delivery, `finished`, or
-  `released`. It does not delay or change those existing stages. Volatile numeric
+  `released`. It does not delay or change those existing stages. Per-trace numeric
   `providerCall` and fixed `providerPhase` labels prevent delayed cleanup from
   being paired with another call; raw observations retain later calls while the
   private summary reports only the first observed call. All provider observations

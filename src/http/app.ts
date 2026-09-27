@@ -312,6 +312,13 @@ export function createHttpApp(deps: HttpDependencies) {
     app.get("/operator/latency", (c) =>
       c.json({ revision: deps.revision, ...latency.snapshot() }),
     );
+    app.get("/operator/logs", (c) => {
+      try {
+        return c.json(latency.logs());
+      } catch {
+        return c.json({ error: "diagnostic_logs_unavailable" }, 503);
+      }
+    });
   }
   if (deps.slackIngressDiagnostics) {
     const diagnostics = deps.slackIngressDiagnostics;

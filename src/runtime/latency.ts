@@ -4,6 +4,7 @@ import type {
   ProviderTimingStage,
   SendResult,
 } from "../core/contracts.js";
+import type { DiagnosticLog } from "./diagnostics.js";
 
 const providerStages = [
   "submitted",
@@ -56,6 +57,9 @@ export type ReplyKind = "ack" | "text" | "reaction" | "search";
 export interface LatencyTrace {
   id: string;
   receivedAt: number;
+  processId?: string;
+  processStartedAt?: number;
+  revision?: string;
   channel: "slack" | "whatsapp";
   threaded: boolean;
   probe?: string;
@@ -87,11 +91,11 @@ export function latencyProbe(text: string): string | undefined {
     ?.toLowerCase();
 }
 
-/** Bounded, volatile, prompt-free observations. No journal steps, replay work,
+/** Bounded, prompt-free observations with an optional persistent log. No journal steps, replay work,
  * provider retries, URLs, identity IDs, content, errors or credentials retained.
- * Missing/restarted/evicted traces stay missing, never reconstructed on replay. */
-export function createLatencyDiagnostics() {
-  const startedAt = Date.now();
+ * Historical traces are read-only: never reconnect clocks or reconstruct on replay. */
+export function createLatencyDiagnostics(log?: DiagnosticLog) {
+  const startedAt = log?.session.processStartedAt ?? Date.now();
   const salt = randomBytes(32);
   const traces = new Map<
     string,
@@ -116,6 +120,7 @@ export function createLatencyDiagnostics() {
       stage,
       ms: performance.now() - entry.start,
     });
+    log?.saveTrace(entry.trace);
   };
   return {
     begin(
@@ -139,6 +144,7 @@ export function createLatencyDiagnostics() {
         trace: {
           id: randomUUID(),
           receivedAt: arrival.at,
+          ...log?.session,
           channel: event.address.channel,
           threaded: !!event.address.threadId,
           ...(probe ? { probe } : {}),
@@ -172,6 +178,7 @@ export function createLatencyDiagnostics() {
           providerCall,
           providerPhase: phase,
         });
+        log?.saveTrace(entry.trace);
       };
     },
     delivered(
@@ -203,6 +210,7 @@ export function createLatencyDiagnostics() {
           : { platformMs: Number(destination - source) / 1000 }),
         ...(entry.trace.probe && kind === "text" ? { pong } : {}),
       });
+      log?.saveTrace(entry.trace);
     },
     snapshot() {
       return {
@@ -210,18 +218,42 @@ export function createLatencyDiagnostics() {
         traces: [...traces.values()].map(({ trace }) => structuredClone(trace)),
       };
     },
+    /** Current-process snapshot stays separate so live probes cannot silently
+     * adopt a historical run after a restart. Only owner routes may read logs. */
+    logs() {
+      return log?.snapshot() ?? { unavailable: true };
+    },
     /** Called only by the owner-private host action. The requested summary is
-     * normal reply content; raw observations remain volatile and prompt-free. */
+     * normal reply content; raw observations remain outside prompts/journals. */
     report(query: string, event: MessageEvent, revision?: string) {
       const probe = latencyProbe(`ping ${query}`);
-      if (query !== "recent" && !probe)
-        return "Use recent or an exact ping UUIDv4 for latency diagnostics.";
-      const retained = [...traces.entries()]
+      if (query !== "recent" && query !== "logs" && !probe)
+        return "Use logs, recent or an exact ping UUIDv4 for diagnostics.";
+      const live = [...traces.entries()]
         .filter(
           ([id, { trace }]) =>
             id !== key(event) && (!probe || trace.probe === probe),
         )
         .map(([, { trace }]) => trace);
+      let retained = live;
+      try {
+        if (query === "logs")
+          return log?.report() ?? "Persistent diagnostic logs are unavailable.";
+        if (log) {
+          const combined = new Map(
+            log
+              .traces(probe, find(event)?.trace.id)
+              .map((trace) => [trace.id, trace]),
+          );
+          // Include in-memory observations even if the persistence write failed.
+          for (const trace of live) combined.set(trace.id, trace);
+          retained = [...combined.values()].sort(
+            (a, b) => a.receivedAt - b.receivedAt,
+          );
+        }
+      } catch {
+        return "Persistent diagnostic logs are unavailable; missing data cannot establish success or failure.";
+      }
       const header = `Latency diagnostics — revision ${revision ?? "unknown"}; process startedAt ${startedAt}.`;
       if (probe && retained.length > 1)
         return `${header}\nMultiple retained messages used that probe UUID. The measurement is ambiguous; do not resend it.`;
@@ -269,6 +301,11 @@ export function createLatencyDiagnostics() {
         );
         return [
           `${new Date(trace.receivedAt).toISOString()} ${trace.channel} ${trace.threaded ? "thread" : "top-level"}; ${state}${trace.probe ? `; probe ${trace.probe}; pong ${sent?.pong === true ? "accepted" : "not confirmed"}` : ""}`,
+          ...(trace.processId
+            ? [
+                `Recorded by process ${trace.processId}, startedAt ${trace.processStartedAt}; revision ${trace.revision ?? "unknown"}.`,
+              ]
+            : []),
           `Slack E2E ${ms(sent?.platformMs)}; host text ${ms(time("text_sent"))}; HTTP ack ${ms(time("http_ack"))}; typing ack ${ms(time("typing_accepted"))}; textual ack ${ms(time("ack_sent"))}.`,
           `Queue ${ms(span("submission_started", "dequeued"))}; context ${ms(span("context_started", "context_ready"))}; provider fast/deep/synthesis ${ms(span("fast_started", "fast_finished"))}/${ms(span("deep_started", "deep_finished"))}/${ms(span("synthesis_started", "synthesis_finished"))}; send ${ms(span("text_started", "text_sent"))}.`,
           `Provider first observed call (${firstProvider?.providerPhase ?? "unobserved"}): submitted→terminal ${ms(providerSpan("submitted", "terminal"))}; validation ${ms(providerSpan("terminal", "validated"))}; answer-ready ${ms(providerTime("validated"))} since arrival; submitted→answer-ready ${ms(providerSpan("submitted", "validated"))}; cleanup ${ms(providerSpan("validated", "retired"))}; missing stages: ${missing.length ? missing.map((stage) => `provider_${stage}`).join(", ") : "none"}.`,
@@ -280,7 +317,10 @@ export function createLatencyDiagnostics() {
           ? `${selected.length} retained sample(s), newest first, excluding this request:`
           : "No matching retained samples. Missing is not proof no reply occurred; do not resend a probe.",
         ...rows,
-        "Times are first spans, not additive totals. Provider includes process/transport, not TTFT or inference alone; acknowledgments overlap. Provider retirement can arrive after turn completion; missing stages are unobserved, not zero, and do not prove success or failure. E2E means Slack timestamp delta, not human read time. At most 128 volatile traces; restarts/eviction lose data. Model settings and cold-provider state are not measured; do not infer a speedup from one sample.",
+        "Times are first spans, not additive totals. Provider includes process/transport, not TTFT or inference alone; acknowledgments overlap. Provider retirement can arrive after turn completion; missing stages are unobserved, not zero, and do not prove success or failure. E2E means Slack timestamp delta, not human read time. Model settings and cold-provider state are not measured; do not infer a speedup from one sample.",
+        log
+          ? "Persistent traces survive process restarts; retention is 30 days / 10,000 traces. Each sample keeps its original process and revision; never merge timings across runs. Retention, write failures or host power loss can leave gaps."
+          : "At most 128 volatile traces; restarts/eviction lose data.",
       ].join("\n\n");
     },
   };

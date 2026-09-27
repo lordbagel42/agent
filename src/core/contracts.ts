@@ -170,7 +170,7 @@ export interface CompanionReply {
     tool: string | null;
     offset: number;
   };
-  /** Owner-private read-only timings: "recent" or one ping UUIDv4. */
+  /** Owner-private diagnostics: "logs", "recent" timings or one ping UUIDv4. */
   latency?: string;
   /** Owner-private aggregate token usage for the last 1, 7, or 30 days. */
   analytics?: { days: 1 | 7 | 30 };
@@ -193,7 +193,7 @@ export interface ModelRequest {
   messages: ConversationMessage[];
   /** Host-only accounting label, never part of a provider prompt. */
   usageStage?: "fast" | "deep" | "synthesis" | "execution";
-  /** Volatile host diagnostics only; never serialize into prompts or journals.
+  /** Host diagnostics callback only; never serialize into prompts or journals.
    * Retirement may be observed after reply resolves and the turn finishes. */
   onProviderTiming?: (stage: ProviderTimingStage) => void;
   /** Only these configured workspace names may be delegated. */

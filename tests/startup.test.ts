@@ -150,6 +150,11 @@ describe("runnable June host", () => {
       ]);
     await stop(first.child);
     await stopTestEngine(directory, enginePort);
+    // A telemetry-only corruption must not take messaging down or expose errors.
+    await writeFile(
+      join(directory, "diagnostics", "logs.sqlite"),
+      "private-corrupt-diagnostics",
+    );
     const second = start();
     await expect
       .poll(
@@ -163,10 +168,36 @@ describe("runnable June host", () => {
         { timeout: 15_000 },
       )
       .toBe(200);
+    expect((await request("/operator/logs", { headers })).status).toBe(200);
+    expect(await (await request("/operator/logs", { headers })).json()).toEqual(
+      { unavailable: true },
+    );
+    expect(second.output()).toContain("persistent diagnostics unavailable");
+    expect(second.output()).not.toContain("private-corrupt-diagnostics");
+    // Receive a fresh signed callback with logging unavailable, without inference.
+    const fresh = body.replaceAll("wamid.receipt", "wamid.after-restart");
+    expect(
+      (
+        await request("/webhooks/whatsapp", {
+          method: "POST",
+          body: fresh,
+          headers: {
+            "content-type": "application/json",
+            "x-hub-signature-256": `sha256=${createHmac("sha256", "fixture-secret").update(fresh).digest("hex")}`,
+          },
+        })
+      ).status,
+    ).toBe(200);
+    await expect
+      .poll(async () => Object.values((await snapshot()).events).length)
+      .toBe(2);
     expect(Object.values((await snapshot()).events)).toEqual([
       expect.objectContaining({
         done: true,
         event: expect.objectContaining({ messageId: "wamid.receipt" }),
+      }),
+      expect.objectContaining({
+        event: expect.objectContaining({ messageId: "wamid.after-restart" }),
       }),
     ]);
     expect((await snapshot()).history).toEqual([]);

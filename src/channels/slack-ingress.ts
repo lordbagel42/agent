@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-const stages = [
+export const slackIngressStages = [
   "arrival",
   "body_too_large",
   "adapter_received",
@@ -21,9 +21,9 @@ const stages = [
   "submission_failed",
 ] as const;
 
-export type SlackIngressStage = (typeof stages)[number];
+export type SlackIngressStage = (typeof slackIngressStages)[number];
 
-interface Observation {
+export interface SlackIngressObservation {
   requestId: string;
   at: number;
   stage: SlackIngressStage;
@@ -35,26 +35,29 @@ export interface SlackIngressDiagnostics {
   snapshot(): {
     startedAt: number;
     counts: Partial<Record<SlackIngressStage, number>>;
-    recent: Observation[];
+    recent: SlackIngressObservation[];
   };
 }
 
 /**
- * Process-local diagnostics, not an audit log or proof of model processing.
+ * Process-local counters with an optional redacted persistent observation sink.
+ * Not an audit log or proof of model processing.
  * Record arrival before body limiting; associate any middleware replacement
  * before recording its stages so HTTP and adapter hooks share a correlation ID.
  * Never read its URL, headers or body: even provider IDs can carry private data.
  * Only expose snapshots through the authenticated operator API.
  */
-export function createSlackIngressDiagnostics(): SlackIngressDiagnostics {
+export function createSlackIngressDiagnostics(
+  persist?: (observation: SlackIngressObservation) => void,
+): SlackIngressDiagnostics {
   const startedAt = Date.now();
   const requests = new WeakMap<Request, string>();
   const counts: Partial<Record<SlackIngressStage, number>> = {};
-  const recent: Observation[] = [];
+  const recent: SlackIngressObservation[] = [];
   return {
     record(request, stage) {
       // Enforce the allowlist at runtime too; never retain caller-provided text.
-      if (!stages.includes(stage)) return;
+      if (!slackIngressStages.includes(stage)) return;
       let requestId = requests.get(request);
       if (requestId === undefined) {
         requestId = randomUUID();
@@ -64,8 +67,10 @@ export function createSlackIngressDiagnostics(): SlackIngressDiagnostics {
         Number.MAX_SAFE_INTEGER,
         (counts[stage] ?? 0) + 1,
       );
-      recent.push({ requestId, at: Date.now(), stage });
+      const observation = { requestId, at: Date.now(), stage };
+      recent.push(observation);
       if (recent.length > 256) recent.shift();
+      persist?.(observation);
     },
     associate(original, replacement) {
       const requestId = requests.get(original);
