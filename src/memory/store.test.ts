@@ -368,13 +368,17 @@ it("stages quoted proposals without granting authority, scopes before ranking, a
     expect(() =>
       store.stageProposals("private", ["s1"], [{ ...input, ...patch }]),
     ).toThrow();
-  const [proposal] = await extractMemory(
+  const [proposal, pending, rejected] = await extractMemory(
     store,
     "private",
     ["s1"],
     async (context) => {
       expect(context).toEqual([source()]);
-      return [input];
+      return [
+        input,
+        { ...input, text: "another hypothesis" },
+        { ...input, text: "rejected hypothesis" },
+      ];
     },
   );
   if (!proposal) throw new Error("Missing proposal");
@@ -400,26 +404,23 @@ it("stages quoted proposals without granting authority, scopes before ranking, a
     JSON.stringify(store.retrieve("private", "", { maxCharacters: 100 }))
       .length,
   ).toBeLessThanOrEqual(100);
-  const [pending] = store.stageProposals(
-    "private",
-    ["s1"],
-    [{ ...input, text: "another hypothesis" }],
-  );
   expect(pending?.status).toBe("pending");
-  const [rejected] = store.stageProposals(
-    "private",
-    ["s1"],
-    [{ ...input, text: "rejected hypothesis" }],
-  );
   if (!rejected) throw new Error("Missing proposal");
   store.reviewProposal("private", rejected.id, "rejected");
   expect(
-    store.stageProposals(
-      "private",
-      ["s1"],
-      [{ ...input, text: "rejected hypothesis" }],
-    )[0]?.status,
-  ).toBe("rejected");
+    store
+      .stageProposals(
+        "private",
+        ["s1"],
+        [{ ...input, text: "rephrased hypothesis", confidence: 0.9 }],
+      )
+      .map((p) => ({ id: p.id, status: p.status })),
+  ).toEqual([
+    { id: proposal.id, status: "accepted" },
+    { id: pending?.id, status: "pending" },
+    { id: rejected.id, status: "rejected" },
+  ]);
+  expect(store.proposals("private")).toHaveLength(3);
   expect(() =>
     store.reviewProposal("private", rejected.id, "accepted"),
   ).toThrow();

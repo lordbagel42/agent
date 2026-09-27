@@ -109,9 +109,19 @@ The result goes to `stageProposals(audience, sourceIds, output)`. It checks exac
 source quotations and current dependencies, derives scope and stable entity IDs,
 and atomically persists encrypted pending proposals. The subject's entity ID is
 derived from that source's platform, account and author. Quotes establish
-provenance, not semantic entailment: human review remains necessary. Identical proposals
-deduplicate; acceptance/rejection is not reset by extractor retries. The async
-helper awaits actual provider settlement; abort/deletion prevents later staging.
+provenance, not semantic entailment: human review remains necessary. The first
+successful admission for an audience and exact source-ID set is durable, even
+when it produces no proposals. Reordering those IDs or changing model wording or
+confidence returns the original proposals with their current review decisions;
+it cannot add hypotheses from the same extraction input on retry. Other audiences
+and different source-ID sets have separate admissions. Identical grounded proposals
+within one audience still share their existing proposal ID and review decision,
+even across different batches. IDs already bind immutable source records; changed
+content under the same ID still fails ingestion rather than being merged.
+This does not prevent a provider call: runtime intent tracking
+owns paid-call retries. The async helper awaits actual provider settlement;
+abort/deletion prevents later staging. Older snapshots have no admission receipts;
+their first post-upgrade admission records one without rewriting existing proposals.
 
 Operator APIs:
 

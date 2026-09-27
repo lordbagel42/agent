@@ -98,6 +98,15 @@ const stateSchema = z.strictObject({
   tombstones: z.array(id),
   imports: z.array(progressSchema),
   proposals: z.array(proposalSchema).default([]),
+  extractions: z
+    .array(
+      z.strictObject({
+        audience: id,
+        sourceIds: ids,
+        proposalIds: z.array(id).max(20),
+      }),
+    )
+    .default([]),
 });
 const pageSchema = z.strictObject({
   sources: z.array(sourceSchema).max(1000),
@@ -255,6 +264,7 @@ export class EvidenceStore {
             tombstones: [],
             imports: [],
             proposals: [],
+            extractions: [],
           });
           this.db.exec("COMMIT");
         } catch (error) {
@@ -434,7 +444,30 @@ export class EvidenceStore {
         },
       });
     });
+    const selected = sources.map((source) => source.id).sort();
+    let admitted: string[] = [];
     this.transaction((state) => {
+      // Source IDs are immutable revision identities. Admission belongs to the
+      // exact scoped input set, not model wording, confidence or input order.
+      // Recheck even empty outputs so deletion in flight cannot leave a receipt.
+      for (const source of sources) {
+        if (
+          !isDeepStrictEqual(
+            state.sources.find((s) => s.id === source.id),
+            source,
+          )
+        )
+          throw new Error("Missing or unauthorized source");
+      }
+      const previous = state.extractions.find(
+        (entry) =>
+          entry.audience === audience &&
+          isDeepStrictEqual(entry.sourceIds, selected),
+      );
+      if (previous) {
+        admitted = previous.proposalIds;
+        return;
+      }
       for (const proposal of proposals) {
         // Validate against today's state within the write transaction, including
         // deletion while extraction was in flight. Do not publish pending claims.
@@ -442,11 +475,15 @@ export class EvidenceStore {
         if (!state.proposals.some((p) => p.id === proposal.id))
           state.proposals.push(proposal);
       }
+      admitted = proposals.map((proposal) => proposal.id);
+      state.extractions.push({
+        audience,
+        sourceIds: selected,
+        proposalIds: admitted,
+      });
     });
     const saved = this.proposals(audience);
-    return proposals.map(
-      (p) => saved.find((s) => s.id === p.id) as MemoryProposal,
-    );
+    return admitted.flatMap((id) => saved.find((s) => s.id === id) ?? []);
   }
 
   proposals(audience: string): MemoryProposal[] {
@@ -641,6 +678,11 @@ export class EvidenceStore {
         removed.add(p.id);
         return false;
       });
+      state.extractions = state.extractions.filter(
+        (entry) => !entry.sourceIds.some((id) => removed.has(id)),
+      );
+      for (const entry of state.extractions)
+        entry.proposalIds = entry.proposalIds.filter((id) => !removed.has(id));
       state.tombstones = [...new Set([...state.tombstones, ...removed])];
     });
   }
