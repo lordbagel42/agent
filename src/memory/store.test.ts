@@ -443,6 +443,77 @@ it("stages quoted proposals without granting authority, scopes before ranking, a
   );
 });
 
+it("projects only scoped reviewed patterns with intact provenance and forgets them across reopen", () => {
+  const { store, path } = open();
+  store.appendSource(source());
+  store.appendSource(source("other", "other-owner"));
+  const input: MemoryProposalInput = {
+    subjectSourceId: "s1",
+    text: "A private learned pattern",
+    category: "pattern",
+    citations: [{ sourceId: "s1", quote: "sensitive kumquat" }],
+    confidence: 0.6,
+    validFrom: 100,
+    validTo: 200,
+    contradicts: [],
+    supersedes: [],
+  };
+  const proposals = store.stageProposals(
+    "private",
+    ["s1"],
+    [
+      input,
+      { ...input, text: "pending pattern" },
+      { ...input, text: "rejected pattern" },
+      { ...input, text: "accepted preference", category: "preference" },
+    ],
+  );
+  const accepted = proposals[0];
+  if (!accepted) throw new Error("Missing proposal");
+  for (const [index, proposal] of proposals.entries()) {
+    if (index !== 1)
+      store.reviewProposal(
+        "private",
+        proposal.id,
+        index === 2 ? "rejected" : "accepted",
+      );
+  }
+  // A directly appended claim, even with copied grounding, is not review.
+  store.appendClaim({ ...accepted.claim, id: "unreviewed-claim" });
+  const [foreign] = store.stageProposals(
+    "other-owner",
+    ["other"],
+    [
+      {
+        ...input,
+        subjectSourceId: "other",
+        text: "foreign pattern",
+        citations: [{ sourceId: "other", quote: "kumquat" }],
+      },
+    ],
+  );
+  if (!foreign) throw new Error("Missing proposal");
+  store.reviewProposal("other-owner", foreign.id, "accepted");
+  const expected = [
+    {
+      claim: accepted.claim,
+      sources: [{ id: "s1", sourceUrl: source().sourceUrl, observedAt: 100 }],
+    },
+  ];
+  expect(store.reviewedPatterns("private")).toEqual(expected);
+  expect(store.reviewedPatterns("public")).toEqual([]);
+  store.close();
+  const reopened = open(path).store;
+  expect(reopened.reviewedPatterns("private")).toEqual(expected);
+  reopened.deleteSource("s1");
+  expect(reopened.reviewedPatterns("private")).toEqual([]);
+  expect(reopened.reviewedPatterns("other-owner")[0]?.claim.id).toBe(
+    foreign.id,
+  );
+  reopened.close();
+  expect(open(path).store.reviewedPatterns("private")).toEqual([]);
+});
+
 it("does not publish an extraction completed after deletion or turn historical messages into owner corrections", async () => {
   const { store } = open();
   store.appendSource(source());

@@ -70,6 +70,43 @@ it.for(["reply", "deep"] as const)(
       });
     }
     for (const related of relationshipClaims) store.appendClaim(related);
+    const learnedPattern = "Prefer short debugging sessions";
+    const original = source(event, scope);
+    const supporting = source(
+      {
+        ...event,
+        messageId: event.messageId.replace("000001", "000000"),
+        text: "Evening sessions end early",
+      },
+      scope,
+    );
+    store.appendSource(supporting);
+    const [pattern] = store.stageProposals(
+      scope,
+      [original.id, supporting.id],
+      [
+        {
+          subjectSourceId: original.id,
+          text: learnedPattern,
+          category: "pattern",
+          citations: [
+            { sourceId: original.id, quote: event.text },
+            { sourceId: supporting.id, quote: supporting.text },
+          ],
+          confidence: 0.6,
+          validFrom: null,
+          validTo: null,
+          contradicts: [],
+          supersedes: [],
+        },
+      ],
+    );
+    if (!pattern) throw new Error("Missing proposal");
+    store.reviewProposal(scope, pattern.id, "accepted");
+    // This pattern must not depend on a keyword match in the current turn.
+    expect(store.retrieve(scope, event.text).claims).not.toContainEqual(
+      pattern.claim,
+    );
     const requests: ModelRequest[] = [];
     const sent: OutboundMessage[] = [];
     const extracted: string[][] = [];
@@ -157,9 +194,20 @@ it.for(["reply", "deep"] as const)(
     expect(contexts).toEqual([
       {
         sources: [source(event, scope)],
-        existingClaims: [...relationshipClaims, claim],
+        existingClaims: [...relationshipClaims, claim, pattern.claim],
       },
     ]);
+    expect(requests[0]?.system).toContain(learnedPattern);
+    expect(requests[0]?.system).toContain(original.sourceUrl);
+    expect(requests[0]?.system).toContain("not public global personality");
+    const snapshot = await june.snapshot();
+    const eventKey = Object.entries(snapshot.events).find(
+      ([, record]) => record.event.id === event.id,
+    )?.[0];
+    if (!eventKey) throw new Error("Missing event");
+    expect(snapshot.memoryContexts?.[eventKey]?.sourceIds).toContain(
+      supporting.id,
+    );
     await june.send("inbox", { type: "event", event });
     const publicJune = client.conversation.getOrCreate([
       "slack",
@@ -188,6 +236,7 @@ it.for(["reply", "deep"] as const)(
     expect(JSON.stringify(requests[1])).not.toContain("PRIVATE");
     expect(JSON.stringify(requests[1])).not.toContain("alex-a");
     expect(JSON.stringify(requests[1])).not.toContain("relationships");
+    expect(JSON.stringify(requests[1])).not.toContain(learnedPattern);
     expect(extracted).toHaveLength(1);
     expect(contexts).toHaveLength(1);
     await june.send("inbox", {
@@ -223,6 +272,7 @@ it.for(["reply", "deep"] as const)(
       ).toBeLessThanOrEqual(12);
       expect(JSON.stringify(memory.evidence).length).toBeLessThanOrEqual(16000);
     }
+    expect(requests.at(-1)?.system).toContain(learnedPattern);
     store.deleteSource(source(event, scope).id);
     await june.forget(source(event, scope).id);
     pending.resolve({
@@ -248,6 +298,7 @@ it.for(["reply", "deep"] as const)(
     await expect.poll(done).toBe(3);
     expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE");
     expect(JSON.stringify(requests.at(-1))).not.toContain("alex-a");
+    expect(JSON.stringify(requests.at(-1))).not.toContain(learnedPattern);
   },
 );
 

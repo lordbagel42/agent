@@ -518,6 +518,53 @@ export class EvidenceStore {
     });
   }
 
+  /** Reviewed patterns are context even without a lexical match. Keep complete
+   * grounding and source links, not raw episodes or unreviewed reflection output.
+   * Re-read every turn; forgetting removes proposals and their derived claims. */
+  reviewedPatterns(audience: string): {
+    claim: Claim;
+    sources: Pick<Source, "id" | "sourceUrl" | "observedAt">[];
+  }[] {
+    parse(id, audience);
+    const state = this.read();
+    const sources = new Map(
+      state.sources
+        .filter(
+          (source) =>
+            source.audiences.includes(audience) &&
+            !(source.platform === "slack" && source.text.startsWith("##")),
+        )
+        .map((source) => [source.id, source]),
+    );
+    const result: ReturnType<EvidenceStore["reviewedPatterns"]> = [];
+    // Newest staged first, not confidence-ranked or a claim of review recency.
+    for (const proposal of state.proposals.toReversed()) {
+      const { claim } = proposal;
+      if (
+        proposal.audience !== audience ||
+        proposal.status !== "accepted" ||
+        claim.grounding?.category !== "pattern" ||
+        !claim.dependsOn.every((id) => sources.has(id))
+      )
+        continue;
+      result.push({
+        claim,
+        sources: claim.dependsOn.map((id) => {
+          const source = sources.get(id) as Source;
+          return {
+            id,
+            sourceUrl: source.sourceUrl,
+            observedAt: source.observedAt,
+          };
+        }),
+      });
+      // Omit an oversized record whole; never truncate its citations or edges.
+      if (JSON.stringify(result).length > 8000) result.pop();
+      if (result.length === 6) break;
+    }
+    return result;
+  }
+
   /** Original episodes only: a dream/claim repetition never becomes independent
    * reflection evidence. Freshness is measured from source observation time. */
   reflectionEvidence(

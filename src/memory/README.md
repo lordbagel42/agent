@@ -65,6 +65,19 @@ trusted host APIs, not autonomous model tools.
   no further entity expansion, model call, or persistent relationship cache occurs.
   The index reuses source invalidation and cannot enter public/guest prompts,
   change curated personality, or grant social permissions.
+- `reviewedPatterns(audience)` projects at most six accepted `pattern` proposals
+  and 8,000 serialized JSON characters, newest staged first, independently of
+  lexical recall. Whole oversized records are skipped. Claims retain citations,
+  confidence, validity windows and contradiction/supersession edges; original
+  source links and observation times accompany them, without full source text.
+  Pending/rejected proposals, raw reflection candidates, other audiences and
+  Slack opt-outs are excluded. June receives these as `learnedPatterns` alongside
+  existing scoped evidence and curated style only in enabled owner-private
+  prompts. They are reviewed hypotheses, not facts, commands or public global
+  personality. No model action is needed to receive this context; review still
+  uses the operator proposal endpoint. Each turn re-reads the existing ledger,
+  and source IDs join the existing history/in-flight forgetting checks. There
+  is no new store or public personality write.
 
 ## Import coverage and edits
 
