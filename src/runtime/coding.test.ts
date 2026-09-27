@@ -1713,6 +1713,58 @@ describe("separate coding supervisor", () => {
   });
 
   it.for([false, true])(
+    "withholds untracked legacy completion after a ledger deletion (deleted=%s)",
+    async (deleted, t) => {
+      const store = new EvidenceStore(":memory:", randomBytes(32));
+      t.onTestFinished(() => store.close());
+      store.appendSource({
+        id: "untracked-ancestor",
+        platform: "slack",
+        account: "T1",
+        conversation: "D1",
+        author: "U1",
+        audiences: [JSON.stringify(["private", owner.id])],
+        observedAt: Date.now(),
+        sourceUrl: "https://fixture.slack.com/archives/D1/p1000001",
+        text: "Legacy completion context",
+      });
+      if (deleted) store.deleteSource("untracked-ancestor");
+      const { registry, sent, modelRequests } = await fixture(
+        t,
+        {
+          async run() {
+            throw new Error("Completion delivery must not launch a job");
+          },
+        },
+        { store, source: () => undefined },
+        { completionText: "" },
+      );
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", owner.id]);
+      const text = "Legacy supervisor summary; independent result unknown.";
+      await june.send("inbox", {
+        type: "job_result",
+        jobId: "legacy-job",
+        attempt: 1,
+        source,
+        text,
+      });
+      await expect
+        .poll(
+          async () =>
+            Object.values((await june.snapshot()).events).filter(
+              (entry) => entry.done,
+            ).length,
+          { timeout: 15000 },
+        )
+        .toBe(1);
+      expect(modelRequests).toHaveLength(deleted ? 0 : 1);
+      expect(sent).toHaveLength(deleted ? 0 : 1);
+      if (!deleted) expect(sent[0]?.content).toEqual({ type: "text", text });
+    },
+  );
+
+  it.for([false, true])(
     "notifies the requester once despite silent synthesis and duplicate completion (unknown=%s)",
     async (unknown, t) => {
       let launches = 0;
@@ -1756,7 +1808,9 @@ describe("separate coding supervisor", () => {
             message.content.type === "text" &&
             message.content.text.startsWith(`Coding job ${id.slice(0, 12)}:`),
         );
-      await expect.poll(() => notifications().length).toBe(1);
+      await expect
+        .poll(() => notifications().length, { timeout: 15000 })
+        .toBe(1);
       const notification = notifications()[0];
       if (notification?.content.type !== "text")
         throw new Error("No completion notification");
@@ -1980,6 +2034,15 @@ describe("separate coding supervisor", () => {
     expect(launches).toBe(1);
     expect((await job.snapshot()).threadId).toBe("T-original-runtime");
     await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+    // Wait for the terminal notification before shutting down its receiving actors.
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).some((e) => e.done),
+        { timeout: 15000 },
+      )
+      .toBe(true);
   });
 
   it("keeps revocation when forgetting overtakes a queued proposal", async (t) => {

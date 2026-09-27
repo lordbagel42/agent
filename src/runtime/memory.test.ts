@@ -339,6 +339,13 @@ it.for(["search", "dependents", "claim"] as const)(
     expect(first.state.history.at(-1)?.context?.sourceIds).toEqual(
       expectedOriginals,
     );
+    expect(first.state.history.at(-1)?.context?.contextSourceIds).toEqual(
+      expect.arrayContaining(
+        mode === "claim"
+          ? ["claim-3"]
+          : evidence.claims.map((claim: Claim) => claim.id),
+      ),
+    );
     expect(first.state.jobs).toEqual({});
     if (mode === "dependents") {
       store.appendSource({
@@ -461,6 +468,9 @@ it.for(["search", "dependents", "claim"] as const)(
       expect(categorized.state.history.at(-1)?.context?.sourceIds).toEqual([
         source.id,
       ]);
+      expect(
+        categorized.state.history.at(-1)?.context?.contextSourceIds,
+      ).toContain("claim-9");
       expect(requests.at(-1)?.system).toContain("category-filtered recall");
       store.appendSource({
         ...source,
@@ -1128,6 +1138,11 @@ it.for(["reply", "deep"] as const)(
       expect(JSON.stringify(memory.evidence).length).toBeLessThanOrEqual(16000);
     }
     expect(requests.at(-1)?.system).toContain(learnedPattern);
+    expect(
+      Object.values((await june.snapshot()).memoryContexts ?? {}).flatMap(
+        (reference) => reference.contextSourceIds ?? [],
+      ),
+    ).toContain(pattern.claim.id);
     store.deleteSource(source(event, scope).id);
     await june.forget(source(event, scope).id);
     pending.resolve({

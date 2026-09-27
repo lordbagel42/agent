@@ -28,8 +28,10 @@ export interface ExecutionRequest {
   task: string;
   workspaces: string[];
   web: boolean;
-  /** Transitive provenance of the interaction prompt that produced this task. */
+  /** Complete deletion dependencies, including claim IDs; not corroboration. */
   evidenceIds: string[];
+  /** Legacy requests cannot prove which visible claims influenced their task. */
+  deletionTracked?: true;
 }
 interface RequestState extends ExecutionRequest {
   status:
@@ -59,6 +61,7 @@ export function createExecutionActor(
 ) {
   const current = (state: ExecutionState) =>
     !state.revoked &&
+    Object.values(state.requests).every((r) => r.deletionTracked === true) &&
     state.evidenceIds.every(
       (id) => !!deps.memory && !deps.memory.store.isDeleted(id),
     );
@@ -78,7 +81,18 @@ export function createExecutionActor(
     }),
     queues: { tasks: queue<{ id: string }>() },
     actions: {
-      summary: (c) => {
+      summary: async (c) => {
+        // A legacy save may precede its queue message. Retire invalid queued
+        // work even when no message can reach execute; never release a live call.
+        if (!current(c.state)) {
+          let changed = false;
+          for (const request of Object.values(c.state.requests)) {
+            if (request.status !== "queued") continue;
+            request.status = "cancelled";
+            changed = true;
+          }
+          if (changed) await c.vars.persist();
+        }
         const latest = Object.values(c.state.requests).at(-1);
         return {
           pending: Object.values(c.state.requests).filter(
@@ -125,6 +139,7 @@ export function createExecutionActor(
           !deps.execution ||
           !isOwner(input.source, deps.owner) ||
           !current(c.state) ||
+          (!!deps.memory && input.deletionTracked !== true) ||
           !scope ||
           executionKey(scope.key, "")[0] !== c.key[0] ||
           !/^[a-f0-9]{64}:[a-z][a-z0-9-]{0,47}$/.test(input.id) ||
@@ -142,7 +157,11 @@ export function createExecutionActor(
             ).length >= 4
           )
             return false;
-          c.state.requests[input.id] = { ...input, status: "queued" };
+          c.state.requests[input.id] = {
+            ...input,
+            deletionTracked: true,
+            status: "queued",
+          };
           c.state.evidenceIds = [
             ...new Set([...c.state.evidenceIds, ...input.evidenceIds]),
           ];
@@ -189,7 +208,7 @@ export function createExecutionActor(
               timeout: 0,
               run: async (step) => {
                 const request = step.state.requests[id];
-                if (!request || step.state.revoked) return;
+                if (!request) return;
                 if (request.status === "running") {
                   request.status = "needs_review";
                   request.report =
@@ -203,6 +222,13 @@ export function createExecutionActor(
                   await step.vars.persist();
                 }
                 if (request.status !== "queued") return;
+                if (!current(step.state)) {
+                  // This serial step owns no live call yet. Retire stale queued
+                  // occupancy without rehabilitating its untracked history.
+                  request.status = "cancelled";
+                  await step.vars.persist();
+                  return;
+                }
                 const scope = routeEvent(request.source, deps.owner);
                 if (
                   !scope ||

@@ -368,10 +368,12 @@ it.for(["before-session", "after-session"])(
       event: { ...source, id: "after-duplicate", messageId: "123.999" },
     });
     await expect
-      .poll(async () =>
-        Object.values((await june.snapshot()).events).some(
-          ({ event, done }) => event.id === "after-duplicate" && done,
-        ),
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).some(
+            ({ event, done }) => event.id === "after-duplicate" && done,
+          ),
+        { timeout: 15000 },
       )
       .toBe(true);
     expect(

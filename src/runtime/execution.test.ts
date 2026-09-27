@@ -1,4 +1,7 @@
 import { randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type {
@@ -8,7 +11,7 @@ import type {
   OutboundMessage,
 } from "../core/contracts.js";
 import { slackSource } from "../imports/index.js";
-import { EvidenceStore } from "../memory/store.js";
+import { EvidenceStore, type Source } from "../memory/store.js";
 import { parseReply } from "../models/provider.js";
 import { executionKey } from "./execution.js";
 import { createJuneRegistry } from "./registry.js";
@@ -16,6 +19,7 @@ import { createJuneRegistry } from "./registry.js";
 // Pause a real worker save, not a replacement workflow or production test hook.
 const persistence = vi.hoisted(() => ({
   afterSave: undefined as undefined | (() => Promise<void>),
+  legacy: false as boolean | "queued" | "running",
 }));
 vi.mock("rivetkit", async (importOriginal) => {
   const real = await importOriginal<typeof import("rivetkit")>();
@@ -40,6 +44,24 @@ vi.mock("rivetkit", async (importOriginal) => {
         createVars: async (c) => ({
           ...(await createVars?.(c)),
           persist: async () => {
+            if (persistence.legacy) {
+              const state = c.state as {
+                requests: Record<
+                  string,
+                  { id: string; status: string; deletionTracked?: true }
+                >;
+                activeRequest?: string;
+              };
+              for (const request of Object.values(state.requests)) {
+                delete request.deletionTracked;
+                if (typeof persistence.legacy === "string") {
+                  request.status = persistence.legacy;
+                  if (persistence.legacy === "running")
+                    state.activeRequest = request.id;
+                }
+              }
+              persistence.legacy = false;
+            }
             await c.saveState({ immediate: true });
             await persistence.afterSave?.();
           },
@@ -103,10 +125,12 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
   const sent: OutboundMessage[] = [];
   const work: ModelRequest[] = [];
   const turns: ModelRequest[] = [];
+  const modelStatus = vi.fn(() => "Model diagnostics, not a worker report");
   const gate = Promise.withResolvers<void>();
   t.onTestFinished(() => gate.resolve());
   const registry = createJuneRegistry({
     owner,
+    modelStatus,
     mcpAvailable: true,
     channels: {
       slack: {
@@ -145,6 +169,7 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
         turns.push(structuredClone(request));
         if (request.system.includes("Execution completion"))
           return {
+            modelStatus: true, // Custom providers must not replace completion text.
             text: request.system.includes('"task":"hotels-first"')
               ? "June: $137"
               : "June: 17:42",
@@ -259,6 +284,7 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
       .every(
         (r) =>
           !r.executionAvailable &&
+          !r.modelStatusAvailable &&
           !r.releaseAvailable &&
           !r.socialAvailable &&
           !r.mcpAvailable &&
@@ -266,6 +292,7 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
           r.workspaces.length === 0,
       ),
   ).toBe(true);
+  expect(modelStatus).not.toHaveBeenCalled();
   // Guests never gain paid worker dispatch just because routing now accepts them.
   const guest = {
     ...event("5", "hi"),
@@ -778,3 +805,296 @@ it("does not orphan work admitted while forgetting older workers", async (t) => 
     .poll(async () => (await worker.summary()).status, { timeout: 15000 })
     .toBe("completed");
 });
+
+it.for(["relation", "grounding"] as const)(
+  "blocks saved reports and pending delivery after %s-only deletion and ledger reopen",
+  async (dependency, t) => {
+    const root = await mkdtemp(join(tmpdir(), "june-execution-privacy-"));
+    const key = randomBytes(32);
+    const path = join(root, "memory.db");
+    let store = new EvidenceStore(path, key);
+    t.onTestFinished(async () => {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    });
+    const scope = ["private", "raygen"];
+    const audience = JSON.stringify(scope);
+    const source = (id: string, text: string): Source => ({
+      id,
+      text,
+      audiences: [audience],
+      platform: "slack",
+      account: "T1",
+      conversation: "D1",
+      author: "U1",
+      observedAt: 100,
+      sourceUrl: "https://fixture.invalid/source",
+    });
+    store.appendSource(source("A", "anchor"));
+    store.appendSource(source("B", "unrelated original"));
+    store.appendClaim({
+      id: "parent-A",
+      entity: "owner",
+      text: "anchor claim",
+      audiences: [audience],
+      kind: "evidence",
+      dependsOn: ["A"],
+      contradicts: [],
+      supersedes: [],
+    });
+    store.appendClaim({
+      id: "C",
+      entity: "owner",
+      text: "violet synthetic context",
+      audiences: [audience],
+      kind: "evidence",
+      dependsOn: ["B"],
+      contradicts: dependency === "relation" ? ["parent-A"] : [],
+      supersedes: [],
+      ...(dependency === "grounding"
+        ? {
+            grounding: {
+              subjectSourceId: "B",
+              text: "violet synthetic context",
+              category: "claim" as const,
+              citations: [{ sourceId: "A", quote: "anchor" }],
+              confidence: 0.5,
+              validFrom: null,
+              validTo: null,
+              contradicts: [],
+              supersedes: [],
+            },
+          }
+        : {}),
+    });
+    // Relation ancestry is deletion-only; original grounding citations remain
+    // evidence under the store's independent provenance contract.
+    expect(store.independentEvidence("C", audience)).toEqual(
+      dependency === "relation" ? ["B"] : ["A", "B"],
+    );
+    const memory = {
+      store,
+      source: (e: MessageEvent, audience: string) =>
+        slackSource({
+          workspace: "T1",
+          channel: e.address.conversationId,
+          ts: e.messageId,
+          author: e.senderId,
+          text: e.text,
+          workspaceUrl: "https://fixture.slack.com/",
+          audiences: [audience],
+        }),
+    };
+    const requests: ModelRequest[] = [];
+    const sent: OutboundMessage[] = [];
+    const run = vi.fn(async () => ({ text: "synthetic-retired-report" }));
+    const registry = createJuneRegistry({
+      owner,
+      memory,
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, reactions: true, threads: true },
+          async receive() {
+            return { response: new Response(), events: [] };
+          },
+          async send(message) {
+            sent.push(JSON.parse(JSON.stringify(message)));
+            return message.content.type === "text" &&
+              message.content.text === "synthetic-retired-report"
+              ? {
+                  status: "rejected",
+                  code: "rate_limited",
+                  retryable: true,
+                  retryAfterMs: 3000,
+                }
+              : { status: "sent", messageId: "out" };
+          },
+        },
+      },
+      model: {
+        async reply(request): Promise<CompanionReply> {
+          requests.push(structuredClone(request));
+          if (request.system.includes("Execution completion"))
+            return { text: "synthetic-retired-report" };
+          if (
+            JSON.parse(request.messages.at(-1)?.content ?? "{}").text ===
+            "violet"
+          ) {
+            expect(request.system).toContain("violet synthetic context");
+            return {
+              text: "",
+              execution: [
+                { agent: "privacy", action: "run", task: "Analyze violet" },
+              ],
+            };
+          }
+          return { text: "fresh answer" };
+        },
+      },
+      execution: { model: { reply: run } },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(scope);
+    await june.send("inbox", { type: "event", event: event("2", "violet") });
+    const completionSends = () =>
+      sent.filter(
+        (m) =>
+          m.content.type === "text" &&
+          m.content.text === "synthetic-retired-report",
+      );
+    await expect
+      .poll(() => completionSends().length, { timeout: 15000 })
+      .toBe(1);
+    const id = (await june.snapshot()).agents?.privacy;
+    if (!id) throw new Error("No worker");
+    const worker = client.execution.getOrCreate(executionKey(scope, id));
+    expect((await worker.summary()).evidenceIds).toEqual(
+      expect.arrayContaining(["B", "C"]),
+    );
+    store.deleteSource("A"); // Crash window: never call conversation.forget.
+    store.close();
+    store = new EvidenceStore(path, key);
+    memory.store = store;
+    expect(store.isDeleted("C")).toBe(true);
+    expect(await worker.summary()).toMatchObject({
+      status: "revoked",
+      report: "",
+    });
+    expect(await worker.result(id)).toBeNull();
+    expect(
+      await worker.submit({
+        id: `${"b".repeat(64)}:privacy`,
+        source: event("4", "fresh followup"),
+        task: "repeat",
+        workspaces: [],
+        web: false,
+        evidenceIds: [],
+        deletionTracked: true,
+      }),
+    ).toBe(false);
+    await june.send("inbox", {
+      type: "event",
+      event: event("3", "fresh unrelated input"),
+    });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).some(
+            (e) => e.event.id === "3" && e.done,
+          ),
+        { timeout: 15000 },
+      )
+      .toBe(true);
+    expect(JSON.stringify(requests.at(-1))).not.toContain(
+      "synthetic-retired-report",
+    );
+    expect(JSON.stringify(requests.at(-1))).not.toContain(
+      "violet synthetic context",
+    );
+    expect(completionSends()).toHaveLength(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    const delivery = Object.values((await june.snapshot()).deliveries).find(
+      (d) => d.message.id === completionSends()[0]?.id,
+    );
+    expect(delivery?.result).toMatchObject({
+      status: "rejected",
+      code: "memory_invalidated",
+    });
+    expect(delivery?.message.content).toEqual({ type: "text", text: "" });
+  },
+);
+
+it.for(["completed", "queued", "running", "save-gap"] as const)(
+  "retires legacy %s occupancy without reviving history",
+  async (status, t) => {
+    t.onTestFinished(() => {
+      persistence.legacy = false;
+      persistence.afterSave = undefined;
+    });
+    const run = vi.fn(async () => ({ text: "legacy private report" }));
+    const registry = createJuneRegistry({
+      owner,
+      channels: {},
+      model: {
+        async reply() {
+          return { text: "" };
+        },
+      },
+      execution: { model: { reply: run } },
+    });
+    const { client } = await setupTest(t, registry);
+    const worker = client.execution.getOrCreate(
+      executionKey(["private", "raygen"], "legacy"),
+    );
+    const request = {
+      id: `${"a".repeat(64)}:legacy`,
+      source: event("20", "work"),
+      task: "work",
+      workspaces: [],
+      web: false,
+      evidenceIds: [],
+    };
+    if (status !== "completed")
+      persistence.legacy = status === "save-gap" ? "queued" : status;
+    if (status === "save-gap") {
+      persistence.afterSave = async () => {
+        persistence.afterSave = undefined;
+        throw new Error("Interrupted before queue send");
+      };
+      await expect(worker.submit(request)).rejects.toThrow();
+    } else expect(await worker.submit(request)).toBe(true);
+    if (status === "completed") {
+      await expect
+        .poll(async () => (await worker.summary()).status, { timeout: 15000 })
+        .toBe("completed");
+      expect((await worker.result(request.id))?.report).toBe(
+        "legacy private report",
+      );
+      // Write the pre-upgrade shape through a real save, not a new empty worker.
+      persistence.legacy = true;
+      await worker.cancel("legacy-save");
+    }
+    await expect
+      .poll(async () => (await worker.summary()).pending, { timeout: 15000 })
+      .toBe(0);
+    expect(await worker.result(request.id)).toBeNull();
+    expect(
+      await worker.submit({
+        ...request,
+        id: `${"b".repeat(64)}:legacy`,
+        deletionTracked: true,
+      }),
+    ).toBe(false);
+    expect(await worker.summary()).toMatchObject({
+      status: "revoked",
+      report: "",
+    });
+    expect(run).toHaveBeenCalledTimes(status === "completed" ? 1 : 0);
+    const fresh = client.execution.getOrCreate(
+      executionKey(["private", "raygen"], "fresh"),
+    );
+    expect(
+      await fresh.submit({
+        ...request,
+        source: event("21", "fresh"),
+        deletionTracked: true,
+      }),
+    ).toBe(true);
+    await expect
+      .poll(async () => (await fresh.summary()).status, { timeout: 15000 })
+      .toBe("completed");
+    expect(run).toHaveBeenCalledTimes(status === "completed" ? 2 : 1);
+    // A terminal worker still owes its asynchronous conversation notification.
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).some(
+            (e) => e.event.id === "21" && e.done,
+          ),
+        { timeout: 15000 },
+      )
+      .toBe(true);
+  },
+);

@@ -108,6 +108,7 @@ it("bounds unaccepted claims without leaking other scopes, raw quotes, or active
   ])
     expect(view.text).not.toContain(forbidden);
   expect(view.sourceIds).toEqual([source.id]);
+  expect(view.claimIds).toEqual(proposals.slice(3, 8).map((p) => p.claim.id));
   expect(store.proposals(audience)).toEqual(before);
   const inspection = await createInspectionReader({
     audience,
@@ -293,6 +294,11 @@ it("dispatches a private June pending view with provenance, rejecting forged, mi
       (reference) => reference.sourceIds,
     ),
   ).toContain(source.id);
+  expect(
+    Object.values((await june.snapshot()).memoryContexts ?? {}).flatMap(
+      (reference) => reference.contextSourceIds ?? [],
+    ),
+  ).toContain(proposal?.claim.id);
   expect(store.proposals(audience)[0]?.status).toBe("pending");
   for (const patch of [
     {

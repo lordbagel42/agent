@@ -68,6 +68,12 @@ approval or a passing verifier result as delivery authority.
 - Cancellation suppresses late answers but waits for the underlying provider to
   settle. Workers participate in deployment draining. Forget revokes workers and
   clears live history/reports; transitive provenance prevents reuse after deletion.
+  Prompt-visible claim IDs (including reviewed patterns, explicit recall and pending
+  review) are deletion dependencies, not independent corroboration. Ledger-only
+  deletion blocks worker reads, reuse and pending delivery even before conversation
+  cleanup. Legacy workers and saved context without complete deletion tracking are
+  unavailable; fresh input cannot rehabilitate their old history. Start a new worker
+  name for new work rather than inferring that a hidden report was verified.
   Journals/backups and already-sent model requests retain their existing retention
   rules; clearing live state is not secure erasure. Worker history is not encrypted
   by the optional evidence store.
