@@ -289,29 +289,68 @@ it("persists call intent across restart and blocks uncertain replay without stag
 });
 
 it("rechecks cancellation and deletion after an abort-ignoring call, including uncited batch sources", async () => {
-  for (const operation of ["cancel", "delete"] as const) {
+  for (const operation of ["cancel", "delete", "context-delete"] as const) {
     const store = open();
     persist(store, [source("cited"), source("uncited")]);
+    if (operation === "context-delete") {
+      store.appendSource(source("comparison-source"));
+      store.appendClaim({
+        id: "comparison-claim",
+        entity: "sender",
+        text: "Prior private context",
+        audiences: [audience],
+        kind: "evidence",
+        dependsOn: ["comparison-source"],
+        contradicts: [],
+        supersedes: [],
+      });
+    }
     const pending = Promise.withResolvers<unknown>();
     let calls = 0;
+    let providerSignal: AbortSignal | undefined;
     const extraction = new ImportedMemoryExtraction(
       store,
       { mail: coverage },
       audience,
       {},
-      async () => {
+      async (_sources, claims, signal) => {
         calls++;
+        providerSignal = signal;
+        expect(claims.map((claim) => claim.id)).toEqual(
+          operation === "context-delete" ? ["comparison-claim"] : [],
+        );
         return pending.promise;
       },
     );
     const digest = extraction.review("mail").digest ?? "missing";
-    const running = extraction.start("mail", digest);
+    let settled = false;
+    const running = extraction.start("mail", digest).finally(() => {
+      settled = true;
+    });
     expect(calls).toBe(1);
+    expect(providerSignal?.aborted).toBe(false);
     await expect(extraction.start("mail", digest)).rejects.toThrow();
     if (operation === "cancel") extraction.cancel("mail", digest);
-    else store.deleteSource("uncited");
+    else
+      store.deleteSource(
+        operation === "delete" ? "uncited" : "comparison-source",
+      );
+    expect(providerSignal?.aborted).toBe(true);
+    await expect(extraction.start("mail", digest)).rejects.toThrow();
+    expect(settled).toBe(false);
+    expect(extraction.review("mail")).toMatchObject({
+      blocked: true,
+      digest: null,
+      attempts: [
+        { id: digest, status: "cancelled", running: true, proposalIds: [] },
+      ],
+    });
     pending.resolve([proposal("cited")]);
-    expect((await running).attempts[0]?.status).toBe("cancelled");
+    expect((await running).attempts[0]).toMatchObject({
+      status: "cancelled",
+      running: false,
+      proposalIds: [],
+    });
     expect(store.proposals(audience)).toEqual([]);
     await expect(extraction.start("mail", digest)).rejects.toThrow();
     expect(calls).toBe(1);
