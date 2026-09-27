@@ -31,6 +31,7 @@ import type {
 } from "../memory/store.js";
 import type { JevObserver, JevQuestion } from "../models/jev.js";
 import { ModelError, parseReply } from "../models/provider.js";
+import type { McpConnections } from "../tools/connections.js";
 import type {
   WebSearchCitation,
   WebSearchProvider,
@@ -92,6 +93,7 @@ export interface Dependencies {
   webSearch?: WebSearchProvider;
   jev?: { observe: JevObserver; question: JevQuestion };
   mcpAvailable?: boolean;
+  mcpCommands?: Pick<McpConnections, "cancel" | "reconcile">;
   modelStatus?: () => string;
   deploymentStatus?: () => Promise<string | undefined>;
   release?: (
@@ -325,9 +327,9 @@ export function createJuneRegistry(deps: Dependencies) {
     run: workflow(
       async (ctx) => {
         await ctx.loop("conversation-v1", async (loop) => {
-          // Old turns retain their journal layout and capability decisions.
-          // Only fresh v10 turns can manage authored workflows.
-          const journalVersion = await loop.getVersion("memory-dispatch", 10);
+          // Preserve v1–v10 journals and their capability decisions;
+          // only fresh v11 turns gain authenticated MCP commands.
+          const journalVersion = await loop.getVersion("memory-dispatch", 11);
           // Preserve already-processing journals. Legacy queued events also
           // lack the ingress eligibility marker and cannot gain authority.
           const correctionVersion = await loop.getVersion(
@@ -900,6 +902,61 @@ export function createJuneRegistry(deps: Dependencies) {
                 reply = {
                   text: "[Private reflection review; content not retained]",
                 };
+              } else if (
+                version >= 11 &&
+                scope.private &&
+                ownerTurn &&
+                body.type === "event" &&
+                /^!mcp-(cancel|reconcile)(?:\s|$)/.test(event.text.trim())
+              ) {
+                // Only a new authenticated owner event can attest stoppage and
+                // outcome. Model output, history and worker results never enter.
+                reply = await loop.step("mcp-command", async (step) => {
+                  if (event.mcpCommandEligible !== true)
+                    return {
+                      text: "Send the MCP command as a new plain private message, not forwarded or quoted text or a code block. Nothing was changed.",
+                    };
+                  if (!valid(step.state) || !deps.mcpCommands)
+                    return {
+                      text: "MCP commands are unavailable for this turn.",
+                    };
+                  const cancel = event.text
+                    .trim()
+                    .match(
+                      /^!mcp-cancel ([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/,
+                    );
+                  const reconcile = event.text
+                    .trim()
+                    .match(
+                      /^!mcp-reconcile ([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}) confirmed-stopped verified-(succeeded|failed)$/,
+                    );
+                  try {
+                    if (cancel?.[1])
+                      return {
+                        text: deps.mcpCommands.cancel(deps.owner.id, cancel[1]),
+                      };
+                    if (reconcile?.[1]) {
+                      const receipt = deps.mcpCommands.reconcile(
+                        deps.owner.id,
+                        reconcile[1],
+                        {
+                          confirmedStopped: true,
+                          outcome: reconcile[2],
+                        },
+                      );
+                      return {
+                        text: `MCP proposal ${reconcile[1]} reconciled as ${receipt.status} from your independent verification. No tool was run and no retry was authorized.`,
+                      };
+                    }
+                  } catch {
+                    return {
+                      text: "That MCP command could not be applied. Check the exact proposal and its recorded receipt. Reconciliation requires an unknown receipt, a stopped worker and an independently verified external result. No tool was run or retried.",
+                    };
+                  }
+                  return {
+                    text: "Use !mcp-cancel <exact proposal UUID>, or !mcp-reconcile <exact proposal UUID> confirmed-stopped verified-succeeded (or verified-failed) only after independently checking both worker stoppage and the external result. Stopped with an unknown result must stay unknown. No tool was run or retried.",
+                  };
+                });
               } else if (
                 version >= 5 &&
                 body.type === "event" &&
@@ -1724,6 +1781,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                     (version < 3 ? memory : ""),
                                 },
                                 signal,
+                                () => !signal.aborted && valid(step.state),
                               );
                             } finally {
                               deps.latency?.mark(event, `${stage}_finished`);

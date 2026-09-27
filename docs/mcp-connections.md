@@ -58,8 +58,8 @@ revision `invalidated`. Re-enabling a tool does not revive those confirmations.
 Recorded execution outcomes remain historical receipts, including `unknown`;
 changing one connection does not invalidate another connection's grants.
 
-The authenticated owner command is `/mcp-cancel <proposal UUID>` in a private
-conversation. Cancellation persists even before approval: later confirmations,
+The authenticated owner command is `!mcp-cancel <proposal UUID>` as an ordinary
+private message, not a Slack slash command. Cancellation persists even before approval: later confirmations,
 including old dashboard forms and retries after restart, cannot grant or execute
 that proposal. It does not disable the connection or cancel other proposals.
 For granted work, cancellation revokes the existing broker grant and suppresses
@@ -67,6 +67,31 @@ dispatch if it wins the race before the MCP tool call. Once dispatched, it canno
 undo an effect or prove the remote operation stopped. The recorded outcome remains
 separate (`unknown`, `succeeded`, or `failed`); never retry an unknown effect.
 Repeating cancellation is safe and never creates a replacement operation.
+
+## Reconcile an unknown receipt through June
+
+First independently verify **both** that the previous worker has stopped and
+that the exact external operation succeeded or failed. June's assertion, a
+transport error, cancellation, or a stopped worker alone is not outcome evidence.
+If the external result is still unknown, leave the receipt **unknown**; do not
+retry it. In an authenticated owner-private message, send one of:
+
+```text
+!mcp-reconcile <exact proposal UUID> confirmed-stopped verified-succeeded
+!mcp-reconcile <exact proposal UUID> confirmed-stopped verified-failed
+```
+
+Send this as ordinary message text, not a Slack slash command. Use the proposal
+ID from June's recent approval receipts or its dashboard review
+link, not a connection ID, grant ID, or prefix. These commands attest your own
+independent checks; the host does not inspect the remote service for you. The
+host maps that proposal to its saved grant and delegates to the existing broker.
+An active local execution, an unstarted proposal, a known outcome, or incomplete
+confirmation is rejected. This updates only the consumed receipt and revokes the
+grant; it never invokes the tool or authorizes another execution. Model output,
+forwarded/quoted/history text, worker results, guests and public messages cannot
+reconcile. Slack quote/code blocks and WhatsApp forwarded messages cannot cancel
+either; send a new plain message from the authenticated owner account.
 
 ## Host configuration
 

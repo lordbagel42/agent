@@ -81,6 +81,14 @@ function normalizeMessage(
       text: body,
       occurredAt,
       address,
+      ...(/^!mcp-(cancel|reconcile)(?:\s|$)/.test(body.trim())
+        ? {
+            mcpCommandEligible:
+              !isObject(value.context) ||
+              (value.context.forwarded !== true &&
+                value.context.frequently_forwarded !== true),
+          }
+        : {}),
     };
   }
 

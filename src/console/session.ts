@@ -32,7 +32,7 @@ export function createConsoleLoginLinks(origin: string) {
     // Install inside any tool wrapper so later MCP synthesis is protected too.
     wrapModel(model: ModelProvider): ModelProvider {
       return {
-        reply: (request, signal) =>
+        reply: (request, signal, isCurrent) =>
           model.reply(
             {
               ...request,
@@ -43,6 +43,7 @@ export function createConsoleLoginLinks(origin: string) {
               })),
             },
             signal,
+            isCurrent,
           ),
       };
     },

@@ -308,6 +308,11 @@ async function normalizeEvent(
         /^!reflection(?:\s|$)/.test(event.text.trim())
           ? { reflectionReviewEligible: isPlainSlackCommand(event) }
           : {}),
+        ...(owner &&
+        channelType === "im" &&
+        /^!mcp-(cancel|reconcile)(?:\s|$)/.test(event.text.trim())
+          ? { mcpCommandEligible: isPlainSlackCommand(event) }
+          : {}),
         metadata: {
           ...slackMetadata(event, channelType),
           ...(channelName ? { channelName } : {}),

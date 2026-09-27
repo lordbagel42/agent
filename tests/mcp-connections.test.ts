@@ -1,20 +1,25 @@
 import { strict as assert } from "node:assert";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Hono } from "hono";
 import { afterEach, expect, test, vi } from "vitest";
+import { createSlackAdapter } from "../src/channels/slack.js";
+import { createWhatsAppAdapter } from "../src/channels/whatsapp.js";
 import { createConnectionRoutes } from "../src/console/connections.js";
 import { createConsoleLoginLinks } from "../src/console/session.js";
 import type {
   CompanionReply,
   MessageEvent,
+  ModelProvider,
   ModelRequest,
   OutboundMessage,
+  Owner,
 } from "../src/core/contracts.js";
 import { RIVET_REPLY_PREFIX } from "../src/core/rivet.js";
+import { routeEvent } from "../src/core/routing.js";
 import { slackSource } from "../src/imports/index.js";
 import { EvidenceStore } from "../src/memory/store.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
@@ -1535,6 +1540,523 @@ test("June privately inspects receipts and forgetting suppresses an in-flight in
       .reply(request);
   }
 });
+
+test.each(["succeeded", "failed"])(
+  "reconciles only the exact unknown proposal as %s without retrying",
+  async (outcome) => {
+    const f = await fixture();
+    f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+    await f.invoke();
+    const proposal = f.store.proposals()[0];
+    assert(proposal);
+    const confirmation = { confirmedStopped: true, outcome };
+    expect(() => f.store.reconcile("owner", proposal.id, confirmation)).toThrow(
+      "proposal_not_started",
+    );
+    f.duringCall(() => {
+      throw new Error("ambiguous fixture transport");
+    });
+    const execution = f.store.confirm(proposal.id);
+    expect(() => f.store.reconcile("owner", proposal.id, confirmation)).toThrow(
+      "capability_denied",
+    );
+    expect(await execution).toBe("unknown");
+    expect(f.calls).toHaveLength(1);
+    await f.invoke();
+    const other = f.store.proposals()[0];
+    assert(other && other.id !== proposal.id);
+    f.store.disconnect(f.id, f.connection().revision);
+    await f.restart();
+    expect(() => f.store.reconcile("guest", proposal.id, confirmation)).toThrow(
+      "capability_denied",
+    );
+    expect(() =>
+      f.store.reconcile("owner", proposal.id.slice(0, 8), confirmation),
+    ).toThrow("proposal_unavailable");
+    for (const input of [
+      { outcome },
+      { confirmedStopped: false, outcome },
+      { confirmedStopped: true },
+      { confirmedStopped: true, outcome: "unknown" },
+    ])
+      expect(() => f.store.reconcile("owner", proposal.id, input)).toThrow(
+        "capability_denied",
+      );
+    expect(f.store.proposals().find((p) => p.id === proposal.id)?.status).toBe(
+      "unknown",
+    );
+    expect(f.store.reconcile("owner", proposal.id, confirmation).status).toBe(
+      outcome,
+    );
+    expect(f.store.proposals().find((p) => p.id === other.id)?.status).toBe(
+      "invalidated",
+    );
+    expect(() => f.store.reconcile("owner", proposal.id, confirmation)).toThrow(
+      "capability_denied",
+    );
+    await f.restart();
+    expect(await f.store.confirm(proposal.id)).toBe(outcome);
+    expect(f.calls).toHaveLength(1);
+  },
+);
+
+test("June accepts MCP commands only from exact current owner-private confirmations, never model assertions", async (t) => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+  await f.invoke();
+  const proposal = f.store.proposals()[0];
+  assert(proposal);
+  f.duringCall(() => {
+    throw new Error("ambiguous fixture transport");
+  });
+  expect(await f.store.confirm(proposal.id)).toBe("unknown");
+  const command = `!mcp-reconcile ${proposal.id} confirmed-stopped verified-failed`;
+  const owner: Owner = {
+    id: "owner",
+    identities: [{ channel: "slack", accountId: "T1", senderId: "UOWNER" }],
+  };
+  const sent: OutboundMessage[] = [];
+  const requests: ModelRequest[] = [];
+  const registry = createJuneRegistry({
+    owner,
+    mcpAvailable: true,
+    mcpCommands: f.store,
+    model: f.store.wrap({
+      reply: async (request) => {
+        requests.push(request);
+        return { text: command };
+      },
+    }),
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, threads: true, reactions: true },
+        receive: async () => ({ response: new Response(), events: [] }),
+        send: async (message) => {
+          sent.push(JSON.parse(JSON.stringify(message)));
+          return { status: "sent", messageId: `out-${sent.length}` };
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const ingress = createSlackAdapter({
+    signingSecret: "fixture",
+    botToken: "fixture",
+    teamId: "T1",
+    botUserId: "UBOT",
+    ownerUserIds: ["UOWNER"],
+    fetch: async () => Response.json({ ok: false }),
+  });
+  let number = 0;
+  const send = async (
+    text: string,
+    overrides: Partial<MessageEvent> = {},
+    blockType?: string,
+  ) => {
+    number++;
+    let event: MessageEvent = {
+      type: "message",
+      id: `input-${number}`,
+      messageId: `100.${number}`,
+      occurredAt: Date.now(),
+      senderId: "UOWNER",
+      direct: true,
+      botMentioned: true,
+      mcpCommandEligible: true,
+      metadata: { channelType: "im" },
+      text,
+      address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+      ...overrides,
+    };
+    if (blockType) {
+      const body = JSON.stringify({
+        type: "event_callback",
+        team_id: "T1",
+        event_id: event.id,
+        event_time: Math.floor(event.occurredAt / 1000),
+        event: {
+          type: "message",
+          channel_type: "im",
+          channel: "D1",
+          user: "UOWNER",
+          ts: event.messageId,
+          text,
+          blocks: [
+            {
+              type: "rich_text",
+              elements: [
+                { type: blockType, elements: [{ type: "text", text }] },
+              ],
+            },
+          ],
+        },
+      });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signature = createHmac("sha256", "fixture")
+        .update(`v0:${timestamp}:${body}`)
+        .digest("hex");
+      const normalized = await ingress.receive(
+        new Request("https://june.example/webhooks/slack", {
+          method: "POST",
+          body,
+          headers: {
+            "content-type": "application/json",
+            "x-slack-request-timestamp": timestamp,
+            "x-slack-signature": `v0=${signature}`,
+          },
+        }),
+      );
+      assert(normalized.events[0]?.type === "message");
+      event = normalized.events[0];
+      expect(event.mcpCommandEligible).toBe(blockType === "rich_text_section");
+    }
+    const scope = routeEvent(event, owner);
+    assert(scope);
+    const conversation = client.conversation.getOrCreate(scope.key);
+    await conversation.send("inbox", { type: "event", event });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await conversation.snapshot()).events).some(
+            (entry) => entry.event.id === event.id && entry.done,
+          ),
+        { timeout: 15000 },
+      )
+      .toBe(true);
+  };
+  const status = () =>
+    f.store.proposals().find((p) => p.id === proposal.id)?.status;
+  await send("What happened to that operation?");
+  expect(requests[0]?.system).toContain("independently checking");
+  expect(requests[0]?.system).toContain("!mcp-reconcile");
+  expect(status()).toBe("unknown"); // The model returned the exact command.
+  await send(command, { senderId: "UGUEST" });
+  await send(command, { direct: false, metadata: { channelType: "channel" } });
+  await send(`Quoted command: ${command}`);
+  expect(status()).toBe("unknown");
+  const modelCalls = requests.length;
+  for (const block of ["rich_text_quote", "rich_text_preformatted"])
+    await send(command, {}, block);
+  await send(command, { mcpCommandEligible: undefined });
+  for (const invalid of [
+    `!mcp-reconcile ${proposal.id} confirmed-stopped`,
+    `!mcp-reconcile ${proposal.id} confirmed-stopped verified-unknown`,
+    `!mcp-reconcile ${proposal.id} verified-failed`,
+    `${command} extra`,
+  ])
+    await send(invalid);
+  expect(status()).toBe("unknown");
+  expect(requests).toHaveLength(modelCalls);
+  await send(command, {}, "rich_text_section");
+  expect(status()).toBe("failed");
+  expect(sent.at(-1)?.content).toEqual({
+    type: "text",
+    text: `MCP proposal ${proposal.id} reconciled as failed from your independent verification. No tool was run and no retry was authorized.`,
+  });
+  await send(command);
+  expect(status()).toBe("failed");
+  expect(requests).toHaveLength(modelCalls);
+  expect(f.calls).toHaveLength(1);
+  await f.invoke();
+  const pending = f.store.proposals()[0];
+  assert(pending && pending.id !== proposal.id);
+  await send(`!mcp-cancel ${pending.id}`, { senderId: "UGUEST" });
+  for (const block of ["rich_text_quote", "rich_text_preformatted"])
+    await send(`!mcp-cancel ${pending.id}`, {}, block);
+  expect(f.store.proposals()[0]).toEqual(pending);
+  await send(`!mcp-cancel ${pending.id}`, {}, "rich_text_section");
+  const cancelled = f.store.proposals()[0];
+  expect(cancelled?.status).toBe("cancelled");
+  await send(`!mcp-cancel ${pending.id}`);
+  expect(f.store.proposals()[0]).toEqual(cancelled);
+  await expect(f.store.confirm(pending.id)).rejects.toThrow();
+  expect(f.calls).toHaveLength(1);
+});
+
+test("WhatsApp MCP attestations reject forwarded and legacy commands before inference", async (t) => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+  await f.invoke();
+  const unknown = f.store.proposals()[0];
+  assert(unknown);
+  f.duringCall(() => {
+    throw new Error("ambiguous fixture transport");
+  });
+  expect(await f.store.confirm(unknown.id)).toBe("unknown");
+  await f.invoke();
+  const pending = f.store.proposals()[0];
+  assert(pending && pending.id !== unknown.id);
+  let modelCalls = 0;
+  const registry = createJuneRegistry({
+    owner: {
+      id: "owner",
+      identities: [
+        { channel: "whatsapp", accountId: "phone", senderId: "15551234567" },
+      ],
+    },
+    mcpCommands: f.store,
+    model: {
+      async reply() {
+        modelCalls++;
+        return { text: "unexpected" };
+      },
+    },
+    channels: {
+      whatsapp: {
+        channel: "whatsapp",
+        capabilities: { text: true, threads: false, reactions: true },
+        receive: async () => ({ response: new Response(), events: [] }),
+        send: async () => ({ status: "sent", messageId: "out" }),
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", "owner"]);
+  const ingress = createWhatsAppAdapter({
+    appSecret: "fixture",
+    verifyToken: "fixture",
+    accessToken: "fixture",
+    phoneNumberId: "phone",
+    apiVersion: "v23.0",
+  });
+  let sequence = 0;
+  const send = async (
+    text: string,
+    forwarding?: "forwarded" | "frequently_forwarded" | "legacy",
+  ) => {
+    const id = `wa-${++sequence}`;
+    const body = JSON.stringify({
+      object: "whatsapp_business_account",
+      entry: [
+        {
+          changes: [
+            {
+              field: "messages",
+              value: {
+                metadata: { phone_number_id: "phone" },
+                messages: [
+                  {
+                    id,
+                    from: "15551234567",
+                    timestamp: String(Math.floor(Date.now() / 1000)),
+                    type: "text",
+                    text: { body: text },
+                    ...(forwarding && forwarding !== "legacy"
+                      ? { context: { [forwarding]: true } }
+                      : {}),
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const received = await ingress.receive(
+      new Request("https://june.example/webhooks/whatsapp", {
+        method: "POST",
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-hub-signature-256": `sha256=${createHmac("sha256", "fixture").update(body).digest("hex")}`,
+        },
+      }),
+    );
+    assert(received.events[0]?.type === "message");
+    const event = received.events[0];
+    if (forwarding === "legacy") delete event.mcpCommandEligible;
+    await june.send("inbox", { type: "event", event });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).some(
+            (entry) => entry.event.id === id && entry.done,
+          ),
+        { timeout: 15000 },
+      )
+      .toBe(true);
+  };
+  const commands = [
+    `!mcp-reconcile ${unknown.id} confirmed-stopped verified-succeeded`,
+    `!mcp-cancel ${pending.id}`,
+  ];
+  const before = f.store.proposals();
+  for (const command of commands) {
+    for (const forwarding of [
+      "forwarded",
+      "frequently_forwarded",
+      "legacy",
+    ] as const) {
+      await send(command, forwarding);
+      expect(f.store.proposals()).toEqual(before);
+      expect(modelCalls).toBe(0);
+    }
+  }
+  for (const command of commands) {
+    await send(command);
+    await send(command);
+  }
+  expect(f.store.proposals().find((p) => p.id === unknown.id)?.status).toBe(
+    "succeeded",
+  );
+  expect(f.store.proposals().find((p) => p.id === pending.id)?.status).toBe(
+    "cancelled",
+  );
+  await expect(f.store.confirm(pending.id)).rejects.toThrow(
+    "proposal_cancelled",
+  );
+  expect(modelCalls).toBe(0);
+  expect(f.calls).toHaveLength(1);
+});
+
+test.for(["read", "approval", "catalog", "discovery", "result", "synthesis"])(
+  "forgetting suppresses stale MCP %s work through June and provider wrappers",
+  async (phase, t) => {
+    const f = await fixture();
+    const memory = new EvidenceStore(":memory:", randomBytes(32));
+    const scope = ["private", "owner"];
+    const audience = JSON.stringify(scope);
+    memory.appendSource({
+      id: "A",
+      text: "violet synthetic secret",
+      audiences: [audience],
+      platform: "slack",
+      account: "T1",
+      conversation: "D1",
+      author: "UOWNER",
+      observedAt: 100,
+      sourceUrl: "https://fixture.slack.com/archives/D1/p100",
+    });
+    t.onTestFinished(() => memory.close());
+    f.store.permit(
+      f.id,
+      f.connection().revision,
+      "lookup",
+      phase === "approval" ? "approval" : "read",
+    );
+    const started = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    t.onTestFinished(() => released.resolve());
+    let modelCalls = 0;
+    const sent: string[] = [];
+    const provider: ModelProvider = {
+      async reply(request, _signal, isCurrent) {
+        modelCalls++;
+        // The live host predicate is out-of-band, not a non-cloneable request field.
+        expect(structuredClone(request).system).toContain(
+          "violet synthetic secret",
+        );
+        expect(isCurrent?.()).toBe(true);
+        if (phase === "catalog" && modelCalls === 1)
+          return {
+            text: "",
+            mcpCatalog: { connection: null, tool: null, offset: 0 },
+          };
+        const pause =
+          phase === "read" ||
+          phase === "approval" ||
+          phase === "catalog" ||
+          (phase === "synthesis" && modelCalls === 2);
+        if (pause) {
+          started.resolve();
+          await released.promise;
+        }
+        if (modelCalls > 1 && phase !== "catalog")
+          return { text: "stale violet answer" };
+        return {
+          text: "",
+          mcp: {
+            connection: f.id,
+            tool: "lookup",
+            argumentsJson: '{"id":"record-9"}',
+          },
+        };
+      },
+    };
+    if (phase === "discovery") f.duringList(() => memory.deleteSource("A"));
+    if (phase === "result") f.duringCall(() => memory.deleteSource("A"));
+    const links = createConsoleLoginLinks("https://june.example");
+    const wrapped =
+      phase === "approval" || phase === "catalog"
+        ? links.wrapModel(f.store.wrap(provider))
+        : f.store.wrap(links.wrapModel(provider));
+    const registry = createJuneRegistry({
+      owner: {
+        id: "owner",
+        identities: [{ channel: "slack", accountId: "T1", senderId: "UOWNER" }],
+      },
+      mcpAvailable: true,
+      model: wrapped,
+      memory: {
+        store: memory,
+        source: (event, scope) =>
+          slackSource({
+            workspace: "T1",
+            channel: "D1",
+            ts: event.messageId,
+            author: event.senderId,
+            text: event.text,
+            workspaceUrl: "https://fixture.slack.com/",
+            audiences: [scope],
+          }),
+      },
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, threads: true, reactions: true },
+          receive: async () => ({ response: new Response(), events: [] }),
+          send: async (message) => {
+            if (message.content.type === "text")
+              sent.push(message.content.text);
+            return { status: "sent", messageId: "out" };
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(scope);
+    await june.send("inbox", {
+      type: "event",
+      event: {
+        id: "violet",
+        type: "message",
+        messageId: "100.000001",
+        occurredAt: Date.now(),
+        senderId: "UOWNER",
+        direct: true,
+        text: "violet",
+        address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+      },
+    });
+    if (phase !== "discovery" && phase !== "result") {
+      await started.promise;
+      memory.deleteSource("A");
+      await june.forget("A");
+      released.resolve();
+    }
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).some(
+            (entry) => entry.event.id === "violet" && entry.done,
+          ),
+        { timeout: 15000 },
+      )
+      .toBe(true);
+    expect(modelCalls).toBe(
+      phase === "catalog" || phase === "synthesis" ? 2 : 1,
+    );
+    expect(f.calls).toHaveLength(
+      phase === "result" || phase === "synthesis" ? 1 : 0,
+    );
+    expect(f.store.proposals()).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(JSON.stringify((await june.snapshot()).history)).not.toContain(
+      "stale violet answer",
+    );
+  },
+);
 
 test("approval review identifies only the matching destination and preserves consent checks", async () => {
   const f = await fixture({

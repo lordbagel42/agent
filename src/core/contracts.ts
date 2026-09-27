@@ -48,6 +48,9 @@ export interface MessageEvent extends EventBase {
   codingCommandEligible?: boolean;
   /** Fresh, plain owner-private Slack review, never quoted or historical text. */
   reflectionReviewEligible?: boolean;
+  /** Verified live plain command, never forwarded/quoted/history text.
+   * The host separately requires an owner-private turn. */
+  mcpCommandEligible?: boolean;
   metadata?: MessageMetadata;
 }
 
@@ -300,7 +303,13 @@ export interface ModelRequest {
 }
 
 export interface ModelProvider {
-  reply(request: ModelRequest, signal?: AbortSignal): Promise<CompanionReply>;
+  /** Host-only live validity check for downstream tool/provider admission.
+   * Keep it out of requests, prompts and journals; wrappers must forward it. */
+  reply(
+    request: ModelRequest,
+    signal?: AbortSignal,
+    isCurrent?: () => boolean,
+  ): Promise<CompanionReply>;
 }
 
 export interface CodingResult {

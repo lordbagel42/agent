@@ -740,6 +740,7 @@ async function main() {
       deepModel && (connections ? connections.wrap(deepModel) : deepModel),
     mcpAvailable: !!connections,
     wakeups: wakeupOptions,
+    mcpCommands: connections,
     execution:
       config.executionEnabled && !config.setupMode
         ? { model: deepModel ?? model }
