@@ -128,7 +128,7 @@ export function createConnectionRoutes(
       form.proof,
     );
     if (!command) return c.text("Invalid or expired form", 403);
-    // The proof's command ID makes resubmitting this form replace, not duplicate.
+    // The store durably consumes this command, even after disconnection.
     deps.store.add(
       {
         name: field(form.name),

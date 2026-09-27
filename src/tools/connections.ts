@@ -167,6 +167,22 @@ export class McpConnections {
     input: { name: string; url: string; token?: string; expiresAt?: number },
     id: string = randomUUID(),
   ): string {
+    // Generations are durable creation receipts, including after disconnect.
+    // Replaying an Add command must never replace newer owner decisions.
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      if (this.generation(id) === "absent") this.#replace(input, id);
+      this.#db.exec("COMMIT");
+      return id;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  #replace(
+    input: { name: string; url: string; token?: string; expiresAt?: number },
+    id: string,
+  ): string {
     const url = new URL(input.url);
     if (
       url.protocol !== "https:" ||
@@ -195,7 +211,7 @@ export class McpConnections {
     return id;
   }
   connectSlack(value: { accessToken: string; expiresAt?: number }) {
-    this.add(
+    this.#replace(
       {
         name: "Slack",
         url: SLACK_MCP_URL,

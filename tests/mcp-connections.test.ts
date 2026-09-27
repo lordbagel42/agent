@@ -15,70 +15,74 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
-async function fixture() {
+async function fixture(
+  input = {
+    name: "Fixture",
+    url: "https://mcp.example/rpc",
+    token: "private-token",
+  },
+) {
   const directory = await mkdtemp(join(tmpdir(), "june-mcp-"));
   const calls: unknown[] = [];
   let description = "Look up a record";
   let onList = () => {};
-  const store = new McpConnections(
-    {
-      directory,
-      key: Buffer.alloc(32, 7),
-      owner: "owner",
-      origin: "https://june.example",
-    },
-    {
-      fetch: async (_url, init) => {
-        if (init?.method === "DELETE")
-          return new Response(null, { status: 204 });
-        const message = JSON.parse(String(init?.body));
-        if (message.id === undefined)
-          return new Response(null, { status: 202 });
-        if (message.method === "tools/list") onList();
-        if (message.method === "tools/call") calls.push(message.params);
-        return Response.json({
-          jsonrpc: "2.0",
-          id: message.id,
-          result:
-            message.method === "initialize"
-              ? {
-                  protocolVersion: "2025-11-25",
-                  capabilities: { tools: {} },
-                  serverInfo: { name: "fixture", version: "1" },
-                }
-              : message.method === "tools/list"
-                ? {
-                    tools: [
-                      {
-                        name: "lookup",
-                        description,
-                        inputSchema: {
-                          type: "object",
-                          properties: { id: { type: "string" } },
-                          required: ["id"],
-                          additionalProperties: false,
-                        },
-                      },
-                    ],
-                  }
-                : {
-                    content: [
-                      { type: "text", text: "private result private-token" },
-                    ],
-                  },
-        });
+  const open = () =>
+    new McpConnections(
+      {
+        directory,
+        key: Buffer.alloc(32, 7),
+        owner: "owner",
+        origin: "https://june.example",
       },
-    },
-  );
+      {
+        fetch: async (_url, init) => {
+          if (init?.method === "DELETE")
+            return new Response(null, { status: 204 });
+          const message = JSON.parse(String(init?.body));
+          if (message.id === undefined)
+            return new Response(null, { status: 202 });
+          if (message.method === "tools/list") onList();
+          if (message.method === "tools/call") calls.push(message.params);
+          return Response.json({
+            jsonrpc: "2.0",
+            id: message.id,
+            result:
+              message.method === "initialize"
+                ? {
+                    protocolVersion: "2025-11-25",
+                    capabilities: { tools: {} },
+                    serverInfo: { name: "fixture", version: "1" },
+                  }
+                : message.method === "tools/list"
+                  ? {
+                      tools: [
+                        {
+                          name: "lookup",
+                          description,
+                          inputSchema: {
+                            type: "object",
+                            properties: { id: { type: "string" } },
+                            required: ["id"],
+                            additionalProperties: false,
+                          },
+                        },
+                      ],
+                    }
+                  : {
+                      content: [
+                        { type: "text", text: "private result private-token" },
+                      ],
+                    },
+          });
+        },
+      },
+    );
+  let store = open();
   cleanups.push(async () => {
     await store.close();
     await rm(directory, { recursive: true });
   });
-  const id = store.add({
-    name: "Fixture",
-    url: "https://mcp.example/rpc",
-    token: "private-token",
-  });
+  const id = store.add(input);
   const connection = () => {
     const value = store.list()[0];
     assert(value);
@@ -91,7 +95,7 @@ async function fixture() {
     workspaces: [],
     mcpAvailable: true,
   };
-  const invoke = () =>
+  const invoke = (target = id) =>
     store
       .wrap({
         reply: async (req) =>
@@ -99,7 +103,7 @@ async function fixture() {
             ? {
                 text: "",
                 mcp: {
-                  connection: id,
+                  connection: target,
                   tool: "lookup",
                   argumentsJson: '{"id":"record-9"}',
                 },
@@ -108,7 +112,13 @@ async function fixture() {
       })
       .reply(request);
   return {
-    store,
+    get store() {
+      return store;
+    },
+    restart: async () => {
+      await store.close();
+      store = open();
+    },
     id,
     directory,
     calls,
@@ -123,6 +133,111 @@ async function fixture() {
     },
   };
 }
+
+test("Add commands stay consumed across permission changes, disconnection and restart", async () => {
+  const f = await fixture();
+  const base = "/console/connections";
+  const app = () =>
+    new Hono().route(
+      base,
+      createConnectionRoutes(
+        {
+          origin: "https://june.example",
+          csrfSecret: "a".repeat(32),
+          authenticate: async () => "owner",
+        },
+        { store: f.store },
+      ),
+    );
+  const page = await (await app().request(base)).text();
+  const proof = page.match(
+    /action="\/console\/connections\/add"[^>]*><input type="hidden" name="proof" value="([^"]+)"/,
+  )?.[1];
+  assert(proof);
+  const body = {
+    proof,
+    name: "Replay fixture",
+    url: "https://mcp.example/rpc",
+    token: "private-token",
+  };
+  const post = (values = body) =>
+    app().request(`${base}/add`, {
+      method: "POST",
+      headers: {
+        origin: "https://june.example",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(values),
+    });
+  const first = await post();
+  expect(first.status).toBe(303);
+  const id = first.headers.get("location")?.split("/").at(-1);
+  assert(id);
+  const connection = () => {
+    const value = f.store.list().find((value) => value.id === id);
+    assert(value);
+    return value;
+  };
+  const initial = connection();
+  expect((await post()).status).toBe(303);
+  expect(connection()).toEqual(initial);
+  await f.store.discover(id, connection().revision);
+  f.store.permit(id, connection().revision, "lookup", "read");
+  const permitted = connection();
+  await f.restart();
+  expect(
+    (
+      await post({
+        ...body,
+        url: "https://other.example/rpc",
+        token: "replacement",
+      })
+    ).status,
+  ).toBe(303);
+  expect(connection()).toEqual(permitted);
+  await f.invoke(id);
+  expect(f.calls).toHaveLength(1);
+  f.store.permit(id, connection().revision, "lookup", "approval");
+  await f.invoke(id);
+  const proposal = f.store.proposals()[0];
+  assert(proposal);
+  f.store.permit(id, connection().revision, "lookup", "disabled");
+  const disabled = connection();
+  await post();
+  expect(connection()).toEqual(disabled);
+  await expect(f.store.confirm(proposal.id)).rejects.toThrow(
+    "proposal_expired",
+  );
+  await f.invoke(id);
+  expect(f.calls).toHaveLength(1);
+  f.store.disconnect(id, connection().revision);
+  const generation = f.store.generation(id);
+  await post();
+  await f.restart();
+  expect((await post()).status).toBe(303);
+  expect(f.store.list().some((value) => value.id === id)).toBe(false);
+  expect(f.store.generation(id)).toBe(generation);
+  await f.invoke(id);
+  expect(f.calls).toHaveLength(1);
+
+  // A fresh command can intentionally add the same server again.
+  expect(f.store.add({ name: body.name, url: body.url })).not.toBe(id);
+  // Slack's verified OAuth reconnect remains an explicit replacement.
+  f.store.connectSlack({ accessToken: "old-token" });
+  const oldRevision = f.store.generation("slack");
+  await f.store.discover("slack", oldRevision);
+  f.store.permit("slack", f.store.generation("slack"), "lookup", "read");
+  f.store.connectSlack({ accessToken: "new-token" });
+  expect(f.store.generation("slack")).not.toBe(oldRevision);
+  expect(f.store.list().find((value) => value.id === "slack")).toMatchObject({
+    tools: [],
+    authenticated: true,
+    status: "not_tested",
+  });
+  f.store.disconnect("slack", f.store.generation("slack"));
+  f.store.connectSlack({ accessToken: "reconnected-token" });
+  expect(f.store.list().some((value) => value.id === "slack")).toBe(true);
+});
 
 test("discovery grants nothing, read results are transient and credentials stay encrypted", async () => {
   const f = await fixture();
@@ -274,16 +389,11 @@ test("mutation approval executes exactly once, including concurrent confirmation
 });
 
 test("approval review identifies only the matching destination and preserves consent checks", async () => {
-  const f = await fixture();
-  f.store.add(
-    {
-      name: 'Research <img src=x onerror="alert(1)">',
-      url: "https://mcp.example/research/rpc",
-      token: "private-token",
-    },
-    f.id,
-  );
-  await f.store.discover(f.id, f.connection().revision);
+  const f = await fixture({
+    name: 'Research <img src=x onerror="alert(1)">',
+    url: "https://mcp.example/research/rpc",
+    token: "private-token",
+  });
   f.store.permit(f.id, f.connection().revision, "lookup", "approval");
   await f.invoke();
   const app = new Hono().route(
@@ -326,7 +436,8 @@ test("approval review identifies only the matching destination and preserves con
   expect(await (await app.request(path())).text()).toContain("succeeded");
   await f.invoke();
   const staleProof = proof(await (await app.request(path())).text());
-  f.store.add({ name: "Replacement", url: "https://other.example/mcp" }, f.id);
+  f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
+  f.store.add({ name: "Other server", url: "https://other.example/mcp" });
   const stale = await (await app.request(path())).text();
   expect(stale).toContain("connection has changed or been removed");
   expect(stale).not.toContain("https://other.example/mcp");
