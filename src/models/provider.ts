@@ -46,6 +46,16 @@ const companionReplySchema = z.strictObject({
   search: searchQuerySchema.optional(),
   escalate: z.boolean().optional(),
   webSearch: searchQuerySchema.optional(),
+  release: z
+    .strictObject({
+      action: z.enum(["request", "inspect"]),
+      revision: z
+        .string()
+        .regex(/^[a-f0-9]{40}$/)
+        .nullable(),
+    })
+    .refine((value) => value.action !== "request" || value.revision !== null)
+    .optional(),
   replyInThread: z.boolean().optional(),
 });
 
@@ -60,6 +70,7 @@ export type ReplyCapabilities = Pick<
   | "searchAvailable"
   | "escalationAvailable"
   | "webSearchAvailable"
+  | "releaseAvailable"
   | "replyPlacementAvailable"
 >;
 
@@ -79,6 +90,7 @@ export function replyJsonSchema(
     searchAvailable,
     escalationAvailable,
     webSearchAvailable,
+    releaseAvailable,
     replyPlacementAvailable,
   } = replyCapabilities(capabilities);
   const permittedWorkspaces = [...new Set(workspaces)];
@@ -109,6 +121,25 @@ export function replyJsonSchema(
       },
       coding,
       reaction: { type: ["string", "null"] },
+      ...(releaseAvailable
+        ? {
+            release: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                action: { type: "string", enum: ["request", "inspect"] },
+                revision: {
+                  type: ["string", "null"],
+                  description:
+                    "Exact lowercase 40-character SHA; required for request, null inspects recent events.",
+                },
+              },
+              required: ["action", "revision"],
+              description:
+                "Request release tracking or inspect controller evidence. No activation, approval, push, or retry. Leave text empty and other actions unset.",
+            },
+          }
+        : {}),
       ...(searchAvailable
         ? {
             search: {
@@ -150,6 +181,7 @@ export function replyJsonSchema(
       "text",
       "coding",
       "reaction",
+      ...(releaseAvailable ? ["release"] : []),
       ...(searchAvailable ? ["search"] : []),
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
@@ -320,6 +352,7 @@ export function parseReply(
     searchAvailable,
     escalationAvailable,
     webSearchAvailable,
+    releaseAvailable,
     replyPlacementAvailable,
   } = replyCapabilities(capabilities);
   let value: unknown;
@@ -339,6 +372,7 @@ export function parseReply(
     "search",
     "escalate",
     "webSearch",
+    "release",
     "replyInThread",
   ]) {
     if (normalized[key] === null) delete normalized[key];
@@ -359,6 +393,7 @@ export function parseReply(
     (reply.search !== undefined && !searchAvailable) ||
     (reply.escalate !== undefined && !escalationAvailable) ||
     (reply.webSearch !== undefined && !webSearchAvailable) ||
+    (reply.release !== undefined && !releaseAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);
@@ -366,12 +401,15 @@ export function parseReply(
   const directiveCount =
     Number(reply.search !== undefined) +
     Number(reply.webSearch !== undefined) +
+    Number(reply.release !== undefined) +
     Number(reply.escalate === true);
   if (
     directiveCount > 1 ||
     (directiveCount > 0 &&
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
-    ((reply.search !== undefined || reply.webSearch !== undefined) &&
+    ((reply.search !== undefined ||
+      reply.webSearch !== undefined ||
+      reply.release !== undefined) &&
       reply.text.trim().length > 0)
   ) {
     throw new ModelError("invalid_response", false);

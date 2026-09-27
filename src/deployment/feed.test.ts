@@ -2,7 +2,55 @@ import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
-import { createDeploymentReader, createDeploymentRoutes } from "./feed.js";
+import {
+  createDeploymentReader,
+  createDeploymentRoutes,
+  createReleaseTool,
+  type DeploymentFeed,
+} from "./feed.js";
+
+test("release inspection preserves global blocks and unknown candidate/identity evidence", async () => {
+  const feed: DeploymentFeed = {
+    version: 1,
+    repository: "lordbagel42/agent",
+    branch: "main",
+    lastHealthyRevision: "a".repeat(40),
+    blocked: true,
+    events: [
+      {
+        sequence: 1,
+        revision: "b".repeat(40),
+        status: "blocked",
+        reason: "activation_unknown",
+        at: 2000,
+        committedAt: null,
+        elapsedMs: null,
+      },
+    ],
+  };
+  const release = createReleaseTool({
+    read: async () => feed,
+    runningRevision: undefined,
+  });
+  const unknown = await release({
+    action: "request",
+    revision: "c".repeat(40),
+  });
+  expect(unknown).toContain("Running revision: unknown");
+  expect(unknown).toContain("Controller blocked: yes. activation_unknown");
+  expect(unknown).toContain("Candidate lifecycle status unknown");
+  const event = feed.events[0];
+  if (!event) throw new Error("Missing fixture event");
+  event.status = "fetch_failed";
+  event.reason = "fetch_failed";
+  const fetchOnly = await release({ action: "inspect", revision: null });
+  expect(fetchOnly).toContain("Candidate lifecycle status unknown");
+  expect(fetchOnly).toContain("Controller could not fetch trusted main");
+  expect(fetchOnly).toContain("Reason is outside the bounded feed");
+  expect(fetchOnly).not.toContain(
+    "Last recorded candidate status: fetch_failed",
+  );
+});
 
 test("deployment evidence is owner-only, read-only, bounded and never raw process output", async () => {
   const root = await mkdtemp(join(tmpdir(), "june-feed-"));

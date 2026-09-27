@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
 import { Hono } from "hono";
 import { z } from "zod";
+import type { CompanionReply } from "../core/contracts.js";
 
 const revision = z.string().regex(/^[0-9a-f]{40}$/);
 const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -54,6 +55,85 @@ const feedSchema = z.strictObject({
 });
 
 export type DeploymentFeed = z.infer<typeof feedSchema>;
+
+const reasons: Record<
+  NonNullable<DeploymentFeed["events"][number]["reason"]>,
+  string
+> = {
+  preflight_failed:
+    "Preparation/preflight failed; the feed does not identify the failing operation. Owner/operator diagnosis required; this tool cannot retry.",
+  health_failed:
+    "Candidate failed readiness/identity checks. Inspect later rollback/block events; do not claim it is live.",
+  drain_busy:
+    "In-flight work could not be safely drained. Controller defers; inspect again later.",
+  insufficient_disk:
+    "Insufficient host disk capacity. Operator must restore capacity; controller retries without a new commit.",
+  resume_failed: "Admission could not be resumed. Operator recovery required.",
+  current_unhealthy:
+    "Current service identity/readiness is unverified. Operator inspection required.",
+  candidate_not_drained:
+    "Failed candidate could not be safely drained. Operator recovery required; no forced restart.",
+  unsafe_rollback:
+    "Rollback compatibility is not established. Operator forward recovery required; never restore old conversation data.",
+  rollback_unhealthy:
+    "Rollback did not establish a healthy service. Operator recovery required.",
+  activation_unknown:
+    "An activation may be incomplete. Operator must establish actual service state and reconcile; no automatic retry.",
+  non_fast_forward:
+    "Main moved backwards or diverged. Owner/operator must resolve trusted branch history.",
+  fetch_failed:
+    "Controller could not fetch trusted main. Operator should inspect repository connectivity/access.",
+};
+
+/** No controller mutations: main is already watched under installed policy.
+ * The conversation journal records request intent and this bounded receipt. */
+export function createReleaseTool(options: {
+  read: () => Promise<DeploymentFeed>;
+  runningRevision: string | undefined;
+}) {
+  return async (
+    request: NonNullable<CompanionReply["release"]>,
+  ): Promise<string> => {
+    const observedAt = new Date().toISOString();
+    const running =
+      options.runningRevision ?? "unknown (no immutable release identity)";
+    const lines = [
+      request.action === "request"
+        ? `Release request recorded in this conversation for ${request.revision}. This is tracking intent only, not approval, queue admission, activation, or a scheduled follow-up.`
+        : `Release inspection: ${request.revision ?? "recent controller events"}.`,
+      `Running revision: ${running} (loaded process identity, observed ${observedAt}; not a fresh independent controller health attestation).`,
+      "Policy: independent controller follows trusted lordbagel42/agent main. This tool cannot push, approve, deploy, retry, reconcile, or change policy.",
+    ];
+    const feed = await options.read().catch(() => undefined);
+    if (!feed)
+      return [
+        ...lines,
+        "Controller feed unavailable. Checks, blockers, and release acceptance are unknown; no deployment action was taken.",
+      ].join("\n\n");
+    const events = request.revision
+      ? feed.events.filter((event) => event.revision === request.revision)
+      : feed.events;
+    // Fetch failures describe controller observation, not candidate lifecycle.
+    // Match the controller's Store.status lookup.
+    const latest = events.findLast((event) => event.status !== "fetch_failed");
+    const blocker = feed.events.findLast((event) => event.status === "blocked");
+    lines.push(
+      `Controller blocked: ${feed.blocked ? "yes" : "no (as last published; not a liveness guarantee)"}.${feed.blocked ? ` ${blocker?.reason ? `${blocker.reason}: ${reasons[blocker.reason]}` : "Reason is outside the bounded feed; operator inspection required."}` : ""}`,
+      `Historical last healthy revision: ${feed.lastHealthyRevision} (not proof of the current deployment).`,
+      latest
+        ? `Last recorded candidate status: ${latest.status} at ${new Date(latest.at).toISOString()}.`
+        : "Candidate lifecycle status unknown in the last 100 controller events. Not known queued, checked, or authorized; owner must verify the exact revision was published to trusted main. Old evidence may have aged out; fetch failures are controller observations only.",
+      "Checks: controller runs frozen install, formatting, types, routing/delivery tests, immutable artifact verification, drain, and readiness/process identity gates. This feed exposes stage outcomes only, not individual check logs; missing results are unknown, never passed.",
+      ...events
+        .slice(-3)
+        .map(
+          (event) =>
+            `${event.sequence}: ${event.revision} — ${event.status} at ${new Date(event.at).toISOString()}${event.reason ? `; ${event.reason}: ${reasons[event.reason]}` : ""}`,
+        ),
+    );
+    return lines.join("\n\n");
+  };
+}
 
 /** The principal comes from host authentication, never a model/request field.
  * Call for the private owner conversation only; these are facts, not commands. */

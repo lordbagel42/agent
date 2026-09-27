@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type {
@@ -9,6 +12,12 @@ import type {
   ReactionEvent,
   SendResult,
 } from "../core/contracts.js";
+import {
+  createDeploymentReader,
+  createReleaseTool,
+  type DeploymentFeed,
+} from "../deployment/feed.js";
+import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry } from "./registry.js";
 
@@ -61,6 +70,188 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("dispatches release tools only in owner-private turns and journals the result", async (t) => {
+    const sent: OutboundMessage[] = [];
+    const requests: ModelRequest[] = [];
+    const revision = "b".repeat(40);
+    const running = "c".repeat(40);
+    const directory = await mkdtemp(join(tmpdir(), "june-release-tool-"));
+    t.onTestFinished(() => rm(directory, { recursive: true, force: true }));
+    const file = join(directory, "events.json");
+    const read = createDeploymentReader({
+      file,
+      ownerId: owner.id,
+      trustedUid: process.getuid?.(),
+    });
+    const feed: DeploymentFeed = {
+      version: 1,
+      repository: "lordbagel42/agent",
+      branch: "main",
+      lastHealthyRevision: "a".repeat(40),
+      blocked: false,
+      events: [],
+    };
+    let directive: NonNullable<CompanionReply["release"]> = {
+      action: "request",
+      revision,
+    };
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack: transport("slack", sent) },
+      model: {
+        async reply(request) {
+          requests.push(request);
+          if (!request.releaseAvailable) {
+            expect(replyJsonSchema([], request).properties).not.toHaveProperty(
+              "release",
+            );
+            // A nonconforming provider must not bypass the runtime audience gate.
+            return { text: "", release: directive };
+          }
+          expect(replyJsonSchema([], request).properties).toHaveProperty(
+            "release",
+          );
+          return parseReply(
+            JSON.stringify({
+              text: "",
+              release: directive,
+              replyInThread: request.replyPlacementAvailable ? true : null,
+            }),
+            [],
+            request,
+          );
+        },
+      },
+      release: createReleaseTool({
+        read: () => read(owner.id),
+        runningRevision: running,
+      }),
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    const scenarios = [
+      {
+        status: "received",
+        reason: null,
+        expected: "Last recorded candidate status: received",
+      },
+      {
+        status: "failed",
+        reason: "preflight_failed",
+        expected: "Preparation/preflight failed",
+      },
+      {
+        status: "blocked",
+        reason: "unsafe_rollback",
+        expected: "Operator forward recovery required",
+      },
+      {
+        status: "deferred",
+        reason: "drain_busy",
+        expected: "Controller defers",
+      },
+      {
+        status: "healthy",
+        reason: null,
+        expected: "Last recorded candidate status: healthy",
+      },
+      {
+        status: "fetch_failed",
+        reason: "fetch_failed",
+        expected: "Last recorded candidate status: healthy",
+      },
+    ] as const;
+    for (const [index, scenario] of scenarios.entries()) {
+      feed.blocked = scenario.status === "blocked";
+      feed.events.push({
+        sequence: index + 1,
+        revision,
+        status: scenario.status,
+        reason: scenario.reason,
+        at: 2000 + index,
+        committedAt: 1000,
+        elapsedMs: index,
+      });
+      await writeFile(file, JSON.stringify(feed), { mode: 0o640 });
+      directive = { action: index === 0 ? "request" : "inspect", revision };
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...message,
+          id: `release-${index}`,
+          messageId: `123.${index}`,
+          text: `Inspect release ${revision}`,
+        },
+      });
+      await expect
+        .poll(
+          async () =>
+            Object.values((await june.snapshot()).events).filter(
+              (event) => event.done,
+            ).length,
+        )
+        .toBe(index + 1);
+      const content = sent[index]?.content;
+      expect(content?.type).toBe("text");
+      if (content?.type !== "text") throw new Error("Missing release receipt");
+      expect(content.text).toContain(scenario.expected);
+      expect(content.text).toContain(`Running revision: ${running}`);
+      expect(content.text).not.toContain(`Running revision: ${revision}`);
+      expect(content.text).not.toContain(
+        `Running revision: ${feed.lastHealthyRevision}`,
+      );
+      expect(content.text).toContain("not individual check logs");
+      expect(content.text.length).toBeLessThan(3500);
+    }
+    expect(requests[0]?.system).toContain("Release tracking");
+    expect(JSON.stringify(sent[0]?.content)).toContain("tracking intent only");
+    await rm(file);
+    await june.send("inbox", {
+      type: "event",
+      event: { ...message, id: "unavailable", messageId: "123.9" },
+    });
+    await expect.poll(async () => sent.length).toBe(7);
+    expect(JSON.stringify(sent[6]?.content)).toContain(
+      "Controller feed unavailable",
+    );
+    expect(JSON.stringify(sent[6]?.content)).toContain(
+      `Running revision: ${running}`,
+    );
+    const channel = client.conversation.getOrCreate(["slack", "T1", "C1", ""]);
+    await channel.send("inbox", {
+      type: "event",
+      event: {
+        ...message,
+        id: "public",
+        direct: false,
+        address: { ...message.address, conversationId: "C1" },
+      },
+    });
+    await expect.poll(async () => sent.length).toBe(8);
+    expect(JSON.stringify(sent[7]?.content)).toContain("owner-private turn");
+    expect(JSON.stringify(sent[7]?.content)).not.toContain(running);
+    expect(sent[0]?.address.threadId).toBe("123.0");
+    for (const release of [
+      { action: "approve", revision },
+      { action: "request", revision: null },
+      { action: "request", revision: "main" },
+      { action: "inspect", revision, principal: owner.id },
+    ]) {
+      expect(() =>
+        parseReply(JSON.stringify({ text: "", release }), [], {
+          releaseAvailable: true,
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      parseReply(
+        JSON.stringify({ text: "", release: { action: "request", revision } }),
+        [],
+        {},
+      ),
+    ).toThrow();
+  });
+
   const replyCases: {
     name: string;
     channel: "slack" | "whatsapp";

@@ -145,6 +145,8 @@ export interface CompanionReply {
   escalate?: boolean;
   /** One public web query; never a request to search private Slack history. */
   webSearch?: string;
+  /** Owner-private release tracking; never activation or approval authority. */
+  release?: { action: "request" | "inspect"; revision: string | null };
   /** Only chooses placement for top-level Slack input; existing threads stay put. */
   replyInThread?: boolean;
 }
@@ -159,6 +161,7 @@ export interface ModelRequest {
   searchAvailable?: boolean;
   escalationAvailable?: boolean;
   webSearchAvailable?: boolean;
+  releaseAvailable?: boolean;
   replyPlacementAvailable?: boolean;
 }
 

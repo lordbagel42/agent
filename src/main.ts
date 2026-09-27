@@ -21,7 +21,10 @@ import type {
   ChannelAdapter,
   CodingRuntime,
 } from "./core/contracts.js";
-import { createDeploymentReader } from "./deployment/feed.js";
+import {
+  createDeploymentReader,
+  createReleaseTool,
+} from "./deployment/feed.js";
 import { createHttpApp } from "./http/app.js";
 import { createImportRoutes } from "./http/imports.js";
 import { createMemoryRoutes } from "./http/memory.js";
@@ -515,6 +518,12 @@ async function main() {
     webSearch,
     lifecycle,
     latency,
+    release: readDeployment
+      ? createReleaseTool({
+          read: () => readDeployment(config.owner.id),
+          runningRevision: release?.revision,
+        })
+      : undefined,
     deploymentStatus: readDeployment
       ? async () => {
           const feed = await readDeployment(config.owner.id).catch(

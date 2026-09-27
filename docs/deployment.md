@@ -170,6 +170,42 @@ are evidence, not instructions, deployment authority or permission to notify new
 channels. Consumer cursors and any notification delivery intent belong in June's
 durable journal, with the existing audience/send restrictions.
 
+### June's release tools
+
+When deployment configuration is present, June's owner-private reply schema and
+prompt advertise a `release` directive. This is the same agent-callable structured
+action interface used for search and coding proposals, not a CLI or a new poller:
+
+```json
+{"text":"","release":{"action":"request","revision":"<exact 40-character lowercase SHA>"}}
+```
+
+Use `action: "inspect"` with an exact revision to inspect that candidate, or
+`revision: null` for recent controller events. Keep other actions unset/null.
+The host reads the existing protected controller feed and sends the bounded
+receipt directly through June's normal durable delivery workflow. The request
+and receipt are retained in the conversation, not in a second deployment queue.
+
+**Request means tracking intent, not an activation command.** Trusted main is
+already the controller's release queue. An unobserved SHA is not accepted or
+authorized by requesting it; the owner must separately authorize and publish
+release-ready code to main. There is no scheduled follow-up, failed-release retry,
+approval token, drain access, policy editing, reconciliation or service control
+in this tool. The legacy supervisor remains inactive. Public/channel turns and
+non-owner senders cannot invoke the tool or receive its private evidence.
+
+Receipts report stage outcomes, fixed failure reasons and next steps; individual
+check logs are not exposed by the controller feed. No evidence means unknown,
+not passed. A blocked controller is reported even when inspecting another SHA.
+The last 100 events may omit older evidence and are not a controller heartbeat.
+`runningRevision` comes only from the immutable identity loaded by the serving
+process at startup, with an observation timestamp. A requested SHA, healthy event,
+main head or historical `lastHealthyRevision` never substitutes for that identity.
+This is a process-identity observation, not a fresh independent MainPID/readiness
+attestation. Replayed conversation receipts describe their recorded time; call
+inspect again for a new observation. If the feed fails, the running identity is
+still reported separately while checks and blockers remain explicitly unknown.
+
 ## One-time bootstrap and access checklist
 
 The existing homelab provisioner remains the source for June's Node installation,
