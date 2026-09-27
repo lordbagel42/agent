@@ -1,6 +1,7 @@
 """Core safety checks. All Git, HTTP service and durable data are disposable."""
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -155,6 +156,54 @@ class FixtureHost(deploy.Host):
         return True
 
 
+class GitHubFixture:
+    def __init__(self):
+        self.runs = {}
+        self.statuses = []
+        self.writes = []
+        self.lose_create_response = False
+
+    def open(self, request, timeout):
+        assert timeout == 5
+        assert request.get_header("Authorization") == "Bearer fixture-token"
+        assert request.get_header("Accept") == "application/vnd.github+json"
+        prefix = "https://api.github.com/repos/lordbagel42/agent/"
+        assert request.full_url.startswith(prefix)
+        path = request.full_url.removeprefix(prefix)
+        method = request.get_method()
+        body = json.loads(request.data) if request.data else None
+        if method == "GET":
+            sha = path.split("/")[1]
+            result = {
+                "check_runs": [
+                    run for run in self.runs.values() if run["head_sha"] == sha
+                ]
+            }
+        elif path == "check-runs":
+            run_id = len(self.runs) + 41
+            result = {
+                **body,
+                "id": run_id,
+                "html_url": f"https://github.com/lordbagel42/agent/runs/{run_id}",
+            }
+            self.runs[run_id] = result
+            self.writes.append((method, body))
+            if self.lose_create_response:
+                self.lose_create_response = False
+                raise deploy.urllib.error.URLError("SECRET lost response")
+        elif path.startswith("check-runs/"):
+            result = self.runs[int(path.split("/")[1])]
+            result.update(body)
+            self.writes.append((method, body))
+        else:
+            assert path.startswith("statuses/") and method == "POST"
+            self.statuses.append(body)
+            result = body
+        response = io.BytesIO(json.dumps(result).encode())
+        response.status = 201 if method == "POST" else 200
+        return response
+
+
 class DeploymentSafety(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -176,74 +225,65 @@ class DeploymentSafety(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
-    def test_github_status_tracks_deployments_without_reposting_busy_polls(self):
-        published = []
+    def test_github_details_update_one_run_and_link_existing_commit_statuses(self):
+        api = GitHubFixture()
         reporter = deploy.GitHubStatuses(self.store)
         self.loop = deploy.Deployer(self.host, self.store, reporter)
-
-        def accept(request, timeout):
-            self.assertEqual(timeout, 5)
-            self.assertEqual(request.get_method(), "POST")
-            self.assertEqual(
-                request.get_header("Authorization"), "Bearer fixture-token"
-            )
-            self.assertEqual(
-                request.get_header("Accept"), "application/vnd.github+json"
-            )
-            self.assertTrue(
-                request.full_url.startswith(
-                    "https://api.github.com/repos/lordbagel42/agent/statuses/"
-                )
-            )
-            body = json.loads(request.data)
-            self.assertEqual(body["context"], "june/deploy")
-            self.assertNotIn("SECRET", request.data.decode())
-            self.assertNotIn("target_url", body)
-            published.append((request.full_url.rsplit("/", 1)[1], body["state"]))
-            return response
-
         with (
             patch.object(deploy, "private_file", return_value="fixture-token\n"),
-            patch.object(reporter.opener, "open") as send,
+            patch.object(reporter.opener, "open", side_effect=api.open),
         ):
-            response = send.return_value
-            response.__enter__.return_value.status = 201
-            send.side_effect = accept
             target = self.host.commit("src/console/view.ts", "two")
+            self.store.set("github-status:" + target, '{"state":"pending"}')
             (self.host.data / "busy").touch()
             self.loop.tick()
             self.loop.tick()
-            self.assertEqual(published, [(target, "pending")])
+            self.assertEqual(len(api.runs), 1)
+            self.assertEqual(api.runs[41]["status"], "queued")
+            self.assertIn("drain_busy", api.runs[41]["output"]["summary"])
             (self.host.data / "busy").unlink()
             self.loop.tick()
+            writes = len(api.writes)
             self.loop.tick()
-            self.assertEqual(published, [(target, "pending"), (target, "success")])
+            self.assertEqual(len(api.writes), writes)
+            self.assertEqual(api.runs[41]["conclusion"], "success")
+            self.assertEqual(api.runs[41]["head_sha"], target)
+            self.assertIn("activating", api.runs[41]["output"]["text"])
+            self.assertEqual(
+                api.statuses[-1]["target_url"],
+                "https://github.com/lordbagel42/agent/runs/41",
+            )
+            self.assertEqual(api.statuses[-1]["state"], "success")
             failed = self.host.commit("src/console/view.ts", "bad health")
             self.loop.tick()
-            self.assertEqual(published[-2:], [(failed, "pending"), (failed, "failure")])
+            self.assertEqual(api.runs[42]["conclusion"], "failure")
+            self.assertIn("rolled_back", api.runs[42]["output"]["summary"])
+            self.assertIn("health_failed", api.runs[42]["output"]["text"])
             self.assertTrue(self.host.running(target))
+            self.assertEqual(
+                len(api.statuses), 2, "new commits should have only the native check"
+            )
             self.store.event(failed, "fetch_failed", "fetch_failed")
             self.loop.tick()
-            self.assertEqual(published[-1], (failed, "failure"))
+            self.assertEqual(api.runs[42]["conclusion"], "failure")
             skipped = self.host.commit("src/console/view.ts", "three")
             newest = self.host.commit("src/console/view.ts", "four")
             self.loop.tick()
-            self.assertIn((skipped, "error"), published)
-            self.assertEqual(published[-1], (newest, "success"))
+            outcomes = {run["head_sha"]: run["conclusion"] for run in api.runs.values()}
+            self.assertEqual(outcomes[skipped], "skipped")
+            self.assertEqual(outcomes[newest], "success")
 
-    def test_github_outage_keeps_deploying_and_retries_latest_status_after_restart(
+    def test_github_lost_response_recovers_existing_run_after_restart_without_redeploying(
         self,
     ):
+        api = GitHubFixture()
+        api.lose_create_response = True
         target = self.host.commit("src/console/view.ts", "two")
         reporter = deploy.GitHubStatuses(self.store)
         self.loop = deploy.Deployer(self.host, self.store, reporter)
         with (
             patch.object(deploy, "private_file", return_value="fixture-token"),
-            patch.object(
-                reporter.opener,
-                "open",
-                side_effect=deploy.urllib.error.URLError("SECRET"),
-            ),
+            patch.object(reporter.opener, "open", side_effect=api.open),
         ):
             self.loop.tick()
         self.assertEqual(self.store.status(target), "healthy")
@@ -258,18 +298,32 @@ class DeploymentSafety(unittest.TestCase):
         self.loop = deploy.Deployer(self.host, self.store, reporter)
         with (
             patch.object(deploy, "private_file", return_value="fixture-token"),
-            patch.object(reporter.opener, "open") as send,
+            patch.object(reporter.opener, "open", side_effect=api.open),
         ):
-            send.return_value.__enter__.return_value.status = 201
             self.loop.tick()
             self.loop.tick()
-            self.assertEqual(len(send.call_args_list), 1)
-            self.assertEqual(
-                json.loads(send.call_args.args[0].data)["state"], "success"
-            )
+        self.assertEqual(len(api.runs), 1)
+        self.assertEqual([method for method, _ in api.writes], ["POST", "PATCH"])
+        self.assertEqual(api.runs[41]["conclusion"], "success")
         self.assertEqual(
             (self.host.data / "starts").read_text().splitlines(), [self.first, target]
         )
+
+    def test_github_report_uses_observation_time_and_only_allowlisted_reasons(self):
+        with patch.object(deploy.time, "time_ns", return_value=2_000_000_000):
+            self.store.event(self.first, "received", committed_at=0)
+        with patch.object(deploy.time, "time_ns", return_value=7_250_000_000):
+            self.store.event(self.first, "blocked", "unsafe_rollback")
+        report = deploy.GitHubStatuses(self.store).report(self.first)
+        self.assertEqual(report["started_at"], "1970-01-01T00:00:02Z")
+        self.assertEqual(report["completed_at"], "1970-01-01T00:00:07.250000Z")
+        self.assertEqual(report["conclusion"], "action_required")
+        self.assertIn("5.25 s", report["output"]["summary"])
+        self.assertIn("unsafe_rollback", report["output"]["summary"])
+        self.store.event(self.first, "blocked", "SECRET arbitrary diagnostic")
+        safe = json.dumps(deploy.GitHubStatuses(self.store).report(self.first))
+        self.assertNotIn("SECRET", safe)
+        self.assertNotIn("arbitrary", safe)
 
     def test_low_disk_defers_without_build_or_drain_and_recovers_without_a_new_commit(
         self,

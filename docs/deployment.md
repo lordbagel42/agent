@@ -11,40 +11,58 @@ deploy key** and pinned GitHub host keys, not a person's `gh` login or the codin
 worker's write credential. Coding agents need separately scoped write access to
 this one repository; they cannot write the installed deployment controller.
 
-## GitHub commit status
+## GitHub deployment details
 
 With a dedicated API credential installed, the controller mirrors deployment
-evidence to the exact commit in `lordbagel42/agent` under **`june/deploy`**:
+evidence to a native **`june/deploy`** check on the exact commit in
+`lordbagel42/agent`. GitHub's **Details** button opens that check's report:
 
-| Controller evidence | GitHub state |
+| Controller evidence | GitHub check |
 | --- | --- |
-| Received, preparing, activating, deferred | `pending` |
-| Healthy or operator-reconciled | `success` |
-| Failed or rolled back | `failure` |
-| Blocked or superseded without deployment | `error` |
+| Received or deferred | Queued |
+| Preparing or activating | In progress |
+| Healthy or operator-reconciled | Completed: success |
+| Failed or rolled back | Completed: failure |
+| Blocked | Completed: action required |
+| Superseded without deployment | Completed: skipped |
 
 Success means that revision was verified healthy, not that it is still running.
-Fetch failures do not overwrite a candidate's result. Only fixed descriptions
-are sent: no logs, commit text, credentials, or private service URLs.
+The report shows the revision, environment, first/latest event timestamps,
+observation-to-outcome duration, and the latest 25 lifecycle events. Known
+failure reasons include fixed explanations and recovery guidance. Commit time
+is displayed separately; it is not deployment start time. Preparation and
+activation requirements are explained, but individual command results are not
+recorded or inferred. Fetch failures do not overwrite a candidate's result.
+No logs, commit text, credentials, arbitrary diagnostics, or private service
+URLs are published.
+
+Existing classic commit statuses receive a Details link to the native check
+and continue updating. New commits receive only the native check, avoiding two
+parallel entries. Reports remain within the private GitHub repository.
 
 An authorized operator enables reporting by installing the updated controller
 and a root-owned `0600` `/etc/june/github-status-token` through the existing secret
 mechanism. Use a fine-grained GitHub token restricted to `lordbagel42/agent` with
-**Commit statuses: read and write**. The read-only SSH deploy key and lifecycle
-token cannot authenticate GitHub API writes; do not reuse a coding-worker or
-personal CLI credential. Missing status credentials leave reporting disabled.
+**Checks: read and write**, plus **Commit statuses: read and write** for existing
+status links. When upgrading from status-only reporting, add Checks permission
+to the existing token before installing this controller; otherwise publication
+fails and the old statuses stop updating. The read-only SSH deploy key and
+lifecycle token cannot authenticate GitHub API writes; do not reuse a coding-worker
+or personal CLI credential. Missing status credentials leave reporting disabled.
 Keep the token out of June's model/build environments; rotate it before expiry.
 Controller installation/restart still requires operator authorization and must
 wait for existing deployment operations to settle.
 
-Reporting happens before preparation and after the deployment attempt, never
+Reporting happens after recording preparation and after the deployment attempt, never
 inside drain/activation/rollback. API failures do not fail deployments: they log
 only `github_status_publish_failed: will retry` and back off for 60 seconds.
-SQLite retains successful acknowledgements across restarts. Each flush sends at
-most ten updates, newest first, including existing history on first enablement.
-Only the latest evidence per revision is retried; repeated pending polls are
-deduplicated. An accepted POST with a lost response may create a duplicate status
-on retry, but never repeats a deployment.
+SQLite retains check IDs and successful report acknowledgements across restarts.
+Each flush sends at most ten updates, newest first, including existing history
+on first enablement. Only the latest evidence per revision is retried; unchanged
+reports are deduplicated. If a check creation response is lost, the controller
+looks up its stable external ID before creating another check. A legacy status
+POST with a lost response may create a duplicate status on retry, but reporting
+never repeats a deployment.
 
 June can inspect the same underlying evidence through her existing owner-private
 `release: {"action":"inspect","revision":"<SHA>"}` directive described below.

@@ -22,7 +22,9 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
+from typing import ClassVar
 
 REPOSITORY = "git@github.com:lordbagel42/agent.git"
 SOURCE = (
@@ -264,8 +266,6 @@ class Deployer:
             or s.status(target) in ("healthy", "failed", "rolled_back", "superseded")
         ):
             return
-        if self.statuses:
-            self.statuses.flush()
         previous = s.get("active")
         try:
             if not h.running(previous) or not h.settled():
@@ -276,6 +276,8 @@ class Deployer:
             # spam the feed or latch a terminal failed revision.
             h.require_space(target)
             s.event(target, "preparing")
+            if self.statuses:
+                self.statuses.flush()
             candidate = h.prepare(target)
             prior = h.manifest(previous)
             rollback_safe = h.rollback_safe(prior, candidate)
@@ -346,12 +348,139 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 class GitHubStatuses:
     """Best-effort mirror of durable evidence, never inside activation/rollback."""
 
+    STAGES: ClassVar = {
+        "received": ("queued", None, "Deployment queued"),
+        "preparing": ("in_progress", None, "Preparing and checking release"),
+        "activating": ("in_progress", None, "Activating release"),
+        "deferred": ("queued", None, "Deployment deferred"),
+        "healthy": ("completed", "success", "Deployed and verified healthy"),
+        "reconciled": ("completed", "success", "Running release verified by operator"),
+        "failed": ("completed", "failure", "Deployment failed"),
+        "rolled_back": ("completed", "failure", "Deployment failed; rolled back"),
+        "blocked": ("completed", "action_required", "Deployment blocked"),
+        "superseded": (
+            "completed",
+            "skipped",
+            "Superseded by newer main; not deployed",
+        ),
+    }
+    REASONS: ClassVar = {
+        "preflight_failed": "Source preparation or preflight failed; individual command results are not recorded. Operator diagnosis required.",
+        "health_failed": "Candidate failed readiness or process-identity checks. Inspect later rollback/block events.",
+        "drain_busy": "In-flight work could not be safely drained. The controller will retry without cancelling work.",
+        "insufficient_disk": "Insufficient disk capacity. Operator must restore capacity; the controller will retry.",
+        "resume_failed": "Admission could not be resumed. Operator recovery required.",
+        "current_unhealthy": "Current service identity/readiness is unverified. Operator inspection required.",
+        "candidate_not_drained": "Failed candidate could not be safely drained. Operator recovery required; no forced restart.",
+        "unsafe_rollback": "Rollback compatibility is not established. Operator forward recovery required; never restore conversation data.",
+        "rollback_unhealthy": "Rollback did not establish a healthy service. Operator recovery required.",
+        "activation_unknown": "An activation may be incomplete. Operator must establish actual service state and reconcile; no automatic retry.",
+        "non_fast_forward": "Main moved backwards or diverged. Owner must resolve trusted branch history.",
+    }
+
     def __init__(self, store):
         self.store = store
         self.retry_at = 0
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect()
         )
+
+    def report(self, commit):
+        first = self.store.db.execute(
+            "SELECT * FROM events WHERE revision=? AND status!='fetch_failed' ORDER BY sequence LIMIT 1",
+            (revision(commit),),
+        ).fetchone()
+        events = self.store.db.execute(
+            "SELECT * FROM events WHERE revision=? AND status!='fetch_failed' ORDER BY sequence DESC LIMIT 25",
+            (commit,),
+        ).fetchall()[::-1]
+        latest = events[-1]
+        status, conclusion, title = self.STAGES[latest["status"]]
+
+        def timestamp(value):
+            return (
+                datetime.fromtimestamp(value / 1000, timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+
+        def reason(value):
+            if value is None:
+                return "—"
+            if value in self.REASONS:
+                return f"`{value}`: {self.REASONS[value]}"
+            return "Unrecognized reason; operator diagnosis required."
+
+        summary = [
+            f"**{latest['status']}** — {title}",
+            f"Revision: [`{commit}`](https://github.com/lordbagel42/agent/commit/{commit}) · `main` · June production",
+            f"Reason: {reason(latest['reason'])}",
+            f"First recorded: {timestamp(first['at'])} · Latest event: {timestamp(latest['at'])}",
+            f"Observation → latest event: {latest['elapsedMs'] / 1000:.2f} s"
+            if latest["elapsedMs"] is not None
+            else "Observation duration: unknown (no earlier received event).",
+            "This is historical deployment evidence, not a claim that this revision is currently running or healthy. June's owner-private release inspection reports loaded process identity separately.",
+        ]
+        if first["committedAt"] is not None:
+            summary.insert(
+                4,
+                f"Commit timestamp: {timestamp(first['committedAt'])} (not used as deployment start).",
+            )
+        timeline = [
+            "## Recorded stages (UTC)",
+            "",
+            "| Time | Stage | Reason |",
+            "| --- | --- | --- |",
+        ]
+        timeline.extend(
+            f"| {timestamp(event['at'])} | `{event['status'] if event['status'] in self.STAGES else 'unknown'}` | {reason(event['reason'])} |"
+            for event in events
+        )
+        if events[0]["sequence"] != first["sequence"]:
+            timeline.append(
+                "\nShowing the latest 25 lifecycle events; earlier stages are omitted."
+            )
+        timeline.append(
+            "\nPreparation runs frozen dependency installation, formatting, type checking, safety tests and immutable artifact verification. Activation requires drain, readiness and process-identity checks. This report contains stage outcomes, not individual command results or raw logs; missing evidence is not a passed check."
+        )
+        payload = {
+            "name": "june/deploy",
+            "status": status,
+            "started_at": timestamp(first["at"]),
+            "output": {
+                "title": title,
+                "summary": "\n\n".join(summary),
+                "text": "\n".join(timeline),
+            },
+        }
+        if conclusion:
+            payload.update(conclusion=conclusion, completed_at=timestamp(latest["at"]))
+        return payload
+
+    def request(self, token, method, path, body=None):
+        request = urllib.request.Request(
+            "https://api.github.com/repos/lordbagel42/agent/" + path,
+            data=json.dumps(body).encode() if body is not None else None,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "User-Agent": "june-deploy",
+                "X-GitHub-Api-Version": "2026-03-10",
+            },
+        )
+        try:
+            with self.opener.open(request, timeout=5) as response:
+                if response.status != (201 if method == "POST" else 200):
+                    raise ValueError("github_status_failed")
+                data = response.read(1024 * 1024 + 1)
+                if len(data) > 1024 * 1024:
+                    raise ValueError("github_response_too_large")
+                return json.loads(data)
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise ValueError("github_status_failed") from None
 
     def flush(self):
         if time.monotonic() < self.retry_at:
@@ -373,62 +502,86 @@ class GitHubStatuses:
             """).fetchall()
             sent = 0
             for event in events:
-                status = event["status"]
-                if status in ("received", "preparing", "activating", "deferred"):
-                    state, description = "pending", "Deployment queued or in progress"
-                elif status in ("healthy", "reconciled"):
-                    state, description = "success", "Deployed and verified healthy"
-                elif status in ("failed", "rolled_back"):
-                    state, description = "failure", "Deployment failed"
-                    if status == "rolled_back":
-                        description += "; rolled back"
-                elif status == "superseded":
-                    state, description = (
-                        "error",
-                        "Not deployed: superseded by newer main",
+                commit = revision(event["revision"])
+                payload = self.report(commit)
+                fingerprint = hashlib.sha256(json.dumps(payload).encode()).hexdigest()
+                run_key = "github-check:" + commit
+                output_key = "github-check-output:" + commit
+                cached = self.store.get(run_key)
+                run = json.loads(cached) if cached else None
+                if not run or self.store.get(output_key) != fingerprint:
+                    created = False
+                    if not run:
+                        # Recover an accepted create whose response/SQLite acknowledgement
+                        # was lost instead of creating another check on every retry.
+                        found = self.request(
+                            token,
+                            "GET",
+                            f"commits/{commit}/check-runs?check_name=june%2Fdeploy&filter=latest&per_page=100",
+                        )
+                        run = next(
+                            (
+                                item
+                                for item in found["check_runs"]
+                                if item["head_sha"] == commit
+                                and item["external_id"] == "june/deploy:" + commit
+                            ),
+                            None,
+                        )
+                        if not run:
+                            run = self.request(
+                                token,
+                                "POST",
+                                "check-runs",
+                                {
+                                    **payload,
+                                    "head_sha": commit,
+                                    "external_id": "june/deploy:" + commit,
+                                },
+                            )
+                            created = True
+                        if (
+                            type(run["id"]) is not int
+                            or run["id"] <= 0
+                            or not re.fullmatch(
+                                r"https://github\.com/lordbagel42/agent/runs/[0-9]+(?:\?check_suite_focus=true)?",
+                                run["html_url"],
+                            )
+                        ):
+                            raise ValueError("invalid_github_check")
+                        run = {"id": run["id"], "html_url": run["html_url"]}
+                        self.store.set(run_key, json.dumps(run))
+                    if not created:
+                        self.request(token, "PATCH", f"check-runs/{run['id']}", payload)
+                    self.store.set(output_key, fingerprint)
+                    sent += 1
+                    if sent >= 10:
+                        break
+                # Migrate existing status Details links; new commits use only the
+                # native check, avoiding two parallel entries for every deployment.
+                key = "github-status:" + commit
+                if self.store.get(key):
+                    state = (
+                        "pending"
+                        if payload["status"] != "completed"
+                        else {
+                            "success": "success",
+                            "failure": "failure",
+                            "skipped": "error",
+                            "action_required": "error",
+                        }[payload["conclusion"]]
                     )
-                elif status == "blocked":
-                    state, description = (
-                        "error",
-                        "Deployment blocked; operator action required",
-                    )
-                else:
-                    continue
-                payload = json.dumps(
-                    {
+                    legacy = {
                         "state": state,
                         "context": "june/deploy",
-                        "description": description,
+                        "description": f"Deployment {state}; open Details",
+                        "target_url": run["html_url"],
                     }
-                )
-                commit = revision(event["revision"])
-                key = "github-status:" + commit
-                # Compare semantic statuses, not event sequences: busy drains
-                # cycle preparing/deferred without consuming GitHub's 1000-status cap.
-                if self.store.get(key) == payload:
-                    continue
-                request = urllib.request.Request(
-                    f"https://api.github.com/repos/lordbagel42/agent/statuses/{commit}",
-                    data=payload.encode(),
-                    method="POST",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Accept": "application/vnd.github+json",
-                        "Content-Type": "application/json",
-                        "User-Agent": "june-deploy",
-                        "X-GitHub-Api-Version": "2026-03-10",
-                    },
-                )
-                try:
-                    with self.opener.open(request, timeout=5) as response:
-                        if response.status != 201:
-                            raise ValueError("github_status_failed")
-                except urllib.error.HTTPError as error:
-                    error.close()
-                    raise ValueError("github_status_failed") from None
-                self.store.set(key, payload)
-                sent += 1
-                if sent == 10:
+                    if self.store.get(key) != json.dumps(legacy):
+                        self.request(token, "POST", f"statuses/{commit}", legacy)
+                        self.store.set(key, json.dumps(legacy))
+                        sent += 1
+                if sent >= 10:
                     break  # Bound backfill work; newer evidence is sent first.
         except Exception:  # noqa: BLE001 - API bodies/credentials never reach logs or June
             self.retry_at = time.monotonic() + 60
