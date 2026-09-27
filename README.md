@@ -1000,7 +1000,8 @@ candidates and explicitly reports possible omissions. Blocked, unavailable and
 empty eligible results are distinct; generic inspection counts are not validated
 eligibility. No evidence or rationale is returned. This exact command bypasses
 inference and automatic memory ingestion/extraction/reflection enqueue, so review
-does not erase its own candidates. Ordinary conversation still invalidates them.
+does not invalidate its own candidates. Ordinary conversation still revokes their
+action eligibility, but retains published hypotheses until expiry or bounded eviction.
 The list is constructed only at delivery, not retained in history or journaled
 reply content. It is not approval, a memory write, or permission to send.
 
@@ -1011,6 +1012,20 @@ its pending derivatives before the actor records success. Already accepted chang
 are not erased. Rejection does not require eligible evidence or quiet-hour clearance.
 An unconfirmed result means retry the same ID, not that nothing changed. Like the
 list command, it skips inference and automatic memory ingestion/extraction/enqueue.
+
+`!reflection inspect <opaque-id>` privately reads the exact retained hypothesis
+and metadata for every original input, including uncited inputs. It does not
+return source bodies. Inspection survives later conversation epochs, live work
+and quiet hours; actions do not. Expiry, forgetting, cancellation, an unsettled
+publication or lost authorization makes the entire read unavailable. Results
+over 24,000 UTF-8 JSON bytes are unavailable, never silently clipped.
+The actor's historical `reviewCandidates(scope)` and `inspectCandidate(scope,id)`
+return content-free `{id,digest}` references; `validateReview(scope,references)`
+rechecks the exact body and full provenance before reuse. These reads confer no
+permission, and strict `candidate(id,scope)` retains its original action gates.
+Historical reads require the trusted synchronous `evidenceCurrent(scope,evidence)`
+dependency; absent that fence they fail closed. Production rechecks the actual
+memory store, so deletion revokes a read before asynchronous actor cancellation.
 
 Owner-private `analytics: {"days":7}` also returns memory retrieval counters
 when memory is enabled: calls, completed, failed, total duration and maximum

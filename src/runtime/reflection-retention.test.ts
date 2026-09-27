@@ -1,7 +1,10 @@
-import { expect, it } from "vitest";
+import { randomBytes } from "node:crypto";
+import { expect, it, onTestFinished } from "vitest";
+import { EvidenceStore } from "../memory/store.js";
 import {
   createReflectionActor,
   type ReflectionCandidate,
+  reflectionCandidateId,
 } from "./reflection.js";
 
 function required<T>(value: T | undefined): T {
@@ -9,9 +12,11 @@ function required<T>(value: T | undefined): T {
   return value;
 }
 
-async function fixture() {
+async function fixture(beforeRetrieve?: (ids: string[]) => Promise<void>) {
   const now = Date.now();
   const scope = JSON.stringify(["private", "owner"]);
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  onTestFinished(() => store.close());
   const config = createReflectionActor({
     ownerId: "owner",
     idleMs: 100,
@@ -27,17 +32,19 @@ async function fixture() {
       evidenceMaxAgeMs: 60000,
       quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
     },
+    evidenceCurrent(scope, evidence) {
+      const current = store.reflectionEvidence(
+        scope,
+        evidence.map((e) => e.id),
+        31000,
+      );
+      return JSON.stringify(current) === JSON.stringify(evidence);
+    },
     async retrieve({ scope, evidenceIds }) {
+      await beforeRetrieve?.(evidenceIds);
       return {
         authorized: true,
-        evidence: evidenceIds.map((id) => ({
-          id,
-          scope,
-          source: "episode" as const,
-          text: "private fixture",
-          observedAt: now - 1000,
-          expiresAt: now + 30000,
-        })),
+        evidence: store.reflectionEvidence(scope, evidenceIds, 31000),
       };
     },
     async decide() {
@@ -65,6 +72,17 @@ async function fixture() {
     name: string,
     phase: "settled" | "started" | "uncertain" = "settled",
   ) => {
+    store.appendSource({
+      id: name,
+      audiences: [scope],
+      platform: "slack",
+      account: "T",
+      conversation: "D",
+      author: "owner",
+      observedAt: now - 1000,
+      sourceUrl: "https://example.com/fixture",
+      text: "private fixture",
+    });
     const requestId = JSON.stringify([scope, [name]]);
     const id = JSON.stringify([requestId, 1]);
     c.state.reflection.requests.push({
@@ -93,7 +111,7 @@ async function fixture() {
     c.state.invocations[id] = phase;
     return id;
   };
-  return { c, actions: config.actions, add, now };
+  return { c, actions: config.actions, add, now, store };
 }
 
 it("preserves published bodies across interactions without rearming effects or releasing uncertain work", async () => {
@@ -190,4 +208,71 @@ it("evicts oldest and expired bodies within count/byte bounds without erasing de
   expect(c.state.candidates[required(ids[51])]).toBeDefined();
   expect(c.state.candidates[required(ids[1])]).toBeUndefined();
   expect(c.state.reflection.requests).toHaveLength(52);
+});
+
+it.each(["cancel", "delete"])(
+  "revalidates earlier publications after the last batch read settles: %s",
+  async (revoke) => {
+    let pause: Promise<void> | undefined;
+    let entered = false;
+    const { c, actions, add, store } = await fixture(async (ids) => {
+      if (ids.includes("last") && pause) {
+        entered = true;
+        await pause;
+      }
+    });
+    c.state.candidateFormatVersion = 1;
+    const first = add("first");
+    add("last");
+    const scope = JSON.stringify(["private", "owner"]);
+    const references =
+      (await actions.reviewCandidates(c, scope))?.references ?? [];
+    expect(references).toHaveLength(2);
+    let release = () => {};
+    pause = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const validation = actions.validateReview(c, scope, references);
+    const listing = actions.reviewCandidates(c, scope);
+    await expect.poll(() => entered).toBe(true);
+    if (revoke === "cancel")
+      await actions.cancel(c, required(c.state.candidates[first]).requestId);
+    else store.deleteSource("first");
+    release();
+    expect(await validation).toBe(false);
+    expect((await listing)?.references).toEqual(references.slice(1));
+  },
+);
+
+it("reads both historical and simulated deep curiosity without rewriting either publication", async () => {
+  const { c, actions, add } = await fixture();
+  c.state.candidateFormatVersion = 1;
+  for (const modern of [false, true]) {
+    const id = add(modern ? "simulated" : "historical");
+    const candidate = required(c.state.candidates[id]);
+    required(
+      c.state.reflection.requests.find((r) => r.id === candidate.requestId),
+    ).kind = "curiosity";
+    candidate.mode = "deep";
+    candidate.kind = modern ? "proposal" : "interruption-candidate";
+    candidate.hypothesisOnly = modern;
+    if (modern)
+      candidate.decision.alternativeResponses = ["One hypothetical reply"];
+    const original = structuredClone(candidate);
+    c.state.epoch++;
+    const result = await actions.inspectCandidate(
+      c,
+      candidate.scope,
+      reflectionCandidateId(id),
+    );
+    expect(result?.candidate).toMatchObject({
+      kind: original.kind,
+      hypothesisOnly: original.hypothesisOnly,
+      epoch: original.epoch,
+      publication: original.publication,
+      decision: original.decision,
+    });
+    expect(c.state.candidates[id]).toEqual(original);
+    expect(await actions.candidate(c, id)).toBeNull();
+  }
 });

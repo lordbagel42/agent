@@ -51,7 +51,7 @@ import { createMemoryExtractor } from "./models/extraction.js";
 import { createJevObserver } from "./models/jev.js";
 import { createModelProvider } from "./models/provider.js";
 import { UsageLedger } from "./models/usage.js";
-import { freshEvidence } from "./reflection/domain.js";
+import { type Evidence, freshEvidence } from "./reflection/domain.js";
 import {
   DecisionExecutor,
   type DecisionFunction,
@@ -720,6 +720,14 @@ async function main() {
           ...config.reflection,
           ownerId: config.owner.id,
           decide,
+          evidenceCurrent(scope: string, evidence: Evidence[]) {
+            const current = memory.store.reflectionEvidence(
+              audience(scope),
+              evidence.map((item) => item.id),
+              config.reflection?.policy.evidenceMaxAgeMs ?? 0,
+            );
+            return JSON.stringify(current) === JSON.stringify(evidence);
+          },
           async retrieve(
             input: { ownerId: string; scope: string; evidenceIds: string[] },
             signal: AbortSignal,

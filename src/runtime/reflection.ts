@@ -68,6 +68,10 @@ export interface ReflectionDependencies {
     input: { ownerId: string; scope: string; evidenceIds: string[] },
     signal: AbortSignal,
   ): Promise<{ authorized: boolean; evidence: Evidence[] }>;
+  /** Synchronous authorization/deletion/value fence for the retrieved immutable
+   * versions. Historical reads fail closed when this boundary is unavailable.
+   */
+  evidenceCurrent?(scope: string, evidence: Evidence[]): boolean;
   /** When a bridge is mounted, synchronously persist revocation of its pending
    * proposals before returning. Must be idempotent; failure leaves actor state
    * unchanged. Earlier accepted changes are not retroactively erased.
@@ -135,6 +139,19 @@ export interface ReflectionRuntimeState {
   triggerIds: string[];
 }
 
+type CandidateContext = {
+  readonly state: ReflectionRuntimeState;
+  vars: {
+    prepareCandidates: () => Promise<void>;
+    publishingCandidates: Set<string>;
+  };
+};
+
+export interface ReflectionReviewReference {
+  id: string;
+  digest: string;
+}
+
 /** One actor keyed [ownerId], never one actor per scope (capacity is owner-wide).
  * Actions are trusted host APIs, not an internet-facing authorization boundary.
  */
@@ -182,14 +199,8 @@ export function createReflectionActor(
   /** With a scope, accept only opaque aliases in the configured private audience.
    * Without one, preserve the trusted operator's legacy internal-ID API.
    */
-  async function readCandidate(
-    c: {
-      readonly state: ReflectionRuntimeState;
-      vars: {
-        prepareCandidates: () => Promise<void>;
-        publishingCandidates: Set<string>;
-      };
-    },
+  async function readPublication(
+    c: CandidateContext,
     id: string,
     scope?: string,
   ) {
@@ -200,32 +211,60 @@ export function createReflectionActor(
     )
       return null;
     await c.vars.prepareCandidates();
-    const candidate =
+    const found =
       scope === undefined
         ? c.state.candidates[id]
         : Object.values(c.state.candidates).find(
             (item) =>
               item.scope === scope && reflectionCandidateId(item.id) === id,
           );
-    const request = c.state.reflection.requests.find(
-      (item) =>
-        item.id === candidate?.requestId && item.scope === candidate?.scope,
+    const sourceRequest = c.state.reflection.requests.find(
+      (item) => item.id === found?.requestId && item.scope === found?.scope,
     );
-    if (!candidate || !request) return null;
-    const current = () =>
-      c.state.candidates[candidate.id]?.id === candidate.id &&
-      c.state.candidates[candidate.id]?.publication?.version === 1 &&
-      (c.state.candidates[candidate.id]?.publication?.expiresAt ?? 0) >
-        Date.now() &&
-      c.state.invocations[candidate.id] === "settled" &&
-      !c.vars.publishingCandidates.has(candidate.id) &&
-      candidate.epoch === c.state.epoch &&
-      !c.state.liveActive &&
-      !isQuiet(Date.now(), deps.policy.quiet) &&
-      !["cancelled", "cancelling"].includes(
-        c.state.reflection.requests.find((item) => item.id === request.id)
-          ?.status ?? "cancelled",
+    if (!found || !sourceRequest) return null;
+    // Snapshot values, not Rivet proxy identities: replaceReflection replaces the
+    // root while reads await memory. Published bodies themselves never change.
+    const encoded = JSON.stringify(found);
+    const candidate: ReflectionCandidate = JSON.parse(encoded);
+    const request = {
+      id: sourceRequest.id,
+      scope: sourceRequest.scope,
+      kind: sourceRequest.kind,
+      evidenceIds: [...sourceRequest.evidenceIds],
+    };
+    const current = () => {
+      const latest = c.state.reflection.requests.find(
+        (item) => item.id === request.id,
       );
+      return (
+        c.state.candidateFormatVersion === 1 &&
+        JSON.stringify(c.state.candidates[candidate.id]) === encoded &&
+        candidate.id === JSON.stringify([request.id, candidate.attempt]) &&
+        Number.isSafeInteger(candidate.attempt) &&
+        candidate.attempt > 0 &&
+        candidate.attempt <= (latest?.attempts ?? 0) &&
+        latest?.scope === candidate.scope &&
+        latest.kind === request.kind &&
+        // Deep curiosity used to publish interruption-shaped hypotheses. Keep
+        // those immutable historical records readable, without rearming them.
+        ((candidate.mode === "deep" && candidate.kind === "proposal") ||
+          candidate.kind ===
+            (request.kind === "curiosity"
+              ? "interruption-candidate"
+              : "proposal")) &&
+        JSON.stringify(latest.evidenceIds) ===
+          JSON.stringify(request.evidenceIds) &&
+        candidate.publication?.version === 1 &&
+        Number.isFinite(candidate.publication.expiresAt) &&
+        candidate.publication.expiresAt > Date.now() &&
+        c.state.invocations[candidate.id] === "settled" &&
+        !c.vars.publishingCandidates.has(candidate.id) &&
+        !c.state.rejectedCandidateIds?.includes(
+          reflectionCandidateId(candidate.id),
+        ) &&
+        !["cancelled", "cancelling"].includes(latest.status)
+      );
+    };
     if (!current()) return null;
     const evidence = await retrieve(
       request,
@@ -243,7 +282,96 @@ export function createReflectionActor(
       evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
       evidence,
     });
-    return decision.answer === "yes" ? { candidate, evidence, decision } : null;
+    const isCurrent = () => {
+      try {
+        return (
+          current() &&
+          (deps.evidenceCurrent?.(candidate.scope, evidence) ?? true) &&
+          evidence.every((item) =>
+            freshEvidence(
+              item,
+              candidate.scope,
+              Date.now(),
+              deps.policy.evidenceMaxAgeMs,
+            ),
+          )
+        );
+      } catch {
+        // Missing/deleted/unauthorized store records throw at the trusted boundary.
+        return false;
+      }
+    };
+    return decision.answer === "yes"
+      ? { candidate, evidence, decision, isCurrent }
+      : null;
+  }
+
+  /** Historical read only. Retained publication never grants effect authority. */
+  async function reviewCandidate(
+    c: CandidateContext,
+    id: string,
+    scope: string,
+  ) {
+    if (!deps.evidenceCurrent) return null;
+    const read = await readPublication(c, id, scope);
+    return read?.isCurrent() ? read : null;
+  }
+
+  /** Action reads retain the original generation, live-work and quiet-hour gates. */
+  async function readCandidate(
+    c: CandidateContext,
+    id: string,
+    scope?: string,
+  ) {
+    const epoch = c.state.epoch;
+    const eligible = () =>
+      c.state.epoch === epoch &&
+      !c.state.liveActive &&
+      !isQuiet(Date.now(), deps.policy.quiet);
+    if (!eligible()) return null;
+    const read = await readPublication(c, id, scope);
+    return read?.isCurrent() && read.candidate.epoch === epoch && eligible()
+      ? read
+      : null;
+  }
+
+  function reviewDto(
+    read: NonNullable<Awaited<ReturnType<typeof reviewCandidate>>>,
+  ) {
+    if (!read.isCurrent()) return null;
+    const { candidate, evidence, decision } = read;
+    const body = {
+      candidate: {
+        id: reflectionCandidateId(candidate.id),
+        kind: candidate.kind,
+        mode: candidate.mode,
+        createdAt: candidate.createdAt,
+        epoch: candidate.epoch,
+        publication: candidate.publication,
+        hypothesisOnly: candidate.hypothesisOnly,
+        decision,
+      },
+      evidence: evidence
+        .map(({ id, source, observedAt, expiresAt }) => ({
+          id,
+          source,
+          observedAt,
+          expiresAt,
+          cited: decision.evidenceIds.includes(id),
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    };
+    const result = {
+      checkedAt: Date.now(),
+      ...body,
+      reference: {
+        id: body.candidate.id,
+        digest: createHash("sha256").update(JSON.stringify(body)).digest("hex"),
+      },
+    };
+    return Buffer.byteLength(JSON.stringify(result), "utf8") <= 24000
+      ? result
+      : null;
   }
 
   const expiresAt = (evidence: Evidence[]) =>
@@ -763,6 +891,56 @@ export function createReflectionActor(
         if (c.key.length !== 1 || c.key[0] !== deps.ownerId) return null;
         return (await readCandidate(c, id, scope))?.candidate ?? null;
       },
+      /** Bounded historical metadata for model review, never a readiness grant. */
+      reviewCandidates: async (c, scope: string) => {
+        if (
+          !deps.evidenceCurrent ||
+          c.key.length !== 1 ||
+          c.key[0] !== deps.ownerId ||
+          scope !== JSON.stringify(["private", deps.ownerId])
+        )
+          return null;
+        await c.vars.prepareCandidates();
+        const ids = Object.values(c.state.candidates)
+          .filter((candidate) => candidate.scope === scope)
+          .map((candidate) => reflectionCandidateId(candidate.id));
+        const checked = await Promise.all(
+          ids.slice(0, 20).map((id) => reviewCandidate(c, id, scope)),
+        );
+        const references = checked.flatMap((read) => {
+          const dto = read && reviewDto(read);
+          return dto ? [dto.reference] : [];
+        });
+        return {
+          checkedAt: Date.now(),
+          references: references.slice(0, 10),
+          truncated: ids.length > 20 || references.length > 10,
+        };
+      },
+      /** Content-free receipts bind exactly what a continuation consumed. */
+      validateReview: async (
+        c,
+        scope: string,
+        references: ReflectionReviewReference[],
+      ) => {
+        if (
+          !deps.evidenceCurrent ||
+          c.key.length !== 1 ||
+          c.key[0] !== deps.ownerId ||
+          scope !== JSON.stringify(["private", deps.ownerId]) ||
+          references.length > 10 ||
+          new Set(references.map((ref) => ref.id)).size !== references.length
+        )
+          return false;
+        const checked = await Promise.all(
+          references.map((ref) => reviewCandidate(c, ref.id, scope)),
+        );
+        return checked.every(
+          (read, index) =>
+            read &&
+            reviewDto(read)?.reference.digest === references[index]?.digest,
+        );
+      },
       /** Exact owner-private inspection, not evidence or authorization for an effect.
        * Project only after current provenance checks; omit the whole result if it
        * exceeds the byte budget rather than silently clipping the rationale.
@@ -774,30 +952,8 @@ export function createReflectionActor(
           scope !== JSON.stringify(["private", deps.ownerId])
         )
           return null;
-        const read = await readCandidate(c, id, scope);
-        if (!read) return null;
-        const { candidate, evidence, decision } = read;
-        const result = {
-          checkedAt: Date.now(),
-          candidate: {
-            id,
-            kind: candidate.kind,
-            mode: candidate.mode,
-            createdAt: candidate.createdAt,
-            hypothesisOnly: candidate.hypothesisOnly,
-            decision,
-          },
-          evidence: evidence.map(({ id, source, observedAt, expiresAt }) => ({
-            id,
-            source,
-            observedAt,
-            expiresAt,
-            cited: decision.evidenceIds.includes(id),
-          })),
-        };
-        return Buffer.byteLength(JSON.stringify(result), "utf8") <= 24000
-          ? result
-          : null;
+        const read = await reviewCandidate(c, id, scope);
+        return read ? reviewDto(read) : null;
       },
       /** Operator-only recovery after confirming the old worker/provider has stopped.
        * Never retries this request or clears its dedupe tombstone.

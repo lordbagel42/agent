@@ -123,6 +123,15 @@ it("admits explicit private reflection once without bypassing evidence or schedu
       deepMs: 800,
       pollMs: 20,
       timeoutMs: 1000,
+      evidenceCurrent: (scope, evidence) =>
+        scope === audience &&
+        JSON.stringify(
+          store.reflectionEvidence(
+            scope,
+            evidence.map((e) => e.id),
+            60000,
+          ),
+        ) === JSON.stringify(evidence),
       async retrieve({ scope, evidenceIds }) {
         return {
           authorized: scope === audience,

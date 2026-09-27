@@ -108,6 +108,17 @@ it("privately inspects exact hypotheses without retention or inference and reval
       deepMs: 86400000,
       pollMs: 20,
       timeoutMs: 10000,
+      evidenceCurrent: (scope, evidence) =>
+        authorized &&
+        !wrongScope &&
+        !expired &&
+        JSON.stringify(
+          store.reflectionEvidence(
+            scope,
+            evidence.map((e) => e.id),
+            60000,
+          ),
+        ) === JSON.stringify(evidence),
       async retrieve(input) {
         reads++;
         await pause;
@@ -300,14 +311,27 @@ it("privately inspects exact hypotheses without retention or inference and reval
   const minute = now.getUTCHours() * 60 + now.getUTCMinutes();
   quiet.startMinute = (minute + 1439) % 1440;
   quiet.endMinute = (minute + 2) % 1440;
-  expect(await reflection.inspectCandidate(scope, id)).toBeNull();
+  expect(await reflection.inspectCandidate(scope, id)).not.toBeNull();
+  expect(await reflection.candidate(id, scope)).toBeNull();
   quiet.startMinute = quiet.endMinute = 0;
   await reflection.trigger({ id: "hold", type: "idle", liveActive: 1 });
-  expect(await reflection.inspectCandidate(scope, id)).toBeNull();
+  expect(await reflection.inspectCandidate(scope, id)).not.toBeNull();
+  expect(await reflection.candidate(id, scope)).toBeNull();
   await reflection.trigger({ id: "release", type: "idle", liveActive: 0 });
   expect(await reflection.inspectCandidate(scope, id)).not.toBeNull();
+  const references = (await reflection.reviewCandidates(scope))?.references;
+  expect(references).toEqual([inspected?.reference]);
+  expect(await reflection.validateReview(scope, references ?? [])).toBe(true);
+  expect(await reflection.validateReview("foreign", references ?? [])).toBe(
+    false,
+  );
+  expect(await reflection.validateReview(scope, [{ id, digest: "bad" }])).toBe(
+    false,
+  );
   // Every source seen by the generator matters, including its uncited input.
   store.deleteSource("uncited");
+  expect(await reflection.validateReview(scope, references ?? [])).toBe(false);
+  expect((await reflection.reviewCandidates(scope))?.references).toEqual([]);
   expect((await deliver(`!reflection inspect ${id}`)).text).not.toContain(
     rationale,
   );
@@ -337,8 +361,19 @@ it("privately inspects exact hypotheses without retention or inference and reval
   await reflection.occupancy("overlap", false);
   release();
   pause = undefined;
-  expect(await pending).toBeNull();
-  expect(await reflection.inspectCandidate(scope, raced)).toBeNull();
+  expect(await pending).not.toBeNull();
+  expect(await reflection.inspectCandidate(scope, raced)).not.toBeNull();
+  expect(await reflection.candidate(raced, scope)).toBeNull();
+  const retained = await reflection.inspectCandidate(scope, raced);
+  expect((await reflection.reviewCandidates(scope))?.references).toContainEqual(
+    retained?.reference,
+  );
+  expect(
+    await reflection.validateReview(
+      scope,
+      retained ? [retained.reference] : [],
+    ),
+  ).toBe(true);
 
   rationale = "PRIVATE RETRY HYPOTHESIS";
   const retried = await stage(["retry"]);
