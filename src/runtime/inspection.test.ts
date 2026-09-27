@@ -330,6 +330,9 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   );
   expect(memoryReport).toContain("not total ledger/disk size");
   expect(memoryReport).toContain("remaining capacity is unknown");
+  expect(memoryReport).toContain('"read":{"status":"succeeded"');
+  expect(memoryReport).toContain('"transaction":{"status":"succeeded"');
+  expect(memoryReport).toContain("Open is not a health check");
   expect(memoryReport.length).toBeLessThan(2000);
   action = { text: "", inspection: "imports" };
   const importReport = await deliver();
@@ -427,6 +430,22 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(fetches).toBe(0);
   expect(store.importProgress("selection-0")).toEqual(progress);
   expect(store.proposals(audience)[0]?.status).toBe("pending");
+  disabled = false;
+  action = { text: "", inspection: "memory" };
+  expect(() =>
+    store.appendSource({ ...retainedSource, text: "SECRET WRITE ERROR" }),
+  ).toThrow();
+  const failedWriteReport = await deliver();
+  expect(failedWriteReport).toContain('"transaction":{"status":"failed"');
+  expect(failedWriteReport).toContain('"sources":1,"claims":0');
+  store.close();
+  const failedReadReport = await deliver();
+  expect(failedReadReport).toContain("snapshot failed");
+  expect(failedReadReport).toContain("counts and size are unknown");
+  expect(failedReadReport).toContain('"connection":"closed"');
+  expect(failedReadReport).toContain('"read":{"status":"failed"');
+  expect(failedReadReport).not.toContain('"sources":0');
+  expect(JSON.stringify(sent)).not.toContain("SECRET");
   for (const inspection of [
     "start",
     "forget",

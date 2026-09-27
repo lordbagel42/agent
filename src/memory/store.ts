@@ -156,6 +156,11 @@ export type DependentClaims = {
 export type ImportCoverage = z.infer<typeof coverageSchema>;
 export type ImportProgress = z.infer<typeof progressSchema>;
 export type ImportPage = z.infer<typeof pageSchema>;
+export type LedgerOperationStatus = {
+  status: "unknown" | "succeeded" | "failed";
+  attemptedAt: number | null;
+  lastSucceededAt: number | null;
+};
 type State = z.infer<typeof stateSchema>;
 
 export const DEFAULT_IMPORT_BUDGET = Object.freeze({
@@ -333,6 +338,17 @@ export class EvidenceStore {
   private readonly key: Buffer;
   readonly importBudget: Readonly<ImportBudget>;
   private closed = false;
+  private readonly sinceOpenedAt = Date.now();
+  private readStatus: LedgerOperationStatus = {
+    status: "unknown",
+    attemptedAt: null,
+    lastSucceededAt: null,
+  };
+  private transactionStatus: LedgerOperationStatus = {
+    status: "unknown",
+    attemptedAt: null,
+    lastSucceededAt: null,
+  };
   private readonly index = new Map<
     string,
     { sources: Source[]; claims: Claim[] }
@@ -362,6 +378,7 @@ export class EvidenceStore {
         )
         .get();
       if (!exists) {
+        const attemptedAt = Date.now();
         this.db.exec("BEGIN IMMEDIATE");
         try {
           this.db.exec(
@@ -378,6 +395,11 @@ export class EvidenceStore {
             corrections: [],
           });
           this.db.exec("COMMIT");
+          this.transactionStatus = {
+            status: "succeeded",
+            attemptedAt,
+            lastSucceededAt: Date.now(),
+          };
         } catch (error) {
           this.db.exec("ROLLBACK");
           throw error;
@@ -391,9 +413,21 @@ export class EvidenceStore {
     }
   }
 
+  /** Content-free, ledger-wide observations for this instance only. No I/O;
+   * an open handle or historical success does not establish current health. */
+  operationStatus() {
+    return {
+      connection: this.closed ? ("closed" as const) : ("open" as const),
+      sinceOpenedAt: this.sinceOpenedAt,
+      read: { ...this.readStatus },
+      transaction: { ...this.transactionStatus },
+    };
+  }
+
   private read(): State {
-    if (this.closed) throw new Error("Memory store closed");
+    const attemptedAt = Date.now();
     try {
+      if (this.closed) throw new Error("Memory store closed");
       const row = this.db
         .prepare("SELECT payload FROM records WHERE id=1")
         .get();
@@ -419,9 +453,19 @@ export class EvidenceStore {
       // Older snapshots may still contain grounding-only derivatives of a
       // tombstoned source. Hide them on every read; the next write persists this.
       if (state.tombstones.length) removeEvidence(state, state.tombstones);
+      this.readStatus = {
+        status: "succeeded",
+        attemptedAt,
+        lastSucceededAt: Date.now(),
+      };
       return state;
     } catch {
-      throw new Error("Memory store authentication failed");
+      this.readStatus = { ...this.readStatus, status: "failed", attemptedAt };
+      throw new Error(
+        this.closed
+          ? "Memory store closed"
+          : "Memory store authentication failed",
+      );
     }
   }
 
@@ -441,15 +485,28 @@ export class EvidenceStore {
   }
 
   private transaction(change: (state: State) => void) {
-    this.db.exec("BEGIN IMMEDIATE");
+    const attemptedAt = Date.now();
+    let began = false;
     try {
+      this.db.exec("BEGIN IMMEDIATE");
+      began = true;
       const state = this.read();
       change(state);
       this.write(state);
       this.db.exec("COMMIT");
+      this.transactionStatus = {
+        status: "succeeded",
+        attemptedAt,
+        lastSucceededAt: Date.now(),
+      };
       this.index.clear();
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      this.transactionStatus = {
+        ...this.transactionStatus,
+        status: "failed",
+        attemptedAt,
+      };
+      if (began) this.db.exec("ROLLBACK");
       throw error;
     }
   }

@@ -325,6 +325,36 @@ explanation, now)` appends a revision reverting the current head, not arbitrary
 Git syntax. To undo an owner correction (including a hidden deleted correction),
 use explicit owner rollback/revision, not an inferred override.
 
+## Ledger operation status
+
+Owner-private `inspection: "memory"` reports scoped capacity and separate
+ledger-wide `operationStatus()` metadata. This read-only API performs no I/O
+and returns only `connection`, `sinceOpenedAt`, and `read`/`transaction` records
+containing `status` (`unknown`, `succeeded`, or `failed`), `attemptedAt`, and
+`lastSucceededAt` (epoch milliseconds or null). No paths, IDs, input, keys, or
+exception messages are retained in these records.
+
+Read success means a snapshot was decrypted, authenticated and validated;
+transaction success is recorded only after COMMIT. Failures preserve the previous
+success timestamp, including failed BEGIN/COMMIT attempts. Transaction status
+includes initial creation, but not input validation rejected before a transaction
+starts. Inspection reads may update read status, never transaction status. An open
+connection or historical success does not establish current health, writability,
+integrity of backups, or complete coverage.
+
+These observations are bounded and process-local to this store instance. Reopening
+authenticates the snapshot again, but prior transaction outcomes/times are unknown;
+they are not inferred from existing records. Missing memory is explicitly disabled
+or unavailable, not empty. A failed snapshot reports unknown counts/size rather
+than cached or zero values. An empty scoped source/claim projection says nothing
+about other audiences, pending proposals, imports or tombstones.
+
+This is not an outage-recovery channel. With live memory configured, deletion
+checks and ingestion run before June can request inspection. A persistent read
+or ingestion failure can block the turn before this receipt is reachable; those
+privacy checks remain fail-closed. Reader failure reports do not prove a broken
+production ledger can still answer a conversational inspection request.
+
 ## Retention and limits
 
 Source IDs are append-only/immutable until deletion; persistence is still one

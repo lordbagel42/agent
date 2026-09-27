@@ -46,12 +46,28 @@ export function createInspectionReader(deps: {
           "Physical erasure is unverified for every category. Logical deletion means removal from active use, not proof that all bytes or external copies are gone. Unknown does not mean absent; an unconfigured subsystem does not prove older copies are absent. This report contains no content, IDs, paths or keys, performs no deletion, and certifies no individual deletion request.",
         ].join("\n");
       case "memory": {
-        if (!deps.memory) return `${heading}\nMemory is unavailable.`;
-        const capacity = deps.memory.store.capacity(deps.audience);
-        const proposals = deps.memory.store.proposals(deps.audience);
-        const counts = { pending: 0, accepted: 0, rejected: 0 };
-        for (const proposal of proposals) counts[proposal.status]++;
-        return `${heading}\nAuthorized memory capacity: ${JSON.stringify(capacity)}. Counts include only retained sources and stored claims visible to this host-bound audience, not pending/rejected proposals. serializedBytes measures UTF-8 JSON of {sources,claims}, including record metadata and the empty container; it excludes other audiences' records, proposals, imports, tombstones, curated history, encryption and database overhead. This is not total ledger/disk size or model context usage. Null limits mean no audience-specific quota, not unlimited capacity; remaining capacity is unknown. Imports separately enforce ledger-wide source/claim/full-snapshot byte ceilings.\nProposal counts: ${JSON.stringify(counts)}. Curated revision count: ${deps.memory.personality?.ownerHistory().revisions.length ?? "unavailable"}. No evidence, proposal text, or personality values returned.\n${MEMORY_CORRECTION_HELP}`;
+        if (!deps.memory)
+          return `${heading}\nMemory is disabled or unavailable. Counts, size and operation history are unknown, not zero.`;
+        const { store, personality } = deps.memory;
+        let snapshot: string;
+        try {
+          const capacity = store.capacity(deps.audience);
+          const proposals = store.proposals(deps.audience);
+          const counts = { pending: 0, accepted: 0, rejected: 0 };
+          for (const proposal of proposals) counts[proposal.status]++;
+          snapshot = `Scoped source/claim projection: ${capacity.sources === 0 && capacity.claims === 0 ? "empty" : "nonempty"}. Authorized memory capacity: ${JSON.stringify(capacity)}. Counts cover this audience's retained sources/stored claims, not pending/rejected proposals. serializedBytes is UTF-8 JSON of {sources,claims}, with record metadata and the empty container; excludes other audiences, proposals, imports, tombstones, curated history, encryption and database overhead. This is not total ledger/disk size or model context usage. Null limits mean no audience-specific quota, not unlimited capacity; remaining capacity is unknown. Imports separately enforce ledger-wide source/claim/full-snapshot byte ceilings.\nProposal counts: ${JSON.stringify(counts)}.`;
+        } catch {
+          snapshot =
+            "Ledger snapshot failed; current counts and size are unknown. No cached or zero values substituted.";
+        }
+        let revisions: number | "unavailable" = "unavailable";
+        try {
+          revisions =
+            personality?.ownerHistory().revisions.length ?? "unavailable";
+        } catch {
+          // A separate curated-store failure must not conceal ledger status.
+        }
+        return `${heading}\n${snapshot}\nLedger operations: ${JSON.stringify(store.operationStatus())}. Ledger-wide, this opening only; earlier history unknown. Times: epoch ms. Read success means authenticated snapshot read; transaction success means COMMIT completed (including initial creation, excluding pre-transaction validation). Open is not a health check; read success does not prove writability.\nCurated revision count: ${revisions}. No evidence, proposal text, keys, error details or personality values returned.\n${MEMORY_CORRECTION_HELP}`;
       }
       case "imports": {
         const imports = deps.imports;
