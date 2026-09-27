@@ -1,5 +1,43 @@
 import { html } from "hono/html";
 
+export const consoleSections = [
+  "configuration",
+  "capabilities",
+  "jobs",
+  "memory",
+  "reflection",
+  "approvals",
+  "revocations",
+] as const;
+
+export function consoleNavigation(
+  base: string,
+  current: "overview" | "usage" | "connections",
+  connectionsAvailable = false,
+) {
+  return [
+    { label: "Overview", href: base || "/", current: current === "overview" },
+    {
+      label: "Token intelligence",
+      href: `${base}/usage`,
+      current: current === "usage",
+    },
+    ...(connectionsAvailable
+      ? [
+          {
+            label: "Connections",
+            href: `${base}/connections`,
+            current: current === "connections",
+          },
+        ]
+      : []),
+    ...consoleSections.map((name) => ({
+      label: `${name[0]?.toUpperCase()}${name.slice(1)}`,
+      href: `${base || "/"}#${name}`,
+    })),
+  ];
+}
+
 export function page(
   title: string,
   nonce: string,

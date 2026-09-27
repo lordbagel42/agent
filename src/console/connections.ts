@@ -11,7 +11,13 @@ import {
   type PrivateRouteSecurity,
   privateRoutes,
 } from "./security.js";
-import { badge, confirmForm, messagePage, page } from "./view.js";
+import {
+  badge,
+  confirmForm,
+  consoleNavigation,
+  messagePage,
+  page,
+} from "./view.js";
 
 export interface ConnectionDependencies {
   store: McpConnections;
@@ -25,10 +31,7 @@ export function createConnectionRoutes(
   const root = new Hono();
   const proof = confirmations(security.csrfSecret);
   const base = "/console/connections";
-  const navigation = [
-    { label: "← Overview", href: "/console" },
-    { label: "Connections", href: base, current: true },
-  ];
+  const navigation = consoleNavigation("/console", "connections", true);
   const callbacks = new Map<string, { url: string; expires: number }>();
   const secure = security.origin.startsWith("https:");
   const cookie = secure ? "__Host-june-slack-return" : "june-slack-return-dev";

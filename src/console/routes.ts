@@ -7,17 +7,17 @@ import {
   privateRoutes,
 } from "./security.js";
 import { usagePage } from "./usage.js";
-import { badge, confirmForm, messagePage, metadata, page } from "./view.js";
+import {
+  badge,
+  confirmForm,
+  consoleNavigation,
+  consoleSections,
+  messagePage,
+  metadata,
+  page,
+} from "./view.js";
 
-export const consoleSections = [
-  "configuration",
-  "capabilities",
-  "jobs",
-  "memory",
-  "reflection",
-  "approvals",
-  "revocations",
-] as const;
+export { consoleSections } from "./view.js";
 export interface ConsoleRecord {
   title: string;
   status: string;
@@ -98,7 +98,9 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
       });
     }
     const base = new URL(c.req.url).pathname.replace(/\/usage\/?$/, "");
-    return c.html(usagePage(snapshot, c.get("nonce"), base));
+    return c.html(
+      usagePage(snapshot, c.get("nonce"), base, deps.connectionsAvailable),
+    );
   });
   app.get("/", async (c) => {
     const snapshot = await deps.inspect(c.get("principal"));
@@ -117,17 +119,11 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
         {
           description:
             "Inspect configuration, work, and permissions. Changes always start with a review.",
-          navigation: [
-            { label: "Overview", href: base || "/", current: true },
-            { label: "Token intelligence", href: `${base}/usage` },
-            ...(deps.connectionsAvailable
-              ? [{ label: "Connections", href: `${base}/connections` }]
-              : []),
-            ...consoleSections.map((name) => ({
-              label: `${name[0]?.toUpperCase()}${name.slice(1)}`,
-              href: `#${name}`,
-            })),
-          ],
+          navigation: consoleNavigation(
+            base,
+            "overview",
+            deps.connectionsAvailable,
+          ),
         },
       ),
     );
