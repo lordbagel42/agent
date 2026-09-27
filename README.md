@@ -628,6 +628,21 @@ reconciliation. This does not queue a repair, retry, overwrite, skip, or create
 replacement IDs. Conflict observations are process-local and page-bound; absence
 after restart is not proof of no conflict. Existing identity checks remain intact.
 
+Reflection inspection also explains interrupted/unknown invocations and shows up
+to five held scoped requests and five owner-wide live turn references. References
+are SHA-256 fingerprints, not API IDs: raw request/turn IDs can encode private
+source and scope IDs. Use bearer-authenticated `GET /operator/reflection` privately
+to match the SHA-256 of each exact UTF-8 ID. After independently verifying that
+the old worker/provider stopped, an operator can POST `/operator/reflection/reconcile`
+with `{id, confirmedStopped:true, live:false}` for a held reflection request or
+`{id, confirmedStopped:true, live:true}` for a live turn. Require `reconciled:true`
+and re-read status before reporting the hold released. If stoppage is unverified,
+leave the hold and outcome unknown. Never paste raw IDs or credentials into chat,
+use a fingerprint as an API ID, or guess an ID for unidentified legacy occupancy.
+Reconciliation does not prove reflection succeeded, approve a candidate, clear
+dedupe or retry work. June cannot perform it. Ordinary live occupancy can include
+the inspection itself and is not evidence of interruption.
+
 The existing `conversation-v1` workflow remains. Journaled old iterations stay
 on their old path; new iterations persist optional feature choices before use.
 New live/extraction attempts persist intent before provider work and never

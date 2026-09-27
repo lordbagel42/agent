@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { CompanionReply } from "../core/contracts.js";
 import type { HistoryImports } from "../imports/index.js";
@@ -23,6 +24,7 @@ export function createInspectionReader(deps: {
       "reflection" | "liveActive" | "invocations"
     > & {
       candidateIds: string[];
+      activeTurnIds: string[];
     }
   >;
 }): (target: NonNullable<CompanionReply["inspection"]>) => Promise<string> {
@@ -117,6 +119,9 @@ export function createInspectionReader(deps: {
       case "reflection": {
         if (!deps.reflection) return `${heading}\nReflection is unavailable.`;
         const status = await deps.reflection();
+        const requests = status.reflection.requests.filter(
+          (request) => request.scope === deps.audience,
+        );
         const counts = {
           pending: 0,
           running: 0,
@@ -124,12 +129,34 @@ export function createInspectionReader(deps: {
           cancelled: 0,
           stopped: 0,
         };
-        for (const request of status.reflection.requests)
-          if (request.scope === deps.audience) counts[request.status]++;
+        for (const request of requests) counts[request.status]++;
         const invocations = { started: 0, settled: 0, uncertain: 0 };
-        for (const state of Object.values(status.invocations))
-          invocations[state]++;
-        return `${heading}\nScoped request counts: ${JSON.stringify(counts)}. Invocation counts: ${JSON.stringify(invocations)}. Live turns: ${status.liveActive}. Candidate count: ${status.candidateIds.length}. Candidates are provisional, not approved messages; a live turn may invalidate them. No evidence IDs, rationale, candidate contents, enqueue or approval action returned.`;
+        const requestIds = new Set(requests.map((request) => request.id));
+        for (const [key, state] of Object.entries(status.invocations))
+          if (requestIds.has(JSON.parse(key)[0])) invocations[state]++;
+        // Request/turn IDs can embed scope and evidence IDs. Only expose bounded
+        // fingerprints; the authenticated operator retrieves the exact IDs.
+        const reference = (id: string) =>
+          createHash("sha256").update(id).digest("hex");
+        const held = requests.filter(
+          (request) =>
+            request.status === "running" || request.status === "cancelling",
+        );
+        const rows = held.slice(0, 5).map((request) => ({
+          reference: reference(request.id),
+          status: request.status,
+          attempt: request.attempts,
+          invocation:
+            status.invocations[
+              JSON.stringify([request.id, request.attempts])
+            ] ?? "not_recorded",
+        }));
+        const turns = status.activeTurnIds.slice(0, 5).map(reference);
+        return `${heading}\nScoped request counts: ${JSON.stringify(counts)}. Scoped invocation counts: ${JSON.stringify(invocations)}. Owner-wide live turns: ${status.liveActive}. Owner-wide candidate count: ${status.candidateIds.length}. Candidates are provisional, not approved messages; a live turn may invalidate them. No evidence IDs, rationale or candidate contents returned.
+Held scoped requests: ${held.length}; showing ${rows.length}. ${JSON.stringify(rows)}
+Owner-wide live turn references: ${status.activeTurnIds.length}; showing ${turns.length}. ${JSON.stringify(turns)}
+An uncertain invocation was interrupted; its outcome is unknown, not success or confirmed failure. Running/started may still be active; cancelling is not stopped. Live occupancy may include this inspection turn and does not by itself prove interruption. Unidentified legacy live holds may also remain. Cancellation, timeout, restart, elapsed time or a model assertion cannot prove provider settlement. Do not retry unknown work or release its capacity automatically.
+Reconciliation is operator-only: use the existing owner bearer authentication on the private GET /operator/reflection endpoint. References are SHA-256 of the exact UTF-8 request id or activeTurnIds entry; match locally, never paste raw IDs or credentials into chat. Inspect the old worker/provider and confirm it actually stopped. If stoppage cannot be verified, leave the hold and outcome unknown. Only after that confirmation, POST /operator/reflection/reconcile with {"id":"<exact request id>","confirmedStopped":true,"live":false}, or {"id":"<exact active turn id>","confirmedStopped":true,"live":true} for live occupancy. Never substitute a reference for an id or guess an id for a legacy hold. Require reconciled:true and read status again before reporting the hold released. Reconciliation is not successful reflection, candidate approval or permission to retry; dedupe remains. This inspection changed nothing and cannot reconcile, cancel, enqueue or send.`;
       }
     }
   };

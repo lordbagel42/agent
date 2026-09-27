@@ -212,6 +212,10 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
           expect(request.system).toContain('Set inspection to "retention"');
         if (request.inspectionAvailable)
           expect(request.system).toContain("serialized-byte usage/limits");
+        if (request.inspectionAvailable)
+          expect(request.system).toContain(
+            "Never retry unknown reflection, assert settlement, or reconcile it yourself",
+          );
         if (search && request.webSearchAvailable)
           return { text: "", webSearch: "public query" };
         // Exercise provider parsing for valid actions, and host guards against
@@ -357,7 +361,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(importReport).toContain("not a queued or completed repair");
   expect(importReport.length).toBeLessThan(4000);
   action = { text: "", inspection: "reflection" };
-  expect(await deliver()).toContain('"pending":1,"running":0');
+  const reflectionReport = await deliver();
+  expect(reflectionReport).toContain('"pending":1,"running":0');
+  expect(reflectionReport).toContain("Reconciliation is operator-only");
+  expect(reflectionReport).toContain(
+    "Live occupancy may include this inspection turn",
+  );
   expect(reads).toBe(3);
   expect(requests).toHaveLength(3);
   action = { text: "", inspection: "native-coding" };
@@ -484,4 +493,83 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       }),
     ).toThrow();
   expect(() => parseReply('{"text":"","inspection":"memory"}', [])).toThrow();
+});
+
+it("keeps interrupted reflection inspection bounded, private and read-only without claiming settlement", async () => {
+  const audience = "owner-private";
+  const requests = Array.from({ length: 12 }, (_, i) => ({
+    id: `SECRET REQUEST ${i}`,
+    scope: audience,
+    evidenceIds: ["SECRET SOURCE"],
+    kind: "reflection" as const,
+    status: i === 1 ? ("cancelling" as const) : ("running" as const),
+    attempts: 2,
+    createdAt: 1,
+  }));
+  // Exclude foreign work before both aggregation and the five-row bound.
+  const first = requests[0];
+  if (!first) throw new Error("Missing reflection fixture");
+  requests.unshift({ ...first, id: "SECRET FOREIGN", scope: "other" });
+  const status = {
+    reflection: { version: 1 as const, requests, scopes: [] },
+    invocations: Object.fromEntries(
+      requests.map((request, i) => [
+        JSON.stringify([request.id, 2]),
+        i === 2 ? ("started" as const) : ("uncertain" as const),
+      ]),
+    ),
+    liveActive: 14,
+    activeTurnIds: Array.from({ length: 12 }, (_, i) => `SECRET TURN ${i}`),
+    candidateIds: ["SECRET CANDIDATE"],
+  };
+  const before = structuredClone(status);
+  const read = createInspectionReader({
+    audience,
+    selections: {},
+    reflection: async () => status,
+  });
+  const report = await read("reflection");
+  expect(status).toEqual(before);
+  expect(report).not.toContain("SECRET");
+  expect(report).not.toContain(audience);
+  expect(report).toContain('"running":11,"cancelling":1');
+  expect(report).toContain('"started":1,"settled":0,"uncertain":11');
+  expect(report).toContain("Held scoped requests: 12; showing 5.");
+  expect(report).toContain("Owner-wide live turn references: 12; showing 5.");
+  const rows = JSON.parse(report.split("showing 5. ")[1]?.split("\n")[0] ?? "");
+  expect(rows).toHaveLength(5);
+  expect(rows[0]).toEqual({
+    reference:
+      "34166e0796c504dc750032965719990ff7f1361372810a4870cfc17be7fb2405",
+    status: "running",
+    attempt: 2,
+    invocation: "uncertain",
+  });
+  expect(rows[1]).toMatchObject({
+    status: "cancelling",
+    invocation: "started",
+  });
+  const turns = JSON.parse(
+    report.split("showing 5. ")[2]?.split("\n")[0] ?? "",
+  );
+  expect(turns).toHaveLength(5);
+  expect(turns[0]).toBe(
+    "4c1a9245f15d4fe290d6dae1b83e9a1686f4da1f38f08c2d3eac5dd4b3b27428",
+  );
+  expect(report).toContain(
+    "its outcome is unknown, not success or confirmed failure",
+  );
+  expect(report).toContain("cancelling is not stopped");
+  expect(report).toContain(
+    "Do not retry unknown work or release its capacity automatically",
+  );
+  expect(report).toContain("GET /operator/reflection");
+  expect(report).toContain("POST /operator/reflection/reconcile");
+  expect(report).toContain('"confirmedStopped":true,"live":false');
+  expect(report).toContain('"confirmedStopped":true,"live":true');
+  expect(report).toContain(
+    "If stoppage cannot be verified, leave the hold and outcome unknown",
+  );
+  expect(report).toContain("Require reconciled:true and read status again");
+  expect(report.length).toBeLessThan(4000);
 });
