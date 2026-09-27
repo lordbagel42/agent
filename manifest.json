@@ -19,6 +19,9 @@
     "scopes": {
       "bot": [
         "im:history",
+        "im:read",
+        "mpim:read",
+        "mpim:history",
         "channels:read",
         "channels:history",
         "groups:read",

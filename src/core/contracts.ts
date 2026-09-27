@@ -106,6 +106,15 @@ export interface ChannelAdapter {
   send(message: OutboundMessage): Promise<SendResult>;
   /** Use only for the initiating message. Credentials and results stay volatile. */
   search?(event: MessageEvent, query: string): Promise<ChannelSearchResult>;
+  /** Read June's accessible Slack history for the verified owner and deliver
+   * directly to that owner's Slack DM. Never return message bodies to a caller. */
+  shareHistory?(
+    event: MessageEvent,
+    request: import("./slack-history.js").SlackHistoryRequest,
+    operationId: string,
+    isCurrent: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<SendResult>;
   /** Bounded same-surface context for an already-authorized owner turn. */
   context?(
     event: MessageEvent,
@@ -159,6 +168,8 @@ export interface CompanionReply {
   reaction?: string;
   /** Request one current-channel lookup instead of a conversational reply. */
   search?: string;
+  /** Owner-only cross-conversation lookup, delivered only to the owner's Slack DM. */
+  slackHistory?: import("./slack-history.js").SlackHistoryRequest;
   /** Text is an optional acknowledgment before the configured deeper model. */
   escalate?: boolean;
   /** One public web query; never a request to search private Slack history. */
@@ -228,6 +239,7 @@ export interface ModelRequest {
   workspaces: string[];
   codingJobsAvailable?: boolean;
   searchAvailable?: boolean;
+  slackHistoryAvailable?: boolean;
   escalationAvailable?: boolean;
   webSearchAvailable?: boolean;
   releaseAvailable?: boolean;

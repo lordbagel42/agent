@@ -563,6 +563,7 @@ export function createJuneRegistry(deps: Dependencies) {
               reflection: boolean;
               workspaces: string[];
               search: boolean;
+              slackHistory?: boolean;
               deep?: boolean;
               web?: boolean;
               context?: boolean;
@@ -588,6 +589,10 @@ export function createJuneRegistry(deps: Dependencies) {
                     search:
                       ownerTurn &&
                       !!deps.channels[event.address.channel]?.search,
+                    slackHistory:
+                      ownerTurn &&
+                      event.address.channel === "slack" &&
+                      !!deps.channels.slack?.shareHistory,
                     ...(version >= 7
                       ? { execution: ownerTurn && !!deps.execution }
                       : {}),
@@ -1326,6 +1331,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
                                   searchAvailable,
+                                slackHistoryAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  !!plan.slackHistory &&
+                                  !!deps.channels.slack?.shareHistory,
                                 escalationAvailable:
                                   body.type === "event" &&
                                   !plan.execution &&
@@ -1533,6 +1543,12 @@ export function createJuneRegistry(deps: Dependencies) {
                             } finally {
                               deps.latency?.mark(event, `${stage}_finished`);
                             }
+                            if (generated.slackHistory !== undefined)
+                              generated = parseReply(
+                                JSON.stringify(generated),
+                                modelRequest.workspaces,
+                                modelRequest,
+                              );
                             if (generated.codingJob !== undefined) {
                               let text =
                                 "Coding job access requires a fresh owner-private turn.";
@@ -2103,6 +2119,87 @@ export function createJuneRegistry(deps: Dependencies) {
                   }
                 });
               }
+              if (reply.slackHistory) {
+                const request = reply.slackHistory;
+                const result = await loop.step({
+                  name: "private-slack-history",
+                  timeout: 30_000,
+                  run: async (step) => {
+                    const id = `${eventId}:slack-history`;
+                    // Only intent and receipt are durable. The adapter resolves
+                    // the verified owner DM and sends contents without returning them.
+                    step.state.deliveries[id] ??= {
+                      ephemeral: true,
+                      phase: "ready",
+                      attempts: 0,
+                      message: {
+                        id: randomUUID(),
+                        address: event.address,
+                        lastInboundAt: event.occurredAt,
+                        content: { type: "text", text: "" },
+                      },
+                    };
+                    const delivery = step.state.deliveries[id];
+                    if (delivery.phase === "settled" && delivery.result)
+                      return delivery.result;
+                    return deliver(
+                      delivery,
+                      step.vars.persist,
+                      async (outbound) => {
+                        await typingCleanup;
+                        const adapter = deps.channels.slack;
+                        const isCurrent = () =>
+                          body.type === "event" &&
+                          ownerTurn &&
+                          event.address.channel === "slack" &&
+                          !!plan.slackHistory &&
+                          adapter === deps.channels.slack &&
+                          !!adapter?.shareHistory &&
+                          valid(step.state) &&
+                          !step.abortSignal.aborted;
+                        if (!isCurrent() || !adapter?.shareHistory)
+                          return {
+                            status: "rejected",
+                            code: "history_owner_required",
+                            retryable: false,
+                          };
+                        return adapter.shareHistory(
+                          event,
+                          request,
+                          outbound.id,
+                          isCurrent,
+                          step.abortSignal,
+                        );
+                      },
+                    );
+                  },
+                });
+                const errors: Record<string, string> = {
+                  history_use_user_id:
+                    "I couldn't resolve that name uniquely. Mention the person or give me their Slack user ID.",
+                  history_dm_not_found:
+                    "I couldn't find an existing DM with that person within the lookup limit. Give me the DM's conversation ID if you have it.",
+                  history_owner_dm_unavailable:
+                    "I couldn't verify your one-to-one Slack DM, so I didn't share any contents. Message me there and try again.",
+                  history_not_a_member:
+                    "I can only retrieve conversations my Slack bot belongs to.",
+                  history_missing_scope:
+                    "Slack hasn't granted the bot the permissions needed for this lookup. The app installation needs its history/read scopes updated.",
+                  history_rate_limited:
+                    "Slack is rate-limiting history reads. Ask again later; I won't retry automatically.",
+                };
+                reply = {
+                  text:
+                    result.status === "sent"
+                      ? event.direct
+                        ? ""
+                        : "I sent the available history to your Slack DM."
+                      : result.status === "unknown"
+                        ? "I couldn't confirm delivery to your Slack DM. I won't resend it automatically."
+                        : (errors[result.code] ??
+                          "I couldn't retrieve and privately deliver that Slack history. No contents were shared by this lookup."),
+                };
+              }
               if (version >= 7 && reply.execution) {
                 const commands =
                   parseReply(
@@ -2476,6 +2573,8 @@ export function createJuneRegistry(deps: Dependencies) {
                   const text = step.state.deliveries[`${eventId}:text`];
                   const reaction = step.state.deliveries[`${eventId}:reaction`];
                   const search = step.state.deliveries[`${eventId}:search`];
+                  const slackHistory =
+                    step.state.deliveries[`${eventId}:slack-history`];
                   const ack =
                     version >= 3
                       ? step.state.deliveries[`${eventId}:ack`]
@@ -2494,6 +2593,10 @@ export function createJuneRegistry(deps: Dependencies) {
                       `[Search reply delivery ${search.result?.status ?? "pending"}; retrieved content was not retained. Do not infer the results or assume the user saw them unless sent.]`,
                     );
                   }
+                  if (slackHistory)
+                    content.push(
+                      `[Private Slack history delivery ${slackHistory.result?.status ?? "pending"}; contents are owner-DM-only and were not retained or supplied to the model. Do not infer them.]`,
+                    );
                   if (text?.message.content.type === "text") {
                     const status = text.result?.status;
                     content.push(

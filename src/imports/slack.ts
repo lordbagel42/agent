@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 import type { PageFetcher, Source } from "../memory/store.js";
 import {
   bindCoverage,
@@ -121,7 +122,11 @@ export function createSlackHistoryFetcher(
         gaps.push(`${conversation}: Slack reports retention-limited history.`);
       const sources: Source[] = [];
       for (const message of data.messages) {
-        if (message.text?.startsWith("##")) continue;
+        if (
+          message.text?.startsWith("##") ||
+          message.text?.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)
+        )
+          continue;
         const source = slackSource({
           workspace: coverage.account,
           channel,

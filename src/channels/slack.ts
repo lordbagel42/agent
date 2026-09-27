@@ -7,12 +7,14 @@ import type {
   OutboundMessage,
   SendResult,
 } from "../core/contracts.js";
+import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
 import {
   createSlackContext,
   slackMessageId,
   slackMetadata,
 } from "./slack-context.js";
+import { createSlackHistory } from "./slack-history.js";
 import type { SlackIngressDiagnostics } from "./slack-ingress.js";
 import {
   createSlackSearch,
@@ -390,7 +392,7 @@ export function createSlackAdapter({
       })
     : undefined;
   const thinkingReactions = new Set<string>();
-  return {
+  const adapter: ChannelAdapter = {
     channel: "slack",
     capabilities: { text: true, reactions: true, threads: true },
     ...(search === undefined ? {} : { search: search.search }),
@@ -600,6 +602,9 @@ export function createSlackAdapter({
           text: message.content.text,
           client_msg_id: message.id,
           ...(threadId === undefined ? {} : { thread_ts: threadId }),
+          ...(message.content.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)
+            ? { unfurl_links: false, unfurl_media: false }
+            : {}),
         };
       } else {
         endpoint = `https://slack.com/api/reactions.${message.content.remove === true ? "remove" : "add"}`;
@@ -712,4 +717,14 @@ export function createSlackAdapter({
       }
     },
   };
+  if (owners.size > 0)
+    adapter.shareHistory = createSlackHistory({
+      teamId,
+      botUserId,
+      botToken,
+      ownerUserIds: owners,
+      fetch: fetchImpl,
+      send: adapter.send,
+    });
+  return adapter;
 }

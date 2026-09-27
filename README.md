@@ -221,6 +221,44 @@ This does not forcibly cancel an in-flight turn. The prompt receives the host's
 verified `botMentioned` flag, so names and group pings do not establish a direct
 mention. Existing owner/guest permissions still apply.
 
+### Owner-only Slack transcripts
+
+Raygen can ask June, in any admitted Slack conversation, “show me your DMs with
+@someone” or request a channel/thread by ID and timestamp. June's `slackHistory`
+directive reads with **her bot token**, not Raygen's personal OAuth token, and
+delivers only to Raygen's verified one-to-one Slack DM. Guests, trusted friends,
+group DMs as destinations, and linked non-Slack identities cannot invoke it.
+Channel reads require June's membership; it never joins or opens conversations.
+User names must match uniquely within the bounded directory lookup; an @mention
+or Slack user ID avoids ambiguity. It resolves existing DMs, not someone else's
+private conversations with third parties.
+
+Enterprise Grid bot tokens are supported only after verifying the configured
+workspace in `auth.teams.list`. Discovery is workspace-scoped; explicit source
+IDs must also appear in the bot's workspace membership list. An enterprise ID
+alone does not grant access to another workspace. Grant and membership discovery
+each stop after five pages of 200 entries, failing closed when unverified.
+
+Install the bot scopes `im:read`, `im:history`, `channels:read`,
+`channels:history`, `groups:read`, `groups:history`, `mpim:read`, `mpim:history`
+and `users:read` for the corresponding conversation types. A manifest request is
+not proof the installation has those grants. Missing permissions, unsupported
+token/method combinations, and rate limits fail without switching credentials.
+
+Each request reads one page of up to 15 retained plain-text messages; long
+messages are explicitly truncated at 1800 escaped characters. The report includes
+a continuation cursor when Slack provides one. A timeline is not a recursive
+thread export: request replies using `threadTs`. Files, deleted messages and
+expired history are not recovered. Directory and DM discovery each stop after
+five pages of 200 entries. These limits do not imply complete coverage.
+
+Transcripts never enter the model, durable outbox contents, conversation memory,
+or workflow results; only a delivery receipt is retained. Automatic Slack context
+and history imports skip June's marked transcript messages so they cannot later
+be reused by social posting or other model tools. Requests and continuation
+cursors remain ordinary conversation data. Sending is guarded by the existing
+durable no-resend mechanism; uncertain delivery requires an explicit new request.
+
 ### Shared June, owner priority and approvals
 
 June keeps one identity and may be playfully sassy with people other than Raygen.

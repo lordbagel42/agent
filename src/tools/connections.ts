@@ -772,6 +772,7 @@ export class McpConnections {
                 workspaces: [],
                 codingJobsAvailable: false,
                 searchAvailable: false,
+                slackHistoryAvailable: false,
                 webSearchAvailable: false,
                 escalationAvailable: false,
                 releaseAvailable: false,

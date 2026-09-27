@@ -4,6 +4,7 @@ import type {
   ModelProvider,
   ModelRequest,
 } from "../core/contracts.js";
+import { slackHistorySchema } from "../core/slack-history.js";
 import { socialActionSchema } from "../core/social.js";
 import { wakeupActionSchema } from "../wakeups/state.js";
 import {
@@ -84,6 +85,7 @@ const companionReplySchema = z.strictObject({
     .optional(),
   reaction: z.string().optional(),
   search: searchQuerySchema.optional(),
+  slackHistory: slackHistorySchema.optional(),
   escalate: z.boolean().optional(),
   webSearch: searchQuerySchema.optional(),
   release: z
@@ -179,6 +181,7 @@ export type ReplyCapabilities = Pick<
   ModelRequest,
   | "codingJobsAvailable"
   | "searchAvailable"
+  | "slackHistoryAvailable"
   | "escalationAvailable"
   | "webSearchAvailable"
   | "releaseAvailable"
@@ -213,6 +216,7 @@ export function replyJsonSchema(
   const {
     codingJobsAvailable,
     searchAvailable,
+    slackHistoryAvailable,
     escalationAvailable,
     webSearchAvailable,
     releaseAvailable,
@@ -544,6 +548,34 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(slackHistoryAvailable
+        ? {
+            slackHistory: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                target: {
+                  type: "string",
+                  description:
+                    "Conversation ID, user ID/@mention, or exact unique user name (1–256 characters). A user selects June's existing DM with them.",
+                },
+                threadTs: {
+                  type: ["string", "null"],
+                  description:
+                    "Exact thread timestamp, or null for the conversation timeline.",
+                },
+                cursor: {
+                  type: ["string", "null"],
+                  description:
+                    "Continuation cursor from the prior report (at most 2000 characters), or null for the first page.",
+                },
+              },
+              required: ["target", "threadTs", "cursor"],
+              description:
+                "Owner-only read of June's own accessible Slack conversations. Contents are sent only to the owner's verified Slack DM, never to this thread or the model. Leave text empty and other actions unset.",
+            },
+          }
+        : {}),
       ...(escalationAvailable
         ? {
             escalate: {
@@ -593,6 +625,7 @@ export function replyJsonSchema(
       ...(mcpPermissionAvailable ? ["mcpPermission"] : []),
       ...(mcpProposalAvailable ? ["mcpProposal"] : []),
       ...(searchAvailable ? ["search"] : []),
+      ...(slackHistoryAvailable ? ["slackHistory"] : []),
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
       ...(latencyAvailable ? ["latency"] : []),
@@ -769,6 +802,7 @@ export function parseReply(
   const {
     codingJobsAvailable,
     searchAvailable,
+    slackHistoryAvailable,
     escalationAvailable,
     webSearchAvailable,
     releaseAvailable,
@@ -804,6 +838,7 @@ export function parseReply(
     "codingJob",
     "reaction",
     "search",
+    "slackHistory",
     "escalate",
     "webSearch",
     "release",
@@ -847,6 +882,7 @@ export function parseReply(
   if (
     (reply.codingJob !== undefined && !codingJobsAvailable) ||
     (reply.search !== undefined && !searchAvailable) ||
+    (reply.slackHistory !== undefined && !slackHistoryAvailable) ||
     (reply.escalate !== undefined && !escalationAvailable) ||
     (reply.webSearch !== undefined && !webSearchAvailable) ||
     (reply.release !== undefined && !releaseAvailable) ||
@@ -877,6 +913,7 @@ export function parseReply(
     Number(reply.mcpProposal !== undefined) +
     Number(reply.execution !== undefined) +
     Number(reply.search !== undefined) +
+    Number(reply.slackHistory !== undefined) +
     Number(reply.webSearch !== undefined) +
     Number(reply.release !== undefined) +
     Number(reply.social !== undefined) +
@@ -894,6 +931,7 @@ export function parseReply(
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
     ((reply.codingJob !== undefined ||
       reply.search !== undefined ||
+      reply.slackHistory !== undefined ||
       reply.modelStatus === true ||
       reply.webSearch !== undefined ||
       reply.release !== undefined ||

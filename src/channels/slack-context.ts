@@ -3,6 +3,7 @@ import type {
   MessageEvent,
   MessageMetadata,
 } from "../core/contracts.js";
+import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 
 const CONTEXT_TIMEOUT_MS = 1_000;
 const NAME_TIMEOUT_MS = 200;
@@ -240,6 +241,9 @@ export function createSlackContext({
           (message.channel !== undefined && message.channel !== channel) ||
           (message.team !== undefined && message.team !== teamId) ||
           message.hidden === true ||
+          (message.user === botUserId &&
+            typeof message.text === "string" &&
+            message.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)) ||
           (typeof message.text === "string" && message.text.startsWith("##")) ||
           message.subtype === "message_deleted" ||
           message.subtype === "message_changed" ||
