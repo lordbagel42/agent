@@ -202,8 +202,9 @@ class Store:
 
 
 class Deployer:
-    def __init__(self, host, store):
+    def __init__(self, host, store, statuses=None):
         self.host, self.store = host, store
+        self.statuses = statuses
         if store.get("intent") and not store.get("blocked"):
             store.block(store.get("intent"), "activation_unknown")
 
@@ -243,6 +244,13 @@ class Deployer:
             self.store.block(target, "resume_failed")
 
     def tick(self):
+        try:
+            self.deploy()
+        finally:
+            if self.statuses:
+                self.statuses.flush()
+
+    def deploy(self):
         h, s = self.host, self.store
         try:
             target = self.observe()
@@ -255,6 +263,8 @@ class Deployer:
             or s.status(target) in ("healthy", "failed", "rolled_back", "superseded")
         ):
             return
+        if self.statuses:
+            self.statuses.flush()
         previous = s.get("active")
         try:
             if not h.running(previous) or not h.settled():
@@ -330,6 +340,98 @@ class Deployer:
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *_args, **_kwargs):
         raise ValueError("redirect_denied")
+
+
+class GitHubStatuses:
+    """Best-effort mirror of durable evidence, never inside activation/rollback."""
+
+    def __init__(self, store):
+        self.store = store
+        self.retry_at = 0
+        self.opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), NoRedirect()
+        )
+
+    def flush(self):
+        if time.monotonic() < self.retry_at:
+            return
+        try:
+            try:
+                token = private_file(Path("/etc/june/github-status-token")).strip()
+            except FileNotFoundError:
+                return  # Opt-in; the SSH fetch key cannot write API statuses.
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", token):
+                raise ValueError("invalid_github_token")
+            # Coalesce outages to the latest lifecycle evidence per SHA. A
+            # fetch failure must not overwrite a candidate's deployment result.
+            events = self.store.db.execute("""
+                SELECT revision,status FROM events WHERE sequence IN (
+                  SELECT MAX(sequence) FROM events WHERE status!='fetch_failed'
+                  GROUP BY revision
+                ) ORDER BY sequence DESC
+            """).fetchall()
+            sent = 0
+            for event in events:
+                status = event["status"]
+                if status in ("received", "preparing", "activating", "deferred"):
+                    state, description = "pending", "Deployment queued or in progress"
+                elif status in ("healthy", "reconciled"):
+                    state, description = "success", "Deployed and verified healthy"
+                elif status in ("failed", "rolled_back"):
+                    state, description = "failure", "Deployment failed"
+                    if status == "rolled_back":
+                        description += "; rolled back"
+                elif status == "superseded":
+                    state, description = (
+                        "error",
+                        "Not deployed: superseded by newer main",
+                    )
+                elif status == "blocked":
+                    state, description = (
+                        "error",
+                        "Deployment blocked; operator action required",
+                    )
+                else:
+                    continue
+                payload = json.dumps(
+                    {
+                        "state": state,
+                        "context": "june/deploy",
+                        "description": description,
+                    }
+                )
+                commit = revision(event["revision"])
+                key = "github-status:" + commit
+                # Compare semantic statuses, not event sequences: busy drains
+                # cycle preparing/deferred without consuming GitHub's 1000-status cap.
+                if self.store.get(key) == payload:
+                    continue
+                request = urllib.request.Request(
+                    f"https://api.github.com/repos/lordbagel42/agent/statuses/{commit}",
+                    data=payload.encode(),
+                    method="POST",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                        "Content-Type": "application/json",
+                        "User-Agent": "june-deploy",
+                        "X-GitHub-Api-Version": "2026-03-10",
+                    },
+                )
+                try:
+                    with self.opener.open(request, timeout=5) as response:
+                        if response.status != 201:
+                            raise ValueError("github_status_failed")
+                except urllib.error.HTTPError as error:
+                    error.close()
+                    raise ValueError("github_status_failed") from None
+                self.store.set(key, payload)
+                sent += 1
+                if sent == 10:
+                    break  # Bound backfill work; newer evidence is sent first.
+        except Exception:  # noqa: BLE001 - API bodies/credentials never reach logs or June
+            self.retry_at = time.monotonic() + 60
+            print("github_status_publish_failed: will retry", flush=True)
 
 
 class Host:
@@ -823,7 +925,8 @@ def main():
             initial,
             pwd.getpwnam("june").pw_gid,
         )
-        loop = Deployer(host, store)
+        statuses = GitHubStatuses(store)
+        loop = Deployer(host, store, statuses)
         try:
             if args.bootstrap:
                 store.event(initial, "healthy")
@@ -837,6 +940,7 @@ def main():
                     break
                 time.sleep(5)
         finally:
+            statuses.flush()
             store.close()
 
 

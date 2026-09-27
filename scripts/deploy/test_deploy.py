@@ -176,6 +176,101 @@ class DeploymentSafety(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+    def test_github_status_tracks_deployments_without_reposting_busy_polls(self):
+        published = []
+        reporter = deploy.GitHubStatuses(self.store)
+        self.loop = deploy.Deployer(self.host, self.store, reporter)
+
+        def accept(request, timeout):
+            self.assertEqual(timeout, 5)
+            self.assertEqual(request.get_method(), "POST")
+            self.assertEqual(
+                request.get_header("Authorization"), "Bearer fixture-token"
+            )
+            self.assertEqual(
+                request.get_header("Accept"), "application/vnd.github+json"
+            )
+            self.assertTrue(
+                request.full_url.startswith(
+                    "https://api.github.com/repos/lordbagel42/agent/statuses/"
+                )
+            )
+            body = json.loads(request.data)
+            self.assertEqual(body["context"], "june/deploy")
+            self.assertNotIn("SECRET", request.data.decode())
+            self.assertNotIn("target_url", body)
+            published.append((request.full_url.rsplit("/", 1)[1], body["state"]))
+            return response
+
+        with (
+            patch.object(deploy, "private_file", return_value="fixture-token\n"),
+            patch.object(reporter.opener, "open") as send,
+        ):
+            response = send.return_value
+            response.__enter__.return_value.status = 201
+            send.side_effect = accept
+            target = self.host.commit("src/console/view.ts", "two")
+            (self.host.data / "busy").touch()
+            self.loop.tick()
+            self.loop.tick()
+            self.assertEqual(published, [(target, "pending")])
+            (self.host.data / "busy").unlink()
+            self.loop.tick()
+            self.loop.tick()
+            self.assertEqual(published, [(target, "pending"), (target, "success")])
+            failed = self.host.commit("src/console/view.ts", "bad health")
+            self.loop.tick()
+            self.assertEqual(published[-2:], [(failed, "pending"), (failed, "failure")])
+            self.assertTrue(self.host.running(target))
+            self.store.event(failed, "fetch_failed", "fetch_failed")
+            self.loop.tick()
+            self.assertEqual(published[-1], (failed, "failure"))
+            skipped = self.host.commit("src/console/view.ts", "three")
+            newest = self.host.commit("src/console/view.ts", "four")
+            self.loop.tick()
+            self.assertIn((skipped, "error"), published)
+            self.assertEqual(published[-1], (newest, "success"))
+
+    def test_github_outage_keeps_deploying_and_retries_latest_status_after_restart(
+        self,
+    ):
+        target = self.host.commit("src/console/view.ts", "two")
+        reporter = deploy.GitHubStatuses(self.store)
+        self.loop = deploy.Deployer(self.host, self.store, reporter)
+        with (
+            patch.object(deploy, "private_file", return_value="fixture-token"),
+            patch.object(
+                reporter.opener,
+                "open",
+                side_effect=deploy.urllib.error.URLError("SECRET"),
+            ),
+        ):
+            self.loop.tick()
+        self.assertEqual(self.store.status(target), "healthy")
+        self.assertTrue(self.host.running(target))
+        self.assertNotIn("SECRET", self.store.feed.read_text())
+        self.assertFalse(self.store.get("blocked"))
+        self.store.close()
+        self.store = deploy.Store(
+            self.host.root / "records", self.host.root / "feed.json", self.first
+        )
+        reporter = deploy.GitHubStatuses(self.store)
+        self.loop = deploy.Deployer(self.host, self.store, reporter)
+        with (
+            patch.object(deploy, "private_file", return_value="fixture-token"),
+            patch.object(reporter.opener, "open") as send,
+        ):
+            send.return_value.__enter__.return_value.status = 201
+            self.loop.tick()
+            self.loop.tick()
+            self.assertEqual(len(send.call_args_list), 1)
+            self.assertEqual(
+                json.loads(send.call_args.args[0].data)["state"], "success"
+            )
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(), [self.first, target]
+        )
+
     def test_low_disk_defers_without_build_or_drain_and_recovers_without_a_new_commit(
         self,
     ):

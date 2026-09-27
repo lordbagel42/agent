@@ -11,6 +11,46 @@ deploy key** and pinned GitHub host keys, not a person's `gh` login or the codin
 worker's write credential. Coding agents need separately scoped write access to
 this one repository; they cannot write the installed deployment controller.
 
+## GitHub commit status
+
+With a dedicated API credential installed, the controller mirrors deployment
+evidence to the exact commit in `lordbagel42/agent` under **`june/deploy`**:
+
+| Controller evidence | GitHub state |
+| --- | --- |
+| Received, preparing, activating, deferred | `pending` |
+| Healthy or operator-reconciled | `success` |
+| Failed or rolled back | `failure` |
+| Blocked or superseded without deployment | `error` |
+
+Success means that revision was verified healthy, not that it is still running.
+Fetch failures do not overwrite a candidate's result. Only fixed descriptions
+are sent: no logs, commit text, credentials, or private service URLs.
+
+An authorized operator enables reporting by installing the updated controller
+and a root-owned `0600` `/etc/june/github-status-token` through the existing secret
+mechanism. Use a fine-grained GitHub token restricted to `lordbagel42/agent` with
+**Commit statuses: read and write**. The read-only SSH deploy key and lifecycle
+token cannot authenticate GitHub API writes; do not reuse a coding-worker or
+personal CLI credential. Missing status credentials leave reporting disabled.
+Keep the token out of June's model/build environments; rotate it before expiry.
+Controller installation/restart still requires operator authorization and must
+wait for existing deployment operations to settle.
+
+Reporting happens before preparation and after the deployment attempt, never
+inside drain/activation/rollback. API failures do not fail deployments: they log
+only `github_status_publish_failed: will retry` and back off for 60 seconds.
+SQLite retains successful acknowledgements across restarts. Each flush sends at
+most ten updates, newest first, including existing history on first enablement.
+Only the latest evidence per revision is retried; repeated pending polls are
+deduplicated. An accepted POST with a lost response may create a duplicate status
+on retry, but never repeats a deployment.
+
+June can inspect the same underlying evidence through her existing owner-private
+`release: {"action":"inspect","revision":"<SHA>"}` directive described below.
+The local feed does not attest GitHub delivery; if the two disagree, use the
+controller evidence and inspect the operator log for publication failures.
+
 ## Main arrival and activation are separate facts
 
 One process holds a nonblocking filesystem lock for its lifetime. Every five
@@ -268,7 +308,8 @@ On the **June host only**, an authorized operator must:
 
 The host's existing public ingress remains **Slack POST only**. Do not expose
 health, events, drain, Rivet ports, Git credentials or the service manager publicly.
-No code here provisions access, makes an external write or runs Pulumi.
+No code here provisions access or runs Pulumi. The optional GitHub status publisher
+makes only the commit-status writes described above.
 
 ## Recovery and verification
 
