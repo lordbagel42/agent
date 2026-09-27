@@ -1,6 +1,7 @@
 import {
   createCipheriv,
   createDecipheriv,
+  createHmac,
   randomBytes,
   randomUUID,
 } from "node:crypto";
@@ -202,6 +203,54 @@ export class McpConnections {
         );
         return { ...value, authenticated: !!token };
       });
+  }
+  /** Owner-private metadata only; never probes servers or exposes config text. */
+  inventory() {
+    const configuredConnections = Number(
+      this.#db.prepare("SELECT COUNT(*) AS total FROM connections").get()
+        ?.total,
+    );
+    const now = Date.now();
+    const connections = this.#db
+      .prepare("SELECT id,value FROM connections ORDER BY rowid LIMIT 20")
+      .all()
+      .map((row) => {
+        const connection = this.#open<StoredConnection>(
+          String(row.id),
+          String(row.value),
+        );
+        const tools = { disabled: 0, read: 0, approval: 0 };
+        for (const tool of connection.tools) tools[tool.permission]++;
+        return {
+          // Custom stored IDs can contain private text. References are display
+          // labels only, not catalog IDs or authorization to execute a tool.
+          ref: `mcp-${createHmac("sha256", this.#key).update(`inventory:${connection.id}`).digest("hex").slice(0, 24)}`,
+          kind:
+            connection.id === "slack" && connection.url === SLACK_MCP_URL
+              ? "slack"
+              : "remote",
+          lastDiscovery:
+            connection.status === "connected"
+              ? "succeeded"
+              : connection.status === "unavailable"
+                ? "failed"
+                : "not_tested",
+          credential:
+            connection.expiresAt !== undefined && connection.expiresAt <= now
+              ? "expired"
+              : connection.token
+                ? "saved"
+                : "absent",
+          tools,
+        };
+      });
+    return {
+      state: configuredConnections === 0 ? "disconnected" : "configured",
+      configuredConnections,
+      connections,
+      truncated: configuredConnections > connections.length,
+      liveAvailability: "not_checked",
+    };
   }
   add(
     input: { name: string; url: string; token?: string; expiresAt?: number },
@@ -632,7 +681,7 @@ export class McpConnections {
           mcpProposalAvailable: true,
           system:
             request.system +
-            `\nYour MCP connection status (owner-private host data): ${JSON.stringify(this.list().map(({ id, name, status, expiresAt, tools }) => ({ id, name, status: expiresAt && expiresAt <= Date.now() ? "authorization_expired" : status, enabledTools: tools.filter((tool) => tool.permission !== "disabled").length })))}. Recent approval receipts (historical, not actions in this turn): ${JSON.stringify(
+            `\nYour MCP connection inventory (owner-private host data): ${JSON.stringify(this.inventory())}. Configuration and past discovery are not live health or verified authorization. Inventory refs are private-safe display labels, not catalog connection IDs. Recent approval receipts (historical, not actions in this turn): ${JSON.stringify(
               this.proposals()
                 .slice(0, 10)
                 .map(({ id, tool, status, cancelledAt }) => ({

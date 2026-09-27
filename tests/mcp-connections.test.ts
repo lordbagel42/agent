@@ -23,6 +23,7 @@ import { routeEvent } from "../src/core/routing.js";
 import { slackSource } from "../src/imports/index.js";
 import { EvidenceStore } from "../src/memory/store.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
+import { createInspectionReader } from "../src/runtime/inspection.js";
 import { buildModelRequest } from "../src/runtime/prompt.js";
 import { createJuneRegistry } from "../src/runtime/registry.js";
 import { McpConnections } from "../src/tools/connections.js";
@@ -322,6 +323,99 @@ test.each([
     expect(JSON.stringify(result)).not.toContain("PRIVATE_INSPECTION_COPY");
   },
 );
+
+test("connection inventory omits private config and credentials without network or permission changes", async () => {
+  const f = await fixture();
+  const ref = f.store.inventory().connections[0]?.ref;
+  expect(ref).toMatch(/^mcp-[a-f0-9]{24}$/);
+  expect(f.store.inventory()).toMatchObject({
+    state: "configured",
+    liveAvailability: "not_checked",
+    connections: [
+      {
+        lastDiscovery: "succeeded",
+        credential: "saved",
+        tools: { disabled: 1, read: 0, approval: 0 },
+      },
+    ],
+  });
+  await f.restart();
+  expect(f.store.inventory().connections[0]?.ref).toBe(ref);
+  f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+  expect(f.store.inventory().connections[0]?.tools).toEqual({
+    disabled: 0,
+    read: 0,
+    approval: 1,
+  });
+  f.store.permit(f.id, f.connection().revision, "lookup", "read");
+  expect(f.store.inventory().connections[0]?.tools).toEqual({
+    disabled: 0,
+    read: 1,
+    approval: 0,
+  });
+  f.duringList(() => {
+    throw new Error("SECRET failure");
+  });
+  await f.store.discover(f.id, f.connection().revision);
+  expect(f.store.inventory().connections[0]?.lastDiscovery).toBe("failed");
+  f.store.disconnect(f.id, f.connection().revision);
+  expect(f.store.inventory()).toEqual({
+    state: "disconnected",
+    configuredConnections: 0,
+    connections: [],
+    truncated: false,
+    liveAvailability: "not_checked",
+  });
+  f.store.connectSlack({ accessToken: "SECRET-token", expiresAt: 0 });
+  for (let i = 0; i < 19; i++)
+    f.store.add(
+      {
+        name: "SECRET-name",
+        url: `https://private.example/${"p".repeat(1800)}`,
+        token: i === 0 ? "SECRET-token" : undefined,
+      },
+      `SECRET-id-${i}`,
+    );
+  const before = f.store.list();
+  const requests = f.requests;
+  const inventory = f.store.inventory();
+  expect(inventory.configuredConnections).toBe(20);
+  expect(inventory.connections).toHaveLength(20);
+  expect(inventory.connections[0]).toMatchObject({
+    kind: "slack",
+    credential: "expired",
+    lastDiscovery: "not_tested",
+  });
+  expect(inventory.connections[1]?.credential).toBe("saved");
+  expect(inventory.connections[2]?.credential).toBe("absent");
+  expect(new Set(inventory.connections.map(({ ref }) => ref)).size).toBe(20);
+  const report = await createInspectionReader({
+    audience: '["private","owner"]',
+    selections: {},
+    mcp: f.store,
+  })("mcp-connections");
+  expect(report).toContain('"state":"configured"');
+  expect(report).toContain("not live health");
+  expect(report.length).toBeLessThan(6000);
+  const prompts: ModelRequest[] = [];
+  const wrapped = f.store.wrap({
+    async reply(request) {
+      prompts.push(request);
+      return { text: "" };
+    },
+  });
+  await wrapped.reply(f.request);
+  await wrapped.reply({ ...f.request, mcpAvailable: false });
+  expect(prompts[0]?.system).toContain('"configuredConnections":20');
+  expect(prompts[1]?.system).not.toContain("connection inventory");
+  for (const text of [report, prompts[0]?.system ?? ""])
+    for (const secret of ["SECRET", "private.example", "private-token", f.id])
+      expect(text).not.toContain(secret);
+  expect(f.requests).toBe(requests);
+  expect(f.calls).toHaveLength(0);
+  expect(f.store.list()).toEqual(before);
+  expect(f.store.proposals()).toEqual([]);
+});
 
 test("dashboard credentials from MCP results never reach the synthesis provider", async () => {
   const f = await fixture();

@@ -49,6 +49,16 @@ external outcome. Historical success is not a fresh check of the external state.
 The host sends this metadata directly, without another model synthesis. Normal
 private-turn and forgetting checks still govern delivery.
 
+Ask June privately to inspect her MCP connections (`inspection: "mcp-connections"`).
+This read works even with MCP disabled or no connections saved: those states are
+disconnected, not healthy. The inventory contains at most 20 opaque display refs,
+connection kind, saved-credential presence/expiry, past discovery outcome and tool
+permission counts. It omits names, endpoint URLs, raw IDs and credential values.
+Configuration, saved credentials and successful past discovery never prove current
+availability or authorization; the read contacts no server and grants no access.
+Inventory refs are not callable IDs; the separate approved `mcpCatalog` supplies
+tool IDs and contracts. Reports are timestamped snapshots, not live monitors.
+
 Contract changes disable the affected tool until reviewed again. Permission
 changes, reconnects and disconnects invalidate pending approvals. Disconnect
 removes June's saved authorization; revoke the grant at its provider separately

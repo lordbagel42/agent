@@ -221,7 +221,8 @@ export interface CompanionReply {
     | "capabilities"
     | "credentials"
     | "slack-search"
-    | "snapshot-retention";
+    | "snapshot-retention"
+    | "mcp-connections";
   /** One owner-private query of retained evidence, never a permission grant. */
   recall?:
     | string

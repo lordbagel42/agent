@@ -11,6 +11,7 @@ import {
   reflectionDriveHalfLifeMs,
   reflectionPriority,
 } from "../reflection/domain.js";
+import type { McpConnections } from "../tools/connections.js";
 import type { Delivery } from "./delivery.js";
 import type { ReflectionRuntimeState } from "./reflection.js";
 
@@ -167,6 +168,7 @@ export function createInspectionReader(deps: {
   imports?: HistoryImports;
   importExtraction?: ImportedMemoryExtraction;
   selections: Record<string, ImportCoverage>;
+  mcp?: Pick<McpConnections, "inventory">;
   nativeCoding?: () => Promise<string>;
   capabilities?: () => string;
   credentials?: Pick<BitwardenCredentialResolver, "inspect">;
@@ -227,6 +229,10 @@ export function createInspectionReader(deps: {
         const snapshot = await deps.operations();
         return `${heading}\nOwner-private conversation markers only, not all actors or external operations. ${JSON.stringify(snapshot)}\nListed operations are unresolved, not failed or successful. Started/sending may still be active, including this inspection's model turn. Uncertain/unknown has no confirmed outcome. Settled invocations are omitted, not proof of success. Missing marker maps and zero counts do not establish complete coverage; older operations may be unrecorded. Process health, idle state and restart do not prove settlement or stoppage. IDs are hashed; no message bodies, queries, destinations, errors or credentials are returned. No retry, cancellation, reconciliation or admission release was performed.`;
       }
+      case "mcp-connections":
+        return deps.mcp
+          ? `${heading}\n${JSON.stringify(deps.mcp.inventory())}\nAt most 20 connections. Configuration, saved credentials and past discovery are not live health or verified authorization. Refs are opaque display labels, not catalog IDs. Names, endpoints, credentials and tool contracts are omitted. No server was contacted or permission changed.`
+          : `${heading}\nMCP is disconnected: integration disabled; no active connection inventory. No server was contacted and no health or authorization is inferred.`;
       case "native-coding":
         return deps.nativeCoding
           ? deps.nativeCoding()

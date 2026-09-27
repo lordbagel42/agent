@@ -900,6 +900,7 @@ async function main() {
           })}. Browsing requires explicit browser.enabled, capabilities.directory, isolated execution configuration and JUNE_ALLOW_ISOLATED_BROWSER=1. Read recipes remain anonymous GET-only without interaction steps. Separately configured mutations permit one anonymous fill or click; browserProposal with operation:null lists names for exact proposals only. No vault access or model grant/execute path exists. Every execution requires its own exact recipe-digest/account/item/origin grant. Results are receipts only, not webpage content. Inspection does not launch Chromium or authorize actions; host isolation acknowledgements are not sandbox verification.`,
           "Browser cancellation requests cleanup, not confirmed stoppage. Pending work retains admission until it settles. Cleanup failure leaves the receipt unknown and blocks new work on that adapter. Never describe unknown as success or safely retryable; owner reconciliation requires independently confirmed stoppage and outcome.",
         ].join("\n"),
+      mcp: connections,
       nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
       slackSearch: config.slack
         ? {

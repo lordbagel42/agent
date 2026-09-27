@@ -783,6 +783,16 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       .getOrCreate(["private", "other-owner"])
       .outstandingOperations(),
   ).rejects.toThrow();
+  action = { text: "", inspection: "mcp-connections" };
+  expect(await deliver()).toContain(
+    "MCP is disconnected: integration disabled",
+  );
+  expect(requests.at(-1)?.system).toContain(
+    'set inspection to "mcp-connections"',
+  );
+  expect(requests.at(-1)?.mcpAvailable).toBe(false);
+  expect(reads).toBe(9);
+  expect(requests).toHaveLength(10);
   for (const inspection of [
     "native-coding",
     "memory",
@@ -793,6 +803,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "slack-search",
     "snapshot-retention",
     "operations",
+    "mcp-connections",
   ] as const) {
     action = { text: "", inspection };
     for (const extra of [
@@ -810,18 +821,21 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         senderId: `guest-${inspection}`,
         metadata: { channelType: "im" as const },
       },
+      ...(inspection === "mcp-connections"
+        ? [{ metadata: { channelType: "mpim" as const } }]
+        : []),
     ]) {
       const before = requests.length;
       expect(await deliver(extra)).toContain("owner-private turn");
       expect(requests).toHaveLength(before + 1);
       expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-      expect(reads).toBe(8);
+      expect(reads).toBe(9);
     }
     search = true;
     await deliver();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(8);
+    expect(reads).toBe(9);
     search = false;
     action = {
       text: "",
@@ -829,7 +843,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       release: { action: "inspect", revision: null },
     };
     expect(await deliver()).toContain("inspection is unavailable");
-    expect(reads).toBe(8);
+    expect(reads).toBe(9);
   }
   action = { text: "", inspection: "slack-search" };
   const readiness = await deliver();
@@ -838,7 +852,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(readiness).toContain("actual installed bot grant is unverified");
   expect(readiness).toContain("Live search access is unverified");
   expect(readiness).toContain("No Slack request was made");
-  expect(reads).toBe(9);
+  expect(reads).toBe(10);
   action = { text: "", inspection: "credentials" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
