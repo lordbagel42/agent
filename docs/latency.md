@@ -11,23 +11,83 @@ message additionally exposes that nonsecret probe UUID.
 
 ## Genuine Slack ping/pong
 
-After deploying instrumentation, run this on a trusted operator machine with
+After the intended revision and model settings are verified live, run this on a
+trusted operator machine with
 `JUNE_OPERATOR_TOKEN` supplied through the existing private credential mechanism.
 `JUNE_URL` is the private listener or an authorized tunnel, not the public webhook.
+The CLI runs from a source checkout; it is not installed in production releases.
+Set `REVISION` to the full verified running SHA, not the checkout's HEAD.
 
 ```sh
 JUNE_URL=http://192.168.0.215:3080 \
   JUNE_LATENCY_OUTPUT=.amp/in/artifacts/human-ping.json \
-  pnpm exec tsx scripts/latency.ts watch
+  pnpm exec tsx scripts/latency.ts watch --revision "$REVISION"
 ```
 
 Send the printed `ping <UUID>` **yourself from the allowlisted human account**.
 June asks her usual model for `pong <UUID>` through the normal context, queue,
 model, journal, outbox and Slack transport. This is not a hard-coded reply or
-model bypass. The watcher checks the accepted text against that UUID. A failed
-or timed-out probe is never automatically resent. Bot/App/Amp-authored messages
+model bypass. The watcher checks the accepted text against that UUID and waits
+for durable completion and status cleanup before allowing the next serial probe.
+A failed or timed-out probe is never automatically resent. Bot/App/Amp-authored messages
 remain ignored even when their `user` field equals the owner. Fabricated signed
 callbacks are not genuine Slack end-to-end probes.
+
+### Respond later without losing the probe
+
+The watcher authenticates before displaying the ping and pins the revision and
+process `startedAt`. It waits 15 minutes by default (`--wait-seconds 1–3600`).
+It also prints a `collect` command for late readback. `watch <UUID>` resumes
+watching an existing probe; **do not resend a ping that was already sent**.
+Both `collect` and `watch <UUID>` require the original `--revision` and
+`--started-at`. Do not substitute the current values after a restart.
+
+```sh
+# Keep the same private JUNE_URL/JUNE_OPERATOR_TOKEN environment.
+# Use the exact UUID, revision and startedAt printed by the original watcher.
+JUNE_LATENCY_OUTPUT=.amp/in/artifacts/human-ping-late.json \
+  pnpm exec tsx scripts/latency.ts collect "$PROBE" \
+    --revision "$REVISION" --started-at "$STARTED_AT"
+```
+
+Every capture needs a fresh output path: existing files are never overwritten.
+`collect` makes one read-only request, accepts up to 20 UUIDs, and does not send
+Slack messages or call a model. Exit codes are **0** for completed matching pongs,
+**2** for pending observations, and **1** for failed verification, interrupted
+observation or command errors.
+A finished/released turn without an accepted matching pong fails verification.
+An unseen or incomplete trace stays pending: it may be unfinished, evicted, or
+lost on restart, not necessarily an unanswered message. Inspect `pending` and
+`traces` in the capture. Repeated UUIDs or multiple messages using one UUID are
+rejected as ambiguous. Revision/restart mismatches fail instead of mixing runs.
+If a watch is interrupted by a restart or failed read, it captures only the last
+same-process observations with `outcome: interrupted` and a fixed reason. It
+also retains partial traces evicted while watching; `unavailable` lists UUIDs
+whose current state could not be confirmed. Such evidence is incomplete, not
+permission to resend. A restart's lost observations cannot be recovered later.
+
+### Prepare a serial comparison
+
+Generate six UUIDs up front so the human need not respond within a short watcher
+window. Treat the first as first-observed, and the remaining five as serial warm
+samples. `plan` is offline and does not assert anything about the running model.
+
+```sh
+JUNE_LATENCY_OUTPUT=.amp/in/artifacts/human-plan.json \
+  pnpm exec tsx scripts/latency.ts plan 6
+
+# Repeat for each planned UUID, with a new output filename each time.
+JUNE_LATENCY_OUTPUT=.amp/in/artifacts/human-01.json \
+  pnpm exec tsx scripts/latency.ts watch "$PROBE" \
+    --revision "$REVISION" --started-at "$STARTED_AT"
+```
+
+Record `REVISION` and `STARTED_AT` from authenticated diagnostics after the
+deployment operator verifies the intended settings. Send only the current
+UUID, wait for its pong and successful watcher/readback, then continue. Stop on
+failure or rollout; preserve partial captures and read back the same UUID later.
+Do not batch-send the plan. Keep the separately verified model, reasoning and
+speed policy with the comparison: revision alone cannot prove a configuration.
 
 Test top-level and existing-thread messages separately. Collect one first
 post-startup sample, then at least five serial warm samples per condition. Use
@@ -35,6 +95,9 @@ fresh UUIDs, the same surface/configuration/model settings, similar history,
 and no concurrent turns. Record the running revision, sample count and failures.
 First actor use is not proof of a cold provider cache; Codex starts a new child
 for every invocation. Never restart production merely to label a sample cold.
+The recovered 8.615 s human ping on `fea6f41` used the previous model policy;
+it is one baseline observation, not evidence for later no-thinking/fast settings
+or an end-to-end improvement. Start a new comparison at a settings transition.
 
 ## Disposable local pipeline
 

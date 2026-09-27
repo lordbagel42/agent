@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 import { createClient } from "rivetkit/client";
 import { createSlackAdapter } from "../src/channels/slack.js";
 import type { ModelProvider } from "../src/core/contracts.js";
@@ -13,6 +14,7 @@ import { createHttpApp } from "../src/http/app.js";
 import {
   createLatencyDiagnostics,
   type LatencyTrace,
+  latencyProbe,
 } from "../src/runtime/latency.js";
 import { createLifecycle } from "../src/runtime/lifecycle.js";
 import {
@@ -77,7 +79,63 @@ if (mode === "report") {
       ),
     );
   }
-} else if (mode === "watch") {
+} else if (mode === "plan") {
+  const count = Number(args[0] ?? 5);
+  if (!Number.isInteger(count) || count < 1 || count > 20 || args.length > 1)
+    throw new Error("Use plan [1–20 serial probes]");
+  const probes = Array.from({ length: count }, () => randomUUID());
+  await capture({ mode: "human-slack-probe-plan", probes });
+  console.error(
+    "Send these manually, one at a time, waiting for each pong. Do not batch-send or repeat a timed-out ping.",
+  );
+  for (const probe of probes) console.error(`ping ${probe}`);
+} else if (mode === "watch" || mode === "collect") {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      revision: { type: "string" },
+      "started-at": { type: "string" },
+      "wait-seconds": { type: "string", default: "900" },
+    },
+  });
+  if (values.revision !== undefined && !/^[a-f0-9]{40}$/.test(values.revision))
+    throw new Error("Use the full running revision for --revision");
+  const expectedStart =
+    values["started-at"] === undefined
+      ? undefined
+      : Number(values["started-at"]);
+  if (
+    expectedStart !== undefined &&
+    (!Number.isSafeInteger(expectedStart) || expectedStart <= 0)
+  )
+    throw new Error(
+      "Use the diagnostics startedAt epoch milliseconds for --started-at",
+    );
+  const seconds = Number(values["wait-seconds"]);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600)
+    throw new Error("Use --wait-seconds 1–3600");
+  if (
+    (mode === "watch" && positionals.length > 1) ||
+    (mode === "collect" && (!positionals.length || positionals.length > 20))
+  )
+    throw new Error(
+      "Use watch [UUID] or collect <UUID> [...], at most 20 probes",
+    );
+  if (positionals.length && (!values.revision || expectedStart === undefined))
+    throw new Error(
+      "An existing/planned UUID requires its original --revision and --started-at; do not adopt a new process for readback",
+    );
+  const probes = positionals.length
+    ? positionals.map((id) => {
+        const probe = latencyProbe(`ping ${id}`);
+        if (!probe)
+          throw new Error("Probe IDs must be UUIDv4 values from plan/watch");
+        return probe;
+      })
+    : [randomUUID()];
+  if (new Set(probes).size !== probes.length)
+    throw new Error("Duplicate probe ID");
   const token = process.env.JUNE_OPERATOR_TOKEN;
   if (!token || token.length < 32)
     throw new Error(
@@ -86,16 +144,7 @@ if (mode === "report") {
   const base = new URL(process.env.JUNE_URL ?? "http://127.0.0.1:3080");
   if (base.username || base.password || base.search || base.hash)
     throw new Error("Clean private service URL required");
-  const probe = randomUUID();
-  console.error(
-    `Send this yourself from the allowlisted HUMAN Slack account: ping ${probe}`,
-  );
-  console.error(
-    "Do not send it using a bot, Amp Slack tool, or fabricated callback. Waiting up to 3 minutes.",
-  );
-  const deadline = Date.now() + 180_000;
-  let startedAt: number | undefined;
-  while (Date.now() < deadline) {
+  const read = async () => {
     const response = await fetch(new URL("/operator/latency", base), {
       redirect: "error",
       headers: { authorization: `Bearer ${token}` },
@@ -103,37 +152,123 @@ if (mode === "report") {
     });
     if (!response.ok)
       throw new Error(`Diagnostics unavailable: HTTP ${response.status}`);
-    const data = (await response.json()) as {
+    return (await response.json()) as {
       revision?: string;
       startedAt: number;
       traces: LatencyTrace[];
     };
-    if (startedAt !== undefined && data.startedAt !== startedAt)
-      throw new Error(
-        "Host restarted; observations are incomplete, do not resend automatically",
-      );
-    startedAt = data.startedAt;
-    const trace = data.traces.find((t) => t.probe === probe);
-    if (
-      trace?.observations.some((o) => o.stage === "finished") &&
-      trace.observations.some((o) => o.stage === "released")
-    ) {
-      await capture({
-        mode: "human-slack-probe",
-        revision: data.revision,
-        startedAt,
-        traces: [trace],
-      });
-      assert(
-        trace.deliveries.some((d) => d.status === "sent" && d.pong),
-        "No matching accepted pong; never automatically resend",
-      );
+  };
+  // Authenticate and pin the running revision BEFORE asking for a human message.
+  let data = await read();
+  const revision = values.revision ?? data.revision;
+  const startedAt = data.startedAt;
+  if (values.revision && data.revision !== values.revision)
+    throw new Error(
+      "Running revision differs from --revision; do not mix rollout samples",
+    );
+  if (expectedStart !== undefined && startedAt !== expectedStart)
+    throw new Error(
+      "Host restarted since --started-at; retained observations cannot establish the earlier baseline",
+    );
+  if (mode === "watch") {
+    console.error(
+      `Pinned revision: ${revision ?? "unknown"}; process startedAt: ${startedAt}`,
+    );
+    console.error(`Watch/readback for: ping ${probes[0]}`);
+    console.error(
+      `If not already sent, send it yourself from the allowlisted HUMAN Slack account. Waiting up to ${seconds}s; never send it twice.`,
+    );
+    console.error(
+      `Late readback: pnpm exec tsx scripts/latency.ts collect ${probes[0]}${revision ? ` --revision ${revision}` : ""} --started-at ${startedAt}`,
+    );
+  }
+  const deadline = Date.now() + seconds * 1000;
+  const observed = new Map<string, LatencyTrace>();
+  const settled = (trace: LatencyTrace | undefined) =>
+    trace?.observations.some((o) => o.stage === "finished") &&
+    trace.observations.some((o) => o.stage === "released");
+  let interruption:
+    | "host_changed"
+    | "read_failed"
+    | "ambiguous_probe"
+    | undefined;
+  let lastObservedAt: string | undefined;
+  let unavailable: string[] = [];
+  for (;;) {
+    if (data.startedAt !== startedAt || data.revision !== revision) {
+      interruption = "host_changed";
       break;
     }
-    await sleep(500);
+    lastObservedAt = new Date().toISOString();
+    unavailable = [];
+    for (const probe of probes) {
+      const matches = data.traces.filter((t) => t.probe === probe);
+      const match = matches[0];
+      const previous = observed.get(probe);
+      if (
+        matches.length > 1 ||
+        (match && previous && match.id !== previous.id)
+      ) {
+        interruption = "ambiguous_probe";
+        break;
+      }
+      if (match) observed.set(probe, match);
+      else unavailable.push(probe); // Retain earlier partial observations on eviction.
+    }
+    if (
+      interruption ||
+      probes.every((probe) => settled(observed.get(probe))) ||
+      mode === "collect" ||
+      Date.now() >= deadline
+    )
+      break;
+    await sleep(1000);
+    try {
+      data = await read();
+    } catch {
+      interruption = "read_failed";
+      break;
+    }
   }
-  if (Date.now() >= deadline)
-    throw new Error("Probe timed out; no resend was attempted");
+  const traces = [...observed.values()];
+  const pending = probes.filter((probe) => !settled(observed.get(probe)));
+  const failed = traces.some(
+    (trace) =>
+      settled(trace) &&
+      !trace.deliveries.some((d) => d.status === "sent" && d.pong),
+  );
+  await capture({
+    mode: "human-slack-probe",
+    outcome: interruption
+      ? "interrupted"
+      : failed
+        ? "failed"
+        : pending.length
+          ? "pending"
+          : "complete",
+    revision,
+    startedAt,
+    retrievedAt: new Date().toISOString(),
+    lastObservedAt,
+    interruption,
+    probes,
+    pending,
+    unavailable: interruption ? probes : unavailable,
+    traces,
+  });
+  if (interruption)
+    console.error(
+      `Observation interrupted (${interruption}); saved only earlier same-process evidence. Do not resend.`,
+    );
+  else if (failed)
+    console.error(
+      "A completed turn lacks a matching accepted pong. No resend was attempted.",
+    );
+  else if (pending.length)
+    console.error(
+      "Pending means unseen, incomplete, evicted or lost on restart—not proof of no reply. Collect the same UUID later; do not resend.",
+    );
+  process.exitCode = interruption || failed ? 1 : pending.length ? 2 : 0;
 } else if (mode === "local") {
   // No inherited endpoints, shared state, or real Slack transports, even if the
   // caller has production variables. The optional model module is explicit.
@@ -342,6 +477,6 @@ if (mode === "report") {
   process.exit(0);
 } else {
   console.log(
-    "pnpm exec tsx scripts/latency.ts local [1–20 samples] [--threaded]\npnpm exec tsx scripts/latency.ts watch\npnpm exec tsx scripts/latency.ts report <capture.json> [...]",
+    "pnpm exec tsx scripts/latency.ts local [1–20 samples] [--threaded]\npnpm exec tsx scripts/latency.ts plan [1–20 probes]\npnpm exec tsx scripts/latency.ts watch [--wait-seconds 900] [--revision SHA]\npnpm exec tsx scripts/latency.ts watch <UUID> --revision SHA --started-at MS [--wait-seconds 900]\npnpm exec tsx scripts/latency.ts collect <UUID> [...] --revision SHA --started-at MS\npnpm exec tsx scripts/latency.ts report <capture.json> [...]",
   );
 }
