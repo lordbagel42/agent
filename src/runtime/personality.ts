@@ -47,7 +47,7 @@ export const defaultGlobalPersonality: GlobalPersonality = {
   },
 };
 
-export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality history, or publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
+export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
 
 export function isPersonalityCommand(text: string): boolean {
   return /^!personality(?:\s|$)/.test(text.trim());
@@ -208,17 +208,36 @@ export function createPersonalityActor(
         }
         if (!ownerPrivate)
           return "Only my owner can inspect personality history or publish revisions with a fresh, plain-text command in an owner-private DM (not a quote or code block).";
-        if (input === "history") {
-          const history = c.state.revisions
-            .slice(-5)
-            .map(
-              (r) =>
-                `v${r.version} (${new Date(r.createdAt).toISOString()})${r.restoredFrom !== undefined ? ` restored from v${r.restoredFrom}` : ""}: ${JSON.stringify(globalStyleSchema.parse(r.style))}\nWhy: ${r.explanation}`,
-            );
-          await c.saveState({ immediate: true });
-          return `Latest 5 personality revisions (explanations are owner-private; version 0 is the initial style):\n${history.join("\n\n")}\nCurrent version: ${head.version}. Rollback appends a revision, never erases history.`;
-        }
         if (input.length > 2000) return "Personality command is too long.";
+        if (/^history(?:\s|$)/.test(input)) {
+          const match = input.match(/^history(?:\s+([1-9]\d*))?$/);
+          const before = match?.[1] ? Number(match[1]) : undefined;
+          const end =
+            before === undefined
+              ? c.state.revisions.length
+              : c.state.revisions.findIndex((r) => r.version === before);
+          if (
+            !match ||
+            end < 0 ||
+            (before !== undefined && !Number.isSafeInteger(before))
+          )
+            return "Invalid personality history cursor. Use !personality history or its next command with a saved positive revision number.";
+          // The exclusive boundary is a saved revision ID, never a moving offset.
+          const page = c.state.revisions
+            .slice(Math.max(0, end - 5), end)
+            .reverse();
+          const history = page.map(
+            (r) =>
+              `v${r.version} (${new Date(r.createdAt).toISOString()})${r.restoredFrom !== undefined ? ` restored from v${r.restoredFrom}` : ""}: ${JSON.stringify(globalStyleSchema.parse(r.style))}\nWhy: ${r.explanation}`,
+          );
+          const oldest = page.at(-1);
+          const next =
+            end > 5 && oldest
+              ? `Next: !personality history ${oldest.version}`
+              : "End of personality history.";
+          await c.saveState({ immediate: true });
+          return `Personality revisions, newest first (up to 5; explanations are owner-private; version 0 is the initial style):\n${history.join("\n\n") || "No earlier revisions."}\nCurrent version: ${head.version}. Rollback appends a revision, never erases history.\n${next}`;
+        }
         const match = input.match(/^(revise|rollback)\s+([\s\S]+)$/);
         if (!match) return personalityHelp;
         let value: unknown;

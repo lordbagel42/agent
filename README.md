@@ -662,10 +662,15 @@ quotes, code blocks or attachment captions):
 
 Use the current version shown by `!personality`; stale edits are rejected and
 duplicate events do not append twice. Rollback can restore any saved version and
-always appends a new revision. History shows the latest five revisions with
-explanations. Guests and owner channel turns can read the public profile but
-cannot inspect history or publish changes. All new turns use the same revised
-voice; in-flight turns retain their snapshot.
+always appends a new revision. History returns up to five revisions, newest first,
+with explanations and a next command when older revisions exist. Follow
+`!personality history BEFORE_VERSION` with the supplied saved revision number
+to read strictly older revisions. The cursor is a stable revision ID, not an
+offset: new edits or rollbacks do not shift older pages. Invalid or unknown
+cursors are rejected; version 0 is the implicit initial style, not a stored
+revision. Guests and owner channel turns can read the public profile but cannot
+inspect history or publish changes. All new turns use the same revised voice;
+in-flight turns retain their snapshot.
 
 Ask June “which revision gave you this tone?” or read `!personality` on any
 surface. Each of the four effective traits has bounded public provenance:
