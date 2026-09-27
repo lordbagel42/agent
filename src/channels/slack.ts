@@ -7,6 +7,7 @@ import type {
   OutboundMessage,
   SendResult,
 } from "../core/contracts.js";
+import type { LatencyDiagnostics } from "../runtime/latency.js";
 import {
   createSlackContext,
   slackMessageId,
@@ -274,6 +275,7 @@ export function createSlackAdapter({
   searchEnabled = false,
   privateSearch,
   ingressDiagnostics,
+  latency,
   fetch: fetchImpl = globalThis.fetch,
   now = () => Date.now(),
 }: {
@@ -290,6 +292,7 @@ export function createSlackAdapter({
   searchEnabled?: boolean;
   privateSearch?: SlackPrivateSearchOptions;
   ingressDiagnostics?: SlackIngressDiagnostics;
+  latency?: LatencyDiagnostics;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
 }): ChannelAdapter {
@@ -338,6 +341,7 @@ export function createSlackAdapter({
       const timer = setTimeout(abort, 1_000);
       let response: Response | undefined;
       try {
+        if (active) latency?.mark(event, "typing_started");
         response = await fetchImpl(
           "https://slack.com/api/assistant.threads.setStatus",
           {
@@ -360,8 +364,10 @@ export function createSlackAdapter({
         const result: unknown = await response.json();
         if (!isJsonObject(result) || result.ok !== true)
           throw new Error("typing_unavailable");
+        latency?.mark(event, active ? "typing_accepted" : "typing_cleared");
         // No remote response content, source text or credential reaches history.
       } catch {
+        latency?.mark(event, "typing_unavailable");
         throw new Error("typing_unavailable");
       } finally {
         clearTimeout(timer);

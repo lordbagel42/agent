@@ -39,6 +39,7 @@ import { createMemoryExtractor } from "./models/extraction.js";
 import { createModelProvider } from "./models/provider.js";
 import { UsageLedger } from "./models/usage.js";
 import { freshEvidence } from "./reflection/domain.js";
+import { createLatencyDiagnostics } from "./runtime/latency.js";
 import { createLifecycle } from "./runtime/lifecycle.js";
 import {
   createJuneRegistry,
@@ -473,6 +474,7 @@ async function main() {
         }
       : undefined;
   const channels: Partial<Record<Channel, ChannelAdapter>> = {};
+  const latency = createLatencyDiagnostics();
   const slackIngressDiagnostics = config.slack
     ? createSlackIngressDiagnostics()
     : undefined;
@@ -490,6 +492,7 @@ async function main() {
       signingSecret: secret(config.slack.signingSecretEnv),
       botToken: secret(config.slack.botTokenEnv),
       ingressDiagnostics: slackIngressDiagnostics,
+      latency,
     });
   }
   if (config.whatsapp) {
@@ -511,6 +514,7 @@ async function main() {
     models,
     webSearch,
     lifecycle,
+    latency,
     deploymentStatus: readDeployment
       ? async () => {
           const feed = await readDeployment(config.owner.id).catch(
@@ -559,6 +563,7 @@ async function main() {
         }
       : undefined,
     slackIngressDiagnostics,
+    latency,
     console: config.console
       ? {
           origin: config.console.origin,

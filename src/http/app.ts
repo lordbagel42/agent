@@ -21,6 +21,7 @@ import {
   type createDeploymentReader,
   createDeploymentRoutes,
 } from "../deployment/feed.js";
+import type { LatencyDiagnostics } from "../runtime/latency.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
 
 export interface HttpDependencies {
@@ -35,6 +36,7 @@ export interface HttpDependencies {
     read?: ReturnType<typeof createDeploymentReader>;
   };
   slackIngressDiagnostics?: SlackIngressDiagnostics;
+  latency?: LatencyDiagnostics;
   console?: {
     origin: string;
     inspect(): Promise<ConsoleSnapshot>;
@@ -59,8 +61,17 @@ export function createHttpApp(deps: HttpDependencies) {
       deps.deployment.token === deps.operatorToken)
   )
     throw new Error("Deployment requires a distinct credential and release");
-  const app = new Hono<{ Variables: { slackRequest?: Request } }>();
+  const app = new Hono<{
+    Variables: {
+      slackRequest?: Request;
+      arrival: { at: number; monotonic: number };
+    };
+  }>();
   app.onError((_error, c) => c.json({ error: "request_failed" }, 500));
+  app.use("/webhooks/*", async (c, next) => {
+    c.set("arrival", { at: Date.now(), monotonic: performance.now() });
+    await next();
+  });
   // Include operator writers, imports and actor-backed console reads. Only
   // health and the separately authenticated drain/resume endpoint bypass this.
   app.use("*", async (c, next) => {
@@ -217,14 +228,25 @@ export function createHttpApp(deps: HttpDependencies) {
               scope ? "owner_accepted" : "owner_filtered",
             );
             if (!scope) continue;
+            if (event.type === "message") {
+              deps.latency?.begin(event, c.get("arrival"));
+              deps.latency?.mark(event, "submission_started");
+            }
             diagnostics?.record(c.req.raw, "submission_started");
             await deps.submit(scope, event);
             diagnostics?.record(c.req.raw, "submission_succeeded");
+            if (event.type === "message")
+              deps.latency?.mark(event, "submitted");
           }
         } catch {
           diagnostics?.record(c.req.raw, "submission_failed");
+          for (const event of events)
+            if (event.type === "message")
+              deps.latency?.mark(event, "submission_failed");
           return c.json({ error: "storage_unavailable" }, 503);
         }
+        for (const event of events)
+          if (event.type === "message") deps.latency?.mark(event, "http_ack");
         return response;
       },
     );
@@ -245,6 +267,12 @@ export function createHttpApp(deps: HttpDependencies) {
   app.get("/operator/conversation", async () =>
     Response.json(await deps.inspectConversation()),
   );
+  if (deps.latency) {
+    const latency = deps.latency;
+    app.get("/operator/latency", (c) =>
+      c.json({ revision: deps.revision, ...latency.snapshot() }),
+    );
+  }
   if (deps.slackIngressDiagnostics) {
     const diagnostics = deps.slackIngressDiagnostics;
     app.get("/operator/ingress/slack", (c) => c.json(diagnostics.snapshot()));
