@@ -507,6 +507,43 @@ There is no automatic resend endpoint for unknown delivery outcomes. Inspect the
 platform before taking a new action. A delivery marked `sent` means the provider
 accepted it, not that the human read it.
 
+## One global, iterable personality
+
+June reads one durable, owner-wide public style snapshot on each new conversation
+turn, including guest DMs and channels. It works without enabling retained memory
+or reflection. The first increment allows tone, verbosity, humor and curiosity
+from a fixed vocabulary; June's public self-description is generated from these
+values. It cannot contain private evidence, arbitrary instructions or permissions.
+Honesty, privacy, identity and authority remain outside the editable profile.
+
+Ask June about her voice or how she would change it: her prompt includes the
+current version and instructions to propose an exact confirmation command in
+ordinary reply text. A model reply is a proposal, not a write. Send these as
+ordinary messages in an authenticated owner-private DM (not Slack slash commands,
+quotes, code blocks or attachment captions):
+
+```text
+!personality
+!personality revise {"expectedVersion":0,"changes":{"tone":"dry","verbosity":"concise"},"explanation":"Try a shorter, drier voice","publish":true}
+!personality history
+!personality rollback {"expectedVersion":1,"targetVersion":0,"explanation":"Restore the initial voice","publish":true}
+```
+
+Use the current version shown by `!personality`; stale edits are rejected and
+duplicate events do not append twice. Rollback can restore any saved version and
+always appends a new revision. History shows the latest five revisions with
+explanations. Guests and owner channel turns can read the public profile but
+cannot inspect history or publish changes. All new turns use the same revised
+voice; in-flight turns retain their snapshot.
+
+No secret or configuration change is needed for this feature. State and private
+explanations live in the existing Rivet data/journal and backup retention domain,
+not the encrypted/forgettable evidence store; keep explanations non-sensitive.
+Existing private curated traits remain intact for operator review, but do not
+provide a second per-scope voice on new turns. No private evidence is promoted.
+This slice does not autonomously infer or publish traits, edit free-form biography,
+or claim a real-provider behavioral evaluation from its runtime fixture checks.
+
 ## Dormant owner-private memory and reflection
 
 `memory` is absent by default. Activation requires an existing canonical,

@@ -40,6 +40,8 @@ export interface MessageEvent extends EventBase {
   /** Verified live Slack text, not a quote/code block, attachment or subtype.
    * Absent on historical/context events and old inbox records. */
   ownerCorrectionEligible?: boolean;
+  /** Fresh, plain owner-private Slack command; quoted/history text cannot publish. */
+  personalityCommandEligible?: boolean;
   metadata?: MessageMetadata;
 }
 

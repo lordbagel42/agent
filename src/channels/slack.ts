@@ -280,6 +280,11 @@ async function normalizeEvent(
         ...(event.text.startsWith("!memory-correct")
           ? { ownerCorrectionEligible: isPlainSlackCommand(event) }
           : {}),
+        ...(owner &&
+        channelType === "im" &&
+        /^!personality(?:\s|$)/.test(event.text.trim())
+          ? { personalityCommandEligible: isPlainSlackCommand(event) }
+          : {}),
         metadata: {
           ...slackMetadata(event, channelType),
           ...(channelName ? { channelName } : {}),

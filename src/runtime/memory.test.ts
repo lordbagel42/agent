@@ -544,7 +544,7 @@ it.for(["reply", "deep"] as const)(
           claimIds: ["grounding-only", "private-claim"],
         },
       ]);
-      expect(memory.style).toEqual({});
+      expect(memory.style).toBeUndefined();
       expect(memory.evidence.claims).toHaveLength(7);
       expect(
         memory.evidence.sources.length + memory.evidence.claims.length,
