@@ -1259,9 +1259,7 @@ async function main() {
           if (!reflectionReview) memory.store.appendSource(source);
         }
       }
-      await client.conversation
-        .getOrCreate(scope.key)
-        .send("inbox", { type: "event", event });
+      await client.conversation.getOrCreate(scope.key).receive(event);
     },
     async ready() {
       return (await registry.routes.health()).ok;

@@ -74,6 +74,198 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("tracks multipart sends separately and stops after an ambiguous part without replaying it", async (t) => {
+    const sent: OutboundMessage[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      channels: {
+        slack: transport("slack", sent, () =>
+          sent.length === 2
+            ? { status: "unknown", code: "timeout" }
+            : { status: "sent", messageId: `out-${sent.length}` },
+        ),
+      },
+      model: {
+        async reply(request) {
+          return parseReply(
+            JSON.stringify({
+              text: "",
+              messages: ["First thought", "Second thought", "Last thought"],
+            }),
+            [],
+            request,
+          );
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    await june.send("inbox", { type: "event", event: message });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).filter(
+            (entry) => entry.done,
+          ).length,
+      )
+      .toBe(1);
+    expect(sent.map((entry) => entry.content)).toEqual([
+      { type: "text", text: "First thought" },
+      { type: "text", text: "Second thought" },
+    ]);
+    expect(new Set(sent.map((entry) => entry.id)).size).toBe(2);
+    await june.send("inbox", { type: "event", event: message });
+    const state = await june.snapshot();
+    expect(
+      Object.values(state.deliveries).map((entry) => entry.result?.status),
+    ).toEqual(["sent", "unknown", "rejected"]);
+    expect(state.history.at(-1)?.content).toContain("unknown");
+    expect(state.history.at(-1)?.content).toContain("Last thought");
+    expect(sent).toHaveLength(2);
+  });
+
+  it("coalesces follow-ups during inference without starting stale actions or losing message boundaries", async (t) => {
+    const firstStarted = Promise.withResolvers<void>();
+    const finishFirst = Promise.withResolvers<void>();
+    t.onTestFinished(() => finishFirst.resolve());
+    const sent: OutboundMessage[] = [];
+    const requests: ModelRequest[] = [];
+    let searches = 0;
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack: transport("slack", sent) },
+      webSearch: {
+        available: true,
+        description: "fixture",
+        async search() {
+          searches++;
+          return { status: "ready", results: [] };
+        },
+      },
+      model: {
+        async reply(request) {
+          requests.push(request);
+          if (requests.length === 1) {
+            firstStarted.resolve();
+            await finishFirst.promise;
+            return { text: "", webSearch: "obsolete query" };
+          }
+          return { text: "Together now" };
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    await june.receive(message);
+    await firstStarted.promise;
+    const second = {
+      ...message,
+      id: "part-2",
+      messageId: "part-2",
+      text: "and another thing",
+    };
+    const third = {
+      ...message,
+      id: "part-3",
+      messageId: "part-3",
+      text: "actually, make that two herons",
+    };
+    await june.receive(second);
+    await june.receive(third);
+    await june.receive(second);
+    finishFirst.resolve();
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).filter(
+            (entry) => entry.done,
+          ).length,
+      )
+      .toBe(3);
+    expect(requests).toHaveLength(2);
+    expect(searches).toBe(0);
+    expect(
+      conversationText(requests[1])
+        ?.filter((entry) => entry.role === "user")
+        .map((entry) => entry.content),
+    ).toEqual([message.text, second.text, third.text]);
+    expect(sent.map((entry) => entry.content)).toEqual([
+      { type: "text", text: "Together now" },
+    ]);
+  });
+
+  it.for(["same surface", "different thread", "urgent"] as const)(
+    "rechecks each multipart send when input arrives: %s",
+    async (scenario, t) => {
+      const firstSent = Promise.withResolvers<void>();
+      const finishSend = Promise.withResolvers<void>();
+      t.onTestFinished(() => finishSend.resolve());
+      const sent: OutboundMessage[] = [];
+      let replies = 0;
+      const registry = createJuneRegistry({
+        owner,
+        channels: {
+          slack: {
+            ...transport("slack", sent),
+            async send(outbound) {
+              sent.push(
+                JSON.parse(JSON.stringify(outbound)) as OutboundMessage,
+              );
+              if (sent.length === 1) {
+                firstSent.resolve();
+                await finishSend.promise;
+              }
+              return { status: "sent", messageId: `out-${sent.length}` };
+            },
+          },
+        },
+        model: {
+          async reply() {
+            replies++;
+            return replies === 1
+              ? {
+                  text: "",
+                  messages: ["Part one", "Part two"],
+                  interrupt: scenario === "urgent",
+                }
+              : { text: "Follow-up reply" };
+          },
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", owner.id]);
+      await june.receive(message);
+      await firstSent.promise;
+      await june.receive({
+        ...message,
+        id: "follow-up",
+        messageId: "follow-up",
+        text: "More context",
+        address: {
+          ...message.address,
+          ...(scenario === "different thread"
+            ? { threadId: "another-thread" }
+            : {}),
+        },
+      });
+      finishSend.resolve();
+      await expect
+        .poll(
+          async () =>
+            Object.values((await june.snapshot()).events).filter(
+              (entry) => entry.done,
+            ).length,
+        )
+        .toBe(2);
+      expect(sent.map((entry) => entry.content)).toEqual(
+        (scenario === "same surface"
+          ? ["Part one", "Follow-up reply"]
+          : ["Part one", "Part two", "Follow-up reply"]
+        ).map((text) => ({ type: "text", text })),
+      );
+    },
+  );
+
   it("only proposes browser mutations in owner-private turns and rejects mixed or forged authority", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];

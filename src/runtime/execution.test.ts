@@ -178,6 +178,7 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
         if (text === "plan")
           return {
             text: "Working on both.",
+            interrupt: false,
             replyInThread: true,
             execution: [
               { agent: "constructor", action: "run", task: "trains-first" },

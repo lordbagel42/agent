@@ -170,9 +170,9 @@ it.for([false, true])(
     await guestActor.send("inbox", { type: "event", event: guest });
     await expect.poll(() => sent.length).toBe(3);
     expect(requests[1]?.system).toContain(secret);
-    expect(JSON.stringify((await guestActor.snapshot()).history)).toContain(
-      secret,
-    );
+    await expect
+      .poll(async () => JSON.stringify((await guestActor.snapshot()).history))
+      .toContain(secret);
     const pending = await social.propose(
       { ...event, id: "outreach" },
       { kind: "outreach", userId: "UOTHER", text: secret },

@@ -71,6 +71,18 @@ const recallTimestampSchema = z
 
 const companionReplySchema = z.strictObject({
   text: z.string().refine((text) => Array.from(text).length <= 3_500),
+  messages: z
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1)
+        .refine((text) => Array.from(text).length <= 3_500),
+    )
+    .min(1)
+    .max(4)
+    .optional(),
+  interrupt: z.boolean().optional(),
   workflow: workflowCommandSchema.optional(),
   execution: z
     .array(
@@ -339,6 +351,7 @@ export type ReplyCapabilities = Pick<
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
+  | "turnTakingAvailable"
   | "socialAvailable"
   | "executionAvailable"
   | "workflowAvailable"
@@ -390,6 +403,7 @@ export function replyJsonSchema(
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
+    turnTakingAvailable,
     socialAvailable,
     executionAvailable,
     workflowAvailable,
@@ -474,6 +488,21 @@ export function replyJsonSchema(
         type: "string",
         description: "Must be no more than 3500 Unicode characters.",
       },
+      ...(turnTakingAvailable
+        ? {
+            messages: {
+              type: ["array", "null"],
+              items: { type: "string" },
+              description:
+                "Optional one to four separate messages in order, each nonempty and at most 3500 Unicode characters. Use instead of text, leaving text empty. Conversational replies only; never combine with action directives.",
+            },
+            interrupt: {
+              type: ["boolean", "null"],
+              description:
+                "Normally false/null: yield unsent replies to newer user input. True only for a genuinely urgent reply or when explicitly asked to interject. Conversational replies only, never action directives.",
+            },
+          }
+        : {}),
       coding,
       reaction: { type: ["string", "null"] },
       ...(codingJobsAvailable
@@ -1358,6 +1387,7 @@ export function replyJsonSchema(
       "text",
       "coding",
       "reaction",
+      ...(turnTakingAvailable ? ["messages", "interrupt"] : []),
       ...(codingJobsAvailable ? ["codingJob"] : []),
       ...(workflowAvailable ? ["workflow"] : []),
       ...(executionAvailable ? ["execution"] : []),
@@ -1592,6 +1622,7 @@ export function parseReply(
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
+    turnTakingAvailable,
     socialAvailable,
     executionAvailable,
     workflowAvailable,
@@ -1608,6 +1639,8 @@ export function parseReply(
 
   const normalized = { ...value };
   for (const key of [
+    "messages",
+    "interrupt",
     "workflow",
     "execution",
     "coding",
@@ -1711,6 +1744,8 @@ export function parseReply(
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
     (reply.workflow !== undefined && !workflowAvailable) ||
+    ((reply.messages !== undefined || reply.interrupt !== undefined) &&
+      !turnTakingAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);
@@ -1753,6 +1788,9 @@ export function parseReply(
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
   if (
+    (reply.messages !== undefined && reply.text.trim().length > 0) ||
+    ((reply.messages !== undefined || reply.interrupt === true) &&
+      (directiveCount > 0 || reply.coding !== undefined)) ||
     directiveCount > 1 ||
     (directiveCount > 0 &&
       (reply.coding !== undefined || reply.reaction !== undefined)) ||

@@ -122,7 +122,11 @@ export interface ChannelAdapter {
   ): Promise<{ response: Response; events: ChannelEvent[] }>;
   send(message: OutboundMessage): Promise<SendResult>;
   /** Use only for the initiating message. Credentials and results stay volatile. */
-  search?(event: MessageEvent, query: string): Promise<ChannelSearchResult>;
+  search?(
+    event: MessageEvent,
+    query: string,
+    canStartAction?: () => boolean,
+  ): Promise<ChannelSearchResult>;
   /** Read June's accessible Slack history for the verified owner and deliver
    * directly to that owner's Slack DM. Never return message bodies to a caller. */
   shareHistory?(
@@ -181,6 +185,10 @@ export interface ExecutionCommand {
 
 export interface CompanionReply {
   text: string;
+  /** Alternative to text: ordered conversational messages, not tool actions. */
+  messages?: string[];
+  /** Exceptional conversational interruption; never bypasses action permissions. */
+  interrupt?: boolean;
   execution?: ExecutionCommand[];
   workflow?: import("../workflows/contracts.js").WorkflowCommand;
   social?: import("./social.js").SocialAction;
@@ -360,6 +368,7 @@ export interface ModelRequest {
   dashboardLoginAvailable?: boolean;
   wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;
+  turnTakingAvailable?: boolean;
   socialAvailable?: boolean;
   executionAvailable?: boolean;
   workflowAvailable?: boolean;
@@ -372,6 +381,9 @@ export interface ModelProvider {
     request: ModelRequest,
     signal?: AbortSignal,
     isCurrent?: () => boolean,
+    /** Host-only pre-dispatch guard, never serialized. Does not cancel or
+     * discard already-started actions; wrappers must retain their evidence. */
+    canStartAction?: () => boolean,
   ): Promise<CompanionReply>;
 }
 

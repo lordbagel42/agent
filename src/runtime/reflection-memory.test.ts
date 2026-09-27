@@ -166,6 +166,7 @@ it("stages only current original-source reflection hypotheses through private Ju
         ).toBeNull();
         return {
           text: "",
+          interrupt: false,
           reflectionMemory: { id, subjectSourceId: "subject" },
         };
       },

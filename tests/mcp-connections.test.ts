@@ -126,7 +126,7 @@ async function fixture(
     workspaces: [],
     mcpAvailable: true,
   };
-  const invoke = (target = id) =>
+  const invoke = (target = id, canStartAction?: () => boolean) =>
     store
       .wrap({
         reply: async (req) =>
@@ -141,7 +141,7 @@ async function fixture(
               }
             : { text: "answer" },
       })
-      .reply(request);
+      .reply(request, undefined, undefined, canStartAction);
   return {
     get store() {
       return store;
@@ -274,6 +274,27 @@ test.each([
       scenario === "synthesis" || scenario === "revoked-result" ? 2 : 1,
     );
     expect(f.calls).toHaveLength(calls);
+    expect(f.store.proposals()).toEqual([]);
+  },
+);
+
+test.each(["discovery", "dispatch"] as const)(
+  "follow-up during MCP %s prevents new calls but retains already-started results",
+  async (boundary) => {
+    const f = await fixture();
+    f.store.permit(f.id, f.connection().revision, "lookup", "read");
+    let current = true;
+    const supersede = () => {
+      current = false;
+    };
+    if (boundary === "discovery") f.duringList(supersede);
+    else f.duringCall(supersede);
+    const answer = await f.invoke(f.id, () => current);
+    expect(current).toBe(false);
+    expect(f.calls).toHaveLength(boundary === "discovery" ? 0 : 1);
+    if (boundary === "discovery")
+      expect(answer.text).toContain("MCP request failed:");
+    else expect(answer.text).toBe("answer");
     expect(f.store.proposals()).toEqual([]);
   },
 );

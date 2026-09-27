@@ -55,6 +55,16 @@ June can reply with text, a native reaction, both, or intentional silence. A lig
 acknowledgment no longer forces an extra text message. Delivery history records
 what the platform accepted, including uncertain or rejected reactions.
 
+June can also choose up to four separate conversational messages using `messages`
+instead of `text`. She starts thinking immediately, without a debounce delay.
+New owner messages in the same conversation/thread supersede unsent replies;
+queued fragments retain their boundaries and are considered together. She may
+set `interrupt: true` for an urgent conversational reply or an explicit invitation
+to interject, never to bypass action permissions. Each part has its own durable
+receipt; a failed or uncertain part stops the remaining text parts. Slack's Events
+API does not expose user typing, so waiting for an unsent draft is necessarily
+based on conversational cues, not a claimed typing detector.
+
 Incoming reactions and delivery receipts are recorded; they can wake June when
 an explicit event watch matches. Reading image/attachment bytes, voice, WhatsApp templates,
 Claude subscription auth, self-deployment, and configuration changes from the

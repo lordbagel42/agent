@@ -25,6 +25,7 @@ export type RivetReader = (
   event: MessageEvent,
   request: RivetRequest,
   signal: AbortSignal,
+  canStartAction?: () => boolean,
 ) => Promise<string>;
 
 /** Defense in depth, not a claim that arbitrary user text can be classified.
@@ -80,9 +81,10 @@ export function createRivetReader(options: {
   secrets?: readonly string[];
   fetch?: typeof globalThis.fetch;
 }): RivetReader {
-  return async (event, input, signal) => {
+  return async (event, input, signal, canStartAction) => {
     if (!isOwnerRivetDm(event, options.owner))
       throw new Error("owner_dm_required");
+    if (canStartAction?.() === false) throw new Error("inspection_superseded");
     const request = rivetRequestSchema.parse(input);
     const config = options.connection();
     const base = new URL(
@@ -108,6 +110,8 @@ export function createRivetReader(options: {
       boundedSignal.throwIfAborted();
       if (!isOwnerRivetDm(event, options.owner))
         throw new Error("owner_dm_required");
+      if (canStartAction?.() === false)
+        throw new Error("inspection_superseded");
       const url = new URL(path, base);
       url.search = new URLSearchParams({
         namespace: config.namespace,
@@ -319,16 +323,20 @@ export async function answerRivetInspection(options: {
   model: ModelProvider;
   signal: AbortSignal;
   valid: () => boolean;
+  canStartAction?: () => boolean;
 }): Promise<string> {
-  const { read, event, model, signal, valid } = options;
+  const { read, event, model, signal, valid, canStartAction } = options;
+  const canStart = () =>
+    !signal.aborted && valid() && canStartAction?.() !== false;
   let request = options.first;
   const results: string[] = [];
   for (let i = 0; i < 6; i++) {
     signal.throwIfAborted();
     if (!valid()) throw new Error("inspection_invalidated");
+    if (!canStart()) throw new Error("inspection_superseded");
     let result: string;
     try {
-      result = await read(event, request, signal);
+      result = await read(event, request, signal, canStart);
     } catch {
       result = JSON.stringify({
         status: "unavailable",
@@ -337,6 +345,7 @@ export async function answerRivetInspection(options: {
     }
     if (!valid() || signal.aborted) throw new Error("inspection_invalidated");
     if (request.format === "raw") return result;
+    if (!canStart()) throw new Error("inspection_superseded");
     results.push(JSON.stringify({ request, result }));
     const followup: ModelRequest = {
       system:
@@ -348,7 +357,7 @@ export async function answerRivetInspection(options: {
       usageStage: "synthesis",
     };
     const answer: CompanionReply = parseReply(
-      JSON.stringify(await model.reply(followup, signal)),
+      JSON.stringify(await model.reply(followup, signal, valid, canStart)),
       [],
       followup,
     );

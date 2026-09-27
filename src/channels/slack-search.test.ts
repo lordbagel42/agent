@@ -831,6 +831,28 @@ describe("owner-authorized private Slack search", () => {
     };
   }
 
+  it("does not start private search when superseded during token verification", async () => {
+    const { engine, event, fetchMock } = privateSetup();
+    const identity = Promise.withResolvers<Response>();
+    fetchMock.mockImplementationOnce(() => identity.promise);
+    let current = true;
+    engine.capture(event, undefined);
+    const pending = engine.search(event, "launch", () => current);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    current = false;
+    identity.resolve(
+      jsonResponse({ ok: true, team_id: teamId, user_id: "U123ABC" }),
+    );
+    await expect(pending).resolves.toEqual({
+      status: "unavailable",
+      code: "unavailable",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://slack.com/api/auth.test",
+    );
+  });
+
   it.each([false, true])(
     "requires fresh captured ingress and spends one DM-bound delivery (reply thread: %s)",
     async (threadedReply) => {

@@ -206,6 +206,7 @@ export class SocialPermissions {
     id: string,
     address: Address,
     text: string,
+    canStartAction?: () => boolean,
   ): Promise<SendResult> {
     this.forget();
     const revision = this.options.deletionRevision?.() ?? 0;
@@ -238,6 +239,12 @@ export class SocialPermissions {
         this.forget();
         if (revision !== (this.options.deletionRevision?.() ?? 0))
           return { status: "rejected", code: "forgotten", retryable: false };
+        if (canStartAction?.() === false)
+          return {
+            status: "rejected",
+            code: "superseded_input",
+            retryable: false,
+          };
         return this.options.slack.send(message);
       },
     );
@@ -407,7 +414,11 @@ export class SocialPermissions {
     const quoted = JSON.stringify(proposal.action.text);
     return `Interruption proposal ${id}. Exact recipient: ${proposal.action.userId}. Exact message (JSON quoted):\n${quoted}\nCandidate ${input.candidateId} is a generated hypothesis, not permission. ${sendEligible ? "Eligibility must be checked again at delivery." : "The original candidate is not currently send-eligible; approving this draft alone cannot send it."} No outreach or separate notification was sent, and no access was granted. Delivery is unavailable until the guarded approval path is enabled. Deny with !deny ${id} or revoke with !revoke ${id}. Expires at ${new Date(proposal.expires).toISOString()}; repeated staging keeps the original recipient and message.`;
   }
-  async propose(event: MessageEvent, input: SocialAction): Promise<string> {
+  async propose(
+    event: MessageEvent,
+    input: SocialAction,
+    canStartAction?: () => boolean,
+  ): Promise<string> {
     if (!this.authorized(event)) return "This conversation is not authorized.";
     const action = socialActionSchema.parse(input);
     if (action.kind === "interruption_proposal")
@@ -424,6 +435,7 @@ export class SocialPermissions {
           ...(action.threadId ? { threadId: action.threadId } : {}),
         },
         action.text,
+        canStartAction,
       );
       return `Post delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived or repeat an uncertain send."}`;
     }
@@ -511,6 +523,7 @@ export class SocialPermissions {
       `${id}:notice`,
       address,
       `<@${RAYGEN_SLACK_ID}> May I? Request ${id}, requested by <@${proposal.requester}>.\n${summary}\nNothing is authorized yet. Reply with exactly !allow ${id} or !deny ${id} (mention me too if replying in a channel). Request expires in 24 hours.`,
+      canStartAction,
     );
     return `Approval request ${id}: notification ${result.status}. No extra permission is active. ${result.status === "sent" ? "Waiting for Raygen." : "I cannot confirm Raygen received it; ask him directly."}`;
   }

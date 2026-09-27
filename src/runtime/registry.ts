@@ -195,6 +195,8 @@ export interface ConversationState {
       event: ChannelEvent;
       /** Workflow completion, not proof that inference or delivery succeeded. */
       done: boolean;
+      /** Conversational output yielded to a newer same-surface owner message. */
+      deferred?: boolean;
       /** Metadata only; the typed result travels through the existing outbox. */
       jevObservation?: {
         status: "started" | "settled" | "unknown";
@@ -214,6 +216,9 @@ export interface ConversationState {
     CodingRequest & { runtimeId?: string; preview?: string }
   >;
   lastInbound: Record<string, number>;
+  /** Write-ahead admission and deduplication until record-event takes ownership. */
+  pendingInputs?: Record<string, MessageEvent>;
+  latestInputs?: Record<string, { id: string; occurredAt: number }>;
   memoryContexts?: Record<string, MemoryReference>;
   forgottenEvents?: string[];
   modelInvocations?: Record<string, "started" | "settled" | "uncertain">;
@@ -243,7 +248,12 @@ function captureForgetTargets(
   return {
     beforeDeletionRevision,
     historyIds: state.history.map((entry) => entry.id),
-    eventIds: Object.keys(state.events),
+    eventIds: [
+      ...new Set([
+        ...Object.keys(state.events),
+        ...Object.keys(state.pendingInputs ?? {}),
+      ]),
+    ],
     deliveryIds: Object.keys(state.deliveries),
     agents: { ...state.agents },
     jobIds: Object.keys(state.jobs),
@@ -267,6 +277,17 @@ type Inbox =
       source: MessageEvent;
       text: string;
     };
+
+function inputSurface(event: MessageEvent): string {
+  const { address, metadata } = event;
+  return JSON.stringify([
+    address.channel,
+    address.accountId,
+    address.conversationId,
+    metadata ? (metadata.threadTs ?? "") : (address.threadId ?? ""),
+    event.senderId,
+  ]);
+}
 
 export function createJuneRegistry(deps: Dependencies) {
   const priority = createPriorityAdmission();
@@ -331,11 +352,90 @@ export function createJuneRegistry(deps: Dependencies) {
       jobs: {},
       lastInbound: {},
     } as ConversationState,
-    createVars: (c): { persist: () => Promise<void> } => ({
+    createVars: (
+      c,
+    ): { persist: () => Promise<void>; receiving: Promise<void> } => ({
       persist: () => c.saveState({ immediate: true }),
+      receiving: Promise.resolve(),
     }),
     queues: { inbox: queue<Inbox>() },
+    onWake: async (c) => {
+      // Runs before workflow replay. Enqueue is durable; duplicates are harmless.
+      // Do not await an immediate save here: native startup cannot service it.
+      for (const event of Object.values(c.state.pendingInputs ?? {})) {
+        await c.queue.send("inbox", { type: "event", event });
+      }
+    },
     actions: {
+      /** Trusted verified ingress. Persist the arrival and its recoverable body
+       * together, before queue publication or any stale reply can resume. */
+      receive: async (c, event: ChannelEvent) => {
+        const scope = routeEvent(event, deps.owner, true);
+        if (!scope || JSON.stringify(scope.key) !== JSON.stringify(c.key))
+          throw new Error("Conversation scope mismatch");
+        // Serialize admission only, never inference or delivery. Concurrent
+        // webhook completions cannot reorder the latest-input marker.
+        const receiving = c.vars.receiving.then(async () => {
+          const id = createHash("sha256")
+            .update(
+              JSON.stringify([
+                event.address.channel,
+                event.address.accountId,
+                event.id,
+              ]),
+            )
+            .digest("hex");
+          if (
+            event.type !== "message" ||
+            !isOwner(event, deps.owner) ||
+            (event.address.channel === "slack" && event.text.startsWith("##"))
+          ) {
+            await c.queue.send("inbox", { type: "event", event });
+            return;
+          }
+          if (c.state.events[id] || c.state.forgottenEvents?.includes(id))
+            return;
+          if (!c.state.pendingInputs?.[id]) {
+            // Include legacy callback IDs in Slack's stable-message deduplication.
+            if (
+              event.address.channel === "slack" &&
+              [
+                ...Object.values(c.state.events).map((record) => record.event),
+                ...Object.values(c.state.pendingInputs ?? {}),
+              ].some(
+                (previous) =>
+                  previous.type === "message" &&
+                  previous.address.channel === event.address.channel &&
+                  previous.address.accountId === event.address.accountId &&
+                  previous.address.conversationId ===
+                    event.address.conversationId &&
+                  previous.messageId === event.messageId &&
+                  previous.senderId === event.senderId,
+              )
+            )
+              return;
+            c.state.pendingInputs ??= {};
+            c.state.pendingInputs[id] = event;
+            c.state.latestInputs ??= {};
+            const surface = inputSurface(event);
+            if (
+              (c.state.latestInputs[surface]?.occurredAt ?? -Infinity) <=
+              event.occurredAt
+            )
+              c.state.latestInputs[surface] = {
+                id,
+                occurredAt: event.occurredAt,
+              };
+          }
+          // A repeated webhook republishes pending input without moving its marker.
+          await c.vars.persist();
+          const pending = c.state.pendingInputs?.[id];
+          if (!pending) return; // Forgetting may revoke admission during the save.
+          await c.queue.send("inbox", { type: "event", event: pending });
+        });
+        c.vars.receiving = receiving.catch(() => {});
+        await receiving;
+      },
       // Activate a host-crashed actor without adding duplicate inbox entries or
       // transferring its private snapshot to a background poller.
       wake: () => true,
@@ -383,6 +483,7 @@ export function createJuneRegistry(deps: Dependencies) {
           ...new Set([...(c.state.forgottenEvents ?? []), ...cleanup.eventIds]),
         ];
         for (const id of cleanup.eventIds) {
+          delete c.state.pendingInputs?.[id];
           const record = c.state.events[id];
           if (record?.event.type === "message") record.event.text = "";
         }
@@ -450,6 +551,7 @@ export function createJuneRegistry(deps: Dependencies) {
             "memory-claim-review",
             3,
           );
+          const turnVersion = await loop.getVersion("conversation-turns", 2);
           // Old iterations must not turn previously ordinary ! text into approval.
           const codingCommandVersion = await loop.getVersion(
             "coding-command-ingress",
@@ -575,6 +677,21 @@ export function createJuneRegistry(deps: Dependencies) {
             // Only the host-generated confirmation receipt may cross its own
             // deletion boundary. No model output or recalled text uses this path.
             let forgetReceipt = false;
+            const superseded = (state: ConversationState) => {
+              if (
+                turnVersion < 2 ||
+                body.type !== "event" ||
+                event.type !== "message" ||
+                !ownerTurn
+              )
+                return false;
+              const latest = state.latestInputs?.[inputSurface(event)];
+              return (
+                !!latest &&
+                latest.id !== eventId &&
+                latest.occurredAt >= event.occurredAt
+              );
+            };
             const valid = (state: ConversationState) => {
               if (
                 deletionRevision !==
@@ -631,13 +748,29 @@ export function createJuneRegistry(deps: Dependencies) {
               const reference = state.memoryContexts?.[eventId];
               return !reference || current(audience, reference);
             };
+            // Check inside durable callbacks, including replay. Supersession
+            // stops new dispatch, not evidence/accounting for already-started work.
+            const canStartAction = (state: ConversationState) => {
+              if (!valid(state)) return false;
+              if (!superseded(state)) return true;
+              const record = state.events[eventId];
+              if (record) record.deferred = true;
+              return false;
+            };
             const addressId = JSON.stringify([
               event.address.channel,
               event.address.accountId,
               event.address.conversationId,
             ]);
             const accepted = await loop.step("record-event", async (step) => {
-              if (step.state.events[eventId]?.done) return false;
+              if (
+                step.state.events[eventId]?.done ||
+                step.state.forgottenEvents?.includes(eventId)
+              ) {
+                delete step.state.pendingInputs?.[eventId];
+                await step.vars.persist();
+                return false;
+              }
               prune(step.state, audience);
               if (!step.state.events[eventId]) {
                 // Older Slack versions keyed turns by callback ID. A delayed
@@ -657,8 +790,11 @@ export function createJuneRegistry(deps: Dependencies) {
                       previous.messageId === event.messageId &&
                       previous.senderId === event.senderId,
                   )
-                )
+                ) {
+                  delete step.state.pendingInputs?.[eventId];
+                  await step.vars.persist();
                   return false;
+                }
                 step.state.events[eventId] = { event, done: false };
                 if (
                   event.type === "message" &&
@@ -685,6 +821,9 @@ export function createJuneRegistry(deps: Dependencies) {
                   });
                 }
               }
+              // Keep admission identity until the history/event record exists;
+              // otherwise a queued duplicate could move the latest marker back.
+              delete step.state.pendingInputs?.[eventId];
               await step.vars.persist();
               return true;
             });
@@ -952,7 +1091,21 @@ export function createJuneRegistry(deps: Dependencies) {
               const send = async (
                 outbound: OutboundMessage,
                 kind: ReplyKind,
+                state: ConversationState,
               ): Promise<SendResult> => {
+                if (
+                  conversationalReply &&
+                  !reply.interrupt &&
+                  superseded(state)
+                ) {
+                  const record = state.events[eventId];
+                  if (record) record.deferred = true;
+                  return {
+                    status: "rejected",
+                    code: "superseded_input",
+                    retryable: false,
+                  };
+                }
                 const adapter = deps.channels[outbound.address.channel];
                 if (!adapter)
                   return {
@@ -1013,6 +1166,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 reflectionReview?.action === "propose"
                   ? reflectionReview
                   : undefined;
+              let conversationalReply = false;
               const command =
                 scope.private && body.type === "event"
                   ? event.text
@@ -1433,6 +1587,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   },
                 );
               } else {
+                conversationalReply = true;
                 let webResults: WebSearchCitation[] | undefined;
                 for (const phase of ["reply", "deep", "synthesis"] as const) {
                   if (phase !== "reply" && version < 3) break;
@@ -1481,7 +1636,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 code: "memory_invalidated",
                                 retryable: false,
                               };
-                            return send(outbound, "ack");
+                            return send(outbound, "ack", step.state);
                           },
                         );
                         return result.status === "sent";
@@ -1502,7 +1657,7 @@ export function createJuneRegistry(deps: Dependencies) {
                         if (
                           !plan.web ||
                           !deps.webSearch?.available ||
-                          !valid(step.state) ||
+                          !canStartAction(step.state) ||
                           step.abortSignal.aborted
                         )
                           return null;
@@ -1532,14 +1687,24 @@ export function createJuneRegistry(deps: Dependencies) {
                         await reflection?.occupancy(invocation, true);
                         let settled = false;
                         try {
-                          if (!valid(step.state) || step.abortSignal.aborted)
+                          if (
+                            !canStartAction(step.state) ||
+                            step.abortSignal.aborted
+                          ) {
+                            settled = true;
                             return null;
+                          }
                           // The provider sees only the explicit public query, never
                           // a model request, private history, memory or source IDs.
                           const search = deps.webSearch;
                           await typingCleanup;
-                          if (!valid(step.state) || step.abortSignal.aborted)
+                          if (
+                            !canStartAction(step.state) ||
+                            step.abortSignal.aborted
+                          ) {
+                            settled = true;
                             return null;
+                          }
                           const result = await withTyping(
                             deps.channels[replyAddress.channel],
                             { ...event, address: replyAddress },
@@ -1607,6 +1772,10 @@ export function createJuneRegistry(deps: Dependencies) {
                             : undefined;
                         let settled = false;
                         let stopTyping: (() => Promise<void>) | undefined;
+                        const outcome: {
+                          reply: CompanionReply | null;
+                          retryable: boolean;
+                        } = { reply: null, retryable: false };
                         try {
                           if (!valid(step.state) || signal.aborted)
                             return { reply: { text: "" }, retryable: false };
@@ -1647,6 +1816,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                 retryable: false,
                               };
                             }
+                          }
+                          if (superseded(step.state)) {
+                            const record = step.state.events[eventId];
+                            if (record) record.deferred = true;
+                            await step.vars.persist();
+                            return { reply: { text: "" }, retryable: false };
                           }
                           // Missing prerequisites block new inference, not accounting
                           // for an invocation already admitted before the restart.
@@ -1929,6 +2104,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                   : {}),
                               },
                               capabilities: {
+                                turnTakingAvailable:
+                                  turnVersion >= 2 && body.type === "event",
                                 workflowAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2292,7 +2469,7 @@ export function createJuneRegistry(deps: Dependencies) {
                           let generated: CompanionReply;
                           try {
                             signal.throwIfAborted();
-                            if (!valid(step.state))
+                            if (!canStartAction(step.state))
                               return { reply: { text: "" }, retryable: false };
                             const model =
                               phase === "deep" ? deps.deepModel : deps.model;
@@ -2313,14 +2490,48 @@ export function createJuneRegistry(deps: Dependencies) {
                                 },
                                 signal,
                                 () => !signal.aborted && valid(step.state),
+                                () =>
+                                  !signal.aborted && canStartAction(step.state),
                               );
                             } finally {
                               deps.latency?.mark(event, `${stage}_finished`);
                             }
+                            if (
+                              generated.slackHistory !== undefined ||
+                              generated.reflectionReview !== undefined ||
+                              generated.messages !== undefined ||
+                              generated.interrupt !== undefined
+                            )
+                              generated = parseReply(
+                                JSON.stringify(generated),
+                                modelRequest.workspaces,
+                                modelRequest,
+                              );
+                            // Let the paid call settle, but do not dispatch a stale
+                            // reply or its not-yet-started actions. The next inbox
+                            // turn sees the original messages in order.
+                            if (
+                              superseded(step.state) &&
+                              !generated.interrupt
+                            ) {
+                              const record = step.state.events[eventId];
+                              if (record) record.deferred = true;
+                              await step.vars.persist();
+                              // A provider wrapper may already have run a tool.
+                              // Retain its answer as withheld delivery evidence,
+                              // but never dispatch remaining action directives.
+                              outcome.reply = {
+                                text: generated.text,
+                                ...(generated.messages
+                                  ? { messages: generated.messages }
+                                  : {}),
+                              };
+                              return outcome;
+                            }
                             if (generated.reflectionReview !== undefined) {
                               // Custom providers must satisfy the same exclusive
                               // directive contract before any effect handler runs.
-                              const checked = parseReply(
+                              outcome.reply = parseReply(
                                 JSON.stringify(generated),
                                 [],
                                 {
@@ -2328,16 +2539,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                     modelRequest.reflectionReviewAvailable,
                                   replyPlacementAvailable:
                                     modelRequest.replyPlacementAvailable,
+                                  turnTakingAvailable:
+                                    modelRequest.turnTakingAvailable,
                                 },
                               );
-                              return { reply: checked, retryable: false };
+                              return outcome;
                             }
-                            if (generated.slackHistory !== undefined)
-                              generated = parseReply(
-                                JSON.stringify(generated),
-                                modelRequest.workspaces,
-                                modelRequest,
-                              );
                             if (generated.jevObservation === true) {
                               let text =
                                 "Jev observations require a fresh owner-private message of at most 4096 UTF-8 bytes and a configured integration.";
@@ -2362,7 +2569,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                 // the adapter and transport cleanup have settled.
                                 record.jevObservation = { status: "started" };
                                 await step.vars.persist();
-                                if (!valid(step.state) || signal.aborted)
+                                if (
+                                  !canStartAction(step.state) ||
+                                  signal.aborted
+                                )
                                   return {
                                     reply: { text: "" },
                                     retryable: false,
@@ -2468,7 +2678,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                       invocation,
                                       false,
                                     );
-                                    if (signal.aborted || !valid(step.state))
+                                    if (
+                                      signal.aborted ||
+                                      !canStartAction(step.state)
+                                    )
                                       return {
                                         reply: { text: "" },
                                         retryable: false,
@@ -2678,7 +2891,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                     if (
                                       !state.revoked &&
                                       visible(id) &&
-                                      valid(step.state) &&
+                                      canStartAction(step.state) &&
                                       !signal.aborted
                                     ) {
                                       if (request.action === "diff") {
@@ -3127,7 +3340,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 scope.private &&
                                 body.type === "event" &&
                                 !signal.aborted &&
-                                valid(step.state);
+                                canStartAction(step.state);
                               if (allowed() && reflection) {
                                 try {
                                   const checked = parseReply(
@@ -3267,7 +3480,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                   step.state.deliveries[id],
                                   step.vars.persist,
                                   async (outbound) => {
-                                    if (!allowed())
+                                    if (
+                                      !allowed() ||
+                                      !canStartAction(step.state)
+                                    )
                                       return {
                                         status: "rejected",
                                         code: "inspection_denied",
@@ -3282,6 +3498,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                         model,
                                         signal,
                                         valid: allowed,
+                                        canStartAction: () =>
+                                          canStartAction(step.state),
                                       });
                                     } catch {
                                       text =
@@ -3310,6 +3528,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                         },
                                       },
                                       "text",
+                                      step.state,
                                     );
                                   },
                                 );
@@ -3546,7 +3765,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                       checked.apps,
                                       eventId,
                                       () =>
-                                        valid(step.state) && !signal.aborted,
+                                        canStartAction(step.state) &&
+                                        !signal.aborted,
                                     );
                                 } catch {
                                   result = {
@@ -3799,13 +4019,8 @@ export function createJuneRegistry(deps: Dependencies) {
                             // cancellation. An aborted/ambiguous call keeps its hold.
                             settled = !signal.aborted;
                           }
-                          return {
-                            reply:
-                              !signal.aborted && valid(step.state)
-                                ? generated
-                                : { text: "" },
-                            retryable: false,
-                          };
+                          outcome.reply = generated;
+                          return outcome;
                         } catch (error) {
                           return {
                             reply:
@@ -3833,6 +4048,11 @@ export function createJuneRegistry(deps: Dependencies) {
                             step.state.modelInvocations[invocation] = "settled";
                             await step.vars.persist();
                           }
+                          // Return evaluates before async finally completes. Mutate
+                          // the same outcome only after settlement, so a concurrent
+                          // forget cannot journal newly invalid generated content.
+                          if (signal.aborted || !valid(step.state))
+                            outcome.reply = { text: "" };
                         }
                       },
                     });
@@ -3879,6 +4099,8 @@ export function createJuneRegistry(deps: Dependencies) {
                   if (phase === "synthesis")
                     reply = {
                       text: reply.text,
+                      ...(reply.messages ? { messages: reply.messages } : {}),
+                      ...(reply.interrupt ? { interrupt: true } : {}),
                       ...(reply.reaction ? { reaction: reply.reaction } : {}),
                     };
                 }
@@ -3942,7 +4164,8 @@ export function createJuneRegistry(deps: Dependencies) {
                         await step.vars.persist();
                         return "unknown";
                       }
-                      if (!(await validate())) return "invalidated";
+                      if (!(await validate()) || !canStartAction(step.state))
+                        return "invalidated";
                       let data: unknown;
                       if (selection.action === "list") {
                         const listed = await reflection
@@ -3997,7 +4220,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       };
                       step.state.modelInvocations[invocation] = "started";
                       await step.vars.persist();
-                      if (!(await validate())) {
+                      if (!(await validate()) || !canStartAction(step.state)) {
                         // No provider or occupancy was admitted in this process.
                         step.state.modelInvocations[invocation] = "settled";
                         await step.vars.persist();
@@ -4007,12 +4230,14 @@ export function createJuneRegistry(deps: Dependencies) {
                       let settled = true;
                       let generated: CompanionReply;
                       try {
-                        if (!(await validate())) return "invalidated";
+                        if (!(await validate()) || !canStartAction(step.state))
+                          return "invalidated";
                         try {
                           generated = await deps.model.reply(
                             request,
                             signal,
                             alive,
+                            () => !signal.aborted && canStartAction(step.state),
                           );
                         } finally {
                           // Wait for actual raw settlement. Aborted work retains
@@ -4119,7 +4344,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     body.type !== "event" ||
                     !plan.wakeups ||
                     !deps.wakeups ||
-                    !valid(step.state)
+                    !canStartAction(step.state)
                   )
                     return {
                       text: "Wakeup management requires an owner-private Slack turn.",
@@ -4179,7 +4404,7 @@ export function createJuneRegistry(deps: Dependencies) {
                           !!plan.slackHistory &&
                           adapter === deps.channels.slack &&
                           !!adapter?.shareHistory &&
-                          valid(step.state) &&
+                          canStartAction(step.state) &&
                           !step.abortSignal.aborted;
                         if (!isCurrent() || !adapter?.shareHistory)
                           return {
@@ -4240,6 +4465,8 @@ export function createJuneRegistry(deps: Dependencies) {
                         !!plan.reflectionMemory &&
                         !!deps.memory &&
                         !!deps.reflection,
+                      turnTakingAvailable:
+                        turnVersion >= 2 && body.type === "event",
                     },
                   ).reflectionMemory;
                   if (command) {
@@ -4262,6 +4489,8 @@ export function createJuneRegistry(deps: Dependencies) {
                     {
                       executionAvailable:
                         body.type === "event" && !!plan.execution,
+                      turnTakingAvailable:
+                        turnVersion >= 2 && body.type === "event",
                     },
                   ).execution ?? [];
                 const outcomes = await loop.step(
@@ -4269,7 +4498,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   async (step) => {
                     const outcomes: string[] = [];
                     for (const command of commands) {
-                      if (!valid(step.state) || !deps.execution) break;
+                      if (!canStartAction(step.state) || !deps.execution) break;
                       step.state.agents ??= {};
                       let id = Object.hasOwn(step.state.agents, command.agent)
                         ? step.state.agents[command.agent]
@@ -4318,7 +4547,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             .summary(),
                         ),
                       );
-                      if (!valid(step.state)) break;
+                      if (!canStartAction(step.state)) break;
                       const requestId = `${eventId}:${command.agent}`;
                       const existing = id
                         ? await step
@@ -4338,11 +4567,11 @@ export function createJuneRegistry(deps: Dependencies) {
                         );
                         continue;
                       }
-                      if (!valid(step.state)) break;
+                      if (!canStartAction(step.state)) break;
                       id ??= `${eventId}:${command.agent}`;
                       step.state.agents[command.agent] = id;
                       await step.vars.persist();
-                      if (!valid(step.state)) break;
+                      if (!canStartAction(step.state)) break;
                       const accepted = await step
                         .client<JuneClientRegistry>()
                         .execution.getOrCreate(executionKey(scope.key, id))
@@ -4394,11 +4623,17 @@ export function createJuneRegistry(deps: Dependencies) {
                   text:
                     plan.social &&
                     deps.social &&
-                    valid(step.state) &&
+                    canStartAction(step.state) &&
                     !step.abortSignal.aborted
                       ? interruptionProposal
                         ? "[Private reflection interruption preview; content not retained]"
-                        : await deps.social.propose(event, action)
+                        : await deps.social.propose(
+                            event,
+                            action,
+                            () =>
+                              !step.abortSignal.aborted &&
+                              canStartAction(step.state),
+                          )
                       : "Permission requests are unavailable; no access was granted.",
                 }));
               }
@@ -4414,7 +4649,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     "propose-coding",
                     async (step) => {
                       if (
-                        !valid(step.state) ||
+                        !canStartAction(step.state) ||
                         !deps.coding ||
                         !Object.hasOwn(
                           deps.coding.workspaces,
@@ -4438,6 +4673,7 @@ export function createJuneRegistry(deps: Dependencies) {
                         };
                       }
                       await step.vars.persist();
+                      if (!canStartAction(step.state)) return false;
                       await step
                         .client<JuneRegistry>()
                         .job.getOrCreate([deps.owner.id, eventId])
@@ -4499,10 +4735,12 @@ export function createJuneRegistry(deps: Dependencies) {
                         // Do not let the model's late clear erase search status.
                         await typingCleanup;
                         step.abortSignal.throwIfAborted();
-                        if (!valid(step.state))
+                        if (!canStartAction(step.state))
                           return {
                             status: "rejected",
-                            code: "memory_invalidated",
+                            code: superseded(step.state)
+                              ? "superseded_input"
+                              : "memory_invalidated",
                             retryable: false,
                           };
                         const adapter = deps.channels[event.address.channel];
@@ -4516,7 +4754,14 @@ export function createJuneRegistry(deps: Dependencies) {
                           version >= 3 ? adapter : undefined,
                           { ...event, address: outbound.address },
                           step.abortSignal,
-                          async () => adapter.search?.(event, query),
+                          async () =>
+                            adapter.search?.(
+                              event,
+                              query,
+                              () =>
+                                !step.abortSignal.aborted &&
+                                canStartAction(step.state),
+                            ),
                         );
                         if (!valid(step.state))
                           return {
@@ -4544,6 +4789,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             content: { type: "text", text },
                           },
                           "search",
+                          step.state,
                         );
                       },
                     );
@@ -4554,10 +4800,14 @@ export function createJuneRegistry(deps: Dependencies) {
               const deliveryIds = await loop.step(
                 "prepare-reply",
                 async (step) => {
-                  const ids = [
+                  const textIds = [
                     `${eventId}:text`,
-                    `${eventId}:reaction`,
-                  ] as const;
+                    ...(turnVersion >= 2
+                      ? [1, 2, 3].map((part) => `${eventId}:text:${part}`)
+                      : []),
+                  ];
+                  const reactionId = `${eventId}:reaction`;
+                  const ids = [...textIds, reactionId];
                   // Preserve already-persisted intents after an interrupted step;
                   // deliver will settle them without dispatch when invalidated.
                   if (!valid(step.state))
@@ -4569,8 +4819,15 @@ export function createJuneRegistry(deps: Dependencies) {
                     body.type === "job_result" && !reply.text.trim()
                       ? body.text
                       : reply.text;
-                  if (text.trim() && !step.state.deliveries[ids[0]]) {
-                    step.state.deliveries[ids[0]] = {
+                  const texts =
+                    turnVersion >= 2 && reply.messages
+                      ? reply.messages
+                      : [text];
+                  for (const [index, text] of texts.entries()) {
+                    const id = textIds[index];
+                    if (!id || !text.trim() || step.state.deliveries[id])
+                      continue;
+                    step.state.deliveries[id] = {
                       phase: "ready",
                       attempts: 0,
                       ...(reflectionReview ||
@@ -4587,8 +4844,8 @@ export function createJuneRegistry(deps: Dependencies) {
                       },
                     };
                   }
-                  if (reply.reaction && !step.state.deliveries[ids[1]]) {
-                    step.state.deliveries[ids[1]] = {
+                  if (reply.reaction && !step.state.deliveries[reactionId]) {
+                    step.state.deliveries[reactionId] = {
                       phase: "ready",
                       attempts: 0,
                       message: {
@@ -4631,6 +4888,20 @@ export function createJuneRegistry(deps: Dependencies) {
                               retryable: false,
                             };
                           }
+                          const previous =
+                            deliveryIds[deliveryIds.indexOf(id) - 1];
+                          if (
+                            turnVersion >= 2 &&
+                            outbound.content.type === "text" &&
+                            previous &&
+                            step.state.deliveries[previous]?.result?.status !==
+                              "sent"
+                          )
+                            return {
+                              status: "rejected",
+                              code: "previous_part_not_sent",
+                              retryable: false,
+                            };
                           if (interruptionProposal) {
                             let text =
                               "Interruption staging is unavailable; no delivery or access grant is authorized.";
@@ -4639,6 +4910,8 @@ export function createJuneRegistry(deps: Dependencies) {
                               plan.social &&
                               deps.reflection &&
                               deps.social &&
+                              (!conversationalReply ||
+                                canStartAction(step.state)) &&
                               !step.abortSignal.aborted
                             ) {
                               try {
@@ -4674,6 +4947,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 },
                               },
                               "text",
+                              step.state,
                             );
                           }
                           if (reflectionReview?.action === "memory") {
@@ -4683,6 +4957,8 @@ export function createJuneRegistry(deps: Dependencies) {
                               plan.memory &&
                               deps.reflection &&
                               deps.memory &&
+                              (!conversationalReply ||
+                                canStartAction(step.state)) &&
                               !step.abortSignal.aborted
                             ) {
                               try {
@@ -4711,6 +4987,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             return send(
                               { ...outbound, content: { type: "text", text } },
                               "text",
+                              step.state,
                             );
                           }
                           if (modelReview) {
@@ -4754,6 +5031,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 },
                               },
                               "text",
+                              step.state,
                             );
                           }
                           if (reflectionReview?.action === "list") {
@@ -4788,6 +5066,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             return send(
                               { ...outbound, content: { type: "text", text } },
                               "text",
+                              step.state,
                             );
                           }
                           if (reflectionReview?.action === "inspect") {
@@ -4817,6 +5096,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             return send(
                               { ...outbound, content: { type: "text", text } },
                               "text",
+                              step.state,
                             );
                           }
                           if (reflectionReview?.action === "reject") {
@@ -4848,9 +5128,14 @@ export function createJuneRegistry(deps: Dependencies) {
                             return send(
                               { ...outbound, content: { type: "text", text } },
                               "text",
+                              step.state,
                             );
                           }
-                          return send(outbound, outbound.content.type);
+                          return send(
+                            outbound,
+                            outbound.content.type,
+                            step.state,
+                          );
                         },
                       );
                     },
@@ -4883,6 +5168,11 @@ export function createJuneRegistry(deps: Dependencies) {
                   // Describe persisted payloads and receipts, including on replay.
                   // A reaction receipt says nothing about a separate text delivery.
                   const text = step.state.deliveries[`${eventId}:text`];
+                  const texts = deliveryIds
+                    .map((id) => step.state.deliveries[id])
+                    .filter(
+                      (delivery) => delivery?.message.content.type === "text",
+                    );
                   const reaction = step.state.deliveries[`${eventId}:reaction`];
                   const search = step.state.deliveries[`${eventId}:search`];
                   const slackHistory =
@@ -4893,6 +5183,10 @@ export function createJuneRegistry(deps: Dependencies) {
                       ? step.state.deliveries[`${eventId}:ack`]
                       : undefined;
                   const content: string[] = [];
+                  if (step.state.events[eventId]?.deferred)
+                    content.push(
+                      "[Reply deferred to newer user input in the same conversation/thread. Consider those message parts together; already-recorded actions are not undone or authorized to repeat.]",
+                    );
                   if (step.state.events[eventId]?.inference)
                     content.push(
                       "[Inference outcome unknown after interruption; the result was not durably recorded. Not intentional silence. No automatic retry was made; actions may have occurred, so rely only on recorded receipts.]",
@@ -4914,12 +5208,13 @@ export function createJuneRegistry(deps: Dependencies) {
                     content.push(
                       `[Private Slack history delivery ${slackHistory.result?.status ?? "pending"}; contents are owner-DM-only and were not retained or supplied to the model. Do not infer them.]`,
                     );
-                  if (text?.message.content.type === "text") {
+                  for (const [index, text] of texts.entries()) {
+                    if (text?.message.content.type !== "text") continue;
                     const status = text.result?.status;
                     content.push(
                       status === "sent"
-                        ? text.message.content.text
-                        : `[Text delivery ${status ?? "pending"}; do not assume the user saw this] ${text.message.content.text}`,
+                        ? `${texts.length > 1 ? `[Message ${index + 1}/${texts.length} sent] ` : ""}${text.message.content.text}`
+                        : `[Text delivery ${status ?? "pending"}${text.result && ["superseded_input", "previous_part_not_sent"].includes(text.result.code) ? ` (${text.result.code})` : ""}; do not assume the user saw this] ${text.message.content.text}`,
                     );
                   }
                   if (reaction?.message.content.type === "reaction") {

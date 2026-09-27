@@ -81,7 +81,7 @@ it.for(["before-session", "after-session"])(
       text: "Remember the heron.",
     };
     const june = client.conversation.getOrCreate(["private", "fixture"]);
-    await june.send("inbox", { type: "event", event: source });
+    await june.receive(source);
     const job = client.job.getOrCreate(["fixture", "crash-job"]);
     await job.send("commands", {
       type: "propose",
@@ -168,6 +168,23 @@ it.for(["before-session", "after-session"])(
     expect(beforeCrash.threadId).toBe(
       boundary === "before-session" ? undefined : "T-fixture-saved",
     );
+    // The receive action is deliberately held just after its durable save.
+    void june
+      .receive({
+        ...source,
+        id: "Ev-admission",
+        messageId: "123.789",
+        text: "One more thing before you reply.",
+      })
+      .catch(() => {});
+    await expect
+      .poll(() => messages.some((m) => m.kind === "admission"))
+      .toBe(true);
+    expect(
+      Object.values((await june.snapshot()).events).some(
+        ({ event }) => event.id === "Ev-admission",
+      ),
+    ).toBe(false);
     const exited = once(first, "exit");
     first.kill("SIGKILL");
     await exited;
@@ -203,6 +220,20 @@ it.for(["before-session", "after-session"])(
       ...beforeDiagnostic.operations[0],
       marker: "unknown",
     });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).deliveries).find(
+            (delivery) =>
+              delivery.message.content.type === "text" &&
+              delivery.message.content.text === "And a second thought.",
+          )?.result,
+      )
+      .toEqual({
+        status: "rejected",
+        code: "previous_part_not_sent",
+        retryable: false,
+      });
     await expect
       .poll(
         async () => Object.values((await delayed.snapshot()).deliveries)[0],
@@ -323,10 +354,12 @@ it.for(["before-session", "after-session"])(
     // Kill again after the job's fallback notification reaches the fake channel,
     // before a receipt can be saved. Restart and duplicate completion must not
     // dispatch another message or turn an unknown delivery into confirmed sent.
+    // Native recovery drains earlier input/worker receipts before this turn.
     await expect
       .poll(
         () =>
           messages.filter((message) => message.kind === "notification").length,
+        { timeout: 15_000 },
       )
       .toBe(1);
     const notificationId = messages.find(
@@ -363,9 +396,10 @@ it.for(["before-session", "after-session"])(
       source,
       text: notification.message.content.text,
     });
-    await june.send("inbox", {
-      type: "event",
-      event: { ...source, id: "after-duplicate", messageId: "123.999" },
+    await june.receive({
+      ...source,
+      id: "after-duplicate",
+      messageId: "123.999",
     });
     await expect
       .poll(
@@ -373,9 +407,22 @@ it.for(["before-session", "after-session"])(
           Object.values((await june.snapshot()).events).some(
             ({ event, done }) => event.id === "after-duplicate" && done,
           ),
-        { timeout: 15000 },
+        { timeout: 15_000 },
       )
       .toBe(true);
+    const recovered = await june.snapshot();
+    expect(
+      Object.values(recovered.events).filter(
+        ({ event, done }) => event.id === "Ev-admission" && done,
+      ),
+    ).toHaveLength(1);
+    expect(
+      recovered.history.filter(
+        ({ role, content }) =>
+          role === "user" && content === "One more thing before you reply.",
+      ),
+    ).toHaveLength(1);
+    expect(recovered.pendingInputs).toEqual({});
     expect(
       messages.filter((message) => message.kind === "notification"),
     ).toHaveLength(1);

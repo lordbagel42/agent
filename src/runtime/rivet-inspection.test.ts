@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import type {
 } from "../core/contracts.js";
 import { RIVET_REPLY_PREFIX, type RivetRequest } from "../core/rivet.js";
 import { routeEvent } from "../core/routing.js";
+import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { createJuneRegistry, type JuneRegistry } from "./registry.js";
 import {
@@ -437,6 +439,50 @@ it("redacts before JSON pointer selection and never follows redirects or inspect
     "actor_out_of_scope",
   );
   expect(paths.slice(before)).toEqual(["/prefix/actors"]);
+  pool = "june";
+  const beforeSupersession = paths.length;
+  await expect(
+    read(event, request, signal, () => paths.length === beforeSupersession),
+  ).rejects.toThrow("inspection_superseded");
+  expect(paths.slice(beforeSupersession)).toEqual(["/prefix/actors"]);
+
+  for (const boundary of [
+    "before read",
+    "after read",
+    "after model",
+  ] as const) {
+    let eligible = boundary !== "before read";
+    let reads = 0;
+    let calls = 0;
+    await expect(
+      answerRivetInspection({
+        event,
+        first: { ...request, format: "answer" },
+        signal,
+        valid: () => true,
+        canStartAction: () => eligible,
+        read: async (_event, _request, _signal, guard) => {
+          expect(guard?.()).toBe(true);
+          reads++;
+          if (boundary === "after read") eligible = false;
+          return "private";
+        },
+        model: {
+          async reply(_request, _signal, isCurrent, canStartAction) {
+            expect(isCurrent?.()).toBe(true);
+            expect(canStartAction?.()).toBe(true);
+            calls++;
+            eligible = false;
+            expect(isCurrent?.()).toBe(true);
+            expect(canStartAction?.()).toBe(false);
+            return { text: "", rivet: request };
+          },
+        },
+      }),
+    ).rejects.toThrow("inspection_superseded");
+    expect(reads).toBe(boundary === "before read" ? 0 : 1);
+    expect(calls).toBe(boundary === "after model" ? 1 : 0);
+  }
   let valid = true;
   let modelCalls = 0;
   await expect(
@@ -458,4 +504,197 @@ it("redacts before JSON pointer selection and never follows redirects or inspect
     }),
   ).rejects.toThrow("inspection_invalidated");
   expect(modelCalls).toBe(0);
+});
+
+it("forgets queued input and filters a superseded result after final settlement persistence", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  store.appendSource({
+    id: "forget-target",
+    audiences: [JSON.stringify(["private", owner.id])],
+    platform: "slack",
+    account: "T1",
+    conversation: "D1",
+    author: "U1",
+    observedAt: 1,
+    sourceUrl: "https://example.com/fixture",
+    text: "synthetic forget target",
+  });
+  const modelStarted = Promise.withResolvers<void>();
+  const finishModel = Promise.withResolvers<void>();
+  const settlementStarted = Promise.withResolvers<void>();
+  const finishSettlement = Promise.withResolvers<void>();
+  const sent: OutboundMessage[] = [];
+  let calls = 0;
+  const registry = createJuneRegistry({
+    owner,
+    memory: { store, source: () => undefined },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        async receive() {
+          return { response: new Response(), events: [] };
+        },
+        async send(message) {
+          sent.push(JSON.parse(JSON.stringify(message)));
+          return { status: "sent", messageId: "fresh-reply" };
+        },
+      },
+    },
+    model: {
+      async reply() {
+        if (++calls === 1) {
+          modelStarted.resolve();
+          await finishModel.promise;
+          return {
+            text: "",
+            messages: ["GENERATED_ERASE_ME", "SECOND_ERASE_ME"],
+          };
+        }
+        return { text: "fresh reply" };
+      },
+    },
+  });
+  const config = registry.config.use.conversation.config;
+  if (!("createVars" in config) || !config.createVars)
+    throw new Error("Missing conversation vars");
+  const createVars = config.createVars;
+  let holdSettlement = true;
+  config.createVars = async (c, input) => {
+    const vars = await createVars(c, input);
+    return {
+      ...vars,
+      persist: async () => {
+        await vars.persist();
+        if (
+          holdSettlement &&
+          Object.values(c.state.modelInvocations ?? {}).includes("settled")
+        ) {
+          holdSettlement = false;
+          settlementStarted.resolve();
+          await finishSettlement.promise;
+        }
+      },
+    };
+  };
+  const directory = await mkdtemp(join(tmpdir(), "june-turn-privacy-"));
+  const previousStorage = process.env.RIVETKIT_STORAGE_PATH;
+  process.env.RIVETKIT_STORAGE_PATH = directory;
+  const port = await freeEnginePort();
+  Object.assign(registry.config, {
+    namespace: "default",
+    token: "default",
+    engineHost: "127.0.0.1",
+    enginePort: port,
+    startEngine: true,
+    startServices: false,
+    noWelcome: true,
+    shutdown: { disableSignalHandlers: true },
+    envoy: { poolName: "default" },
+    test: { enabled: false },
+  });
+  let client: ReturnType<typeof createClient<JuneRegistry>> | undefined;
+  t.onTestFinished(async () => {
+    finishModel.resolve();
+    finishSettlement.resolve();
+    await client?.dispose();
+    await registry.shutdown();
+    await stopTestEngine(directory, port);
+    await rm(directory, { recursive: true, force: true });
+    store.close();
+    if (previousStorage === undefined) delete process.env.RIVETKIT_STORAGE_PATH;
+    else process.env.RIVETKIT_STORAGE_PATH = previousStorage;
+  });
+  registry.start();
+  await expect
+    .poll(async () => (await registry.routes.health()).ok, { timeout: 10_000 })
+    .toBe(true);
+  const runtime = registry.parseConfig();
+  client = createClient<JuneRegistry>({
+    endpoint: runtime.endpoint,
+    namespace: runtime.namespace,
+    token: runtime.token,
+    poolName: runtime.envoy.poolName,
+  });
+  const june = client.conversation.getOrCreate(["private", owner.id]);
+  await june.receive(event);
+  await modelStarted.promise;
+  await june.receive({
+    ...event,
+    id: "pending",
+    messageId: "101.1",
+    text: "PENDING_ERASE_ME",
+  });
+  finishModel.resolve();
+  await settlementStarted.promise;
+  store.deleteSource("forget-target");
+  await june.forget("forget-target");
+  await june.receive({
+    ...event,
+    id: "fresh",
+    messageId: "102.1",
+    text: "fresh input",
+  });
+  await june.forget("forget-target");
+  expect(
+    Object.values((await june.snapshot()).pendingInputs ?? {}).map(
+      (e) => e.text,
+    ),
+  ).toEqual(["fresh input"]);
+  finishSettlement.resolve();
+  await expect
+    .poll(
+      async () =>
+        Object.values((await june.snapshot()).events).find(
+          ({ event }) => event.id === "fresh",
+        )?.done,
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+  const state = await june.snapshot();
+  expect(JSON.stringify(state)).not.toContain("ERASE_ME");
+  expect(
+    Object.values(state.events).some(({ event }) => event.id === "pending"),
+  ).toBe(false);
+  expect(state.pendingInputs).toEqual({});
+  expect(calls).toBe(2);
+  expect(sent.map((message) => message.content)).toEqual([
+    { type: "text", text: "fresh reply" },
+  ]);
+
+  const read = createRivetReader({
+    owner,
+    connection: () => ({
+      endpoint: runtime.endpoint as string,
+      namespace: runtime.namespace,
+      token: runtime.token,
+      pool: runtime.envoy.poolName,
+    }),
+  });
+  const signal = new AbortController().signal;
+  const actors = JSON.parse(
+    JSON.parse(
+      await read(
+        event,
+        { ...request, target: "actors", actorId: null, name: "conversation" },
+        signal,
+      ),
+    ).jsonFragment,
+  );
+  const actorId: string = actors.actors[0].actor_id;
+  let journal = "";
+  for (let page: number | null = 0; page !== null; ) {
+    const result = JSON.parse(
+      await read(
+        event,
+        { ...request, target: "workflow-history", actorId, page },
+        signal,
+      ),
+    );
+    journal += result.jsonFragment;
+    page = result.nextPage;
+  }
+  expect(journal).toContain("think-0");
+  expect(journal).not.toContain("GENERATED_ERASE_ME");
+  expect(journal).not.toContain("SECOND_ERASE_ME");
 });

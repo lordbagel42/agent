@@ -68,6 +68,14 @@ const registry = createJuneRegistry({
         process.send?.({ kind: "jev-model" });
         return { text: "", jevObservation: true };
       }
+      if (
+        JSON.parse(request.messages.at(-1)?.content ?? "{}").source?.eventId ===
+        "Ev-crash"
+      )
+        return {
+          text: "",
+          messages: ["The heron is remembered.", "And a second thought."],
+        };
       return { text: "The heron is remembered." };
     },
   },
@@ -132,6 +140,30 @@ const registry = createJuneRegistry({
   },
   coding,
 });
+// Pause after a real durable admission save, before queue publication. The next
+// process must recover that input without relying on a repeated webhook.
+const conversationConfig = registry.config.use.conversation.config;
+if (!("createVars" in conversationConfig) || !conversationConfig.createVars)
+  throw new Error("Missing conversation vars");
+const createVars = conversationConfig.createVars;
+conversationConfig.createVars = async (c, input) => {
+  const vars = await createVars(c, input);
+  return {
+    ...vars,
+    persist: async () => {
+      await vars.persist();
+      if (
+        process.env.FIXTURE_PHASE === "interrupt" &&
+        Object.values(c.state.pendingInputs ?? {}).some(
+          (event) => event.id === "Ev-admission",
+        )
+      ) {
+        process.send?.({ kind: "admission" });
+        await new Promise<never>(() => {});
+      }
+    },
+  };
+};
 Object.assign(registry.config, {
   startEngine: true,
   startServices: false,

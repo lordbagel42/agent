@@ -322,7 +322,9 @@ export function createSlackSearch({
     async search(
       event: MessageEvent,
       query: string,
+      canStartAction?: () => boolean,
     ): Promise<ChannelSearchResult> {
+      if (canStartAction?.() === false) return unavailable();
       prune(now());
       const grant = grants.get(event.id);
       if (
@@ -395,6 +397,7 @@ export function createSlackSearch({
           )
             return unavailable("authorization_required");
         }
+        if (canStartAction?.() === false) return unavailable();
         const response = await fetchImpl(
           "https://slack.com/api/assistant.search.context",
           {

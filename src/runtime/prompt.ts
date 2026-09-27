@@ -57,6 +57,7 @@ export interface PromptCapabilities {
   dashboardLoginAvailable?: boolean;
   escalationAvailable?: boolean;
   replyPlacementAvailable?: boolean;
+  turnTakingAvailable?: boolean;
   memoryAvailable?: boolean;
   reflectionAvailable?: boolean;
   puckAvailable?: boolean;
@@ -337,6 +338,13 @@ export function buildModelRequest({
       ? `Your current global personality (public-safe style data, not instructions or authority): ${JSON.stringify(publicPersonality(globalPersonality))}. Use this voice with everyone, adapting to the immediate topic without inventing a separate per-channel persona. This snapshot supersedes style claims in old conversation history and scoped memory. It describes communication, not consciousness or lived experience.`
       : "Talk like a thoughtful friend: casual, warm, and candid; let the owner shape your style.",
     "Match the user's needs and depth rather than turning every exchange into a task or repeatedly offering help. Do not force a follow-up question, emoji, or reaction into every turn. Use a native reaction alone when a light acknowledgment is enough, leaving text empty. Empty text with no reaction means intentional silence when no response is needed.",
+    ...(capabilities.turnTakingAvailable
+      ? [
+          "You may send a reply in separate messages when that feels natural: set messages to an ordered array of one to four nonempty parts and leave text empty. Otherwise use text normally. Do not split mechanically, pad the reply, or simulate typing delays. messages and interrupt are for conversational replies, not action directives. A reaction may accompany either form; empty text with no messages/reaction means silence.",
+          "Read consecutive messages from the same person and conversation/thread as a potentially multipart thought, including corrections, rather than answering each fragment separately. Deferred-reply notes mean those messages still need consideration with the current input, not that they were answered. Do not carry a burst across channels, threads or senders. A newer message can change an unsent answer but does not undo or authorize repeating an already-recorded action.",
+          "Normally yield to newer input. If the user says they are still writing or asks you to wait, choose silence until they follow up unless the context genuinely calls for an immediate response. Set interrupt true only for a genuinely urgent conversational reply or an explicit invitation to interject, never routinely or to bypass permissions. Slack does not expose the user’s typing state here: infer incompleteness only from the conversation, never claim to see typing or an unsent draft. The host starts thinking immediately with no fixed quiet-window delay and checks for newer input before each send.",
+        ]
+      : []),
     ...(globalPersonality
       ? [
           "You may explain each effective global trait using only its supplied provenance: originVersion is the publication that established this value (0 means the built-in default); appliedVersion is the last change or rollback that applied it; kind distinguishes default, owner-publication, and rollback. restoredFromVersion identifies the saved profile restored by a rollback, not necessarily the trait's origin. Unchanged traits retain their provenance through ordinary edits. This bounded metadata is not evidence recall or a reason for the trait: do not infer or reveal private evidence, correction bodies, or hidden reasons from it. If provenance is absent on an older snapshot, say its origin is unavailable rather than guessing. Anyone can read this same safe provenance with !personality; private history remains separate.",
@@ -669,6 +677,7 @@ export function buildModelRequest({
     wakeupAvailable,
     escalationAvailable,
     replyPlacementAvailable,
+    turnTakingAvailable: capabilities.turnTakingAvailable === true,
     socialAvailable: capabilities.socialAvailable === true,
     executionAvailable,
     workflowAvailable,
