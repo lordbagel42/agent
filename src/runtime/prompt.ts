@@ -140,8 +140,7 @@ export function buildModelRequest({
     capabilities.escalationAvailable === true && models.deep !== undefined;
   const replyPlacementAvailable =
     capabilities.replyPlacementAvailable === true &&
-    event.address.channel === "slack" &&
-    !thread(event);
+    event.address.channel === "slack";
   const memoryAvailable = privateTurn && capabilities.memoryAvailable === true;
 
   const messages = history
@@ -241,8 +240,8 @@ export function buildModelRequest({
       : "No public web results are supplied for this turn. Do not invent search findings.",
     "Tavily is a temporary web-search option; Raygen wants a free/self-hosted replacement. That preference is not proof Tavily or a replacement is connected now.",
     replyPlacementAvailable
-      ? "This Slack input is top-level. Use surrounding context and discretion: prefer replyInThread false for an ongoing unthreaded conversation; use true for a focused side discussion that belongs in a thread. Do not invent a thread or relocate other messages."
-      : "Keep the host's reply placement. Existing threads stay in their actual thread; do not move an active thread back into the channel.",
+      ? "Choose where to reply in this Slack conversation using replyInThread: false posts in the main DM/channel; true uses the existing thread or starts one on the incoming message; omit/null keeps the incoming placement. Prefer normal, unthreaded replies in DMs and ongoing channel conversation. Use a thread when it actually helps, not just because someone mentioned you. You may leave an existing thread when asked or when appropriate, but do not move sensitive thread context into a broader audience. Thinking indicators are best-effort and thread-scoped: never choose a thread merely to show activity, send a placeholder, or claim the client displayed an indicator. Destination choice is not permission to share private context or contact new people."
+      : "Keep the host-selected reply placement; it may differ from the incoming message's placement. Do not request another placement change in this invocation.",
     privateTurn
       ? `Owner-private availability: ${JSON.stringify({
           memory: memoryAvailable,

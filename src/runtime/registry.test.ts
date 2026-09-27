@@ -70,6 +70,58 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it.for([
+    { direct: true, thread: undefined, choice: undefined, want: undefined },
+    { direct: false, thread: undefined, choice: false, want: undefined },
+    { direct: false, thread: undefined, choice: true, want: "123.456" },
+    { direct: true, thread: "older-root", choice: false, want: undefined },
+    { direct: false, thread: "older-root", choice: true, want: "older-root" },
+    { direct: true, thread: "older-root", choice: null, want: "older-root" },
+  ])(
+    "lets June choose Slack reply placement ($direct/$thread/$choice)",
+    async (scenario, t) => {
+      const sent: OutboundMessage[] = [];
+      const requests: ModelRequest[] = [];
+      const source: MessageEvent = {
+        ...message,
+        direct: scenario.direct,
+        address: {
+          ...message.address,
+          conversationId: scenario.direct ? "D1" : "C1",
+          ...(scenario.thread ? { threadId: scenario.thread } : {}),
+        },
+      };
+      const registry = createJuneRegistry({
+        owner,
+        channels: { slack: transport("slack", sent) },
+        model: {
+          async reply(request) {
+            requests.push(request);
+            return parseReply(
+              JSON.stringify({ text: "Here.", replyInThread: scenario.choice }),
+              [],
+              request,
+            );
+          },
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(
+        scenario.direct
+          ? ["private", "raygen"]
+          : ["slack", "T1", "C1", scenario.thread ?? ""],
+      );
+      await june.send("inbox", { type: "event", event: source });
+      await expect.poll(() => sent.length).toBe(1);
+      expect(requests[0]?.replyPlacementAvailable).toBe(true);
+      expect(sent[0]?.content).toEqual({ type: "text", text: "Here." });
+      expect(sent[0]?.address).toEqual({
+        ...source.address,
+        threadId: scenario.want,
+      });
+    },
+  );
+
   it("dispatches release tools only in owner-private turns and journals the result", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];
@@ -426,12 +478,7 @@ describe("Rivet conversation workflow", () => {
             messageId: "out1",
           },
         });
-        expect(delivery.message.address).toEqual(
-          source.address.channel === "slack" &&
-            delivery.message.content.type === "text"
-            ? { ...source.address, threadId: "123.456" }
-            : source.address,
-        );
+        expect(delivery.message.address).toEqual(source.address);
       }
 
       await june.send("inbox", { type: "event", event: source });
@@ -544,10 +591,7 @@ describe("Rivet conversation workflow", () => {
           return {
             status: "private_ready",
             consume(candidate) {
-              expect(candidate).toEqual({
-                ...source,
-                address: { ...source.address, threadId: source.messageId },
-              });
+              expect(candidate).toEqual(source);
               expect(sent).toHaveLength(0);
               return "EPHEMERAL_SEARCH_RESULT_93";
             },
@@ -919,10 +963,12 @@ describe("Rivet conversation workflow", () => {
       await expect.poll(done).toBe(1);
       await expect.poll(() => active).toBe(0);
       expect(failed).toBe(false);
-      const expectedThread = scenario.thread ?? source.messageId;
+      const expectedThread = scenario.place
+        ? (scenario.thread ?? source.messageId)
+        : undefined;
       expect(typing).toEqual([
-        { active: true, threadId: expectedThread },
-        { active: false, threadId: expectedThread },
+        { active: true, threadId: scenario.thread },
+        { active: false, threadId: scenario.thread },
         ...(scenario.unknown
           ? []
           : [
@@ -1099,7 +1145,7 @@ describe("Rivet conversation workflow", () => {
         type: "text",
         text: "The answer is ready.",
       });
-      expect(sent[0]?.address.threadId).toBe(message.messageId);
+      expect(sent[0]?.address.threadId).toBeUndefined();
       expect(typingDuringContext).toEqual([true]);
       expect(typing).toEqual([true]);
       let drained = false;

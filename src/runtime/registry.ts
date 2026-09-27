@@ -179,9 +179,9 @@ export function createJuneRegistry(deps: Dependencies) {
     run: workflow(
       async (ctx) => {
         await ctx.loop("conversation-v1", async (loop) => {
-          // Preserve legacy journals: v4 selected Slack reply threads; only
-          // fresh v5 turns gain social actions and journaled guest admission.
-          const version = await loop.getVersion("memory-dispatch", 5);
+          // Preserve legacy journals and placement; v6 restores model-selected
+          // Slack placement without forcing threads merely to show activity.
+          const version = await loop.getVersion("memory-dispatch", 6);
           const [message] = await loop.queue.nextBatch("inbox", {
             names: ["inbox"],
             count: 1,
@@ -425,7 +425,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 return result;
               };
               let replyAddress =
-                version >= 4 && event.address.channel === "slack"
+                version >= 4 && version < 6 && event.address.channel === "slack"
                   ? {
                       ...event.address,
                       threadId: event.address.threadId ?? event.messageId,
@@ -920,10 +920,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   deps.mcpAvailable === true,
                                 replyPlacementAvailable:
-                                  version < 4 &&
+                                  (version < 4 || version >= 6) &&
                                   phase === "reply" &&
                                   event.address.channel === "slack" &&
-                                  !event.address.threadId,
+                                  (version >= 6 || !event.address.threadId),
                                 memoryAvailable: plan.memory && !!deps.memory,
                                 reflectionAvailable:
                                   plan.reflection && !!deps.reflection,
@@ -938,6 +938,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             });
                             if (
                               version >= 4 &&
+                              version < 6 &&
                               event.address.channel === "slack"
                             )
                               modelRequest.system +=
@@ -1051,6 +1052,20 @@ export function createJuneRegistry(deps: Dependencies) {
                       `model-backoff-${attempt}`,
                       1000 * 2 ** attempt,
                     );
+                  }
+                  if (
+                    version >= 6 &&
+                    phase === "reply" &&
+                    event.address.channel === "slack" &&
+                    reply.replyInThread !== undefined
+                  ) {
+                    const { threadId: _threadId, ...surface } = event.address;
+                    replyAddress = reply.replyInThread
+                      ? {
+                          ...surface,
+                          threadId: event.address.threadId ?? event.messageId,
+                        }
+                      : surface;
                   }
                   if (
                     version >= 3 &&

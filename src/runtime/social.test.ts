@@ -304,7 +304,7 @@ it("exports provider-compatible social schemas but still validates action limits
   ).toThrow();
 });
 
-it("runs June's access-request interface through real Rivet, with guest tools gated and thread typing", async (t) => {
+it("runs June's access-request interface through real Rivet without forcing guest threads", async (t) => {
   const { social, sent, slack, typing } = fixture(t);
   const requests: ModelRequest[] = [];
   const registry = createJuneRegistry({
@@ -355,8 +355,8 @@ it("runs June's access-request interface through real Rivet, with guest tools ga
     sent[0]?.content.type === "text"
       ? sent[0].content.text.match(/[a-f0-9]{24}/)?.[0]
       : undefined;
-  expect(typing).toContainEqual({ active: true, thread: guest.messageId });
-  expect(typing).toContainEqual({ active: false, thread: guest.messageId });
+  expect(typing).toContainEqual({ active: true, thread: undefined });
+  expect(typing).toContainEqual({ active: false, thread: undefined });
   expect(requests[0]?.system).not.toContain("Owner-private availability:");
   const ownerActor = client.conversation.getOrCreate(["private", owner.id]);
   await ownerActor.send("inbox", {

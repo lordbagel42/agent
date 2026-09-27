@@ -152,7 +152,7 @@ export interface CompanionReply {
   release?: { action: "request" | "inspect"; revision: string | null };
   /** One owner-private MCP call; host resolves credentials and permissions. */
   mcp?: { connection: string; tool: string; argumentsJson: string };
-  /** Only chooses placement for top-level Slack input; existing threads stay put. */
+  /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */
   replyInThread?: boolean;
 }
 

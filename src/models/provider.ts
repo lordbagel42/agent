@@ -230,7 +230,7 @@ export function replyJsonSchema(
             replyInThread: {
               type: ["boolean", "null"],
               description:
-                "For top-level Slack input only: true replies in a thread, false replies at channel level, null uses the host default. Existing threads always stay in their thread. May accompany any otherwise valid reply or directive.",
+                "Choose Slack placement: true uses the incoming thread or starts one on the incoming message; false posts in the main DM/channel, even for threaded input; null preserves incoming placement. Prefer unthreaded DM and ongoing channel replies unless a thread helps. May accompany any otherwise valid reply or directive.",
             },
           }
         : {}),

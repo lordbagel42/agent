@@ -173,8 +173,10 @@ Anyone in that workspace can initiate a turn by directly mentioning June or
 messaging her 1:1. Group pings alone are not invitations. Set
 `slack.participateInOwnerChannels: true` to also accept Raygen's unmentioned messages
 in channels whose verified current name contains `raygen`. Group DMs remain
-excluded. Existing threads stay threaded; new top-level input starts a reply
-thread on the initiating message, including DMs, so Slack can show activity.
+excluded. June chooses reply placement with `replyInThread`: false posts in the
+main DM/channel, true uses the existing thread or starts one on the incoming
+message, and unset preserves incoming placement. Normal DMs and ongoing channel
+conversation should generally stay unthreaded; mentions do not force threads.
 Raw `##` messages are
 excluded, including from fetched context; `<>` and group pings require a direct
 mention.
@@ -227,12 +229,14 @@ without overlapping, and attempt to clear on success, failure or cancellation;
 they never create messages or journal entries. Slack uses `assistant.threads.setStatus` with existing
 `chat:write` permission. It is thread-scoped (including DM threads), not the
 ordinary top-level DM typing bubble. The reply thread is selected before context
-loading, not by the model afterward. Status starts after durable acceptance,
+loading only when the input is already threaded; top-level input does not invent
+a thread for a status indicator. June can select placement in her response.
+Status starts after durable acceptance,
 turn admission and replay checks; queued turns still wait for their predecessor.
 The original inbound scope/context is preserved. Existing journaled turns retain
 their earlier placement policy, including an inbox iteration already waiting at
-upgrade; the next fresh iteration uses threads. June is told this is automatic
-host behavior.
+upgrade; the next fresh iteration enables June's placement choice. Typing is
+best-effort and never dictates where the reply belongs.
 Unsupported surfaces and status failures do not prevent a reply. Live Slack
 status rendering still needs verification after an authorized rollout.
 
