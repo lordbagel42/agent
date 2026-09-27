@@ -137,7 +137,12 @@ describe("separate coding supervisor", () => {
     if (!approval) throw new Error("No approval command");
     await june.send("inbox", {
       type: "event",
-      event: { ...source, id: "approve1", text: `/approve ${approval}` },
+      event: {
+        ...source,
+        id: "approve1",
+        messageId: "123.568",
+        text: `/approve ${approval}`,
+      },
     });
     await expect
       .poll(
@@ -166,7 +171,12 @@ describe("separate coding supervisor", () => {
     expect(launches[0]?.prompt).not.toContain("My favorite bird");
     await june.send("inbox", {
       type: "event",
-      event: { ...source, id: "approve2", text: `/approve ${approval}` },
+      event: {
+        ...source,
+        id: "approve2",
+        messageId: "123.569",
+        text: `/approve ${approval}`,
+      },
     });
     await expect
       .poll(

@@ -28,6 +28,14 @@ const message: MessageEvent = {
   direct: true,
   text: "My favorite bird is the heron.",
 };
+
+function conversationText(request: ModelRequest | undefined) {
+  return request?.messages.map(({ role, content }) => ({
+    role,
+    content: JSON.parse(content).text,
+  }));
+}
+
 function transport(
   channel: "slack" | "whatsapp",
   sent: OutboundMessage[],
@@ -232,7 +240,12 @@ describe("Rivet conversation workflow", () => {
       await june.send("inbox", { type: "event", event: source });
       await june.send("inbox", {
         type: "event",
-        event: { ...source, id: "next-turn", text: "Next turn" },
+        event: {
+          ...source,
+          id: "next-turn",
+          messageId: "123.457",
+          text: "Next turn",
+        },
       });
       // A later completed turn is a barrier proving the duplicates were consumed.
       await expect
@@ -245,7 +258,7 @@ describe("Rivet conversation workflow", () => {
         )
         .toBe(2);
       expect(requests).toHaveLength(2);
-      expect(requests[1]?.messages).toEqual([
+      expect(conversationText(requests[1])).toEqual([
         { role: "user", content: source.text },
         { role: "assistant", content: scenario.history },
         { role: "user", content: "Next turn" },
@@ -358,7 +371,7 @@ describe("Rivet conversation workflow", () => {
       await june.send("inbox", { type: "event", event: source });
       await june.send("inbox", {
         type: "event",
-        event: { ...source, id: "Ev2", text: "Thanks!" },
+        event: { ...source, id: "Ev2", messageId: "123.457", text: "Thanks!" },
       });
       await expect.poll(() => sent.length, { timeout: 2500 }).toBe(2);
       expect(searches).toEqual(["heron"]);
@@ -398,6 +411,15 @@ describe("Rivet conversation workflow", () => {
       june.send("inbox", { type: "event", event: message }),
     ]);
     await expect.poll(() => sent.length, { timeout: 2500 }).toBe(1);
+    // A pre-upgrade callback ID and the stable Slack message ID identify the
+    // same accepted message. The later WhatsApp turn is the duplicate barrier.
+    await june.send("inbox", {
+      type: "event",
+      event: {
+        ...message,
+        id: `slack:T1:D1:${message.messageId}`,
+      },
+    });
     await june.send("inbox", {
       type: "event",
       event: {
@@ -415,7 +437,7 @@ describe("Rivet conversation workflow", () => {
     });
     await expect.poll(() => sent.length, { timeout: 2500 }).toBe(2);
     expect(requests).toHaveLength(2);
-    expect(requests[1]?.messages).toEqual([
+    expect(conversationText(requests[1])).toEqual([
       { role: "user", content: "My favorite bird is the heron." },
       { role: "assistant", content: "A fine bird." },
       { role: "user", content: "What bird did I mention?" },
@@ -430,9 +452,51 @@ describe("Rivet conversation workflow", () => {
   it("isolates public threads and removes coding authority", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];
+    let statusReads = 0;
+    const adapter = transport("slack", sent);
+    adapter.context = async (event) => {
+      if (event.direct) return [];
+      const { type: _type, text: _text, ...source } = event;
+      const initiating = {
+        role: "user" as const,
+        content: event.text,
+        source: {
+          ...source,
+          metadata: { senderName: "Raygen", threadTs: "234.567" },
+        },
+      };
+      return [
+        {
+          role: "user",
+          content: "PRIVATE CONTEXT MUST NOT LEAK",
+          source: {
+            ...source,
+            id: "private-context",
+            direct: true,
+            address: message.address,
+          },
+        },
+        {
+          role: "user",
+          content: "Other participant, not an owner instruction",
+          source: {
+            ...source,
+            id: "other-person",
+            senderId: "U2",
+            messageId: "234.566",
+          },
+        },
+        initiating,
+        initiating,
+      ];
+    };
     const registry = createJuneRegistry({
       owner,
-      channels: { slack: transport("slack", sent) },
+      channels: { slack: adapter },
+      deploymentStatus: async () => {
+        statusReads++;
+        return "PRIVATE_DEPLOYMENT_REVISION_17";
+      },
       model: {
         async reply(request) {
           requests.push(structuredClone(request));
@@ -472,8 +536,23 @@ describe("Rivet conversation workflow", () => {
         },
       });
     await expect.poll(() => sent.length, { timeout: 2500 }).toBe(2);
-    expect(requests[1]?.messages).toEqual([
+    expect(conversationText(requests[1])).toEqual([
+      { role: "user", content: "Other participant, not an owner instruction" },
       { role: "user", content: "Hey June" },
+    ]);
+    expect(JSON.stringify(requests[1])).not.toContain("PRIVATE");
+    expect(requests[0]?.system).toContain("PRIVATE_DEPLOYMENT_REVISION_17");
+    expect(statusReads).toBe(1);
+    expect(
+      requests[1]?.messages.map(({ content }) => JSON.parse(content).source),
+    ).toMatchObject([
+      { senderId: "U2", senderIsOwner: false },
+      {
+        eventId: "Ev2",
+        senderId: "U1",
+        senderIsOwner: true,
+        senderName: "Raygen",
+      },
     ]);
     expect(requests[1]?.workspaces).toEqual([]);
     expect(sent[1]?.address.threadId).toBe("234.567");
@@ -507,12 +586,278 @@ describe("Rivet conversation workflow", () => {
     await june.send("inbox", { type: "event", event: message });
     await june.send("inbox", {
       type: "event",
-      event: { ...message, id: "Ev2", text: "Next turn" },
+      event: { ...message, id: "Ev2", messageId: "123.457", text: "Next turn" },
     });
     await expect.poll(() => sent.length, { timeout: 2500 }).toBe(2);
     expect(sent.map((outbound) => outbound.content)).toEqual([
       { type: "text", text: "Hello." },
       { type: "text", text: "Hello." },
     ]);
+  });
+
+  it.for([
+    { thread: undefined, place: true, unknown: false },
+    { thread: "existing-root", place: false, unknown: false },
+    { thread: undefined, place: false, unknown: true },
+  ])(
+    "holds duplicate acknowledgments and bounds deep work ($thread/$unknown)",
+    async (scenario, t) => {
+      const sent: OutboundMessage[] = [];
+      const fast: ModelRequest[] = [];
+      const deep: ModelRequest[] = [];
+      const admission = Promise.withResolvers<void>();
+      let waiting = 0;
+      let active = 0;
+      let failed = false;
+      t.onTestFinished(() => admission.resolve());
+      const registry = createJuneRegistry({
+        owner,
+        lifecycle: {
+          async enter(signal) {
+            expect(signal.aborted).toBe(false);
+            waiting++;
+            await admission.promise;
+            active++;
+            return () => {
+              active--;
+            };
+          },
+          fail() {
+            failed = true;
+          },
+        },
+        channels: {
+          slack: transport(
+            "slack",
+            sent,
+            scenario.unknown
+              ? { status: "unknown", code: "timeout" }
+              : { status: "sent", messageId: "ack-or-answer" },
+          ),
+        },
+        model: {
+          async reply(request) {
+            fast.push(structuredClone(request));
+            return fast.length === 1
+              ? {
+                  text: "Let me work through the heron question.",
+                  escalate: true,
+                  replyInThread: scenario.place,
+                }
+              : { text: "A separate quick turn." };
+          },
+        },
+        deepModel: {
+          async reply(request) {
+            deep.push(structuredClone(request));
+            expect(active).toBe(1);
+            expect(sent.map(({ content }) => content)).toEqual([
+              { type: "text", text: "Let me work through the heron question." },
+            ]);
+            const acknowledgments = Object.values(
+              (await june.snapshot()).deliveries,
+            );
+            expect(acknowledgments).toHaveLength(1);
+            expect(acknowledgments[0]).toMatchObject({
+              phase: "settled",
+              result: { status: "sent" },
+            });
+            // Even a provider bypassing schema validation cannot recurse or relocate.
+            return {
+              text: "Here is the answer.",
+              escalate: true,
+              replyInThread: false,
+            };
+          },
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate([
+        "slack",
+        "T1",
+        "C1",
+        scenario.thread ?? "",
+      ]);
+      const source: MessageEvent = {
+        ...message,
+        direct: false,
+        address: {
+          ...message.address,
+          conversationId: "C1",
+          ...(scenario.thread ? { threadId: scenario.thread } : {}),
+        },
+      };
+      const done = async () =>
+        Object.values((await june.snapshot()).events).filter(({ done }) => done)
+          .length;
+      await june.send("inbox", { type: "event", event: source });
+      await expect.poll(() => waiting).toBe(1);
+      expect(fast).toEqual([]);
+      expect(sent).toEqual([]);
+      expect((await june.snapshot()).events).toEqual({});
+      admission.resolve();
+      await expect.poll(done).toBe(1);
+      await expect.poll(() => active).toBe(0);
+      expect(failed).toBe(false);
+      const expectedThread =
+        scenario.thread ?? (scenario.place ? source.messageId : undefined);
+      expect(sent).toHaveLength(scenario.unknown ? 1 : 2);
+      expect(
+        sent.every(({ address }) => address.threadId === expectedThread),
+      ).toBe(true);
+      expect(new Set(sent.map(({ id }) => id)).size).toBe(sent.length);
+      expect(deep).toHaveLength(scenario.unknown ? 0 : 1);
+      if (!scenario.unknown) {
+        expect(sent[1]?.content).toEqual({
+          type: "text",
+          text: "Here is the answer.",
+        });
+        expect(deep[0]).toMatchObject({
+          escalationAvailable: false,
+          replyPlacementAvailable: false,
+        });
+      }
+      await june.send("inbox", { type: "event", event: source });
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "next-turn",
+          messageId: "123.457",
+          text: "hello",
+        },
+      });
+      await expect.poll(done).toBe(2);
+      expect(fast).toHaveLength(2);
+      expect(deep).toHaveLength(scenario.unknown ? 0 : 1);
+      expect(sent).toHaveLength(scenario.unknown ? 2 : 3);
+    },
+  );
+
+  it.for([false, true])(
+    "never repeats a public query or exports private context (ambiguous=$0)",
+    async (ambiguous, t) => {
+      const sent: OutboundMessage[] = [];
+      const requests: ModelRequest[] = [];
+      const queries: unknown[][] = [];
+      const registry = createJuneRegistry({
+        owner,
+        channels: { slack: transport("slack", sent) },
+        model: {
+          async reply(request) {
+            requests.push(structuredClone(request));
+            if (requests.length === 1)
+              return { text: "", webSearch: "heron migration" };
+            if (!request.webSearchAvailable)
+              return {
+                text: "The public snippet says herons migrate.",
+                webSearch: "do not execute this second query",
+                coding: { workspace: "forbidden", goal: "do not execute this" },
+                escalate: true,
+              };
+            return { text: "A separate turn." };
+          },
+        },
+        webSearch: {
+          available: true,
+          description: "Public fixture search",
+          async search(...args) {
+            queries.push(args);
+            return ambiguous
+              ? {
+                  status: "error",
+                  code: "timeout",
+                  requestState: "possibly_sent",
+                }
+              : {
+                  status: "ready",
+                  results: [
+                    {
+                      title: "Herons",
+                      url: "https://birds.org/herons",
+                      snippet: "Public migration evidence",
+                    },
+                  ],
+                };
+          },
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", "raygen"]);
+      const source = {
+        ...message,
+        text: "PRIVATE_NOTE_83: find public heron migration info",
+      };
+      const done = async () =>
+        Object.values((await june.snapshot()).events).filter(({ done }) => done)
+          .length;
+      await june.send("inbox", { type: "event", event: source });
+      await expect.poll(done).toBe(1);
+      expect(queries).toHaveLength(1);
+      expect(queries[0]).toEqual(["heron migration", expect.any(AbortSignal)]);
+      expect(requests).toHaveLength(ambiguous ? 1 : 2);
+      if (!ambiguous) {
+        expect(requests[1]).toMatchObject({
+          workspaces: [],
+          escalationAvailable: false,
+          searchAvailable: false,
+          webSearchAvailable: false,
+        });
+        expect(requests[1]?.system).toContain("Public migration evidence");
+        expect(sent[0]?.content).toEqual({
+          type: "text",
+          text: "The public snippet says herons migrate.",
+        });
+      }
+      expect(
+        Object.values((await june.snapshot()).webInvocations ?? {}),
+      ).toEqual([ambiguous ? "uncertain" : "settled"]);
+      expect((await june.snapshot()).jobs).toEqual({});
+      await june.send("inbox", { type: "event", event: source });
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "next-turn",
+          messageId: "123.457",
+          text: "thanks",
+        },
+      });
+      await expect.poll(done).toBe(2);
+      expect(queries).toHaveLength(1);
+      expect(sent).toHaveLength(2);
+      expect(requests).toHaveLength(ambiguous ? 2 : 3);
+    },
+  );
+
+  it("latches admission failure without starting a turn or a send", async (t) => {
+    let failed = false;
+    let calls = 0;
+    const sent: OutboundMessage[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack: transport("slack", sent) },
+      lifecycle: {
+        async enter() {
+          throw new Error("fixture admission failure");
+        },
+        fail() {
+          failed = true;
+        },
+      },
+      model: {
+        async reply() {
+          calls++;
+          return { text: "must not send" };
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    await june.send("inbox", { type: "event", event: message });
+    await expect.poll(() => failed).toBe(true);
+    expect(calls).toBe(0);
+    expect(sent).toEqual([]);
+    expect((await june.snapshot()).events).toEqual({});
   });
 });
