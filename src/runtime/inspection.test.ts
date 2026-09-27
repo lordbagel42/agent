@@ -357,6 +357,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         id,
         {
           coverage,
+          credentialAccount: "FIXTURE_SLACK_ACCOUNT",
           async fetchPage() {
             fetches++;
             return {
@@ -861,11 +862,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       ...expected,
     });
     expect(data.nextOffset).toBeNull();
-    expect(data.digest).toBe(
-      createHash("sha256")
-        .update(JSON.stringify([id, selections[id]]))
-        .digest("hex"),
-    );
+    expect(data.digest).toBe(imports.review(id).digest);
     expect(data.pages).toBe(id === "selection-0" ? 1 : 0);
     expect(report).toContain(
       id === "selection-0" ? "timeline only" : "label IDs, not threads",
@@ -1253,6 +1250,7 @@ it("pages exact scope without widening audiences or fetching history", async (t)
         id,
         {
           coverage,
+          credentialAccount: "FIXTURE_EXACT_ACCOUNT",
           async fetchPage() {
             throw new Error("must not fetch history");
           },
@@ -1274,6 +1272,8 @@ it("pages exact scope without widening audiences or fetching history", async (t)
       expect(report).not.toContain("SECRET");
       expect(report.length).toBeLessThan(3500);
       const data = JSON.parse(report.split("\n")[1] ?? "");
+      if (selection !== null)
+        expect(data.digest).toBe(imports.review(selection).digest);
       json += selection === null ? data.selectionsJson : data.coverageJson;
       expect(data.nextOffset === null || data.nextOffset > offset).toBe(true);
       offset = data.nextOffset;
@@ -1307,4 +1307,13 @@ it("pages exact scope without widening audiences or fetching history", async (t)
     cooldownReason: null,
     coolingDown: false,
   });
+  const mismatched = createInspectionReader({
+    audience: "private",
+    imports,
+    selections: { [ids[0] as string]: { ...coverage, account: "TOTHER" } },
+  });
+  await expect(mismatched("imports")).rejects.toThrow("coverage changed");
+  await expect(
+    mismatched({ target: "imports", selection: ids[0] as string, offset: 0 }),
+  ).rejects.toThrow("coverage changed");
 });

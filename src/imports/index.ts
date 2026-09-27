@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   type EvidenceStore,
   ImmutableSourceConflictError,
@@ -14,10 +14,26 @@ export { createGmailHistoryFetcher } from "./gmail.js";
 export { gmailSourceId, slackSource, slackSourceId } from "./identity.js";
 export { createSlackHistoryFetcher } from "./slack.js";
 
-/** Identifies configured coverage for review; never consent to fetch it. */
-export function importCoverageDigest(id: string, coverage: ImportCoverage) {
+interface ImportSelection {
+  coverage: ImportCoverage;
+  /** Exact non-secret credential reference, never an account display name. */
+  credentialAccount: string;
+  fetchPage: PageFetcher;
+}
+
+/** Identifies the current import binding for review; never consent to fetch. */
+export function importCoverageDigest(
+  id: string,
+  coverage: ImportCoverage,
+  credentialAccount: string,
+  confirmationScope: string,
+) {
+  if (!credentialAccount.trim())
+    throw new Error("Missing import credential account binding");
   return createHash("sha256")
-    .update(JSON.stringify([id, coverage]))
+    .update(
+      JSON.stringify([id, coverage, credentialAccount, confirmationScope]),
+    )
     .digest("hex");
 }
 
@@ -31,25 +47,40 @@ export class HistoryImports {
   // Process-local, content-free observation bound to the rejected page. A
   // cancelled/no-op/failed retry is not evidence the conflict was reconciled.
   private readonly conflicts = new Map<string, number>();
-  private readonly selections: Map<
-    string,
-    { coverage: ImportCoverage; fetchPage: PageFetcher }
-  >;
+  private readonly selections: Map<string, ImportSelection>;
+  // A restarted host may replace a credential behind the same environment name.
+  // Expire all old confirmations without opening or hashing credential values.
+  private readonly confirmationScope = randomUUID();
 
   constructor(
     private readonly store: EvidenceStore,
-    selections: Record<
-      string,
-      { coverage: ImportCoverage; fetchPage: PageFetcher }
-    >,
+    selections: Record<string, ImportSelection>,
     private readonly now = Date.now,
   ) {
     this.selections = new Map(
       Object.entries(selections).map(([id, s]) => [
         id,
-        { coverage: structuredClone(s.coverage), fetchPage: s.fetchPage },
+        {
+          coverage: structuredClone(s.coverage),
+          credentialAccount: s.credentialAccount,
+          fetchPage: s.fetchPage,
+        },
       ]),
     );
+  }
+
+  review(id: string) {
+    const { coverage, credentialAccount } = this.selection(id);
+    return {
+      coverage: structuredClone(coverage),
+      digest: importCoverageDigest(
+        id,
+        coverage,
+        credentialAccount,
+        this.confirmationScope,
+      ),
+      ...this.status(id),
+    };
   }
 
   status(id: string) {

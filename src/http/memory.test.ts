@@ -3,8 +3,12 @@ import { expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type { MessageEvent } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
-import { HistoryImports } from "../imports/index.js";
-import { EvidenceStore } from "../memory/store.js";
+import {
+  createGmailHistoryFetcher,
+  HistoryImports,
+  importCoverageDigest,
+} from "../imports/index.js";
+import { EvidenceStore, type ImportCoverage } from "../memory/store.js";
 import { parseReply } from "../models/provider.js";
 import { createInspectionReader } from "../runtime/inspection.js";
 import { createJuneRegistry } from "../runtime/registry.js";
@@ -35,6 +39,7 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
   const imports = new HistoryImports(store, {
     mail: {
       coverage,
+      credentialAccount: "FIXTURE_MAIL_TOKEN",
       async fetchPage({ cursor }) {
         reads++;
         cursors.push(cursor);
@@ -367,6 +372,7 @@ it("reports rejected budgets without evidence and retries the same uncommitted p
   const imports = new HistoryImports(store, {
     selected: {
       coverage,
+      credentialAccount: "FIXTURE_SLACK_ACCOUNT",
       async fetchPage() {
         fetches++;
         return { sources, nextCursor: null };
@@ -416,4 +422,135 @@ it("reports rejected budgets without evidence and retries the same uncommitted p
   expect(store.search("owner", "").sources).toEqual([source]);
   expect(imports.status("selected").budget.lastRejection).toBeNull();
   expect(fetches).toBe(2);
+});
+
+it.each([
+  { from: 0 },
+  { to: 6000 },
+  { conversations: ["STARRED"] },
+  { audiences: ["other-owner"] },
+  { account: "other@example.invalid" },
+  { credentialAccount: "FIXTURE_OTHER_ACCOUNT" },
+  {}, // Same handle can be rebound on host restart; old consent must expire.
+])("invalidates pending start when binding changes: %j", async (changed) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  const coverage: ImportCoverage = {
+    platform: "gmail",
+    account: "fixture@example.invalid",
+    conversations: ["INBOX"],
+    from: 1000,
+    to: 5000,
+    audiences: ["owner"],
+  };
+  let credentialReads = 0;
+  let providerReads = 0;
+  const configured = (selected: ImportCoverage, credentialAccount: string) => {
+    // The user-visible name stays equal; it must not substitute for identity.
+    const selections = {
+      Personal: {
+        coverage: selected,
+        credentialAccount,
+        fetchPage: createGmailHistoryFetcher({
+          coverage: selected,
+          async accessToken() {
+            credentialReads++;
+            return "fixture-only-token";
+          },
+          async transport() {
+            providerReads++;
+            return Response.json({ messages: [] });
+          },
+        }),
+      },
+    };
+    const imports = new HistoryImports(store, selections);
+    // Simulate stale parallel route configuration. Only the service binding counts.
+    const app = createImportRoutes(imports, { Personal: coverage });
+    const inspect = createInspectionReader({
+      audience: selected.audiences[0] as string,
+      imports,
+      selections: { Personal: selected },
+    });
+    return { imports, app, selections, inspect };
+  };
+  try {
+    const original = configured(coverage, "FIXTURE_ACCOUNT");
+    const review = (await (await original.app.request("/")).json()).Personal;
+    const action = {
+      target: "import-approval",
+      selection: "Personal",
+    } as const;
+    const proposal = JSON.parse(
+      (await original.inspect(action)).split("\n")[1] ?? "",
+    );
+    expect(proposal.digest).toBe(review.digest);
+    const { credentialAccount, ...coverageChange } = changed;
+    const currentCoverage = { ...coverage, ...coverageChange };
+    if (Object.keys(changed).length) {
+      // Prove exact identity/coverage matters independently of restart expiry.
+      expect(
+        importCoverageDigest(
+          "Personal",
+          currentCoverage,
+          credentialAccount ?? "FIXTURE_ACCOUNT",
+          "same-fixture-host",
+        ),
+      ).not.toBe(
+        importCoverageDigest(
+          "Personal",
+          coverage,
+          "FIXTURE_ACCOUNT",
+          "same-fixture-host",
+        ),
+      );
+    }
+    const current = configured(
+      currentCoverage,
+      credentialAccount ?? "FIXTURE_ACCOUNT",
+    );
+    const currentReview = (await (await current.app.request("/")).json())
+      .Personal;
+    expect(currentReview.coverage).toEqual(currentCoverage);
+    expect(currentReview.digest).not.toBe(review.digest);
+    expect(JSON.stringify(currentReview)).not.toContain("FIXTURE_");
+    expect(JSON.stringify(currentReview)).not.toContain("fixture-only-token");
+    const freshProposal = await current.inspect(action);
+    expect(freshProposal).not.toContain("FIXTURE_");
+    expect(freshProposal).not.toContain("fixture-only-token");
+    const fresh = JSON.parse(freshProposal.split("\n")[1] ?? "");
+    expect(fresh.digest).toBe(currentReview.digest);
+    await expect(
+      createInspectionReader({
+        audience: "owner",
+        imports: current.imports,
+        selections: {
+          Personal: { ...coverage, account: "stale-config@example.invalid" },
+        },
+      })(action),
+    ).rejects.toThrow("Import coverage changed");
+    // Neither constructor inputs nor returned metadata can retarget the binding.
+    current.selections.Personal.credentialAccount = "MUTATED_HANDLE";
+    currentCoverage.conversations = ["MUTATED_LABEL"];
+    currentReview.coverage.account = "mutated@example.invalid";
+    expect(current.imports.review("Personal").digest).toBe(
+      currentReview.digest,
+    );
+    const confirm = (body: unknown) =>
+      current.app.request("/Personal/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect((await confirm(proposal.confirmation.body)).status).toBe(409);
+    expect(store.importProgress("Personal")).toBeUndefined();
+    expect(credentialReads).toBe(0);
+    expect(providerReads).toBe(0);
+    expect((await confirm(fresh.confirmation.body)).status).toBe(200);
+    expect(credentialReads).toBe(1);
+    expect(providerReads).toBe(1);
+    expect((await confirm(fresh.confirmation.body)).status).toBe(409);
+    expect(providerReads).toBe(1);
+  } finally {
+    store.close();
+  }
 });

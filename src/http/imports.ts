@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { ImportedMemoryExtraction } from "../imports/extraction.js";
-import { type HistoryImports, importCoverageDigest } from "../imports/index.js";
+import type { HistoryImports } from "../imports/index.js";
 import { ImportBudgetExceeded, type ImportCoverage } from "../memory/store.js";
 
 /** Mount behind owner bearer auth. A selection is not consent to fetch it.
@@ -13,15 +13,7 @@ export function createImportRoutes(
   selections: Record<string, ImportCoverage>,
   extraction?: ImportedMemoryExtraction,
 ) {
-  const approved = Object.fromEntries(
-    Object.entries(selections).map(([id, coverage]) => [
-      id,
-      {
-        coverage: structuredClone(coverage),
-        digest: importCoverageDigest(id, coverage),
-      },
-    ]),
-  );
+  const configuredIds = new Set(Object.keys(selections));
   const app = new Hono();
   app.onError((error, c) =>
     error instanceof ImportBudgetExceeded
@@ -38,20 +30,13 @@ export function createImportRoutes(
   app.get("/", (c) =>
     c.json(
       Object.fromEntries(
-        Object.entries(approved).map(([id, selection]) => [
-          id,
-          {
-            ...selection,
-            ...imports.status(id),
-          },
-        ]),
+        [...configuredIds].map((id) => [id, imports.review(id)]),
       ),
     ),
   );
   app.post("/:id/start", async (c) => {
     const id = c.req.param("id");
-    const selection = Object.hasOwn(approved, id) ? approved[id] : undefined;
-    if (!selection) return c.json({ error: "not_found" }, 404);
+    if (!configuredIds.has(id)) return c.json({ error: "not_found" }, 404);
     const input = z
       .strictObject({
         confirmed: z.literal(true),
@@ -59,9 +44,10 @@ export function createImportRoutes(
         expectedPages: z.number().int().nonnegative().safe(),
       })
       .parse(await c.req.json());
+    const selection = imports.review(id);
     if (
       input.digest !== selection.digest ||
-      input.expectedPages !== (imports.status(id).progress?.pages ?? 0)
+      input.expectedPages !== (selection.progress?.pages ?? 0)
     )
       return c.json({ error: "import_review_changed" }, 409);
     // beginImport durably binds the approved coverage before credential lookup.

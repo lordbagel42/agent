@@ -90,8 +90,16 @@ describe("history privacy boundaries", () => {
       const imports = new HistoryImports(
         store,
         {
-          first: { coverage: slack, fetchPage },
-          replay: { coverage: slack, fetchPage },
+          first: {
+            coverage: slack,
+            credentialAccount: "FIXTURE_SLACK_ACCOUNT",
+            fetchPage,
+          },
+          replay: {
+            coverage: slack,
+            credentialAccount: "FIXTURE_SLACK_ACCOUNT",
+            fetchPage,
+          },
         },
         () => now,
       );
@@ -162,9 +170,21 @@ describe("history privacy boundaries", () => {
         },
       });
       const selections = {
-        first: { coverage: slack, fetchPage },
-        blocked: { coverage: slack, fetchPage },
-        other: { coverage: { ...slack, account: "T2" }, fetchPage },
+        first: {
+          coverage: slack,
+          credentialAccount: "FIXTURE_SLACK_ACCOUNT",
+          fetchPage,
+        },
+        blocked: {
+          coverage: slack,
+          credentialAccount: "FIXTURE_SLACK_ACCOUNT",
+          fetchPage,
+        },
+        other: {
+          coverage: { ...slack, account: "T2" },
+          credentialAccount: "FIXTURE_OTHER_ACCOUNT",
+          fetchPage,
+        },
       };
       try {
         let imports = new HistoryImports(store, selections, () => now);
@@ -322,10 +342,19 @@ describe("history privacy boundaries", () => {
         store.beginImport("edit", coverage);
         const beforeEdit = store.importProgress("edit");
         const imports = new HistoryImports(store, {
-          edit: { coverage, fetchPage },
-          deleted: { coverage, fetchPage },
+          edit: {
+            coverage,
+            credentialAccount: "FIXTURE_SLACK_ACCOUNT",
+            fetchPage,
+          },
+          deleted: {
+            coverage,
+            credentialAccount: "FIXTURE_SLACK_ACCOUNT",
+            fetchPage,
+          },
           provider: {
             coverage,
+            credentialAccount: "FIXTURE_SLACK_ACCOUNT",
             async fetchPage() {
               // Identical error wording from a provider is not a store conflict.
               throw new Error("Source IDs are immutable");
@@ -701,6 +730,7 @@ describe("history privacy boundaries", () => {
           {
             old: {
               coverage: slack,
+              credentialAccount: "FIXTURE_SLACK_ACCOUNT",
               fetchPage: async () => ({
                 sources: [],
                 nextCursor: null,
@@ -741,6 +771,7 @@ describe("history privacy boundaries", () => {
               id,
               {
                 coverage,
+                credentialAccount: "FIXTURE_ACCOUNT",
                 fetchPage: async () => {
                   fetched.push(id);
                   return { sources: [], nextCursor: null, retryAfterMs: 60000 };
@@ -795,6 +826,7 @@ describe("history privacy boundaries", () => {
     const imports = new HistoryImports(store, {
       job: {
         coverage: slack,
+        credentialAccount: "FIXTURE_SLACK_ACCOUNT",
         fetchPage: async () => {
           await waiting;
           return { sources: [], nextCursor: null };

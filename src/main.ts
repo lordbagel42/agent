@@ -655,6 +655,7 @@ async function main() {
         Object.entries(config.imports).map(([id, selection]) => {
           const coverage = selections[id];
           if (!coverage) throw new Error("Missing import coverage");
+          const credentialAccount = selection.accessTokenEnv;
           const fetchPage = (
             selection.platform === "slack"
               ? createSlackHistoryFetcher
@@ -662,13 +663,14 @@ async function main() {
           )({
             coverage,
             async accessToken() {
-              return secret(selection.accessTokenEnv);
+              return secret(credentialAccount);
             },
           });
           return [
             id,
             {
               coverage,
+              credentialAccount,
               async fetchPage(request: Parameters<typeof fetchPage>[0]) {
                 const page = await fetchPage(request);
                 const sources = page.sources.filter(

@@ -156,6 +156,7 @@ it("requires exact operator consent, extracts only imported audience-scoped batc
   const imports = new HistoryImports(store, {
     mail: {
       coverage,
+      credentialAccount: "FIXTURE_MAIL_ACCOUNT",
       async fetchPage() {
         throw new Error("must not read real history");
       },
@@ -341,6 +342,7 @@ it("persists call intent across restart and blocks uncertain replay without stag
   const imports = new HistoryImports(store, {
     waiting: {
       coverage,
+      credentialAccount: "FIXTURE_WAITING_ACCOUNT",
       async fetchPage() {
         throw new Error("must not fetch");
       },

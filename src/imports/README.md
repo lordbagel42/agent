@@ -1,7 +1,8 @@
 # Read-only history imports
 
 Host API: construct `createSlackHistoryFetcher(config)` or
-`createGmailHistoryFetcher(config)`, then register `{coverage, fetchPage}` under
+`createGmailHistoryFetcher(config)`, then register
+`{coverage, credentialAccount, fetchPage}` under
 an operator-chosen job ID in `new HistoryImports(store, selections)`.
 `await start(id)` starts/resumes **one page**; `status(id)` returns running state
 and encrypted durable progress; `cancel(id)` aborts the current fetch without
@@ -70,6 +71,20 @@ injected `accessToken(signal)` callback; optional `transport` supports fixtures.
 No credentials are enrolled, stored or logged. Never supply Slack RTS results.
 June's owner-only audience is `JSON.stringify(["private", owner.id])`, computed
 from trusted host identity, not a request-supplied audience value.
+
+`review(id)` returns cloned coverage, its confirmation digest, and current
+running/progress metadata from the same binding used by `start`. The digest binds
+the exact selection ID, all coverage (including provider account and audiences),
+and `credentialAccount`: a non-secret, exact credential reference, never a display
+name. The environment-backed host uses the selected `accessTokenEnv` name and
+pins that name for later lookup; credential values are not read or hashed for
+review. Names shared by two accounts do not make their bindings interchangeable.
+Confirmations also expire when the importer is recreated, so replacing an
+environment credential under the same name across restart still requires fresh
+review. Runtime credential-reference retargeting is unsupported; recreate the
+importer after any such change. Review/confirmation does not verify provider
+authorization or credential validity, and neither handles nor token values are
+included in review output. June may propose a confirmation, never execute it.
 
 ## Provider prerequisites and limits
 

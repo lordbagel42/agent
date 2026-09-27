@@ -4,7 +4,7 @@ import type { Config } from "../config.js";
 import type { CompanionReply, MessageEvent } from "../core/contracts.js";
 import type { BitwardenCredentialResolver } from "../credentials/bitwarden.js";
 import type { ImportedMemoryExtraction } from "../imports/extraction.js";
-import { type HistoryImports, importCoverageDigest } from "../imports/index.js";
+import type { HistoryImports } from "../imports/index.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import {
@@ -354,12 +354,10 @@ export function createInspectionReader(deps: {
       if (!deps.imports || !selected)
         return "Import approval is unavailable for this selection. No import was started.";
       const [id, coverage] = selected;
-      return proposeImportApproval(
-        id,
-        coverage,
-        importCoverageDigest(id, coverage),
-        deps.imports.status(id),
-      );
+      const review = deps.imports.review(id);
+      if (!isDeepStrictEqual(review.coverage, coverage))
+        throw new Error("Import coverage changed");
+      return proposeImportApproval(id, review.coverage, review.digest, review);
     }
     const target = typeof query === "string" ? query : query.target;
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
@@ -551,9 +549,19 @@ export function createInspectionReader(deps: {
           const selected = selections.find(([id]) => id === query.selection);
           if (!selected) throw new Error("Import selection is unavailable");
           const [id, coverage] = selected;
-          const { running, progress, notBefore, cooldownReason, coolingDown } =
-            imports.status(id);
-          if (progress && !isDeepStrictEqual(progress.coverage, coverage))
+          const {
+            coverage: boundCoverage,
+            digest,
+            running,
+            progress,
+            notBefore,
+            cooldownReason,
+            coolingDown,
+          } = imports.review(id);
+          if (
+            !isDeepStrictEqual(boundCoverage, coverage) ||
+            (progress && !isDeepStrictEqual(progress.coverage, coverage))
+          )
             throw new Error("Import coverage changed");
           const { platform, account, conversations, from, to } = coverage;
           const { json, ...page } = jsonPage(
@@ -573,12 +581,13 @@ export function createInspectionReader(deps: {
               : platform === "gmail"
                 ? "Gmail account is the configured email address. conversations are label IDs, not threads or the whole mailbox. Gmail's strict after search may omit the exact lower boundary; labels can change during pagination."
                 : "Provider-specific coverage semantics are unavailable.";
-          return `${heading}\n${JSON.stringify({ digest: importCoverageDigest(id, coverage), ...page, coverageJson: json, running, started: progress !== undefined, pages: progress?.pages ?? 0, complete: progress?.complete ?? false, notBefore, cooldownReason, coolingDown, gapCount: progress?.gaps.length ?? 0 })}\nConcatenate coverageJson chunks using nextOffset until null; do not mix digests. from/to are configured epoch milliseconds [from,to). ${scope} Complete means selected traversal exhausted, not gap-free account history. Configuration is not verified access. notBefore is the persisted account cooldown deadline, not provider readiness; no polling or automatic retry. Cursors, gap contents, credentials and message bodies are omitted. No import was started or cancelled; no account data was read.`;
+          return `${heading}\n${JSON.stringify({ digest, ...page, coverageJson: json, running, started: progress !== undefined, pages: progress?.pages ?? 0, complete: progress?.complete ?? false, notBefore, cooldownReason, coolingDown, gapCount: progress?.gaps.length ?? 0 })}\nConcatenate coverageJson chunks using nextOffset until null; do not mix digests. from/to are configured epoch milliseconds [from,to). ${scope} Complete means selected traversal exhausted, not gap-free account history. Configuration is not verified access. notBefore is the persisted account cooldown deadline, not provider readiness; no polling or automatic retry. Cursors, gap contents, credentials and message bodies are omitted. No import was started or cancelled; no account data was read.`;
         }
         const rows = selections
           .slice(0, deps.importExtraction ? 5 : 10)
           .map(([id, coverage]) => {
             const {
+              coverage: boundCoverage,
               running,
               progress,
               notBefore,
@@ -586,8 +595,11 @@ export function createInspectionReader(deps: {
               coolingDown,
               budget,
               lastConflict,
-            } = imports.status(id);
-            if (progress && !isDeepStrictEqual(progress.coverage, coverage))
+            } = imports.review(id);
+            if (
+              !isDeepStrictEqual(boundCoverage, coverage) ||
+              (progress && !isDeepStrictEqual(progress.coverage, coverage))
+            )
               throw new Error("Import coverage changed");
             const extraction = deps.importExtraction?.review(id);
             return {
