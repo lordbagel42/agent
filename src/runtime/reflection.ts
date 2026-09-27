@@ -29,10 +29,16 @@ export type ReflectionMode = "interaction" | "idle" | "deep";
 /** Exact host commands only; quoted text and model output never select review. */
 export function parseReflectionReviewCommand(
   text: string,
-): { action: "list" } | { action: "inspect"; id: string } | undefined {
-  if (text.trim() === "!reflection list") return { action: "list" };
-  const match = /^!reflection inspect ([a-f0-9]{64})$/.exec(text.trim());
-  return match?.[1] ? { action: "inspect", id: match[1] } : undefined;
+):
+  | { action: "list" }
+  | { action: "inspect" | "reject"; id: string }
+  | undefined {
+  const command = text.trim();
+  if (command === "!reflection list") return { action: "list" };
+  const inspect = /^!reflection inspect ([a-f0-9]{64})$/.exec(command)?.[1];
+  if (inspect) return { action: "inspect", id: inspect };
+  const id = /^!reflection reject ([a-f0-9]{64})$/.exec(command)?.[1];
+  return id ? { action: "reject", id } : undefined;
 }
 
 /** Internal IDs embed evidence IDs; private review uses bounded opaque tokens. */
@@ -62,6 +68,11 @@ export interface ReflectionDependencies {
     input: { ownerId: string; scope: string; evidenceIds: string[] },
     signal: AbortSignal,
   ): Promise<{ authorized: boolean; evidence: Evidence[] }>;
+  /** When a bridge is mounted, synchronously persist revocation of its pending
+   * proposals before returning. Must be idempotent; failure leaves actor state
+   * unchanged. Earlier accepted changes are not retroactively erased.
+   */
+  rejectProposals?(scope: string, candidateId: string): undefined;
   idleMs: number;
   deepMs: number;
   pollMs: number;
@@ -112,6 +123,8 @@ export interface ReflectionRuntimeState {
   candidates: Record<string, ReflectionCandidate>;
   /** Separate from the scheduler domain format; absent on legacy actors. */
   candidateFormatVersion?: 1;
+  /** Opaque IDs only; retained across replay and interaction invalidation. */
+  rejectedCandidateIds?: string[];
   liveActive: number;
   /** Optional for actors persisted before ID-based occupancy was introduced. */
   liveTurns?: { id: string; active: boolean }[];
@@ -475,6 +488,38 @@ export function createReflectionActor(
           if (candidate.requestId === id) delete c.state.candidates[key];
         await c.vars.persist();
         c.vars.active.get(id)?.abort();
+        return true;
+      },
+      /** Trusted owner-private revocation, not cancellation or evidence recall.
+       * No evidence/attention gate may prevent revoking an extant candidate.
+       */
+      rejectCandidate: async (c, scope: string, id: string) => {
+        if (
+          c.key.length !== 1 ||
+          c.key[0] !== deps.ownerId ||
+          scope !== JSON.stringify(["private", deps.ownerId]) ||
+          !/^[a-f0-9]{64}$/.test(id)
+        )
+          return false;
+        if (c.state.rejectedCandidateIds?.includes(id)) {
+          deps.rejectProposals?.(scope, id);
+          // A duplicate must still await a flush that may have failed earlier.
+          await c.vars.persist();
+          return true;
+        }
+        const candidate = Object.values(c.state.candidates).find(
+          (candidate) =>
+            candidate.scope === scope &&
+            reflectionCandidateId(candidate.id) === id,
+        );
+        if (!candidate) return false;
+        // Persist dependent revocations first: a crash before the actor flush
+        // must not let an old candidate stage or promote a copied proposal.
+        deps.rejectProposals?.(scope, id);
+        c.state.rejectedCandidateIds ??= [];
+        c.state.rejectedCandidateIds.push(id);
+        delete c.state.candidates[candidate.id];
+        await c.vars.persist();
         return true;
       },
       /** Stable live turn/attempt IDs. Release only after actual provider settlement

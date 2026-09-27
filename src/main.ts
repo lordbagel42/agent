@@ -61,6 +61,7 @@ import { createInspectionReader } from "./runtime/inspection.js";
 import { createLatencyDiagnostics } from "./runtime/latency.js";
 import { createLifecycle } from "./runtime/lifecycle.js";
 import { createPersonalityPreview } from "./runtime/personality-evaluation-preview.js";
+import { parseReflectionReviewCommand } from "./runtime/reflection.js";
 import {
   createJuneRegistry,
   type Dependencies,
@@ -1159,7 +1160,15 @@ async function main() {
         const source = memory.source(event, JSON.stringify(scope.key));
         if (source) {
           if (memory.store.isDeleted(source.id)) return;
-          memory.store.appendSource(source);
+          // Review is an authenticated control message, not new evidence. Keep
+          // deletion filtering, but do not require an append to revoke a candidate.
+          const reflectionReview =
+            scope.private &&
+            JSON.stringify(scope.key) === ownerAudience &&
+            (event.address.channel !== "slack" ||
+              event.reflectionReviewEligible === true) &&
+            parseReflectionReviewCommand(event.text);
+          if (!reflectionReview) memory.store.appendSource(source);
         }
       }
       await client.conversation

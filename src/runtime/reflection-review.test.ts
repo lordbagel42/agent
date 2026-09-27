@@ -5,11 +5,34 @@ import { setupTest } from "../../tests/rivet.js";
 import type { MessageEvent, OutboundMessage } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { EvidenceStore } from "../memory/store.js";
+import { parseReflectionReviewCommand } from "./reflection.js";
 import {
   createJuneRegistry,
   type Dependencies,
   type JuneClientRegistry,
 } from "./registry.js";
+
+it("recognizes rejection only as an exact command with an opaque candidate ID", () => {
+  const id = "0123456789abcdef".repeat(4);
+  expect(parseReflectionReviewCommand(`!reflection reject ${id}`)).toEqual({
+    action: "reject",
+    id,
+  });
+  expect(parseReflectionReviewCommand("!reflection list")).toEqual({
+    action: "list",
+  });
+  for (const text of [
+    `/reflection reject ${id}`,
+    `> !reflection reject ${id}`,
+    `\`!reflection reject ${id}\``,
+    `please !reflection reject ${id}`,
+    `!reflection reject ${id} extra`,
+    `!reflection reject ${id.slice(1)}`,
+    `!reflection reject ${id.toUpperCase()}`,
+    `!reflection reject\n${id}`,
+  ])
+    expect(parseReflectionReviewCommand(text)).toBeUndefined();
+});
 
 it("lists only current private candidates without inference, extraction, retention or stale retry payloads", async (t) => {
   const owner = {

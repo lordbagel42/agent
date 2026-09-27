@@ -391,7 +391,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // first new message, while already-journaled turns keep the old path.
           const reflectionReviewVersion = await loop.getVersion(
             "reflection-review",
-            3,
+            4,
           );
           // A parked inbox can use the jury on its first new turn; journals
           // already processing a turn retain the original capability plan.
@@ -445,8 +445,10 @@ export function createJuneRegistry(deps: Dependencies) {
                 ? parseReflectionReviewCommand(event.text)
                 : undefined;
             const reflectionReview =
-              parsedReflectionReview?.action === "inspect" &&
-              reflectionReviewVersion < 3
+              (parsedReflectionReview?.action === "inspect" &&
+                reflectionReviewVersion < 3) ||
+              (parsedReflectionReview?.action === "reject" &&
+                reflectionReviewVersion < 4)
                 ? undefined
                 : parsedReflectionReview;
             if (version >= 5 && !ownerTurn) {
@@ -3772,6 +3774,37 @@ export function createJuneRegistry(deps: Dependencies) {
                                 };
                               if (result)
                                 text = `${PRIVATE_REFLECTION_REVIEW_PREFIX}Rationale and alternatives are generated hypotheses, never independent evidence or permission to act. ${JSON.stringify(result)}`;
+                            }
+                            if (!valid(step.state) || step.abortSignal.aborted)
+                              return {
+                                status: "rejected",
+                                code: "memory_invalidated",
+                                retryable: false,
+                              };
+                            return send(
+                              { ...outbound, content: { type: "text", text } },
+                              "text",
+                            );
+                          }
+                          if (reflectionReview?.action === "reject") {
+                            let text =
+                              "Reflection rejection could not be confirmed; retry the same candidate ID.";
+                            if (plan.reflection && deps.reflection) {
+                              try {
+                                const rejected = await step
+                                  .client<JuneClientRegistry>()
+                                  .reflection.getOrCreate([deps.owner.id])
+                                  .rejectCandidate(
+                                    audience,
+                                    reflectionReview.id,
+                                  );
+                                text = rejected
+                                  ? "Reflection candidate rejected (or already rejected). Other candidates and previously accepted changes are unchanged."
+                                  : "No matching private reflection candidate or rejection receipt was found; rejection could not be confirmed.";
+                              } catch {
+                                // A dependent ledger may have committed before
+                                // actor persistence failed. Never claim no change.
+                              }
                             }
                             if (!valid(step.state) || step.abortSignal.aborted)
                               return {

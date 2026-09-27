@@ -78,6 +78,7 @@ status(): Promise<{reflection, invocations, decisionOutcomes, candidateIds, live
 isSettled(): Promise<boolean>
 listCandidates(scope): Promise<{status, checkedAt, ids, truncated}>
 candidate(id): Promise<ReflectionCandidate | null>
+rejectCandidate(scope, opaqueId): Promise<boolean>
 reconcile(requestId, confirmedStopped): Promise<boolean>
 ```
 
@@ -202,6 +203,20 @@ list still require the original epoch, no live work and non-quiet time.
   staging/reads. There is **no outbound send**. Any later delivery must use the
   candidate ID as its own durable dedupe key and recheck audience, attention,
   quiet hours and approval. Repeated candidate reads are not new send grants.
+- Owner-private `!reflection reject <64hex>` revokes exactly the candidate
+  identified by its opaque list/inspection ID. Rejection persists a content-free
+  tombstone before success and repeated rejection remains successful across
+  restart. It deletes only that candidate, without cancelling the request,
+  changing occupancy or invalidating other candidates. Missing or foreign-scope
+  candidates are not rejected. Revocation returns no rationale and still works
+  when evidence is deleted or quiet hours prevent inspection. Retain rejection
+  tombstones through compaction; later incorporation/delivery must resolve the
+  current candidate again, never use an earlier inspection as authority.
+  A mounted proposal bridge must inject synchronous, idempotent
+  `rejectProposals(scope, opaqueId)` to durably reject that candidate's pending
+  derivatives and prevent restaging. This runs before candidate removal/actor
+  persistence, including on duplicate rejection; failure cannot acknowledge
+  success. Earlier accepted changes are not retroactively erased.
 - Each settled attempt finishes with no claimed new evidence; model output
   cannot reset habituation. Fresh trusted ingestion should enqueue a new ID
   set. Domain attempts/no-new-evidence bounds stop each request. A retrieval

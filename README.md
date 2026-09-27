@@ -922,6 +922,14 @@ does not erase its own candidates. Ordinary conversation still invalidates them.
 The list is constructed only at delivery, not retained in history or journaled
 reply content. It is not approval, a memory write, or permission to send.
 
+To reject one candidate, send `!reflection reject <64hex>` privately with its
+exact opaque ID. This records a durable rejection and removes only that candidate;
+repeating it, including after restart, is safe. Configured proposal bridges revoke
+its pending derivatives before the actor records success. Already accepted changes
+are not erased. Rejection does not require eligible evidence or quiet-hour clearance.
+An unconfirmed result means retry the same ID, not that nothing changed. Like the
+list command, it skips inference and automatic memory ingestion/extraction/enqueue.
+
 Owner-private `analytics: {"days":7}` also returns memory retrieval counters
 when memory is enabled: calls, completed, failed, total duration and maximum
 duration in milliseconds. `inspection: "memory"` exposes the same aggregates
