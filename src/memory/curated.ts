@@ -154,6 +154,7 @@ export class CuratedPersonalityStore {
     this.check();
     if (this.git(["rev-parse", "--is-bare-repository"]) !== "true")
       throw new Error("Expected dedicated bare repository");
+    this.forgetGlobalProposals();
   }
 
   private opaque(value: unknown): string {
@@ -378,6 +379,25 @@ export class CuratedPersonalityStore {
     return this.persist({ ...snapshot, state, provenance }, parent);
   }
 
+  /** Reconcile authoritative tombstones, including interrupted host cleanup.
+   * Remove copied private payloads from the active snapshot, not just reads.
+   * Public profile revisions/decisions live elsewhere and remain unchanged.
+   * Historical encrypted snapshots and backups are NOT physically erased. */
+  forgetGlobalProposals(): void {
+    this.check();
+    const parent = this.head();
+    const snapshot = this.load(parent);
+    const proposals = snapshot.globalProposals ?? [];
+    const retained = proposals.filter(
+      (proposal) =>
+        ![...proposal.evidenceIds, ...proposal.sourceIds].some((id) =>
+          this.evidence.isDeleted(id),
+        ),
+    );
+    if (retained.length === proposals.length) return;
+    this.persist({ ...snapshot, globalProposals: retained }, parent);
+  }
+
   /** Host-only private staging. Scope comes from authenticated owner routing;
    * input comes from the model. This never touches effective personality.
    * Source IDs, rationale and changes stay in the encrypted snapshot. */
@@ -386,7 +406,7 @@ export class CuratedPersonalityStore {
     input: unknown,
     now = Date.now(),
   ): GlobalPersonalityProposal {
-    this.check();
+    this.forgetGlobalProposals();
     const parsed = globalProposalInputSchema.safeParse(input);
     if (
       !parsed.success ||
@@ -491,7 +511,7 @@ export class CuratedPersonalityStore {
     id: string,
     now = Date.now(),
   ): GlobalPersonalityProposal | undefined {
-    this.check();
+    this.forgetGlobalProposals();
     const snapshot = this.load(this.head());
     const proposal = snapshot.globalProposals?.find((p) => p.id === id);
     return proposal && this.validGlobalProposal(snapshot, proposal, scope, now)
@@ -505,7 +525,7 @@ export class CuratedPersonalityStore {
     now = Date.now(),
     excludedIds: readonly string[] = [],
   ): GlobalPersonalityProposal[] {
-    this.check();
+    this.forgetGlobalProposals();
     if (!Number.isInteger(limit) || limit < 1 || limit > 20)
       throw new Error("Invalid suggestion limit");
     const snapshot = this.load(this.head());

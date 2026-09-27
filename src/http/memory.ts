@@ -54,6 +54,7 @@ export function createMemoryRoutes(deps: {
     // Ledger first. A crash before working-context cleanup still fails closed
     // at runtime source revalidation; retry repeats the remaining cleanup.
     deps.store.deleteSource(input.sourceId);
+    deps.personality?.forgetGlobalProposals();
     await deps.forget(audience, input.sourceId);
     return c.json({ forgotten: true, physicalPurge: false });
   });

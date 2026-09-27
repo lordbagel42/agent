@@ -12,6 +12,7 @@ import type {
   OutboundMessage,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
+import { createMemoryRoutes } from "../http/memory.js";
 import { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
@@ -184,4 +185,98 @@ it("stages through June without publishing and rejects public, guest, stale and 
       inspectionAvailable: true,
     }),
   ).toThrow();
+});
+
+it("forgets suggestion payloads before June context cleanup and preserves unrelated suggestions and the global default", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "june-suggestion-cleanup-"));
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  const personality = new CuratedPersonalityStore(
+    join(root, "curated"),
+    randomBytes(32),
+    store,
+    { initialize: true },
+  );
+  t.onTestFinished(() => {
+    personality.close();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const owner = { id: "owner", identities: [] };
+  const scope = JSON.stringify(["private", owner.id]);
+  const proposals = ["http-source", "june-source", "unrelated"].map((id) => {
+    store.appendSource({
+      id,
+      audiences: [scope],
+      platform: "slack",
+      account: "T1",
+      conversation: "D1",
+      author: "U1",
+      observedAt: Date.now(),
+      sourceUrl: "https://example.invalid/source",
+      text: "Private preference",
+    });
+    return personality.stageGlobalProposal(scope, {
+      expectedVersion: 0,
+      changes: { tone: "dry" },
+      evidenceIds: [id],
+      explanation: `Private copied explanation ${id}`,
+      confidence: 0.8,
+    });
+  });
+  const registry = createJuneRegistry({
+    owner,
+    channels: {},
+    memory: { store, personality, source: () => undefined },
+    model: {
+      async reply() {
+        throw new Error("No model call expected");
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", owner.id]);
+  const profile = (
+    client as Client<JuneClientRegistry>
+  ).personality.getOrCreate([owner.id]);
+  const initial = await profile.read();
+  const head = personality.ownerHistory().commit;
+  let cleanups = 0;
+  const http = createMemoryRoutes({
+    store,
+    personality,
+    audience: () => scope,
+    async forget(_scope, sourceId) {
+      if (++cleanups === 1)
+        throw new Error("Simulated interruption before context cleanup");
+      await june.forget(sourceId);
+    },
+  });
+  const forget = () =>
+    http.request("/forget", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "http-source", confirmed: true }),
+    });
+  expect((await forget()).status).toBe(400);
+  // Check durable mutation BEFORE any pending reader can reconcile it for us.
+  const afterHttp = personality.ownerHistory().commit;
+  expect(afterHttp).not.toBe(head);
+  const retried = await forget();
+  expect(retried.status).toBe(200);
+  expect(await retried.json()).toEqual({
+    forgotten: true,
+    physicalPurge: false,
+  });
+  expect(cleanups).toBe(2);
+  expect(personality.ownerHistory().commit).toBe(afterHttp);
+  await expect(june.forget("june-source")).rejects.toThrow();
+  expect(personality.ownerHistory().commit).toBe(afterHttp);
+  store.deleteSource("june-source");
+  await june.forget("june-source");
+  const afterJune = personality.ownerHistory().commit;
+  expect(afterJune).not.toBe(afterHttp);
+  await june.forget("june-source");
+  expect(personality.ownerHistory().commit).toBe(afterJune);
+  expect(personality.pendingGlobalProposals(scope)).toEqual([proposals[2]]);
+  expect(await profile.read()).toEqual(initial);
 });

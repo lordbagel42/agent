@@ -261,6 +261,7 @@ export function createJuneRegistry(deps: Dependencies) {
       forget: async (c, sourceId: string) => {
         if (!deps.memory?.store.isDeleted(sourceId))
           throw new Error("Source must be tombstoned first");
+        deps.memory.personality?.forgetGlobalProposals();
         const forgottenAgents = { ...c.state.agents };
         const forgottenJobs = Object.keys(c.state.jobs);
         c.state.history = [];

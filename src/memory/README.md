@@ -420,6 +420,16 @@ explanation, now)` appends a revision reverting the current head, not arbitrary
 Git syntax. To undo an owner correction (including a hidden deleted correction),
 use explicit owner rollback/revision, not an inferred override.
 
+Staged global personality suggestions retain original `sourceIds` in the private
+curated store. After source tombstoning, `forgetGlobalProposals()` removes matching
+payloads, including copied explanations, from the active encrypted snapshot before
+HTTP/June working-context cleanup. Pending reads, staging and reopening reconcile
+tombstones too, so interrupted cleanup cannot leave those payloads active. June's
+pending-suggestion reads use the same store readers; forgotten suggestions cannot
+be read or restaged. Unrelated suggestions, the public global defaults/revisions
+and the actor's approval/rejection decisions are unchanged. This is logical
+forgetting, not erasure of older encrypted snapshots or journals.
+
 ## Ledger operation status
 
 Owner-private `inspection: "memory"` reports scoped capacity and separate
