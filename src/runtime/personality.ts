@@ -10,6 +10,7 @@ import type {
   ReflectionProposalBinding,
 } from "../reflection/global-proposal.js";
 import { CHARTER } from "../reflection/personality.js";
+import { personalityProfileDigest } from "./personality-evaluation-preview.js";
 
 // A closed vocabulary is intentional: private evidence, arbitrary instructions,
 // names and explanations cannot become public through this profile.
@@ -55,7 +56,7 @@ export const defaultGlobalPersonality: GlobalPersonality = {
   },
 };
 
-export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality pending for up to five unreviewed suggestion summaries with exact proposalId/expectedVersion and safe provenance fingerprints. Pending inspection is read-only, not approval or evidence recall. Use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Reset just one named trait with !personality reset {"expectedVersion":VERSION,"trait":"humor","explanation":"Restore default humor","publish":true}. Defaults are tone=warm, verbosity=balanced, humor=subtle, curiosity=occasional. Reset preserves other traits and appends a revision without clearing history; propose this command, not a whole-profile rollback, when the owner asks to reset one trait. Approve an exact staged suggestion for all conversations with !personality approve {"proposalId":"ID","expectedVersion":VERSION,"publish":true}; its staged version and evidence must still be current. Approval publishes only style, never its private evidence or rationale. Grounded fields return to defaults if their evidence expires or is forgotten, including on rollback. Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Reject a staged suggestion with !personality reject {"proposalId":"ID"}; rejection is permanent for that ID and does not change my global voice. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
+export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality pending for up to five unreviewed suggestion summaries with exact proposalId/expectedVersion and safe provenance fingerprints. Pending inspection is read-only, not approval or evidence recall. Use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Reset just one named trait with !personality reset {"expectedVersion":VERSION,"trait":"humor","explanation":"Restore default humor","publish":true}. Defaults are tone=warm, verbosity=balanced, humor=subtle, curiosity=occasional. Reset preserves other traits and appends a revision without clearing history; propose this command, not a whole-profile rollback, when the owner asks to reset one trait. Before approving a staged suggestion, ask June to compare it on 1–4 original held-out source IDs using personalityEvaluate with mode:"compare". Review the exact proposed style and comparison, then approve it for all conversations with !personality approve {"proposalId":"ID","expectedVersion":VERSION,"evaluationId":"RECEIPT_UUID","candidateDigest":"SHA256_FROM_COMPARISON","publish":true}. A complete, unexpired host comparison must still match the exact candidate, effective current profile and evidence; a preview alone is insufficient. Judgments are advisory, not a required winning score. Approval publishes only style, never its private evidence or rationale. Grounded fields return to defaults if their evidence expires or is forgotten, including on rollback. Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Reject a staged suggestion with !personality reject {"proposalId":"ID"}; rejection is permanent for that ID and does not change my global voice. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
 
 export function isPersonalityCommand(text: string): boolean {
   return /^!personality(?:\s|$)/.test(text.trim());
@@ -198,6 +199,8 @@ const rejectSchema = z.strictObject({
 const approveSchema = z.strictObject({
   proposalId: z.string().regex(/^personality:[a-f0-9]{64}$/),
   expectedVersion: z.number().int().nonnegative().safe(),
+  evaluationId: z.uuid(),
+  candidateDigest: z.string().regex(/^[a-f0-9]{64}$/),
   publish: z.literal(true),
 });
 
@@ -485,7 +488,8 @@ export function createPersonalityActor(
           const approval = approveSchema.safeParse(value);
           if (!approval.success)
             return "Invalid personality approval. Nothing changed.";
-          const { proposalId, expectedVersion } = approval.data;
+          const { proposalId, expectedVersion, evaluationId, candidateDigest } =
+            approval.data;
           const decision = c.state.proposalDecisions?.[proposalId];
           if (decision?.status === "accepted") {
             await c.saveState({ immediate: true });
@@ -504,18 +508,35 @@ export function createPersonalityActor(
             proposal.expectedVersion !== head.version
           )
             return `Personality changed: current version is ${head.version}. Request a new suggestion; nothing was overwritten.`;
+          const evaluation = curated?.readEvaluation(
+            privateScope,
+            evaluationId,
+          );
+          const current = currentPersonality(c.state.revisions, effective);
+          const version = head.version + 1;
           const style = globalStyleSchema.parse({
-            ...effective(head).style,
+            ...current.style,
             ...proposal.changes,
           });
+          // A caller-provided digest is confirmation, not proof of evaluation.
+          // Forgetting can change effective style without advancing the version.
+          if (
+            evaluation?.status !== "complete" ||
+            evaluation.candidateId !== proposalId ||
+            evaluation.expectedVersion !== expectedVersion ||
+            evaluation.currentDigest !== personalityProfileDigest(current) ||
+            evaluation.candidateDigest !== candidateDigest ||
+            evaluation.candidateDigest !==
+              personalityProfileDigest({ version, style })
+          )
+            return "Personality evaluation is unavailable or no longer matches this candidate and current profile. Request a new comparison and review it; nothing changed.";
           const proposalIds = { ...head.proposalIds };
           for (const trait of Object.keys(proposal.changes) as (keyof Style)[])
             proposalIds[trait] = proposalId;
-          // Live evidence, head guard, revision and terminal decision share one
-          // synchronous turn. No private rationale is copied into actor state.
-          if (proposal.expiresAt <= Date.now())
-            return "That personality suggestion is unavailable or its evidence is no longer valid. Nothing changed.";
-          const version = head.version + 1;
+          // Evidence, evaluation, head guard and terminal decision share one
+          // synchronous turn. Recheck expiry after all synchronous store reads.
+          if (Math.min(proposal.expiresAt, evaluation.expiresAt) <= Date.now())
+            return "Personality suggestion or evaluation expired. Request a new comparison; nothing changed.";
           c.state.revisions.push({
             version,
             style,

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,8 +9,14 @@ import { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
 import {
   GLOBAL_PROPOSAL_MAX_AGE_MS,
+  type GlobalPersonalityProposal,
   type ReflectionProposalBinding,
 } from "../reflection/global-proposal.js";
+import {
+  type PersonalityComparisonReceipt,
+  personalityHeldOutDigest,
+} from "../reflection/personality-comparison.js";
+import { personalityProfileDigest } from "./personality-evaluation-preview.js";
 import { createJuneRegistry } from "./registry.js";
 
 it("approves only the exact live suggestion at its staged head through owner-private June ingress", async (t) => {
@@ -103,8 +109,74 @@ it("approves only the exact live suggestion at its staged head through owner-pri
       reflection,
     );
   };
-  const command = (proposalId: string, expectedVersion: number) =>
-    `!personality approve ${JSON.stringify({ proposalId, expectedVersion, publish: true })}`;
+  evidence.appendSource({
+    id: "held-out",
+    audiences: [scope],
+    platform: "slack",
+    account: "T1",
+    conversation: "D1",
+    author: "U1",
+    sourceUrl: "https://example.com/held-out",
+    observedAt: Date.now() - 60 * 60 * 1000,
+    text: "PRIVATE held-out interaction",
+  });
+  const evaluations = new Map<string, PersonalityComparisonReceipt>();
+  const evaluate = async (
+    proposal: GlobalPersonalityProposal,
+    overrides: Partial<
+      Omit<PersonalityComparisonReceipt, "evaluationId" | "expiresAt">
+    > = {},
+  ) => {
+    const current = await profile.read();
+    const now = overrides.evaluatedAt ?? Date.now();
+    const heldOutSourceIds = overrides.heldOutSourceIds ?? ["held-out"];
+    const receipt = curated.recordEvaluation(
+      scope,
+      {
+        candidateId: proposal.id,
+        expectedVersion: proposal.expectedVersion,
+        currentDigest: personalityProfileDigest(current),
+        candidateDigest: personalityProfileDigest({
+          version: current.version + 1,
+          style: { ...current.style, ...proposal.changes },
+        }),
+        heldOutSourceIds,
+        heldOutDigest: personalityHeldOutDigest(
+          evidence.reflectionEvidence(
+            scope,
+            heldOutSourceIds,
+            GLOBAL_PROPOSAL_MAX_AGE_MS,
+          ),
+        ),
+        evidenceMaxAgeMs: GLOBAL_PROPOSAL_MAX_AGE_MS,
+        evaluatedAt: now,
+        status: "complete",
+        // An unfavorable judgment is still advisory; the owner may approve it.
+        pairs: heldOutSourceIds.map((evidenceId) => ({
+          evidenceId,
+          current: "yes",
+          candidate: "no",
+          outcome: "current",
+        })),
+        ...overrides,
+      },
+      now,
+    );
+    evaluations.set(proposal.id, receipt);
+    return receipt;
+  };
+  const unknownEvaluationId = randomUUID();
+  const command = (proposalId: string, expectedVersion: number, extra = {}) =>
+    `!personality approve ${JSON.stringify({
+      proposalId,
+      expectedVersion,
+      evaluationId:
+        evaluations.get(proposalId)?.evaluationId ?? unknownEvaluationId,
+      candidateDigest:
+        evaluations.get(proposalId)?.candidateDigest ?? "0".repeat(64),
+      publish: true,
+      ...extra,
+    })}`;
   const candidateId = "a".repeat(64);
   const valid = stage("fresh", 0, 0, scope, {
     candidateId,
@@ -143,11 +215,16 @@ it("approves only the exact live suggestion at its staged head through owner-pri
       await profile.command({ ...source, text: command(valid.id, 0) }),
     ).not.toContain("Saved global");
   }
-  for (const extra of [{ changes: { tone: "playful" } }, { publish: false }]) {
+  for (const extra of [
+    { changes: { tone: "playful" } },
+    { publish: false },
+    { evaluationId: undefined },
+    { candidateDigest: undefined },
+  ]) {
     expect(
       await profile.command({
         ...event,
-        text: `!personality approve ${JSON.stringify({ proposalId: valid.id, expectedVersion: 0, publish: true, ...extra })}`,
+        text: command(valid.id, 0, extra),
       }),
     ).toContain("Invalid personality approval");
   }
@@ -165,20 +242,79 @@ it("approves only the exact live suggestion at its staged head through owner-pri
   expect(
     await profile.command({ ...event, text: command(valid.id, 1) }),
   ).toMatch(/^Personality changed:/);
+  // Caller-supplied digests without a stored evaluation cannot approve.
+  expect(
+    await profile.command({ ...event, text: command(valid.id, 0) }),
+  ).toContain("Personality evaluation is unavailable");
+  for (const overrides of [
+    { candidateDigest: "f".repeat(64) },
+    { currentDigest: "e".repeat(64) },
+    {
+      status: "incomplete" as const,
+      pairs: [
+        {
+          evidenceId: "held-out",
+          current: "yes" as const,
+          candidate: "abstain" as const,
+          outcome: "unknown" as const,
+        },
+      ],
+    },
+  ]) {
+    await evaluate(valid, overrides);
+    expect(
+      await profile.command({ ...event, text: command(valid.id, 0) }),
+    ).toContain("Personality evaluation is unavailable");
+    expect((await profile.read()).version).toBe(0);
+  }
+  const wrongCandidate = await evaluate(oldHead);
+  await evaluate(valid);
+  expect(
+    await profile.command({
+      ...event,
+      text: command(valid.id, 0, {
+        evaluationId: wrongCandidate.evaluationId,
+        candidateDigest: wrongCandidate.candidateDigest,
+      }),
+    }),
+  ).toContain("Personality evaluation is unavailable");
+  const staleEvaluation = stage("stale-evaluation", 0, 20 * 60 * 1000);
+  await evaluate(staleEvaluation, { evaluatedAt: Date.now() - 16 * 60 * 1000 });
+  expect(
+    await profile.command({ ...event, text: command(staleEvaluation.id, 0) }),
+  ).toContain("Personality evaluation is unavailable");
+  const heldOnly = stage("held-only", 0);
+  await evaluate(valid, { heldOutSourceIds: heldOnly.sourceIds });
+  evidence.deleteSource("held-only");
+  expect(curated.pendingGlobalProposal(scope, valid.id)).toBeDefined();
+  expect(
+    await profile.command({ ...event, text: command(valid.id, 0) }),
+  ).toContain("Personality evaluation is unavailable");
+  await evaluate(valid);
   const june = client.conversation.getOrCreate(["private", owner.id]);
-  await june.send("inbox", {
-    type: "event",
-    event: { ...event, text: command(valid.id, 0) },
+  const deliverApproval = async (id: string, extra = {}) => {
+    await june.send("inbox", {
+      type: "event",
+      event: { ...event, id, messageId: id, text: command(valid.id, 0, extra) },
+    });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).some(
+            (record) => record.event.id === id && record.done,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+  };
+  await deliverApproval("mismatched-digest", {
+    candidateDigest: "0".repeat(64),
   });
-  await expect
-    .poll(
-      async () =>
-        Object.values((await june.snapshot()).events).some(
-          (record) => record.event.id === event.id && record.done,
-        ),
-      { timeout: 10_000 },
-    )
-    .toBe(true);
+  expect(sent.at(-1)?.content).toMatchObject({
+    text: expect.stringContaining("Personality evaluation is unavailable"),
+  });
+  expect((await profile.read()).version).toBe(0);
+  await deliverApproval(event.id);
   expect(sent.at(-1)?.content).toMatchObject({
     text: expect.stringContaining("Saved global personality revision 1"),
   });
@@ -283,6 +419,7 @@ it("approves only the exact live suggestion at its staged head through owner-pri
   ).toMatch(/^Personality changed:/);
   expect((await profile.read()).version).toBe(4);
   const competing = [stage("candidate-a", 4), stage("candidate-b", 4)];
+  for (const proposal of competing) await evaluate(proposal);
   const results = await Promise.all(
     competing.map((proposal, index) =>
       profile.command({
@@ -299,9 +436,31 @@ it("approves only the exact live suggestion at its staged head through owner-pri
     results.filter((result) => result.startsWith("Personality changed:")),
   ).toHaveLength(1);
   expect((await profile.read()).version).toBe(5);
+  const drifted = stage("same-version-drift", 5);
+  const beforeDrift = await evaluate(drifted);
   evidence.deleteSource("candidate-a");
   evidence.deleteSource("candidate-b");
   expect((await profile.read()).style.tone).toBe("warm");
+  // Candidate overwrites both revoked fields: its digest remains identical.
+  // Only comparing the effective *current* digest catches this stale review.
+  expect(
+    personalityProfileDigest({
+      version: 6,
+      style: {
+        ...(await profile.read()).style,
+        ...drifted.changes,
+      },
+    }),
+  ).toBe(beforeDrift.candidateDigest);
+  expect(curated.readEvaluation(scope, beforeDrift.evaluationId)).toBeDefined();
+  expect(
+    await profile.command({
+      ...event,
+      id: "same-version-drift",
+      text: command(drifted.id, 5),
+    }),
+  ).toContain("Personality evaluation is unavailable");
+  expect((await profile.read()).version).toBe(5);
   // The enum matches stored v5, but this is new, independent owner authority.
   const sameValue = await profile.command({
     ...event,

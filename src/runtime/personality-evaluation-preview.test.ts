@@ -449,7 +449,8 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
     }),
   ).toEqual(action);
 
-  // Owner publication is fixture setup, never an evaluation side effect.
+  // The real June comparison receipt can be reviewed and deliberately approved;
+  // neither model output nor a mismatched digest publishes the candidate.
   const approved = curated.stageGlobalProposal(scope, {
     expectedVersion: 0,
     changes: { curiosity: "eager" },
@@ -457,9 +458,49 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
     explanation: "PRIVATE grounded style",
     confidence: 0.8,
   });
+  web = false;
+  action = {
+    text: "",
+    personalityEvaluate: { ...comparisonRequest, candidateId: approved.id },
+  };
+  await deliver();
+  const approvalReport = sent.at(-1)?.content;
+  if (approvalReport?.type !== "text")
+    throw new Error("Missing approval comparison");
+  const approvalEvaluationId = approvalReport.text.match(
+    /"evaluationId":"([^"]+)"/,
+  )?.[1];
+  const approvalReceipt = curated.readEvaluation(
+    scope,
+    approvalEvaluationId ?? "",
+  );
+  if (!approvalReceipt) throw new Error("Missing trusted comparison receipt");
+  expect(
+    (await client.personality.getOrCreate([owner.id]).read()).version,
+  ).toBe(0);
+  const approval = {
+    proposalId: approved.id,
+    expectedVersion: 0,
+    evaluationId: approvalReceipt.evaluationId,
+    candidateDigest: approvalReceipt.candidateDigest,
+    publish: true,
+  };
   await deliver({
-    text: `!personality approve ${JSON.stringify({ proposalId: approved.id, expectedVersion: 0, publish: true })}`,
+    text: `!personality approve ${JSON.stringify({ ...approval, candidateDigest: "0".repeat(64) })}`,
     personalityCommandEligible: true,
+  });
+  expect(sent.at(-1)?.content).toMatchObject({
+    text: expect.stringContaining("Personality evaluation is unavailable"),
+  });
+  expect(
+    (await client.personality.getOrCreate([owner.id]).read()).version,
+  ).toBe(0);
+  await deliver({
+    text: `!personality approve ${JSON.stringify(approval)}`,
+    personalityCommandEligible: true,
+  });
+  expect(sent.at(-1)?.content).toMatchObject({
+    text: expect.stringContaining("Saved global personality revision 1"),
   });
   const next = curated.stageGlobalProposal(scope, {
     expectedVersion: 1,
@@ -485,5 +526,5 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
   );
   if (!beforeForgetting) throw new Error("Missing pre-forgetting snapshot");
   expect(await service.isCurrent(beforeForgetting)).toBe(false);
-  expect(state.calls).toHaveLength(6);
+  expect(state.calls).toHaveLength(10);
 });

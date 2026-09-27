@@ -15,6 +15,8 @@ import { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { GLOBAL_PROPOSAL_MAX_AGE_MS } from "../reflection/global-proposal.js";
+import { createPersonalityComparison } from "./personality-comparison.js";
+import { createPersonalityPreview } from "./personality-evaluation-preview.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
 it("inspects pending suggestions through June without disclosing private support or granting other audiences a read", async (t) => {
@@ -299,9 +301,28 @@ it("inspects pending suggestions through June without disclosing private support
   ).toThrow();
   const approved = pending[0];
   if (!approved) throw new Error("Missing approval fixture");
+  append("held-out");
+  const compared = await createPersonalityComparison({
+    proposals: curated,
+    preview: createPersonalityPreview({
+      ownerId: owner.id,
+      store,
+      readCandidate: (id) => profile.evaluationCandidate(id),
+      evidenceMaxAgeMs: GLOBAL_PROPOSAL_MAX_AGE_MS,
+      decide: async (input) => ({
+        answer: "yes",
+        evidenceIds: input.evidence.map((e) => e.id),
+        rationale: "Suitable",
+      }),
+    }),
+  })({ candidateId: approved.id, heldOutSourceIds: ["held-out"] });
+  if (compared.status !== "comparison")
+    throw new Error("Missing comparison fixture");
+  const { evaluationId, candidateDigest } = compared.receipt;
+  const evaluatedHead = curated.ownerHistory().commit;
   expect(
     await deliver({
-      text: `!personality approve ${JSON.stringify({ proposalId: approved.id, expectedVersion: 1, publish: true })}`,
+      text: `!personality approve ${JSON.stringify({ proposalId: approved.id, expectedVersion: 1, evaluationId, candidateDigest, publish: true })}`,
     }),
   ).toContain("Saved global personality revision 2");
   const afterApproval = await deliver();
@@ -311,5 +332,5 @@ it("inspects pending suggestions through June without disclosing private support
     ),
   ).toEqual(pending.slice(1, 4).map((p) => p.id));
   expect(JSON.stringify(await profile.read())).not.toContain(approved.id);
-  expect(curated.ownerHistory().commit).toBe(encryptedHead);
+  expect(curated.ownerHistory().commit).toBe(evaluatedHead);
 });

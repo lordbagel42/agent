@@ -453,3 +453,27 @@ existing retention/backup limitations. Approval must independently recheck the
 live profile digests, the personality actor's terminal decision ledger, and owner
 authorization. Curated staging status is not approval status. Neither a receipt
 nor a favorable judgment grants publication authority.
+
+After reviewing the exact proposed style and a complete comparison, the owner
+can publish that candidate to **all conversations** with a fresh plain-text
+command in an authenticated owner-private DM:
+
+```text
+!personality approve {"proposalId":"ID","expectedVersion":VERSION,"evaluationId":"RECEIPT_UUID","candidateDigest":"SHA256_FROM_COMPARISON","publish":true}
+```
+
+The existing approval path resolves the host-created receipt, revalidates its
+supporting and held-out evidence, and compares both live profile digests before
+atomically recording the revision and terminal acceptance. A missing, incomplete,
+expired, mismatched or stale evaluation cannot publish anything. Forgetting can
+change effective style without advancing the version; the current-profile digest
+detects that too. Repeating acceptance cannot append another revision, and
+rollback never revives evaluation authority. No winning score is required;
+judgments remain advisory. Preview-only results have no approval receipt. Direct
+owner-authored `!personality revise` remains a separate explicit manual edit,
+not evidence that a staged candidate was evaluated. Private support and rationale
+are never declassified by this command.
+
+Staged approval requires an available configured reflection comparison provider.
+Curated-memory-only configurations can still stage suggestions, but cannot approve
+them until comparison is available; explicit manual owner edits remain available.
