@@ -178,9 +178,53 @@ Gmail alone retains a JSON evidence envelope with inline body text, thread/messa
 IDs, method and selected original From/To/Cc/Bcc/Reply-To headers. It does not merge
 people by display name. Account/conversation/audiences/date/link are first-class
 encrypted Source fields on both platforms. Treat **all source content as untrusted
-evidence**, never instructions. Graph extraction/review is a later stage, not
-performed here. Store/key provisioning and authenticated HTTP routing belong to
-the host; use a private encrypted store outside Git.
+evidence**, never instructions. Page fetching never runs extraction or review.
+Store/key provisioning and authenticated HTTP routing belong to the host; use a
+private encrypted store outside Git.
+
+## One approved imported-memory batch
+
+`ImportedMemoryExtraction` is a separate operator-only pass over stored evidence.
+It reuses `memory.extraction`, its provider/privacy activation gates and the
+existing pending-claim ledger. It does not fetch accounts, replay live events,
+run tools, accept claims, or start background work.
+
+Ask June privately to extract memories from imported history. Her existing
+`inspection:"imports"` action returns bounded counts and, for eligible selections,
+an exact review path and digest. The request grants no authority. The operator:
+
+1. Reads `GET /operator/imports/:id/extraction` using the owner bearer token.
+   Review the exact source IDs, context claim IDs, immutable coverage, model
+   configuration, blockers and digest. The console cookie does not authorize these routes.
+2. Approves `POST /operator/imports/:id/extraction/start` with
+   `{confirmed:true,digest}`. This authorizes **one** call for at most 20 sources
+   and 64,000 serialized characters, plus at most 20 existing scoped claims /
+   16,000 characters for context. The digest binds those claim IDs too; changed
+   context requires a fresh review. It stages at most 20 pending hypotheses;
+   use the existing memory proposal review separately to accept or reject them.
+3. Reinspect for another batch; an old digest cannot advance another batch.
+   `POST /operator/imports/:id/extraction/cancel` with `{digest}` durably prevents
+   staging and requests abort. Cancellation is not proof the provider stopped.
+
+The encrypted ledger records attempted exact inputs before inference. Completion
+and proposals commit together, including empty results. Restart never runs work;
+an uncompleted intent reports uncertain and blocks new admission until operator
+investigation/cancellation. Failed, cancelled, uncertain and successful inputs
+are never automatically extracted again, including through overlapping import
+selections. There is deliberately no retry/reset endpoint in this increment.
+Deletion of any batch source invalidates the entire in-flight batch, even if the
+model did not cite that source. Already transmitted provider data cannot be erased
+by local cancellation or deletion.
+
+New pages atomically persist selection/source membership with their cursor.
+**Legacy pages without membership are ineligible**, reported as `untrackedPages`:
+coverage or source text cannot prove which Gmail label authorized an old read.
+Use a separately approved bounded reimport under a new selection, or a future
+audited migration; this code does neither automatically. Oversized sources are
+counted and left unattempted, never truncated or silently marked complete.
+Changing configuration or provider bindings invalidates the approval digest.
+This is forward-only ledger evolution: old binaries cannot read the new strict
+snapshot fields; do not blindly roll back code against this store.
 
 Authoritative references used (no account reads during development):
 

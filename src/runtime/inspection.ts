@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { CompanionReply, MessageEvent } from "../core/contracts.js";
 import type { BitwardenCredentialResolver } from "../credentials/bitwarden.js";
+import type { ImportedMemoryExtraction } from "../imports/extraction.js";
 import type { HistoryImports } from "../imports/index.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
@@ -87,6 +88,7 @@ export function createInspectionReader(deps: {
   audience: string;
   memory?: { store: EvidenceStore; personality?: CuratedPersonalityStore };
   imports?: HistoryImports;
+  importExtraction?: ImportedMemoryExtraction;
   selections: Record<string, ImportCoverage>;
   nativeCoding?: () => Promise<string>;
   capabilities?: () => string;
@@ -188,42 +190,72 @@ export function createInspectionReader(deps: {
         const selections = Object.entries(deps.selections).filter(
           ([, coverage]) => coverage.audiences.includes(deps.audience),
         );
-        const rows = selections.slice(0, 10).map(([id, coverage]) => {
-          const {
-            running,
-            progress,
-            notBefore,
-            cooldownReason,
-            coolingDown,
-            budget,
-            lastConflict,
-          } = imports.status(id);
-          if (progress && !isDeepStrictEqual(progress.coverage, coverage))
-            throw new Error("Import coverage changed");
-          return {
-            selection: id.slice(0, 80),
-            conversations: coverage.conversations.length,
-            from: coverage.from,
-            to: coverage.to,
-            running,
-            started: progress !== undefined,
-            pages: progress?.pages ?? 0,
-            complete: progress?.complete ?? false,
-            notBefore,
-            cooldownReason,
-            coolingDown,
-            gapCount: progress?.gaps.length ?? 0,
-            budgetRejected: budget.lastRejection,
-            lastConflict,
-            gapKinds: summarizeImportGaps(progress?.gaps ?? []),
-          };
-        });
+        const rows = selections
+          .slice(0, deps.importExtraction ? 5 : 10)
+          .map(([id, coverage]) => {
+            const {
+              running,
+              progress,
+              notBefore,
+              cooldownReason,
+              coolingDown,
+              budget,
+              lastConflict,
+            } = imports.status(id);
+            if (progress && !isDeepStrictEqual(progress.coverage, coverage))
+              throw new Error("Import coverage changed");
+            const extraction = deps.importExtraction?.review(id);
+            return {
+              selection: id.slice(0, 80),
+              conversations: coverage.conversations.length,
+              from: coverage.from,
+              to: coverage.to,
+              running,
+              started: progress !== undefined,
+              pages: progress?.pages ?? 0,
+              complete: progress?.complete ?? false,
+              notBefore,
+              cooldownReason,
+              coolingDown,
+              gapCount: progress?.gaps.length ?? 0,
+              budgetRejected: budget.lastRejection,
+              lastConflict,
+              gapKinds: summarizeImportGaps(progress?.gaps ?? []),
+              extraction: extraction
+                ? {
+                    batch: extraction.sourceIds.length,
+                    eligible: extraction.eligible,
+                    oversized: extraction.oversized,
+                    untrackedPages: extraction.untrackedPages,
+                    blocked: extraction.blocked,
+                    staged: extraction.attempts.filter(
+                      (e) => e.status === "staged",
+                    ).length,
+                    uncertain: extraction.attempts.filter(
+                      (e) => e.status === "uncertain",
+                    ).length,
+                    cancelled: extraction.attempts.filter(
+                      (e) => e.status === "cancelled",
+                    ).length,
+                    // Exact actionable request, never a bearer credential or a
+                    // grant. Bound configured IDs keep the metadata reply small.
+                    request:
+                      extraction.digest && id.length <= 80
+                        ? {
+                            review: `/operator/imports/${encodeURIComponent(id)}/extraction`,
+                            digest: extraction.digest,
+                          }
+                        : null,
+                  }
+                : undefined,
+            };
+          });
         const reconciliation = rows.some(
           (row) => row.lastConflict === "immutable_source",
         )
           ? "\nImmutable-source conflict: a page reused a source ID with changed fields. Rejected page: stored evidence and cursor unchanged. Saved evidence is not proof of current content. Please arrange explicit reconciliation through the authenticated operator before retrying. I cannot overwrite evidence, skip conflicts, invent replacement IDs, or authorize reconciliation. This is operator review, not a queued or completed repair."
           : "";
-        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nnotBefore: persisted account cooldown deadline (epoch ms). cooldownReason: rate_limit, provider_backoff, pacing, unknown (legacy), or null. coolingDown is a time gate, not provider readiness. Wait until notBefore; no polling or automatic retry. Explicit operator confirmation is needed to resume, even after expiry/restart.\nbudgetRejected and lastConflict are last observed this process; page-count advancement or restart clears them, but cooldown-only updates do not. Null proves neither capacity nor absence of conflicts. Budget rejection: whole page exceeds ledger-wide source/claim/full-snapshot UTF-8 byte ceilings; no page evidence or progress committed. Reduce import or request operator capacity review.\nWindows are requested [from,to) epoch milliseconds, not verified coverage. Pages count persisted pages; a finished page does not mean pagination is exhausted. Complete means only that pagination exhausted the selected window, not gap-free coverage or complete account history. Gap counts are persisted limitation/omission notes, may repeat, and are not counts of missing messages. Zero recorded gaps is not proof of completeness; unstarted selections have not been assessed. Gap kinds are content-free summaries of recognized notes; unclassified details are withheld. Only shown selections are summarized. Raw gap contents, account/conversation IDs, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.${reconciliation}`;
+        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nnotBefore: persisted account cooldown deadline (epoch ms). cooldownReason: rate_limit, provider_backoff, pacing, unknown (legacy), or null. coolingDown is a time gate, not provider readiness. Wait until notBefore; no polling or automatic retry. Explicit operator confirmation is needed to resume, even after expiry/restart.\nbudgetRejected and lastConflict are last observed this process; page-count advancement or restart clears them, but cooldown-only updates do not. Null proves neither capacity nor absence of conflicts. Budget rejection: whole page exceeds ledger-wide source/claim/full-snapshot UTF-8 byte ceilings; no page evidence or progress committed. Reduce import or request operator capacity review.\nWindows are requested [from,to) epoch milliseconds, not verified coverage. Pages count persisted pages; a finished page does not mean pagination is exhausted. Complete means only that pagination exhausted the selected window, not gap-free coverage or complete account history. Gap counts are persisted limitation/omission notes, may repeat, and are not counts of missing messages. Zero recorded gaps is not proof of completeness; unstarted selections have not been assessed. Gap kinds are content-free summaries of recognized notes; unclassified details are withheld. Only shown selections are summarized. Raw gap contents, account/conversation IDs, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.${reconciliation}${deps.importExtraction ? "\nEach request names the exact review path and digest. Ask the operator to GET that path to review source IDs, context claim IDs, coverage and model, then POST to that path + /start with {confirmed:true,digest} using owner bearer authentication. Each approval allows one batch (20 sources / 64,000 serialized characters plus 20 scoped claims / 16,000 characters at most), one paid model call, and pending claims only. Separate memory review accepts claims. Untracked legacy pages and oversized sources are not extracted. Unknown calls are never automatically repeated. This inspection grants no permission and runs no extraction." : "\nExtraction unavailable."}`;
       }
       case "reflection": {
         if (!deps.reflection) return `${heading}\nReflection is unavailable.`;

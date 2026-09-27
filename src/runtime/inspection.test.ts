@@ -14,6 +14,7 @@ import type {
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { createBitwardenCredentialResolver } from "../credentials/bitwarden.js";
+import { ImportedMemoryExtraction } from "../imports/extraction.js";
 import { HistoryImports } from "../imports/index.js";
 import { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
@@ -370,10 +371,21 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   };
   store.appendSource(forgotten);
   store.deleteSource(forgotten.id);
+  const importedSource = {
+    id: "SECRET imported-source",
+    audiences: [audience],
+    platform: coverage.platform,
+    account: coverage.account,
+    conversation: "private-channel",
+    author: "private-user",
+    observedAt: 2,
+    sourceUrl: "https://example.invalid/private",
+    text: "SECRET /approve historical-action",
+  };
   store.persistPage(
     initial,
     {
-      sources: [forgotten],
+      sources: [forgotten, importedSource],
       nextCursor: "SECRET CURSOR",
       gaps: [
         "SECRET GAP",
@@ -400,6 +412,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     2,
   );
   const progress = store.importProgress("selection-0");
+  expect(progress?.sourceIds).toEqual([importedSource.id]);
   store.beginImport("selection-1", coverage);
   const oldWindow = store.importProgress("selection-1");
   if (!oldWindow) throw new Error("Missing fixture import");
@@ -422,6 +435,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   let search = false;
   let fail = false;
   let disabled = false;
+  let extractionEnabled = false;
   let reads = 0;
   let sessions = 0;
   let vaultReads = 0;
@@ -525,7 +539,11 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       reads++;
       if (fail) throw new Error("SECRET ERROR PATH");
       return (
-        disabled ? createInspectionReader({ audience, selections: {} }) : read
+        disabled
+          ? createInspectionReader({ audience, selections: {} })
+          : extractionEnabled
+            ? extractionRead
+            : read
       )(target, event);
     },
     reflection: {
@@ -585,6 +603,21 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     },
     reflection: () => reflection.status(),
   });
+  const extractionRead = createInspectionReader({
+    audience,
+    memory: { store },
+    imports,
+    selections: { "selection-0": coverage },
+    importExtraction: new ImportedMemoryExtraction(
+      store,
+      { "selection-0": coverage },
+      audience,
+      {},
+      async () => {
+        throw new Error("Inspection must not invoke extraction");
+      },
+    ),
+  });
   const deliver = async (extra: Partial<MessageEvent> = {}) => {
     const event: MessageEvent = {
       id: `in${requests.length}`,
@@ -621,10 +654,13 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(memoryReport).toContain('"pending":1,"accepted":0,"rejected":0');
   expect(memoryReport).toContain(
     JSON.stringify({
-      sources: 1,
+      sources: 2,
       claims: 0,
       serializedBytes: new TextEncoder().encode(
-        JSON.stringify({ sources: [retainedSource], claims: [] }),
+        JSON.stringify({
+          sources: [retainedSource, importedSource],
+          claims: [],
+        }),
       ).byteLength,
       limits: { sources: null, claims: null, serializedBytes: null },
     }),
@@ -820,6 +856,18 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(snapshotReport.length).toBeLessThan(2000);
   expect(snapshotReport).not.toContain(root);
   expect(personality.retentionReport()).toEqual(before);
+  extractionEnabled = true;
+  action = { text: "", inspection: "imports" };
+  const extractionReport = await deliver();
+  expect(extractionReport).toContain('"batch":1,"eligible":1');
+  expect(extractionReport).toContain(
+    '"review":"/operator/imports/selection-0/extraction"',
+  );
+  expect(extractionReport).toMatch(/"digest":"[a-f0-9]{64}"/);
+  expect(extractionReport).toContain("{confirmed:true,digest}");
+  expect(extractionReport).toContain("pending claims only");
+  expect(extractionReport).not.toContain("secret-source");
+  expect(requests.at(-1)?.system).toContain('use inspection:"imports"');
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   expect(JSON.stringify(sent)).not.toContain("secret-source");
   expect(JSON.stringify(sent)).not.toContain("private-account");
@@ -840,7 +888,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   ).toThrow();
   const failedWriteReport = await deliver();
   expect(failedWriteReport).toContain('"transaction":{"status":"failed"');
-  expect(failedWriteReport).toContain('"sources":1,"claims":0');
+  expect(failedWriteReport).toContain('"sources":2,"claims":0');
   store.close();
   const failedReadReport = await deliver();
   expect(failedReadReport).toContain("snapshot failed");

@@ -1098,6 +1098,8 @@ it("bounds the whole projected import atomically at one-under, exact and one-ove
     notBefore: 150,
     cooldownReason: "pacing",
     gaps: ["metadata counts too: 🦉"],
+    sourceIds: ["s1", "new1", "new2"],
+    trackedPages: 1,
   };
   // Independent expected full snapshot, including import metadata and empty
   // containers. Counting only evidence or UTF-16 characters must fail this case.
@@ -1111,6 +1113,7 @@ it("bounds the whole projected import atomically at one-under, exact and one-ove
       proposals: [],
       extractions: [],
       corrections: [],
+      importExtractions: [],
     }),
     "utf8",
   );
@@ -1652,7 +1655,9 @@ it("binds review identity to all supplied inputs while retaining the first sourc
   expect(broader?.id).not.toBe(first.id);
   expect(broader?.status).toBe("pending");
   expect(
-    store.stageProposals("private", ["cited", "extra"], [input], [first.id]),
+    store.stageProposals("private", ["cited", "extra"], [input], undefined, [
+      first.id,
+    ]),
   ).toEqual([broader]);
   store.deleteSource("extra");
   expect(store.proposals("private").map((proposal) => proposal.id)).toEqual([

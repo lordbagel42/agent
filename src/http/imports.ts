@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
+import type { ImportedMemoryExtraction } from "../imports/extraction.js";
 import type { HistoryImports } from "../imports/index.js";
 import { ImportBudgetExceeded, type ImportCoverage } from "../memory/store.js";
 
@@ -11,6 +12,7 @@ import { ImportBudgetExceeded, type ImportCoverage } from "../memory/store.js";
 export function createImportRoutes(
   imports: HistoryImports,
   selections: Record<string, ImportCoverage>,
+  extraction?: ImportedMemoryExtraction,
 ) {
   const approved = Object.fromEntries(
     Object.entries(selections).map(([id, coverage]) => [
@@ -69,5 +71,32 @@ export function createImportRoutes(
     return c.json(await imports.start(id));
   });
   app.post("/:id/cancel", (c) => c.json(imports.cancel(c.req.param("id"))));
+  app.get("/:id/extraction", (c) =>
+    extraction
+      ? c.json(extraction.review(c.req.param("id")))
+      : c.json({ error: "extraction_unavailable" }, 503),
+  );
+  app.post("/:id/extraction/start", async (c) => {
+    if (!extraction) return c.json({ error: "extraction_unavailable" }, 503);
+    const input = z
+      .strictObject({
+        confirmed: z.literal(true),
+        digest: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .parse(await c.req.json());
+    const id = c.req.param("id");
+    if (extraction.review(id).digest !== input.digest)
+      return c.json({ error: "extraction_review_changed" }, 409);
+    return c.json(await extraction.start(id, input.digest));
+  });
+  app.post("/:id/extraction/cancel", async (c) => {
+    if (!extraction) return c.json({ error: "extraction_unavailable" }, 503);
+    const input = z
+      .strictObject({
+        digest: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .parse(await c.req.json());
+    return c.json(extraction.cancel(c.req.param("id"), input.digest));
+  });
   return app;
 }

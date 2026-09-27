@@ -107,6 +107,19 @@ const progressSchema = z.strictObject({
   // Older snapshots have a deadline but no recorded reason.
   cooldownReason: cooldownReasonSchema.nullable().optional(),
   gaps: z.array(z.string().max(10000)),
+  // Legacy pages have no provable per-selection membership; never infer it from
+  // message text or today's Gmail labels. Only future persisted pages fill this.
+  sourceIds: z.array(id).default([]),
+  trackedPages: timestamp.default(0),
+});
+const importExtractionSchema = z.strictObject({
+  id: z.string().regex(/^[a-f0-9]{64}$/),
+  importId: id,
+  audience: id,
+  sourceIds: ids.max(20),
+  contextClaimIds: z.array(id).max(20),
+  status: z.enum(["started", "staged", "uncertain", "cancelled"]),
+  proposalIds: z.array(id).max(20),
 });
 const stateSchema = z.strictObject({
   version: z.literal(1),
@@ -128,6 +141,7 @@ const stateSchema = z.strictObject({
   corrections: z
     .array(z.strictObject({ sourceId: id, correction: correctionSchema }))
     .default([]),
+  importExtractions: z.array(importExtractionSchema).default([]),
 });
 const pageSchema = z.strictObject({
   sources: z.array(sourceSchema).max(1000),
@@ -181,6 +195,7 @@ export type LedgerOperationStatus = {
   attemptedAt: number | null;
   lastSucceededAt: number | null;
 };
+export type ImportExtraction = z.infer<typeof importExtractionSchema>;
 type State = z.infer<typeof stateSchema>;
 
 export const DEFAULT_IMPORT_BUDGET = Object.freeze({
@@ -283,6 +298,17 @@ function removeEvidence(state: State, sourceIds: string[]): Set<string> {
   // Admission receipts survive forgetting, even when all results are removed.
   for (const entry of state.extractions)
     entry.proposalIds = entry.proposalIds.filter((id) => !removed.has(id));
+  for (const extraction of state.importExtractions) {
+    if (
+      [...extraction.sourceIds, ...extraction.contextClaimIds].some((id) =>
+        removed.has(id),
+      )
+    )
+      extraction.status = "cancelled";
+    extraction.proposalIds = extraction.proposalIds.filter(
+      (id) => !removed.has(id),
+    );
+  }
   state.tombstones = [...new Set([...state.tombstones, ...removed])];
   return removed;
 }
@@ -454,6 +480,7 @@ export class EvidenceStore {
             proposals: [],
             extractions: [],
             corrections: [],
+            importExtractions: [],
           });
           this.db.exec("COMMIT");
           this.transactionStatus = {
@@ -672,6 +699,7 @@ export class EvidenceStore {
     audience: string,
     sourceIds: string[],
     output: unknown,
+    importExtractionId?: string,
     contextClaimIds: string[] = [],
   ): MemoryProposal[] {
     const inputs = parse(z.array(proposalInputSchema).max(20), output);
@@ -735,6 +763,25 @@ export class EvidenceStore {
     });
     let admitted: string[] = [];
     this.transaction((state) => {
+      const extraction = importExtractionId
+        ? state.importExtractions.find((e) => e.id === importExtractionId)
+        : undefined;
+      if (
+        importExtractionId &&
+        (extraction?.status !== "started" ||
+          extraction.audience !== audience ||
+          !isDeepStrictEqual(extraction.sourceIds, sourceIds) ||
+          !isDeepStrictEqual(
+            [...extraction.contextClaimIds].sort(),
+            context.claimIds,
+          ) ||
+          !extraction.contextClaimIds.every((id) =>
+            state.claims.some(
+              (c) => c.id === id && c.audiences.includes(audience),
+            ),
+          ))
+      )
+        throw new Error("Import extraction no longer authorized");
       // Source IDs are immutable revision identities. Admission belongs to the
       // exact scoped input set, not model wording, confidence or input order.
       // Recheck even empty outputs so deletion in flight cannot leave a receipt.
@@ -762,34 +809,40 @@ export class EvidenceStore {
       );
       if (previous) {
         admitted = previous.proposalIds;
-        return;
+      } else {
+        const fresh = proposals.filter((proposal) => {
+          // Pre-receipt snapshots used grounding-only identities. Never launder
+          // their unknown context (or tombstones) into a newly tracked identity.
+          const legacyId = `proposal:${createHash("sha256")
+            .update(JSON.stringify([audience, proposal.claim.grounding]))
+            .digest("hex")}`;
+          return (
+            !state.tombstones.includes(legacyId) &&
+            !state.proposals.some(
+              (p) =>
+                p.id === legacyId && p.claim.extractionContext === undefined,
+            )
+          );
+        });
+        for (const proposal of fresh) {
+          // Validate against today's state within the write transaction, including
+          // deletion while extraction was in flight. Do not publish pending claims.
+          insertClaim({ ...state, claims: [...state.claims] }, proposal.claim);
+          if (!state.proposals.some((p) => p.id === proposal.id))
+            state.proposals.push(proposal);
+        }
+        admitted = fresh.map((proposal) => proposal.id);
+        state.extractions.push({
+          audience,
+          sourceIds: selected,
+          proposalIds: admitted,
+        });
       }
-      const fresh = proposals.filter((proposal) => {
-        // Pre-receipt snapshots used grounding-only identities. Never launder
-        // their unknown context (or tombstones) into a newly tracked identity.
-        const legacyId = `proposal:${createHash("sha256")
-          .update(JSON.stringify([audience, proposal.claim.grounding]))
-          .digest("hex")}`;
-        return (
-          !state.tombstones.includes(legacyId) &&
-          !state.proposals.some(
-            (p) => p.id === legacyId && p.claim.extractionContext === undefined,
-          )
-        );
-      });
-      for (const proposal of fresh) {
-        // Validate against today's state within the write transaction, including
-        // deletion while extraction was in flight. Do not publish pending claims.
-        insertClaim({ ...state, claims: [...state.claims] }, proposal.claim);
-        if (!state.proposals.some((p) => p.id === proposal.id))
-          state.proposals.push(proposal);
+      // Completion and proposals commit together, including an empty result.
+      if (extraction) {
+        extraction.status = "staged";
+        extraction.proposalIds = admitted;
       }
-      admitted = fresh.map((proposal) => proposal.id);
-      state.extractions.push({
-        audience,
-        sourceIds: selected,
-        proposalIds: admitted,
-      });
     });
     const saved = this.proposals(audience);
     return admitted.flatMap((id) => saved.find((s) => s.id === id) ?? []);
@@ -1515,6 +1568,51 @@ export class EvidenceStore {
     return cooldown;
   }
 
+  importExtractions(audience: string): ImportExtraction[] {
+    parse(id, audience);
+    return this.read().importExtractions.filter((e) => e.audience === audience);
+  }
+
+  /** Persist intent before a paid call. Overlapping jobs/batches cannot repeat
+   * any previously attempted input, even after cancellation or uncertain exit. */
+  beginImportExtraction(input: ImportExtraction): void {
+    const extraction = parse(importExtractionSchema, input);
+    if (extraction.status !== "started" || extraction.proposalIds.length)
+      throw new Error("Invalid extraction intent");
+    this.transaction((state) => {
+      const progress = state.imports.find((p) => p.id === extraction.importId);
+      if (
+        !progress?.coverage.audiences.includes(extraction.audience) ||
+        !extraction.sourceIds.every((id) => progress.sourceIds.includes(id)) ||
+        state.importExtractions.some(
+          (e) =>
+            e.id === extraction.id ||
+            (e.audience === extraction.audience &&
+              (e.status === "started" ||
+                e.sourceIds.some((id) => extraction.sourceIds.includes(id)))),
+        )
+      )
+        throw new Error("Import extraction already attempted or unauthorized");
+      this.extractionContext(extraction.audience, extraction.sourceIds);
+      state.importExtractions.push(extraction);
+    });
+  }
+
+  stopImportExtraction(
+    extractionId: string,
+    status: "uncertain" | "cancelled",
+  ): void {
+    parse(id, extractionId);
+    parse(z.enum(["uncertain", "cancelled"]), status);
+    this.transaction((state) => {
+      const extraction = state.importExtractions.find(
+        (e) => e.id === extractionId,
+      );
+      if (!extraction) throw new Error("Missing import extraction");
+      if (extraction.status === "started") extraction.status = status;
+    });
+  }
+
   beginImport(jobId: string, input: ImportCoverage): void {
     parse(id, jobId);
     const coverage = parse(coverageSchema, input);
@@ -1534,6 +1632,8 @@ export class EvidenceStore {
           complete: false,
           notBefore: 0,
           gaps: [],
+          sourceIds: [],
+          trackedPages: 0,
         });
     });
   }
@@ -1606,6 +1706,15 @@ export class EvidenceStore {
         }
         insertSource(state, source);
       }
+      progress.sourceIds = [
+        ...new Set([
+          ...progress.sourceIds,
+          ...page.sources
+            .filter((s) => !state.tombstones.includes(s.id))
+            .map((s) => s.id),
+        ]),
+      ];
+      progress.trackedPages++;
       progress.cursor = page.nextCursor;
       progress.complete = page.nextCursor === null;
       progress.pages++;
@@ -1645,6 +1754,7 @@ export async function extractMemory(
     signal?: AbortSignal,
   ) => Promise<unknown>,
   signal?: AbortSignal,
+  importExtractionId?: string,
 ): Promise<MemoryProposal[]> {
   signal?.throwIfAborted();
   const selected = [...sourceIds];
@@ -1656,6 +1766,17 @@ export async function extractMemory(
     maxCharacters: 16000,
   });
   const contextClaimIds = claims.map((claim) => claim.id);
+  if (importExtractionId) {
+    const intent = store
+      .importExtractions(audience)
+      .find((e) => e.id === importExtractionId);
+    if (
+      intent?.status !== "started" ||
+      !isDeepStrictEqual(intent.sourceIds, selected) ||
+      !isDeepStrictEqual(intent.contextClaimIds, contextClaimIds)
+    )
+      throw new Error("Import extraction context changed");
+  }
   const controller = new AbortController();
   const combined = signal
     ? AbortSignal.any([signal, controller.signal])
@@ -1674,7 +1795,13 @@ export async function extractMemory(
     // Even an unreferenced context claim may have influenced the proposal text.
     if (store.deletionRevision() !== revision)
       throw new Error("Memory changed during extraction");
-    return store.stageProposals(audience, selected, output, contextClaimIds);
+    return store.stageProposals(
+      audience,
+      selected,
+      output,
+      importExtractionId,
+      contextClaimIds,
+    );
   } finally {
     active.delete(controller);
     if (!active.size) activeExtractions.delete(store);

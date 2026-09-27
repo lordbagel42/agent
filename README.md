@@ -955,7 +955,20 @@ from that review and reads at most one page. A successful-page retry cannot
 advance a second page. Durable progress binds immutable approved coverage before
 credential lookup. Restart never resumes imports; changed coverage requires a
 new selection. `/cancel` aborts the current fetch, not already persisted pages.
-Imported text never enters the live command inbox. See the detailed
+Imported text never enters the live command inbox.
+
+With `memory.extraction` authorized, ask June privately to extract imported
+memories. `inspection:"imports"` returns up to five extraction status summaries
+with exact operator review paths and approval digests. Read
+`GET /operator/imports/:id/extraction`, then approve one batch with
+`POST /operator/imports/:id/extraction/start` and `{confirmed:true,digest}`.
+Only existing authorized evidence is sent to the configured model (at most 20
+sources / 64,000 serialized characters, plus 20 scoped context claims / 16,000
+characters); resulting claims remain pending for separate review. Restart never
+retries uncertain calls. Legacy pages lacking
+source-membership records and oversized sources remain ineligible, not silently
+completed. No account fetch, claim acceptance or background scheduling is implied.
+See the detailed
 [memory](src/memory/README.md), [import](src/imports/README.md) and
 [reflection](src/reflection/README.md) contracts and their remaining limits.
 

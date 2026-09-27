@@ -35,6 +35,7 @@ import {
 import { createHttpApp } from "./http/app.js";
 import { createImportRoutes } from "./http/imports.js";
 import { createMemoryRoutes } from "./http/memory.js";
+import { ImportedMemoryExtraction } from "./imports/extraction.js";
 import {
   createGmailHistoryFetcher,
   createSlackHistoryFetcher,
@@ -468,6 +469,7 @@ async function main() {
   };
   startupStage = "private memory storage";
   let memory: Dependencies["memory"];
+  let importExtractor: ReturnType<typeof createMemoryExtractor> | undefined;
   if (config.memory) {
     startupStage =
       "memory: requires JUNE_ALLOW_MEMORY=1 after privacy/retention review";
@@ -512,6 +514,7 @@ async function main() {
         usage,
         apiKey: secret(config.memory.extraction.apiKeyEnv),
       });
+    importExtractor = extractor;
     memory = {
       store,
       personality,
@@ -570,6 +573,16 @@ async function main() {
       },
     ]),
   );
+  const importExtraction =
+    memory && importExtractor && config.memory?.extraction
+      ? new ImportedMemoryExtraction(
+          memory.store,
+          selections,
+          ownerAudience,
+          config.memory.extraction,
+          importExtractor,
+        )
+      : undefined;
   const imports =
     memory &&
     new HistoryImports(
@@ -791,6 +804,7 @@ async function main() {
       audience: ownerAudience,
       memory,
       imports,
+      importExtraction,
       selections,
       credentials: credentials ? { inspect: credentials.inspect } : undefined,
       capabilities: () =>
@@ -1093,7 +1107,10 @@ async function main() {
     );
   }
   if (imports) {
-    app.route("/operator/imports", createImportRoutes(imports, selections));
+    app.route(
+      "/operator/imports",
+      createImportRoutes(imports, selections, importExtraction),
+    );
   }
   if (reflection) {
     const actor = client.reflection.getOrCreate([config.owner.id]);
