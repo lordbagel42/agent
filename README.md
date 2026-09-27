@@ -523,6 +523,18 @@ and is not repeated automatically. A separately approved resume can produce a
 new attempt notification. Forgotten-source results remain suppressed. Worker
 claims and unknown outcomes are not independent verification or deployment proof.
 
+Ask “why was coding job ID blocked?” to inspect its bounded `admissionReason`.
+List/inspect report `workspace_occupied` when an existing execution lease denied
+the last attempt, without identifying that execution or returning its goal.
+`admission_unknown` means admission failed without establishing occupancy (for
+example, a retained admission lock); raw filesystem errors are never returned.
+These are recorded failures, not current capacity or a queue position: blocked
+attempts require operator reconciliation and do not retry automatically.
+`null` means no reason was recorded,
+including historical jobs; it does not mean capacity is available. A new
+authorized attempt clears the old reason. Inspection cannot release the lease,
+bypass workspace limits, or authorize a retry.
+
 After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
 `/resume-stopped <job-prefix>`. Do not resume a job with an unknown live worker.

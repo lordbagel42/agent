@@ -1595,7 +1595,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 );
                                 const heading = `Coding snapshot at ${new Date().toISOString()}.`;
                                 const caution =
-                                  "Cancellation requested is not proof of stoppage. Running/needs_review may still have live work; uncertain admission remains held. Worker claims are not verification. No push or deployment is authorized.";
+                                  "admissionReason describes the last attempt, not live capacity: workspace_occupied means an existing lease blocked admission; admission_unknown means admission failed with occupancy unknown. Either requires operator reconciliation and is not queued for automatic retry. Null means no recorded admission reason, not available capacity. Cancellation requested is not proof of stoppage. Running/needs_review may still have live work; uncertain admission remains held. Worker claims are not verification. No push or deployment is authorized.";
                                 if (request.action === "list") {
                                   const rows = [];
                                   for (const id of ids.slice(-5).reverse()) {
@@ -1613,6 +1613,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                         attempts: state.attempts,
                                         cancelRequested:
                                           state.cancelRequested === true,
+                                        admissionReason: codingJobMetadata(
+                                          id,
+                                          state,
+                                          deps.coding?.runtimeId,
+                                        ).admissionReason,
                                       });
                                   }
                                   text = `${heading}\nNative coding: ${deps.coding ? "configured; login and provider health are not verified" : "disabled or unavailable; no native execution can be requested"}. Permitted workspace names: ${JSON.stringify(workspaces.slice(0, 20))}.\nRecent jobs (up to 5): ${JSON.stringify(rows)}\nUse inspect with a job ID for durable details. New work requires a proposal and /approve ID. ${caution}`;

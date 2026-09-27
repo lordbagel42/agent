@@ -30,6 +30,15 @@ export interface WorktreeManifest {
   baseCommit: string;
 }
 
+/** Fixed admission reason only; never include the occupying job's metadata. */
+export class WorkspaceOccupiedError extends Error {
+  constructor() {
+    super(
+      "Coding worktree: workspace occupied; reconcile its existing execution first",
+    );
+  }
+}
+
 /**
  * Command-outcome evidence only, never release authorization. HEAD is captured
  * before execution; no immutable content/artifact or verifier digest is bound.
@@ -287,7 +296,7 @@ export function createWorktreeManager(input: WorktreeConfig) {
             owner.jobId !== jobId ||
             owner.attempt >= attempt
           )
-            fail("workspace occupied; reconcile its existing execution first");
+            throw new WorkspaceOccupiedError();
           // Only an explicit operator confirmation can release uncertain execution.
           await rm(lease, { recursive: true });
         }

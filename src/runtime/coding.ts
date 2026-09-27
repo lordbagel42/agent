@@ -1,9 +1,10 @@
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
-import type {
-  createWorktreeManager,
-  VerificationResult,
-  WorktreeManifest,
+import {
+  type createWorktreeManager,
+  type VerificationResult,
+  WorkspaceOccupiedError,
+  type WorktreeManifest,
 } from "../coding/worktree.js";
 import type {
   CodingRequest,
@@ -56,6 +57,8 @@ export interface CodingState {
   verification?: VerificationResult;
   cancelRequested?: boolean;
   revoked?: boolean;
+  /** Last attempt's admission denial, not a live queue position or grant. */
+  admissionReason?: "workspace_occupied" | "admission_unknown";
 }
 type Command =
   | { type: "propose"; proposal: JobProposal }
@@ -112,6 +115,11 @@ export function codingJobMetadata(
     // Current blockers only, not a diagnosis reconstructed from raw errors.
     recovery: reason ? { reason, guidance: recoveryGuidance[reason] } : null,
     cancelRequested: state.cancelRequested === true,
+    admissionReason:
+      state.admissionReason === "workspace_occupied" ||
+      state.admissionReason === "admission_unknown"
+        ? state.admissionReason
+        : null,
     threadId: state.threadId?.slice(0, 256) ?? null,
     worktreePrepared: !!state.worktree,
     workerResultRecorded: state.workerClaim !== undefined,
@@ -264,6 +272,7 @@ export function createCodingActor(
                 step.state.attempts = approved;
                 delete step.state.verification;
                 delete step.state.workerClaim;
+                delete step.state.admissionReason;
                 await step.vars.persist();
                 const controller = new AbortController();
                 step.vars.controller = controller;
@@ -272,6 +281,7 @@ export function createCodingActor(
                   step.abortSignal,
                   AbortSignal.timeout(coding.timeoutMs),
                 ]);
+                let admissionAttempted = false;
                 let admitted = false;
                 let launched = false;
                 let settled = false;
@@ -297,6 +307,7 @@ export function createCodingActor(
                     throw new Error(
                       "Legacy execution requires manual reconciliation",
                     );
+                  admissionAttempted = true;
                   await manager.admit(
                     proposal.id,
                     approved,
@@ -374,12 +385,24 @@ export function createCodingActor(
                     !signal.aborted
                       ? "completed"
                       : "needs_review";
-                } catch {
+                } catch (error) {
                   step.state.status = "needs_review";
-                  step.state.report =
-                    step.state.worktree && !step.state.threadId
-                      ? missingSessionReport
-                      : "No confirmed completion. Admission, cancellation, worker execution, or verification needs review. Inspect the isolated workspace and saved thread; unknown execution must be confirmed stopped before resuming.";
+                  if (admissionAttempted && !admitted) {
+                    const occupied = error instanceof WorkspaceOccupiedError;
+                    step.state.admissionReason = occupied
+                      ? "workspace_occupied"
+                      : "admission_unknown";
+                    step.state.report =
+                      (occupied
+                        ? "Workspace admission was blocked by an existing execution lease. "
+                        : "Workspace admission could not be established; occupancy is unknown. ") +
+                      "No worker launched for this attempt, and it is not queued for automatic retry. An operator must inspect and reconcile any retained admission before an explicitly authorized retry; this does not confirm any worker stopped.";
+                  } else {
+                    step.state.report =
+                      step.state.worktree && !step.state.threadId
+                        ? missingSessionReport
+                        : "No confirmed completion. Admission, cancellation, worker execution, or verification needs review. Inspect the isolated workspace and saved thread; unknown execution must be confirmed stopped before resuming.";
+                  }
                 } finally {
                   acceptingThread = false;
                   signal.removeEventListener("abort", onAbort);

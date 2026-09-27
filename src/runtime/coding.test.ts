@@ -558,34 +558,35 @@ describe("separate coding supervisor", () => {
     );
     const store = new EvidenceStore(":memory:", randomBytes(32));
     t.onTestFinished(() => store.close());
-    const { registry, manager, coding, modelRequests } = await fixture(
-      t,
-      {
-        async run() {
-          launches++;
-          // Model the uncertain pre-ID startup gap, including an uncooperative
-          // process. Cancelling it cannot permit a replacement launch.
-          return pending.promise;
+    const { registry, manager, coding, modelRequests, worktreeRoot } =
+      await fixture(
+        t,
+        {
+          async run() {
+            launches++;
+            // Model the uncertain pre-ID startup gap, including an uncooperative
+            // process. Cancelling it cannot permit a replacement launch.
+            return pending.promise;
+          },
         },
-      },
-      {
-        store,
-        source(event, audience) {
-          return {
-            id: event.id,
-            platform: "slack",
-            account: "T1",
-            conversation: "D1",
-            author: "U1",
-            audiences: [audience],
-            observedAt: event.occurredAt,
-            sourceUrl: "https://example.invalid/source",
-            text: event.text,
-          };
+        {
+          store,
+          source(event, audience) {
+            return {
+              id: event.id,
+              platform: "slack",
+              account: "T1",
+              conversation: "D1",
+              author: "U1",
+              audiences: [audience],
+              observedAt: event.occurredAt,
+              sourceUrl: "https://example.invalid/source",
+              text: event.text,
+            };
+          },
         },
-      },
-      { reply: () => action },
-    );
+        { reply: () => action },
+      );
     coding.timeoutMs = 60000;
     const { client } = await setupTest(t, registry);
     let sequence = 0;
@@ -643,6 +644,7 @@ describe("separate coding supervisor", () => {
     expect(inspection).toContain('"attempts":0');
     expect(inspection).toContain('"runtimeBinding":"matched"');
     expect(inspection).toContain('"recovery":null');
+    expect(inspection).toContain('"admissionReason":null');
     expect(inspection).not.toContain("SECRET");
     const originalRuntimeId = coding.runtimeId;
     coding.runtimeId = "/private/SECRET-CURRENT-BINDING";
@@ -656,6 +658,51 @@ describe("separate coding supervisor", () => {
       .poll(async () => (await job.snapshot()).commandApprovals[denied.key])
       .toBeNull();
     expect(launches).toBe(0);
+    coding.runtimeId = originalRuntimeId;
+    await manager.admit("SECRET-OCCUPYING-JOB", 4);
+    await deliver({ text: `/approve ${proposal.key}` });
+    await expect
+      .poll(async () => (await job.snapshot()).admissionReason, {
+        timeout: 15000,
+      })
+      .toBe("workspace_occupied");
+    for (const requestAction of ["inspect", "list"] as const) {
+      action = {
+        text: "",
+        codingJob: {
+          action: requestAction,
+          id: requestAction === "list" ? null : proposal.key,
+        },
+      };
+      const blocked = (await deliver()).text;
+      expect(blocked).toContain('"admissionReason":"workspace_occupied"');
+      expect(blocked).toContain("not queued for automatic retry");
+      expect(blocked).not.toContain("SECRET");
+    }
+    expect(launches).toBe(0);
+    // A retained admission lock is not evidence that capacity is free or that
+    // a particular job is active. Its filesystem error must not reach June.
+    const admissionLock = path.join(
+      worktreeRoot,
+      ".june-jobs",
+      "admission-lock",
+    );
+    await mkdir(admissionLock);
+    await deliver({ text: `/resume-stopped ${proposal.key}` });
+    await expect
+      .poll(async () => (await job.snapshot()).admissionReason, {
+        timeout: 15000,
+      })
+      .toBe("admission_unknown");
+    action = { text: "", codingJob: { action: "inspect", id: proposal.key } };
+    const unavailable = (await deliver()).text;
+    expect(unavailable).toContain('"admissionReason":"admission_unknown"');
+    expect(unavailable).not.toContain("SECRET");
+    expect(unavailable).not.toContain(worktreeRoot);
+    expect(unavailable).not.toContain("EEXIST");
+    expect(launches).toBe(0);
+    await rm(admissionLock, { recursive: true });
+    coding.runtimeId = "/private/SECRET-CURRENT-BINDING";
     action = { text: "", codingJob: { action: "cancel", id: proposal.key } };
     for (const extra of [
       {
@@ -668,8 +715,10 @@ describe("separate coding supervisor", () => {
       const denied = (await deliver(extra)).text;
       expect(denied).toContain("owner-private turn");
       expect(denied).not.toContain("runtime_binding_mismatch");
+      expect(denied).not.toContain("workspace_occupied");
+      expect(denied).not.toContain("admission_unknown");
       expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(false);
-      expect((await job.snapshot()).cancelRequested).toBeUndefined();
+      expect((await job.snapshot()).cancelRequested).toBe(false);
     }
     coding.runtimeId = originalRuntimeId;
     action = {
@@ -677,11 +726,12 @@ describe("separate coding supervisor", () => {
       coding: { workspace: "june", goal: "FORBIDDEN MIX" },
     };
     await deliver();
-    expect((await job.snapshot()).cancelRequested).toBeUndefined();
+    expect((await job.snapshot()).cancelRequested).toBe(false);
     action = { text: "", codingJob: { action: "cancel", id: "f".repeat(64) } };
     expect((await deliver()).text).toContain("missing or ambiguous");
-    expect((await job.snapshot()).cancelRequested).toBeUndefined();
-    await deliver({ text: `/approve ${proposal.key}` });
+    expect((await job.snapshot()).cancelRequested).toBe(false);
+    await manager.release("SECRET-OCCUPYING-JOB", 4);
+    await deliver({ text: `/resume-stopped ${proposal.key}` });
     await expect.poll(() => launches).toBe(1);
     action = { text: "", codingJob: { action: "cancel", id: proposal.key } };
     const cancellation = await deliver({ id: "cancel-native" });
@@ -698,6 +748,7 @@ describe("separate coding supervisor", () => {
     expect(unknown).toContain('"threadId":null');
     expect(unknown).toContain('"manualReconciliationRequired":true');
     expect(unknown).toContain('"reason":"saved_session_missing"');
+    expect(unknown).toContain('"admissionReason":null');
     expect(unknown).not.toContain("SECRET");
     const resume = await deliver({ text: `/resume-stopped ${proposal.key}` });
     await expect
@@ -1412,6 +1463,68 @@ describe("separate coding supervisor", () => {
       .poll(async () => (await job.snapshot()).status, { timeout: 3000 })
       .toBe("completed");
     expect(threads).toEqual([undefined, "T-saved"]);
+  });
+
+  it("reports occupied admission without disclosing or releasing another job's lease", async (t) => {
+    let launches = 0;
+    const { registry, manager } = await fixture(t, {
+      async run() {
+        launches++;
+        return { threadId: "T-admitted", report: "Finished." };
+      },
+    });
+    await manager.admit("private-other-job", 7);
+    const { client } = await setupTest(t, registry);
+    const job = client.job.getOrCreate(["raygen", "blocked-admission"]);
+    await job.send("commands", {
+      type: "propose",
+      proposal: {
+        id: "blocked-admission",
+        runtimeId: "fixture-runtime-v1",
+        source,
+        workspace: "june",
+        goal: "Approved task",
+      },
+    });
+    await job.send("commands", { type: "approve", commandId: "approval" });
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("needs_review");
+    const blocked = await job.snapshot();
+    expect(blocked.admissionReason).toBe("workspace_occupied");
+    expect(blocked.report).toContain("not queued for automatic retry");
+    expect(JSON.stringify(blocked)).not.toContain("private-other-job");
+    expect(blocked.worktree).toBeUndefined();
+    expect(launches).toBe(0);
+    await job.send("commands", {
+      type: "resume",
+      commandId: "cannot-displace-other-job",
+      confirmedStopped: true,
+    });
+    await expect.poll(async () => (await job.snapshot()).attempts).toBe(2);
+    await expect
+      .poll(async () => (await job.snapshot()).admissionReason)
+      .toBe("workspace_occupied");
+    expect(launches).toBe(0);
+    // The original owner/attempt still owns capacity. Releasing it does not
+    // enqueue or authorize this blocked job; a fresh explicit resume is needed.
+    await manager.release("private-other-job", 7);
+    await job.send("commands", {
+      type: "resume",
+      commandId: "cannot-displace-other-job",
+      confirmedStopped: true,
+    });
+    await job.send("commands", {
+      type: "resume",
+      commandId: "authorized-retry",
+      confirmedStopped: true,
+    });
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("completed");
+    expect((await job.snapshot()).admissionReason).toBeUndefined();
+    expect((await job.snapshot()).attempts).toBe(3);
+    expect(launches).toBe(1);
   });
 
   it("rejects approvals and resumes under a different runtime binding without releasing admission", async (t) => {
