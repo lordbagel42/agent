@@ -457,6 +457,7 @@ test("mixed host recall/browser/preview directives cannot dispatch MCP calls, pr
   f.request.browserProposalAvailable = true;
   f.request.personalityPreviewAvailable = true;
   f.request.forgetPreviewAvailable = true;
+  f.request.personalityEvaluateAvailable = true;
   for (const permission of ["read", "approval"] as const) {
     f.store.permit(f.id, f.connection().revision, "lookup", permission);
     for (const directive of [
@@ -484,6 +485,12 @@ test("mixed host recall/browser/preview directives cannot dispatch MCP calls, pr
           },
         },
         { forgetPreview: { sourceId: "s1" } },
+        {
+          personalityEvaluate: {
+            candidateId: "candidate",
+            heldOutSourceIds: ["held-out"] as string[],
+          },
+        },
       ] as const)
         for (const afterCatalog of [false, true]) {
           let calls = 0;

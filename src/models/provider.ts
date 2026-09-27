@@ -17,6 +17,7 @@ import {
   globalStyleSchema,
   personalityPreviewSchema,
 } from "../runtime/personality.js";
+import { personalityEvaluateSchema } from "../runtime/personality-evaluation-preview.js";
 import { wakeupActionSchema } from "../wakeups/state.js";
 import { workflowCommandSchema } from "../workflows/contracts.js";
 import {
@@ -245,6 +246,7 @@ const companionReplySchema = z.strictObject({
   forgetPreview: z
     .strictObject({ sourceId: z.string().min(1).max(2048) })
     .optional(),
+  personalityEvaluate: personalityEvaluateSchema.optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -285,6 +287,7 @@ export type ReplyCapabilities = Pick<
   | "browserProposalAvailable"
   | "personalityPreviewAvailable"
   | "forgetPreviewAvailable"
+  | "personalityEvaluateAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
@@ -329,6 +332,7 @@ export function replyJsonSchema(
     browserProposalAvailable,
     personalityPreviewAvailable,
     forgetPreviewAvailable,
+    personalityEvaluateAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -867,6 +871,29 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(personalityEvaluateAvailable
+        ? {
+            personalityEvaluate: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                candidateId: {
+                  type: "string",
+                  description: "Exact pending global personality proposal ID.",
+                },
+                heldOutSourceIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "1–4 distinct original interaction source IDs, not proposal support IDs. Never invent IDs.",
+                },
+              },
+              required: ["candidateId", "heldOutSourceIds"],
+              description:
+                "Owner-private advisory suitability preview only. No profile mutation, promotion, tools or simulated message delivery. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(analyticsAvailable
         ? {
             analytics: {
@@ -1101,6 +1128,7 @@ export function replyJsonSchema(
       ...(browserProposalAvailable ? ["browserProposal"] : []),
       ...(personalityPreviewAvailable ? ["personalityPreview"] : []),
       ...(forgetPreviewAvailable ? ["forgetPreview"] : []),
+      ...(personalityEvaluateAvailable ? ["personalityEvaluate"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
@@ -1291,6 +1319,7 @@ export function parseReply(
     browserProposalAvailable,
     personalityPreviewAvailable,
     forgetPreviewAvailable,
+    personalityEvaluateAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -1338,6 +1367,7 @@ export function parseReply(
     "browserProposal",
     "personalityPreview",
     "forgetPreview",
+    "personalityEvaluate",
     "dashboardLogin",
     "wakeup",
     "replyInThread",
@@ -1392,6 +1422,8 @@ export function parseReply(
     (reply.browserProposal !== undefined && !browserProposalAvailable) ||
     (reply.personalityPreview !== undefined && !personalityPreviewAvailable) ||
     (reply.forgetPreview !== undefined && !forgetPreviewAvailable) ||
+    (reply.personalityEvaluate !== undefined &&
+      !personalityEvaluateAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
@@ -1427,6 +1459,7 @@ export function parseReply(
     Number(reply.browserProposal !== undefined) +
     Number(reply.personalityPreview !== undefined) +
     Number(reply.forgetPreview !== undefined) +
+    Number(reply.personalityEvaluate !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
@@ -1458,6 +1491,7 @@ export function parseReply(
       reply.browserProposal !== undefined ||
       reply.personalityPreview !== undefined ||
       reply.forgetPreview !== undefined ||
+      reply.personalityEvaluate !== undefined ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||
       reply.latency !== undefined) &&

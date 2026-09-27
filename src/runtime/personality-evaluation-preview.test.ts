@@ -1,0 +1,437 @@
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Client } from "rivetkit/client";
+import { expect, it, type TestContext } from "vitest";
+import { setupTest } from "../../tests/rivet.js";
+import type {
+  CompanionReply,
+  MessageEvent,
+  ModelRequest,
+  OutboundMessage,
+} from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
+import { CuratedPersonalityStore } from "../memory/curated.js";
+import { EvidenceStore } from "../memory/store.js";
+import { parseReply, replyJsonSchema } from "../models/provider.js";
+import type { Decision, DecisionFunction } from "../reflection/evaluator.js";
+import { defaultGlobalPersonality } from "./personality.js";
+import { createPersonalityPreview } from "./personality-evaluation-preview.js";
+import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
+
+const owner = {
+  id: "owner",
+  identities: [{ channel: "slack" as const, accountId: "T1", senderId: "U1" }],
+};
+const scope = JSON.stringify(["private", owner.id]);
+const request = {
+  candidateId: "candidate",
+  heldOutSourceIds: ["held-two", "held-one"],
+};
+
+function fixture(
+  t: TestContext,
+  readCandidate?: Parameters<
+    typeof createPersonalityPreview
+  >[0]["readCandidate"],
+  now = 200,
+) {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  for (const id of [
+    "support",
+    "held-one",
+    "held-two",
+    "held-three",
+    "held-four",
+    "held-five",
+    "foreign",
+    "opt-out",
+    "oversized",
+  ]) {
+    store.appendSource({
+      id,
+      audiences: [id === "foreign" ? "other-scope" : scope],
+      platform: "slack",
+      account: "T1",
+      conversation: "D1",
+      author: "U1",
+      observedAt: now - 100,
+      sourceUrl: "https://fixture.invalid/interaction",
+      text:
+        id === "opt-out"
+          ? "## private"
+          : id === "oversized"
+            ? "x".repeat(4001)
+            : `PRIVATE ${id}`,
+    });
+  }
+  const state = {
+    now,
+    decided: false,
+    profile: structuredClone(defaultGlobalPersonality),
+    proposal: {
+      id: "candidate",
+      scope,
+      expectedVersion: 0,
+      changes: { tone: "dry" as const },
+      evidenceIds: ["support"],
+      sourceIds: ["support"],
+      explanation: "PRIVATE explanation",
+      confidence: 0.8,
+      createdAt: now - 50,
+      expiresAt: now + 1800,
+      status: "pending" as const,
+    },
+    calls: [] as Parameters<DecisionFunction>[0][],
+    decide: (async (input) => ({
+      answer: input.evidence[0]?.id === "held-two" ? "no" : "yes",
+      evidenceIds: input.evidence.map((e) => e.id),
+      rationale: "PRIVATE rationale",
+    })) as DecisionFunction,
+  };
+  const service = createPersonalityPreview({
+    ownerId: owner.id,
+    store,
+    readCandidate:
+      readCandidate ??
+      (async (id) =>
+        !state.decided &&
+        id === state.proposal.id &&
+        state.now < state.proposal.expiresAt &&
+        store.source(scope, "support")
+          ? structuredClone({
+              profile: state.profile,
+              proposal: state.proposal,
+            })
+          : null),
+    now: () => state.now,
+    evidenceMaxAgeMs: 1000,
+    decide: async (input, signal) => {
+      state.calls.push(structuredClone(input));
+      return state.decide(input, signal);
+    },
+  });
+  return { store, state, service };
+}
+
+it("keeps held-out evidence private, rejects contaminated/stale inputs and discards revoked in-flight results without writes", async (t) => {
+  const { store, state, service } = fixture(t);
+  const before = structuredClone({
+    profile: state.profile,
+    proposal: state.proposal,
+  });
+  const result = await service.preview(request);
+  // Independently construct the canonical profile bytes, rather than reusing the digest helper.
+  const digest = createHash("sha256")
+    .update(
+      '{"version":1,"style":{"tone":"dry","verbosity":"balanced","humor":"subtle","curiosity":"occasional"}}',
+    )
+    .digest("hex");
+  expect(result).toMatchObject({
+    status: "preview",
+    candidateDigest: digest,
+    outcomes: [
+      { evidenceId: "held-two", answer: "no" },
+      { evidenceId: "held-one", answer: "yes" },
+    ],
+  });
+  expect(JSON.stringify(result)).not.toContain("PRIVATE");
+  expect({ profile: state.profile, proposal: state.proposal }).toEqual(before);
+  expect(state.calls.map((c) => c.evidence.map((e) => e.id))).toEqual([
+    ["held-two"],
+    ["held-one"],
+  ]);
+  expect(JSON.stringify(state.calls)).not.toContain("explanation");
+  expect(state.calls.every((c) => c.prior === undefined)).toBe(true);
+
+  for (const ids of [
+    ["support"],
+    ["foreign"],
+    ["missing"],
+    ["opt-out"],
+    ["oversized"],
+    ["held-one", "held-one"],
+    ["held-one", "held-two", "held-three", "held-four", "held-five"],
+  ]) {
+    expect(
+      await service.preview({ ...request, heldOutSourceIds: ids }),
+    ).toEqual({ status: "unavailable" });
+  }
+  state.profile.version = 1;
+  expect(await service.preview(request)).toEqual({ status: "unavailable" });
+  state.profile.version = 0;
+  state.now = 1100;
+  expect(await service.preview(request)).toEqual({ status: "unavailable" });
+  state.now = 200;
+  state.decided = true;
+  expect(await service.preview(request)).toEqual({ status: "unavailable" });
+  state.decided = false;
+  expect(state.calls).toHaveLength(2);
+
+  const snapshot = await service.snapshot(request);
+  if (!snapshot) throw new Error("Missing test snapshot");
+  snapshot.candidate.style.humor = "none";
+  expect(await service.isCurrent(snapshot)).toBe(false);
+
+  const held = Promise.withResolvers<Decision>();
+  state.decide = () => held.promise;
+  const controller = new AbortController();
+  const pending = service.preview(request, controller.signal);
+  await expect.poll(() => state.calls.length).toBe(3);
+  controller.abort();
+  expect(await pending).toEqual({ status: "unavailable" });
+  expect(await service.preview(request)).toMatchObject({
+    status: "preview",
+    outcomes: [{ answer: "abstain" }, { answer: "abstain" }],
+  });
+  expect(state.calls).toHaveLength(3); // Cancelled raw work still holds its slot.
+  held.resolve({
+    answer: "yes",
+    evidenceIds: ["held-two"],
+    rationale: "PRIVATE late",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  state.decide = async (input) => {
+    store.deleteSource("held-one");
+    return {
+      answer: "yes",
+      evidenceIds: [input.evidence[0]?.id ?? ""],
+      rationale: "PRIVATE revoked",
+    };
+  };
+  expect(await service.preview(request)).toEqual({ status: "unavailable" });
+  expect(state.calls).toHaveLength(4); // Never sends the second, forgotten interaction.
+  expect({ profile: state.profile, proposal: state.proposal }).toEqual(before);
+
+  const duringFinalRead = new AbortController();
+  let reads = 0;
+  const cancelled = fixture(t, async () => {
+    if (++reads === 3) duringFinalRead.abort();
+    return {
+      profile: cancelled.state.profile,
+      proposal: cancelled.state.proposal,
+    };
+  });
+  expect(
+    await cancelled.service.preview(
+      { ...request, heldOutSourceIds: ["held-one"] },
+      duringFinalRead.signal,
+    ),
+  ).toEqual({ status: "unavailable" });
+  expect(cancelled.state.calls).toHaveLength(1);
+});
+
+it("exposes June evaluation only to owner-private requests and never dispatches mixed or synthesis actions", async (t) => {
+  let client: Client<JuneClientRegistry>;
+  const { store, state, service } = fixture(
+    t,
+    (id) => client.personality.getOrCreate([owner.id]).evaluationCandidate(id),
+    Date.now(),
+  );
+  const root = await mkdtemp(join(tmpdir(), "june-preview-"));
+  const curated = new CuratedPersonalityStore(
+    join(root, "curated"),
+    randomBytes(32),
+    store,
+    { initialize: true },
+  );
+  t.onTestFinished(async () => {
+    curated.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const proposal = curated.stageGlobalProposal(
+    scope,
+    {
+      expectedVersion: 0,
+      changes: { tone: "dry" },
+      evidenceIds: ["support"],
+      explanation: "PRIVATE explanation",
+      confidence: 0.8,
+    },
+    state.now,
+  );
+  const actualRequest = { ...request, candidateId: proposal.id };
+  const sent: OutboundMessage[] = [];
+  const requests: ModelRequest[] = [];
+  let action: CompanionReply = { text: "", personalityEvaluate: actualRequest };
+  let web = false;
+  const registry = createJuneRegistry({
+    owner,
+    memory: { store, personality: curated, source: () => undefined },
+    personalityEvaluation: service,
+    model: {
+      async reply(input) {
+        requests.push(input);
+        const schema = replyJsonSchema([], input);
+        expect(Object.hasOwn(schema.properties, "personalityEvaluate")).toBe(
+          input.personalityEvaluateAvailable === true,
+        );
+        expect(schema.required.includes("personalityEvaluate")).toBe(
+          input.personalityEvaluateAvailable === true,
+        );
+        if (web && input.webSearchAvailable)
+          return { text: "", webSearch: "public fixture" };
+        return action;
+      },
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        async receive() {
+          return { response: new Response(), events: [] };
+        },
+        async send(message) {
+          sent.push(message);
+          return { status: "sent", messageId: `out-${sent.length}` };
+        },
+      },
+    },
+    webSearch: {
+      available: true,
+      description: "fixture",
+      async search() {
+        return {
+          status: "ready",
+          results: [
+            {
+              title: "fixture",
+              url: "https://fixture.invalid",
+              snippet: "public",
+            },
+          ],
+        };
+      },
+    },
+  });
+  ({ client } = (await setupTest(t, registry)) as {
+    client: Client<JuneClientRegistry>;
+  });
+  const profile = await client.personality.getOrCreate([owner.id]).read();
+  let serial = 0;
+  async function deliver(extra: Partial<MessageEvent> = {}) {
+    const event: MessageEvent = {
+      type: "message",
+      id: `event-${++serial}`,
+      messageId: `${serial}`,
+      occurredAt: Date.now(),
+      address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+      senderId: "U1",
+      direct: true,
+      metadata: { channelType: "im" },
+      text: "Evaluate this candidate privately",
+      ...extra,
+    };
+    const routed = routeEvent(event, owner);
+    if (!routed) throw new Error("Invalid test route");
+    const actor = client.conversation.getOrCreate(routed.key);
+    const eventKey = createHash("sha256")
+      .update(
+        JSON.stringify([
+          event.address.channel,
+          event.address.accountId,
+          event.id,
+        ]),
+      )
+      .digest("hex");
+    await actor.send("inbox", { type: "event", event });
+    await expect
+      .poll(async () => (await actor.snapshot()).events[eventKey]?.done, {
+        timeout: 10000,
+      })
+      .toBe(true);
+    return actor.snapshot();
+  }
+  const snapshot = await deliver();
+  expect(state.calls).toHaveLength(2);
+  expect(requests[0]?.personalityEvaluateAvailable).toBe(true);
+  expect(requests[0]?.system).toContain(
+    "personalityEvaluate:{candidateId,heldOutSourceIds}",
+  );
+  expect(JSON.stringify(snapshot)).not.toContain("PRIVATE");
+  expect(sent).toHaveLength(1);
+  expect(sent[0]?.address.conversationId).toBe("D1");
+  expect(JSON.stringify(sent[0])).toContain("candidateDigest");
+  for (const extra of [
+    {
+      direct: false,
+      metadata: { channelType: "channel" as const },
+      address: {
+        channel: "slack" as const,
+        accountId: "T1",
+        conversationId: "C1",
+      },
+    },
+    { senderId: "GUEST" },
+    { metadata: undefined },
+  ]) {
+    await deliver(extra);
+    expect(requests.at(-1)?.personalityEvaluateAvailable).toBe(false);
+    expect(state.calls).toHaveLength(2);
+  }
+  action = { text: "", personalityEvaluate: actualRequest, reaction: "wave" };
+  await deliver();
+  expect(state.calls).toHaveLength(2);
+  action = { text: "", personalityEvaluate: actualRequest };
+  web = true;
+  await deliver();
+  expect(requests.at(-1)?.personalityEvaluateAvailable).toBe(false);
+  expect(state.calls).toHaveLength(2);
+  await deliver({
+    text: `!personality reject ${JSON.stringify({ proposalId: proposal.id })}`,
+    personalityCommandEligible: true,
+  });
+  expect(await service.preview(actualRequest)).toEqual({
+    status: "unavailable",
+  });
+  expect(state.calls).toHaveLength(2);
+  expect(await client.personality.getOrCreate([owner.id]).read()).toEqual(
+    profile,
+  );
+  expect(() => parseReply(JSON.stringify(action), [])).toThrow();
+  expect(
+    parseReply(JSON.stringify(action), [], {
+      personalityEvaluateAvailable: true,
+    }),
+  ).toEqual(action);
+
+  // Owner publication is fixture setup, never an evaluation side effect.
+  const approved = curated.stageGlobalProposal(scope, {
+    expectedVersion: 0,
+    changes: { curiosity: "eager" },
+    evidenceIds: ["support"],
+    explanation: "PRIVATE grounded style",
+    confidence: 0.8,
+  });
+  await deliver({
+    text: `!personality approve ${JSON.stringify({ proposalId: approved.id, expectedVersion: 0, publish: true })}`,
+    personalityCommandEligible: true,
+  });
+  const next = curated.stageGlobalProposal(scope, {
+    expectedVersion: 1,
+    changes: { tone: "direct" },
+    evidenceIds: ["held-four"],
+    explanation: "PRIVATE independent support",
+    confidence: 0.8,
+  });
+  const nextRequest = { ...request, candidateId: next.id };
+  const beforeForgetting = await service.snapshot(nextRequest);
+  expect(beforeForgetting?.current).toMatchObject({
+    version: 1,
+    style: { curiosity: "eager" },
+  });
+  store.deleteSource("support");
+  const afterForgetting = await service.snapshot(nextRequest);
+  expect(afterForgetting?.current).toMatchObject({
+    version: 1,
+    style: { curiosity: "occasional" },
+  });
+  expect(afterForgetting?.currentDigest).not.toBe(
+    beforeForgetting?.currentDigest,
+  );
+  if (!beforeForgetting) throw new Error("Missing pre-forgetting snapshot");
+  expect(await service.isCurrent(beforeForgetting)).toBe(false);
+  expect(state.calls).toHaveLength(2);
+});

@@ -76,6 +76,7 @@ import {
   isPersonalityCommand,
   previewPersonality,
 } from "./personality.js";
+import type { createPersonalityPreview } from "./personality-evaluation-preview.js";
 import { createPriorityAdmission } from "./priority.js";
 import { buildModelRequest, type PromptInput } from "./prompt.js";
 import {
@@ -122,6 +123,7 @@ export interface Dependencies {
   rivet?: RivetReader;
   /** Pure exact-action proposal only; never grant or execute from model output. */
   browserProposal?: (operation: string | null) => string;
+  personalityEvaluation?: ReturnType<typeof createPersonalityPreview>;
   dashboardLogin?: {
     issue(): { url: string; expiresAt: string } | undefined;
     redact(text: string): string;
@@ -1699,6 +1701,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   scope.private &&
                                   plan.memory &&
                                   !!deps.memory,
+                                personalityEvaluateAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.personalityEvaluation,
                                 dashboardLoginAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2821,6 +2828,44 @@ export function createJuneRegistry(deps: Dependencies) {
                                 } catch {
                                   // Do not expose input, storage errors, or whether
                                   // an unavailable source exists in another scope.
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (
+                              generated.personalityEvaluate !== undefined
+                            ) {
+                              let text =
+                                "Held-out personality evaluation is unavailable; no profile was changed or message simulated.";
+                              if (
+                                body.type === "event" &&
+                                phase !== "synthesis" &&
+                                scope.private &&
+                                isOwner(event, deps.owner) &&
+                                (event.address.channel !== "slack" ||
+                                  event.metadata?.channelType === "im") &&
+                                modelRequest.personalityEvaluateAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                deps.personalityEvaluation
+                              ) {
+                                const checked = parseReply(
+                                  JSON.stringify(generated),
+                                  modelRequest.workspaces,
+                                  modelRequest,
+                                );
+                                if (checked.personalityEvaluate) {
+                                  const result =
+                                    await deps.personalityEvaluation.preview(
+                                      checked.personalityEvaluate,
+                                      signal,
+                                    );
+                                  if (!signal.aborted && valid(step.state))
+                                    text = `Owner-private held-out personality preview: ${JSON.stringify(result)}\nAdvisory suitability judgments, not simulated replies or calibrated quality. Abstain means unknown. No profile mutation, promotion, or message to another recipient. Evidence and rationale omitted.`;
                                 }
                               }
                               generated = {

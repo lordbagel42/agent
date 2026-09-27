@@ -705,7 +705,8 @@ export class McpConnections {
           reply.pendingMemory !== undefined ||
           reply.browserProposal !== undefined ||
           reply.personalityPreview !== undefined ||
-          reply.forgetPreview !== undefined
+          reply.forgetPreview !== undefined ||
+          reply.personalityEvaluate !== undefined
         )
           return parseReply(
             JSON.stringify(reply),
@@ -741,7 +742,8 @@ export class McpConnections {
             reply.pendingMemory !== undefined ||
             reply.browserProposal !== undefined ||
             reply.personalityPreview !== undefined ||
-            reply.forgetPreview !== undefined
+            reply.forgetPreview !== undefined ||
+            reply.personalityEvaluate !== undefined
           )
             return parseReply(
               JSON.stringify(reply),
@@ -880,6 +882,7 @@ export class McpConnections {
                 browserProposalAvailable: false,
                 personalityPreviewAvailable: false,
                 forgetPreviewAvailable: false,
+                personalityEvaluateAvailable: false,
                 dashboardLoginAvailable: false,
                 modelStatusAvailable: false,
                 wakeupAvailable: false,

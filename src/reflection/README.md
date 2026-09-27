@@ -303,3 +303,44 @@ June command, no-retention boundary, read races and invalidated send retries.
   Provider exceptions/malformed decisions become explicit abstentions. There is
   no Jev network implementation or claimed calibration; inject a real supported
   typed-decision function through `typedEvaluator`.
+
+## Owner-private held-out personality preview
+
+When reflection and curated memory are configured and their existing startup
+gates are enabled, June can request `personalityEvaluate` with an exact pending
+global proposal `candidateId` and `heldOutSourceIds` (1–4 distinct original
+interaction IDs). Leave text empty and other actions unset. This is available
+only on owner-private inbound turns, not guest/channel turns, worker results,
+web/MCP synthesis, or prompts without a verified Slack `im` surface.
+
+`createPersonalityPreview` in `../runtime/personality-evaluation-preview.ts`
+reads the proposal and current global profile, rejects a stale target version,
+and requires held-out IDs disjoint from the proposal's original support IDs.
+Its host-only `personality.evaluationCandidate(id)` reader checks the actor's
+accepted/rejected decision ledger atomically with the current profile and
+curated payload; a stored payload marked pending alone is not sufficient.
+Sources must remain authorized, fresh, not forgotten or opted out, and no more
+than 4,000 characters each. It does not truncate or use claims/dreams as original
+interactions. Each interaction gets the same fixed suitability rubric via the
+existing tool-free reflection provider, with one shared provider slot and a
+30-second per-call deadline. Cancelled/uncooperative calls retain their slot
+until actual settlement. No retries or background jobs are created.
+
+The service exports `snapshot`, `isCurrent`, `evaluate(snapshot, signal?, side?)`
+and `preview`; comparison callers can reuse the same snapshot and executor for
+`"current"` and `"candidate"`. Revalidate with `isCurrent` before releasing any
+evaluation output. Snapshots and raw decisions are volatile owner-private data;
+never journal evidence text or provider rationale. The June path returns only
+IDs, yes/no/abstain outcomes, timestamp, target version and SHA-256 profile
+digests over canonical `{version,style}`. The candidate uses target version + 1.
+It rechecks the profile, proposal and all evidence before every provider call
+and before releasing the result; changes discard the result.
+
+This judges a style record against selected interactions; it does **not**
+generate candidate replies, send messages to another recipient, mutate a
+profile, accept a proposal, or create a promotion receipt. Only the ordinary
+private owner reply carries the metadata report. Source-ID disjointness is not
+proof of statistical independence or that a provider has never seen the text.
+Judgments are advisory, not calibrated scores; abstention means unknown. Verify
+offline with `src/runtime/personality-evaluation-preview.test.ts` and the
+existing evaluator tests, using fake providers and disposable stores/engine.

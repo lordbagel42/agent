@@ -334,6 +334,33 @@ export function createPersonalityActor(
         }
         return `Staged private personality suggestion ${proposal.id} for global version ${proposal.expectedVersion}. Nothing was applied; separate owner review is required.`;
       },
+      /** Private host-only projection, never part of read() or a public prompt.
+       * Keep head, decision and payload reads synchronous; this does not mutate state. */
+      evaluationCandidate: (c, id: string) => {
+        if (c.key.length !== 1 || c.key[0] !== owner.id)
+          throw new Error("Wrong personality owner");
+        if (
+          !z.string().min(1).max(256).safeParse(id).success ||
+          Object.hasOwn(c.state.proposalDecisions ?? {}, id)
+        )
+          return null;
+        const head = c.state.revisions.at(-1) ?? defaultGlobalPersonality;
+        const proposal = curated?.pendingGlobalProposal(
+          JSON.stringify(["private", owner.id]),
+          id,
+        );
+        if (!proposal || proposal.expectedVersion !== head.version) return null;
+        return {
+          profile: currentPersonality(c.state.revisions, effective),
+          proposal: {
+            id: proposal.id,
+            expectedVersion: proposal.expectedVersion,
+            changes: proposal.changes,
+            evidenceIds: proposal.evidenceIds,
+            sourceIds: proposal.sourceIds,
+          },
+        };
+      },
       command: async (c, event: MessageEvent): Promise<string> => {
         if (c.key.length !== 1 || c.key[0] !== owner.id)
           throw new Error("Wrong personality owner");

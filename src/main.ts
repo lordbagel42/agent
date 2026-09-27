@@ -60,6 +60,7 @@ import { DiagnosticLog } from "./runtime/diagnostics.js";
 import { createInspectionReader } from "./runtime/inspection.js";
 import { createLatencyDiagnostics } from "./runtime/latency.js";
 import { createLifecycle } from "./runtime/lifecycle.js";
+import { createPersonalityPreview } from "./runtime/personality-evaluation-preview.js";
 import {
   createJuneRegistry,
   type Dependencies,
@@ -948,6 +949,19 @@ async function main() {
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
         : undefined,
     }),
+    personalityEvaluation:
+      reflection && memory?.personality
+        ? createPersonalityPreview({
+            ownerId: config.owner.id,
+            store: memory.store,
+            readCandidate: (id) =>
+              client.personality
+                .getOrCreate([config.owner.id])
+                .evaluationCandidate(id),
+            decide: reflection.decide,
+            evidenceMaxAgeMs: reflection.policy.evidenceMaxAgeMs,
+          })
+        : undefined,
     dashboardLogin: loginLinks,
     release: readDeployment
       ? createReleaseTool({
