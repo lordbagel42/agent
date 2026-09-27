@@ -206,6 +206,9 @@ export function createReflectionActor(
       scope: candidate.scope,
       question: "novelty",
       prompt: "Inspect the existing hypothesis; do not generate evidence.",
+      ...(candidate.mode === "deep" && candidate.decision.alternativeResponses
+        ? { simulateResponses: true }
+        : {}),
       now: Date.now(),
       evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
       evidence,
@@ -824,14 +827,15 @@ export function createReflectionActor(
                   const input: DecisionInput = {
                     scope: request.scope,
                     question:
-                      request.kind === "curiosity"
+                      request.kind === "curiosity" && mode !== "deep"
                         ? "interruption-cost"
                         : "novelty",
                     prompt:
                       "Use only the supplied existing evidence. No web search was performed for this request; do not request additional sources, private account access or tool execution. " +
                       (mode === "deep"
-                        ? "Consider patterns and alternative interpretations. Dreams are hypotheses, never independent evidence. Stage a proposal only; no actions or permission changes."
+                        ? "Simulate 1–3 alternative responses to these episodes, each at most 2000 characters. Alternatives and predicted effects are hypothetical, never independent evidence. Stage a proposal only; no actions or permission changes."
                         : "Evaluate whether these episodes support a useful reflection proposal or interruption candidate. Silence is normal; do not repeatedly contact an idle owner. No actions or permission changes."),
+                    ...(mode === "deep" ? { simulateResponses: true } : {}),
                     now: Date.now(),
                     evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
                     evidence: executionEvidence,
@@ -856,12 +860,17 @@ export function createReflectionActor(
                   ) {
                     step.state.decisionOutcomes ??= {};
                     step.state.decisionOutcomes[invocation] = decision.answer;
-                    const interruption = request.kind === "curiosity";
-                    const hypothesisOnly = !current.some(
-                      (e) =>
-                        e.source !== "dream" &&
-                        decision.evidenceIds.includes(e.id),
-                    );
+                    const interruption =
+                      request.kind === "curiosity" && mode !== "deep";
+                    // Citing original episodes does not turn simulated replies into
+                    // observations or independent grounds for an interruption.
+                    const hypothesisOnly =
+                      mode === "deep" ||
+                      !current.some(
+                        (e) =>
+                          e.source !== "dream" &&
+                          decision.evidenceIds.includes(e.id),
+                      );
                     if (
                       decision.answer === "yes" &&
                       (!interruption ||

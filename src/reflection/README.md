@@ -208,6 +208,34 @@ list still require the original epoch, no live work and non-quiet time.
   rejection cancels work; failures after admission consume the attempt without
   persisting exception text.
 
+### Deep-mode alternative-response simulation
+
+June requests `reflectionRequest: { evidenceIds, mode: "deep" }` in an
+owner-private conversation when `reflectionRequestAvailable` is advertised,
+with empty reply text and no other actions. IDs must identify existing retained
+sources; the host binds the scope. The queued/duplicate receipt is not a
+completed simulation. Deep mode keeps the existing idle delay, quiet hours,
+capacity, timeout, cancellation, provenance rechecks and canonical evidence-set
+dedupe; changing mode cannot retry a previously consumed evidence set.
+
+Each admitted attempt's single decision call receives host-owned `simulateResponses: true`.
+A successful `yes` decision requires `alternativeResponses`, an array of 1–3
+nonblank strings of at most 2000 characters each. Invalid or missing alternatives
+abstain and consume the attempt; no repair call is added. Existing attempt and
+no-new-evidence bounds still apply, as do the normal 4000-character rationale,
+original evidence-ID validation, input/output byte budgets and token limit.
+Ordinary decisions reject this extra field.
+
+The resulting candidate is always `kind: "proposal", hypothesisOnly: true`,
+including deep curiosity requests citing original episodes. Its
+`decision.alternativeResponses` are hypothetical replies, **not events that
+happened, independent evidence, permission changes or messages to send**. Only
+the original evidence IDs ground its rationale. No source/claim ingestion,
+interruption candidate or outbound send is created, and simulation never resets
+the no-new-evidence counter. Authorized candidate inspection must retain the
+hypothetical label; metadata polling never includes alternatives. Forgotten
+sources invalidate reads just as for other reflection candidates.
+
 Verification: `pnpm exec vitest run src/runtime/reflection.test.ts
 src/reflection/domain.test.ts` exercises the real disposable engine plus domain
 rules. The runtime test protects audience/deletion checks, duplicate admission,

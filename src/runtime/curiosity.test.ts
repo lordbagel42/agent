@@ -57,7 +57,8 @@ it("does not turn failed or abstaining curiosity into investigated evidence or a
               webSearch: "private account query",
             };
           return {
-            answer: answer === "no" ? "no" : "abstain",
+            answer:
+              answer === "no" ? "no" : answer === "yes" ? "yes" : "abstain",
             rationale: "Fixture",
             evidenceIds: input.evidence.map((e) => e.id),
           };
@@ -68,7 +69,7 @@ it("does not turn failed or abstaining curiosity into investigated evidence or a
   const reflection = (
     client as Client<JuneClientRegistry>
   ).reflection.getOrCreate(["owner"]);
-  for (const answer of ["no", "abstain", "throw", "tools"]) {
+  for (const answer of ["no", "abstain", "throw", "tools", "yes"]) {
     const request = {
       kind: "curiosity" as const,
       mode: "idle" as const,
@@ -86,12 +87,20 @@ it("does not turn failed or abstaining curiosity into investigated evidence or a
     expect(status.decisionOutcomes?.[key]).toBe(
       answer === "throw" ? undefined : answer === "tools" ? "abstain" : answer,
     );
-    expect(status.candidateIds).toEqual([]);
+    if (answer === "yes") {
+      expect(status.candidateIds).toEqual([key]);
+      expect(await reflection.candidate(key)).toMatchObject({
+        mode: "idle",
+        kind: "interruption-candidate",
+        hypothesisOnly: false,
+        decision: { answer: "yes", evidenceIds: ["yes"] },
+      });
+    } else expect(status.candidateIds).toEqual([]);
     expect(status.reflection.requests.find((r) => r.id === id)).toMatchObject({
       status: "stopped",
       attempts: 1,
     });
     expect(await reflection.request(request)).toEqual({ status: "duplicate" });
   }
-  expect(calls).toBe(4);
+  expect(calls).toBe(5);
 });

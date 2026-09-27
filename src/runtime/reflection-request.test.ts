@@ -12,6 +12,7 @@ import type {
 import { routeEvent } from "../core/routing.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
+import { reflectionCandidateId } from "./reflection.js";
 import {
   createJuneRegistry,
   type Dependencies,
@@ -94,6 +95,7 @@ it("admits explicit private reflection once without bypassing evidence or schedu
           expect(request.system).toContain(
             "Curiosity performs no public search",
           );
+          expect(request.system).toContain("explicitly hypothetical");
         }
         if (search && request.webSearchAvailable)
           return { text: "", webSearch: "public query" };
@@ -137,6 +139,9 @@ it("admits explicit private reflection once without bypassing evidence or schedu
           answer: "yes",
           rationale: "PRIVATE interpretation",
           evidenceIds: input.evidence.map((e) => e.id),
+          ...(input.simulateResponses
+            ? { alternativeResponses: ["PRIVATE hypothetical alternative"] }
+            : {}),
         };
       },
     },
@@ -242,12 +247,36 @@ it("admits explicit private reflection once without bypassing evidence or schedu
   await expect.poll(() => decisions.length, { timeout: 5000 }).toBe(1);
   expect(decisions[0]?.at).toBeGreaterThanOrEqual(interactionAt + 800);
   expect(decisions[0]?.ids).toEqual(["a", "b"]);
-  expect(decisions[0]?.question).toBe("interruption-cost");
+  expect(decisions[0]?.question).toBe("novelty"); // Deep curiosity never stages an interruption.
   await expect
     .poll(
       async () => (await reflection.status()).reflection.requests[0]?.status,
     )
     .toBe("stopped");
+  const candidateId = (await reflection.status()).candidateIds[0];
+  expect(candidateId).toBeDefined();
+  expect(await reflection.candidate(candidateId as string)).toMatchObject({
+    mode: "deep",
+    kind: "proposal",
+    hypothesisOnly: true,
+    decision: {
+      evidenceIds: ["a", "b"],
+      alternativeResponses: ["PRIVATE hypothetical alternative"],
+    },
+  });
+  expect(
+    await reflection.inspectCandidate(
+      audience,
+      reflectionCandidateId(candidateId as string),
+    ),
+  ).toMatchObject({
+    candidate: {
+      hypothesisOnly: true,
+      decision: {
+        alternativeResponses: ["PRIVATE hypothetical alternative"],
+      },
+    },
+  });
   expect(await deliver()).toContain("Reflection queued");
   const idleRequest = (await reflection.status()).reflection.requests[1];
   await expect.poll(() => decisions.length, { timeout: 5000 }).toBe(2);

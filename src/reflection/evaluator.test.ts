@@ -51,6 +51,14 @@ describe("decision provider evidence and authority boundaries", () => {
           expect(body.tools).toBeUndefined();
           expect(body.previous_response_id).toBeUndefined();
           expect(init?.redirect).toBe("error");
+          const schema =
+            body.text?.format.schema ?? body.output_config.format.schema;
+          if (schema.properties.alternativeResponses) {
+            expect(schema.required).toContain("alternativeResponses");
+            expect(body.instructions ?? body.system).toContain(
+              "explicitly hypothetical",
+            );
+          }
           return Response.json(
             protocol === "openai"
               ? {
@@ -101,6 +109,34 @@ describe("decision provider evidence and authority boundaries", () => {
         "abstain",
       );
       expect(calls).toBe(3);
+
+      const simulation = { ...inherited, simulateResponses: true as const };
+      const alternatives = [
+        "a".repeat(2000),
+        "A clarifying question",
+        "A shorter reply",
+      ];
+      output = { ...yes, alternativeResponses: alternatives };
+      expect(await decide(simulation, signal)).toEqual(output);
+      // The same synthetic payload must not be accepted as an ordinary decision.
+      expect((await decide(inherited, signal)).answer).toBe("abstain");
+      for (const malformed of [
+        { ...yes, alternativeResponses: [...alternatives, "fourth"] },
+        { ...yes, alternativeResponses: ["a".repeat(2001)] },
+        { ...yes, alternativeResponses: [" "] },
+        { ...yes, alternativeResponses: [] },
+        yes,
+        {
+          ...yes,
+          alternativeResponses: ["reply"],
+          evidenceIds: ["invented-simulation-id"],
+        },
+        { ...yes, alternativeResponses: ["reply"], hypothesisOnly: false },
+      ]) {
+        output = malformed;
+        expect((await decide(simulation, signal)).answer).toBe("abstain");
+      }
+      expect(calls).toBe(12);
     }
   });
 
@@ -119,9 +155,10 @@ describe("decision provider evidence and authority boundaries", () => {
         throw new Error("provider secret");
       },
     });
-    expect((await decide(input, controller.signal)).rationale).toBe(
-      "cancelled",
-    );
+    expect(
+      (await decide({ ...input, simulateResponses: true }, controller.signal))
+        .rationale,
+    ).toBe("cancelled");
     expect((await decide(input, controller.signal)).rationale).toBe(
       "cancelled",
     );
@@ -154,7 +191,10 @@ describe("decision provider evidence and authority boundaries", () => {
           release = resolve;
         }),
     });
-    const pending = uncooperative(input, held.signal).then((decision) => {
+    const pending = uncooperative(
+      { ...input, simulateResponses: true },
+      held.signal,
+    ).then((decision) => {
       settled = true;
       return decision;
     });

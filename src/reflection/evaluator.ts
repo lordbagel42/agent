@@ -6,6 +6,8 @@ export interface Decision {
   evidenceIds: string[];
   /** Uncalibrated self-report. Never authority, permission, or a truth probability. */
   confidence?: number;
+  /** Synthetic drafts, never observations, independent evidence or send authority. */
+  alternativeResponses?: string[];
 }
 
 export interface Vote {
@@ -19,6 +21,8 @@ export interface DecisionInput {
   now: number;
   evidenceMaxAgeMs: number;
   evidence: Evidence[];
+  /** Host-selected deep reflection only; does not grant tools or further calls. */
+  simulateResponses?: true;
   /** Only critic/synthesis receive prior answers. */
   prior?: Vote[];
 }
@@ -44,7 +48,13 @@ export function validateDecision(
   if (
     Object.keys(record).some(
       (key) =>
-        !["answer", "rationale", "evidenceIds", "confidence"].includes(key),
+        ![
+          "answer",
+          "rationale",
+          "evidenceIds",
+          "confidence",
+          ...(input.simulateResponses ? ["alternativeResponses"] : []),
+        ].includes(key),
     ) ||
     typeof record.answer !== "string" ||
     !["yes", "no", "abstain"].includes(record.answer) ||
@@ -64,10 +74,29 @@ export function validateDecision(
         record.confidence > 1))
   )
     return abstain("malformed-decision");
+  if (
+    input.simulateResponses &&
+    ((record.answer === "yes" &&
+      (!Array.isArray(record.alternativeResponses) ||
+        record.alternativeResponses.length === 0)) ||
+      (record.alternativeResponses !== undefined &&
+        (!Array.isArray(record.alternativeResponses) ||
+          record.alternativeResponses.length > 3 ||
+          !record.alternativeResponses.every(
+            (text) =>
+              typeof text === "string" && !!text.trim() && text.length <= 2000,
+          ))))
+  )
+    return abstain("malformed-simulation");
   return {
     answer: record.answer as Decision["answer"],
     rationale: record.rationale,
     evidenceIds: [...new Set(record.evidenceIds as string[])],
+    ...(record.alternativeResponses === undefined
+      ? {}
+      : {
+          alternativeResponses: [...(record.alternativeResponses as string[])],
+        }),
     ...(record.confidence === undefined
       ? {}
       : { confidence: record.confidence as number }),
@@ -90,6 +119,8 @@ export function validDecisionContext(input: DecisionInput): boolean {
     !!input.scope.trim() &&
     !!input.prompt.trim() &&
     input.prompt.length <= 8000 &&
+    (input.simulateResponses === undefined ||
+      input.simulateResponses === true) &&
     ["relevance", "novelty", "uncertainty", "interruption-cost"].includes(
       input.question,
     ) &&

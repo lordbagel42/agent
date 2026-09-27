@@ -61,6 +61,7 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
           async decide(input, signal) {
             calls++;
             providerSignal = signal;
+            if (input.simulateResponses) expect(input.question).toBe("novelty");
             await new Promise<void>((resolve) => {
               release = resolve;
             });
@@ -68,6 +69,13 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
               answer: "yes",
               rationale: "Fixture",
               evidenceIds: input.evidence.map((e) => e.id),
+              ...(input.simulateResponses
+                ? {
+                    alternativeResponses: [
+                      "Hypothetical: ask one clarifying question.",
+                    ],
+                  }
+                : {}),
             };
           },
         },
@@ -246,6 +254,7 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   const queued = await handle.enqueue({
     ...input,
     kind: "curiosity",
+    mode: "deep",
     evidenceIds: ["read-after-delete"],
   });
   await expect
@@ -260,15 +269,29 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   await expect.poll(() => calls).toBe(3);
   release();
   await expect
-    .poll(async () => (await handle.status()).candidateIds.length)
+    .poll(async () => (await handle.status()).candidateIds.length, {
+      timeout: 5000,
+    })
     .toBe(1);
   const candidateId = (await handle.status()).candidateIds[0];
   if (!candidateId) throw new Error("Missing fixture candidate");
   expect(await handle.candidate(candidateId)).toMatchObject({
-    kind: "interruption-candidate",
-    decision: { answer: "yes" },
+    mode: "deep",
+    kind: "proposal",
+    hypothesisOnly: true,
+    decision: {
+      answer: "yes",
+      evidenceIds: ["read-after-delete"],
+      alternativeResponses: ["Hypothetical: ask one clarifying question."],
+    },
   });
-  expect((await handle.status()).decisionOutcomes).toMatchObject({
+  const simulationStatus = await handle.status();
+  expect(
+    simulationStatus.reflection.scopes.find((s) => s.scope === input.scope)
+      ?.noNewEvidence,
+  ).toBe(1);
+  expect(JSON.stringify(simulationStatus)).not.toContain("Hypothetical: ask");
+  expect(simulationStatus.decisionOutcomes).toMatchObject({
     [JSON.stringify([queued.id, 1])]: "yes",
   });
   // Switching kinds cannot spend a second attempt over the same evidence set.
