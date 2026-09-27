@@ -147,8 +147,6 @@ class Store:
             "SELECT status,reason FROM events WHERE revision=? ORDER BY sequence DESC LIMIT 1",
             (commit,),
         ).fetchone()
-        if previous and tuple(previous) == (status, reason):
-            return
         received = self.db.execute(
             "SELECT at,committedAt FROM events WHERE revision=? AND status='received' LIMIT 1",
             (commit,),
@@ -162,17 +160,20 @@ class Store:
                 self.db.execute("UPDATE state SET value='' WHERE key='intent'")
             if status == "reconciled":
                 self.db.execute("UPDATE state SET value='' WHERE key='blocked'")
-            self.db.execute(
-                "INSERT INTO events(revision,status,at,committedAt,reason,elapsedMs) VALUES (?,?,?,?,?,?)",
-                (
-                    revision(commit),
-                    status,
-                    now,
-                    received[1] if received else committed_at,
-                    reason,
-                    max(0, now - received[0]) if received else None,
-                ),
-            )
+            # Deduplicate history, not current state: another revision may have
+            # left an ambiguous intent since this revision was last reconciled.
+            if not previous or tuple(previous) != (status, reason):
+                self.db.execute(
+                    "INSERT INTO events(revision,status,at,committedAt,reason,elapsedMs) VALUES (?,?,?,?,?,?)",
+                    (
+                        revision(commit),
+                        status,
+                        now,
+                        received[1] if received else committed_at,
+                        reason,
+                        max(0, now - received[0]) if received else None,
+                    ),
+                )
         self.publish()
 
     def block(self, commit, reason):

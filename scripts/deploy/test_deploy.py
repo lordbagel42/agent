@@ -398,6 +398,56 @@ class DeploymentSafety(unittest.TestCase):
         ):
             self.fail("second deployer acquired the same lock")
 
+    def test_repeated_reconciliation_clears_new_ambiguity_and_survives_restart(self):
+        self.loop.reconcile(self.first)
+        original = json.loads(self.store.feed.read_text())["events"]
+        self.loop.reconcile(self.first)
+        self.assertEqual(json.loads(self.store.feed.read_text())["events"], original)
+
+        target = self.host.commit("src/console/view.ts", "two")
+        self.store.set("intent", target)
+        root, feed_path = self.host.root, self.store.feed
+        self.store.close()
+        self.store = deploy.Store(root / "records", feed_path, self.first)
+        self.loop = deploy.Deployer(self.host, self.store)
+        self.assertEqual(self.store.get("blocked"), "activation_unknown")
+        events = json.loads(feed_path.read_text())["events"]
+
+        # A crash before SQLite commit must leave both ambiguity markers intact.
+        self.store.db.execute("""
+            CREATE TEMP TRIGGER interrupt_reconciliation BEFORE UPDATE ON state
+            WHEN NEW.key='blocked' AND NEW.value=''
+            BEGIN SELECT RAISE(ABORT, 'fixture interruption'); END
+        """)
+        with self.assertRaises(deploy.sqlite3.IntegrityError):
+            self.loop.reconcile(self.first)
+        self.assertEqual(self.store.get("intent"), target)
+        self.assertEqual(self.store.get("blocked"), "activation_unknown")
+        self.store.db.execute("DROP TRIGGER interrupt_reconciliation")
+
+        # SQLite commits before feed publication; reopening repairs a stale feed.
+        with (
+            patch.object(self.store, "publish", side_effect=OSError("fixture")),
+            self.assertRaises(OSError),
+        ):
+            self.loop.reconcile(self.first)
+        self.assertFalse(self.store.get("intent"))
+        self.assertFalse(self.store.get("blocked"))
+        self.assertTrue(json.loads(feed_path.read_text())["blocked"])
+        self.store.close()
+        self.store = deploy.Store(root / "records", feed_path, self.first)
+        self.assertFalse(json.loads(feed_path.read_text())["blocked"])
+        self.loop = deploy.Deployer(self.host, self.store)
+        self.loop.reconcile(self.first)
+        feed = json.loads(feed_path.read_text())
+        self.assertFalse(feed["blocked"])
+        self.assertEqual(feed["lastHealthyRevision"], self.first)
+        self.assertEqual(feed["events"], events)
+        self.assertFalse(self.store.get("intent"))
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(), [self.first]
+        )
+
     def test_new_head_coalesces_and_force_push_cannot_reactivate_old_revision(self):
         stale = self.host.commit("src/console/view.ts", "two")
         newest = []
