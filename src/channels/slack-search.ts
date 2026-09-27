@@ -332,9 +332,18 @@ export function createSlackSearch({
         : undefined;
       const privateBinding = grant.privateAuthorization;
       const eventBinding = grant.binding;
+      // A top-level DM may be answered in a thread on that exact message.
+      // Keep ingress authorization exact; only delivery gains this destination.
+      const replyBinding = event.address.threadId
+        ? eventBinding
+        : binding({
+            ...event,
+            address: { ...event.address, threadId: event.messageId },
+          });
       const authorized = (candidate: MessageEvent) =>
         now() < grant.expiresAt &&
-        binding(candidate) === eventBinding &&
+        (binding(candidate) === eventBinding ||
+          binding(candidate) === replyBinding) &&
         JSON.stringify(authorization(candidate)) === privateBinding;
       // Spend before the first await, even if the request fails. Keep a tokenless
       // tombstone until expiry, and never evict one to make room for a new grant.

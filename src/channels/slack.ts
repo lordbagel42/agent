@@ -321,8 +321,8 @@ export function createSlackAdapter({
     ...(contextEnabled ? { context: context.context } : {}),
     async setTyping(event, active, signal) {
       const { address } = event;
-      // Slack's status UI is thread-scoped and can auto-open that thread. Never
-      // invent one for top-level replies or use a placeholder chat message.
+      // Slack's status UI is thread-scoped and can auto-open that thread. The
+      // caller must supply its selected reply thread; never post a placeholder.
       // https://docs.slack.dev/reference/methods/assistant.threads.setStatus/
       if (
         address.channel !== "slack" ||

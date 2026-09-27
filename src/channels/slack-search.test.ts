@@ -778,82 +778,117 @@ describe("owner-authorized private Slack search", () => {
     };
   }
 
-  it("requires fresh captured ingress, verifies token identity, and spends one DM-bound delivery", async () => {
-    const context = privateSetup();
-    const { engine, event, fetchMock } = context;
-    await expect(engine.search(event, "launch")).resolves.toEqual(
-      authorizationRequired,
-    );
-    expect(fetchMock).not.toHaveBeenCalled();
-    engine.capture(event, undefined);
-    const pending = engine.search(event, "launch");
-    await expect(engine.search(event, "launch")).resolves.toEqual(
-      authorizationRequired,
-    );
-    const result = await pending;
-    expect(result.status).toBe("private_ready");
-    if (result.status !== "private_ready")
-      throw new Error("Expected private result");
-    expect(JSON.stringify(result)).toBe('{"status":"private_ready"}');
-    expect(result).not.toHaveProperty("text");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const call = fetchMock.mock.calls[1];
-    if (!call) throw new Error("Expected search");
-    const request = new Request(...call);
-    expect(request.headers.get("authorization")).toBe(
-      "Bearer xoxp-owner-test-token",
-    );
-    await expect(request.json()).resolves.toEqual({
-      query: "launch",
-      context_channel_id: "D123ABC",
-      content_types: ["messages"],
-      channel_types: ["public_channel", "im"],
-      include_context_messages: false,
-      include_bots: false,
-      limit: 5,
-    });
-    expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "https://slack.com/api/auth.test",
-    );
-    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
-      method: "POST",
-      headers: { authorization: request.headers.get("authorization") },
-      redirect: "error",
-    });
-    for (const modified of [
-      { ...event, id: "Ev_replay" },
-      { ...event, senderId: "UOTHER" },
-      { ...event, direct: false },
-      { ...event, messageId: "1800000000.000124" },
-      { ...event, occurredAt: initialNow + 1 },
-      { ...event, address: { ...event.address, channel: "whatsapp" as const } },
-      ...["C123ABC", "G123ABC", "DOTHER"].map((conversationId) => ({
-        ...event,
-        address: { ...event.address, conversationId },
-      })),
-      { ...event, address: { ...event.address, threadId: "other" } },
-      { ...event, address: { ...event.address, accountId: "TOTHER" } },
-    ]) {
-      const rejected = privateSetup();
-      rejected.engine.capture(rejected.event, undefined);
-      const guarded = await rejected.engine.search(rejected.event, "launch");
-      if (guarded.status !== "private_ready")
+  it.each([false, true])(
+    "requires fresh captured ingress and spends one DM-bound delivery (reply thread: %s)",
+    async (threadedReply) => {
+      const context = privateSetup();
+      const { engine, event, fetchMock } = context;
+      await expect(engine.search(event, "launch")).resolves.toEqual(
+        authorizationRequired,
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      engine.capture(event, undefined);
+      const pending = engine.search(event, "launch");
+      await expect(engine.search(event, "launch")).resolves.toEqual(
+        authorizationRequired,
+      );
+      const result = await pending;
+      expect(result.status).toBe("private_ready");
+      if (result.status !== "private_ready")
         throw new Error("Expected private result");
-      expect(guarded.consume(modified)).toBeUndefined();
-      expect(guarded.consume(rejected.event)).toBeUndefined();
-    }
-    context.advance(299_999);
-    expect(
-      result.consume({ ...event, address: { ...event.address } }),
-    ).toContain("private sentinel");
-    expect(result.consume(event)).toBeUndefined();
-    engine.capture(event, undefined);
-    await expect(engine.search(event, "launch")).resolves.toEqual(
-      authorizationRequired,
-    );
-    expect(JSON.stringify(event)).not.toMatch(/sentinel|xoxp|grantedScopes/);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
+      expect(JSON.stringify(result)).toBe('{"status":"private_ready"}');
+      expect(result).not.toHaveProperty("text");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const call = fetchMock.mock.calls[1];
+      if (!call) throw new Error("Expected search");
+      const request = new Request(...call);
+      expect(request.headers.get("authorization")).toBe(
+        "Bearer xoxp-owner-test-token",
+      );
+      await expect(request.json()).resolves.toEqual({
+        query: "launch",
+        context_channel_id: "D123ABC",
+        content_types: ["messages"],
+        channel_types: ["public_channel", "im"],
+        include_context_messages: false,
+        include_bots: false,
+        limit: 5,
+      });
+      expect(fetchMock.mock.calls[0]?.[0]).toBe(
+        "https://slack.com/api/auth.test",
+      );
+      expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+        method: "POST",
+        headers: { authorization: request.headers.get("authorization") },
+        redirect: "error",
+      });
+      for (const modified of [
+        { ...event, id: "Ev_replay" },
+        { ...event, senderId: "UOTHER" },
+        { ...event, direct: false },
+        { ...event, messageId: "1800000000.000124" },
+        { ...event, occurredAt: initialNow + 1 },
+        {
+          ...event,
+          address: { ...event.address, channel: "whatsapp" as const },
+        },
+        ...["C123ABC", "G123ABC", "DOTHER"].map((conversationId) => ({
+          ...event,
+          address: { ...event.address, conversationId },
+        })),
+        { ...event, address: { ...event.address, threadId: "other" } },
+        { ...event, address: { ...event.address, accountId: "TOTHER" } },
+      ]) {
+        const rejected = privateSetup();
+        rejected.engine.capture(rejected.event, undefined);
+        const guarded = await rejected.engine.search(rejected.event, "launch");
+        if (guarded.status !== "private_ready")
+          throw new Error("Expected private result");
+        expect(guarded.consume(modified)).toBeUndefined();
+        expect(guarded.consume(rejected.event)).toBeUndefined();
+      }
+      context.advance(299_999);
+      expect(
+        result.consume({
+          ...event,
+          address: {
+            ...event.address,
+            ...(threadedReply ? { threadId: event.messageId } : {}),
+          },
+        }),
+      ).toContain("private sentinel");
+      expect(result.consume(event)).toBeUndefined();
+      engine.capture(event, undefined);
+      await expect(engine.search(event, "launch")).resolves.toEqual(
+        authorizationRequired,
+      );
+      expect(JSON.stringify(event)).not.toMatch(/sentinel|xoxp|grantedScopes/);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["existing-root", "message-root", undefined])(
+    "does not relocate an existing private thread to %s",
+    async (destination) => {
+      const { engine, event } = privateSetup();
+      event.address.threadId = "existing-root";
+      engine.capture(event, undefined);
+      const result = await engine.search(event, "launch");
+      if (result.status !== "private_ready")
+        throw new Error("Expected private result");
+      const text = result.consume({
+        ...event,
+        address: {
+          ...event.address,
+          threadId:
+            destination === "message-root" ? event.messageId : destination,
+        },
+      });
+      if (destination === "existing-root")
+        expect(text).toContain("private sentinel");
+      else expect(text).toBeUndefined();
+    },
+  );
 
   it.each([
     { ownerId: "other" },
@@ -937,7 +972,12 @@ describe("owner-authorized private Slack search", () => {
       else if (stage === "scopes")
         context.update({ grantedScopes: ["search:read.public"] });
       else context.revoke();
-      expect(result.consume(event)).toBeUndefined();
+      expect(
+        result.consume({
+          ...event,
+          address: { ...event.address, threadId: event.messageId },
+        }),
+      ).toBeUndefined();
       // Restoring scopes cannot resurrect a rejected delivery.
       context.update({
         grantedScopes: ["search:read.public", "search:read.im"],

@@ -170,16 +170,21 @@ user ID. The owner's allowlist uses the **human user's** ID, not the bot's.
 Only configured owners can initiate turns, including mentions. Set
 `slack.participateInOwnerChannels: true` to also accept their unmentioned messages
 in channels whose verified current name contains `raygen`. Group DMs remain
-excluded. Existing threads stay threaded; on top-level input June can choose
-channel or thread placement from context.
+excluded. Existing threads stay threaded; new top-level input starts a reply
+thread on the initiating message, including DMs, so Slack can show activity.
 
 Adapters can implement optional `setTyping` for ephemeral activity during new
-model and lookup calls. Updates run alongside work, refresh without overlapping,
-and attempt to clear on success, failure or cancellation; they never create
-messages or journal entries. Slack uses `assistant.threads.setStatus` with existing
+context loading, model and lookup calls. Updates run alongside work, refresh
+without overlapping, and attempt to clear on success, failure or cancellation;
+they never create messages or journal entries. Slack uses `assistant.threads.setStatus` with existing
 `chat:write` permission. It is thread-scoped (including DM threads), not the
-ordinary top-level DM typing bubble. June never invents a thread just to show
-status; a deeper pass uses the reply thread already selected by the fast pass.
+ordinary top-level DM typing bubble. The reply thread is selected before context
+loading, not by the model afterward. Status starts after durable acceptance,
+turn admission and replay checks; queued turns still wait for their predecessor.
+The original inbound scope/context is preserved. Existing journaled turns retain
+their earlier placement policy, including an inbox iteration already waiting at
+upgrade; the next fresh iteration uses threads. June is told this is automatic
+host behavior.
 Unsupported surfaces and status failures do not prevent a reply. Live Slack
 status rendering still needs verification after an authorized rollout.
 

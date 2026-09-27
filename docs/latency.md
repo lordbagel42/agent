@@ -76,7 +76,8 @@ over SSH is not a live June turn, even with the actual model and login.
 - `fast/deep/synthesis_started` → corresponding `finished`: full provider call,
   not first-token time; SDK/subprocess overhead and accounting are included.
 - `typing_accepted`: Slack accepted the thread status, not proof the client
-  rendered it. Top-level DMs have no typing call. `ack_sent`: accepted textual
+  rendered it. New top-level DMs use the initiating message as the reply/status
+  thread root; status starts before context loading. `ack_sent`: accepted textual
   deep-pass acknowledgment. These overlap work and must not be added to totals.
 - `text_started` → `text_sent`: actual transport. `deliveries[].platformMs` is
   exact Slack message-to-message timestamp difference for accepted text/ack/search,

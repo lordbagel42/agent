@@ -36,7 +36,7 @@ import {
   createReflectionActor,
   type ReflectionDependencies,
 } from "./reflection.js";
-import { withTyping } from "./typing.js";
+import { startTyping, withTyping } from "./typing.js";
 
 export interface Dependencies {
   owner: Owner;
@@ -173,9 +173,9 @@ export function createJuneRegistry(deps: Dependencies) {
     run: workflow(
       async (ctx) => {
         await ctx.loop("conversation-v1", async (loop) => {
-          // Preserve both legacy layouts: missing gates with old work resolve to
-          // v1, persisted v2 stays v2. Only fresh v3 turns gain follow-up steps.
-          const version = await loop.getVersion("memory-dispatch", 3);
+          // Preserve legacy journals and reply placement. Only fresh v4 turns
+          // default Slack replies to threads so status has a visible surface.
+          const version = await loop.getVersion("memory-dispatch", 4);
           const [message] = await loop.queue.nextBatch("inbox", {
             names: ["inbox"],
             count: 1,
@@ -375,7 +375,13 @@ export function createJuneRegistry(deps: Dependencies) {
                 );
                 return result;
               };
-              let replyAddress = event.address;
+              let replyAddress =
+                version >= 4 && event.address.channel === "slack"
+                  ? {
+                      ...event.address,
+                      threadId: event.address.threadId ?? event.messageId,
+                    }
+                  : event.address;
               let reply: CompanionReply = {
                 text: "I couldn't reach my model. Your message is saved; please try again shortly.",
               };
@@ -593,6 +599,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 .reflection.getOrCreate([deps.owner.id])
                             : undefined;
                         let settled = false;
+                        let stopTyping: (() => Promise<void>) | undefined;
                         try {
                           if (
                             !valid(step.state) ||
@@ -622,6 +629,19 @@ export function createJuneRegistry(deps: Dependencies) {
                               },
                               retryable: false,
                             };
+                          // Start before context/network reads, but only after
+                          // admission and the replay/no-reinvocation guards.
+                          await typingCleanup;
+                          signal.throwIfAborted();
+                          if (!valid(step.state))
+                            return { reply: { text: "" }, retryable: false };
+                          stopTyping = startTyping(
+                            version >= 3
+                              ? deps.channels[replyAddress.channel]
+                              : undefined,
+                            { ...event, address: replyAddress },
+                            signal,
+                          );
                           deps.latency?.mark(event, "context_started");
                           prune(step.state, audience);
                           let memory = "";
@@ -839,6 +859,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                   !!deps.webSearch?.available,
                                 webSearchProvider: deps.webSearch?.description,
                                 replyPlacementAvailable:
+                                  version < 4 &&
                                   phase === "reply" &&
                                   event.address.channel === "slack" &&
                                   !event.address.threadId,
@@ -851,6 +872,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                 : {}),
                               ...(webResults ? { webResults } : {}),
                             });
+                            if (
+                              version >= 4 &&
+                              event.address.channel === "slack"
+                            )
+                              modelRequest.system +=
+                                "\nSlack replies stay in the existing thread, or start a thread on the initiating message (including DMs). The host automatically requests a thinking status before loading context; do not use a tool or send a placeholder to show activity, and do not claim the client displayed it.";
                             const deploymentStatus = scope.private
                               ? await deps
                                   .deploymentStatus?.()
@@ -878,45 +905,22 @@ export function createJuneRegistry(deps: Dependencies) {
                               phase === "deep" ? deps.deepModel : deps.model;
                             if (!model)
                               return { reply: { text: "" }, retryable: false };
-                            // A previous clear must settle before a new pulse can
-                            // start, but must not hold an already-ready reply.
-                            await typingCleanup;
-                            signal.throwIfAborted();
-                            if (!valid(step.state))
-                              return { reply: { text: "" }, retryable: false };
-                            // Only an actual new invocation shows activity. Replay
-                            // holds and legacy turns never issue status updates.
-                            generated = await withTyping(
-                              version >= 3
-                                ? deps.channels[replyAddress.channel]
-                                : undefined,
-                              { ...event, address: replyAddress },
-                              signal,
-                              async () => {
-                                const stage =
-                                  phase === "reply" ? "fast" : phase;
-                                deps.latency?.mark(event, `${stage}_started`);
-                                try {
-                                  return await model.reply(
-                                    {
-                                      ...modelRequest,
-                                      usageStage:
-                                        phase === "reply" ? "fast" : phase,
-                                      system:
-                                        modelRequest.system +
-                                        (version < 3 ? memory : ""),
-                                    },
-                                    signal,
-                                  );
-                                } finally {
-                                  deps.latency?.mark(
-                                    event,
-                                    `${stage}_finished`,
-                                  );
-                                }
-                              },
-                              deferTypingCleanup,
-                            );
+                            const stage = phase === "reply" ? "fast" : phase;
+                            deps.latency?.mark(event, `${stage}_started`);
+                            try {
+                              generated = await model.reply(
+                                {
+                                  ...modelRequest,
+                                  usageStage: stage,
+                                  system:
+                                    modelRequest.system +
+                                    (version < 3 ? memory : ""),
+                                },
+                                signal,
+                              );
+                            } finally {
+                              deps.latency?.mark(event, `${stage}_finished`);
+                            }
                             if (generated.release) {
                               // Read-only controller inspection plus conversational intent.
                               // Keep the result in the existing model step's receipt: no
@@ -961,6 +965,7 @@ export function createJuneRegistry(deps: Dependencies) {
                               error.retryable,
                           };
                         } finally {
+                          if (stopTyping) deferTypingCleanup(stopTyping());
                           if (version >= 2 && settled) {
                             // Release before marking settled. A crash in between keeps
                             // the no-relaunch marker, never reopens a finished turn ID.
@@ -985,6 +990,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   }
                   if (
                     version >= 3 &&
+                    version < 4 &&
                     phase === "reply" &&
                     event.address.channel === "slack" &&
                     !event.address.threadId &&
@@ -1071,6 +1077,9 @@ export function createJuneRegistry(deps: Dependencies) {
                       delivery,
                       step.vars.persist,
                       async (outbound) => {
+                        // Do not let the model's late clear erase search status.
+                        await typingCleanup;
+                        step.abortSignal.throwIfAborted();
                         if (!valid(step.state))
                           return {
                             status: "rejected",

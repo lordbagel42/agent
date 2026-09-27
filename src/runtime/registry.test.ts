@@ -426,7 +426,12 @@ describe("Rivet conversation workflow", () => {
             messageId: "out1",
           },
         });
-        expect(delivery.message.address).toEqual(source.address);
+        expect(delivery.message.address).toEqual(
+          source.address.channel === "slack" &&
+            delivery.message.content.type === "text"
+            ? { ...source.address, threadId: "123.456" }
+            : source.address,
+        );
       }
 
       await june.send("inbox", { type: "event", event: source });
@@ -525,6 +530,13 @@ describe("Rivet conversation workflow", () => {
       const requests: ModelRequest[] = [];
       const searches: string[] = [];
       const adapter = transport("slack", sent);
+      const firstClear = Promise.withResolvers<void>();
+      t.onTestFinished(() => firstClear.resolve());
+      const typing: boolean[] = [];
+      adapter.setTyping = async (_event, active) => {
+        typing.push(active);
+        if (typing.length === 2) await firstClear.promise;
+      };
       adapter.search = async (source, query) => {
         expect(source.id).toBe("Ev1");
         searches.push(query);
@@ -532,7 +544,10 @@ describe("Rivet conversation workflow", () => {
           return {
             status: "private_ready",
             consume(candidate) {
-              expect(candidate).toEqual(source);
+              expect(candidate).toEqual({
+                ...source,
+                address: { ...source.address, threadId: source.messageId },
+              });
               expect(sent).toHaveLength(0);
               return "EPHEMERAL_SEARCH_RESULT_93";
             },
@@ -555,7 +570,11 @@ describe("Rivet conversation workflow", () => {
       const june = client.conversation.getOrCreate(["private", "raygen"]);
       const source = { ...message, text: "Find Slack messages about herons." };
       await june.send("inbox", { type: "event", event: source });
+      await expect.poll(() => typing).toEqual([true, false]);
+      expect(searches).toEqual([]);
+      firstClear.resolve();
       await expect.poll(() => sent.length, { timeout: 2500 }).toBe(1);
+      expect(typing).toEqual([true, false, true, false]);
       expect(sent[0]?.content).toEqual({
         type: "text",
         text: "EPHEMERAL_SEARCH_RESULT_93",
@@ -900,11 +919,10 @@ describe("Rivet conversation workflow", () => {
       await expect.poll(done).toBe(1);
       await expect.poll(() => active).toBe(0);
       expect(failed).toBe(false);
-      const expectedThread =
-        scenario.thread ?? (scenario.place ? source.messageId : undefined);
+      const expectedThread = scenario.thread ?? source.messageId;
       expect(typing).toEqual([
-        { active: true, threadId: scenario.thread },
-        { active: false, threadId: scenario.thread },
+        { active: true, threadId: expectedThread },
+        { active: false, threadId: expectedThread },
         ...(scenario.unknown
           ? []
           : [
@@ -1047,6 +1065,7 @@ describe("Rivet conversation workflow", () => {
     const started = Promise.withResolvers<void>();
     const cleared = Promise.withResolvers<void>();
     const typing: boolean[] = [];
+    let typingDuringContext: boolean[] = [];
     const sent: OutboundMessage[] = [];
     const registry = createJuneRegistry({
       owner,
@@ -1059,6 +1078,11 @@ describe("Rivet conversation workflow", () => {
       channels: {
         slack: {
           ...transport("slack", sent),
+          async context() {
+            // Status must already be in flight while Slack context is loading.
+            typingDuringContext = [...typing];
+            return [];
+          },
           async setTyping(_event, active) {
             typing.push(active);
             await (active ? started.promise : cleared.promise);
@@ -1075,6 +1099,8 @@ describe("Rivet conversation workflow", () => {
         type: "text",
         text: "The answer is ready.",
       });
+      expect(sent[0]?.address.threadId).toBe(message.messageId);
+      expect(typingDuringContext).toEqual([true]);
       expect(typing).toEqual([true]);
       let drained = false;
       const drain = lifecycle.drain().then((value) => {
