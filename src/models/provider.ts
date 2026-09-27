@@ -116,6 +116,12 @@ const companionReplySchema = z.strictObject({
     })
     .refine((value) => value.tool === null || value.connection !== null)
     .optional(),
+  mcpProposal: z
+    .strictObject({
+      action: z.literal("inspect"),
+      id: z.uuid({ version: "v4" }).transform((value) => value.toLowerCase()),
+    })
+    .optional(),
   latency: z
     .union([
       z.literal("recent"),
@@ -175,6 +181,7 @@ export type ReplyCapabilities = Pick<
   | "modelStatusAvailable"
   | "mcpAvailable"
   | "mcpPermissionAvailable"
+  | "mcpProposalAvailable"
   | "latencyAvailable"
   | "analyticsAvailable"
   | "inspectionAvailable"
@@ -208,6 +215,7 @@ export function replyJsonSchema(
     modelStatusAvailable,
     mcpAvailable,
     mcpPermissionAvailable,
+    mcpProposalAvailable,
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
@@ -480,6 +488,21 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(mcpProposalAvailable
+        ? {
+            mcpProposal: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                action: { type: "string", enum: ["inspect"] },
+                id: { type: "string", description: "Exact proposal UUIDv4." },
+              },
+              required: ["action", "id"],
+              description:
+                "Inspect one recorded MCP proposal and receipt privately. Metadata only; never runs, approves or retries a tool. Leave text empty and other actions unset.",
+            },
+          }
+        : {}),
       ...(mcpPermissionAvailable
         ? {
             mcpPermission: {
@@ -551,6 +574,7 @@ export function replyJsonSchema(
       ...(modelStatusAvailable ? ["modelStatus"] : []),
       ...(mcpAvailable ? ["mcp", "mcpCatalog"] : []),
       ...(mcpPermissionAvailable ? ["mcpPermission"] : []),
+      ...(mcpProposalAvailable ? ["mcpProposal"] : []),
       ...(searchAvailable ? ["search"] : []),
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
@@ -734,6 +758,7 @@ export function parseReply(
     modelStatusAvailable,
     mcpAvailable,
     mcpPermissionAvailable,
+    mcpProposalAvailable,
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
@@ -769,6 +794,7 @@ export function parseReply(
     "mcp",
     "mcpPermission",
     "mcpCatalog",
+    "mcpProposal",
     "latency",
     "analytics",
     "inspection",
@@ -812,6 +838,7 @@ export function parseReply(
     (reply.mcp !== undefined && !mcpAvailable) ||
     (reply.mcpPermission !== undefined && !mcpPermissionAvailable) ||
     (reply.mcpCatalog !== undefined && !mcpAvailable) ||
+    (reply.mcpProposal !== undefined && !mcpProposalAvailable) ||
     (reply.latency !== undefined && !latencyAvailable) ||
     (reply.analytics !== undefined && !analyticsAvailable) ||
     (reply.inspection !== undefined && !inspectionAvailable) ||
@@ -830,6 +857,7 @@ export function parseReply(
     Number(reply.mcp !== undefined) +
     Number(reply.mcpPermission !== undefined) +
     Number(reply.mcpCatalog !== undefined) +
+    Number(reply.mcpProposal !== undefined) +
     Number(reply.execution !== undefined) +
     Number(reply.search !== undefined) +
     Number(reply.webSearch !== undefined) +
@@ -856,6 +884,7 @@ export function parseReply(
       reply.mcp !== undefined ||
       reply.mcpPermission !== undefined ||
       reply.mcpCatalog !== undefined ||
+      reply.mcpProposal !== undefined ||
       reply.analytics !== undefined ||
       reply.inspection !== undefined ||
       reply.recall !== undefined ||

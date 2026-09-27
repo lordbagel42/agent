@@ -39,6 +39,16 @@ failed processing, while remote errors (including `isError`) stay unknown, not
 proven rejections. Answer synthesis can fail after a tool returns. Replies use
 fixed host text, never raw errors; no failure label establishes retry safety.
 
+Ask June privately to inspect a proposal using its exact UUID. Her read-only
+`mcpProposal: {action: "inspect", id: "<proposal UUID>"}` action returns bounded
+recorded status, expiry, cancellation timestamp, grant ID and receipt metadata, including after a
+disconnect. It never approves, executes or retries the tool, and does not return
+arguments, destinations, credentials or result bodies. Unknown outcomes remain
+unknown, not denial, rejection or success; a missing receipt is not proof of an
+external outcome. Historical success is not a fresh check of the external state.
+The host sends this metadata directly, without another model synthesis. Normal
+private-turn and forgetting checks still govern delivery.
+
 Contract changes disable the affected tool until reviewed again. Permission
 changes, reconnects and disconnects invalidate pending approvals. Disconnect
 removes June's saved authorization; revoke the grant at its provider separately

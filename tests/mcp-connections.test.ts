@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,11 +8,20 @@ import { Hono } from "hono";
 import { afterEach, expect, test, vi } from "vitest";
 import { createConnectionRoutes } from "../src/console/connections.js";
 import { createConsoleLoginLinks } from "../src/console/session.js";
-import type { ModelRequest } from "../src/core/contracts.js";
+import type {
+  CompanionReply,
+  MessageEvent,
+  ModelRequest,
+  OutboundMessage,
+} from "../src/core/contracts.js";
+import { slackSource } from "../src/imports/index.js";
+import { EvidenceStore } from "../src/memory/store.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
 import { buildModelRequest } from "../src/runtime/prompt.js";
+import { createJuneRegistry } from "../src/runtime/registry.js";
 import { McpConnections } from "../src/tools/connections.js";
 import { createSlackMcpOAuth } from "../src/tools/slack-mcp-oauth.js";
+import { setupTest } from "./rivet.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -1193,6 +1203,271 @@ test.each(["succeeded", "unknown"])(
     expect(f.calls).toHaveLength(1);
   },
 );
+
+test("proposal inspection is content-free and never repeats approved or unknown effects", async () => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+  await f.invoke();
+  const proposal = f.store.proposals()[0];
+  assert(proposal);
+  const inspect = async (id: string) => {
+    const before = f.requests;
+    let modelCalls = 0;
+    const answer = await f.store
+      .wrap({
+        async reply(request) {
+          modelCalls++;
+          expect(request.system).toContain("mcpProposal");
+          return parseReply(
+            JSON.stringify({
+              text: "",
+              mcpProposal: { action: "inspect", id },
+            }),
+            [],
+            request,
+          );
+        },
+      })
+      .reply(f.request);
+    expect(modelCalls).toBe(1);
+    expect(f.requests).toBe(before);
+    expect(answer.text.length).toBeLessThan(1000);
+    for (const omitted of [
+      "record-9",
+      "private-token",
+      "private result",
+      "lookup",
+      "mcp.example",
+    ])
+      expect(answer.text).not.toContain(omitted);
+    const [metadata] = answer.text.split("\n");
+    assert(metadata);
+    return JSON.parse(metadata.replace("Recorded MCP proposal metadata: ", ""));
+  };
+  expect(await inspect(proposal.id)).toMatchObject({
+    id: proposal.id,
+    status: "awaiting_approval",
+    grantId: null,
+    receipt: null,
+  });
+  expect(await inspect(randomUUID())).toEqual({ status: "not_found" });
+  expect(f.calls).toHaveLength(0);
+  await f.store.confirm(proposal.id);
+  expect(await inspect(proposal.id)).toMatchObject({
+    status: "succeeded",
+    receipt: { status: "succeeded" },
+  });
+  f.result("private result: remote rejection private-token");
+  f.fail("result");
+  await f.invoke();
+  const uncertain = f.store.proposals()[0];
+  assert(uncertain);
+  expect(await f.store.confirm(uncertain.id)).toBe("unknown");
+  expect(await inspect(uncertain.id)).toMatchObject({
+    status: "unknown",
+    receipt: { status: "unknown" },
+  });
+  f.store.cancel("owner", uncertain.id);
+  expect(await inspect(uncertain.id)).toMatchObject({
+    status: "unknown",
+    cancelledAt: expect.any(Number),
+    receipt: { status: "unknown" },
+  });
+  await f.invoke();
+  const cancelled = f.store.proposals()[0];
+  assert(cancelled);
+  f.store.cancel("owner", cancelled.id);
+  expect(await inspect(cancelled.id)).toMatchObject({
+    status: "cancelled",
+    cancelledAt: expect.any(Number),
+    grantId: null,
+    receipt: null,
+  });
+  // Exact lookup must not depend on the 50-entry dashboard listing window.
+  for (let n = 0; n < 51; n++) await f.invoke();
+  expect(f.store.proposals().some(({ id }) => id === proposal.id)).toBe(false);
+  const unconsumed = f.store.proposals()[0];
+  assert(unconsumed);
+  f.store.disconnect(f.id, f.connection().revision);
+  await f.restart();
+  expect(await inspect(proposal.id)).toMatchObject({ status: "succeeded" });
+  expect(await inspect(uncertain.id)).toMatchObject({ status: "unknown" });
+  expect(await inspect(unconsumed.id)).toMatchObject({
+    status: "invalidated",
+    grantId: null,
+    receipt: null,
+  });
+  expect(f.calls).toHaveLength(2);
+
+  const directive = {
+    text: "",
+    mcpProposal: { action: "inspect", id: proposal.id },
+  };
+  for (const capabilities of [
+    {},
+    { mcpAvailable: true },
+    { mcpProposalAvailable: true },
+    { mcpPermissionAvailable: true },
+  ]) {
+    const schema = replyJsonSchema([], capabilities);
+    expect(schema.required.toSorted()).toEqual(
+      Object.keys(schema.properties).toSorted(),
+    );
+    expect("mcpProposal" in schema.properties).toBe(
+      capabilities.mcpProposalAvailable === true,
+    );
+  }
+  for (const [reply, capabilities] of [
+    [directive, {}],
+    [directive, { mcpAvailable: true }],
+    [{ ...directive, text: "claimed success" }, { mcpProposalAvailable: true }],
+    [
+      {
+        ...directive,
+        mcp: { connection: f.id, tool: "lookup", argumentsJson: "{}" },
+      },
+      { mcpAvailable: true, mcpProposalAvailable: true },
+    ],
+    [
+      { ...directive, mcpProposal: { action: "approve", id: proposal.id } },
+      { mcpProposalAvailable: true },
+    ],
+    [
+      { ...directive, mcpProposal: { action: "inspect", id: "not-an-id" } },
+      { mcpProposalAvailable: true },
+    ],
+  ] as const)
+    expect(() => parseReply(JSON.stringify(reply), [], capabilities)).toThrow();
+});
+
+test("June privately inspects receipts and forgetting suppresses an in-flight inspection", async (t) => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+  await f.invoke();
+  const proposal = f.store.proposals()[0];
+  assert(proposal);
+  const directive: CompanionReply = {
+    text: "",
+    mcpProposal: { action: "inspect", id: proposal.id },
+  };
+  const store = new EvidenceStore(":memory:", Buffer.alloc(32, 9));
+  const pending = Promise.withResolvers<CompanionReply>();
+  t.onTestFinished(() => {
+    pending.resolve({ text: "" });
+    store.close();
+  });
+  const requests: ModelRequest[] = [];
+  const sent: OutboundMessage[] = [];
+  const source = (event: MessageEvent, audience: string) =>
+    slackSource({
+      workspace: "T1",
+      channel: event.address.conversationId,
+      ts: event.messageId,
+      author: event.senderId,
+      text: event.text,
+      workspaceUrl: "https://fixture.slack.com/",
+      audiences: [audience],
+    });
+  const registry = createJuneRegistry({
+    owner: {
+      id: "owner",
+      identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
+    },
+    memory: { store, source },
+    mcpAvailable: true,
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        async receive() {
+          return { response: new Response(), events: [] };
+        },
+        async send(message) {
+          sent.push(message);
+          return { status: "sent", messageId: String(sent.length) };
+        },
+      },
+    },
+    model: f.store.wrap({
+      async reply(request) {
+        requests.push(request);
+        return requests.length === 1 ? directive : pending.promise;
+      },
+    }),
+  });
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", "owner"]);
+  const event: MessageEvent = {
+    type: "message",
+    id: "inspect-first",
+    messageId: "100.000001",
+    occurredAt: Date.now(),
+    address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+    direct: true,
+    senderId: "U1",
+    text: `Inspect proposal ${proposal.id}`,
+  };
+  const done = async () =>
+    Object.values((await june.snapshot()).events).filter((e) => e.done).length;
+  await june.send("inbox", { type: "event", event });
+  await expect.poll(done).toBe(1);
+  expect(requests[0]?.mcpAvailable).toBe(true);
+  expect(sent[0]?.content).toMatchObject({
+    type: "text",
+    text: expect.stringContaining('"status":"awaiting_approval"'),
+  });
+  const forgotten = {
+    ...event,
+    id: "inspect-forgotten",
+    messageId: "100.000002",
+  };
+  await june.send("inbox", { type: "event", event: forgotten });
+  await expect.poll(() => requests.length).toBe(2);
+  const sourceId = source(forgotten, JSON.stringify(["private", "owner"])).id;
+  store.deleteSource(sourceId);
+  await june.forget(sourceId);
+  pending.resolve(directive);
+  await expect.poll(done).toBe(2);
+  expect(sent).toHaveLength(1);
+  expect((await june.snapshot()).history).toEqual([]);
+  expect(f.calls).toHaveLength(0);
+
+  // The same known UUID cannot reveal metadata outside an owner-private turn.
+  for (const [direct, senderId] of [
+    [false, "U1"],
+    [true, "U2"],
+  ] as const) {
+    const request = buildModelRequest({
+      event: {
+        ...event,
+        direct,
+        senderId,
+        metadata: { channelType: direct ? "im" : "channel" },
+      },
+      history: [],
+      now: new Date(),
+      owner: {
+        id: "owner",
+        identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
+      },
+      models: { current: { provider: "fixture", model: "fixture" } },
+      capabilities: { mcpAvailable: true },
+    });
+    expect(request.mcpAvailable).toBe(false);
+    await f.store
+      .wrap({
+        async reply(input) {
+          expect(input.system).not.toContain("Recorded MCP proposal");
+          expect(input.system).not.toContain(proposal.id);
+          expect(() =>
+            parseReply(JSON.stringify(directive), [], input),
+          ).toThrow();
+          return { text: "No private tools" };
+        },
+      })
+      .reply(request);
+  }
+});
 
 test("approval review identifies only the matching destination and preserves consent checks", async () => {
   const f = await fixture({

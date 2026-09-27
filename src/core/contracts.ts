@@ -177,6 +177,8 @@ export interface CompanionReply {
     tool: string | null;
     offset: number;
   };
+  /** Owner-private recorded proposal/receipt metadata; never execution or approval. */
+  mcpProposal?: { action: "inspect"; id: string };
   /** Owner-private diagnostics: "logs", "recent" timings or one ping UUIDv4. */
   latency?: string;
   /** Owner-private aggregate token usage for the last 1, 7, or 30 days. */
@@ -232,6 +234,8 @@ export interface ModelRequest {
   mcpAvailable?: boolean;
   /** Set by the owner-private MCP wrapper, independently of enabled tools. */
   mcpPermissionAvailable?: boolean;
+  /** Historical receipt reads remain available independently of enabled tools. */
+  mcpProposalAvailable?: boolean;
   latencyAvailable?: boolean;
   analyticsAvailable?: boolean;
   inspectionAvailable?: boolean;
