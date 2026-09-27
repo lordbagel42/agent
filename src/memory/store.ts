@@ -819,9 +819,11 @@ export class EvidenceStore {
       cursor?: string;
       // Trusted host presentation measurement; never supplied by the model.
       measureCharacters?: (json: string) => number;
+      entity?: string;
     } = {},
   ): MemoryRetrieval {
     parse(z.string().max(10000), query);
+    const entity = parse(id.optional(), options.entity);
     const category = proposalInputSchema.shape.category
       .optional()
       .safeParse(options.category);
@@ -865,7 +867,10 @@ export class EvidenceStore {
           (item) =>
             !options.claimsOnly &&
             category.data === undefined &&
-            !ignored.has(item.id),
+            !ignored.has(item.id) &&
+            (entity === undefined ||
+              JSON.stringify([item.platform, item.account, item.author]) ===
+                entity),
         )
         .map((item) => ({ type: "source" as const, item })),
       ...visible.claims
@@ -876,10 +881,11 @@ export class EvidenceStore {
         )
         .filter(
           (item) =>
-            ignored.size === 0 ||
-            !this.independentEvidence(item.id, audience).some((id) =>
-              ignored.has(id),
-            ),
+            (entity === undefined || item.entity === entity) &&
+            (ignored.size === 0 ||
+              !this.independentEvidence(item.id, audience).some((id) =>
+                ignored.has(id),
+              )),
         )
         .map((item) => ({ type: "claim" as const, item })),
     ];

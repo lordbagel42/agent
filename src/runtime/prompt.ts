@@ -351,6 +351,7 @@ export function buildModelRequest({
     ...(recallAvailable
       ? [
           "To continue retained-memory search, copy the result's search object into recall and copy nextCursor into its cursor field. This repeats the exact query and filters; do not reconstruct them from memory or evidence text. Null/omitted cursor starts from the beginning; never invent a cursor or offset. Matching additions or deletions invalidate a cursor: restart the same search without it rather than inferring why it failed. An empty truncated page may still have nextCursor; no nextCursor means no further page, not that omitted evidence is false. Only fetch another page when the owner's request needs it.",
+          "For entity-filtered recall, add entity to the search object using an exact existing entity ID; query may be empty. Extracted claims' entity IDs use the JSON-encoded [platform,account,author] tuple. Never guess an identity, resolve an alias, or merge people by display name; ask the owner to disambiguate instead. Unknown IDs return no matches, not name-based alternatives. Null/omitted entity leaves this filter off; category and entity filters can be combined.",
         ]
       : []),
     ...(memoryAvailable && event.address.channel === "slack"

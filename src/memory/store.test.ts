@@ -305,6 +305,14 @@ it("keeps identities distinct, grounded contradictions and supersession, and inv
     "slack:one",
     "slack:two",
   ]);
+  expect(
+    store
+      .retrieve("private", "", { entity: "slack:one" })
+      .claims.map((c) => c.id),
+  ).toEqual(["c1", "dream"]);
+  expect(
+    store.retrieve("private", "", { entity: "slack:one" }).sources,
+  ).toEqual([]);
   expect(store.independentEvidence("dream", "private")).toEqual(["s1"]);
   expect(() =>
     store.appendClaim({
@@ -613,6 +621,86 @@ it("scopes contradiction expansion before counting and never restores hidden or 
   expect(
     open(path).store.retrieve("private", "", { contradictionsOf: "root" }),
   ).toEqual({ sources: [], claims: [] });
+});
+
+it("recalls exact scoped entity IDs without merging same-name authors, accounts or platforms", () => {
+  const { store } = open();
+  const entities = [
+    ["slack", "workspace-secret", "user-secret"],
+    ["slack", "workspace-secret", "other-user"],
+    ["slack", "other-workspace", "user-secret"],
+    ["gmail", "workspace-secret", "user-secret"],
+  ] as const;
+  for (const [i, [platform, account, author]] of entities.entries()) {
+    store.appendSource({
+      ...source(`s${i}`),
+      platform,
+      account,
+      author,
+      text: "Alex likes pears",
+    });
+    store.appendClaim({
+      id: `c${i}`,
+      entity: JSON.stringify(entities[i]),
+      text: "Alex likes pears",
+      audiences: ["private"],
+      kind: "evidence",
+      dependsOn: [`s${i}`],
+      contradicts: [],
+      supersedes: [],
+    });
+  }
+  store.appendSource({ ...source("foreign", "foreign"), text: "Alex" });
+  for (const [i, tuple] of entities.entries()) {
+    const result = store.retrieve("private", "", {
+      entity: JSON.stringify(tuple),
+    });
+    expect(result.sources.map((s) => s.id)).toEqual([`s${i}`]);
+    expect(result.claims.map((c) => c.id)).toEqual([`c${i}`]);
+    expect(result.truncated).toBeUndefined();
+  }
+  const entity = JSON.stringify(entities[0]);
+  expect(store.retrieve("public", "", { entity })).toEqual({
+    sources: [],
+    claims: [],
+  });
+  expect(store.retrieve("private", "", { entity: "Alex" })).toEqual({
+    sources: [],
+    claims: [],
+  });
+  expect(store.retrieve("private", "mango", { entity })).toEqual({
+    sources: [],
+    claims: [],
+  });
+  expect(store.retrieve("private", "pears", { entity, limit: 1 }).omitted).toBe(
+    1,
+  );
+  const page = store.retrieve("private", "", {
+    entity,
+    limit: 1,
+    paginate: true,
+  });
+  expect(page.claims.map((c) => c.id)).toEqual(["c0"]);
+  expect(page.nextCursor).toBeTruthy();
+  expect(
+    store
+      .retrieve("private", "", { entity, limit: 1, cursor: page.nextCursor })
+      .sources.map((s) => s.id),
+  ).toEqual(["s0"]);
+  expect(() =>
+    store.retrieve("private", "", {
+      entity: JSON.stringify(entities[1]),
+      limit: 1,
+      cursor: page.nextCursor,
+    }),
+  ).toThrow("Invalid recall cursor");
+  expect(() => store.retrieve("private", "", { entity: "" })).toThrow();
+  store.deleteSource("s0");
+  expect(store.retrieve("private", "", { entity })).toEqual({
+    sources: [],
+    claims: [],
+  });
+  expect(store.retrieve("private", "Alex").claims).toHaveLength(3);
 });
 
 it("fails closed on wrong keys and modified ciphertext", () => {

@@ -99,6 +99,13 @@ trusted host APIs, not autonomous model tools.
   no further entity expansion, model call, or persistent relationship cache occurs.
   The index reuses source invalidation and cannot enter public/guest prompts,
   change curated personality, or grant social permissions.
+- `retrieve` also accepts `entity`, an exact existing entity ID. Claims match
+  their stored `entity`; sources match `JSON.stringify([platform,account,author])`,
+  the same tuple used for extracted claims. This filter applies after audience
+  authorization and before lexical ranking, bounds, and omission counts. An empty
+  query retrieves the entity's records without a keyword restriction. Unknown
+  IDs return no matches; names, aliases, partial IDs, and similar-looking tuples
+  are never resolved or merged. Existing explicit claim IDs are not rewritten.
 - `reviewedPatterns(audience)` projects at most six accepted `pattern` proposals
   and 8,000 serialized JSON characters, newest staged first, independently of
   lexical recall. Whole oversized records are skipped. Claims retain citations,
@@ -165,6 +172,15 @@ remain lexical. The same six-record / 3,000-character escaped JSON budget applie
 to the root and its one-hop incoming/outgoing neighbors; direction and source
 dependencies are retained, not converted into consensus or verified truth.
 No result can establish agreement, and referenced but absent bodies are unknown.
+
+For an entity-specific request, June can use
+`recall: {kind: "search", query: "", entity: '["slack","T1","U1"]'}`
+with the exact existing entity ID from retained evidence or the owner's request.
+The filter never infers identity from a display name; equal names in different
+author/account/platform tuples stay separate. Unknown IDs produce no matches,
+not an unfiltered fallback. `entity` can accompany a category or keyword query;
+omitted/null means no entity filter. Ask for clarification when identity is
+ambiguous rather than inventing an ID or merging people.
 
 The host derives the audience from routing; the model cannot choose an audience,
 limit, provider, account, or permission. Recall is absent from guest/public,

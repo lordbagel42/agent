@@ -162,6 +162,12 @@ const companionReplySchema = z.strictObject({
           .regex(/^[A-Za-z0-9_-]{43}$/)
           .nullish()
           .transform((value) => value ?? undefined),
+        entity: z
+          .string()
+          .min(1)
+          .max(2048)
+          .nullish()
+          .transform((value) => value ?? undefined),
       }),
       z.strictObject({
         kind: z.literal("contradictions"),
@@ -417,7 +423,7 @@ export function replyJsonSchema(
                     query: {
                       type: "string",
                       description:
-                        "At most 500 Unicode characters; empty for category-only recall.",
+                        "At most 500 Unicode characters; empty for filter-only recall.",
                     },
                     category: {
                       type: ["string", "null"],
@@ -431,8 +437,13 @@ export function replyJsonSchema(
                       description:
                         "Copy nextCursor from the last page with the same query and filters. Null starts a search. Changed matching data invalidates the cursor; restart without it. Never invent offsets or cursors.",
                     },
+                    entity: {
+                      type: ["string", "null"],
+                      description:
+                        "Exact existing entity ID (1–2048 characters), not a display name or inferred identity. Extracted IDs are JSON-encoded [platform,account,author] tuples. Null omits this filter.",
+                    },
                   },
-                  required: ["kind", "query", "category", "cursor"],
+                  required: ["kind", "query", "category", "cursor", "entity"],
                 },
                 {
                   type: "object",
@@ -449,7 +460,7 @@ export function replyJsonSchema(
                 },
               ],
               description:
-                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with an optional category filter, or explicit contradiction-neighbor inspection by claim ID. Unknown categories are rejected, never broadened. The host returns bounded evidence with provenance directly, without deciding truth. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
+                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with optional category and exact entity filters, or explicit contradiction-neighbor inspection by claim ID. Unknown categories are rejected, never broadened. Unknown entity IDs return no matches, never name-based alternatives. The host returns bounded evidence with provenance directly, without deciding truth. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
             },
           }
         : {}),

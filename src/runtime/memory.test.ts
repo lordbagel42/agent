@@ -354,13 +354,52 @@ it("recalls only for the owner privately and invalidates recalled and derived re
   );
   expect(continued.claims.map((claim: Claim) => claim.id)).toEqual(["claim-9"]);
   expect(continued.nextCursor).toBeUndefined();
+  const people = [
+    { author: "ALEX1", text: "Alex likes pears" },
+    { author: "ALEX2", text: "Alex prefers mangoes" },
+  ];
+  for (const person of people) {
+    store.appendSource({ ...source, ...person, id: person.author });
+    store.appendClaim({
+      id: `claim-${person.author}`,
+      entity: JSON.stringify(["slack", "T1", person.author]),
+      text: person.text,
+      audiences: [audience],
+      kind: "evidence",
+      dependsOn: [person.author],
+      contradicts: [],
+      supersedes: [],
+    });
+  }
+  for (const person of people) {
+    action = {
+      text: "",
+      recall: {
+        kind: "search",
+        query: "",
+        entity: JSON.stringify(["slack", "T1", person.author]),
+      },
+    };
+    await turn();
+    expect(requests.at(-1)?.system).toContain("entity-filtered recall");
+    const content = sent.at(-1)?.content;
+    if (content?.type !== "text") throw new Error("Missing entity recall");
+    const result = JSON.parse(
+      content.text.slice(content.text.indexOf("\n") + 1),
+    );
+    expect(result.sources.map((s: { id: string }) => s.id)).toEqual([
+      person.author,
+    ]);
+    expect(result.claims.map((c: { id: string }) => c.id)).toEqual([
+      `claim-${person.author}`,
+    ]);
+  }
+  action = { text: "", recall: { kind: "search", query: "", entity: "Alex" } };
+  await turn();
+  expect(JSON.stringify(sent.at(-1))).toContain("No retained evidence matched");
   action = {
     text: "",
-    recall: {
-      kind: "search",
-      query: "violet heron",
-      cursor: evidence.nextCursor,
-    },
+    recall: { kind: "search", query: "", entity: '["slack","T1","ALEX1"]' },
   };
   for (const extra of [
     {
@@ -378,6 +417,7 @@ it("recalls only for the owner privately and invalidates recalled and derived re
     expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE violet");
     expect(JSON.stringify(sent.at(-1))).toContain("owner-private turn");
     expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE violet");
+    expect(JSON.stringify(sent.at(-1))).not.toContain("Alex likes pears");
   }
   web = true;
   await turn();
@@ -432,6 +472,9 @@ it("recalls only for the owner privately and invalidates recalled and derived re
     " ",
     "x".repeat(501),
     { query: "bird", audience: "other-owner" },
+    { kind: "search", query: "", entity: "" },
+    { kind: "search", query: "", entity: 42 },
+    { kind: "search", query: "", entity: "x".repeat(2049) },
     { kind: "search", query: "bird", category: "preferences" },
     {
       kind: "search",

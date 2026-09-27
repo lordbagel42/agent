@@ -211,6 +211,7 @@ export interface CompanionReply {
         query: string;
         category?: "claim" | "preference" | "commitment" | "pattern";
         cursor?: string;
+        entity?: string;
       }
     | { kind: "contradictions"; claimId: string };
   /** Owner-private bounded view of unaccepted memory claims; never review. */
