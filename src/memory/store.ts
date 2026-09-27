@@ -682,6 +682,19 @@ export class EvidenceStore {
     };
   }
 
+  /** Content-free usage for one host-authorized audience, not total disk usage.
+   * Bytes measure UTF-8 JSON of {sources,claims}, including record metadata.
+   * The ledger currently has no configured/enforced total capacity budgets. */
+  capacity(audience: string) {
+    const visible = this.search(audience, "");
+    return {
+      sources: visible.sources.length,
+      claims: visible.claims.length,
+      serializedBytes: Buffer.byteLength(JSON.stringify(visible), "utf8"),
+      limits: { sources: null, claims: null, serializedBytes: null },
+    };
+  }
+
   /** Unique original source IDs, never a count of dream/claim repetitions. */
   independentEvidence(claimId: string, audience: string): string[] {
     parse(id, claimId);

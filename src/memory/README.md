@@ -37,6 +37,18 @@ trusted host APIs, not autonomous model tools.
 - `source(audience, sourceId)` reads one authorized source, or `undefined`.
   `isDeleted(sourceId)` is only for trusted ingestion/replay filtering; it is
   not a model-visible existence oracle. Tombstones must outlive replayable data.
+- `capacity(audience)` returns content-free `sources`, `claims`, and
+  `serializedBytes` usage with separate `limits` for those fields. The existing
+  owner-private `inspection: "memory"` action exposes this snapshot to June;
+  guests, channels and synthesis cannot call it. Counts cover all retained,
+  authorized sources and stored claims (including dreams), not pending/rejected
+  proposals or a recall result window. Bytes measure UTF-8 JSON of the scoped
+  `{sources,claims}` object, including full record metadata and its empty
+  container. Other audiences' records, proposals, imports, tombstones, curated
+  history, encryption and SQLite overhead are excluded; this is not total ledger
+  size, disk usage or model context size. Total source/claim/byte budgets are not
+  configured or enforced, so limits are `null` and remaining capacity is unknown,
+  not unlimited. Retrieval/extraction character limits below are separate.
 - `retrieve(audience, query, {limit?, maxCharacters?})` returns `{sources,claims}`.
   Authorization precedes lexical ranking. Defaults: 12 combined records, 16,000
   serialized JSON characters; hard limits: 100 records, 100,000 characters and a

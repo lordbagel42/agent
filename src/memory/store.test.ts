@@ -110,6 +110,81 @@ it("persists encrypted provenance and filters audiences before text matching acr
   ).toThrow();
 });
 
+it("counts only authorized capacity without leaking other audiences or deleted evidence", () => {
+  const { store, path } = open();
+  const empty = {
+    sources: 0,
+    claims: 0,
+    serializedBytes: 26,
+    limits: { sources: null, claims: null, serializedBytes: null },
+  };
+  expect(store.capacity("private")).toEqual(empty);
+  const privateSource = { ...source(), text: "private 🐦 café" };
+  const shared = { ...source("shared"), audiences: ["private", "public"] };
+  const privateClaim: Claim = {
+    id: "private-claim",
+    entity: "private-entity",
+    text: "private hypothesis 🐦",
+    audiences: ["private"],
+    kind: "evidence",
+    dependsOn: [privateSource.id],
+    contradicts: [],
+    supersedes: [],
+  };
+  const publicClaims: Claim[] = ["public-one", "public-two"].map((id) => ({
+    ...privateClaim,
+    id,
+    text: "public hypothesis",
+    audiences: ["public"],
+    dependsOn: [shared.id],
+  }));
+  store.appendSource(privateSource);
+  store.appendSource(shared);
+  store.appendSource(shared); // Identical replay is still one record per audience.
+  store.appendClaim(privateClaim);
+  for (const claim of publicClaims) store.appendClaim(claim);
+  const privateJson = JSON.stringify({
+    sources: [privateSource, shared],
+    claims: [privateClaim],
+  });
+  const privateBytes = new TextEncoder().encode(privateJson).byteLength;
+  expect(privateBytes).toBeGreaterThan(privateJson.length);
+  const privateCapacity = {
+    ...empty,
+    sources: 2,
+    claims: 1,
+    serializedBytes: privateBytes,
+  };
+  expect(store.capacity("private")).toEqual(privateCapacity);
+  expect(store.capacity("public")).toEqual({
+    ...empty,
+    sources: 1,
+    claims: 2,
+    serializedBytes: new TextEncoder().encode(
+      JSON.stringify({ sources: [shared], claims: publicClaims }),
+    ).byteLength,
+  });
+  store.appendSource({
+    ...source("hidden", "public"),
+    text: "secret".repeat(100),
+  });
+  expect(store.capacity("private")).toEqual(privateCapacity);
+  expect(store.capacity("unknown")).toEqual(empty);
+  store.close();
+  const reopened = open(path).store;
+  expect(reopened.capacity("private")).toEqual(privateCapacity);
+  reopened.deleteSource(privateSource.id);
+  expect(reopened.capacity("private")).toEqual({
+    ...empty,
+    sources: 1,
+    serializedBytes: new TextEncoder().encode(
+      JSON.stringify({ sources: [shared], claims: [] }),
+    ).byteLength,
+  });
+  reopened.deleteSource(shared.id);
+  expect(reopened.capacity("private")).toEqual(empty);
+});
+
 it("keeps identities distinct, grounded contradictions and supersession, and invalidates derivatives transitively", () => {
   const { store, path } = open();
   store.appendSource(source());

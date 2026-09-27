@@ -26,7 +26,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   const audience = JSON.stringify(["private", owner.id]);
   const store = new EvidenceStore(":memory:", randomBytes(32));
   t.onTestFinished(() => store.close());
-  store.appendSource({
+  const retainedSource = {
     id: "secret-source",
     audiences: [audience],
     platform: "slack",
@@ -36,6 +36,13 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     observedAt: 1,
     sourceUrl: "https://example.com/private",
     text: "SECRET CONTENT",
+  };
+  store.appendSource(retainedSource);
+  store.appendSource({
+    ...retainedSource,
+    id: "other-secret-source",
+    audiences: ["SECRET OTHER AUDIENCE"],
+    text: "SECRET OTHER CONTENT".repeat(10),
   });
   store.stageProposals(
     audience,
@@ -122,6 +129,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
           expect(request.system).toContain(
             'Set inspection to "memory", "imports", "reflection", or "native-coding"',
           );
+        if (request.inspectionAvailable)
+          expect(request.system).toContain("serialized-byte usage/limits");
         if (search && request.webSearchAvailable)
           return { text: "", webSearch: "public query" };
         // Exercise provider parsing for valid actions, and host guards against
@@ -232,7 +241,21 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     const content = sent.at(-1)?.content;
     return content?.type === "text" ? content.text : "";
   };
-  expect(await deliver()).toContain('"pending":1,"accepted":0,"rejected":0');
+  const memoryReport = await deliver();
+  expect(memoryReport).toContain('"pending":1,"accepted":0,"rejected":0');
+  expect(memoryReport).toContain(
+    JSON.stringify({
+      sources: 1,
+      claims: 0,
+      serializedBytes: new TextEncoder().encode(
+        JSON.stringify({ sources: [retainedSource], claims: [] }),
+      ).byteLength,
+      limits: { sources: null, claims: null, serializedBytes: null },
+    }),
+  );
+  expect(memoryReport).toContain("not total ledger/disk size");
+  expect(memoryReport).toContain("remaining capacity is unknown");
+  expect(memoryReport.length).toBeLessThan(2000);
   action = { text: "", inspection: "imports" };
   const importReport = await deliver();
   expect(importReport).toContain("Configured selections: 12; showing 10");
@@ -260,17 +283,23 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     },
     { senderId: "U2", metadata: { channelType: "im" as const } },
   ]) {
-    const before = requests.length;
-    expect(await deliver(extra)).toContain("owner-private turn");
-    expect(requests).toHaveLength(before + 1);
+    for (const inspection of ["native-coding", "memory"] as const) {
+      action = { text: "", inspection };
+      const before = requests.length;
+      expect(await deliver(extra)).toContain("owner-private turn");
+      expect(requests).toHaveLength(before + 1);
+      expect(requests.at(-1)?.inspectionAvailable).toBe(false);
+      expect(reads).toBe(4);
+    }
+  }
+  search = true;
+  for (const inspection of ["native-coding", "memory"] as const) {
+    action = { text: "", inspection };
+    await deliver();
+    expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
     expect(reads).toBe(4);
   }
-  search = true;
-  await deliver();
-  expect(requests.at(-1)?.usageStage).toBe("synthesis");
-  expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-  expect(reads).toBe(4);
   search = false;
   action = {
     text: "",
