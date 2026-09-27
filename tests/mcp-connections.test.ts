@@ -455,6 +455,7 @@ test("mixed host recall/browser directives cannot dispatch MCP calls, proposals 
   const f = await fixture();
   f.request.recallAvailable = true;
   f.request.browserProposalAvailable = true;
+  f.request.forgetPreviewAvailable = true;
   for (const permission of ["read", "approval"] as const) {
     f.store.permit(f.id, f.connection().revision, "lookup", permission);
     for (const directive of [
@@ -470,6 +471,7 @@ test("mixed host recall/browser directives cannot dispatch MCP calls, proposals 
       for (const hostDirective of [
         { recall: "heron" },
         { browserProposal: { operation: "fill-note" } },
+        { forgetPreview: { sourceId: "s1" } },
       ])
         for (const afterCatalog of [false, true]) {
           let calls = 0;
@@ -611,6 +613,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.codingJobsAvailable = true;
   f.request.recallAvailable = true;
   f.request.reflectionRequestAvailable = true;
+  f.request.forgetPreviewAvailable = true;
   let evidence = "";
   let synthesis: ModelRequest | undefined;
   let modelStatusAvailable: boolean | undefined;
@@ -693,6 +696,13 @@ test("discovery grants nothing, read results are transient and credentials stay 
     ),
   ).toThrow();
   expect(f.request.reflectionRequestAvailable).toBe(true);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "forgetPreview",
+  );
+  expect(() =>
+    parseReply('{"text":"","forgetPreview":{"sourceId":"s1"}}', [], synthesis),
+  ).toThrow();
+  expect(f.request.forgetPreviewAvailable).toBe(true);
   expect(evidence).toContain("private result [credential redacted]");
   expect(modelStatusAvailable).toBe(false);
   expect(evidence).not.toContain("private-token");

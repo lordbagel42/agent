@@ -703,7 +703,8 @@ export class McpConnections {
         if (
           reply.recall !== undefined ||
           reply.pendingMemory !== undefined ||
-          reply.browserProposal !== undefined
+          reply.browserProposal !== undefined ||
+          reply.forgetPreview !== undefined
         )
           return parseReply(
             JSON.stringify(reply),
@@ -737,7 +738,8 @@ export class McpConnections {
           if (
             reply.recall !== undefined ||
             reply.pendingMemory !== undefined ||
-            reply.browserProposal !== undefined
+            reply.browserProposal !== undefined ||
+            reply.forgetPreview !== undefined
           )
             return parseReply(
               JSON.stringify(reply),
@@ -874,6 +876,7 @@ export class McpConnections {
                 juryAvailable: false,
                 rivetAvailable: false,
                 browserProposalAvailable: false,
+                forgetPreviewAvailable: false,
                 dashboardLoginAvailable: false,
                 modelStatusAvailable: false,
                 wakeupAvailable: false,

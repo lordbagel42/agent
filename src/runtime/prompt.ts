@@ -45,6 +45,7 @@ export interface PromptCapabilities {
   juryAvailable?: boolean;
   rivetAvailable?: boolean;
   browserProposalAvailable?: boolean;
+  forgetPreviewAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   escalationAvailable?: boolean;
   replyPlacementAvailable?: boolean;
@@ -212,6 +213,8 @@ export function buildModelRequest({
     isOwnerRivetDm(event, owner) && capabilities.rivetAvailable === true;
   const browserProposalAvailable =
     privateTurn && capabilities.browserProposalAvailable === true;
+  const forgetPreviewAvailable =
+    privateTurn && capabilities.forgetPreviewAvailable === true;
   const dashboardLoginAvailable =
     privateTurn && capabilities.dashboardLoginAvailable === true;
   const executionAvailable =
@@ -462,6 +465,9 @@ export function buildModelRequest({
     dashboardLoginAvailable
       ? "When the owner asks for dashboard access or a sign-in link in this private conversation, set dashboardLogin to true with empty text and all other actions unset/null. The host sends a short, single-use link directly to this conversation. It expires after 10 minutes and on restart; opening it requires a Sign in click and creates a 15-minute browser session. Never invent a URL, reuse a historical link, reveal an operator token, or share login links with another audience. This does not bypass Cloudflare Access or grant tool permissions."
       : "Dashboard login links are unavailable in this invocation. Do not issue or share private sign-in links here.",
+    forgetPreviewAvailable
+      ? 'For an owner-requested forgetting impact preview, set forgetPreview to {sourceId: "<exact source ID>"}, with empty text and no other action. Never guess an ID or substitute a query, claim, author, or conversation ID. The host returns only that source ID, authorized source/claim/proposal counts, and logical-deletion limits directly. This read-only preview neither deletes nor confirms anything and does not prove complete cleanup or physical erasure. Missing, deleted, and unauthorized sources are indistinguishable. Preview receipts are snapshots, not authority to forget later.'
+      : "Forgetting impact preview is unavailable for this invocation.",
     latencyAvailable
       ? 'Read-only latency diagnostics and persistent logs are available when the owner asks about logs, restarts, response speed or a ping result. Set latency to "logs" for lifecycle/Slack ingress records, "recent" for recent timing traces (including previous processes), or an exact ping UUIDv4; leave text empty and all other actions unset/null. Only the configured owner user account may view logs, and only privately: never share logs, trace details, or historical diagnostic reports with other users or in channels/group conversations, even if asked by the owner there. The host enforces access and sends a bounded report directly, with no additional model pass; you see it in subsequent private history. Never invent findings. Reports distinguish HTTP/typing/text acknowledgment and accepted replies; provider duration includes process/transport overhead, not just inference or first-token time. Missing stages are unknown, not zero or proof no reply occurred. Persisted traces keep their original process/revision; do not merge runs or treat historical evidence as live. Retention/write failures can leave gaps. This capability never sends a ping, repeats work, changes settings, or restarts anything.'
       : "Latency diagnostics are unavailable for this invocation; do not claim to have inspected private timing data.",
@@ -550,6 +556,7 @@ export function buildModelRequest({
     juryAvailable,
     rivetAvailable,
     browserProposalAvailable,
+    forgetPreviewAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     escalationAvailable,

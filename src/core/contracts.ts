@@ -261,6 +261,8 @@ export interface CompanionReply {
   rivet?: import("./rivet.js").RivetRequest;
   /** List named mutations (null), or propose one for separate exact human approval. */
   browserProposal?: { operation: string | null };
+  /** Exact owner-private forgetting impact; never deletion or confirmation. */
+  forgetPreview?: { sourceId: string };
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Owner-private persistent schedules and event subscriptions. */
@@ -308,6 +310,7 @@ export interface ModelRequest {
   juryAvailable?: boolean;
   rivetAvailable?: boolean;
   browserProposalAvailable?: boolean;
+  forgetPreviewAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;

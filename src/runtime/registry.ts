@@ -1675,6 +1675,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   scope.private &&
                                   !!deps.browserProposal,
+                                forgetPreviewAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  plan.memory &&
+                                  !!deps.memory,
                                 dashboardLoginAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2669,6 +2675,62 @@ export function createJuneRegistry(deps: Dependencies) {
                                 } catch {
                                   text =
                                     "That exact browser proposal is unavailable. Nothing ran and no permission was granted.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (generated.forgetPreview !== undefined) {
+                              let text =
+                                "Forgetting impact preview requires an owner-private turn and available memory. Nothing was deleted.";
+                              if (
+                                scope.private &&
+                                modelRequest.forgetPreviewAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                deps.memory
+                              ) {
+                                text =
+                                  "Forgetting impact preview is unavailable. Nothing was deleted.";
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  const preview =
+                                    checked.forgetPreview &&
+                                    deps.memory.store.previewForget(
+                                      audience,
+                                      checked.forgetPreview.sourceId,
+                                    );
+                                  if (preview) {
+                                    // Pick public fields explicitly. Host-only binding
+                                    // and confirmability must never enter receipts.
+                                    const {
+                                      sourceId,
+                                      sources,
+                                      claims,
+                                      proposals,
+                                      physicalPurge,
+                                    } = preview;
+                                    const report = JSON.stringify({
+                                      sourceId,
+                                      sources,
+                                      claims,
+                                      proposals,
+                                      physicalPurge,
+                                    });
+                                    // Never truncate an escaped ID into a different target.
+                                    if (report.length <= 2200)
+                                      text = `Forgetting impact preview (read-only snapshot): ${report}\nCounts cover only authorized ledger records. Accepted proposals also appear in the claim count; do not add them twice. No evidence bodies or derivative IDs are shown. Nothing was deleted or confirmed.\nA separately authorized forget logically tombstones this source and dependent claims/proposals, invalidates copied working context and grounded personality, and requests associated job/reflection cleanup. Existing social grants/outreach are revoked and copied prose redacted. These counts are not a count of all cleanup effects. Already-sent content, running external work, encrypted history, Rivet journals, and backups cannot be recalled or physically erased by this operation.`;
+                                  }
+                                } catch {
+                                  // Do not expose input, storage errors, or whether
+                                  // an unavailable source exists in another scope.
                                 }
                               }
                               generated = {

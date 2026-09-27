@@ -406,6 +406,19 @@ Operator APIs:
 - `reviewProposal(audience, id, "accepted" | "rejected"): void` is an
   authenticated operator action. Same-decision retries are idempotent; opposing
   decisions fail. Only accepted proposals become retrievable claims.
+- `previewForget(audience, sourceId): ForgetPreview | undefined` is read-only,
+  reusing source-dependent inspection's full authorized claim graph. It returns
+  `{sourceId,sources:1,claims,proposals:{pending,accepted,rejected},physicalPurge:false}`
+  plus **host-only** `fingerprint` and `confirmable`. Missing, deleted and foreign
+  source IDs all return undefined. Counts include contradiction/supersession
+  derivatives and all authorized proposals; accepted proposals also count as
+  claims. The fingerprint binds the audience, exact target, complete authorized
+  derivative IDs/edges and proposal statuses, never just bounded inspection rows
+  or counts. `confirmable:false` blocks later confirmation when global deletion
+  reaches unpreviewed records. Never expose that bit, its reason, or the
+  fingerprint in model context or preview receipts. A later confirmation path
+  must require confirmable and freshly compare the fingerprint before deletion;
+  preview itself does not authorize or perform any mutation or cleanup.
 - `deleteSource(id): void` removes the source and all dependent claims/proposals,
   including contradiction/supersession dependencies and all explicit references
   in `grounding`, and tombstones their IDs. Snapshot reads reapply tombstones to

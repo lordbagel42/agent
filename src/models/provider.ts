@@ -232,6 +232,9 @@ const companionReplySchema = z.strictObject({
   browserProposal: z
     .strictObject({ operation: z.string().min(1).max(128).nullable() })
     .optional(),
+  forgetPreview: z
+    .strictObject({ sourceId: z.string().min(1).max(2048) })
+    .optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -270,6 +273,7 @@ export type ReplyCapabilities = Pick<
   | "juryAvailable"
   | "rivetAvailable"
   | "browserProposalAvailable"
+  | "forgetPreviewAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
@@ -312,6 +316,7 @@ export function replyJsonSchema(
     juryAvailable,
     rivetAvailable,
     browserProposalAvailable,
+    forgetPreviewAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -794,6 +799,24 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(forgetPreviewAvailable
+        ? {
+            forgetPreview: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                sourceId: {
+                  type: "string",
+                  description:
+                    "Exact source ID, 1–2048 characters; never a query or claim ID.",
+                },
+              },
+              required: ["sourceId"],
+              description:
+                "Preview authorized forgetting impact for one exact source. Counts only; no deletion or confirmation. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(analyticsAvailable
         ? {
             analytics: {
@@ -1026,6 +1049,7 @@ export function replyJsonSchema(
       ...(juryAvailable ? ["jury"] : []),
       ...(rivetAvailable ? ["rivet"] : []),
       ...(browserProposalAvailable ? ["browserProposal"] : []),
+      ...(forgetPreviewAvailable ? ["forgetPreview"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
@@ -1214,6 +1238,7 @@ export function parseReply(
     juryAvailable,
     rivetAvailable,
     browserProposalAvailable,
+    forgetPreviewAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -1259,6 +1284,7 @@ export function parseReply(
     "jury",
     "rivet",
     "browserProposal",
+    "forgetPreview",
     "dashboardLogin",
     "wakeup",
     "replyInThread",
@@ -1311,6 +1337,7 @@ export function parseReply(
     (reply.jury !== undefined && !juryAvailable) ||
     (reply.rivet !== undefined && !rivetAvailable) ||
     (reply.browserProposal !== undefined && !browserProposalAvailable) ||
+    (reply.forgetPreview !== undefined && !forgetPreviewAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
@@ -1344,6 +1371,7 @@ export function parseReply(
     Number(reply.jury !== undefined) +
     Number(reply.rivet !== undefined) +
     Number(reply.browserProposal !== undefined) +
+    Number(reply.forgetPreview !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
@@ -1373,6 +1401,7 @@ export function parseReply(
       reply.jury !== undefined ||
       reply.rivet !== undefined ||
       reply.browserProposal !== undefined ||
+      reply.forgetPreview !== undefined ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||
       reply.latency !== undefined) &&

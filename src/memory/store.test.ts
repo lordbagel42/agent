@@ -195,6 +195,147 @@ it("keeps retrieval timing content-free across success, failure, and reopening",
   expect(open(path).store.operationStatus().retrieval).toEqual(empty);
 });
 
+it("previews exact authorized forgetting impact without mutation or foreign graph disclosure", () => {
+  const { store, path } = open();
+  store.appendSource({ ...source(), audiences: ["private", "foreign"] });
+  store.appendSource(source("other"));
+  store.appendSource(source("foreign-source", "foreign"));
+  const claim = {
+    id: "direct",
+    entity: "entity",
+    text: "PRIVATE BODY",
+    audiences: ["private", "foreign"],
+    kind: "evidence" as const,
+    dependsOn: ["s1"],
+    contradicts: [],
+    supersedes: [],
+  };
+  store.appendClaim(claim);
+  store.appendClaim({
+    ...claim,
+    id: "dream",
+    kind: "dream",
+    dependsOn: ["direct"],
+  });
+  store.appendClaim({
+    ...claim,
+    id: "contrary",
+    audiences: ["private"],
+    dependsOn: ["other"],
+    contradicts: ["dream"],
+  });
+  store.appendClaim({
+    ...claim,
+    id: "replacement",
+    audiences: ["private"],
+    dependsOn: ["other"],
+    supersedes: ["contrary"],
+  });
+  const input = {
+    subjectSourceId: "other",
+    text: "PROPOSAL BODY",
+    category: "claim" as const,
+    citations: [{ sourceId: "other", quote: "kumquat" }],
+    confidence: 0.5,
+    validFrom: null,
+    validTo: null,
+    contradicts: ["replacement"],
+    supersedes: [],
+  };
+  const [pending, accepted, rejected] = store.stageProposals(
+    "private",
+    ["other"],
+    [input, { ...input, text: "accepted" }, { ...input, text: "rejected" }],
+  );
+  if (!pending || !accepted || !rejected)
+    throw new Error("Missing fixture proposals");
+  store.reviewProposal("private", accepted.id, "accepted");
+  store.reviewProposal("private", rejected.id, "rejected");
+  const before = readFileSync(path);
+  const preview = store.previewForget("private", "s1");
+  expect(preview).toMatchObject({
+    sourceId: "s1",
+    sources: 1,
+    claims: 5,
+    proposals: { pending: 1, accepted: 1, rejected: 1 },
+    physicalPurge: false,
+    confirmable: true,
+  });
+  expect(preview?.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+  expect(store.previewForget("private", "s1")).toEqual(preview);
+  for (const id of ["missing", "foreign-source", "direct", " s1"])
+    expect(store.previewForget("private", id)).toBeUndefined();
+  expect(readFileSync(path)).toEqual(before);
+  expect(JSON.stringify(preview)).not.toContain("BODY");
+  expect(
+    store.dependentClaims("private", "s1", { limit: 1 })?.claims,
+  ).toHaveLength(1);
+  expect(store.previewForget("private", "s1")?.claims).toBe(5);
+
+  store.appendClaim({
+    ...claim,
+    id: "unrelated-foreign",
+    audiences: ["foreign"],
+    dependsOn: ["foreign-source"],
+  });
+  expect(store.previewForget("private", "s1")).toEqual(preview);
+  store.appendClaim({
+    ...claim,
+    id: "hidden-child",
+    audiences: ["foreign"],
+    dependsOn: ["direct"],
+  });
+  const hidden = store.previewForget("private", "s1");
+  expect(hidden).toEqual({ ...preview, confirmable: false });
+  expect(JSON.stringify(hidden)).not.toContain("hidden-child");
+  // A hidden proposal alone also makes global cleanup unconfirmable.
+  store.appendSource({
+    ...source("shared"),
+    audiences: ["private", "foreign"],
+  });
+  const otherPreview = store.previewForget("private", "shared");
+  expect(otherPreview?.confirmable).toBe(true);
+  store.stageProposals(
+    "foreign",
+    ["shared"],
+    [
+      {
+        ...input,
+        subjectSourceId: "shared",
+        citations: [{ sourceId: "shared", quote: "kumquat" }],
+        contradicts: [],
+      },
+    ],
+  );
+  expect(store.previewForget("private", "shared")).toEqual({
+    ...otherPreview,
+    confirmable: false,
+  });
+
+  store.reviewProposal("private", pending.id, "rejected");
+  expect(store.previewForget("private", "s1")?.fingerprint).not.toBe(
+    preview?.fingerprint,
+  );
+  const left = open().store;
+  const right = open().store;
+  for (const [index, ledger] of [left, right].entries()) {
+    ledger.appendSource(source());
+    ledger.appendClaim({
+      ...claim,
+      audiences: ["private"],
+      id: `same-count-${index}`,
+    });
+  }
+  expect(left.previewForget("private", "s1")?.claims).toBe(1);
+  expect(right.previewForget("private", "s1")?.claims).toBe(1);
+  expect(left.previewForget("private", "s1")?.fingerprint).not.toBe(
+    right.previewForget("private", "s1")?.fingerprint,
+  );
+  store.deleteSource("s1");
+  expect(store.previewForget("private", "s1")).toBeUndefined();
+  expect(store.source("private", "other")).toBeDefined();
+});
+
 it("excludes legacy ## Slack evidence from automatic memory but permits explicit lookup", () => {
   const { store } = open();
   store.appendSource({ ...source("ignored"), text: "## secret" });

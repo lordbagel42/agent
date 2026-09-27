@@ -949,6 +949,18 @@ the requested data; this is not deletion from Slack or the provider. Historical
 Rivet journals may contain older/forgotten content: this privileged inspection is
 not the evidence store's deletion-aware recall API.
 
+For an owner-private forgetting impact request, June can use
+`forgetPreview: {sourceId: "<exact source ID>"}` with empty text and no other
+action. With memory enabled, the host replies directly with the exact target,
+one authorized source, transitive claim counts, and proposal counts by status.
+Accepted proposals also appear among claims, so those counts must not be added
+twice. No bodies, derivative IDs, foreign counts, or confirmation authority are
+returned; unavailable targets are indistinguishable. Preview does not delete,
+revoke, cancel, or change memory. It explains logical cleanup and explicitly
+excludes physical purge of journals/backups and recall of already-sent content
+or external work. Guests, public turns, synthesis and disabled memory cannot use
+this action. A preview is a snapshot, not proof of later cleanup.
+
 The existing `conversation-v1` workflow remains. Journaled old iterations stay
 on their old path; new iterations persist optional feature choices before use.
 New live/extraction attempts persist intent before provider work and never

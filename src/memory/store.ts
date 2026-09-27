@@ -160,6 +160,18 @@ export type Source = z.infer<typeof sourceSchema>;
 export type Claim = z.infer<typeof claimSchema>;
 export type MemoryProposalInput = z.infer<typeof proposalInputSchema>;
 export type MemoryProposal = z.infer<typeof proposalSchema>;
+export interface ForgetPreview {
+  sourceId: string;
+  sources: 1;
+  claims: number;
+  proposals: { pending: number; accepted: number; rejected: number };
+  physicalPurge: false;
+  /** Host-only binding, never a deletion grant or a model-visible receipt. */
+  fingerprint: string;
+  /** Host-only: false when deletion would reach unpreviewed records. Do not
+   * expose this bit or explain it using foreign graph existence. */
+  confirmable: boolean;
+}
 export type MemoryRetrieval = {
   sources: Source[];
   claims: Claim[];
@@ -689,6 +701,65 @@ export class EvidenceStore {
     return JSON.stringify(result).length <= budget
       ? result
       : { sources: [], claims: [], truncated: true, omitted: 1 };
+  }
+
+  /** Read-only exact-target preview. Counts and fingerprint include authorized
+   * records only; accepted proposals also appear among claims. Never serialize
+   * the whole result into model context/history: binding fields are host-only. */
+  previewForget(audience: string, sourceId: string): ForgetPreview | undefined {
+    const claims = this.sourceDependents(audience, sourceId);
+    if (!claims) return undefined;
+    const affected = new Set([sourceId, ...claims.map((claim) => claim.id)]);
+    const state = this.read();
+    const proposals = state.proposals.filter(
+      (proposal) =>
+        proposal.audience === audience &&
+        proposal.claim.audiences.includes(audience) &&
+        (affected.has(proposal.id) ||
+          dependencies(proposal.claim).some((ref) => affected.has(ref))),
+    );
+    const counts = { pending: 0, accepted: 0, rejected: 0 };
+    for (const proposal of proposals) counts[proposal.status]++;
+    // Every path to a hidden target first crosses this authorized closure.
+    // Test that boundary without exposing hidden IDs/counts in the fingerprint.
+    const proposalIds = new Set(proposals.map((proposal) => proposal.id));
+    const confirmable =
+      !state.claims.some(
+        (claim) =>
+          !affected.has(claim.id) &&
+          dependencies(claim).some((ref) => affected.has(ref)),
+      ) &&
+      !state.proposals.some(
+        (proposal) =>
+          !proposalIds.has(proposal.id) &&
+          (affected.has(proposal.id) ||
+            dependencies(proposal.claim).some((ref) => affected.has(ref))),
+      );
+    const identity = (claim: Claim) => [
+      claim.id,
+      [...new Set(dependencies(claim))].sort(),
+    ];
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify([
+          audience,
+          sourceId,
+          claims.sort((a, b) => a.id.localeCompare(b.id)).map(identity),
+          proposals
+            .sort((a, b) => a.id.localeCompare(b.id))
+            .map((p) => [p.status, identity(p.claim)]),
+        ]),
+      )
+      .digest("hex");
+    return {
+      sourceId,
+      sources: 1,
+      claims: claims.length,
+      proposals: counts,
+      fingerprint,
+      confirmable,
+      physicalPurge: false,
+    };
   }
 
   appendClaim(input: Claim): void {
