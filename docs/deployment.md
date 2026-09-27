@@ -157,9 +157,9 @@ durable journal, with the existing audience/send restrictions.
 
 The existing homelab provisioner remains the source for June's Node installation,
 base service protections and persistent paths. Do **not** run its old automatic
-rollback path across the compatibility epochs above. Reconcile the repository's
-current default `feat/rivet-messaging` with the combined integrated source, then
-publish `main`; never push a worker's partial clone over combined work.
+rollback path across the compatibility epochs above. `main` is the repository's
+default and only remote branch. Publish release-ready changes directly there;
+never push a worker's partial clone over combined work.
 
 On the **June host only**, an authorized operator must:
 
@@ -173,8 +173,12 @@ On the **June host only**, an authorized operator must:
    require separate operator installation; main cannot self-replace this policy.
 3. Create the dedicated non-login `june-build` account (different UID from June),
    its private `/var/cache/june-build`, and a root-owned bare repository
-   `/var/lib/june-deploy/source.git`. Build staging and `/opt/june/releases` must
-   share a filesystem for atomic promotion. Root owns `/var/lib/june-deploy`
+   `/var/lib/june-deploy/source.git`. Create root-owned `/opt/june/build` (`0711`)
+   for staging beside `/opt/june/releases`: both must share the **same mount**
+   inside the controller's systemd sandbox for atomic promotion. The cache's
+   separate writable bind mount cannot be renamed across, even on the same disk.
+   A build may write only its own staging directory and the package cache.
+   Root owns `/var/lib/june-deploy`
    (`0711` traversal only), its `records` (`0700`) and `public` (root:june `0750`).
    No coding/build UID may replace their ancestors, manipulate service-manager
    jobs, or edit `/opt/june`, `/etc/june`, or the controller.

@@ -308,7 +308,7 @@ class Host:
         self.root = Path("/opt/june")
         self.releases = self.root / "releases"
         self.current = self.root / "current"
-        self.stage_root = Path("/var/cache/june-build")
+        self.stage_root = self.root / "build"
         self.repo = Path("/var/lib/june-deploy/source.git")
         self.token = private_file(Path("/etc/june/deploy-token")).strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", self.token):
@@ -459,7 +459,7 @@ class Host:
                 "-p",
                 "InaccessiblePaths=/etc/june /var/lib/june /var/lib/june-deploy",
                 "-p",
-                "ReadWritePaths=/var/cache/june-build",
+                f"ReadWritePaths={stage} /var/cache/june-build",
                 "/usr/bin/env",
                 "-i",
                 "HOME=/var/cache/june-build",
@@ -703,6 +703,7 @@ def main():
     # unexpected ownership or adopt an existing untrusted deployment database.
     for name in (
         "/opt/june",
+        "/opt/june/build",
         "/opt/june/releases",
         "/var/lib/june-deploy",
         "/var/lib/june-deploy/public",
