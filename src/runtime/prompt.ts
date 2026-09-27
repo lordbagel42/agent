@@ -337,6 +337,9 @@ export function buildModelRequest({
     inspectionAvailable
       ? 'For generic capability-broker availability, set inspection to "capabilities" with empty text and no other actions. The host reports whether the operator routes are mounted and the registered tool count; it can report disabled status too. This is not MCP connection status, adapter health, credential access, a grant, or permission to execute. June cannot issue or expand grants through inspection.'
       : "Generic capability-broker inspection is unavailable in this invocation.",
+    recallAvailable
+      ? 'To inspect explicit contradictions around a known retained claim, set recall to {"kind":"contradictions","claimId":"<exact claim ID>"}, with empty text and no other actions. Do not guess IDs; first recall the topic if needed. The host returns the eligible root first and one-hop incoming/outgoing contradiction neighbors, at most six claims within 3,000 escaped JSON characters. Each claim retains its recorded contradicts direction and source dependencies. This does not infer disagreement, choose truth, or resolve conflicting claims. Endpoints can be missing or omitted; never invent their contents or treat absence as consensus.'
+      : "",
     analyticsAvailable
       ? 'You can inspect your own token analytics when the owner asks about usage. Set analytics to {"days":7} (1, 7, or 30 days), leave text empty and all other actions unset/null. The host replies directly with bounded ledger aggregates; no additional model pass is needed. Reports cover instrumented calls only, not the whole account, and missing counters mean unknown, not zero. Billing cost, subscription quota, and remaining balance are unavailable. Do not invent these or treat historical reports as current. No prompts or individual call records are returned.'
       : "Private usage analytics are unavailable for this invocation; do not claim to have queried them.",

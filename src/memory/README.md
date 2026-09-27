@@ -98,6 +98,16 @@ trusted host APIs, not autonomous model tools.
   uses the operator proposal endpoint. Each turn re-reads the existing ledger,
   and source IDs join the existing history/in-flight forgetting checks. There
   is no new store or public personality write.
+- `retrieve(audience, "", {contradictionsOf: claimId, limit?, maxCharacters?})`
+  selects the exact eligible claim first, then one-hop incoming and outgoing
+  explicit `contradicts` neighbors in stable ID order, within the same budgets.
+  It preserves each claim's recorded relation direction and provenance without
+  selecting a winner, inferring edges, or recursively expanding the graph.
+  Missing, unauthorized, forgotten and opted-out roots return identical empty
+  results. Omitted endpoints are not invented; the absence of a neighbor is not
+  agreement or proof of resolution. A nonempty text query is rejected in this mode.
+  Recorded edge IDs remain intact even when their endpoint bodies are omitted;
+  those references do not supply the missing content.
 
 ## June-facing recall
 
@@ -123,6 +133,14 @@ to 500 Unicode characters. Omitting `category` (or setting it to `null` on the
 provider wire) preserves unfiltered recall. Unknown categories are rejected
 explicitly without searching more broadly. The same owner-private authorization,
 six-record/3,000-character limits, provenance and deletion guards apply.
+
+For explicit contradiction neighbors, ask June privately to inspect a known
+claim ID. She can choose `recall: {kind: "contradictions", claimId: "..."}`
+(exact ID, 1–2048 characters) with empty text and no other action. String queries
+remain lexical. The same six-record / 3,000-character escaped JSON budget applies
+to the root and its one-hop incoming/outgoing neighbors; direction and source
+dependencies are retained, not converted into consensus or verified truth.
+No result can establish agreement, and referenced but absent bodies are unknown.
 
 The host derives the audience from routing; the model cannot choose an audience,
 limit, provider, account, or permission. Recall is absent from guest/public,

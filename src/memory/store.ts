@@ -810,6 +810,8 @@ export class EvidenceStore {
       maxCharacters?: number;
       claimsOnly?: boolean;
       category?: MemoryProposalInput["category"];
+      /** Exact claim plus one-hop explicit contradiction neighbors; no text query. */
+      contradictionsOf?: string;
     } = {},
   ): MemoryRetrieval {
     parse(z.string().max(10000), query);
@@ -820,6 +822,12 @@ export class EvidenceStore {
       throw new Error(
         "Invalid memory category; expected claim, preference, commitment, or pattern",
       );
+    const contradictionsOf =
+      options.contradictionsOf === undefined
+        ? undefined
+        : parse(id, options.contradictionsOf);
+    if (contradictionsOf !== undefined && query !== "")
+      throw new Error("Invalid memory input");
     const limit = parse(z.number().int().min(1).max(100), options.limit ?? 12);
     const budget = parse(
       z.number().int().min(100).max(100000),
@@ -839,7 +847,7 @@ export class EvidenceStore {
     const words = [
       ...new Set(query.toLocaleLowerCase().split(/\s+/u).filter(Boolean)),
     ];
-    const candidates = [
+    const eligible = [
       ...visible.sources
         .filter(
           (item) =>
@@ -862,12 +870,30 @@ export class EvidenceStore {
             ),
         )
         .map((item) => ({ type: "claim" as const, item })),
-    ]
+    ];
+    // Resolve the root only after scope/opt-out filtering. Missing and hidden
+    // roots have identical empty results; never synthesize an edge endpoint.
+    const root = eligible.find(
+      (entry) => entry.type === "claim" && entry.item.id === contradictionsOf,
+    );
+    const candidates = eligible
+      .filter(
+        (entry) =>
+          contradictionsOf === undefined ||
+          (root?.type === "claim" &&
+            entry.type === "claim" &&
+            (entry.item.id === root.item.id ||
+              root.item.contradicts.includes(entry.item.id) ||
+              entry.item.contradicts.includes(root.item.id))),
+      )
       .map((entry) => ({
         ...entry,
-        score: words.filter((word) =>
-          entry.item.text.toLocaleLowerCase().includes(word),
-        ).length,
+        score:
+          entry.item.id === contradictionsOf
+            ? 1
+            : words.filter((word) =>
+                entry.item.text.toLocaleLowerCase().includes(word),
+              ).length,
       }))
       .filter((entry) => !words.length || entry.score > 0)
       .sort((a, b) => b.score - a.score || a.item.id.localeCompare(b.item.id));

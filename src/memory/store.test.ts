@@ -453,6 +453,88 @@ it("bounds complete dependent records and authorized omission metadata, without 
     expect(() => store.dependentClaims("private", "s1", options)).toThrow();
 });
 
+it("scopes contradiction expansion before counting and never restores hidden or forgotten neighbors", () => {
+  const { store, path } = open();
+  store.appendSource({ ...source("shared"), audiences: ["private", "other"] });
+  store.appendSource(source("incoming-source"));
+  store.appendSource({ ...source("ignored"), text: "## do not recall" });
+  for (const entry of [
+    { id: "z-older", audiences: ["private", "other"] },
+    {
+      id: "root",
+      audiences: ["private", "other"],
+      contradicts: ["z-older"],
+    },
+    {
+      id: "a-incoming",
+      dependsOn: ["incoming-source"],
+      contradicts: ["root"],
+    },
+    { id: "second-hop", contradicts: ["a-incoming"] },
+    { id: "foreign", audiences: ["other"], contradicts: ["root"] },
+    { id: "opt-out", dependsOn: ["ignored"], contradicts: ["root"] },
+    { id: "replacement-only", supersedes: ["root"] },
+  ]) {
+    store.appendClaim({
+      entity: "slack:owner",
+      text: `Unresolved hypothesis ${entry.id}`,
+      kind: "evidence",
+      audiences: ["private"],
+      dependsOn: ["shared"],
+      contradicts: [],
+      supersedes: [],
+      ...entry,
+    });
+  }
+  const result = store.retrieve("private", "", { contradictionsOf: "root" });
+  expect(result.sources).toEqual([]);
+  expect(result.claims.map((claim) => claim.id)).toEqual([
+    "root",
+    "a-incoming",
+    "z-older",
+  ]);
+  expect(result.claims.map((claim) => claim.contradicts)).toEqual([
+    ["z-older"],
+    ["root"],
+    [],
+  ]);
+  expect(result.truncated).toBeUndefined();
+  expect(
+    store.retrieve("private", "", { contradictionsOf: "root", limit: 2 }),
+  ).toEqual({
+    sources: [],
+    claims: result.claims.slice(0, 2),
+    truncated: true,
+    omitted: 1,
+  });
+  expect(
+    store.retrieve("private", "", {
+      contradictionsOf: "root",
+      maxCharacters: 100,
+    }),
+  ).toEqual({ sources: [], claims: [], truncated: true, omitted: 3 });
+  for (const claimId of ["foreign", "opt-out", "missing", "shared"]) {
+    expect(
+      store.retrieve("private", "", { contradictionsOf: claimId }),
+    ).toEqual({ sources: [], claims: [] });
+  }
+  expect(store.retrieve("unknown", "", { contradictionsOf: "root" })).toEqual({
+    sources: [],
+    claims: [],
+  });
+  store.deleteSource("incoming-source");
+  expect(
+    store
+      .retrieve("private", "", { contradictionsOf: "root" })
+      .claims.map((claim) => claim.id),
+  ).toEqual(["root", "z-older"]);
+  store.deleteSource("shared");
+  store.close();
+  expect(
+    open(path).store.retrieve("private", "", { contradictionsOf: "root" }),
+  ).toEqual({ sources: [], claims: [] });
+});
+
 it("fails closed on wrong keys and modified ciphertext", () => {
   const { store, path } = open();
   store.appendSource(source());

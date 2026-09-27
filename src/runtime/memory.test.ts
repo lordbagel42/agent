@@ -226,6 +226,46 @@ it("recalls only for the owner privately and invalidates recalled and derived re
     source.id,
   ]);
   expect(requests.at(-1)?.system).toContain("category-filtered recall");
+  store.appendSource({
+    ...source,
+    id: "contrary-source",
+    text: "Contrary observation",
+  });
+  store.appendClaim({
+    id: "opposing",
+    entity: "bird",
+    text: "A competing hypothesis, not a resolution",
+    audiences: [audience],
+    kind: "evidence",
+    dependsOn: ["contrary-source"],
+    contradicts: ["claim-0"],
+    supersedes: [],
+  });
+  const contradictionRecall = {
+    kind: "contradictions" as const,
+    claimId: "claim-0",
+  };
+  action = { text: "", recall: contradictionRecall };
+  const neighbors = await turn();
+  expect(requests.at(-1)?.system).toContain('"kind":"contradictions"');
+  const neighborOutput = sent.at(-1)?.content;
+  if (neighborOutput?.type !== "text")
+    throw new Error("Missing contradiction output");
+  expect(neighborOutput.text).toContain("not a truth decision");
+  expect(neighborOutput.text.length).toBeLessThanOrEqual(3500);
+  const neighborsJson = JSON.parse(
+    neighborOutput.text.slice(neighborOutput.text.indexOf("\n") + 1),
+  );
+  expect(neighborsJson.sources).toEqual([]);
+  expect(
+    neighborsJson.claims.map((claim: Claim) => [claim.id, claim.contradicts]),
+  ).toEqual([
+    ["claim-0", []],
+    ["opposing", ["claim-0"]],
+  ]);
+  expect(neighbors.state.history.at(-1)?.context?.sourceIds.toSorted()).toEqual(
+    ["contrary-source", source.id],
+  );
   for (const extra of [
     {
       direct: false,
@@ -261,10 +301,10 @@ it("recalls only for the owner privately and invalidates recalled and derived re
     expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE violet");
   }
   validate = false;
-  action = { text: "", recall: "violet heron", inspection: "memory" };
+  action = { text: "", recall: contradictionRecall, inspection: "memory" };
   await turn();
   expect(JSON.stringify(sent.at(-1))).toContain("recall is unavailable");
-  action = { text: "", recall: "violet heron" };
+  action = { text: "", recall: contradictionRecall };
   forgetOnSend = true;
   const before = sent.length;
   const invalidated = await turn();
@@ -287,7 +327,7 @@ it("recalls only for the owner privately and invalidates recalled and derived re
   await turn(); // Queue barrier: the duplicate must not rerun recall or delivery.
   expect(requests).toHaveLength(callCount + 1);
   deps.memory = undefined;
-  action = { text: "", recall: "violet heron" };
+  action = { text: "", recall: contradictionRecall };
   await turn();
   expect(requests.at(-1)?.recallAvailable).toBe(false);
   expect(JSON.stringify(sent.at(-1))).toContain("enabled retained memory");
@@ -304,6 +344,10 @@ it("recalls only for the owner privately and invalidates recalled and derived re
       audience: "other-owner",
     },
     { kind: "search", query: "x".repeat(501), category: "preference" },
+    { ...contradictionRecall, audience: "other-owner" },
+    { ...contradictionRecall, kind: "unknown" },
+    { ...contradictionRecall, claimId: "" },
+    { ...contradictionRecall, claimId: "x".repeat(2049) },
   ])
     expect(() =>
       parseReply(JSON.stringify({ text: "", recall }), [], {

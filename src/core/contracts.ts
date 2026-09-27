@@ -198,7 +198,8 @@ export interface CompanionReply {
         kind: "search";
         query: string;
         category?: "claim" | "preference" | "commitment" | "pattern";
-      };
+      }
+    | { kind: "contradictions"; claimId: string };
   /** Owner-private bounded view of unaccepted memory claims; never review. */
   pendingMemory?: true;
   /** Issue one short-lived dashboard login link to the owner privately. */
