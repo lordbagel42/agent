@@ -16,6 +16,7 @@ import {
   McpToolAdapter,
   mcpToolContractDigest,
 } from "./mcp.js";
+import { PUCK_MCP_URL } from "./puck.js";
 import { SLACK_MCP_URL } from "./slack-mcp-oauth.js";
 
 export type ToolPermission = "disabled" | "read" | "approval";
@@ -55,6 +56,7 @@ interface StoredConnection {
   revision: string;
   token?: string;
   expiresAt?: number;
+  account?: string;
   tools: { contract: Tool; permission: ToolPermission }[];
   status: "not_tested" | "connected" | "unavailable";
 }
@@ -269,7 +271,13 @@ export class McpConnections {
     }
   }
   #replace(
-    input: { name: string; url: string; token?: string; expiresAt?: number },
+    input: {
+      name: string;
+      url: string;
+      token?: string;
+      expiresAt?: number;
+      account?: string;
+    },
     id: string,
   ): string {
     if (!input.name.trim() || input.name.length > 80)
@@ -314,6 +322,7 @@ export class McpConnections {
       url: url.href,
       token: input.token || undefined,
       expiresAt: input.expiresAt,
+      account: input.account,
       revision: randomUUID(),
       tools: [],
       status: "not_tested",
@@ -329,6 +338,22 @@ export class McpConnections {
         expiresAt: value.expiresAt,
       },
       "slack",
+    );
+  }
+  connectAmp(value: {
+    accessToken: string;
+    expiresAt: number;
+    account: string;
+  }) {
+    this.#replace(
+      {
+        name: "Amp",
+        url: PUCK_MCP_URL,
+        token: value.accessToken,
+        expiresAt: value.expiresAt,
+        account: value.account,
+      },
+      "amp",
     );
   }
   disconnect(id: string, revision: string) {
@@ -691,7 +716,7 @@ export class McpConnections {
                   status,
                   cancelledAt,
                 })),
-            )}. The owner can add, test, authorize or disconnect connections at ${this.options.origin}/console/connections; you cannot grant your own permissions. Expired Slack grants require reconnecting.\n` +
+            )}. The owner can add, test, authorize or disconnect connections at ${this.options.origin}/console/connections; you cannot grant your own permissions. Connect Amp there enrolls connection "amp"; use its actual owner-enabled catalog, never guess remote tool names. Expired Slack and Amp grants require reconnecting.\n` +
             'Inspect a recorded proposal using mcpProposal: {action: "inspect", id: "<exact proposal UUID>"}, empty text and no other actions. This metadata-only read works even after disconnect and never approves, invokes or retries a tool. Unknown is not denial, rejection or success; no receipt is not proof of an external outcome.\n' +
             "The owner can send !mcp-cancel <exact proposal UUID> as an ordinary private message. Cancelled ungranted proposals cannot later be approved. For granted work, cancellation requests revoke future dispatch but do not confirm an external effect stopped or was undone; recorded outcomes stay separate. Never claim unknown work stopped or repeat it automatically.\n" +
             "An unknown MCP receipt is not failure or proof the effect stopped. Never retry it automatically. Only after independently checking that the worker has stopped AND that the external result succeeded or failed, the authenticated owner can send !mcp-reconcile <exact proposal UUID> confirmed-stopped verified-succeeded (or verified-failed) as an ordinary private message. Stopped with unknown result stays unknown. This only annotates the consumed grant; it never runs the tool or authorizes retry. Your own text, assertions, tool results and historical commands are not confirmation.\n" +

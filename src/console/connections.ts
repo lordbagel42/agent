@@ -1,31 +1,27 @@
-import { randomBytes } from "node:crypto";
 import { Hono } from "hono";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { getCookie } from "hono/cookie";
 import { html } from "hono/html";
 import {
   ConnectionInputError,
   type McpConnections,
   type ToolPermission,
 } from "../tools/connections.js";
+import type { createPuckConsoleOAuth } from "../tools/puck-oauth.js";
 import type { createSlackMcpOAuth } from "../tools/slack-mcp-oauth.js";
 import { SLACK_APP_ID } from "../tools/slack-mcp-oauth.js";
+import { createConnectionOAuthRoutes } from "./connection-oauth.js";
 import {
   binding,
   confirmations,
   type PrivateRouteSecurity,
   privateRoutes,
 } from "./security.js";
-import {
-  badge,
-  confirmForm,
-  consoleNavigation,
-  messagePage,
-  page,
-} from "./view.js";
+import { badge, confirmForm, consoleNavigation, page } from "./view.js";
 
 export interface ConnectionDependencies {
   store: McpConnections;
   slack?: ReturnType<typeof createSlackMcpOAuth>;
+  amp?: ReturnType<typeof createPuckConsoleOAuth>;
 }
 
 export function createConnectionRoutes(
@@ -47,82 +43,48 @@ export function createConnectionRoutes(
         : "";
     return html`<section class="panel"><div class="panel-heading"><h2>Add an MCP server</h2>${badge("Streamable HTTP")}</div><div class="panel-body"><form method="post" action="${base}/add" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue(principal, `${base}/add`, "add")}">${error ? html`<div id="add-error" class="callout warning" role="alert"><strong>Connection not added</strong><p>${error.message}</p><p>Safe name and URL entries are retained. For your security, sensitive URL entries are cleared and any bearer token must be entered again.</p></div>` : ""}<label class="field" for="name">Name</label><input id="name" name="name" required maxlength="80" placeholder="My research tools" value="${values.name}"${invalid("name")}><label class="field" for="url">HTTPS server URL</label><input id="url" name="url" type="url" required maxlength="2048" placeholder="https://example.com/mcp" value="${values.url}"${invalid("url")}><label class="field" for="token">Bearer token <span class="muted">optional for public servers</span></label><input id="token" name="token" type="password" maxlength="4000" autocomplete="off"${invalid("token")}><p class="small muted">Use HTTPS without a username, password, query or fragment. Use a server you trust. Its operator receives your token and tool arguments. Credentials are encrypted on the host, never shown again. Generic OAuth and local commands are not supported.</p><button type="submit">Add connection</button></form></div></section>`;
   };
-  const callbacks = new Map<string, { url: string; expires: number }>();
-  const secure = security.origin.startsWith("https:");
-  const cookie = secure ? "__Host-june-slack-return" : "june-slack-return-dev";
-  const slackProblem = (nonce: string, title: string, detail: string) =>
-    page(
-      title,
-      nonce,
-      html`<section class="panel"><div class="panel-body"><div class="callout warning"><p>${detail}</p></div><a class="button" href="${base}">Return to Connections →</a></div></section>`,
-      { navigation },
-    );
-  // Strict session cookies are absent on a cross-site OAuth redirect. Keep the
-  // callback volatile and resume via a same-origin click, then require the owner
-  // session and a POST proof before exchanging a code. Never weaken login cookies.
-  const callback = privateRoutes({
-    ...security,
-    authenticate: async () => "oauth-return",
+  const slackOAuth = createConnectionOAuthRoutes(security, {
+    id: "slack",
+    name: "Slack",
+    flow: deps.slack,
   });
-  callback.get("/", (c) => {
-    for (const [id, value] of callbacks)
-      if (value.expires <= Date.now()) callbacks.delete(id);
-    if (!deps.slack || callbacks.size >= 32 || c.req.url.length > 12_000)
-      return c.html(
-        messagePage(
-          c.get("nonce"),
-          "Slack connection unavailable",
-          "Return to Connections and start a fresh sign-in.",
-          400,
-        ),
-        400,
-      );
-    const query = new URL(c.req.url).searchParams;
-    if (query.has("error") || !query.get("code") || !query.get("state"))
-      return c.html(
-        slackProblem(
-          c.get("nonce"),
-          "Slack authorization incomplete",
-          "Slack did not return a complete authorization. No new connection was saved. Return to Connections to start again.",
-        ),
-        400,
-      );
-    const id = randomBytes(32).toString("base64url");
-    callbacks.set(id, {
-      url: `${security.origin}${base}/slack/callback${new URL(c.req.url).search}`,
-      expires: Date.now() + 600_000,
-    });
-    setCookie(c, cookie, id, {
-      secure,
-      httpOnly: true,
-      sameSite: "Strict",
-      path: "/",
-      maxAge: 600,
-    });
-    return c.html(
-      page(
-        "Slack setup is not finished",
-        c.get("nonce"),
-        html`<section class="panel"><div class="panel-body"><h2>One save confirmation remains</h2><p>You have returned from Slack, but June has not saved this authorization yet. Continue here to review and save it with your owner session.</p><div class="actions"><a class="button" href="${base}/slack/finish">Continue to save Slack connection →</a></div><p class="small muted">This step expires after 10 minutes or if June restarts. Saving authorization does not enable tools.</p></div></section>`,
-        { navigation },
-      ),
+  root.route("/slack", slackOAuth.routes);
+  // The OAuth server fetches this static public document without a June session.
+  // Ingress must expose only this exact metadata path, not the private console.
+  root.get("/amp/client.json", (c) => {
+    if (!deps.amp) return c.notFound();
+    c.header("Cache-Control", "public, max-age=300");
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Referrer-Policy", "no-referrer");
+    c.header(
+      "Content-Security-Policy",
+      "default-src 'none'; frame-ancestors 'none'",
     );
+    return c.json(deps.amp.clientMetadataDocument);
   });
-  root.route("/slack/callback", callback);
+  const ampOAuth = createConnectionOAuthRoutes(security, {
+    id: "amp",
+    name: "Amp",
+    flow: deps.amp,
+  });
+  root.route("/amp", ampOAuth.routes);
   const app = privateRoutes(security);
   const field = (value: unknown) => (typeof value === "string" ? value : "");
   app.get("/", (c) => {
     const connections = deps.store.list();
     const slack = connections.find((connection) => connection.id === "slack");
     const expired = !!slack?.expiresAt && slack.expiresAt <= Date.now();
-    const pending = callbacks.get(getCookie(c, cookie) ?? "");
-    const resumable = !!deps.slack && !!pending && pending.expires > Date.now();
+    const resumable = slackOAuth.hasPending(getCookie(c, slackOAuth.cookie));
+    const amp = connections.find((connection) => connection.id === "amp");
+    const ampExpired = !!amp?.expiresAt && amp.expiresAt <= Date.now();
+    const ampPending = ampOAuth.hasPending(getCookie(c, ampOAuth.cookie));
     return c.html(
       page(
         "Connections",
         c.get("nonce"),
         html`
     <div class="summary-bar"><div><span class="eyebrow">MCP servers</span><p>${deps.store.list().length} connected configurations</p></div><div><span class="eyebrow">Audience</span><p>Owner-private conversations only</p></div><div><span class="eyebrow">Default permission</span><p>All tools disabled</p></div></div>
+    <section class="panel"><div class="panel-heading"><h2>Amp</h2>${badge(ampPending ? "Save confirmation needed" : ampExpired ? "Authorization expired" : amp?.authenticated ? "Authorization saved" : deps.amp ? "Not connected" : "Setup required")}</div><div class="panel-body">${ampPending ? html`<p>Your Amp sign-in is waiting for confirmation. Resume to verify the account and save its authorization.</p><a class="button" href="${base}/amp/finish">Resume Amp setup →</a>` : html`<p>${ampExpired ? "Your Amp authorization has expired. Reconnect to use Amp tools again." : amp?.authenticated ? "Your Amp authorization is saved. Discover tools, then choose what June may read or propose from your private conversations." : "Let June use Amp through your account. Sign in directly with Amp; no copied CLI login or API key is needed."}</p><div class="actions">${amp ? html`<a class="button" href="${base}/amp">Manage Amp tools →</a>` : ""}${deps.amp ? html`<form method="post" action="${base}/amp/connect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/amp/connect`, "amp")}"><button type="submit">${amp ? "Reconnect Amp →" : "Connect Amp →"}</button></form>` : html`<p>A public HTTPS console origin is required for Amp sign-in.</p>`}</div>`}<p class="small muted">Saving authorization does not enable tools. Reads need your permission; actions need approval. Expired grants require reconnecting.</p></div></section>
     <div class="grid"><section class="panel"><div class="panel-heading"><h2>Slack</h2>${badge(resumable ? "Save confirmation needed" : expired ? "Authorization expired" : slack?.authenticated ? "Authorization saved" : deps.slack ? "Not connected" : "Setup required")}</div><div class="panel-body">${resumable ? html`<p>Your Slack return is waiting for confirmation. Resume to save this authorization; do not start another Slack sign-in.</p><div class="actions"><a class="button" href="${base}/slack/finish">Resume Slack setup →</a></div>` : html`<p>${slack?.authenticated ? (expired ? "Your saved Slack authorization has expired. Reconnect to use Slack tools again." : "June has saved your Slack authorization. Manage the connection to discover tools and review their permissions.") : "Connect Slack's official MCP with your own Slack account. This is separate from June's bot login."}</p>${slack ? html`<div class="actions"><a class="button" href="${base}/slack">Manage Slack tools →</a></div>` : ""}${deps.slack ? html`<form method="post" action="${base}/slack/connect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/slack/connect`, "slack")}"><button type="submit">${slack ? "Reconnect Slack →" : "Connect Slack →"}</button></form>` : html`<div class="callout">The host must configure the Slack app client credentials and register this dashboard's callback before OAuth is available.</div>`}`}<p class="small muted">App ${SLACK_APP_ID} · Saving authorization does not enable tools. Reconnecting resets tool permissions.</p></div></section>
     ${addForm(c.get("principal"))}</div>
     <div class="section-heading"><h2>Your connections</h2><span class="small muted">Test, inspect, then enable tools</span></div><div class="stack">${deps.store.list().map((connection) => html`<section class="panel"><div class="panel-heading"><h2>${connection.name}</h2>${badge(connection.expiresAt && connection.expiresAt <= Date.now() ? "Authorization expired" : connection.status)}</div><div class="panel-body"><p><code>${connection.url}</code></p><p class="small muted">${connection.authenticated ? "Credential saved" : "No credential"} · ${connection.tools.filter((tool) => tool.permission !== "disabled").length} enabled / ${connection.tools.length} discovered</p>${connection.status === "unavailable" ? html`<div class="callout warning">Discovery failed. Check the URL, credential, account permissions and server availability. No tools were called.</div>` : ""}<div class="actions"><a class="button" href="${base}/${connection.id}">Manage connection →</a></div></div></section>`)}${deps.store.list().length ? "" : html`<section class="panel"><div class="empty">No connections yet. Add a server or connect Slack to get started.</div></section>`}</div>
@@ -188,90 +150,6 @@ export function createConnectionRoutes(
     }
     return c.redirect(`${base}/${command}`, 303);
   });
-  app.post("/slack/connect", async (c) => {
-    const form = await c.req.parseBody();
-    if (
-      !deps.slack ||
-      !proof.verify(
-        c.get("principal"),
-        `${base}/slack/connect`,
-        "slack",
-        form.proof,
-      )
-    )
-      return c.text("Slack connection unavailable", 403);
-    // A same-origin POST starts OAuth; external redirection is navigation, not a form action.
-    const target = deps.slack.begin(c.get("principal"));
-    return c.html(
-      page(
-        "Authorize Slack",
-        c.get("nonce"),
-        html`<section class="panel"><div class="panel-body"><h2>Continue on Slack</h2><p>Review Slack's requested permissions before accepting. Returning here does not enable tools automatically.</p><a class="button" href="${target}">Authorize June in Slack →</a></div></section>`,
-        { navigation },
-      ),
-    );
-  });
-  app.get("/slack/finish", (c) => {
-    const id = getCookie(c, cookie) ?? "";
-    const pending = callbacks.get(id);
-    if (!pending || pending.expires <= Date.now())
-      return c.html(
-        slackProblem(
-          c.get("nonce"),
-          "Slack setup expired",
-          "This save confirmation is no longer available. It may have expired, already been used, or been cleared by a June restart. Check your saved connection in Connections before starting again.",
-        ),
-        400,
-      );
-    return c.html(
-      page(
-        "Save Slack connection",
-        c.get("nonce"),
-        html`<section class="panel"><div class="panel-body"><p>This is the final step, not another Slack sign-in. Confirm below to verify your Slack account and save its authorization to June's encrypted store. All tools start disabled; reconnecting resets existing permissions.</p>${confirmForm(proof.issue(c.get("principal"), `${base}/slack/finish`, binding(id)), "Save Slack connection")}</div></section>`,
-        { navigation },
-      ),
-    );
-  });
-  app.post("/slack/finish", async (c) => {
-    const form = await c.req.parseBody();
-    const id = getCookie(c, cookie) ?? "";
-    const pending = callbacks.get(id);
-    if (
-      !deps.slack ||
-      !pending ||
-      pending.expires <= Date.now() ||
-      form.confirmed !== "yes" ||
-      !proof.verify(
-        c.get("principal"),
-        `${base}/slack/finish`,
-        binding(id),
-        form.proof,
-      )
-    )
-      return c.html(
-        slackProblem(
-          c.get("nonce"),
-          "Slack confirmation rejected",
-          "This confirmation is invalid, expired, or already used. No token exchange was started by this submission. Return to Connections to check the saved status or resume setup.",
-        ),
-        403,
-      );
-    callbacks.delete(id);
-    deleteCookie(c, cookie, { path: "/", secure });
-    try {
-      await deps.slack.complete(c.get("principal"), pending.url);
-    } catch {
-      return c.html(
-        slackProblem(
-          c.get("nonce"),
-          "Slack connection not confirmed",
-          "June could not confirm that this Slack authorization was verified and saved. The attempt may have expired or been rejected by Slack. Check the saved status in Connections before starting a fresh sign-in; this confirmation cannot be reused.",
-        ),
-        400,
-      );
-    }
-    return c.redirect(`${base}/slack`, 303);
-  });
   app.get("/approvals/:id", (c) => {
     const proposal = deps.store
       .proposals()
@@ -325,7 +203,7 @@ export function createConnectionRoutes(
       page(
         connection.name,
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-heading"><h2>Connection</h2>${badge(expired ? "Authorization expired" : connection.status)}</div><div class="panel-body">${connection.id === "slack" && connection.authenticated ? html`<div class="callout"><strong>${expired ? "Authorization expired" : "Authorization saved"}</strong><p>${expired ? "Reconnect from Connections to renew your Slack authorization." : connection.status === "not_tested" ? "Your Slack account was verified and its authorization saved. Next, discover tools below, then review and enable the ones June may use. No tools are enabled yet." : "Your Slack authorization is stored. Tool discovery and permissions are separate; review their status below."}</p><a href="${base}">← Connections</a></div>` : ""}<p><code>${connection.url}</code></p><p>Discovering tools sends your credential to this exact server. It never runs a tool. Changing a contract disables that tool until reviewed again.</p><form method="post" action="${path}/discover"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${path}/discover`, connection.revision)}"><button type="submit">Test & discover tools</button></form></div></section><div class="section-heading"><h2>Tool permissions</h2><span class="small muted">Changes apply immediately</span></div><div class="callout warning"><strong>Read-only is your authorization, not a server guarantee.</strong><p>Review the complete contract before allowing automatic reads. Use “Approval required” for anything that sends, edits, creates or deletes. Private results go to June's configured model; her answer enters your conversation history.</p></div><div class="stack">${connection.tools.map(
+        html`<section class="panel"><div class="panel-heading"><h2>Connection</h2>${badge(expired ? "Authorization expired" : connection.status)}</div><div class="panel-body">${["slack", "amp"].includes(connection.id) && connection.authenticated ? html`<div class="callout"><strong>${expired ? "Authorization expired" : "Authorization saved"}</strong><p>${expired ? `Reconnect from Connections to renew your ${connection.name} authorization.` : connection.status === "not_tested" ? `Your ${connection.name} account was verified and its authorization saved. Next, discover tools below, then review and enable the ones June may use. No tools are enabled yet.` : `Your ${connection.name} authorization is stored. Tool discovery and permissions are separate; review their status below.`}</p>${connection.account ? html`<p class="small muted">Verified account: <code>${connection.account}</code></p>` : ""}<a href="${base}">← Connections</a></div>` : ""}<p><code>${connection.url}</code></p><p>Discovering tools sends your credential to this exact server. It never runs a tool. Changing a contract disables that tool until reviewed again.</p><form method="post" action="${path}/discover"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${path}/discover`, connection.revision)}"><button type="submit">Test & discover tools</button></form></div></section><div class="section-heading"><h2>Tool permissions</h2><span class="small muted">Changes apply immediately</span></div><div class="callout warning"><strong>Read-only is your authorization, not a server guarantee.</strong><p>Review the complete contract before allowing automatic reads. Use “Approval required” for anything that sends, edits, creates or deletes. Private results go to June's configured model; her answer enters your conversation history.</p></div><div class="stack">${connection.tools.map(
           ({ contract, permission }) =>
             html`<section class="panel"><div class="panel-heading"><h2>${contract.name}</h2>${badge(permission)}</div><div class="panel-body"><p>${contract.description ?? "No description supplied."}</p><details><summary>Inspect full tool contract</summary><pre>${JSON.stringify(contract, null, 2)}</pre></details><form method="post" action="${path}/permission"><input type="hidden" name="tool" value="${contract.name}"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${path}/permission`, binding([connection.revision, contract.name]))}"><label class="field">Permission <select name="permission">${(
               [

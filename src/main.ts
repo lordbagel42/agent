@@ -77,6 +77,7 @@ import { CapabilityBroker } from "./tools/broker.js";
 import { BrowserAdapter, browserOperationDigest } from "./tools/browser.js";
 import { createBrowserProposal } from "./tools/browser-proposals.js";
 import { McpConnections } from "./tools/connections.js";
+import { createPuckConsoleOAuth } from "./tools/puck-oauth.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
 import { createTavilyWebSearchProvider } from "./tools/web-search.js";
 import { createWorkflowTools } from "./workflows/tools.js";
@@ -440,6 +441,7 @@ async function main() {
   startupStage = "private MCP connections";
   let connections: McpConnections | undefined;
   let slackMcp: ReturnType<typeof createSlackMcpOAuth> | undefined;
+  let ampMcp: ReturnType<typeof createPuckConsoleOAuth> | undefined;
   if (config.mcp) {
     if (!config.console) throw new Error("MCP requires the private console");
     await privateDirectory(config.mcp.directory);
@@ -450,6 +452,15 @@ async function main() {
       origin: config.console.origin,
     });
     const store = connections;
+    if (config.console.origin.startsWith("https:")) {
+      ampMcp = createPuckConsoleOAuth({
+        origin: config.console.origin,
+        generation: () => store.generation("amp"),
+        async saveAuthorization(value) {
+          store.connectAmp(value);
+        },
+      });
+    }
     if (config.mcp.slack) {
       const slack = config.mcp.slack;
       if (
@@ -1134,7 +1145,7 @@ async function main() {
           origin: config.console.origin,
           loginLinks,
           connections: connections
-            ? { store: connections, slack: slackMcp }
+            ? { store: connections, slack: slackMcp, amp: ampMcp }
             : undefined,
           async usage(_principal, days, model) {
             return usage.snapshot(days, model);

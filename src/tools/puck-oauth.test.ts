@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import type { OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { expect, test } from "vitest";
-import { createPuckOAuth } from "./puck-oauth.js";
+import { createPuckConsoleOAuth, createPuckOAuth } from "./puck-oauth.js";
 
 function fixture(mode = "ok") {
   const saved: OAuthTokens[] = [];
@@ -169,4 +170,120 @@ test("discovery cannot redirect authorization to another issuer", async () => {
   const f = fixture("evil-issuer");
   await expect(f.flow.begin()).rejects.toThrow("puck_oauth_failed");
   expect(f.posts).toHaveLength(0);
+});
+
+test("console consent binds the owner, connection generation and verified Amp identity before saving once", async () => {
+  const keys = await generateKeyPair("RS256");
+  const untrustedKeys = await generateKeyPair("RS256");
+  const publicKey = await exportJWK(keys.publicKey);
+  const origin = "https://june.example";
+  const clientId = `${origin}/console/connections/amp/client.json`;
+  const issuer = "https://auth.ampcode.com";
+  let generation = "before";
+  let nonce = "";
+  let invalidIdentity:
+    | "nonce"
+    | "audience"
+    | "signature"
+    | "expiry"
+    | undefined;
+  let disconnect = false;
+  let exchanges = 0;
+  const saved: unknown[] = [];
+  const flow = createPuckConsoleOAuth(
+    {
+      origin,
+      generation: () => generation,
+      saveAuthorization: async (value) => {
+        saved.push(value);
+      },
+    },
+    {
+      fetch: async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("oauth-protected-resource/mcp"))
+          return Response.json({
+            resource: "https://ampcode.com/mcp",
+            authorization_servers: [issuer],
+          });
+        if (url.endsWith("oauth-authorization-server"))
+          return Response.json({
+            issuer,
+            authorization_endpoint: `${issuer}/oauth2/authorize`,
+            token_endpoint: `${issuer}/oauth2/token`,
+            response_types_supported: ["code"],
+            code_challenge_methods_supported: ["S256"],
+            client_id_metadata_document_supported: true,
+          });
+        if (url === `${issuer}/oauth2/jwks`)
+          return Response.json({
+            keys: [{ ...publicKey, kid: "test", alg: "RS256" }],
+          });
+        expect(url).toBe(`${issuer}/oauth2/token`);
+        expect(new URLSearchParams(String(init?.body)).get("resource")).toBe(
+          "https://ampcode.com/mcp",
+        );
+        exchanges++;
+        if (disconnect) generation = "disconnected";
+        return Response.json({
+          access_token: "dedicated-june-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          scope: "openid",
+          id_token: await new SignJWT({
+            nonce: invalidIdentity === "nonce" ? "other-attempt" : nonce,
+          })
+            .setProtectedHeader({ alg: "RS256", kid: "test" })
+            .setIssuer(issuer)
+            .setAudience(
+              invalidIdentity === "audience" ? "other-client" : clientId,
+            )
+            .setSubject("amp-owner-123")
+            .setIssuedAt()
+            .setExpirationTime(invalidIdentity === "expiry" ? "-1m" : "5m")
+            .sign(
+              invalidIdentity === "signature"
+                ? untrustedKeys.privateKey
+                : keys.privateKey,
+            ),
+        });
+      },
+    },
+  );
+  const begin = async () => {
+    const url = new URL(await flow.begin("june-owner"));
+    nonce = url.searchParams.get("nonce") ?? "";
+    expect(nonce.length).toBeGreaterThan(20);
+    expect(url.searchParams.get("scope")).toBe("openid");
+    const callback = new URL(`${origin}/console/connections/amp/callback`);
+    callback.searchParams.set("state", url.searchParams.get("state") ?? "");
+    callback.searchParams.set("code", "one-use-code");
+    return callback.href;
+  };
+  const callback = await begin();
+  await expect(flow.complete("other-owner", callback)).rejects.toThrow(
+    "puck_oauth_failed",
+  );
+  expect(exchanges).toBe(0);
+  await flow.complete("june-owner", callback);
+  expect(saved).toMatchObject([
+    { accessToken: "dedicated-june-token", account: "amp-owner-123" },
+  ]);
+  await expect(flow.complete("june-owner", callback)).rejects.toThrow(
+    "puck_oauth_failed",
+  );
+  expect(exchanges).toBe(1);
+  for (const invalid of ["nonce", "audience", "signature", "expiry"] as const) {
+    invalidIdentity = invalid;
+    await expect(flow.complete("june-owner", await begin())).rejects.toThrow(
+      "puck_oauth_failed",
+    );
+    expect(saved).toHaveLength(1);
+  }
+  invalidIdentity = undefined;
+  disconnect = true;
+  await expect(flow.complete("june-owner", await begin())).rejects.toThrow(
+    "puck_oauth_failed",
+  );
+  expect(saved).toHaveLength(1);
 });

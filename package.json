@@ -29,6 +29,7 @@
     "ajv": "8.20.0",
     "cron-parser": "5.10.1",
     "hono": "4.13.9",
+    "jose": "6.2.12",
     "playwright": "1.63.0",
     "quickjs-emscripten": "0.32.0",
     "rivetkit": "2.3.21",

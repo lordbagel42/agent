@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Hono } from "hono";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, expect, test, vi } from "vitest";
 import { createSlackAdapter } from "../src/channels/slack.js";
 import { createWhatsAppAdapter } from "../src/channels/whatsapp.js";
@@ -21,6 +22,7 @@ import type {
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../src/core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../src/core/rivet.js";
 import { routeEvent } from "../src/core/routing.js";
+import { createHttpApp } from "../src/http/app.js";
 import { slackSource } from "../src/imports/index.js";
 import { EvidenceStore } from "../src/memory/store.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
@@ -28,6 +30,7 @@ import { createInspectionReader } from "../src/runtime/inspection.js";
 import { buildModelRequest } from "../src/runtime/prompt.js";
 import { createJuneRegistry } from "../src/runtime/registry.js";
 import { McpConnections } from "../src/tools/connections.js";
+import { createPuckConsoleOAuth } from "../src/tools/puck-oauth.js";
 import { createSlackMcpOAuth } from "../src/tools/slack-mcp-oauth.js";
 import { setupTest } from "./rivet.js";
 
@@ -2688,4 +2691,223 @@ test("Slack OAuth resumes pending setup and reports saved authorization without 
   expect(denied.status).toBe(400);
   expect(denied.headers.get("set-cookie")).toBeNull();
   expect(await denied.text()).not.toContain(`${base}/slack/finish`);
+});
+
+test("Amp consent saves once behind owner confirmation; June needs tool consent and reconnect revokes it", async () => {
+  const f = await fixture();
+  f.store.disconnect(f.id, f.connection().revision);
+  const origin = "https://june.example";
+  const base = "/console/connections";
+  const issuer = "https://auth.ampcode.com";
+  const keys = await generateKeyPair("RS256");
+  const publicKey = await exportJWK(keys.publicKey);
+  let nonce = "";
+  let exchanges = 0;
+  const amp = createPuckConsoleOAuth(
+    {
+      origin,
+      generation: () => f.store.generation("amp"),
+      saveAuthorization: async (value) => {
+        f.store.connectAmp(value);
+      },
+    },
+    {
+      fetch: async (input) => {
+        const url = String(input);
+        if (url.endsWith("oauth-protected-resource/mcp"))
+          return Response.json({
+            resource: "https://ampcode.com/mcp",
+            authorization_servers: [issuer],
+          });
+        if (url.endsWith("oauth-authorization-server"))
+          return Response.json({
+            issuer,
+            authorization_endpoint: `${issuer}/oauth2/authorize`,
+            token_endpoint: `${issuer}/oauth2/token`,
+            response_types_supported: ["code"],
+            code_challenge_methods_supported: ["S256"],
+            client_id_metadata_document_supported: true,
+          });
+        if (url === `${issuer}/oauth2/jwks`)
+          return Response.json({
+            keys: [{ ...publicKey, kid: "fixture", alg: "RS256" }],
+          });
+        expect(url).toBe(`${issuer}/oauth2/token`);
+        exchanges++;
+        return Response.json({
+          access_token: "private-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          id_token: await new SignJWT({ nonce })
+            .setProtectedHeader({ alg: "RS256", kid: "fixture" })
+            .setIssuer(issuer)
+            .setAudience(`${origin}${base}/amp/client.json`)
+            .setSubject("fixture-amp-owner")
+            .setIssuedAt()
+            .setExpirationTime("5m")
+            .sign(keys.privateKey),
+        });
+      },
+    },
+  );
+  const ownerToken = "owner-fixture-token".repeat(2);
+  const app = createHttpApp({
+    owner: { id: "owner", identities: [] },
+    channels: {},
+    operatorToken: ownerToken,
+    submit: async () => {},
+    ready: async () => true,
+    inspectConversation: async () => ({}),
+    inspectJob: async () => undefined,
+    resumeJob: async () => false,
+    console: {
+      origin,
+      inspect: async () => ({ observedAt: "fixture", sections: {} }),
+      connections: { store: f.store, amp },
+    },
+  });
+  let cookie = "";
+  const get = (path: string) =>
+    app.request(`${base}${path}`, {
+      headers: { authorization: `Bearer ${ownerToken}`, cookie },
+    });
+  const proof = (body: string) =>
+    body.match(/name="proof" value="([^"]+)"/)?.[1] ?? "";
+  const post = (
+    path: string,
+    body: Record<string, string>,
+    requestOrigin = origin,
+  ) =>
+    app.request(`${base}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ownerToken}`,
+        cookie,
+        origin: requestOrigin,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(body),
+    });
+  const metadata = await app.request(`${base}/amp/client.json`);
+  expect(metadata.status).toBe(200);
+  expect(await metadata.json()).toEqual({
+    client_id: `${origin}${base}/amp/client.json`,
+    client_name: "June",
+    redirect_uris: [`${origin}${base}/amp/callback`],
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+    scope: "openid",
+  });
+  expect((await app.request(base)).status).toBe(401);
+  expect((await app.request(`${base}/amp/finish`)).status).toBe(401);
+  expect(
+    (await app.request(`${base}/amp/connect`, { method: "POST" })).status,
+  ).toBe(401);
+  const beginProof = proof(await (await get("")).text());
+  expect(
+    (await post("/amp/connect", { proof: beginProof }, "https://evil.example"))
+      .status,
+  ).toBe(403);
+  const begin = await post("/amp/connect", { proof: beginProof });
+  const target = new URL(
+    (await begin.text())
+      .match(/href="(https:\/\/auth.ampcode.com[^"]+)"/)?.[1]
+      ?.replaceAll("&amp;", "&") ?? "",
+  );
+  nonce = target.searchParams.get("nonce") ?? "";
+  const callback = await app.request(
+    `${base}/amp/callback?state=${target.searchParams.get("state")}&code=fixture-code`,
+  );
+  cookie = callback.headers.get("set-cookie")?.split(";")[0] ?? "";
+  expect(cookie).toContain("__Host-june-amp-return=");
+  expect(exchanges).toBe(0);
+  expect(f.store.list()).toHaveLength(0);
+  expect(await (await get("")).text()).toContain("Resume Amp setup");
+  const confirmation = {
+    proof: proof(await (await get("/amp/finish")).text()),
+    confirmed: "yes",
+  };
+  expect(
+    (await post("/amp/finish", confirmation, "https://evil.example")).status,
+  ).toBe(403);
+  expect(
+    (await post("/amp/finish", { proof: confirmation.proof })).status,
+  ).toBe(403);
+  expect(exchanges).toBe(0);
+  expect((await post("/amp/finish", confirmation)).status).toBe(303);
+  expect((await post("/amp/finish", confirmation)).status).toBe(403);
+  expect(exchanges).toBe(1);
+  expect(f.store.list()).toMatchObject([
+    {
+      id: "amp",
+      url: "https://ampcode.com/mcp",
+      account: "fixture-amp-owner",
+      authenticated: true,
+      tools: [],
+      status: "not_tested",
+    },
+  ]);
+  const saved = await (await get("/amp")).text();
+  expect(saved).toContain("Authorization saved");
+  expect(saved).toContain("fixture-amp-owner");
+  expect(saved).not.toContain("private-token");
+  await f.restart();
+  expect(
+    (await readFile(join(f.directory, "connections.sqlite"))).includes(
+      Buffer.from("private-token"),
+    ),
+  ).toBe(false);
+  await f.store.discover("amp", f.connection().revision);
+  const call: CompanionReply = {
+    text: "",
+    mcp: {
+      connection: "amp",
+      tool: "lookup",
+      argumentsJson: '{"id":"record-9"}',
+    },
+  };
+  expect(
+    (await f.store.wrap({ reply: async () => call }).reply(f.request)).text,
+  ).toContain("denied");
+  expect(f.calls).toEqual([]);
+  f.store.permit("amp", f.connection().revision, "lookup", "read");
+  const requests: ModelRequest[] = [];
+  const answer = await f.store
+    .wrap({
+      reply: async (request) => {
+        requests.push(request);
+        return request.mcpAvailable
+          ? call
+          : { text: "Fixture result received" };
+      },
+    })
+    .reply(f.request);
+  expect(answer.text).toBe("Fixture result received");
+  expect(requests).toHaveLength(2);
+  expect(requests[0]?.system).toContain('"connection":"amp"');
+  expect(requests[1]?.system).toContain("private result");
+  expect(JSON.stringify(requests)).not.toContain("private-token");
+  expect(requests[1]).toMatchObject({
+    mcpAvailable: false,
+    reflectionMemoryAvailable: false,
+    usageStage: "synthesis",
+  });
+  expect(f.calls).toEqual([{ name: "lookup", arguments: { id: "record-9" } }]);
+  f.store.permit("amp", f.connection().revision, "lookup", "approval");
+  expect((await f.invoke("amp")).text).toContain("Nothing has run");
+  expect(f.calls).toHaveLength(1);
+  const proposal = f.store.proposals()[0];
+  assert(proposal);
+  f.store.connectAmp({
+    accessToken: "replacement-token",
+    expiresAt: Date.now() + 3600_000,
+    account: "other-amp-owner",
+  });
+  expect(f.connection().tools).toEqual([]);
+  expect(f.store.proposals()[0]?.status).toBe("invalidated");
+  await expect(f.store.confirm(proposal.id)).rejects.toThrow(
+    "proposal_expired",
+  );
+  expect(f.calls).toHaveLength(1);
 });

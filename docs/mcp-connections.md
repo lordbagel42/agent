@@ -1,8 +1,9 @@
 # MCP connections
 
 Open **Connections** in June's private dashboard. Add a trusted HTTPS Streamable
-HTTP endpoint with an optional bearer token, or use **Connect Slack** for Slack's
-official MCP. Generic OAuth, stdio commands and legacy SSE are not supported.
+HTTP endpoint with an optional bearer token, or use **Connect Amp** or **Connect
+Slack** for their official MCP servers. Other OAuth providers, stdio commands and
+legacy SSE are not supported.
 
 1. Add a connection, then **Test & discover tools**. Discovery runs no tools.
 2. Review each complete tool contract. Every tool starts **Disabled**.
@@ -132,7 +133,8 @@ cannot invoke the checklist.
 
 ## Host configuration
 
-Enable the existing private console and add this optional configuration:
+Enable the existing private console and add this optional configuration. The
+`slack` block is needed only for Slack, not for Amp:
 
 ```json
 {
@@ -151,8 +153,9 @@ Enable the existing private console and add this optional configuration:
 }
 ```
 
-Provision a random 32-byte base64 `JUNE_MCP_KEY` and Slack app client credentials
-through the private service environment. Never put their values in config or Git.
+Provision a random 32-byte base64 `JUNE_MCP_KEY` and, if using Slack, its app client
+credentials through the private service environment. Preserve an existing MCP
+key; do not replace it to add Amp. Never put secret values in config or Git.
 The directory must be private, canonical, outside any Git repository, and writable
 by June. Preserve the key and SQLite files together. Run **one active June process
 per directory**; the approval coordinator is not a distributed service.
@@ -179,6 +182,49 @@ callback; it cannot replace an exchange already running. Keep callback query
 strings out of access logs. The hostname must expose only the private dashboard,
 not operator, health, Rivet or webhook routes; Slack's webhook keeps its separate
 signed ingress. Cloudflare Access supplements, not replaces, June's owner login.
+
+## Amp consent and activation gates
+
+Amp uses `https://ampcode.com/mcp`. `main.ts` mounts **Connect Amp** when MCP and an
+HTTPS console origin are configured. It uses a dedicated authorization-code/S256
+flow with public client metadata; no Amp client secret, `AMP_API_KEY`, copied CLI
+login or native-coding configuration is required.
+
+Keep these gates separate:
+
+1. **Source/runtime:** the running release must include the console OAuth wiring,
+   not just the standalone Puck connector. MCP needs its existing private store
+   and encryption key. A source push or health response alone proves no Amp access.
+2. **Ingress:** Amp must fetch exactly
+   `https://june.raygen.dev/console/connections/amp/client.json` without an owner
+   session or Cloudflare Access challenge. This static document contains only
+   application metadata. Exempt only that exact path; keep the console private.
+   The browser returns to `/console/connections/amp/callback` on the same configured
+   origin. Keep callback query strings out of upstream logs. An ingress change
+   requires separate operator authorization; publishing source does not apply it.
+3. **Owner consent:** choose **Connect Amp**, authorize the intended Amp account,
+   then **Continue to save Amp connection** and **Save Amp connection** with your
+   June owner session. The callback alone stores no credential. June verifies the
+   signed ID token's issuer, audience, expiry and nonce, and saves the verified
+   account identifier and access token in the encrypted connection store. Check
+   the account shown on the Amp detail page. Abandoned consent expires after ten
+   minutes or a restart; **Resume Amp setup** continues a pending browser return.
+4. **Tool consent:** **Test & discover tools**, review actual returned contracts,
+   then enable selected reads or approval-required effects. Nothing is enabled
+   automatically. Read authorization trusts the remote tool's behavior and may
+   expose account-wide data; it does not limit that tool to June-created threads.
+5. **June-facing verification:** in an owner-private conversation, ask June to
+   inspect the enabled Amp catalog (`mcpCatalog` with connection `amp`), then use a
+   reviewed read on a known fixture. Check the answer and remote result before
+   declaring live access. Effects use the existing proposal, approval and receipt
+   flow; June cannot approve her own requests. No remote tool names are assumed.
+
+This first console flow requests only `openid`, not an offline refresh grant.
+Expired access requires explicit reconnect; it is not unattended permanent access.
+Reconnect replaces the saved account/token, clears tools and invalidates old
+approvals. Disconnect removes the local credential; revoke provider consent
+separately if needed. Consent does not enable native coding or replace its isolated
+runtime and approval requirements.
 
 ## Coordinated configuration cutover
 

@@ -9,6 +9,7 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 import { PUCK_MCP_URL, PUCK_RESOURCE_METADATA_URL } from "./puck.js";
 
 const ISSUER = "https://auth.ampcode.com";
@@ -19,9 +20,11 @@ const METADATA = `${ISSUER}/.well-known/oauth-authorization-server`;
 export interface PuckOAuthOptions {
   /** Public operator-hosted HTTPS non-root JSON document, not a PIN portal. */
   clientMetadataUrl: string;
-  /** Exact HTTP loopback callback URI; host must bind it before begin(). */
+  /** Exact HTTPS or HTTP loopback callback URI, bound before begin(). */
   redirectUrl: string;
   scopes: readonly ("openid" | "profile" | "email" | "offline_access")[];
+  /** OIDC nonce verified by the credential owner before saving authorization. */
+  nonce?: string;
   /** Atomically save in June's dedicated credential store, outside journals and
    * repos. Verify owner/account identity before exposing PuckAuthorization.
    * Never log tokens or decode an unverified id_token as authenticated identity. */
@@ -78,9 +81,12 @@ export function createPuckOAuth(
     metadataUrl.password ||
     metadataUrl.search ||
     metadataUrl.hash ||
-    redirectUrl.protocol !== "http:" ||
-    redirectUrl.hostname !== "127.0.0.1" ||
-    !redirectUrl.port ||
+    (redirectUrl.protocol !== "https:" &&
+      !(
+        redirectUrl.protocol === "http:" &&
+        redirectUrl.hostname === "127.0.0.1" &&
+        redirectUrl.port
+      )) ||
     redirectUrl.pathname === "/" ||
     redirectUrl.username ||
     redirectUrl.password ||
@@ -162,6 +168,7 @@ export function createPuckOAuth(
         url.searchParams.get("code_challenge_method") !== "S256"
       )
         failed();
+      if (options.nonce) url.searchParams.set("nonce", options.nonce);
       authorizationUrl = new URL(url);
     },
     saveCodeVerifier(value) {
@@ -316,5 +323,157 @@ export function createPuckOAuth(
       }
     },
     cancel,
+  };
+}
+
+/** Dedicated, owner-started console sign-in. No refresh grant or CLI credential
+ * reuse. Expired access requires another explicit sign-in. The selected Amp
+ * account is verified with its signed ID token, not inferred from a bearer. */
+export function createPuckConsoleOAuth(
+  options: {
+    origin: string;
+    generation(): string;
+    saveAuthorization(value: {
+      accessToken: string;
+      expiresAt: number;
+      account: string;
+    }): Promise<void>;
+  },
+  dependencies: { fetch?: typeof fetch; now?: () => number } = {},
+) {
+  const origin = new URL(options.origin);
+  if (origin.origin !== options.origin || origin.protocol !== "https:")
+    failed();
+  const now = dependencies.now ?? Date.now;
+  const fetchImpl = dependencies.fetch ?? fetch;
+  const clientMetadataUrl = `${origin.origin}/console/connections/amp/client.json`;
+  const redirectUrl = `${origin.origin}/console/connections/amp/callback`;
+  const jwks = createRemoteJWKSet(new URL(`${ISSUER}/oauth2/jwks`), {
+    timeoutDuration: 10_000,
+    [customFetch]: async (input, init) => {
+      const response = await fetchImpl(input, {
+        ...init,
+        redirect: "error",
+        credentials: "omit",
+      });
+      if (!response.ok) failed();
+      const reader = response.body?.getReader();
+      if (!reader) failed();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > 131_072) failed();
+          chunks.push(value);
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+      return new Response(Buffer.concat(chunks), {
+        status: response.status,
+        headers: response.headers,
+      });
+    },
+  });
+  let attempt:
+    | {
+        principal: string;
+        generation: string;
+        flow: ReturnType<typeof createPuckOAuth>;
+        busy: boolean;
+        expiresAt: number;
+      }
+    | undefined;
+  const makeFlow = (nonce: string, generation: string) =>
+    createPuckOAuth(
+      {
+        clientMetadataUrl,
+        redirectUrl,
+        scopes: ["openid"],
+        nonce,
+        async saveTokens(tokens, binding) {
+          if (
+            typeof tokens.id_token !== "string" ||
+            !Number.isSafeInteger(tokens.expires_in) ||
+            (tokens.expires_in ?? 0) <= 0
+          )
+            failed();
+          const { payload } = await jwtVerify(tokens.id_token, jwks, {
+            issuer: ISSUER,
+            audience: clientMetadataUrl,
+            algorithms: ["RS256"],
+            requiredClaims: ["sub", "iat", "exp", "nonce"],
+            currentDate: new Date(now()),
+          });
+          const expiresAt =
+            binding.receivedAt + (tokens.expires_in ?? 0) * 1000;
+          if (
+            payload.nonce !== nonce ||
+            typeof payload.sub !== "string" ||
+            !payload.sub ||
+            payload.sub.length > 256 ||
+            (payload.azp !== undefined && payload.azp !== clientMetadataUrl) ||
+            !Number.isSafeInteger(expiresAt) ||
+            expiresAt <= now() ||
+            options.generation() !== generation
+          )
+            failed();
+          await options.saveAuthorization({
+            accessToken: tokens.access_token,
+            expiresAt,
+            account: payload.sub,
+          });
+        },
+      },
+      dependencies,
+    );
+  return {
+    // Public, static application metadata only: never account/state/token data.
+    clientMetadataDocument: makeFlow("", "").clientMetadataDocument,
+    async begin(principal: string): Promise<string> {
+      if (!principal || attempt?.busy) failed();
+      attempt?.flow.cancel();
+      const generation = options.generation();
+      const pending = {
+        principal,
+        generation,
+        flow: makeFlow(randomBytes(32).toString("base64url"), generation),
+        busy: true,
+        expiresAt: now() + 600_000,
+      };
+      attempt = pending;
+      try {
+        return (await pending.flow.begin()).href;
+      } catch {
+        attempt = undefined;
+        return failed();
+      } finally {
+        pending.busy = false;
+      }
+    },
+    async complete(principal: string, callback: string): Promise<void> {
+      const pending = attempt;
+      if (
+        !pending ||
+        pending.busy ||
+        pending.principal !== principal ||
+        pending.expiresAt <= now() ||
+        pending.generation !== options.generation()
+      )
+        failed();
+      pending.busy = true;
+      try {
+        await pending.flow.complete(new URL(callback));
+      } catch {
+        return failed();
+      } finally {
+        pending.flow.cancel();
+        attempt = undefined;
+      }
+    },
   };
 }

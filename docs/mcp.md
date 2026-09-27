@@ -1,9 +1,12 @@
 # MCP adapter
 
 `src/tools/mcp.ts` uses the pinned official MCP TypeScript SDK (`1.30.1`) and
-Ajv (`8.20.0`). General execution remains receipt-only. The optional Puck
-connector adds a separately reviewed private read boundary; neither path is
-mounted by `main.ts` without dedicated authorization and host wiring.
+Ajv (`8.20.0`). Effect execution remains receipt-only. With MCP configured,
+`main.ts` mounts the owner-reviewed [Connections](mcp-connections.md) interface,
+including dedicated Amp consent on an HTTPS console. Its generic MCP boundary
+provides June's enabled catalog, private reads and approval-required proposals.
+The optional narrower `createPuckConnection` boundary below is not mounted by the
+default runtime; its presence alone does not establish Amp access.
 
 ## Mounting
 
@@ -111,16 +114,23 @@ untrusted evidence; never persist or journal its text. Capability status reports
 configuration, missing authorization, and the last verified request, not live
 health. Coding requests remain proposals for the existing approval supervisor.
 
-`createPuckOAuth` in `src/tools/puck-oauth.ts` supplies an operator-only bootstrap
+`createPuckOAuth` in `src/tools/puck-oauth.ts` supplies the dedicated bootstrap
 using the SDK's authorization-code/S256/CIMD flow. It pins the Amp issuer and
 resource, accepts one expiring callback state, and attempts one token exchange.
-Before use, the host must publish its generated metadata at the exact public
-HTTPS client ID URL, bind/forward the exact loopback callback, obtain owner
-consent, verify identity, and persist tokens outside repositories/journals.
-Refresh and revocation remain credential-store responsibilities. Request
-`offline_access` only when unattended refresh is intended. Do not import CLI or
-browser credentials. No metadata host, callback, token store, live grant, or
-authenticated tool registration is configured by the default runtime.
+Standalone hosts must publish metadata at the exact public HTTPS client ID URL,
+bind the exact HTTPS or loopback callback, obtain owner consent, verify identity
+and persist tokens outside repositories/journals. Do not import CLI or browser
+credentials.
+
+`createPuckConsoleOAuth` supplies that identity and storage boundary for June's
+console: owner-bound attempt, connection-generation check, signed RS256 ID-token
+verification against Amp's pinned issuer/JWKS, and nonce/audience/expiry checks.
+Only an authenticated same-origin confirmation POST exchanges the code. The
+runtime mounts static client metadata, but an authorized operator must make its
+exact path publicly fetchable through ingress. The owner still needs to consent,
+save, discover actual tool contracts and review permissions. The first console
+flow requests no refresh grant; expired access needs reconnect. See
+[activation gates](mcp-connections.md#amp-consent-and-activation-gates).
 
 ## Offline verification
 
