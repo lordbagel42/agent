@@ -6,9 +6,16 @@ work rather than a new bot/session for each channel. June uses she/her pronouns.
 Her owner will develop her personality with her rather than receiving a fixed
 character sheet. TypeScript is the implementation language.
 
+This is the accepted design, not a completion or production-availability claim.
+The [implementation evidence matrix](implementation-plan.md) pins the audited
+source revision and separates **implemented / host-integrated / June-callable /
+enabled / live-verified**. Missing deployment evidence remains unknown. A source
+module, an operator API, a model action and an enabled live service are different
+facts; planned or in-flight changes do not establish any of them.
+
 ```diagram
 ┌──────────────────────────────────────────────────────┐
-│ Slack · WhatsApp · future channel adapters            │
+│ Slack · dormant WhatsApp · future channel adapters    │
 └────────────────────────┬─────────────────────────────┘
                          ▼
 ┌──────────────────────────────────────────────────────┐
@@ -57,12 +64,13 @@ Important differences from a generic job queue:
 - Persist the self-hosted engine's data directory and keep its control plane and
   inspector private. The webhook server is the public boundary.
 
-Development validation uses the real engine: accepted state survives an
-application/engine restart, and a hard-killed host does not blindly repeat a send
-or coding launch. RivetKit 2.3.21 also emits native `transaction_closed` errors
-while shutting actors down. The architectural fit is promising, not a production
-reliability claim; resolving these diagnostics and extended recovery testing are
-deployment prerequisites.
+Development recovery checks use the real engine with disposable state and fake
+external boundaries to exercise accepted-state survival and held ambiguous
+sends/launches. These checks are not evidence that every dormant production
+workflow has replayed successfully. Native `transaction_closed` shutdown errors
+were recorded during earlier RivetKit 2.3.21 validation; this document does not
+establish whether a current deployment reproduces them. Extended recovery and
+idle sleep/wake checks remain separate from process health.
 
 Sources (reviewed 2026-09-26):
 
@@ -91,24 +99,29 @@ account/region must qualify under the linked
 [AI-provider policy](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing/ai-providers)
 before activating June's WhatsApp adapter.
 
-Manually configured, verified-by-the-operator identity mappings link the owner's
-Slack and WhatsApp identities. Unknown senders are ignored. Owner DMs share one
-conversation; Slack channel threads have separate context and never read private
-DM history. Group messages do not inherit coding authority.
+The cross-channel design links verified owner identities. In the audited source,
+[config parsing](../src/config.ts) pins Slack ownership to `RAYGEN_SLACK_ID` in
+the configured workspace, replacing configured Slack owner mappings. Other
+channel identities remain configured mappings. Owner DMs share one conversation;
+Slack channel threads never inherit private DM history or coding authority.
+The [routing policy](../src/core/routing.ts) also supports separately scoped
+Slack guest/channel conversations when configured. A known Slack sender or a
+channel named after the owner does not establish owner identity.
 
-Keep the first deployment headless: authenticated operator API, webhook ingress,
-configuration file, and health endpoint. A bespoke UI follows after the messaging
-and recovery contracts work. No dashboard, connector, or account is provisioned
-automatically as part of development.
+The first increment was headless. Source now includes an optional private console
+and owner-private dashboard login links alongside the authenticated operator API,
+webhook ingress and health endpoint. See the matrix for wiring and activation
+evidence. Console access is not a tool permission grant; development does not
+automatically provision a dashboard, connector or account.
 
 OpenAI and Anthropic model adapters normalize a small, validated response
 contract. Custom base URLs are explicit configuration, never model-controlled.
 Subscription credentials are not treated as interchangeable API keys.
 ChatGPT subscription access uses the official, pinned Codex CLI with a dedicated
-credential directory and browser OAuth callback. Each generation uses an empty
-temporary workspace and returns that same validated response contract; it does
-not become June's coding worker. The first homelab instance runs channel-free
-setup mode until the owner signs in and configures messaging accounts.
+credential directory and its supported sign-in flow. When `protocol: "codex"` is
+selected outside setup mode, the host uses the [hot Codex provider](../src/models/codex-hot.ts)
+for conversational inference, separate from June's coding worker. Channel-free setup mode is an
+explicit configuration option, not a statement about the current live instance.
 
 Coding runs through a separate persistent supervisor, using Amp's SDK first.
 Native local Amp execution is opt-in, operates on configured workspace paths,
@@ -116,10 +129,12 @@ and is not a security sandbox. It is inappropriate on a host containing secrets
 or resources the coding agent must not access. Never describe Amp's report as an
 independently verified deployment or completion.
 
-This increment saves conversation history and delivery/job records. It sends the
-most recent 40 entries to the conversational model. That is working context, not
-the eventual long-term memory graph. Graph extraction, dreaming, Jev evaluation,
-historical import, and autonomous personality edits are not implemented yet.
+Conversation history and delivery/job records are working context, not proof of
+comprehensive long-term recall. Source also contains encrypted evidence storage,
+scoped retrieval/extraction, private personality curation, historical imports and
+reflection/jury requests behind separate activation gates. These implementations
+do not establish that every planned operation is host-integrated, June-callable
+or live-verified. Use the matrix's operation-level evidence.
 
 ## A changing personality, grounded in evidence
 
@@ -134,10 +149,14 @@ June should have three different kinds of state:
 
 1. **Stable charter:** identity, honesty, privacy, and the owner's authority.
    June cannot revise this to give herself more permissions.
-2. **Slowly changing personality:** conversational style, tastes, values,
-   interests, relationships, and learned patterns. Each revision has an
-   explanation, supporting experiences, a confidence level, and a reversible
-   version. The owner's corrections have priority over inferred preferences.
+2. **Slowly changing personality:** one public-safe global profile for June's
+   conversational style, tastes, values and interests, with versioned explanation
+   and rollback. Private relationship context and evidence-backed learned patterns
+   remain scoped overlays, not separate public identities or material to copy into
+   the global profile. The owner's corrections outrank inferred preferences;
+   publishing a private-derived suggestion requires review of the exact public
+   payload. The matrix distinguishes existing scoped curation from global-profile
+   implementation; neither permits June to edit her own authority.
 3. **Transient drives:** curiosity, desire to finish commitments, social
    initiative, novelty, and cognitive load. These decay, habituate, and compete
    with cooldowns. They select useful behavior, not claims of biological needs,
@@ -210,7 +229,13 @@ as new instructions. Import progress is visible while normal conversation stays
 available. The first graph is a revisable interpretation, not a claim to have
 understood a person completely.
 
-## Subsequent increments
+## Capability-local acceptance work
+
+These are design requirements, not an ordered list of wholly missing modules.
+Some foundations are implemented and integrated; others are unmounted or still
+planned at the matrix's pinned revision. Each increment must expose a usable
+June-facing path where appropriate, preserve external approval boundaries, and
+report activation/live evidence separately.
 
 1. **Memory and personality:** the evidence graph, Git-curated memory,
    contradiction/deletion semantics, and visible personality revisions above.
