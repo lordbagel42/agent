@@ -213,6 +213,35 @@ test("enrollment inspection reveals no credentials or private configuration and 
   expect(f.connection()).toEqual(before);
 });
 
+test("interaction cannot invoke MCP and workers cannot mix forbidden actions into a call", async () => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "read");
+  const prompts: ModelRequest[] = [];
+  const call = {
+    text: "",
+    mcp: {
+      connection: f.id,
+      tool: "lookup",
+      argumentsJson: '{"id":"record-9"}',
+    },
+  };
+  const model = f.store.wrap({
+    async reply(request) {
+      prompts.push(request);
+      return { ...call, execution: [] };
+    },
+  });
+  await model.reply({ ...f.request, agentRole: "interaction" });
+  expect(prompts[0]?.mcpAvailable).toBe(false);
+  expect(prompts[0]?.system).not.toContain("connection inventory");
+  expect(f.calls).toHaveLength(0);
+  await expect(
+    model.reply({ ...f.request, agentRole: "execution" }),
+  ).rejects.toThrow();
+  expect(f.calls).toHaveLength(0);
+  expect(f.store.proposals()).toEqual([]);
+});
+
 test.each([
   ["missing", "unavailable", 0],
   ["disabled", "denied", 0],

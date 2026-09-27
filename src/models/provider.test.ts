@@ -60,6 +60,77 @@ const request: ModelRequest = {
   workspaces: ["garden", "notes"],
 };
 
+it("enforces explicit agent roles independently of capability flags and workspaces", () => {
+  const capabilities = {
+    mcpAvailable: true,
+    latencyAvailable: true,
+    executionAvailable: true,
+    replyPlacementAvailable: true,
+    turnTakingAvailable: true,
+    escalationAvailable: true,
+  };
+  const directives = {
+    mcp: { connection: "approved", tool: "lookup", argumentsJson: "{}" },
+    coding: { workspace: "garden", goal: "Inspect the app" },
+    latency: "logs",
+    execution: [{ agent: "research", action: "run", task: "Inspect evidence" }],
+    reaction: "wave",
+    replyInThread: true,
+    messages: ["First thought", "A correction"],
+    interrupt: false,
+    escalate: true,
+  };
+  for (const agentRole of ["interaction", "execution"] as const) {
+    const scoped = { ...capabilities, agentRole };
+    const schema = replyJsonSchema(request.workspaces, scoped);
+    for (const [key, value] of Object.entries(directives)) {
+      const reply = JSON.stringify({ text: "", [key]: value });
+      const permitted =
+        agentRole === "interaction"
+          ? [
+              "execution",
+              "reaction",
+              "replyInThread",
+              "messages",
+              "interrupt",
+            ].includes(key)
+          : ["mcp", "coding", "latency"].includes(key);
+      // Undefined remains the legacy mixed-role contract.
+      expect(() =>
+        parseReply(reply, request.workspaces, capabilities),
+      ).not.toThrow();
+      if (permitted) {
+        expect(schema.properties).toHaveProperty(key);
+        expect(() =>
+          parseReply(reply, request.workspaces, scoped),
+        ).not.toThrow();
+      } else {
+        expect(schema.properties).not.toHaveProperty(key);
+        expect(schema.required).not.toContain(key);
+        expect(() => parseReply(reply, request.workspaces, scoped)).toThrow(
+          ModelError,
+        );
+      }
+    }
+  }
+  expect(() =>
+    parseReply(
+      JSON.stringify({ text: "", execution: directives.execution }),
+      [],
+      {
+        agentRole: "interaction",
+        executionAvailable: false,
+      },
+    ),
+  ).toThrow(ModelError);
+  expect(() =>
+    parseReply(JSON.stringify({ text: "", mcp: directives.mcp }), [], {
+      agentRole: "execution",
+      mcpAvailable: false,
+    }),
+  ).toThrow(ModelError);
+});
+
 function mockFetch(
   implementation: (...arguments_: FetchArguments) => Promise<Response>,
 ): typeof globalThis.fetch {

@@ -147,6 +147,8 @@ async function fixture(
   };
   const sent: OutboundMessage[] = [];
   const modelRequests: ModelRequest[] = [];
+  const legacy = !!options?.reply;
+  let workerReport = "Scope ready for approval.";
   const registry = createJuneRegistry({
     owner,
     memory,
@@ -175,8 +177,8 @@ async function fixture(
               "The worker reports the change; its claims are not independently verified.",
           };
         if (request.system.includes("Execution completion"))
-          return { text: "Scope ready for approval." };
-        if (options?.reply) return options.reply();
+          return { text: workerReport };
+        if (legacy && options?.reply) return options.reply();
         return {
           text: "I'll prepare the change.",
           execution: [
@@ -189,16 +191,26 @@ async function fixture(
         };
       },
     },
-    execution: {
-      model: {
-        async reply() {
-          return {
-            text: "Scope prepared, not executed.",
-            coding: { ...codingRequest },
-          };
+    // Custom directives exercise the supported legacy host without workers.
+    // Default cases use the interaction -> execution -> approval path.
+    execution: legacy
+      ? undefined
+      : {
+          model: {
+            async reply(request) {
+              const last = request.messages.at(-1)?.content ?? "";
+              if (last.startsWith("Host tool observation")) {
+                workerReport = last;
+                return { text: workerReport };
+              }
+              if (options?.reply) return options.reply();
+              return {
+                text: "Scope prepared, not executed.",
+                coding: { ...codingRequest },
+              };
+            },
+          },
         },
-      },
-    },
     coding: options?.disabled ? undefined : coding,
   });
   return {
@@ -1136,6 +1148,18 @@ describe("separate coding supervisor", () => {
     await expect
       .poll(async () => (await job.snapshot()).status, { timeout: 5000 })
       .toBe("needs_review");
+    // Status settles before notify-companion. Let its recipient finish before
+    // tearing down the engine, rather than racing a new actor's first wake.
+    await expect
+      .poll(async () => {
+        const state = await client.conversation
+          .getOrCreate(["private", owner.id])
+          .snapshot();
+        return Object.values(state.events).some(
+          (record) => record.event.id === source.id && record.done,
+        );
+      })
+      .toBe(true);
   });
 
   it.for([false, true])(
@@ -1565,12 +1589,14 @@ describe("separate coding supervisor", () => {
       },
     });
     await expect
-      .poll(() =>
-        sent.some(
-          (message) =>
-            message.content.type === "text" &&
-            message.content.text.includes("Workspace diff is unavailable"),
-        ),
+      .poll(
+        () =>
+          sent.some(
+            (message) =>
+              message.content.type === "text" &&
+              message.content.text.includes("Workspace diff is unavailable"),
+          ),
+        { timeout: 15000 },
       )
       .toBe(true);
     expect(artifactCheck).not.toHaveBeenCalled();
@@ -1593,12 +1619,14 @@ describe("separate coding supervisor", () => {
       },
     });
     await expect
-      .poll(() =>
-        sent.some(
-          (message) =>
-            message.content.type === "text" &&
-            message.content.text.includes('"artifactMatches":false'),
-        ),
+      .poll(
+        () =>
+          sent.some(
+            (message) =>
+              message.content.type === "text" &&
+              message.content.text.includes('"artifactMatches":false'),
+          ),
+        { timeout: 15000 },
       )
       .toBe(true);
     const inspection = sent.find(

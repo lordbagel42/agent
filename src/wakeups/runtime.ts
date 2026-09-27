@@ -83,12 +83,36 @@ export function createWakeupActor(
         await c.vars.persist();
         return c.state;
       },
+      /** Metadata only. Bind these tombstone dependencies before retaining reads. */
+      async dependencies(c, action: WakeupAction) {
+        guard(c.key);
+        invalidate(c.state);
+        await c.vars.persist();
+        const jobs = Object.values(c.state.jobs).filter(
+          (job) =>
+            job.instruction &&
+            (action.action === "list" ||
+              ("id" in action && action.id === job.id)),
+        );
+        return [
+          ...new Set(
+            jobs.flatMap((job) => {
+              const source = deps.memory?.source(
+                job.source,
+                JSON.stringify(["private", deps.owner.id]),
+              );
+              return [...job.evidenceIds, ...(source ? [source.id] : [])];
+            }),
+          ),
+        ];
+      },
       async manage(
         c,
         action: WakeupAction,
         source: MessageEvent,
         commandId: string,
         evidenceIds: string[] = [],
+        originEventId?: string,
       ) {
         guard(c.key);
         if (!authorized(source, evidenceIds))
@@ -102,14 +126,22 @@ export function createWakeupActor(
           Date.now(),
           deps.sources,
           evidenceIds,
+          originEventId,
         );
         await c.vars.persist();
         await c.queue.send("wake", { wake: true });
         return result;
       },
-      async forget(c, jobIds: string[]) {
+      async forget(c, originEventIds: string[]) {
         guard(c.key);
-        revoke(c.state, jobIds);
+        revoke(
+          c.state,
+          Object.values(c.state.jobs)
+            .filter((job) =>
+              originEventIds.includes(job.originEventId ?? job.id),
+            )
+            .map((job) => job.id),
+        );
         await c.vars.persist();
       },
       async publish(c, event: WakeupEvent) {
@@ -247,6 +279,9 @@ export function createWakeupActor(
                         wakeup: {
                           runId: run.id,
                           jobId: job.id,
+                          ...(job.originEventId
+                            ? { originEventId: job.originEventId }
+                            : {}),
                           instruction: job.instruction,
                           event: run.event,
                         },

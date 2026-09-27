@@ -1057,7 +1057,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   action = { text: "", inspection: "capacity" };
   const capacityReport = await deliver();
   expect(capacityReport).toContain(
-    '"limits":{"total":2,"guests":1,"background":1,"nonOwner":1,"waitingBackground":32}',
+    '"limits":{"total":3,"guests":1,"background":2,"nonOwner":2,"waitingBackground":32}',
   );
   expect(capacityReport).toContain(
     '"active":1,"owners":1,"guests":0,"background":0',

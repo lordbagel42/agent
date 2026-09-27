@@ -1,4 +1,5 @@
-/** Two slots, at most one guest or background execution. Owners enter first.
+/** Two worker slots plus an owner reserve; at most two foreground turns and one
+ * guest. Independent workers can progress while June keeps talking. Owners enter first.
  * Running effects are never cancelled to make room for a higher-priority turn. */
 export function createPriorityAdmission() {
   let active = 0;
@@ -7,9 +8,16 @@ export function createPriorityAdmission() {
   const waiting: { owner: boolean | "background"; wake: () => void }[] = [];
   const recent = new Map<string, number[]>();
   const pump = () => {
-    while (active < 2) {
-      let index = waiting.findIndex((item) => item.owner === true);
-      if (index < 0 && guests + background === 0) index = 0;
+    while (active < 3) {
+      let index = waiting.findIndex(
+        (item) => item.owner === true && active - background < 2,
+      );
+      if (index < 0 && guests + background < 2)
+        index = waiting.findIndex(
+          (item) =>
+            item.owner === "background" ||
+            (item.owner === false && guests === 0 && active - background < 2),
+        );
       const item = waiting[index];
       if (!item) break;
       waiting.splice(index, 1);
@@ -24,10 +32,10 @@ export function createPriorityAdmission() {
     snapshot() {
       return {
         limits: {
-          total: 2,
+          total: 3,
           guests: 1,
-          background: 1,
-          nonOwner: 1,
+          background: 2,
+          nonOwner: 2,
           waitingBackground: 32,
         },
         current: {

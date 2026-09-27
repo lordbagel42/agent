@@ -120,6 +120,7 @@ it("copies evaluated behavior exactly and keeps identity independent of workspac
 
 it.for([
   "current",
+  "delegated",
   "deleted-before-save",
   "deleted-before-enqueue",
   "quiet-before-enqueue",
@@ -201,6 +202,19 @@ it.for([
           if (request.skillCodingProposalAvailable)
             expect(request.system).toContain("skillCodingProposal");
           await beforeReply?.();
+          if (request.agentRole === "interaction")
+            return request.system.includes("Execution completion")
+              ? { text: "" }
+              : {
+                  text: "Checking the evaluated skill.",
+                  execution: [
+                    {
+                      agent: "skill",
+                      action: "run",
+                      task: "Prepare the evaluated skill proposal.",
+                    },
+                  ],
+                };
           return structuredClone(action);
         },
       },
@@ -298,7 +312,7 @@ it.for([
       if (expectDelivery)
         await expect
           .poll(() => sent.length, { timeout: 5000 })
-          .toBeGreaterThan(before);
+          .toBeGreaterThan(before + (deps.execution && route.private ? 1 : 0));
       const content = sent.at(-1)?.content;
       return content?.type === "text" ? content.text : "";
     };
@@ -341,7 +355,17 @@ it.for([
       text: "",
       skillCodingProposal: { candidateId, workspace: "june" },
     };
-    if (boundary !== "current") {
+    if (boundary === "delegated")
+      deps.execution = {
+        model: {
+          async reply(request) {
+            expect(request.agentRole).toBe("execution");
+            expect(request.skillCodingProposalAvailable).toBe(true);
+            return structuredClone(action);
+          },
+        },
+      };
+    if (boundary !== "current" && boundary !== "delegated") {
       let unionReads = 0;
       const invalidatingRead =
         boundary === "deleted-before-save"
@@ -453,6 +477,8 @@ it.for([
       afterRetrieve = undefined;
     };
     await turn({}, false);
+    if (boundary === "delegated")
+      await expect.poll(() => afterRetrieve).toBeUndefined();
     expect(await conversation.canResumeJob(id)).toBe(false);
     expect((await job.snapshot()).attempts).toBe(0);
     expect(run).not.toHaveBeenCalled();

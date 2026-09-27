@@ -42,6 +42,8 @@ it("reports a hard-killed Jev attempt as unknown without relaunching either prov
           RIVETKIT_STORAGE_PATH: directory,
           RIVET_RUN_ENGINE_PORT: String(port),
           FIXTURE_PHASE: phase,
+          // This fixture exercises the legacy conversation-owned Jev receipt.
+          FIXTURE_EXECUTION: "disabled",
         },
         stdio: ["ignore", "pipe", "pipe", "ipc"],
       },

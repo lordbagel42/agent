@@ -324,6 +324,7 @@ function isJsonObject(value: unknown): value is JsonObject {
 
 export type ReplyCapabilities = Pick<
   ModelRequest,
+  | "agentRole"
   | "codingJobsAvailable"
   | "searchAvailable"
   | "slackHistoryAvailable"
@@ -373,6 +374,51 @@ function replyCapabilities(
 }
 
 export function replyJsonSchema(
+  workspaces: string[],
+  capabilities: ReplyCapabilities | boolean = false,
+) {
+  const schema = legacyReplyJsonSchema(workspaces, capabilities);
+  const { agentRole } = replyCapabilities(capabilities);
+  for (const key of Object.keys(schema.properties)) {
+    if (!rolePermitsField(agentRole, key)) {
+      Reflect.deleteProperty(schema.properties, key);
+    }
+  }
+  return {
+    ...schema,
+    required: schema.required.filter((key) => rolePermitsField(agentRole, key)),
+  };
+}
+
+/** Roles narrow capability grants; they never confer a grant themselves. */
+function rolePermitsField(
+  role: ModelRequest["agentRole"],
+  key: string,
+): boolean {
+  if (role === "interaction") {
+    return [
+      "text",
+      "messages",
+      "interrupt",
+      "reaction",
+      "replyInThread",
+      "execution",
+    ].includes(key);
+  }
+  if (role === "execution") {
+    return ![
+      "execution",
+      "messages",
+      "interrupt",
+      "reaction",
+      "replyInThread",
+      "escalate",
+    ].includes(key);
+  }
+  return true;
+}
+
+function legacyReplyJsonSchema(
   workspaces: string[],
   capabilities: ReplyCapabilities | boolean = false,
 ) {
@@ -1661,6 +1707,13 @@ export function parseReply(
     throw new ModelError("malformed_response", false);
   }
   if (!isJsonObject(value)) {
+    throw new ModelError("invalid_response", false);
+  }
+
+  // Check the raw keys before normalization: even false/null cannot smuggle a
+  // forbidden field past a role's schema, regardless of flags or workspaces.
+  const { agentRole } = replyCapabilities(capabilities);
+  if (Object.keys(value).some((key) => !rolePermitsField(agentRole, key))) {
     throw new ModelError("invalid_response", false);
   }
 

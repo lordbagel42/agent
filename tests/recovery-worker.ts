@@ -94,14 +94,17 @@ const registry = createJuneRegistry({
       },
     }),
   },
-  execution: {
-    model: {
-      async reply() {
-        process.send?.({ kind: "execution" });
-        return new Promise<never>(() => {});
-      },
-    },
-  },
+  execution:
+    process.env.FIXTURE_EXECUTION === "disabled"
+      ? undefined
+      : {
+          model: {
+            async reply() {
+              process.send?.({ kind: "execution" });
+              return new Promise<never>(() => {});
+            },
+          },
+        },
   channels: {
     slack: {
       channel: "slack",

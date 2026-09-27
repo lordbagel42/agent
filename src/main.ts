@@ -902,7 +902,11 @@ async function main() {
     mcpCommands: connections,
     execution:
       config.executionEnabled && !config.setupMode
-        ? { model: deepModel ?? model }
+        ? {
+            model: connections
+              ? connections.wrap(deepModel ?? model)
+              : (deepModel ?? model),
+          }
         : undefined,
     workflows: config.setupMode
       ? undefined

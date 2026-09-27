@@ -623,10 +623,11 @@ export class McpConnections {
       reply: async (request, signal, isCurrent, canStartAction) => {
         const current = () => !signal?.aborted && (isCurrent?.() ?? true);
         if (!current()) return { text: "" };
-        if (!request.mcpAvailable) {
+        if (!request.mcpAvailable || request.agentRole === "interaction") {
           const reply = await model.reply(
             {
               ...request,
+              mcpAvailable: false,
               mcpPermissionAvailable: false,
               mcpProposalAvailable: false,
             },
@@ -729,7 +730,11 @@ export class McpConnections {
           canStartAction,
         );
         if (!current()) return { text: "" };
-        if (reply.messages !== undefined || reply.interrupt !== undefined)
+        if (
+          request.agentRole ||
+          reply.messages !== undefined ||
+          reply.interrupt !== undefined
+        )
           reply = parseReply(
             JSON.stringify(reply),
             request.workspaces,
@@ -777,7 +782,11 @@ export class McpConnections {
             canStartAction,
           );
           if (!current()) return { text: "" };
-          if (reply.messages !== undefined || reply.interrupt !== undefined)
+          if (
+            request.agentRole ||
+            reply.messages !== undefined ||
+            reply.interrupt !== undefined
+          )
             reply = parseReply(
               JSON.stringify(reply),
               request.workspaces,

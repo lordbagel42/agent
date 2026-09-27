@@ -1,7 +1,8 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Client } from "rivetkit/client";
 import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type {
@@ -14,7 +15,8 @@ import { slackSource } from "../imports/index.js";
 import { EvidenceStore, type Source } from "../memory/store.js";
 import { parseReply } from "../models/provider.js";
 import { executionKey } from "./execution.js";
-import { createJuneRegistry } from "./registry.js";
+import type { ExecutionContext } from "./execution-context.js";
+import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
 // Pause a real worker save, not a replacement workflow or production test hook.
 const persistence = vi.hoisted(() => ({
@@ -169,7 +171,6 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
         turns.push(structuredClone(request));
         if (request.system.includes("Execution completion"))
           return {
-            modelStatus: true, // Custom providers must not replace completion text.
             text: request.system.includes('"task":"hotels-first"')
               ? "June: $137"
               : "June: 17:42",
@@ -213,15 +214,15 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
   const send = (id: string, text: string) =>
     june.send("inbox", { type: "event", event: event(id, text) });
   await send("1", "plan");
-  await expect.poll(() => work.length, { timeout: 15000 }).toBe(1);
+  await expect.poll(() => work.length, { timeout: 15000 }).toBe(2);
   await send("2", "hi");
   await expect.poll(texts, { timeout: 15000 }).toContain("Still chatting.");
-  expect(work).toHaveLength(1);
+  expect(work).toHaveLength(2);
   const statusTurn = turns.find((r) =>
     r.messages.at(-1)?.content.includes('"text":"hi"'),
   );
-  expect(statusTurn?.system).toContain('"status":"running"');
-  expect(statusTurn?.system).toContain('"status":"queued"');
+  expect(statusTurn?.system.match(/"status":"running"/g)).toHaveLength(2);
+  expect(statusTurn?.agentRole).toBe("interaction");
   expect(texts()).not.toContain("Hotel evidence: $137");
   gate.resolve();
   await expect.poll(texts, { timeout: 15000 }).toContain("June: $137");
@@ -254,7 +255,10 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
   expect(work[2]?.system).toContain(
     "June will request separate owner approval",
   );
-  expect(work[2]?.system).toContain("You cannot send messages");
+  expect(work[2]?.system).toContain(
+    "Do not send ordinary conversational replies",
+  );
+  expect(work[2]?.agentRole).toBe("execution");
   expect(work[2]?.workspaces).toEqual([]);
   expect(JSON.stringify(work)).not.toContain("PRIVATE revision reason");
   expect(work[2]?.messages.some((m) => m.content.includes("17:42"))).toBe(true);
@@ -284,6 +288,7 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
       .filter((r) => r.system.includes("Execution completion"))
       .every(
         (r) =>
+          r.agentRole === "interaction" &&
           !r.executionAvailable &&
           !r.modelStatusAvailable &&
           !r.releaseAvailable &&
@@ -516,11 +521,14 @@ it.for([false, true])(
     const started = Promise.withResolvers<AbortSignal>();
     const saving = Promise.withResolvers<void>();
     const saveSettled = Promise.withResolvers<void>();
+    const occupied = Promise.withResolvers<void>();
+    const reserve = Promise.withResolvers<void>();
     let calls = 0;
     t.onTestFinished(() => {
       persistence.afterSave = undefined;
       settle.resolve();
       saveSettled.resolve();
+      reserve.resolve();
     });
     const registry = createJuneRegistry({
       owner,
@@ -534,6 +542,11 @@ it.for([false, true])(
         model: {
           async reply(_request, signal) {
             if (!signal) throw new Error("Execution signal missing");
+            if (_request.messages.at(-1)?.content === "occupy") {
+              occupied.resolve();
+              await reserve.promise;
+              return { text: "" };
+            }
             calls++;
             if (calls === 1) {
               started.resolve(signal);
@@ -559,6 +572,10 @@ it.for([false, true])(
       web: false,
       evidenceIds: [],
     };
+    await client.execution
+      .getOrCreate(executionKey(["private", "raygen"], "reserve"))
+      .submit({ ...input, id: `${"c".repeat(64)}:reserve`, task: "occupy" });
+    await occupied.promise;
     await first.submit(input);
     const signal = await started.promise;
     await first.cancel("cancel-held");
@@ -1115,3 +1132,138 @@ it.for(["completed", "queued", "running", "save-gap"] as const)(
       .toBe(true);
   },
 );
+
+it("keeps delegated wakeup origins and inspected ancestry separate from operation IDs and rejects stale worker history", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const scope = ["private", owner.id];
+  const audience = JSON.stringify(scope);
+  const source = (e: MessageEvent, scope: string) =>
+    slackSource({
+      workspace: "T1",
+      channel: "D1",
+      ts: e.messageId,
+      author: "U1",
+      text: e.text,
+      workspaceUrl: "https://fixture.slack.com/",
+      audiences: [scope],
+    });
+  const original = event("501", "Private reminder instruction");
+  const unrelated = source(event("502", "Another private exchange"), audience);
+  store.appendSource(source(original, audience));
+  store.appendSource(unrelated);
+  const create = {
+    action: "create" as const,
+    name: "Private reminder",
+    instruction: "Remember the private instruction",
+    once: true,
+    trigger: {
+      kind: "at" as const,
+      at: new Date(Date.now() + 86_400_000).toISOString(),
+    },
+  };
+  let calls = 0;
+  const registry = createJuneRegistry({
+    owner,
+    channels: {},
+    memory: { store, source },
+    wakeups: { sources: [], pollMs: 1000 },
+    model: { reply: async () => ({ text: "" }) },
+    execution: {
+      model: {
+        async reply(request): Promise<CompanionReply> {
+          calls++;
+          const last = request.messages.at(-1)?.content ?? "";
+          if (last === "create") return { text: "", wakeup: create };
+          if (last === "inspect")
+            return { text: "", wakeup: { action: "list" } };
+          if (last.includes('"jobs":'))
+            return { text: "", wakeup: { action: "inspect", id: "existing" } };
+          if (last.includes('"recentRuns":'))
+            return { text: "", wakeup: { action: "pause", id: "existing" } };
+          return { text: "Confirmed reminder result" };
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const wakeups = (client as Client<JuneClientRegistry>).wakeups.getOrCreate([
+    owner.id,
+  ]);
+  await wakeups.manage(create, original, "existing", [
+    source(original, audience).id,
+  ]);
+  const context: ExecutionContext = {
+    version: 1,
+    scopeKey: scope,
+    audience,
+    conversationKey: scope,
+    originEventId: "a".repeat(64),
+    deletionRevision: 0,
+    sourceIds: [],
+    contextSourceIds: [],
+    personality: createHash("sha256").update("{}").digest("hex"),
+    capabilities: { wakeupAvailable: true },
+  };
+  const input = {
+    id: `${context.originEventId}:creator`,
+    source: event("503", "create"),
+    task: "create",
+    context,
+    web: false,
+    workspaces: [],
+    evidenceIds: [],
+    deletionTracked: true as const,
+  };
+  const creator = client.execution.getOrCreate(executionKey(scope, "creator"));
+  expect(await creator.submit(input)).toBe(true);
+  await expect
+    .poll(async () => (await creator.summary()).status, { timeout: 15000 })
+    .toBe("completed");
+  const created = Object.values((await wakeups.snapshot()).jobs).find(
+    (job) => job.id !== "existing",
+  );
+  expect(created?.originEventId).toBe(context.originEventId);
+  expect(created?.id).not.toBe(context.originEventId);
+  await wakeups.forget([context.originEventId]);
+  expect((await wakeups.snapshot()).jobs[created?.id ?? ""]?.instruction).toBe(
+    "",
+  );
+  expect((await wakeups.snapshot()).jobs.existing?.status).toBe("active");
+
+  const inspector = client.execution.getOrCreate(
+    executionKey(scope, "inspector"),
+  );
+  const inspected = {
+    ...input,
+    id: `${"b".repeat(64)}:inspector`,
+    task: "inspect",
+    source: event("504", "inspect"),
+    context: { ...context, originEventId: "b".repeat(64) },
+  };
+  expect(await inspector.submit(inspected)).toBe(true);
+  await expect
+    .poll(async () => (await inspector.summary()).status, { timeout: 15000 })
+    .toBe("completed");
+  expect((await wakeups.snapshot()).jobs.existing?.status).toBe("paused");
+  expect((await inspector.summary()).evidenceIds).toContain(
+    source(original, audience).id,
+  );
+  expect(calls).toBe(6); // create/report; list/inspect/pause/report
+
+  // Even deletion outside the explicit ancestry invalidates reports/history.
+  // Updating a later request's revision must not rehabilitate old tool text.
+  expect((await inspector.summary()).evidenceIds).not.toContain(unrelated.id);
+  store.deleteSource(unrelated.id);
+  expect((await inspector.summary()).status).toBe("revoked");
+  expect((await inspector.summary()).report).toBe("");
+  expect(await inspector.result(inspected.id)).toBeNull();
+  expect(
+    await inspector.submit({
+      ...inspected,
+      id: `${"c".repeat(64)}:inspector`,
+      context: { ...context, deletionRevision: store.deletionRevision() },
+    }),
+  ).toBe(false);
+  expect(calls).toBe(6);
+});

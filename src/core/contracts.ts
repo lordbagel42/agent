@@ -326,6 +326,8 @@ export type ProviderTimingStage =
   | "retired";
 
 export interface ModelRequest {
+  /** Host-enforced action boundary; omitted preserves legacy mixed-role turns. */
+  agentRole?: "interaction" | "execution";
   system: string;
   messages: ConversationMessage[];
   /** Host-only accounting label, never part of a provider prompt. */

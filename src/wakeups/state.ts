@@ -60,6 +60,8 @@ export const eventSchema = z
 export type WakeupEvent = z.infer<typeof eventSchema>;
 export interface WakeupJob {
   id: string;
+  /** Conversation provenance; legacy direct jobs used id for both identities. */
+  originEventId?: string;
   name: string;
   instruction: string;
   trigger: z.infer<typeof triggerSchema>;
@@ -97,6 +99,7 @@ export interface WakeupState {
 export interface WakeupContext {
   runId: string;
   jobId: string;
+  originEventId?: string;
   instruction: string;
   event: WakeupEvent;
 }
@@ -135,6 +138,7 @@ export function applyAction(
   now: number,
   sources: readonly string[],
   evidenceIds: string[] = [],
+  originEventId?: string,
 ): string {
   const action = wakeupActionSchema.parse(input);
   if (action.action === "list") {
@@ -175,6 +179,7 @@ export function applyAction(
     const { threadId: _thread, ...address } = source.address;
     state.jobs[commandId] = {
       id: commandId,
+      ...(originEventId ? { originEventId } : {}),
       name: action.name,
       instruction: action.instruction,
       trigger,

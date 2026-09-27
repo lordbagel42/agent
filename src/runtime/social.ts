@@ -213,6 +213,7 @@ export class SocialPermissions {
     text: string,
     canStartAction?: () => boolean,
     check?: () => Extract<SendResult, { status: "rejected" }> | undefined,
+    isCurrent: () => boolean = () => true,
   ): Promise<SendResult> {
     this.forget();
     const revision = this.options.deletionRevision?.() ?? 0;
@@ -246,7 +247,10 @@ export class SocialPermissions {
         // Privacy reads may take time. Run them before the interruption gate's
         // final clock sample, leaving only adapter dispatch after that gate.
         this.forget();
-        if (revision !== (this.options.deletionRevision?.() ?? 0))
+        if (
+          !isCurrent() ||
+          revision !== (this.options.deletionRevision?.() ?? 0)
+        )
           return { status: "rejected", code: "forgotten", retryable: false };
         if (canStartAction?.() === false)
           return {
@@ -544,8 +548,11 @@ export class SocialPermissions {
     event: MessageEvent,
     input: SocialAction,
     canStartAction?: () => boolean,
+    operationId = event.id,
+    isCurrent: () => boolean = () => true,
   ): Promise<string> {
-    if (!this.authorized(event)) return "This conversation is not authorized.";
+    if (!isCurrent() || !this.authorized(event))
+      return "This conversation is not authorized.";
     const action = socialActionSchema.parse(input);
     if (action.kind === "interruption_proposal")
       return "Interruption staging requires the current private reflection gate. Nothing was staged or sent.";
@@ -553,7 +560,7 @@ export class SocialPermissions {
     if (action.kind === "post") {
       if (!owner) return "Only Raygen's turns can post to other destinations.";
       const result = await this.send(
-        JSON.stringify([event.address.accountId, event.id, "post"]),
+        JSON.stringify([event.address.accountId, operationId, "post"]),
         {
           channel: "slack",
           accountId: this.options.teamId,
@@ -562,6 +569,8 @@ export class SocialPermissions {
         },
         action.text,
         canStartAction,
+        undefined,
+        isCurrent,
       );
       return `Post delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived or repeat an uncertain send."}`;
     }
@@ -586,7 +595,7 @@ export class SocialPermissions {
         return "Propose shareable context privately with Raygen.";
     }
     const id = createHash("sha256")
-      .update(JSON.stringify([event.address.accountId, event.id, "social"]))
+      .update(JSON.stringify([event.address.accountId, operationId, "social"]))
       .digest("hex")
       .slice(0, 24);
     let proposal = this.get(id);
@@ -650,6 +659,8 @@ export class SocialPermissions {
       address,
       `<@${RAYGEN_SLACK_ID}> May I? Request ${id}, requested by <@${proposal.requester}>.\n${summary}\nNothing is authorized yet. Reply with exactly !allow ${id} or !deny ${id} (mention me too if replying in a channel). Request expires in 24 hours.`,
       canStartAction,
+      undefined,
+      isCurrent,
     );
     return `Approval request ${id}: notification ${result.status}. No extra permission is active. ${result.status === "sent" ? "Waiting for Raygen." : "I cannot confirm Raygen received it; ask him directly."}`;
   }

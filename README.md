@@ -1280,9 +1280,10 @@ Bearer-only operator API. Existing operator clients are unchanged.
 ### One-time dashboard sign-in links
 
 Ask June **in your private conversation** for a dashboard login link. Her
-`dashboardLogin: true` action sends a short URL such as
+worker's host-checked `dashboardLogin: true` action sends a short URL such as
 `https://june.raygen.dev/<random-id>` directly to that conversation; it is not
-available to guests, public channels, execution workers, or synthesis passes.
+available to guests, public channels, or synthesis passes. Workers receive only
+the private delivery receipt; the credential never enters their model history.
 She must not reuse old links or invent URLs. Amp and trusted operators can create
 the same links through the private listener:
 

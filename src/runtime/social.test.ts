@@ -1563,6 +1563,7 @@ it("bounds background waiters without spending the owner reserve or releasing ab
   const admission = createPriorityAdmission();
   const active = new AbortController();
   const release = await admission.enter("background", active.signal);
+  const second = await admission.enter("background", active.signal);
   const queued = new AbortController();
   const order: string[] = [];
   const waiters = Array.from({ length: 32 }, () =>
@@ -1595,6 +1596,7 @@ it("bounds background waiters without spending the owner reserve or releasing ab
   queued.abort();
   await Promise.all(waiters);
   first?.();
+  second?.();
   owner?.();
   const next = await admission.enter(
     "background",
