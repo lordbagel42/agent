@@ -47,6 +47,35 @@ HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
 """
 
 
+RUNNING_SERVICE = {
+    "LoadState": "loaded",
+    "ActiveState": "active",
+    "SubState": "running",
+    "Result": "success",
+    "MainPID": "101",
+    "ControlPID": "0",
+    "ExecMainPID": "101",
+    "ExecMainCode": "0",
+    "ExecMainStatus": "0",
+    "ExecMainStartTimestampMonotonic": "1000000",
+    "ExecMainExitTimestampMonotonic": "0",
+    "InvocationID": "1234567890abcdef1234567890abcdef",
+    "Job": "",
+}
+STOPPED_SERVICE = {
+    **RUNNING_SERVICE,
+    "ActiveState": "inactive",
+    "SubState": "dead",
+    "MainPID": "0",
+    "ExecMainCode": "1",  # CLD_EXITED, not a signal accepted by SuccessExitStatus.
+    "ExecMainExitTimestampMonotonic": "3000000",
+}
+
+
+def service_output(state):
+    return "\n".join(f"{key}={value}" for key, value in state.items()).encode()
+
+
 class FixtureHost(deploy.Host):
     def __init__(self, root):
         import socket
@@ -268,6 +297,112 @@ class ControllerProvenance(unittest.TestCase):
                 store.close()
 
 
+class ServiceStopSafety(unittest.TestCase):
+    def test_stop_requires_retained_matching_normal_exit_not_only_job_success(self):
+        host = object.__new__(deploy.Host)
+        cases = [
+            ({}, True),
+            ({"InvocationID": ""}, True),  # Retained process record still required.
+            ({"InvocationID": "", "ExecMainPID": "102"}, False),
+            ({"InvocationID": "", "ExecMainStartTimestampMonotonic": "1100000"}, False),
+            ({"InvocationID": "", "ExecMainExitTimestampMonotonic": "0"}, False),
+            ({"InvocationID": "", "ExecMainExitTimestampMonotonic": "1500000"}, False),
+            ({"Result": "timeout"}, False),  # Even when the main process exited 0.
+            ({"Result": "signal", "ExecMainCode": "2", "ExecMainStatus": "9"}, False),
+            ({"ExecMainCode": "2", "ExecMainStatus": "15"}, False),
+            ({"ExecMainStatus": "1"}, False),
+            ({"ExecMainPID": "102"}, False),
+            ({"ExecMainStartTimestampMonotonic": "1100000"}, False),
+            ({"ExecMainExitTimestampMonotonic": "0"}, False),
+            ({"ExecMainExitTimestampMonotonic": "1500000"}, False),
+            ({"ExecMainExitTimestampMonotonic": ""}, False),
+            ({"InvocationID": "abcdef1234567890abcdef1234567890"}, False),
+            ({"ActiveState": "failed"}, False),
+            ({"SubState": "failed"}, False),
+            ({"MainPID": "102"}, False),
+            ({"ControlPID": "103"}, False),
+            ({"Job": "71"}, False),
+            ({"LoadState": "not-found"}, False),
+        ]
+        for changed, clean in cases:
+            with (
+                self.subTest(changed=changed),
+                patch.object(deploy.time, "monotonic_ns", return_value=2_000_000_000),
+                patch.object(
+                    deploy.subprocess,
+                    "check_output",
+                    side_effect=[
+                        service_output(RUNNING_SERVICE),
+                        service_output({**STOPPED_SERVICE, **changed}),
+                    ],
+                ),
+                patch.object(deploy.subprocess, "run") as manager,
+            ):
+                if clean:
+                    host.service("stop")
+                else:
+                    with self.assertRaises(ValueError):
+                        host.service("stop")
+                self.assertEqual(
+                    [call.args[0] for call in manager.call_args_list],
+                    [["systemctl", "stop", "june.service"]],
+                )
+        for changed in (
+            {"InvocationID": ""},
+            {"MainPID": "0"},
+            {"ExecMainPID": "102"},
+            {"ExecMainStartTimestampMonotonic": "0"},
+            {"ExecMainExitTimestampMonotonic": "1500000"},
+            {"Job": "71"},
+        ):
+            with (
+                self.subTest(before=changed),
+                patch.object(
+                    deploy.subprocess,
+                    "check_output",
+                    return_value=service_output({**RUNNING_SERVICE, **changed}),
+                ),
+                patch.object(deploy.subprocess, "run") as manager,
+                self.assertRaises(ValueError),
+            ):
+                try:
+                    host.service("stop")
+                finally:
+                    manager.assert_not_called()
+        for unavailable in (
+            service_output({k: v for k, v in STOPPED_SERVICE.items() if k != "Result"}),
+            b"not a property record",
+            subprocess.TimeoutExpired("systemctl show", 5),
+            subprocess.CalledProcessError(1, "systemctl show"),
+        ):
+            with (
+                self.subTest(unavailable=unavailable),
+                patch.object(deploy.time, "monotonic_ns", return_value=2_000_000_000),
+                patch.object(
+                    deploy.subprocess,
+                    "check_output",
+                    side_effect=[service_output(RUNNING_SERVICE), unavailable],
+                ),
+                patch.object(deploy.subprocess, "run") as manager,
+            ):
+                with self.assertRaises((ValueError, subprocess.SubprocessError)):
+                    host.service("stop")
+                manager.assert_called_once()
+        with (
+            patch.object(deploy.subprocess, "check_output") as evidence,
+            patch.object(deploy.subprocess, "run") as manager,
+        ):
+            host.service("start")
+            evidence.assert_not_called()
+            manager.assert_called_once_with(
+                ["systemctl", "start", "june.service"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+
+
 class DeploymentSafety(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -288,6 +423,103 @@ class DeploymentSafety(unittest.TestCase):
         self.host.service("stop")
         self.store.close()
         self.tmp.cleanup()
+
+    def test_unclean_stop_blocks_activation_and_rollback_without_switch_or_retry(self):
+        for failed_stop in (1, 2):
+            with self.subTest(failed_stop=failed_stop):
+                fixture = DeploymentSafety("runTest")
+                fixture.setUp()
+                try:
+                    target = fixture.host.commit("src/console/view.ts", "bad candidate")
+                    service = fixture.host.service
+                    stops = 0
+
+                    def checked_service(
+                        action,
+                        service=service,
+                        failed_stop=failed_stop,
+                        fixture=fixture,
+                    ):
+                        nonlocal stops
+                        if action != "stop":
+                            return service(action)
+                        stops += 1
+                        if stops != failed_stop:
+                            return service(action)
+                        pid = str(fixture.host.process.pid)
+                        before = {**RUNNING_SERVICE, "MainPID": pid, "ExecMainPID": pid}
+                        after = {
+                            **STOPPED_SERVICE,
+                            "ExecMainPID": pid,
+                            "Result": "timeout",
+                        }
+
+                        def stop_job(*args, **kwargs):
+                            self.assertEqual(
+                                args[0], ["systemctl", "stop", "june.service"]
+                            )
+                            service("stop")
+                            return subprocess.CompletedProcess(args[0], 0)
+
+                        with (
+                            patch.object(
+                                deploy.time, "monotonic_ns", return_value=2_000_000_000
+                            ),
+                            patch.object(
+                                deploy.subprocess,
+                                "check_output",
+                                side_effect=[
+                                    service_output(before),
+                                    service_output(after),
+                                ],
+                            ),
+                            patch.object(
+                                deploy.subprocess, "run", side_effect=stop_job
+                            ),
+                        ):
+                            return deploy.Host.service(fixture.host, action)
+
+                    with patch.object(
+                        fixture.host, "service", side_effect=checked_service
+                    ):
+                        fixture.loop.tick()
+                        self.assertEqual(
+                            fixture.store.get("blocked"), "activation_unknown"
+                        )
+                        self.assertEqual(fixture.store.get("intent"), target)
+                        self.assertEqual(fixture.store.get("active"), fixture.first)
+                        selected = fixture.first if failed_stop == 1 else target
+                        self.assertEqual(
+                            fixture.host.current.resolve(),
+                            fixture.host.releases / selected,
+                        )
+                        starts = (
+                            [fixture.first]
+                            if failed_stop == 1
+                            else [fixture.first, target]
+                        )
+                        self.assertEqual(
+                            (fixture.host.data / "starts").read_text().splitlines(),
+                            starts,
+                        )
+                        feed = fixture.store.feed
+                        fixture.store.close()
+                        fixture.store = deploy.Store(
+                            fixture.host.root / "records", feed, fixture.first
+                        )
+                        fixture.loop = deploy.Deployer(fixture.host, fixture.store)
+                        fixture.loop.tick()
+                        self.assertEqual(stops, failed_stop)
+                        self.assertEqual(
+                            (fixture.host.data / "starts").read_text().splitlines(),
+                            starts,
+                        )
+                        self.assertEqual(
+                            fixture.store.get("blocked"), "activation_unknown"
+                        )
+                finally:
+                    fixture.tearDown()
+                    fixture.doCleanups()
 
     def test_crashed_preparation_reclaims_only_recorded_unsealed_stages(self):
         target = self.host.commit("src/console/view.ts", "two")

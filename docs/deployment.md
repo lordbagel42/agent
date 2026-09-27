@@ -119,6 +119,17 @@ For each candidate it:
    candidate, checks readiness plus actual MainPID working-directory identity,
    and durably records success or failure.
 
+Before either activation or rollback switches releases, stopping must leave a
+retained systemd execution record matching the pre-stop PID and start time:
+normal exit code 0, `Result=success`, inactive service and no pending job/control
+process. A changed invocation, timeout, signal, or missing/uncertain evidence
+durably blocks as `activation_unknown`, without switching, starting or retrying.
+`systemctl stop` returning 0 and the service becoming inactive are not enough.
+This certifies only the main process's exit, not native persistence or successful
+shutdown of every child; it does not replace the drain contract or shutdown
+ordering validation. Lost systemd history requires operator recovery, not an
+inferred successful stop.
+
 The warm-path **target** is about 30 seconds, not a timeout that bypasses checks.
 Measure push-to-observation externally and `received` → `healthy` from the event
 timestamps. `elapsedMs` measures observation-to-outcome, not Git commit age:

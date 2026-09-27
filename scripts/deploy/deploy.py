@@ -1302,6 +1302,62 @@ class Host:
     def service(self, action):
         if action not in ("stop", "start"):
             raise ValueError("invalid_action")
+        if action == "stop":
+            properties = (
+                "LoadState",
+                "ActiveState",
+                "SubState",
+                "Result",
+                "MainPID",
+                "ControlPID",
+                "ExecMainPID",
+                "ExecMainCode",
+                "ExecMainStatus",
+                "ExecMainStartTimestampMonotonic",
+                "ExecMainExitTimestampMonotonic",
+                "InvocationID",
+                "Job",
+            )
+
+            def state():
+                output = subprocess.check_output(
+                    [
+                        "systemctl",
+                        "show",
+                        "june.service",
+                        "--property=" + ",".join(properties),
+                    ],
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                ).decode()
+                values = dict(line.split("=", 1) for line in output.splitlines())
+                if set(values) != set(properties):
+                    raise ValueError("stop_evidence_missing")
+                return values
+
+            before = state()
+            began = time.monotonic_ns() // 1000
+            if (
+                any(
+                    before[key] != value
+                    for key, value in {
+                        "LoadState": "loaded",
+                        "ActiveState": "active",
+                        "SubState": "running",
+                        "Result": "success",
+                        "ControlPID": "0",
+                        "Job": "",
+                        "ExecMainExitTimestampMonotonic": "0",
+                    }.items()
+                )
+                or not before["MainPID"].isdecimal()
+                or int(before["MainPID"]) <= 0
+                or before["ExecMainPID"] != before["MainPID"]
+                or not 0 < int(before["ExecMainStartTimestampMonotonic"]) <= began
+                or not re.fullmatch(r"[0-9a-f]{32}", before["InvocationID"])
+                or before["InvocationID"] == "0" * 32
+            ):
+                raise ValueError("stop_identity_unknown")
         # No subprocess timeout: systemd owns stop timeout/cgroup settlement.
         # A failed/unknown manager operation blocks, never invokes another one.
         subprocess.run(
@@ -1311,6 +1367,36 @@ class Host:
             stderr=subprocess.DEVNULL,
             check=True,
         )
+        if action == "stop":
+            after = state()
+            # A completed stop job may still have timed out and killed the
+            # process. Require retained proof of this process's normal exit;
+            # inactive/exit0 from systemctl alone is not that proof.
+            if (
+                any(
+                    after[key] != value
+                    for key, value in {
+                        "LoadState": "loaded",
+                        "ActiveState": "inactive",
+                        "SubState": "dead",
+                        "Result": "success",
+                        "MainPID": "0",
+                        "ControlPID": "0",
+                        "Job": "",
+                        "ExecMainCode": str(os.CLD_EXITED),
+                        "ExecMainStatus": "0",
+                        "ExecMainPID": before["MainPID"],
+                        "ExecMainStartTimestampMonotonic": before[
+                            "ExecMainStartTimestampMonotonic"
+                        ],
+                    }.items()
+                )
+                or after["InvocationID"] not in ("", before["InvocationID"])
+                or int(after["ExecMainExitTimestampMonotonic"]) < began
+            ):
+                raise ValueError("stop_outcome_unknown")
+            # This proves only main-process exit, not native persistence or
+            # graceful settlement of every child. The drain contract still applies.
 
     def switch(self, commit):
         link = self.current.with_name(".current-deploy")
