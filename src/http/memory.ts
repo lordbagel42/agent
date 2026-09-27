@@ -52,6 +52,13 @@ export function createMemoryRoutes(deps: {
       .parse(await c.req.json());
     return c.json({ manifest: deps.store.backup(input.id) });
   });
+  app.post("/restore/validate", async (c) => {
+    const input = z
+      .strictObject({ id: z.string().regex(/^[a-f0-9]{64}$/) })
+      .parse(await c.req.json());
+    // Fixed local backup ID; never accept a path, key, or caller's watermark.
+    return c.json(deps.store.validateBackup(input.id));
+  });
   app.post("/proposals/:id/review", async (c) => {
     const input = z
       .strictObject({

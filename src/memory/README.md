@@ -868,3 +868,30 @@ June installation. Local disk loss still loses the backup. Nothing is uploaded,
 physically purged, expired automatically, or independently retained by this
 command. Verification uses disposable local data only; no live export or
 production replacement is part of acceptance.
+
+## Offline restore validation
+
+`validateEvidenceBackup(directory, key, {watermark, pages})` checks a backup's
+manifest, ciphertext hash, AES-GCM authentication/key, ledger schema and signed
+tombstone replay on an owner-only disposable copy. It binds the manifest's
+tombstone count to the authenticated snapshot before replay. Supply the latest
+independently trusted watermark and complete signed pages from the same ledger;
+the backup's own count is not a freshness anchor. Legacy snapshots without a
+ledger identity, stale/incomplete/mismatched pages, malformed data and wrong keys
+fail closed. Neither the original ledger nor the backup is opened for writes.
+The temporary copy is deleted; only content-free validation metadata is returned.
+
+For a running host, bearer-only `POST /operator/memory/restore/validate` accepts
+exactly `{ "id": "<64 lowercase hex backup ID>" }`. It validates that fixed local
+backup against the host's current signed deletion history and in-memory key;
+request-supplied paths, keys, pages and watermarks are rejected. This local
+preflight does **not** verify independent backup/tombstone retention.
+
+June can inspect the last process-local result with `inspection: "memory"` in
+the owner's private conversation. It reports `validated`, `rejected`, `stale`
+after new forgetting, or not run (including after restart). No body, tombstone
+ID, secret key or filesystem path is exposed. June cannot run validation or
+replace a store. A successful preflight is not a restore authorization: actual
+replacement remains an explicit operator operation, requiring a fresh validation
+against the latest retained deletion watermark. There is no automatic production
+restore, and this evidence-ledger check does not validate curated Git or journals.

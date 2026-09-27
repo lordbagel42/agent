@@ -13,10 +13,13 @@ import {
   closeSync,
   existsSync,
   lstatSync,
+  mkdtempSync,
   openSync,
   readSync,
   realpathSync,
+  rmSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
@@ -331,6 +334,19 @@ export function tombstoneExportMac(
   }
 }
 
+export type EvidenceRestoreValidation = {
+  checkedAt: number;
+  storeReplaced: false;
+} & (
+  | {
+      status: "validated" | "stale";
+      backupId: string;
+      snapshotWatermark: number;
+      replayedThrough: number;
+    }
+  | { status: "rejected" }
+);
+
 // Never include input data in validation errors (these may reach operator logs).
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
@@ -571,6 +587,7 @@ export class EvidenceStore {
     totalDurationMs: 0,
     maxDurationMs: null as number | null,
   };
+  private lastRestoreValidation: EvidenceRestoreValidation | null = null;
   private readonly index = new Map<
     string,
     { sources: Source[]; claims: Claim[] }
@@ -580,7 +597,11 @@ export class EvidenceStore {
     private readonly path: string,
     key: Uint8Array,
     options: Partial<ImportBudget> & {
-      restore?: { watermark: number; pages: Iterable<unknown> };
+      restore?: {
+        watermark: number;
+        pages: Iterable<unknown>;
+        snapshotWatermark?: number;
+      };
     } = {},
   ) {
     parse(id, path);
@@ -781,10 +802,18 @@ export class EvidenceStore {
   private replayTombstones(restore: {
     watermark: number;
     pages: Iterable<unknown>;
+    snapshotWatermark?: number;
   }): void {
     const watermark = parse(timestamp, restore.watermark);
     this.transaction((state) => {
       if (!state.ledgerId) throw new Error("Snapshot has no ledger identity");
+      // Bind backup metadata to the authenticated snapshot before replay can
+      // change the count. Never ordinary-open a candidate to obtain this value.
+      if (
+        restore.snapshotWatermark !== undefined &&
+        parse(timestamp, restore.snapshotWatermark) !== state.tombstones.length
+      )
+        throw new Error("Snapshot watermark mismatch");
       const retained: string[] = [];
       const seen = new Set<string>();
       let complete = false;
@@ -1030,6 +1059,56 @@ export class EvidenceStore {
     } catch {
       throw new Error("Memory backup status unavailable");
     }
+  }
+
+  /** Operator preflight against this ledger's current signed tombstones. No
+   * replacement, backup write, remote call, or independently retained receipt. */
+  validateBackup(backupId: string): EvidenceRestoreValidation {
+    parse(z.string().regex(/^[a-f0-9]{64}$/), backupId);
+    const rejected: EvidenceRestoreValidation = {
+      checkedAt: Date.now(),
+      storeReplaced: false,
+      status: "rejected",
+    };
+    this.lastRestoreValidation = rejected;
+    try {
+      const directory = join(this.backupRoot(), backupId);
+      const watermark = this.deletionRevision();
+      const store = this;
+      function* pages() {
+        let after = 0;
+        for (;;) {
+          const page = store.exportTombstones({ after, watermark });
+          yield page;
+          if (page.nextAfter === null) return;
+          after = page.nextAfter;
+        }
+      }
+      const result = validateEvidenceBackup(directory, this.key, {
+        watermark,
+        pages: pages(),
+      });
+      this.lastRestoreValidation =
+        result.status === "validated" && result.backupId !== backupId
+          ? rejected
+          : result;
+    } catch {
+      // Every admitted attempt supersedes the prior result, even if trusted
+      // inputs cannot be obtained. Never retain a misleading older success.
+    }
+    return { ...this.lastRestoreValidation };
+  }
+
+  /** Process-local snapshot only; new forgetting invalidates a prior success. */
+  restoreValidationStatus(): EvidenceRestoreValidation | null {
+    const latest = this.lastRestoreValidation;
+    if (!latest) return null;
+    if (
+      latest.status === "validated" &&
+      latest.replayedThrough !== this.deletionRevision()
+    )
+      return { ...latest, status: "stale" };
+    return { ...latest };
   }
 
   source(audience: string, sourceId: string): Source | undefined {
@@ -2325,6 +2404,66 @@ export class EvidenceStore {
       this.closed = true;
     }
   }
+}
+
+/** Offline preflight only. The caller must supply independently retained pages
+ * and the latest trusted watermark from the SAME ledger. Neither the manifest
+ * nor a numeric watermark establishes ledger identity or retention freshness.
+ * Only a disposable ciphertext copy is opened for replay; no store is replaced.
+ */
+export function validateEvidenceBackup(
+  directory: string,
+  key: Uint8Array,
+  restore: { watermark: number; pages: Iterable<unknown> },
+): EvidenceRestoreValidation {
+  const base = { checkedAt: Date.now(), storeReplaced: false as const };
+  let temporary: string | undefined;
+  let candidate: EvidenceStore | undefined;
+  let result: EvidenceRestoreValidation = { ...base, status: "rejected" };
+  try {
+    const watermark = parse(timestamp, restore.watermark);
+    const { manifest, payload } = readEvidenceBackup(directory);
+    if (manifest.tombstoneWatermark > watermark) throw new Error();
+    temporary = mkdtempSync(join(tmpdir(), "june-restore-validation-"));
+    chmodSync(temporary, 0o700);
+    const path = join(temporary, "evidence.sqlite");
+    const db = new DatabaseSync(path);
+    try {
+      chmodSync(path, 0o600);
+      db.exec(
+        "CREATE TABLE records (id INTEGER PRIMARY KEY CHECK(id=1), payload BLOB NOT NULL)",
+      );
+      db.prepare("INSERT INTO records(id,payload) VALUES(1,?)").run(payload);
+    } finally {
+      db.close();
+    }
+    // Use the exact authenticated restore path, including rejection of legacy
+    // snapshots without ledger identity. Never ordinary-open/migrate first.
+    candidate = new EvidenceStore(path, key, {
+      restore: { ...restore, snapshotWatermark: manifest.tombstoneWatermark },
+    });
+    result = {
+      ...base,
+      status: "validated",
+      backupId: manifest.id,
+      snapshotWatermark: manifest.tombstoneWatermark,
+      replayedThrough: watermark,
+    };
+  } catch {
+    // Never return paths, key material, IDs, plaintext, or parser/SQLite errors.
+  } finally {
+    try {
+      candidate?.close();
+    } catch {
+      result = { ...base, status: "rejected" };
+    }
+    try {
+      if (temporary) rmSync(temporary, { recursive: true, force: true });
+    } catch {
+      result = { ...base, status: "rejected" };
+    }
+  }
+  return result;
 }
 
 export type PageFetcher = (request: {
