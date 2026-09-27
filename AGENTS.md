@@ -1,5 +1,6 @@
 - Always start code from the latest commit on GitHub's `main` branch.
 - Once code is tested and reviewed, push directly to `main`. Use trunk-based development.
+- Do not impose push holds on this or other agents for measurements, settings changes, or coordination. Rebase over concurrent work; use deployment/operator locks for live mutations, not Git publication freezes.
 - Keep unit tests few and focused. Prioritize thorough manual testing of real workflows, edge cases, and failure paths.
 - Always have a more capable or higher-effort agent review changes before pushing (for example, Oracle in Amp or Opus at higher effort in Claude Code).
 
