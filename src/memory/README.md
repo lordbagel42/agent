@@ -566,3 +566,27 @@ window; expire old encrypted backups/snapshots under the operator's retention
 policy. Git alone cannot restore personality, and a Git revert is not erasure.
 Physical purge/key rotation and retention scheduling remain operator work; no
 automatic backup/history deletion or production activation is performed here.
+
+June can request `{"text":"","inspection":"snapshot-retention"}` on an
+owner-private turn; public/guest turns and synthesis cannot use it. This is
+separate from the no-scan `retention` inventory and reports unavailable when no
+curated store is attached. It never creates a store or starts cleanup.
+`CuratedPersonalityStore.retentionReport()` is a metadata-only retention dry run:
+it preserves every snapshot referenced by the current curated Git history,
+including historical/rollback revisions whose evidence has been tombstoned.
+It reports aggregate file counts and bytes only, never paths, IDs, provenance,
+personality values or explanations, and never reads/decrypts snapshot payloads.
+Classification stops at 200 commits and 1,000 snapshot files; incomplete scans
+report unknown (`null`) review-candidate and missing-snapshot totals, not zero.
+Other counts are observed lower bounds when incomplete. The existing filesystem
+safety validation still inspects the store tree; these are classification limits,
+not an overall I/O/time budget. Missing referenced files indicate missing restore
+inputs; presence does not verify ciphertext integrity or restore readiness.
+
+Unreferenced files are **operator-review candidates, not deletion permission**:
+they may belong to an in-flight write, another ref, or a retained backup. No age
+cutoff, backup dependency verification, prune command, scheduler, or deletion API
+is provided. Preserve Git metadata, encrypted snapshots, separately managed keys,
+and independent tombstones throughout the backup window; replay later tombstones
+before serving any restored data. The report neither verifies other retained
+copies nor turns logical deletion into physical erasure.

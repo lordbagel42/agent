@@ -1,6 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { createDecipheriv, randomBytes } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
@@ -43,6 +49,14 @@ it("isolates personality scopes, rejects forged corrections, and never resurrect
       evidence,
       { initialize: true },
     );
+    expect(curated.retentionReport()).toMatchObject({
+      dryRun: true,
+      automaticDeletion: false,
+      history: { scanned: 0, complete: true },
+      snapshots: { files: 0, bytes: 0, complete: true },
+      reviewCandidates: { files: 0, bytes: 0 },
+      missingReferencedSnapshots: 0,
+    });
     const proposal: PersonalityProposal = {
       id: "private-revision",
       scope: "private",
@@ -125,6 +139,51 @@ it("isolates personality scopes, rejects forged corrections, and never resurrect
     expect(curated.ownerHistory().revisions.at(-1)?.reverts).toBe(
       "channel-revision",
     );
+
+    // An orphan file is only a review candidate. Referenced historical and
+    // rollback snapshots stay protected even after their evidence is deleted.
+    const snapshotDir = join(root, "curated", "snapshots");
+    const orphan = randomBytes(32).toString("hex");
+    writeFileSync(join(snapshotDir, orphan), randomBytes(37), { mode: 0o600 });
+    const before = Object.fromEntries(
+      readdirSync(snapshotDir).map((name) => [
+        name,
+        readFileSync(join(snapshotDir, name)),
+      ]),
+    );
+    const history = curated.ownerHistory();
+    const report = curated.retentionReport();
+    const bytes = Object.values(before).reduce(
+      (sum, file) => sum + file.length,
+      0,
+    );
+    expect(report).toMatchObject({
+      history: { scanned: 3, complete: true },
+      snapshots: { files: 4, bytes, complete: true },
+      protectedSnapshots: { files: 3, bytes: bytes - 37 },
+      reviewCandidates: { files: 1, bytes: 37 },
+      missingReferencedSnapshots: 0,
+    });
+    expect(JSON.stringify(report).length).toBeLessThan(1000);
+    for (const secret of [
+      root,
+      first,
+      orphan,
+      ...Object.keys(before),
+      "secret",
+    ])
+      expect(JSON.stringify(report)).not.toContain(secret);
+    expect(curated.ownerHistory()).toEqual(history);
+    expect(evidence.isDeleted(source.id)).toBe(true);
+    expect(curated.effectiveTraits("private", first)).toEqual({});
+    expect(
+      Object.fromEntries(
+        readdirSync(snapshotDir).map((name) => [
+          name,
+          readFileSync(join(snapshotDir, name)),
+        ]),
+      ),
+    ).toEqual(before);
 
     // Inspect decoded Git objects, not merely compressed files: compression is
     // not confidentiality. Only opaque hashes and fixed metadata may enter Git.

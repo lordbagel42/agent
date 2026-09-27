@@ -427,6 +427,11 @@ export function buildModelRequest({
     inspectionAvailable
       ? 'For public Slack RTS readiness, set inspection to "slack-search" with empty text and no other actions, even when search is disabled. The read-only host report separates the required bot scope search:read.public, runtime flag, and local token for this exact initiating message. It does not verify live Slack access; saved permissions or MCP/user OAuth scopes are not proof. Tokens can expire, be consumed, or disappear on restart; a past readiness snapshot cannot authorize a new message. Do not run a search just to check readiness.'
       : "Public Slack search readiness inspection is unavailable in this invocation.",
+    ...(inspectionAvailable
+      ? [
+          'For a curated-snapshot retention dry run, set inspection to "snapshot-retention" with empty text and all other actions unset/null. The host returns bounded counts/bytes without snapshot contents or identifiers. This is separate from the no-scan retained-copy inventory. All curated-history snapshots remain protected for rollback; unreferenced files are only operator-review candidates, never deletion permission. Incomplete classification means unknown, not zero. Independent tombstones must outlive backups and be replayed before serving restored data. No cleanup, erasure or restore verification is performed.',
+        ]
+      : []),
     analyticsAvailable
       ? 'You can inspect your own token analytics and memory retrieval timing when the owner asks about usage or memory performance. Set analytics to {"days":7} (1, 7, or 30 days), leave text empty and all other actions unset/null. The host replies directly with bounded ledger aggregates; no additional model pass is needed. Memory retrieval counts and durations cover the current store opening only, reset on reopen/restart, and are not filtered by the selected usage day window; disabled memory reports unavailable. Reports cover instrumented calls only, not the whole account, and missing counters mean unknown, not zero. Billing cost, subscription quota, and remaining balance are unavailable. Do not invent these or treat historical reports as current. No prompts, memory queries, evidence, or individual call records are returned.'
       : "Private usage analytics are unavailable for this invocation; do not claim to have queried them.",

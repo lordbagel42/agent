@@ -10,6 +10,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  opendirSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -585,6 +586,82 @@ export class CuratedPersonalityStore {
           ...(reverts ? { reverts } : {}),
         }),
       ),
+    };
+  }
+
+  /** Metadata-only dry run. Preserve all reachable history, not just the head:
+   * historical projections require their own encrypted snapshot. Unreferenced
+   * files may be in-flight writes or needed by backups; never authorize erasure.
+   * No payloads are read/decrypted and no identifiers leave this projection. */
+  retentionReport() {
+    this.check();
+    const head = this.head();
+    const historyLimit = 200;
+    const snapshotLimit = 1000;
+    const commits = head
+      ? this.git(["rev-list", `--max-count=${historyLimit + 1}`, head]).split(
+          "\n",
+        )
+      : [];
+    const historyComplete = commits.length <= historyLimit;
+    const references = new Set<string>();
+    for (const commit of commits.slice(0, historyLimit)) {
+      const record = recordSchema.parse(
+        JSON.parse(this.git(["show", `${commit}:record.json`])),
+      );
+      references.add(record.revision);
+    }
+    const snapshots = { files: 0, bytes: 0, complete: true };
+    const protectedSnapshots = { files: 0, bytes: 0 };
+    const unreferenced = { files: 0, bytes: 0 };
+    const directory = opendirSync(join(this.root, "snapshots"));
+    try {
+      for (
+        let entry = directory.readSync();
+        entry;
+        entry = directory.readSync()
+      ) {
+        if (snapshots.files === snapshotLimit) {
+          snapshots.complete = false;
+          break;
+        }
+        const stat = lstatSync(join(this.root, "snapshots", entry.name));
+        if (
+          !hex.safeParse(entry.name).success ||
+          !stat.isFile() ||
+          stat.nlink !== 1
+        )
+          throw new Error("Unrecognized curated snapshot entry");
+        snapshots.files++;
+        snapshots.bytes += stat.size;
+        const group = references.has(entry.name)
+          ? protectedSnapshots
+          : unreferenced;
+        group.files++;
+        group.bytes += stat.size;
+      }
+    } finally {
+      directory.closeSync();
+    }
+    if (this.head() !== head) throw new Error("Curated history changed");
+    return {
+      dryRun: true,
+      automaticDeletion: false,
+      policy: "preserve-all-reachable-history",
+      history: {
+        scanned: Math.min(commits.length, historyLimit),
+        limit: historyLimit,
+        complete: historyComplete,
+      },
+      snapshots: { ...snapshots, limit: snapshotLimit },
+      protectedSnapshots,
+      // A partial history can misclassify a rollback snapshot as unreferenced.
+      reviewCandidates:
+        historyComplete && snapshots.complete ? unreferenced : null,
+      missingReferencedSnapshots:
+        historyComplete && snapshots.complete
+          ? references.size - protectedSnapshots.files
+          : null,
     };
   }
 

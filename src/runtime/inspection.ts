@@ -135,6 +135,12 @@ export function createInspectionReader(deps: {
                   : "unavailable: missing, expired, consumed, or lost on restart; a fresh owner Slack message is required";
         return `${heading}\nPublic Slack RTS (assistant.search.context). Runtime slack.searchEnabled: ${search ? String(search.enabled) : "unavailable: Slack is not configured"}. Required bot scope: search:read.public; actual installed bot grant is unverified by this inspection. Saved permissions, requested manifest scopes, and separate MCP/user OAuth grants do not establish this bot grant or live search availability.\nCurrent-message action token: ${token}.\nLive search access is unverified, even with the runtime enabled and a local token present. This snapshot is not reusable authorization for another message. No Slack request was made, no token was consumed or returned, and no search or OAuth scope was enabled. Private/DM search and MCP tool permissions are separate.`;
       }
+      case "snapshot-retention": {
+        const personality = deps.memory?.personality;
+        if (!personality)
+          return `${heading}\nCurated snapshot retention dry run is unavailable.`;
+        return `${heading}\nCurated snapshot retention dry run: ${JSON.stringify(personality.retentionReport())}\nPreserve all snapshots referenced by curated history for historical reads and rollback, even after logical source deletion. Counts/bytes cover observed files only; incomplete scans are lower bounds and null means unknown, not zero. File presence is not authentication or proof of restore readiness. Unreferenced files are operator-review candidates only: they may belong to an in-flight write, another ref or backup. No deletion is authorized or performed; no age policy or backup dependency check was applied. Preserve Git metadata, encrypted snapshots, separately managed keys and independent tombstones throughout backup retention; replay later tombstones before serving restored data. Other retained copies remain unknown. No private contents, paths or identifiers returned.`;
+      }
       case "native-coding":
         return deps.nativeCoding
           ? deps.nativeCoding()

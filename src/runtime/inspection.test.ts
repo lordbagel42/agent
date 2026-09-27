@@ -1,4 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Client } from "rivetkit/client";
 import { expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
@@ -12,7 +15,7 @@ import type {
 import { routeEvent } from "../core/routing.js";
 import { createBitwardenCredentialResolver } from "../credentials/bitwarden.js";
 import { HistoryImports } from "../imports/index.js";
-import type { CuratedPersonalityStore } from "../memory/curated.js";
+import { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import {
@@ -277,6 +280,32 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     audiences: ["SECRET OTHER AUDIENCE"],
     text: "SECRET OTHER CONTENT".repeat(10),
   });
+  const root = mkdtempSync(join(tmpdir(), "june-inspection-retention-"));
+  const personality = new CuratedPersonalityStore(
+    join(root, "curated"),
+    randomBytes(32),
+    store,
+    { initialize: true },
+  );
+  t.onTestFinished(() => {
+    personality.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  personality.ownerRevise(
+    {
+      id: "SECRET REVISION",
+      scope: audience,
+      trait: "tone",
+      value: "SECRET TONE",
+      basis: "inferred",
+      evidenceIds: ["secret-source"],
+      explanation: "SECRET EXPLANATION",
+      confidence: 1,
+    },
+    store.reflectionEvidence(audience, ["secret-source"], 1000),
+    2,
+    1000,
+  );
   store.stageProposals(
     audience,
     ["secret-source"],
@@ -456,6 +485,17 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
           expect(request.system).toContain(
             "Never retry unknown reflection, assert settlement, or reconcile it yourself",
           );
+        if (
+          request.inspectionAvailable &&
+          action.inspection === "snapshot-retention"
+        ) {
+          expect(request.system).toContain(
+            'set inspection to "snapshot-retention"',
+          );
+          expect(JSON.stringify(replyJsonSchema([], request))).toContain(
+            '"snapshot-retention"',
+          );
+        }
         if (search && request.webSearchAvailable)
           return { text: "", webSearch: "public query" };
         // Exercise provider parsing for valid actions, and host guards against
@@ -523,7 +563,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   });
   const read = createInspectionReader({
     audience,
-    memory: { store },
+    memory: { store, personality },
     imports,
     selections,
     capabilities: () =>
@@ -691,6 +731,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "inference",
     "credentials",
     "slack-search",
+    "snapshot-retention",
   ] as const) {
     action = { text: "", inspection };
     for (const extra of [
@@ -748,7 +789,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain("inspection is unavailable");
   expect(store.importProgress("selection-1")?.coverage.to).toBe(999);
   disabled = true;
-  for (const target of ["memory", "imports", "reflection"] as const) {
+  for (const target of [
+    "memory",
+    "imports",
+    "reflection",
+    "snapshot-retention",
+  ] as const) {
     action = { text: "", inspection: target };
     expect(await deliver()).toContain("unavailable.");
   }
@@ -764,6 +810,16 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain("Credential resolver: absent");
   action = { text: "", inspection: "slack-search" };
   expect(await deliver()).toContain("Slack is not configured");
+  disabled = false;
+  action = { text: "", inspection: "snapshot-retention" };
+  const before = personality.retentionReport();
+  const snapshotReport = await deliver();
+  expect(snapshotReport).toContain(JSON.stringify(before));
+  expect(snapshotReport).toContain('"dryRun":true,"automaticDeletion":false');
+  expect(snapshotReport).toContain("replay later tombstones");
+  expect(snapshotReport.length).toBeLessThan(2000);
+  expect(snapshotReport).not.toContain(root);
+  expect(personality.retentionReport()).toEqual(before);
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   expect(JSON.stringify(sent)).not.toContain("secret-source");
   expect(JSON.stringify(sent)).not.toContain("private-account");
