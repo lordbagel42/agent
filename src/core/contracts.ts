@@ -218,6 +218,8 @@ export interface CompanionReply {
   pendingMemory?: true;
   /** Privately stage evidence-grounded style only; never approve or publish. */
   personalitySuggestion?: import("../reflection/global-proposal.js").GlobalProposalInput;
+  /** Observe only the current owner-private message with a fixed Jev rubric. */
+  jevObservation?: boolean;
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Owner-private persistent schedules and event subscriptions. */
@@ -260,6 +262,7 @@ export interface ModelRequest {
   recallAvailable?: boolean;
   pendingMemoryAvailable?: boolean;
   personalitySuggestionAvailable?: boolean;
+  jevObservationAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;

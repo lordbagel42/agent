@@ -44,6 +44,7 @@ import { EvidenceStore, extractMemory } from "./memory/store.js";
 import { createHotCodexProvider } from "./models/codex-hot.js";
 import { createDecisionProvider } from "./models/decision.js";
 import { createMemoryExtractor } from "./models/extraction.js";
+import { createJevObserver } from "./models/jev.js";
 import { createModelProvider } from "./models/provider.js";
 import { UsageLedger } from "./models/usage.js";
 import { freshEvidence } from "./reflection/domain.js";
@@ -422,6 +423,20 @@ async function main() {
       apiKey: process.env[config.webSearch.apiKeyEnv],
       timeoutMs: config.webSearch.timeoutMs,
     });
+  let jev: Dependencies["jev"];
+  if (config.jev && !config.setupMode) {
+    startupStage =
+      "Jev: requires JUNE_ALLOW_JEV=1 after provider/privacy review";
+    if (process.env.JUNE_ALLOW_JEV !== "1") throw new Error("Jev not allowed");
+    jev = {
+      question: config.jev.question,
+      observe: createJevObserver({
+        ...config.jev,
+        apiKey: secret(config.jev.apiKeyEnv),
+        questions: { observation: config.jev.question },
+      }),
+    };
+  }
   const ownerAudience = JSON.stringify(["private", config.owner.id]);
   const audience = (value: unknown) => {
     if (value === undefined || value === ownerAudience) return ownerAudience;
@@ -713,6 +728,7 @@ async function main() {
       : undefined,
     models,
     webSearch,
+    jev,
     lifecycle,
     latency,
     analytics: (days) => usage.report(days),

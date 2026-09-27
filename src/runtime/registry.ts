@@ -28,6 +28,7 @@ import type {
   MemoryRetrieval,
   Source,
 } from "../memory/store.js";
+import type { JevObserver, JevQuestion } from "../models/jev.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type {
   WebSearchCitation,
@@ -80,6 +81,7 @@ export interface Dependencies {
   wakeups?: WakeupDependencies;
   models?: PromptInput["models"];
   webSearch?: WebSearchProvider;
+  jev?: { observe: JevObserver; question: JevQuestion };
   mcpAvailable?: boolean;
   modelStatus?: () => string;
   deploymentStatus?: () => Promise<string | undefined>;
@@ -133,6 +135,11 @@ interface ConversationState {
       event: ChannelEvent;
       /** Workflow completion, not proof that inference or delivery succeeded. */
       done: boolean;
+      /** Metadata only; the typed result travels through the existing outbox. */
+      jevObservation?: {
+        status: "started" | "settled" | "unknown";
+        code?: string;
+      };
       /** Recovery receipt; absent on legacy and uninterrupted events. */
       inference?: {
         status: "unknown";
@@ -577,6 +584,7 @@ export function createJuneRegistry(deps: Dependencies) {
               execution?: boolean;
               deletionRevision?: number;
               wakeups?: boolean;
+              jev?: boolean;
             } =
               version >= 2
                 ? await loop.step("turn-plan", async () => ({
@@ -587,6 +595,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     pendingMemory: !!deps.memory && scope.private,
                     extraction: !!deps.memory?.extract && scope.private,
                     reflection: ownerTurn && !!deps.reflection,
+                    jev: ownerTurn && scope.private && !!deps.jev,
                     workspaces:
                       scope.private && deps.coding
                         ? Object.keys(deps.coding.workspaces)
@@ -1029,12 +1038,24 @@ export function createJuneRegistry(deps: Dependencies) {
                                   code: "interrupted_inference",
                                   invocation,
                                 };
+                              if (record?.jevObservation)
+                                record.jevObservation = {
+                                  status: "unknown",
+                                  code: "interrupted_observation",
+                                };
                               await step.vars.persist();
                               // No paid/native re-invocation after an interrupted step,
                               // even when the completed result missed its journal flush.
                               // Persist the outcome before returning: an empty recovery
                               // result is not the model choosing intentional silence.
-                              return { reply: { text: "" }, retryable: false };
+                              return {
+                                reply: {
+                                  text: record?.jevObservation
+                                    ? "Jev observation outcome is unknown after interruption. A request may have been sent; it was not repeated. No observation, jury verdict or permission is claimed."
+                                    : "",
+                                },
+                                retryable: false,
+                              };
                             }
                           }
                           // Missing prerequisites block new inference, not accounting
@@ -1394,6 +1415,15 @@ export function createJuneRegistry(deps: Dependencies) {
                                   (event.address.channel !== "slack" ||
                                     event.metadata?.channelType === "im") &&
                                   !!deps.memory?.personality,
+                                jevObservationAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  !!plan.jev &&
+                                  !!deps.jev &&
+                                  Buffer.byteLength(event.text) <= 4096,
+                                jevQuestion: plan.jev
+                                  ? deps.jev?.question
+                                  : undefined,
                                 dashboardLoginAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -1563,7 +1593,69 @@ export function createJuneRegistry(deps: Dependencies) {
                                 modelRequest.workspaces,
                                 modelRequest,
                               );
-                            if (generated.codingJob !== undefined) {
+                            if (generated.jevObservation === true) {
+                              let text =
+                                "Jev observations require a fresh owner-private message of at most 4096 UTF-8 bytes and a configured integration.";
+                              if (
+                                modelRequest.jevObservationAvailable &&
+                                ownerTurn &&
+                                scope.private &&
+                                body.type === "event" &&
+                                deps.jev &&
+                                !signal.aborted &&
+                                valid(step.state)
+                              ) {
+                                parseReply(
+                                  JSON.stringify(generated),
+                                  workspaces,
+                                  modelRequest,
+                                );
+                                const record = step.state.events[eventId];
+                                if (!record) throw new Error("Missing event");
+                                // The existing model receipt prevents all replay
+                                // dispatches. Keep its admission/occupancy until
+                                // the adapter and transport cleanup have settled.
+                                record.jevObservation = { status: "started" };
+                                await step.vars.persist();
+                                if (!valid(step.state) || signal.aborted)
+                                  return {
+                                    reply: { text: "" },
+                                    retryable: false,
+                                  };
+                                const result = await deps.jev
+                                  .observe(
+                                    { state: event.text, sourceIds: [eventId] },
+                                    signal,
+                                  )
+                                  .catch(() => ({
+                                    status: "error" as const,
+                                    code: "transport" as const,
+                                    requestState: "possibly_sent" as const,
+                                  }));
+                                record.jevObservation = {
+                                  status:
+                                    result.status === "error" &&
+                                    result.requestState === "possibly_sent"
+                                      ? "unknown"
+                                      : "settled",
+                                  ...(result.status === "error"
+                                    ? { code: result.code }
+                                    : {}),
+                                };
+                                await step.vars.persist();
+                                const data = JSON.stringify(result);
+                                text =
+                                  data.length <= 3000
+                                    ? `Jev typed observation (not a jury verdict or permission). Confidence is uncalibrated; sourceIds identify input, not answer citations. No rationale or automatic retry.\n${data}`
+                                    : "Jev returned a result too large to deliver here; no result is claimed and the request was not repeated.";
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (generated.codingJob !== undefined) {
                               let text =
                                 "Coding job access requires a fresh owner-private turn.";
                               if (

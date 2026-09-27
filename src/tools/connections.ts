@@ -781,6 +781,7 @@ export class McpConnections {
                 inspectionAvailable: false,
                 recallAvailable: false,
                 pendingMemoryAvailable: false,
+                jevObservationAvailable: false,
                 dashboardLoginAvailable: false,
                 modelStatusAvailable: false,
                 wakeupAvailable: false,

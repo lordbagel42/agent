@@ -177,6 +177,7 @@ const companionReplySchema = z.strictObject({
     .optional(),
   pendingMemory: z.literal(true).optional(),
   personalitySuggestion: globalProposalInputSchema.optional(),
+  jevObservation: z.boolean().optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -210,6 +211,7 @@ export type ReplyCapabilities = Pick<
   | "recallAvailable"
   | "pendingMemoryAvailable"
   | "personalitySuggestionAvailable"
+  | "jevObservationAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
@@ -246,6 +248,7 @@ export function replyJsonSchema(
     recallAvailable,
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
+    jevObservationAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -388,6 +391,15 @@ export function replyJsonSchema(
               required: ["action", "revision"],
               description:
                 "Inspect deployment progress, blockers, and revision identity using existing controller evidence. Read-only; no activation, approval, push, or retry. Leave text empty and other actions unset.",
+            },
+          }
+        : {}),
+      ...(jevObservationAvailable
+        ? {
+            jevObservation: {
+              type: ["boolean", "null"],
+              description:
+                "Only when explicitly asked: observe the current owner-private message with the configured Jev rubric. Set true with empty text and no other actions. Typed observation/abstention only, never a jury verdict or permission.",
             },
           }
         : {}),
@@ -720,6 +732,7 @@ export function replyJsonSchema(
       ...(recallAvailable ? ["recall"] : []),
       ...(pendingMemoryAvailable ? ["pendingMemory"] : []),
       ...(personalitySuggestionAvailable ? ["personalitySuggestion"] : []),
+      ...(jevObservationAvailable ? ["jevObservation"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
@@ -903,6 +916,7 @@ export function parseReply(
     recallAvailable,
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
+    jevObservationAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -941,6 +955,7 @@ export function parseReply(
     "recall",
     "pendingMemory",
     "personalitySuggestion",
+    "jevObservation",
     "dashboardLogin",
     "wakeup",
     "replyInThread",
@@ -988,6 +1003,7 @@ export function parseReply(
     (reply.pendingMemory !== undefined && !pendingMemoryAvailable) ||
     (reply.personalitySuggestion !== undefined &&
       !personalitySuggestionAvailable) ||
+    (reply.jevObservation !== undefined && !jevObservationAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
@@ -1014,6 +1030,7 @@ export function parseReply(
     Number(reply.recall !== undefined) +
     Number(reply.pendingMemory === true) +
     Number(reply.personalitySuggestion !== undefined) +
+    Number(reply.jevObservation === true) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
@@ -1037,6 +1054,7 @@ export function parseReply(
       reply.recall !== undefined ||
       reply.pendingMemory === true ||
       reply.personalitySuggestion !== undefined ||
+      reply.jevObservation === true ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||
       reply.latency !== undefined) &&

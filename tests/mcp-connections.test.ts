@@ -456,6 +456,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.latencyAvailable = true;
   f.request.analyticsAvailable = true;
   f.request.inspectionAvailable = true;
+  f.request.jevObservationAvailable = true;
   f.request.codingJobsAvailable = true;
   f.request.recallAvailable = true;
   let evidence = "";
@@ -504,6 +505,13 @@ test("discovery grants nothing, read results are transient and credentials stay 
     parseReply('{"text":"","inspection":"memory"}', [], synthesis),
   ).toThrow();
   expect(f.request.inspectionAvailable).toBe(true);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "jevObservation",
+  );
+  expect(() =>
+    parseReply('{"text":"","jevObservation":true}', [], synthesis),
+  ).toThrow();
+  expect(f.request.jevObservationAvailable).toBe(true);
   expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
     "codingJob",
   );

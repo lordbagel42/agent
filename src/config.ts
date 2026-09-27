@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { RAYGEN_SLACK_ID } from "./core/social.js";
+import { jevQuestionSchema } from "./models/jev.js";
 import { browserOperationSchema } from "./tools/browser.js";
 
 const nonempty = z.string().trim().min(1);
@@ -166,6 +167,21 @@ const schema = z
     model: companionModel,
     deepModel: companionModel.optional(),
     executionEnabled: z.boolean().default(true),
+    jev: z
+      .strictObject({
+        endpoint: baseUrl.refine((value) => value.startsWith("https:")),
+        model: nonempty.max(256),
+        apiKeyEnv: envName,
+        timeoutMs: z.number().int().min(1000).max(30000).default(10000),
+        question: jevQuestionSchema.refine(
+          (question) =>
+            Buffer.byteLength(JSON.stringify(question)) <= 1024 &&
+            (question.type !== "choice" ||
+              Object.keys(question.criteria).length <= 8),
+          "Use one bounded observation rubric (1024 bytes, at most 8 choices)",
+        ),
+      })
+      .optional(),
     webSearch: z
       .strictObject({
         provider: z.literal("tavily"),

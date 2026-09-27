@@ -17,7 +17,7 @@ function record<Value extends z.ZodType>(valueSchema: Value) {
     .pipe(z.record(key, valueSchema));
 }
 
-const questionSchema = z.discriminatedUnion("type", [
+export const jevQuestionSchema = z.discriminatedUnion("type", [
   z
     .strictObject({
       type: z.literal("choice"),
@@ -43,7 +43,7 @@ const questionSchema = z.discriminatedUnion("type", [
 ]);
 
 /** Trusted operator rubrics, not imported instructions. This is a narrow API subset. */
-export type JevQuestion = z.infer<typeof questionSchema>;
+export type JevQuestion = z.infer<typeof jevQuestionSchema>;
 export interface JevObservationInput {
   /** Already authorized/minimized by the caller. Text is data, never authority. */
   state: string;
@@ -222,7 +222,7 @@ export function createJevObserver(options: JevObserverOptions): JevObserver {
       timeoutMs > 300_000
     )
       throw new Error();
-    questions = record(questionSchema).parse(options.questions);
+    questions = record(jevQuestionSchema).parse(options.questions);
     if (Object.keys(questions).length < 1 || Object.keys(questions).length > 16)
       throw new Error();
   } catch {

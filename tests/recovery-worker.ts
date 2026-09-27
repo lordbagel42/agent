@@ -5,6 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { createWorktreeManager } from "../src/coding/worktree.js";
+import { createJevObserver } from "../src/models/jev.js";
 import type { CodingDependencies } from "../src/runtime/coding.js";
 import { createJuneRegistry } from "../src/runtime/registry.js";
 
@@ -60,8 +61,30 @@ const registry = createJuneRegistry({
         process.send?.({ kind: "coding-report", text: request.system });
         return { text: "" };
       }
+      if (
+        JSON.parse(request.messages.at(-1)?.content ?? "{}").text ===
+        "Jev fixture"
+      ) {
+        process.send?.({ kind: "jev-model" });
+        return { text: "", jevObservation: true };
+      }
       return { text: "The heron is remembered." };
     },
+  },
+  jev: {
+    question: { type: "noul", instructions: "Observe fixture only." },
+    observe: createJevObserver({
+      endpoint: "https://example.invalid/jev",
+      apiKey: "fake-key",
+      model: "fixture",
+      questions: {
+        observation: { type: "noul", instructions: "Observe fixture only." },
+      },
+      async fetch() {
+        process.send?.({ kind: "jev" });
+        return new Promise<never>(() => {});
+      },
+    }),
   },
   execution: {
     model: {
