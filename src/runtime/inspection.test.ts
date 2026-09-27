@@ -212,11 +212,14 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       (e) => e.done,
     ).length;
     await actor.send("inbox", { type: "event", event });
+    // Real-engine synthesis includes two model phases, a web lookup and six
+    // reflection occupancy calls. This checks completion/privacy, not a 1s SLA.
     await expect
       .poll(
         async () =>
           Object.values((await actor.snapshot()).events).filter((e) => e.done)
             .length,
+        { timeout: 5000 },
       )
       .toBe(done + 1);
     const content = sent.at(-1)?.content;
