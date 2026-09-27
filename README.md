@@ -81,7 +81,9 @@ pnpm check
 pnpm start
 ```
 
-The HTTP server defaults to loopback port **3080**. `/health` returns readiness.
+The HTTP server defaults to loopback port **3080**. `/health` checks process
+admission and Rivet runtime readiness, not durable workflow progress. A healthy
+response does not prove every dormant actor replayed or every operation settled.
 Only publish `/webhooks/slack` and `/webhooks/whatsapp` through an HTTPS reverse
 proxy. Keep `/operator/*`, Rivet's engine/peer/metrics ports, and its inspector
 private. Do not use a preview portal to expose the engine or operator API.
@@ -931,6 +933,13 @@ admission. It is not an inventory of other actors or external work: missing
 legacy markers, zero counts, process health, idle state and restart never prove
 completion or stoppage. Use the existing subsystem-specific recovery procedures
 after independently confirming external outcomes.
+
+The same report independently checks process admission and Rivet runtime
+readiness, using the `/health` predicate. A ready process can coexist with held
+operations; a single probe does not establish workflow advancement or replay of
+dormant actors. Failed or absent diagnostic reads report unknown counts, not an
+empty workflow set, and do not hide an available readiness result (or vice versa).
+No health response fields or public routes are added.
 
 ### Rivet inspection in the owner's DM
 

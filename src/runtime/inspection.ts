@@ -173,6 +173,8 @@ export function createInspectionReader(deps: {
   importExtraction?: ImportedMemoryExtraction;
   selections: Record<string, ImportCoverage>;
   mcp?: Pick<McpConnections, "inventory">;
+  /** The host's HTTP readiness predicate, not a workflow progress check. */
+  processHealth?: () => Promise<boolean>;
   nativeCoding?: () => Promise<string>;
   capabilities?: () => string;
   credentials?: Pick<BitwardenCredentialResolver, "inspect">;
@@ -231,10 +233,17 @@ export function createInspectionReader(deps: {
         return `${heading}\nCurated snapshot retention dry run: ${JSON.stringify(personality.retentionReport())}\nPreserve all snapshots referenced by curated history for historical reads and rollback, even after logical source deletion. Counts/bytes cover observed files only; incomplete scans are lower bounds and null means unknown, not zero. File presence is not authentication or proof of restore readiness. Unreferenced files are operator-review candidates only: they may belong to an in-flight write, another ref or backup. No deletion is authorized or performed; no age policy or backup dependency check was applied. Preserve Git metadata, encrypted snapshots, separately managed keys and independent tombstones throughout backup retention; replay later tombstones before serving restored data. Other retained copies remain unknown. No private contents, paths or identifiers returned.`;
       }
       case "operations": {
-        if (!deps.operations)
-          return `${heading}\nDurable operation diagnostics are unavailable; settlement cannot be inferred.`;
-        const snapshot = await deps.operations();
-        return `${heading}\nOwner-private conversation markers only, not all actors or external operations. ${JSON.stringify(snapshot)}\nListed operations are unresolved, not failed or successful. Started/sending may still be active, including this inspection's model turn. Uncertain/unknown has no confirmed outcome. Settled invocations are omitted, not proof of success. Missing marker maps and zero counts do not establish complete coverage; older operations may be unrecorded. Process health, idle state and restart do not prove settlement or stoppage. IDs are hashed; no message bodies, queries, destinations, errors or credentials are returned. No retry, cancellation, reconciliation or admission release was performed.`;
+        // Probe and marker reads fail independently; neither implies the other.
+        const ready = await Promise.resolve()
+          .then(() => deps.processHealth?.())
+          .catch(() => undefined);
+        const health = `${heading}\nProcess/engine readiness: ${ready === undefined ? "unavailable" : ready ? "ready" : "not ready"}. This checks process admission and Rivet runtime readiness, as /health does, not workflow advancement. Dormant actors are not surveyed; their replay and progress remain unverified even when ready.`;
+        const snapshot = await Promise.resolve()
+          .then(() => deps.operations?.())
+          .catch(() => undefined);
+        if (!snapshot)
+          return `${health}\nDurable operation diagnostics are unavailable; unresolved counts are unknown, not zero. Settlement cannot be inferred.`;
+        return `${health}\nOwner-private conversation markers only, not all actors or external operations. ${JSON.stringify(snapshot)}\nListed operations are unresolved, not failed or successful. Started/sending may still be active, including this inspection's model turn. Uncertain/unknown has no confirmed outcome. Settled invocations are omitted, not proof of success. Missing marker maps and zero counts do not establish complete coverage; older operations may be unrecorded. Process health, idle state and restart do not prove settlement or stoppage. IDs are hashed; no message bodies, queries, destinations, errors or credentials are returned. No retry, cancellation, reconciliation or admission release was performed.`;
       }
       case "mcp-connections":
         return deps.mcp

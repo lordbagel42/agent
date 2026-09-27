@@ -902,6 +902,8 @@ async function main() {
           "Browser cancellation requests cleanup, not confirmed stoppage. Pending work retains admission until it settles. Cleanup failure leaves the receipt unknown and blocks new work on that adapter. Never describe unknown as success or safely retryable; owner reconciliation requires independently confirmed stoppage and outcome.",
         ].join("\n"),
       mcp: connections,
+      processHealth: async (): Promise<boolean> =>
+        lifecycle.ready && (await registry.routes.health()).ok,
       nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
       slackSearch: config.slack
         ? {
