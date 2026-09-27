@@ -871,11 +871,11 @@ export class McpConnections {
             if (!current()) return { text: "" };
             // Supersession is not revocation: preserve an already-started result.
             if (!authorized()) return mcpFailure("denied");
-            // A Slack/MCP lookup must not turn a transient inspection post into
-            // ordinary persisted synthesis or memory. Read it through rivet again.
+            // The adapter replaces private inspection/reflection copies with a
+            // content-free marker before truncation. Never synthesize that copy.
             if (JSON.stringify(result).includes(RIVET_REPLY_PREFIX))
               return {
-                text: "That lookup includes a private Rivet inspection reply. Ask me to inspect Rivet again in your DM; I won't retain or forward that copy.",
+                text: "That lookup includes a private inspection or reflection reply. Ask me to inspect Rivet again or review the reflection afresh in your DM; I won't retain or forward that copy.",
               };
             const answer = await model.reply(
               {
@@ -899,6 +899,7 @@ export class McpConnections {
                 recallAvailable: false,
                 pendingMemoryAvailable: false,
                 jevObservationAvailable: false,
+                reflectionReviewAvailable: false,
                 reflectionRequestAvailable: false,
                 reflectionMemoryAvailable: false,
                 reflectionPersonalitySuggestionAvailable: false,

@@ -18,6 +18,7 @@ import type {
   OutboundMessage,
   Owner,
 } from "../src/core/contracts.js";
+import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../src/core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../src/core/rivet.js";
 import { routeEvent } from "../src/core/routing.js";
 import { slackSource } from "../src/imports/index.js";
@@ -348,8 +349,34 @@ test.each([
     text: "PRIVATE_INSPECTION_COPY",
     structured: { text: RIVET_REPLY_PREFIX },
   },
+  {
+    kind: "reflection",
+    text: `${PRIVATE_REFLECTION_REVIEW_PREFIX}PRIVATE_INSPECTION_COPY`,
+  },
+  {
+    kind: "JSON escaped reflection",
+    text: '{"text":"June private reflection review \\u2014 owner only\\nPRIVATE_INSPECTION_COPY"}',
+  },
+  {
+    kind: "reflection after truncation",
+    text: `PRIVATE_INSPECTION_COPY${"x".repeat(13000)}${PRIVATE_REFLECTION_REVIEW_PREFIX}`,
+  },
+  {
+    kind: "structured reflection",
+    text: "PRIVATE_INSPECTION_COPY",
+    structured: { text: PRIVATE_REFLECTION_REVIEW_PREFIX },
+  },
+  {
+    kind: "structured reflection key",
+    text: "PRIVATE_INSPECTION_COPY",
+    structured: { [PRIVATE_REFLECTION_REVIEW_PREFIX]: "copy" },
+  },
+  {
+    kind: "JSON escaped reflection key",
+    text: '{"June private reflection review \\u2014 owner only\\n":"PRIVATE_INSPECTION_COPY"}',
+  },
 ])(
-  "MCP cannot reimport a $kind private Rivet reply into normal synthesis",
+  "MCP cannot reimport a $kind private review reply into normal synthesis",
   async ({ text, structured }) => {
     const f = await fixture();
     f.store.permit(f.id, f.connection().revision, "lookup", "read");
@@ -375,6 +402,84 @@ test.each([
     expect(JSON.stringify(result)).not.toContain("PRIVATE_INSPECTION_COPY");
   },
 );
+
+test("MCP reflection copies cannot reach June's synthesis request or durable history", async (t) => {
+  const f = await fixture();
+  const hypothesis = "DISTINCTIVE PRIVATE REFLECTION COPY";
+  f.store.permit(f.id, f.connection().revision, "lookup", "read");
+  f.result(PRIVATE_REFLECTION_REVIEW_PREFIX + hypothesis);
+  const prompts: ModelRequest[] = [];
+  const sent: string[] = [];
+  const registry = createJuneRegistry({
+    owner: {
+      id: "owner",
+      identities: [{ channel: "slack", accountId: "T1", senderId: "UOWNER" }],
+    },
+    mcpAvailable: true,
+    model: f.store.wrap({
+      async reply(request) {
+        prompts.push(request);
+        if (prompts.length > 1) return { text: hypothesis };
+        return {
+          text: "",
+          mcp: {
+            connection: f.id,
+            tool: "lookup",
+            argumentsJson: '{"id":"record-9"}',
+          },
+        };
+      },
+    }),
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, threads: true, reactions: true },
+        receive: async () => ({ response: new Response(), events: [] }),
+        async send(message) {
+          if (message.content.type === "text") sent.push(message.content.text);
+          return { status: "sent", messageId: "out" };
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", "owner"]);
+  await june.send("inbox", {
+    type: "event",
+    event: {
+      id: "review-copy",
+      type: "message",
+      messageId: "100.000001",
+      occurredAt: Date.now(),
+      senderId: "UOWNER",
+      direct: true,
+      metadata: { channelType: "im" },
+      text: "Look up the earlier reply",
+      address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+    },
+  });
+  await expect
+    .poll(
+      async () =>
+        Object.values((await june.snapshot()).events).some(
+          (record) => record.done,
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(true);
+  expect
+    .soft(
+      prompts.some((request) => JSON.stringify(request).includes(hypothesis)),
+    )
+    .toBe(false);
+  expect
+    .soft(JSON.stringify((await june.snapshot()).history).includes(hypothesis))
+    .toBe(false);
+  expect.soft(sent.some((text) => text.includes(hypothesis))).toBe(false);
+  expect(prompts).toHaveLength(1);
+  expect(f.calls).toHaveLength(1);
+  expect(sent[0]).toContain("won't retain or forward");
+});
 
 test("connection inventory omits private config and credentials without network or permission changes", async () => {
   const f = await fixture();
@@ -685,6 +790,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.codingJobsAvailable = true;
   f.request.recallAvailable = true;
   f.request.reflectionRequestAvailable = true;
+  f.request.reflectionReviewAvailable = true;
   f.request.reflectionMemoryAvailable = true;
   f.request.reflectionPersonalitySuggestionAvailable = true;
   f.request.skillEvaluationRequestAvailable = true;
@@ -774,6 +880,18 @@ test("discovery grants nothing, read results are transient and credentials stay 
     ),
   ).toThrow();
   expect(f.request.reflectionRequestAvailable).toBe(true);
+  expect(synthesis.reflectionReviewAvailable).toBe(false);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "reflectionReview",
+  );
+  expect(() =>
+    parseReply(
+      '{"text":"","reflectionReview":{"action":"list"}}',
+      [],
+      synthesis,
+    ),
+  ).toThrow();
+  expect(f.request.reflectionReviewAvailable).toBe(true);
   expect(synthesis.reflectionMemoryAvailable).toBe(false);
   expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
     "reflectionMemory",
