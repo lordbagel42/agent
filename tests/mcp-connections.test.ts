@@ -631,6 +631,89 @@ test("June can use enabled tools privately but channels receive no MCP catalog o
   }
 });
 
+test("per-connection cached catalog inspection neither probes availability nor grants authority", async () => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "read");
+  const other = f.store.add({
+    name: "Other",
+    url: "https://other.example/private-endpoint",
+  });
+  await f.store.discover(other, f.store.generation(other));
+  f.store.permit(other, f.store.generation(other), "lookup", "approval");
+  f.duringList(() => {
+    throw new Error("fixture server offline");
+  });
+  const before = f.store.list();
+  const requests = f.requests;
+  const queries = [
+    { connection: other, tool: null, offset: 0 },
+    { connection: other, tool: "lookup", offset: 0 },
+    { connection: f.id, tool: "lookup", offset: 0 },
+    { connection: "absent", tool: null, offset: 0 },
+  ];
+  let round = 0;
+  const answer = await f.store
+    .wrap({
+      reply: async (request) => {
+        expect(request.system).toContain(
+          "not the complete authorized catalog or a live availability check",
+        );
+        expect(request.system).not.toContain("private-endpoint");
+        expect(request.system).not.toContain("private-token");
+        const lines = request.system.split("\n");
+        const result =
+          round === 0
+            ? JSON.parse(
+                lines
+                  .find((line) => line.startsWith("Owner-approved MCP tools"))
+                  ?.split(": ")
+                  .slice(1)
+                  .join(": ") ?? "",
+              )
+            : JSON.parse(lines.at(-1) ?? "").result;
+        expect(result).toMatchObject({
+          source: "cached_snapshot",
+          liveAvailability: "not_checked",
+          nextOffset: null,
+        });
+        if (round === 0) expect(result.tools).toHaveLength(2);
+        if (round === 1)
+          expect(result.tools).toEqual([
+            expect.objectContaining({
+              connection: other,
+              name: "lookup",
+              permission: "approval",
+            }),
+          ]);
+        if (round === 2 || round === 3)
+          expect(JSON.parse(result.contractJson)).toMatchObject({
+            connection: round === 2 ? other : f.id,
+            name: "lookup",
+            permission: round === 2 ? "approval" : "read",
+            inputSchema: { required: ["id"] },
+          });
+        if (round === 4) expect(result.tools).toEqual([]);
+        const query = queries[round++];
+        return parseReply(
+          JSON.stringify(
+            query
+              ? { text: "", mcpCatalog: query }
+              : { text: "Cached tools inspected; availability not checked." },
+          ),
+          [],
+          request,
+        );
+      },
+    })
+    .reply(f.request);
+  expect(answer.text).toContain("availability not checked");
+  expect(round).toBe(5);
+  expect(f.requests).toBe(requests);
+  expect(f.calls).toEqual([]);
+  expect(f.store.proposals()).toEqual([]);
+  expect(f.store.list()).toEqual(before);
+});
+
 test("June discovers and calls beyond the first catalog page without granting disabled tools", async () => {
   const tools: Tool[] = Array.from({ length: 43 }, (_, index) => ({
     name: `lookup_${index}`,
@@ -730,7 +813,11 @@ test("June discovers and calls beyond the first catalog page without granting di
         if (rounds++ === 0) return query("lookup_42");
         const last = JSON.parse(lines.at(-1) ?? "");
         if (rounds === 2) {
-          expect(last.result).toEqual({ error: "tool_not_enabled" });
+          expect(last.result).toEqual({
+            source: "cached_snapshot",
+            liveAvailability: "not_checked",
+            error: "tool_not_enabled",
+          });
           return query("lookup_0");
         }
         const chunks = lines

@@ -379,7 +379,7 @@ export function replyJsonSchema(
               },
               required: ["connection", "tool", "offset"],
               description:
-                "Read approved MCP catalog only. Null tool pages summaries; exact connection and tool retrieve JSON contract chunks. Start offset 0, continue at nextOffset. Leave text empty and other actions unset.",
+                "Inspect the cached owner-approved MCP catalog, not live availability. This contacts no server, grants no permission and runs no tool. Null tool pages summaries; exact connection and tool retrieve JSON contract chunks. Start offset 0, continue at nextOffset. Leave text empty and other actions unset.",
             },
           }
         : {}),
