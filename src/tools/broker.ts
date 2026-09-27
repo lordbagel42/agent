@@ -36,6 +36,13 @@ export interface CapabilityAuditEvent {
  * This is an authorization boundary, NOT a process/network sandbox. */
 export interface ToolAdapter {
   execute(action: ToolAction, credential: unknown): Promise<unknown>;
+  /** Used instead of execute when present, never as a retry/fallback on error. */
+  executeAuthorized?(
+    action: ToolAction,
+    credential: unknown,
+    /** Recheck immediately before dispatch after adapter-internal awaits. */
+    authorized: () => boolean,
+  ): Promise<unknown>;
 }
 export interface BrokerOptions {
   owner: string;
@@ -145,7 +152,10 @@ export class CapabilityBroker {
     const tools = Object.fromEntries(
       Object.entries(options.tools).map(([name, adapter]) => [
         name,
-        Object.freeze({ execute: adapter.execute.bind(adapter) }),
+        Object.freeze({
+          execute: adapter.execute.bind(adapter),
+          executeAuthorized: adapter.executeAuthorized?.bind(adapter),
+        }),
       ]),
     );
     this.#options = Object.freeze({ ...options, tools: Object.freeze(tools) });
@@ -377,7 +387,18 @@ export class CapabilityBroker {
         if (this.#receipt(grantId)?.status !== "unknown") deny();
         this.#event(grantId, "adapter_admitted");
       });
-      await adapter.execute(action, credential);
+      const authorized = () => {
+        try {
+          this.#grant(principal, grantId);
+          if (linkToken !== undefined) this.#link(principal, linkToken);
+          return this.#receipt(grantId)?.status === "unknown";
+        } catch {
+          return false;
+        }
+      };
+      if (adapter.executeAuthorized)
+        await adapter.executeAuthorized(action, credential, authorized);
+      else await adapter.execute(action, credential);
       this.#transaction(() => {
         this.#db
           .prepare(

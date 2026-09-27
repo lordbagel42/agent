@@ -48,6 +48,16 @@ revision `invalidated`. Re-enabling a tool does not revive those confirmations.
 Recorded execution outcomes remain historical receipts, including `unknown`;
 changing one connection does not invalidate another connection's grants.
 
+The authenticated owner command is `/mcp-cancel <proposal UUID>` in a private
+conversation. Cancellation persists even before approval: later confirmations,
+including old dashboard forms and retries after restart, cannot grant or execute
+that proposal. It does not disable the connection or cancel other proposals.
+For granted work, cancellation revokes the existing broker grant and suppresses
+dispatch if it wins the race before the MCP tool call. Once dispatched, it cannot
+undo an effect or prove the remote operation stopped. The recorded outcome remains
+separate (`unknown`, `succeeded`, or `failed`); never retry an unknown effect.
+Repeating cancellation is safe and never creates a replacement operation.
+
 ## Host configuration
 
 Enable the existing private console and add this optional configuration:

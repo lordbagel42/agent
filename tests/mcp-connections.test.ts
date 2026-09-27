@@ -32,6 +32,7 @@ async function fixture(
   let onList = () => {};
   let requests = 0;
   let callFailure: "transport" | "result" | undefined;
+  let onCall = () => {};
   const open = () =>
     new McpConnections(
       {
@@ -51,6 +52,7 @@ async function fixture(
           if (message.method === "tools/list") onList();
           if (message.method === "tools/call") {
             calls.push(message.params);
+            onCall();
             if (callFailure === "transport")
               throw new Error("provider-secret private-token");
           }
@@ -143,6 +145,9 @@ async function fixture(
     },
     duringList: (fn: () => void) => {
       onList = fn;
+    },
+    duringCall: (fn: () => void) => {
+      onCall = fn;
     },
     result: (text: string) => {
       resultText = text;
@@ -1068,6 +1073,126 @@ test("revocation invalidates June's pending request without affecting another co
   );
   expect(f.calls).toHaveLength(2);
 });
+
+test("owner cancellation persists ungranted proposals and rejects stale approval and replay", async () => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+  await f.invoke();
+  const proposal = f.store.proposals()[0];
+  assert(proposal);
+  const app = new Hono().route(
+    "/console/connections",
+    createConnectionRoutes(
+      {
+        origin: "https://june.example",
+        csrfSecret: "a".repeat(32),
+        authenticate: async () => "owner",
+      },
+      { store: f.store },
+    ),
+  );
+  const path = `/console/connections/approvals/${proposal.id}`;
+  const review = await (await app.request(path)).text();
+  const proof = review.match(/name="proof" value="([^"]+)"/)?.[1];
+  assert(proof);
+  expect(() => f.store.cancel("guest", proposal.id)).toThrow(
+    "capability_denied",
+  );
+  expect(f.store.proposals()[0]).toEqual(proposal);
+  const cancelled = f.store.cancel("owner", proposal.id);
+  expect(cancelled).toContain("Nothing ran");
+  expect(f.store.proposals()[0]).toMatchObject({ status: "cancelled" });
+  expect(f.store.proposals()[0]?.grant).toBeUndefined();
+  const cancelledAt = f.store.proposals()[0]?.cancelledAt;
+  expect(cancelledAt).toBeTypeOf("number");
+  expect(
+    (
+      await app.request(path, {
+        method: "POST",
+        headers: {
+          origin: "https://june.example",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ proof, confirmed: "yes" }),
+      })
+    ).status,
+  ).toBe(403);
+  await expect(f.store.confirm(proposal.id)).rejects.toThrow(
+    "proposal_cancelled",
+  );
+  await f.restart();
+  expect(f.store.cancel("owner", proposal.id)).toBe(cancelled);
+  expect(f.store.proposals()[0]?.cancelledAt).toBe(cancelledAt);
+  await expect(f.store.confirm(proposal.id)).rejects.toThrow(
+    "proposal_cancelled",
+  );
+  expect(f.calls).toHaveLength(0);
+  // Cancellation is exact-proposal scoped, not a connection-wide revocation.
+  await f.invoke();
+  const other = f.store.proposals()[0];
+  assert(other);
+  expect(await f.store.confirm(other.id)).toBe("succeeded");
+  expect(f.calls).toHaveLength(1);
+});
+
+test.each(["credential lookup", "discovery"])(
+  "cancellation during %s suppresses granted MCP dispatch without replay",
+  async (phase) => {
+    const f = await fixture();
+    f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+    await f.invoke();
+    const proposal = f.store.proposals()[0];
+    assert(proposal);
+    let cancelled = "";
+    if (phase === "discovery")
+      f.duringList(() => {
+        cancelled = f.store.cancel("owner", proposal.id);
+      });
+    const pending = f.store.confirm(proposal.id);
+    if (phase === "credential lookup")
+      cancelled = f.store.cancel("owner", proposal.id);
+    expect(await pending).toBe("unknown");
+    expect(cancelled).toContain("outcome: unknown");
+    expect(f.store.proposals()[0]?.grant).toBeTypeOf("string");
+    expect(f.store.proposals()[0]?.cancelledAt).toBeTypeOf("number");
+    expect(f.calls).toHaveLength(0);
+    await f.restart();
+    expect(f.store.cancel("owner", proposal.id)).toContain("outcome: unknown");
+    await expect(f.store.confirm(proposal.id)).rejects.toThrow(
+      "proposal_cancelled",
+    );
+    expect(f.calls).toHaveLength(0);
+  },
+);
+
+test.each(["succeeded", "unknown"])(
+  "cancellation after dispatch preserves the %s outcome and never repeats the effect",
+  async (outcome) => {
+    const f = await fixture();
+    f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+    await f.invoke();
+    const proposal = f.store.proposals()[0];
+    assert(proposal);
+    let cancelled = "";
+    f.duringCall(() => {
+      cancelled = f.store.cancel("owner", proposal.id);
+      if (outcome === "unknown") throw new Error("lost response");
+    });
+    expect(await f.store.confirm(proposal.id)).toBe(outcome);
+    expect(cancelled).toContain("outcome: unknown");
+    expect(cancelled).toContain("does not confirm an external effect stopped");
+    expect(f.calls).toHaveLength(1);
+    await f.restart();
+    expect(f.store.cancel("owner", proposal.id)).toContain(
+      `outcome: ${outcome}`,
+    );
+    expect(f.store.proposals()[0]?.status).toBe(outcome);
+    await expect(f.store.confirm(proposal.id)).rejects.toThrow(
+      "proposal_cancelled",
+    );
+    expect(f.calls).toHaveLength(1);
+  },
+);
 
 test("approval review identifies only the matching destination and preserves consent checks", async () => {
   const f = await fixture({
