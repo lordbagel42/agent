@@ -143,7 +143,57 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   return result.data;
 }
 function dependencies(claim: Claim): string[] {
-  return [...claim.dependsOn, ...claim.contradicts, ...claim.supersedes];
+  // Grounding can retain quoted evidence even when a trusted writer omitted it
+  // from the top-level edges. Every explicit reference is a privacy dependency.
+  const grounding = claim.grounding;
+  return [
+    ...claim.dependsOn,
+    ...claim.contradicts,
+    ...claim.supersedes,
+    ...(grounding
+      ? [
+          grounding.subjectSourceId,
+          ...grounding.citations.map((citation) => citation.sourceId),
+          ...grounding.contradicts,
+          ...grounding.supersedes,
+        ]
+      : []),
+  ];
+}
+
+function removeEvidence(state: State, sourceIds: string[]): void {
+  const removed = new Set(sourceIds);
+  // References only point backwards, but fixed point also handles rebuilding.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const claim of state.claims) {
+      if (
+        !removed.has(claim.id) &&
+        dependencies(claim).some((ref) => removed.has(ref))
+      ) {
+        removed.add(claim.id);
+        changed = true;
+      }
+    }
+  }
+  state.sources = state.sources.filter((s) => !removed.has(s.id));
+  state.claims = state.claims.filter((c) => !removed.has(c.id));
+  state.proposals = state.proposals.filter((p) => {
+    if (
+      !removed.has(p.id) &&
+      !dependencies(p.claim).some((ref) => removed.has(ref))
+    )
+      return true;
+    removed.add(p.id);
+    return false;
+  });
+  state.extractions = state.extractions.filter(
+    (entry) => !entry.sourceIds.some((id) => removed.has(id)),
+  );
+  for (const entry of state.extractions)
+    entry.proposalIds = entry.proposalIds.filter((id) => !removed.has(id));
+  state.tombstones = [...new Set([...state.tombstones, ...removed])];
 }
 
 /** Upgrade the old Gmail connector's label-valued conversation without changing
@@ -305,6 +355,9 @@ export class EvidenceStore {
         ),
       );
       for (const source of state.sources) upgradeGmailConversation(source);
+      // Older snapshots may still contain grounding-only derivatives of a
+      // tombstoned source. Hide them on every read; the next write persists this.
+      if (state.tombstones.length) removeEvidence(state, state.tombstones);
       return state;
     } catch {
       throw new Error("Memory store authentication failed");
@@ -716,38 +769,7 @@ export class EvidenceStore {
     this.transaction((state) => {
       if (state.claims.some((c) => c.id === sourceId))
         throw new Error("Expected source ID");
-      const removed = new Set([sourceId]);
-      // References only point backwards, but fixed point also handles rebuilding.
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (const claim of state.claims) {
-          if (
-            !removed.has(claim.id) &&
-            dependencies(claim).some((ref) => removed.has(ref))
-          ) {
-            removed.add(claim.id);
-            changed = true;
-          }
-        }
-      }
-      state.sources = state.sources.filter((s) => !removed.has(s.id));
-      state.claims = state.claims.filter((c) => !removed.has(c.id));
-      state.proposals = state.proposals.filter((p) => {
-        if (
-          !removed.has(p.id) &&
-          !dependencies(p.claim).some((ref) => removed.has(ref))
-        )
-          return true;
-        removed.add(p.id);
-        return false;
-      });
-      state.extractions = state.extractions.filter(
-        (entry) => !entry.sourceIds.some((id) => removed.has(id)),
-      );
-      for (const entry of state.extractions)
-        entry.proposalIds = entry.proposalIds.filter((id) => !removed.has(id));
-      state.tombstones = [...new Set([...state.tombstones, ...removed])];
+      removeEvidence(state, [sourceId]);
     });
   }
 

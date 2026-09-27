@@ -208,6 +208,36 @@ it.for(["reply", "deep"] as const)(
     expect(snapshot.memoryContexts?.[eventKey]?.sourceIds).toContain(
       supporting.id,
     );
+    const retained = source(
+      {
+        ...event,
+        messageId: event.messageId.replace("000001", "000010"),
+        text: "unrelated fresh heron evidence",
+      },
+      scope,
+    );
+    store.appendSource(retained);
+    store.appendClaim({
+      id: "grounding-only",
+      entity: claim.entity,
+      text: "PRIVATE derived fresh heron hypothesis",
+      audiences: [scope],
+      kind: "evidence",
+      dependsOn: [retained.id],
+      contradicts: [],
+      supersedes: [],
+      grounding: {
+        subjectSourceId: source(event, scope).id,
+        text: "PRIVATE derived fresh heron hypothesis",
+        category: "claim",
+        citations: [{ sourceId: source(event, scope).id, quote: event.text }],
+        confidence: 0.5,
+        validFrom: null,
+        validTo: null,
+        contradicts: [],
+        supersedes: [],
+      },
+    });
     await june.send("inbox", { type: "event", event });
     const publicJune = client.conversation.getOrCreate([
       "slack",
@@ -250,6 +280,9 @@ it.for(["reply", "deep"] as const)(
     });
     await expect.poll(() => requests.length).toBe(phase === "deep" ? 4 : 3);
     expect(requests[2]?.system).toContain("PRIVATE heron observation");
+    expect(requests[2]?.system).toContain(
+      "PRIVATE derived fresh heron hypothesis",
+    );
     for (const request of requests.slice(2)) {
       const encoded = request.system.match(
         /Supplied memory text \(JSON string\): (.+)/,
@@ -263,10 +296,13 @@ it.for(["reply", "deep"] as const)(
         { entity: '["slack","T1","U2"]', claimIds: ["alex-a", "alex-d"] },
         { entity: '["slack","T1","U3"]', claimIds: ["alex-b"] },
         { entity: '["slack","T2","U2"]', claimIds: ["alex-c"] },
-        { entity: '["slack","T1","U1"]', claimIds: ["private-claim"] },
+        {
+          entity: '["slack","T1","U1"]',
+          claimIds: ["grounding-only", "private-claim"],
+        },
       ]);
       expect(memory.style).toEqual({});
-      expect(memory.evidence.claims).toHaveLength(6);
+      expect(memory.evidence.claims).toHaveLength(7);
       expect(
         memory.evidence.sources.length + memory.evidence.claims.length,
       ).toBeLessThanOrEqual(12);
@@ -299,6 +335,7 @@ it.for(["reply", "deep"] as const)(
     expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE");
     expect(JSON.stringify(requests.at(-1))).not.toContain("alex-a");
     expect(JSON.stringify(requests.at(-1))).not.toContain(learnedPattern);
+    expect(requests.at(-1)?.system).toContain("unrelated fresh heron evidence");
   },
 );
 

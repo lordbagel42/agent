@@ -190,7 +190,10 @@ Operator APIs:
   authenticated operator action. Same-decision retries are idempotent; opposing
   decisions fail. Only accepted proposals become retrievable claims.
 - `deleteSource(id): void` removes the source and all dependent claims/proposals,
-  including contradiction/supersession dependencies, and tombstones their IDs.
+  including contradiction/supersession dependencies and all explicit references
+  in `grounding`, and tombstones their IDs. Snapshot reads reapply tombstones to
+  hide grounding-only derivatives left by older writers; the next write persists
+  that cleanup. Unrelated sources and claims remain available.
   The host must also suppress associated conversation history, in-flight context,
   reflection candidates, and any external summaries/caches before future prompts.
 

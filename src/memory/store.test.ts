@@ -247,6 +247,80 @@ it("keeps identities distinct, grounded contradictions and supersession, and inv
   ]);
 });
 
+it.for([
+  { subjectSourceId: "s1" },
+  { citations: [{ sourceId: "s1", quote: "sensitive kumquat" }] },
+  { contradicts: ["root"] },
+  { supersedes: ["root"] },
+])(
+  "treats grounding-only references as privacy dependencies: %j",
+  (grounding) => {
+    const { store, path } = open();
+    store.appendSource(source());
+    const retained = {
+      ...source("retained"),
+      audiences: ["private", "public"],
+      text: "unrelated kumquat",
+    };
+    store.appendSource(retained);
+    const base: Claim = {
+      id: "root",
+      entity: "owner",
+      text: "kumquat hypothesis",
+      audiences: ["private"],
+      kind: "evidence",
+      dependsOn: ["s1"],
+      contradicts: [],
+      supersedes: [],
+    };
+    store.appendClaim(base);
+    const derived: Claim = {
+      ...base,
+      id: "derived",
+      dependsOn: [retained.id],
+      grounding: {
+        subjectSourceId: retained.id,
+        text: "kumquat hypothesis",
+        category: "claim",
+        citations: [{ sourceId: retained.id, quote: retained.text }],
+        confidence: 0.5,
+        validFrom: null,
+        validTo: null,
+        contradicts: [],
+        supersedes: [],
+        ...grounding,
+      },
+    };
+    expect(() =>
+      store.appendClaim({ ...derived, audiences: ["public"] }),
+    ).toThrow("unauthorized");
+    store.appendClaim(derived);
+    store.appendClaim({ ...base, id: "child", dependsOn: [derived.id] });
+    const safe = { ...base, id: "safe", dependsOn: [retained.id] };
+    store.appendClaim(safe);
+    const reader = open(path).store;
+    expect(reader.retrieve("private", "kumquat").claims).toContainEqual(
+      derived,
+    );
+    store.deleteSource("s1");
+    const fresh = { ...source("fresh"), text: "fresh kumquat" };
+    store.appendSource(fresh);
+    for (const current of [store, reader, open(path).store]) {
+      expect(current.retrieve("private", "kumquat")).toEqual({
+        sources: [fresh, retained],
+        claims: [safe],
+      });
+      expect(current.search("private", "kumquat").claims).toEqual([safe]);
+      expect(current.isDeleted(derived.id)).toBe(true);
+      expect(current.isDeleted("child")).toBe(true);
+      expect(current.independentEvidence(derived.id, "private")).toEqual([]);
+      expect(() => current.appendClaim({ ...derived, id: "replay" })).toThrow(
+        "unauthorized",
+      );
+    }
+  },
+);
+
 it("fails closed on wrong keys and modified ciphertext", () => {
   const { store, path } = open();
   store.appendSource(source());
