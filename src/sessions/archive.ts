@@ -49,6 +49,8 @@ const data = z.strictObject({
   // Full host-supplied deletion provenance, never independent corroboration.
   contextSourceIds: refs,
   entries: z.array(entry).max(50),
+  // Historical metadata/provenance was unavailable; no times are invented.
+  incomplete: z.literal(true).optional(),
 });
 const receipt = {
   eventId: hash,

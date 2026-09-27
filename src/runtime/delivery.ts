@@ -7,6 +7,8 @@ export interface Delivery {
   phase: "ready" | "sending" | "settled";
   attempts: number;
   result?: SendResult;
+  /** Host observation of this outcome; absent on historical receipts. */
+  outcomeObservedAt?: number;
 }
 
 export async function deliver(
@@ -19,6 +21,7 @@ export async function deliver(
 ): Promise<SendResult> {
   if (delivery.phase === "sending") {
     delivery.result = { status: "unknown", code: "interrupted_send" };
+    delivery.outcomeObservedAt = Date.now();
   } else if (
     !delivery.result ||
     (delivery.result.status === "rejected" &&
@@ -33,6 +36,7 @@ export async function deliver(
       if (rejected) {
         delivery.attempts--;
         delivery.result = rejected;
+        delivery.outcomeObservedAt = Date.now();
         delivery.phase = rejected.retryable ? "ready" : "settled";
         await persist();
         return delivery.result;
@@ -41,6 +45,7 @@ export async function deliver(
     } catch {
       delivery.result = { status: "unknown", code: "transport_error" };
     }
+    delivery.outcomeObservedAt = Date.now();
   }
   delivery.phase = "settled";
   await persist();

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { OutboundMessage } from "../core/contracts.js";
 import { type Delivery, deliver } from "./delivery.js";
 
@@ -10,6 +10,42 @@ const message: OutboundMessage = {
 };
 
 describe("outbox crash boundary", () => {
+  it("timestamps observations, not no-op replay or already settled legacy receipts", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      const delivery: Delivery = { message, phase: "ready", attempts: 0 };
+      const persist = vi.fn(async () => {});
+      const send = vi.fn(async () => ({
+        status: "sent" as const,
+        messageId: "receipt",
+      }));
+      await deliver(delivery, persist, send);
+      expect(delivery.outcomeObservedAt).toBe(1000);
+      clock.mockReturnValue(2000);
+      await deliver(delivery, persist, send);
+      expect(delivery.outcomeObservedAt).toBe(1000);
+      delete delivery.outcomeObservedAt;
+      await deliver(delivery, persist, send);
+      expect(delivery.outcomeObservedAt).toBeUndefined();
+      expect(send).toHaveBeenCalledTimes(1);
+      const interrupted: Delivery = { message, phase: "sending", attempts: 1 };
+      await deliver(interrupted, persist, send);
+      expect(interrupted.outcomeObservedAt).toBe(2000);
+      expect(interrupted.result?.status).toBe("unknown");
+      const withheld: Delivery = { message, phase: "ready", attempts: 0 };
+      await deliver(withheld, persist, send, () => ({
+        status: "rejected",
+        retryable: true,
+        code: "blocked",
+      }));
+      expect(withheld.outcomeObservedAt).toBe(2000);
+      expect(withheld.attempts).toBe(0);
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("persists sending intent before sending and the receipt before returning", async () => {
     const delivery: Delivery = { message, phase: "ready", attempts: 0 };
     const order: string[] = [];

@@ -2,8 +2,9 @@
 
 Status: approved architectural direction. Session-directory control state,
 encrypted archive storage/lookup, June-facing typed archive recall and
-archive-aware forgetting are implemented. The archive producer, live session
-routing and migration are not implemented or activated by these prerequisites.
+archive-aware forgetting are implemented. The conservative archive projection
+and catalog-validation extraction are prepared; runtime archive production,
+live session routing and migration are not activated by these prerequisites.
 
 ## Outcome and scope
 
@@ -38,6 +39,13 @@ The coordinator is routing and control state, not another LLM. Session actors
 handle conversation, clarification, delegation and synthesis; substantive work
 belongs to execution workers. Ending a session does not end June's identity,
 personality, outstanding approvals, workers or schedules.
+
+Keep the existing `conversation(scopeKey)` actor as the stable coordinator and
+catalog owner. Do not copy its approval/worker indexes into a second actor during
+cutover: an inbox barrier does not stop concurrent metadata RPCs. Existing worker
+metadata destinations remain valid; new activity origins and immutable input
+assignments are separate coordinator records. Preserve authenticated original
+events, full deletion provenance and exact sent-preview receipt lookup there.
 
 Scope keys remain host-derived from authenticated routing. Session keys use an
 opaque host-generated ID, persisted before dispatch, and a stable scope binding.
@@ -216,7 +224,8 @@ Next introduce a coordinator admission path that durably chooses legacy versus
 session routing per event. During cutover, stop assigning new events to the legacy
 lane, drain its accepted queue and known live turns, and record the last accepted
 event boundary. New input waits durably until this handoff completes. Ambiguous
-live work requires existing reconciliation; it is not declared drained by age.
+live work remains held unless an existing authorized reconciliation actually
+resolves that exact operation; it is not declared drained by age.
 
 Scopes with unresolved conversational model/web intents or unknown ordinary
 deliveries remain held pending a separately approved conversation-reconciliation
@@ -226,6 +235,13 @@ alone proves neither sent nor rejected delivery and never permits replay.
 `event.done`, `phase=settled`, restart and released reflection occupancy are not
 drain certificates. Preserve exact IDs, uncertainty, deduplication, tombstones
 and provenance while independently progressing provably drained scopes.
+
+A FIFO barrier establishes queue position, not historical effect coverage. Old
+unguarded invocations and provider-local timeouts may lack definitive outcomes
+even when current marker scans are empty or report host settlement. Retain an
+explicit coverage hold rather than backfilling a clean certificate. Activation
+also requires all frozen legacy admissions and retries to be accounted for;
+recovery may republish an already assigned legacy input behind the barrier.
 
 Adopt existing event IDs into cross-session deduplication, preserve old proposal
 lookup and worker identities, and archive only provably retainable legacy entries.
