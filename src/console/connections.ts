@@ -225,11 +225,19 @@ export function createConnectionRoutes(
       .proposals()
       .find((value) => value.id === c.req.param("id"));
     if (!proposal) return c.notFound();
+    // Never label an old request with a replacement connection's destination.
+    const connection = deps.store
+      .list()
+      .find(
+        (value) =>
+          value.id === proposal.connection &&
+          value.revision === proposal.revision,
+      );
     return c.html(
       page(
         "Review tool request",
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-heading"><h2>${proposal.tool}</h2>${badge(proposal.status)}</div><div class="panel-body"><p>Connection: ${proposal.connection}. This action may change external data. Verify the exact destination and arguments. Approval expires ${new Date(proposal.expiresAt).toISOString()}.</p><pre>${JSON.stringify(proposal.arguments, null, 2)}</pre>${proposal.status === "awaiting_approval" ? confirmForm(proof.issue(c.get("principal"), `${base}/approvals/${proposal.id}`, binding(proposal)), "Approve and execute once") : html`<p>No execution is available. Unknown outcomes must be checked externally; they are never retried here.</p>`}</div></section>`,
+        html`<section class="panel"><div class="panel-heading"><h2>${proposal.tool}</h2>${badge(proposal.status)}</div><div class="panel-body">${connection ? html`<h3>${connection.name}</h3><p>Destination: <code>${connection.url}</code></p><p class="small muted">${connection.authenticated ? "Uses the credential saved for this connection. The credential is not shown." : "No saved credential is sent."}</p>` : html`<div class="callout warning">The connection has changed or been removed. The reviewed destination is no longer available. Ask June for a new request; this request cannot be approved.</div>`}<p class="small muted">Connection ID: ${proposal.connection} · Revision: ${proposal.revision}</p><p>This action may change external data. Verify the exact destination and arguments below. Approval authorizes this tool call once, not future calls. Approval expires ${new Date(proposal.expiresAt).toISOString()}.</p><pre>${JSON.stringify(proposal.arguments, null, 2)}</pre>${connection && proposal.status === "awaiting_approval" ? confirmForm(proof.issue(c.get("principal"), `${base}/approvals/${proposal.id}`, binding(proposal)), "Approve and execute once") : html`<p>No execution is available. Unknown outcomes must be checked externally; they are never retried here.</p>`}</div></section>`,
         { navigation },
       ),
     );

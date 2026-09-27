@@ -273,6 +273,74 @@ test("mutation approval executes exactly once, including concurrent confirmation
   expect(f.calls).toHaveLength(1);
 });
 
+test("approval review identifies only the matching destination and preserves consent checks", async () => {
+  const f = await fixture();
+  f.store.add(
+    {
+      name: 'Research <img src=x onerror="alert(1)">',
+      url: "https://mcp.example/research/rpc",
+      token: "private-token",
+    },
+    f.id,
+  );
+  await f.store.discover(f.id, f.connection().revision);
+  f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+  await f.invoke();
+  const app = new Hono().route(
+    "/console/connections",
+    createConnectionRoutes(
+      {
+        origin: "https://june.example",
+        csrfSecret: "a".repeat(32),
+        authenticate: async () => "owner",
+      },
+      { store: f.store },
+    ),
+  );
+  const path = () =>
+    `/console/connections/approvals/${f.store.proposals()[0]?.id}`;
+  const review = await (await app.request(path())).text();
+  expect(review).toContain("Research &lt;img");
+  expect(review).not.toContain("<img");
+  expect(review).toContain("https://mcp.example/research/rpc");
+  expect(review).toContain("record-9");
+  expect(review).not.toContain("private-token");
+  expect(f.calls).toHaveLength(0);
+  const proof = (body: string) =>
+    body.match(/name="proof" value="([^"]+)"/)?.[1] ?? "";
+  const post = (body: Record<string, string>) =>
+    app.request(path(), {
+      method: "POST",
+      headers: {
+        origin: "https://june.example",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(body),
+    });
+  expect((await post({ proof: proof(review) })).status).toBe(403);
+  expect(f.calls).toHaveLength(0);
+  expect((await post({ proof: proof(review), confirmed: "yes" })).status).toBe(
+    303,
+  );
+  expect(f.calls).toEqual([{ name: "lookup", arguments: { id: "record-9" } }]);
+  expect(await (await app.request(path())).text()).toContain("succeeded");
+  await f.invoke();
+  const staleProof = proof(await (await app.request(path())).text());
+  f.store.add({ name: "Replacement", url: "https://other.example/mcp" }, f.id);
+  const stale = await (await app.request(path())).text();
+  expect(stale).toContain("connection has changed or been removed");
+  expect(stale).not.toContain("https://other.example/mcp");
+  expect(stale).not.toContain('name="proof"');
+  expect((await post({ proof: staleProof, confirmed: "yes" })).status).toBe(
+    503,
+  );
+  expect(f.calls).toHaveLength(1);
+  f.store.disconnect(f.id, f.connection().revision);
+  expect(await (await app.request(path())).text()).toContain(
+    "connection has changed or been removed",
+  );
+});
+
 test("disconnect during discovery prevents an already-approved mutation from dispatching", async () => {
   const f = await fixture();
   f.store.permit(f.id, f.connection().revision, "lookup", "approval");
