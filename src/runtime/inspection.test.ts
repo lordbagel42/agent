@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { Client } from "rivetkit/client";
 import { expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
+import { nativeCodingPreflight } from "../coding/preflight.js";
 import type {
   CompanionReply,
   MessageEvent,
@@ -119,7 +120,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         ).toBe(request.inspectionAvailable);
         if (request.inspectionAvailable)
           expect(request.system).toContain(
-            'Set inspection to "memory", "imports", or "reflection"',
+            'Set inspection to "memory", "imports", "reflection", or "native-coding"',
           );
         if (search && request.webSearchAvailable)
           return { text: "", webSearch: "public query" };
@@ -191,6 +192,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     memory: { store },
     imports,
     selections,
+    nativeCoding: () =>
+      nativeCodingPreflight(
+        { enabled: false, workspaces: {}, isolation: {}, timeoutMs: 1000 },
+        false,
+        {},
+      ),
     reflection: () => reflection.status(),
   });
   const deliver = async (extra: Partial<MessageEvent> = {}) => {
@@ -236,6 +243,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain('"pending":1,"running":0');
   expect(reads).toBe(3);
   expect(requests).toHaveLength(3);
+  action = { text: "", inspection: "native-coding" };
+  expect(await deliver()).toContain(
+    "coding.enabled is false (activation gate closed)",
+  );
+  expect(reads).toBe(4);
+  expect(requests).toHaveLength(4);
   for (const extra of [
     {
       direct: false,
@@ -251,21 +264,21 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     expect(await deliver(extra)).toContain("owner-private turn");
     expect(requests).toHaveLength(before + 1);
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(3);
+    expect(reads).toBe(4);
   }
   search = true;
   await deliver();
   expect(requests.at(-1)?.usageStage).toBe("synthesis");
   expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-  expect(reads).toBe(3);
+  expect(reads).toBe(4);
   search = false;
   action = {
     text: "",
-    inspection: "memory",
+    inspection: "native-coding",
     release: { action: "inspect", revision: null },
   };
   expect(await deliver()).toContain("inspection is unavailable");
-  expect(reads).toBe(3);
+  expect(reads).toBe(4);
   action = { text: "", inspection: "memory" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
@@ -285,6 +298,10 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     action = { text: "", inspection: target };
     expect(await deliver()).toContain("unavailable.");
   }
+  action = { text: "", inspection: "native-coding" };
+  expect(await deliver()).toContain(
+    "preflight is unavailable; readiness cannot be inferred",
+  );
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   expect(JSON.stringify(sent)).not.toContain("private-account");
   expect(fetches).toBe(0);

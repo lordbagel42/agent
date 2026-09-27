@@ -108,7 +108,9 @@ const companionReplySchema = z.strictObject({
     ])
     .optional(),
   replyInThread: z.boolean().optional(),
-  inspection: z.enum(["memory", "imports", "reflection"]).optional(),
+  inspection: z
+    .enum(["memory", "imports", "reflection", "native-coding"])
+    .optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -290,9 +292,9 @@ export function replyJsonSchema(
         ? {
             inspection: {
               type: ["string", "null"],
-              enum: ["memory", "imports", "reflection", null],
+              enum: ["memory", "imports", "reflection", "native-coding", null],
               description:
-                "Read owner-private bounded subsystem metadata, not recalled content. Leave text empty and all other actions unset. No approvals, imports, reflection triggers or mutations are performed.",
+                "Read owner-private bounded subsystem metadata or native-coding preflight, not recalled content. Leave text empty and all other actions unset. No approvals, native execution, imports, reflection triggers or mutations are performed.",
             },
           }
         : {}),

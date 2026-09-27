@@ -14,6 +14,7 @@ export function createInspectionReader(deps: {
   memory?: { store: EvidenceStore; personality?: CuratedPersonalityStore };
   imports?: HistoryImports;
   selections: Record<string, ImportCoverage>;
+  nativeCoding?: () => Promise<string>;
   reflection?: () => Promise<
     Pick<
       ReflectionRuntimeState,
@@ -26,6 +27,10 @@ export function createInspectionReader(deps: {
   return async (target) => {
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {
+      case "native-coding":
+        return deps.nativeCoding
+          ? deps.nativeCoding()
+          : `${heading}\nNative coding preflight is unavailable; readiness cannot be inferred.`;
       case "memory": {
         if (!deps.memory) return `${heading}\nMemory is unavailable.`;
         const proposals = deps.memory.store.proposals(deps.audience);

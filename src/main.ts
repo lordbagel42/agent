@@ -15,6 +15,7 @@ import { createAmpRuntime } from "./coding/amp.js";
 import { createClaudeRuntime } from "./coding/claude.js";
 import { createCodexRuntime } from "./coding/codex.js";
 import { createPiRuntime } from "./coding/pi.js";
+import { nativeCodingPreflight } from "./coding/preflight.js";
 import { createWorktreeManager } from "./coding/worktree.js";
 import { parseConfig, secret } from "./config.js";
 import { createConsoleLoginLinks } from "./console/session.js";
@@ -616,6 +617,7 @@ async function main() {
       memory,
       imports,
       selections,
+      nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
       reflection: reflection
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
         : undefined,

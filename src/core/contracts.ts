@@ -175,7 +175,7 @@ export interface CompanionReply {
   /** Owner-private aggregate token usage for the last 1, 7, or 30 days. */
   analytics?: { days: 1 | 7 | 30 };
   /** Owner-private bounded metadata inspection; never recall or mutation. */
-  inspection?: "memory" | "imports" | "reflection";
+  inspection?: "memory" | "imports" | "reflection" | "native-coding";
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */

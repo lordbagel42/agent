@@ -405,6 +405,20 @@ Keep native execution disabled until protected-host acceptance establishes the
 required credential, process and network isolation. This increment does not
 enforce a separate credential broker or deployment policy.
 
+Ask June privately to inspect native coding prerequisites. The model action is
+`{"text":"","inspection":"native-coding"}`, with no other actions, available
+even when coding is disabled. Its timestamped read-only report distinguishes
+closed activation gates, absent runtime/workspace/isolation configuration and
+local directory problems from **unverified** authentication and protected-host
+acceptance. It inspects up to ten workspaces (numbered in configuration order),
+checks overlapping roots and private runtime directories, and reports omitted
+checks explicitly. It returns no paths, credential names/values, command
+arguments or raw errors; it does not execute a CLI, verifier or coding worker.
+Existing directories, a configured supervisor and Pi's sandbox acknowledgment
+are not containment evidence. Automatic deployment drain with native coding
+remains unsupported; idle/cancelled job labels do not prove settlement. This
+inspection never enables coding, grants approval or permits uncertain resumes.
+
 Each proposal durably binds the parsed runtime/execution configuration before
 approval. Changing that configuration cannot resume a saved thread under a new
 adapter, state directory or verifier. Jobs from an older unbound schema require
