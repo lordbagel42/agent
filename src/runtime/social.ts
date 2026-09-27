@@ -174,16 +174,25 @@ export class SocialPermissions {
       this.save(proposal);
       return "Revoked. Previously delivered messages cannot be unsent.";
     }
-    if (proposal.status !== "pending")
+    // Approval can survive a crash before delivery is journaled. Re-enter the
+    // durable send on repeated approval, not a fresh send: its ledger prevents
+    // replay of accepted or uncertain deliveries. Other decisions stay final.
+    const resumeOutreach =
+      decision === "allow" &&
+      proposal.status === "approved" &&
+      proposal.action.kind === "outreach";
+    if (proposal.status !== "pending" && !resumeOutreach)
       return `That request is already ${proposal.status}; it was not executed again.`;
     if (decision === "deny") {
       proposal.status = "denied";
       this.save(proposal);
       return "Denied. No additional access was granted.";
     }
-    proposal.status = "approved";
-    proposal.expires = this.now() + 30 * DAY;
-    this.save(proposal);
+    if (!resumeOutreach) {
+      proposal.status = "approved";
+      proposal.expires = this.now() + 30 * DAY;
+      this.save(proposal);
+    }
     if (proposal.action.kind === "outreach") {
       const result = await this.send(
         `${proposal.id}:outreach`,

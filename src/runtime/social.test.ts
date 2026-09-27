@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type {
@@ -277,6 +278,130 @@ it("prevents guest sharing/outreach and sends a frozen owner-approved message on
   expect(sent).toHaveLength(2);
   expect(sent[1]?.address.conversationId).toBe("UGUEST");
   expect(sent[1]?.content).toEqual({ type: "text", text: "Approved hello." });
+});
+
+it("recovers approved outreach after restart only when delivery is known not to have happened", async (t) => {
+  const { social, sent, options } = fixture(t);
+  const db = new DatabaseSync(options.file);
+  t.onTestFinished(() => db.close());
+  for (const boundary of ["before_send", "after_send"] as const) {
+    const pending = await social.propose(
+      { ...raygen, id: boundary },
+      { kind: "outreach", userId: "UGUEST", text: boundary },
+    );
+    const id = pending.match(/[a-f0-9]{24}/)?.[0];
+    if (!id) throw new Error("missing proposal id");
+    const approval = { ...raygen, text: `!allow ${id}` };
+    // Fail the actual durable write, either before dispatch or after Slack
+    // accepted it. The latter must leave an uncertain, non-retryable send.
+    db.exec(`CREATE TRIGGER crash BEFORE INSERT ON social_deliveries
+      WHEN NEW.id = '${id}:outreach' AND json_extract(NEW.value, '$.phase') = '${boundary === "before_send" ? "sending" : "settled"}'
+      BEGIN SELECT RAISE(ABORT, 'simulated crash'); END;`);
+    const before = sent.length;
+    await expect(social.decide(approval)).rejects.toThrow("simulated crash");
+    expect(sent.length - before).toBe(boundary === "before_send" ? 0 : 1);
+    const approved = JSON.parse(
+      String(
+        db.prepare("SELECT value FROM social_proposals WHERE id = ?").get(id)
+          ?.value,
+      ),
+    );
+    expect(approved.status).toBe("approved");
+    db.exec("DROP TRIGGER crash");
+    const reopened = new SocialPermissions({
+      ...options,
+      now: () => options.now() + 1000,
+    });
+    try {
+      const expected = boundary === "before_send" ? "sent" : "unknown";
+      expect(await reopened.decide(approval)).toContain(`delivery ${expected}`);
+      expect(await reopened.decide(approval)).toContain(`delivery ${expected}`);
+      expect(sent.length - before).toBe(1);
+      expect(sent.at(-1)?.content).toEqual({ type: "text", text: boundary });
+      expect(
+        JSON.parse(
+          String(
+            db
+              .prepare("SELECT value FROM social_proposals WHERE id = ?")
+              .get(id)?.value,
+          ),
+        ).expires,
+      ).toBe(approved.expires);
+    } finally {
+      reopened.close();
+    }
+  }
+});
+
+it("runs June's outreach proposal and repeated owner approval through Rivet", async (t) => {
+  const { social, slack, sent } = fixture(t);
+  let calls = 0;
+  const registry = createJuneRegistry({
+    owner,
+    social,
+    channels: { slack },
+    model: {
+      async reply(request) {
+        calls++;
+        expect(request.socialAvailable).toBe(true);
+        return parseReply(
+          JSON.stringify({
+            text: "",
+            social: {
+              kind: "outreach",
+              userId: "UGUEST",
+              text: "Frozen hello.",
+            },
+          }),
+          [],
+          request,
+        );
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const actor = client.conversation.getOrCreate(["private", owner.id]);
+  await actor.send("inbox", { type: "event", event: raygen });
+  await expect.poll(() => sent.length).toBe(2);
+  const notice = sent[0]?.content;
+  const id =
+    notice?.type === "text"
+      ? notice.text.match(/[a-f0-9]{24}/)?.[0]
+      : undefined;
+  expect(id).toBeDefined();
+  expect(
+    sent.every((message) => message.address.conversationId !== "UGUEST"),
+  ).toBe(true);
+  for (const attempt of [1, 2]) {
+    await actor.send("inbox", {
+      type: "event",
+      event: {
+        ...raygen,
+        id: `approval-${attempt}`,
+        messageId: `124.${attempt}`,
+        text: `!allow ${id}`,
+      },
+    });
+    await expect
+      .poll(
+        () =>
+          sent.filter(
+            (message) =>
+              message.content.type === "text" &&
+              message.content.text.includes("Approved outreach: delivery sent"),
+          ).length,
+      )
+      .toBe(attempt);
+  }
+  expect(calls).toBe(1);
+  const delivered = sent.filter(
+    (message) => message.address.conversationId === "UGUEST",
+  );
+  expect(delivered).toHaveLength(1);
+  expect(delivered[0]?.content).toEqual({
+    type: "text",
+    text: "Frozen hello.",
+  });
 });
 
 it("reserves owner capacity and prioritizes the owner over queued guests without cancelling work", async () => {
