@@ -2044,6 +2044,14 @@ export function createJuneRegistry(deps: Dependencies) {
                                   !!deps.memory &&
                                   plan.reflection &&
                                   !!deps.reflection,
+                                skillEvaluationRequestAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  plan.memory &&
+                                  !!deps.memory &&
+                                  plan.reflection &&
+                                  !!deps.reflection,
                                 juryAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2387,6 +2395,59 @@ export function createJuneRegistry(deps: Dependencies) {
                                 } catch {
                                   text =
                                     "Reflection request could not be confirmed. Do not infer completion or assume an interrupted request was not queued.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (
+                              generated.skillEvaluationRequest !== undefined
+                            ) {
+                              let text =
+                                "Skill evaluation requires an owner-private turn with retained memory and reflection enabled.";
+                              if (
+                                scope.private &&
+                                modelRequest.skillEvaluationRequestAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                reflection
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  if (checked.skillEvaluationRequest) {
+                                    // model.reply has actually settled. Release only this
+                                    // invocation; its started receipt still prevents replay.
+                                    // Admission rereads the actor's current epoch/live state.
+                                    await reflection.occupancy(
+                                      invocation,
+                                      false,
+                                    );
+                                    if (signal.aborted || !valid(step.state))
+                                      return {
+                                        reply: { text: "" },
+                                        retryable: false,
+                                      };
+                                    const result =
+                                      await reflection.requestSkillEvaluation(
+                                        checked.skillEvaluationRequest,
+                                      );
+                                    text =
+                                      result.status === "queued"
+                                        ? "Skill evaluation queued for the exact retained candidate and separate held-out cases. Existing delays and admission budgets still apply; no result, installation, promotion or coding approval is confirmed."
+                                        : result.status === "duplicate"
+                                          ? "Skill evaluation was already requested for this candidate. No new cases were queued and no work was restarted; this does not confirm completion."
+                                          : "Skill evaluation unavailable. Select one current retained skill candidate and 2–5 permitted original cases disjoint from all its training evidence; no evaluation was queued.";
+                                  }
+                                } catch {
+                                  text =
+                                    "Skill evaluation request could not be confirmed. Do not infer completion or assume an interrupted request was not queued.";
                                 }
                               }
                               generated = {

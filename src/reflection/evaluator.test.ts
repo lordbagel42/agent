@@ -3,6 +3,7 @@ import { createDecisionProvider } from "../models/decision.js";
 import type { Decision, DecisionInput } from "./evaluator.js";
 import {
   DecisionExecutor,
+  evaluateSkillCandidate,
   runJury,
   typedEvaluator,
   validateDecision,
@@ -463,4 +464,73 @@ describe("independent jury", () => {
     expect(result.synthesis.answer).toBe("yes");
     expect(result).not.toHaveProperty("grant");
   });
+});
+
+it("keeps skill evaluation held out, exact-bound and tool-free while retaining negative and failed cases", async () => {
+  const original = input.evidence[0];
+  if (!original) throw new Error("Missing fixture");
+  const candidate = {
+    candidateId: "a".repeat(64),
+    candidateDigest: "b".repeat(64),
+    proposedBehavior: "Ask before giving a long explanation.",
+    scope: input.scope,
+    trainingEvidence: input.evidence,
+    heldOutEvidence: ["improves", "regresses", "fails", "wrong-citation"].map(
+      (id) => ({ ...original, id, text: id }),
+    ),
+    now: input.now,
+    evidenceMaxAgeMs: input.evidenceMaxAgeMs,
+  };
+  let calls = 0;
+  const decide = async (context: DecisionInput): Promise<Decision> => {
+    calls++;
+    expect(context.evidence).toHaveLength(1);
+    expect(context.question).toBe("skill-improvement");
+    expect(context.prior).toBeUndefined();
+    expect(context.prompt).toContain(candidate.candidateDigest);
+    expect(context.prompt).toContain(candidate.proposedBehavior);
+    expect(context.evidence.some((e) => e.id === original.id)).toBe(false);
+    const id = context.evidence[0]?.id;
+    if (id === "fails") throw new Error("private provider details");
+    return {
+      answer: id === "regresses" ? "no" : "yes",
+      rationale: "Fixture comparison",
+      evidenceIds: [id === "wrong-citation" ? original.id : (id ?? "")],
+    };
+  };
+  const result = await evaluateSkillCandidate(
+    candidate,
+    decide,
+    new AbortController().signal,
+  );
+  expect(result.map((item) => item.decision.answer)).toEqual([
+    "yes",
+    "no",
+    "abstain",
+    "abstain",
+  ]);
+  expect(result[2]?.decision.rationale).toBe("evaluator-failed");
+  expect(result[3]?.decision.rationale).toBe("malformed-decision");
+  expect(calls).toBe(4);
+  for (const invalid of [
+    original,
+    { ...original, id: "copied-training" },
+    { ...original, id: "dream", text: "simulation", source: "dream" as const },
+    { ...original, id: "other-scope", text: "private", scope: "other" },
+  ]) {
+    await expect(
+      evaluateSkillCandidate(
+        {
+          ...candidate,
+          heldOutEvidence: [
+            invalid,
+            { ...original, id: "other", text: "other" },
+          ],
+        },
+        decide,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("Invalid held-out skill evaluation");
+  }
+  expect(calls).toBe(4);
 });

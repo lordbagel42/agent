@@ -52,6 +52,7 @@ export interface PromptCapabilities {
   forgetPreviewAvailable?: boolean;
   personalityEvaluateAvailable?: boolean;
   importCancelAvailable?: boolean;
+  skillEvaluationRequestAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   escalationAvailable?: boolean;
   replyPlacementAvailable?: boolean;
@@ -244,6 +245,10 @@ export function buildModelRequest({
     capabilities.personalityEvaluateAvailable === true;
   const importCancelAvailable =
     privateTurn && capabilities.importCancelAvailable === true;
+  const skillEvaluationRequestAvailable =
+    privateTurn &&
+    memoryAvailable &&
+    capabilities.skillEvaluationRequestAvailable === true;
   const dashboardLoginAvailable =
     privateTurn && capabilities.dashboardLoginAvailable === true;
   const executionAvailable =
@@ -502,6 +507,9 @@ export function buildModelRequest({
           "Deep reflection may also stage an optional skill-change proposal: a bounded description of better behavior and rationale grounded in original evidence, generated in the same tool-free background call. It is hypothesis-only review data, never executable code, installed instructions, changed permissions or an approved coding job. A queued receipt is not proof a proposal was generated. Private candidate inspection exposes the exact staged content and host-owned ID/digest; evaluation and any coding remain separate, permission-checked steps.",
         ]
       : []),
+    skillEvaluationRequestAvailable
+      ? 'To evaluate an existing retained skill candidate, set skillEvaluationRequest to {"candidateId":"exact reflection candidate alias","heldOutEvidenceIds":["original source ID","another original source ID"]}. Select 2–5 distinct current original sources that were not used to generate that candidate; never invent IDs or send evidence bodies, behavior text, digests, scope, code or permissions. Leave text empty and all other actions unset/null. The host resolves the exact immutable skill proposal and stages one bounded evaluation after this inference settles. Each case must establish a baseline and desired outcome, otherwise the evaluator abstains. Training generation never receives these held-outs. Results are hypothetical comparisons, not installed-skill tests or permission grants. Requesting does not install, promote, approve coding, change permissions or promise completion. Use private reflection inspection for exact candidate-bound receipt metadata; distinguish historical results from current eligibility and preserve no/abstain/unknown outcomes.'
+      : "Skill evaluation requests are unavailable in this invocation; do not claim to have evaluated or promoted a skill.",
     privateTurn && capabilities.reflectionAvailable
       ? "The owner can send the exact ordinary private messages !reflection list and !reflection inspect <exact 64-character candidate ID> (not Slack slash commands) to list current authorized IDs or privately inspect one existing hypothesis without starting inference or automatic extraction. Inspection returns the original rationale and provenance metadata, not source bodies; a result over the 24,000-byte budget is unavailable rather than clipped. Generic inspection counts are staged metadata, not validated candidate eligibility. Ordinary conversation invalidates candidates; do not claim an old ID is still current or emit a command as though you executed it. The host rechecks all input evidence, quiet hours and live work. Both commands are read-only, not approval, recall, or permission to act. The inspected body is not retained in conversation history or supplied to you. To reject one candidate, the owner sends !reflection reject <64hex> with its exact opaque ID. Rejection is durable and safe to repeat after restart or an unconfirmed receipt; it revokes that candidate and its pending derivatives, not unrelated candidates or already accepted changes. Never invent an ID or claim your output executed the command."
       : "Private reflection candidate review is unavailable for this invocation.",
@@ -649,6 +657,7 @@ export function buildModelRequest({
     forgetPreviewAvailable,
     personalityEvaluateAvailable,
     importCancelAvailable,
+    skillEvaluationRequestAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     escalationAvailable,

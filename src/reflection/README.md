@@ -358,6 +358,45 @@ send/staging grant: consumers must recheck authority and eligibility at their
 effect boundary. `src/runtime/reflection-inspection.test.ts` exercises the private
 June command, no-retention boundary, read races and invalidated send retries.
 
+### Separate held-out skill evaluation
+
+When `skillEvaluationRequestAvailable` is advertised on an owner-private inbound
+turn, June can request `skillEvaluationRequest: {candidateId, heldOutEvidenceIds}`
+with empty text and no other action. `candidateId` is the exact 64-hex reflection
+alias, not a skill ID, behavior body or model-selected digest. Select 2–5 distinct
+original retained sources disjoint from **every** original generation input,
+including uncited inputs. Identical training/held-out text and duplicate case
+text are rejected; this is not proof of statistical independence or that the
+provider has never encountered the material.
+
+The host resolves the existing immutable `skillChange`, releases only the
+requesting inference's settled occupancy, and stages one request per candidate.
+Choosing a different held-out set cannot retry it. The existing reflection
+workflow owns idle delay, quiet hours, live preemption, capacity, cooldown,
+habituation and durable admission. It calls the shared settlement-aware
+`deps.decide` once per case, sequentially, without another scheduler or pool.
+Training generation never receives these held-outs. Evaluation sees the exact
+proposed behavior and one case, not training bodies or previous case judgments.
+Cases without a supported baseline and desired outcome must abstain.
+
+The existing request carries `skillEvaluation`: exact candidate alias, skill
+ID/digest, source request ID, held-out IDs, and per-case phases and decisions.
+It never changes the published candidate body. Results share the publication's
+expiry and retained-body budget; retirement removes decision bodies while
+preserving dedupe and unknown-work markers. Per-case `started` markers are
+flushed before dispatch, results after actual settlement. Interrupted work
+becomes uncertain and never replays remaining cases, even after reconciliation.
+Failures, negative judgments and abstentions remain distinguishable.
+
+`skillEvaluation(alias, ownerPrivateScope)` returns
+`{candidate, receipt, evidenceIds, eligible, checkedAt}` or `null`, after checking
+all original and held-out provenance. `evidenceIds` contains their complete
+union. Historical receipt visibility is not current action eligibility:
+`eligible` additionally requires a settled all-yes result, no live work and
+non-quiet time. Consumers must recheck at their own effect boundary. No result
+installs a skill, promotes a proposal, approves coding, grants permissions, or
+establishes an executed behavioral improvement. Private review is effect-free.
+
 ## Semantics and limits
 
 - Scope is an opaque, trusted owner/audience key. Dedupe is the canonical JSON

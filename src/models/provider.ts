@@ -277,6 +277,16 @@ const companionReplySchema = z.strictObject({
     .optional(),
   personalityEvaluate: personalityEvaluateSchema.optional(),
   importCancel: z.string().min(1).max(2048).optional(),
+  skillEvaluationRequest: z
+    .strictObject({
+      candidateId: z.string().regex(/^[a-f0-9]{64}$/),
+      heldOutEvidenceIds: z
+        .array(z.string().trim().min(1).max(2048))
+        .min(2)
+        .max(5)
+        .refine((ids) => new Set(ids).size === ids.length),
+    })
+    .optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -322,6 +332,7 @@ export type ReplyCapabilities = Pick<
   | "forgetPreviewAvailable"
   | "personalityEvaluateAvailable"
   | "importCancelAvailable"
+  | "skillEvaluationRequestAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
@@ -371,6 +382,7 @@ export function replyJsonSchema(
     forgetPreviewAvailable,
     personalityEvaluateAvailable,
     importCancelAvailable,
+    skillEvaluationRequestAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -1083,6 +1095,30 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(skillEvaluationRequestAvailable
+        ? {
+            skillEvaluationRequest: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                candidateId: {
+                  type: "string",
+                  description:
+                    "Exact 64-character lowercase hexadecimal reflection candidate alias.",
+                },
+                heldOutEvidenceIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "2–5 distinct original retained source IDs, each 1–2048 characters, disjoint from all candidate training evidence. Never supply evidence bodies.",
+                },
+              },
+              required: ["candidateId", "heldOutEvidenceIds"],
+              description:
+                "Request bounded hypothetical evaluation of one retained skill candidate by its exact reflection alias. Host binds the immutable skill ID, digest and owner-private scope after inference settles. No installation or promotion. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(analyticsAvailable
         ? {
             analytics: {
@@ -1324,6 +1360,7 @@ export function replyJsonSchema(
       ...(forgetPreviewAvailable ? ["forgetPreview"] : []),
       ...(personalityEvaluateAvailable ? ["personalityEvaluate"] : []),
       ...(importCancelAvailable ? ["importCancel"] : []),
+      ...(skillEvaluationRequestAvailable ? ["skillEvaluationRequest"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
@@ -1519,6 +1556,7 @@ export function parseReply(
     forgetPreviewAvailable,
     personalityEvaluateAvailable,
     importCancelAvailable,
+    skillEvaluationRequestAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -1571,6 +1609,7 @@ export function parseReply(
     "forgetPreview",
     "personalityEvaluate",
     "importCancel",
+    "skillEvaluationRequest",
     "dashboardLogin",
     "wakeup",
     "replyInThread",
@@ -1632,6 +1671,8 @@ export function parseReply(
     (reply.personalityEvaluate !== undefined &&
       !personalityEvaluateAvailable) ||
     (reply.importCancel !== undefined && !importCancelAvailable) ||
+    (reply.skillEvaluationRequest !== undefined &&
+      !skillEvaluationRequestAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
@@ -1672,6 +1713,7 @@ export function parseReply(
     Number(reply.forgetPreview !== undefined) +
     Number(reply.personalityEvaluate !== undefined) +
     Number(reply.importCancel !== undefined) +
+    Number(reply.skillEvaluationRequest !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
@@ -1708,6 +1750,7 @@ export function parseReply(
       reply.forgetPreview !== undefined ||
       reply.personalityEvaluate !== undefined ||
       reply.importCancel !== undefined ||
+      reply.skillEvaluationRequest !== undefined ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||
       reply.latency !== undefined) &&

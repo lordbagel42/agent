@@ -17,11 +17,16 @@ import {
   type RequestInput,
   reflectionPriority,
   type SkillChangeProposal,
+  type SkillEvaluationReceipt,
 } from "../reflection/domain.js";
 import {
+  abstain,
   type Decision,
   type DecisionFunction,
   type DecisionInput,
+  evaluateSkillCandidate,
+  type SkillEvaluationInput,
+  skillEvaluationContext,
   validateDecision,
 } from "../reflection/evaluator.js";
 import type { Lifecycle } from "./lifecycle.js";
@@ -364,7 +369,7 @@ export function createReflectionActor(
   }
 
   function reviewDto(
-    read: NonNullable<Awaited<ReturnType<typeof reviewCandidate>>>,
+    read: NonNullable<Awaited<ReturnType<typeof reviewWithEvaluation>>>,
   ) {
     if (!read.isCurrent()) return null;
     const { candidate, evidence, decision } = read;
@@ -391,10 +396,15 @@ export function createReflectionActor(
           cited: decision.evidenceIds.includes(id),
         }))
         .sort((a, b) => a.id.localeCompare(b.id)),
+      ...(read.evaluation ? { skillEvaluation: read.evaluation.receipt } : {}),
     };
     const result = {
       checkedAt: Date.now(),
       ...body,
+      // Eligibility is a checked-at advisory value, not part of immutable content.
+      ...(read.evaluation
+        ? { skillEvaluationEligible: read.evaluation.isEligible() }
+        : {}),
       reference: {
         id: body.candidate.id,
         digest: createHash("sha256").update(JSON.stringify(body)).digest("hex"),
@@ -412,6 +422,169 @@ export function createReflectionActor(
         e.observedAt + deps.policy.evidenceMaxAgeMs,
       ]),
     );
+
+  type EvaluationContext = Parameters<typeof readCandidate>[0] & {
+    vars: { publishingEvaluations: Set<string> };
+  };
+
+  /** One current read of ALL training and held-out provenance, never model bodies. */
+  async function evaluationInput(
+    c: EvaluationContext,
+    id: string,
+    scope: string,
+    heldOutEvidenceIds: string[],
+  ) {
+    const read = await reviewCandidate(c, id, scope);
+    if (!read?.candidate.skillChange) return null;
+    const proposal = read.candidate.skillChange;
+    const { candidate } = read;
+    const trainingIds = read.evidence.map((e) => e.id);
+    const evidenceIds = [
+      ...new Set([...trainingIds, ...heldOutEvidenceIds]),
+    ].sort();
+    const evidence = await retrieve(
+      { scope, evidenceIds, kind: "reflection" },
+      AbortSignal.timeout(deps.timeoutMs),
+    ).catch(() => null);
+    if (!evidence || !read.isCurrent()) return null;
+    const isCurrent = () => {
+      try {
+        return (
+          read.isCurrent() &&
+          deps.evidenceCurrent?.(scope, evidence) === true &&
+          evidence.every((e) =>
+            freshEvidence(e, scope, Date.now(), deps.policy.evidenceMaxAgeMs),
+          )
+        );
+      } catch {
+        return false;
+      }
+    };
+    const input: SkillEvaluationInput = {
+      candidateId: id,
+      candidateDigest: proposal.digest,
+      proposedBehavior: proposal.proposedBehavior,
+      scope,
+      trainingEvidence: evidence.filter((e) => trainingIds.includes(e.id)),
+      heldOutEvidence: heldOutEvidenceIds.flatMap((id) =>
+        evidence.filter((e) => e.id === id),
+      ),
+      now: Date.now(),
+      evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
+    };
+    const context = skillEvaluationContext(input);
+    return context && isCurrent()
+      ? { candidate, evidenceIds, evidence, input, context, isCurrent }
+      : null;
+  }
+
+  async function readSkillEvaluation(
+    c: EvaluationContext,
+    id: string,
+    scope: string,
+  ) {
+    const epoch = c.state.epoch;
+    const request = c.state.reflection.requests.find(
+      (r) => r.evaluationFor === id && r.scope === scope,
+    );
+    if (
+      !request?.skillEvaluation ||
+      c.vars.publishingEvaluations.has(request.id)
+    )
+      return null;
+    const receipt: SkillEvaluationReceipt = JSON.parse(
+      JSON.stringify(request.skillEvaluation),
+    );
+    const read = await evaluationInput(
+      c,
+      id,
+      scope,
+      receipt.heldOutEvidenceIds,
+    );
+    const current = c.state.reflection.requests.find(
+      (r) => r.id === request.id,
+    );
+    if (
+      !read?.isCurrent() ||
+      !current ||
+      receipt.status === "invalidated" ||
+      c.vars.publishingEvaluations.has(request.id) ||
+      JSON.stringify(current.skillEvaluation) !== JSON.stringify(receipt) ||
+      receipt.candidateId !== id ||
+      receipt.sourceRequestId !== read.candidate.requestId ||
+      receipt.skillChangeId !== read.candidate.skillChange?.id ||
+      receipt.candidateDigest !== read.candidate.skillChange?.digest ||
+      JSON.stringify(current.evidenceIds) !==
+        JSON.stringify(read.evidenceIds) ||
+      receipt.cases.length !== receipt.heldOutEvidenceIds.length ||
+      receipt.cases.some(
+        (item, i) => item.evidenceId !== receipt.heldOutEvidenceIds[i],
+      )
+    )
+      return null;
+    const status = current.status;
+    const attempts = current.attempts;
+    const isCurrent = () => {
+      const latest = c.state.reflection.requests.find(
+        (r) => r.id === request.id,
+      );
+      return (
+        read.isCurrent() &&
+        !c.vars.publishingEvaluations.has(request.id) &&
+        latest?.status === status &&
+        latest.attempts === attempts &&
+        JSON.stringify(latest.skillEvaluation) === JSON.stringify(receipt)
+      );
+    };
+    const isEligible = () =>
+      isCurrent() &&
+      receipt.status === "settled" &&
+      c.state.invocations[JSON.stringify([request.id, attempts])] ===
+        "settled" &&
+      !["cancelled", "cancelling"].includes(status) &&
+      !c.state.liveActive &&
+      epoch === c.state.epoch &&
+      !isQuiet(Date.now(), deps.policy.quiet) &&
+      receipt.cases.every(
+        (item) =>
+          item.status === "settled" &&
+          item.decision &&
+          validateDecision(item.decision, {
+            ...read.context,
+            now: Date.now(),
+            evidence: read.input.heldOutEvidence.filter(
+              (e) => e.id === item.evidenceId,
+            ),
+          }).answer === "yes",
+      );
+    return { ...read, receipt, isEligible, isCurrent };
+  }
+
+  /** One DTO/reference binds both the immutable proposal and its attached receipt. */
+  async function reviewWithEvaluation(
+    c: EvaluationContext,
+    id: string,
+    scope: string,
+  ) {
+    const read = await reviewCandidate(c, id, scope);
+    if (!read) return null;
+    const hasEvaluation = () =>
+      c.state.reflection.requests.some((r) => r.evaluationFor === id);
+    if (!hasEvaluation())
+      return {
+        ...read,
+        evaluation: undefined,
+        isCurrent: () => !hasEvaluation() && read.isCurrent(),
+      };
+    const evaluation = await readSkillEvaluation(c, id, scope);
+    if (!evaluation?.isCurrent() || !read.isCurrent()) return null;
+    return {
+      ...read,
+      evidence: evaluation.evidence,
+      evaluation,
+      isCurrent: () => read.isCurrent() && evaluation.isCurrent(),
+    };
+  }
 
   // Remove bodies only. Request/invocation/rejection receipts remain authoritative
   // and prevent eviction or expiry from restarting a previously admitted attempt.
@@ -445,15 +618,43 @@ export function createReflectionActor(
       ([aId, a], [bId, b]) =>
         a.createdAt - b.createdAt || aId.localeCompare(bId),
     );
+    const aliases = new Set(oldest.map(([id]) => reflectionCandidateId(id)));
+    const resultBytes = () =>
+      state.reflection.requests.reduce(
+        (bytes, request) =>
+          bytes +
+          (request.skillEvaluation &&
+          aliases.has(request.skillEvaluation.candidateId)
+            ? Buffer.byteLength(JSON.stringify(request.skillEvaluation))
+            : 0),
+        0,
+      );
     let remaining = oldest.length;
     for (const [id] of oldest) {
       if (
         remaining <= 50 &&
-        Buffer.byteLength(JSON.stringify(state.candidates)) <= 256 * 1024
+        Buffer.byteLength(JSON.stringify(state.candidates)) + resultBytes() <=
+          256 * 1024
       )
         break;
       remove(id);
+      aliases.delete(reflectionCandidateId(id));
       remaining--;
+    }
+    // Results share the publication's body budget/expiry; no second retained store.
+    // Keep case phases and request identity so retirement cannot rearm evaluation.
+    for (const request of state.reflection.requests) {
+      const receipt = request.skillEvaluation;
+      if (
+        receipt &&
+        !aliases.has(receipt.candidateId) &&
+        (receipt.status !== "invalidated" ||
+          receipt.cases.some((item) => item.decision))
+      ) {
+        receipt.status = "invalidated";
+        for (const item of receipt.cases) delete item.decision;
+        changed = true;
+      }
     }
     return changed;
   }
@@ -482,6 +683,7 @@ export function createReflectionActor(
       active: Map<string, AbortController>;
       prepareCandidates: () => Promise<void>;
       publishingCandidates: Set<string>;
+      publishingEvaluations: Set<string>;
     } => {
       let prepared: Promise<void> | undefined;
       return {
@@ -493,6 +695,7 @@ export function createReflectionActor(
         },
         active: new Map<string, AbortController>(),
         publishingCandidates: new Set<string>(),
+        publishingEvaluations: new Set<string>(),
         prepareCandidates: () =>
           (prepared ??= (async () => {
             if (c.state.candidateFormatVersion === 1) return;
@@ -582,6 +785,104 @@ export function createReflectionActor(
     },
     queues: { wake: queue<{ wake: true }>() },
     actions: {
+      requestSkillEvaluation: async (
+        c,
+        input: NonNullable<CompanionReply["skillEvaluationRequest"]>,
+      ) => {
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
+          throw new Error("Wrong reflection owner");
+        if (
+          !input ||
+          Object.keys(input).some(
+            (key) => !["candidateId", "heldOutEvidenceIds"].includes(key),
+          ) ||
+          !/^[a-f0-9]{64}$/.test(input.candidateId) ||
+          !Array.isArray(input.heldOutEvidenceIds) ||
+          input.heldOutEvidenceIds.length < 2 ||
+          input.heldOutEvidenceIds.length > 5 ||
+          input.heldOutEvidenceIds.some(
+            (id) =>
+              typeof id !== "string" ||
+              !id.trim() ||
+              id !== id.trim() ||
+              id.length > 2048,
+          ) ||
+          new Set(input.heldOutEvidenceIds).size !==
+            input.heldOutEvidenceIds.length
+        )
+          throw new Error("Invalid skill evaluation request");
+        // Capture the operation epoch before migration/retrieval can yield.
+        const epoch = c.state.epoch;
+        const scope = JSON.stringify(["private", deps.ownerId]);
+        const heldOutEvidenceIds = [...input.heldOutEvidenceIds].sort();
+        const read = await evaluationInput(
+          c,
+          input.candidateId,
+          scope,
+          heldOutEvidenceIds,
+        );
+        if (
+          !read?.isCurrent() ||
+          epoch !== c.state.epoch ||
+          c.state.liveActive ||
+          isQuiet(Date.now(), deps.policy.quiet)
+        )
+          return { status: "unavailable" as const };
+        if (
+          c.state.reflection.requests.some(
+            (r) => r.evaluationFor === input.candidateId,
+          )
+        )
+          return { status: "duplicate" as const };
+        const result = enqueue(
+          c.state.reflection,
+          {
+            scope,
+            evidenceIds: read.evidenceIds,
+            kind: "reflection",
+            evaluationFor: input.candidateId,
+          },
+          Date.now(),
+        );
+        c.vars.replaceReflection(result.state);
+        const request = c.state.reflection.requests.find(
+          (r) => r.id === result.id,
+        );
+        if (!request || !read.candidate.skillChange)
+          throw new Error("Missing evaluation request");
+        request.skillEvaluation = {
+          candidateId: input.candidateId,
+          skillChangeId: read.candidate.skillChange.id,
+          candidateDigest: read.candidate.skillChange.digest,
+          sourceRequestId: read.candidate.requestId,
+          heldOutEvidenceIds,
+          status: "pending",
+          cases: heldOutEvidenceIds.map((evidenceId) => ({
+            evidenceId,
+            status: "pending",
+          })),
+        };
+        c.state.modes[result.id] = "idle";
+        c.vars.publishingEvaluations.add(result.id);
+        await c.vars.persist();
+        c.vars.publishingEvaluations.delete(result.id);
+        await c.queue.send("wake", { wake: true });
+        return { status: "queued" as const };
+      },
+      /** Advisory history plus separately computed current all-yes eligibility. */
+      skillEvaluation: async (c, id: string, scope: string) => {
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId) return null;
+        const read = await readSkillEvaluation(c, id, scope);
+        if (!read?.isCurrent()) return null;
+        const { candidate, receipt, evidenceIds } = read;
+        return {
+          candidate,
+          receipt,
+          evidenceIds,
+          eligible: read.isEligible(),
+          checkedAt: Date.now(),
+        };
+      },
       /** June's explicit owner-private request. No model-controlled scope,
        * evidence body or immediate mode; the existing scheduler owns admission.
        */
@@ -748,7 +1049,14 @@ export function createReflectionActor(
       },
       /** Metadata only: no raw evidence or model rationale can leak through polling. */
       status: (c) => ({
-        reflection: c.state.reflection,
+        reflection: {
+          ...c.state.reflection,
+          requests: c.state.reflection.requests.map((request) => {
+            const metadata = { ...request };
+            delete metadata.skillEvaluation;
+            return metadata;
+          }),
+        },
         invocations: { ...c.state.invocations },
         decisionOutcomes: { ...c.state.decisionOutcomes },
         candidateIds: Object.keys(c.state.candidates),
@@ -1005,7 +1313,7 @@ export function createReflectionActor(
           .filter((candidate) => candidate.scope === scope)
           .map((candidate) => reflectionCandidateId(candidate.id));
         const checked = await Promise.all(
-          ids.slice(0, 20).map((id) => reviewCandidate(c, id, scope)),
+          ids.slice(0, 20).map((id) => reviewWithEvaluation(c, id, scope)),
         );
         const references = checked.flatMap((read) => {
           const dto = read && reviewDto(read);
@@ -1033,7 +1341,7 @@ export function createReflectionActor(
         )
           return false;
         const checked = await Promise.all(
-          references.map((ref) => reviewCandidate(c, ref.id, scope)),
+          references.map((ref) => reviewWithEvaluation(c, ref.id, scope)),
         );
         return checked.every(
           (read, index) =>
@@ -1052,7 +1360,7 @@ export function createReflectionActor(
           scope !== JSON.stringify(["private", deps.ownerId])
         )
           return null;
-        const read = await reviewCandidate(c, id, scope);
+        const read = await reviewWithEvaluation(c, id, scope);
         return read ? reviewDto(read) : null;
       },
       /** Host-admitted pending staging after inference settles; never acceptance. */
@@ -1168,6 +1476,15 @@ export function createReflectionActor(
                 ))
                   if (phase === "started") {
                     step.state.invocations[key] = "uncertain";
+                    const receipt = step.state.reflection.requests.find(
+                      (r) => JSON.stringify([r.id, r.attempts]) === key,
+                    )?.skillEvaluation;
+                    if (receipt && receipt.status !== "invalidated") {
+                      receipt.status = "uncertain";
+                      for (const item of receipt.cases)
+                        if (item.status === "started")
+                          item.status = "uncertain";
+                    }
                     recovered = true;
                   }
                 if (recovered) await step.vars.persist();
@@ -1186,6 +1503,9 @@ export function createReflectionActor(
                   );
                   return (
                     r.status === "pending" &&
+                    !step.vars.publishingEvaluations.has(r.id) &&
+                    (!r.evaluationFor ||
+                      r.skillEvaluation?.status === "pending") &&
                     !step.state.reflection.requests.some(
                       (other) =>
                         other.scope === r.scope &&
@@ -1215,9 +1535,16 @@ export function createReflectionActor(
                 ]);
                 let attempt: number | undefined;
                 let invocation = "";
+                const operationEpoch = step.state.epoch;
                 try {
                   const evidence = await retrieve(request, signal);
-                  if (signal.aborted || step.state.liveActive > 0) return;
+                  if (
+                    signal.aborted ||
+                    step.state.liveActive > 0 ||
+                    (request.evaluationFor &&
+                      operationEpoch !== step.state.epoch)
+                  )
+                    return;
                   if (!evidence) {
                     step.vars.replaceReflection(
                       cancel(step.state.reflection, request.id),
@@ -1249,6 +1576,97 @@ export function createReflectionActor(
                   invocation = JSON.stringify([request.id, attempt]);
                   step.state.invocations[invocation] = "started";
                   await step.vars.persist();
+                  if (request.evaluationFor) {
+                    const alias = request.evaluationFor;
+                    const currentRequest = () =>
+                      step.state.reflection.requests.find(
+                        (r) => r.id === request.id,
+                      );
+                    const canRun = () =>
+                      !signal.aborted &&
+                      operationEpoch === step.state.epoch &&
+                      !step.state.liveActive &&
+                      !isQuiet(Date.now(), deps.policy.quiet) &&
+                      currentRequest()?.status === "running";
+                    const persistReceipt = async () => {
+                      step.vars.publishingEvaluations.add(request.id);
+                      try {
+                        await step.vars.persist();
+                      } catch (error) {
+                        controller.abort();
+                        throw error;
+                      }
+                      step.vars.publishingEvaluations.delete(request.id);
+                    };
+                    const read = await readSkillEvaluation(
+                      step,
+                      alias,
+                      request.scope,
+                    );
+                    if (!read?.isCurrent() || !canRun()) return;
+                    await evaluateSkillCandidate(
+                      read.input,
+                      async (context, callSignal) => {
+                        const evidenceId = context.evidence[0]?.id;
+                        const before = await readSkillEvaluation(
+                          step,
+                          alias,
+                          request.scope,
+                        );
+                        const receipt = currentRequest()?.skillEvaluation;
+                        const item = receipt?.cases.find(
+                          (item) => item.evidenceId === evidenceId,
+                        );
+                        if (
+                          !before?.isCurrent() ||
+                          !receipt ||
+                          !item ||
+                          item.status !== "pending" ||
+                          !canRun()
+                        )
+                          return abstain("stale-or-invalid-evidence");
+                        receipt.status = "started";
+                        item.status = "started";
+                        await persistReceipt();
+                        // Persistence yields: recheck every source and the operation
+                        // fence again immediately before the shared provider call.
+                        const current = await readSkillEvaluation(
+                          step,
+                          alias,
+                          request.scope,
+                        );
+                        if (!current?.isCurrent() || !canRun())
+                          return abstain("stale-or-invalid-evidence");
+                        return deps.decide(
+                          {
+                            ...context,
+                            now: Date.now(),
+                            evidence: current.input.heldOutEvidence.filter(
+                              (e) => e.id === evidenceId,
+                            ),
+                          },
+                          callSignal,
+                        );
+                      },
+                      signal,
+                      async (result) => {
+                        const receipt = currentRequest()?.skillEvaluation;
+                        const item = receipt?.cases.find(
+                          (item) => item.evidenceId === result.evidenceId,
+                        );
+                        if (
+                          !receipt ||
+                          !item ||
+                          receipt.status === "invalidated"
+                        )
+                          return;
+                        item.status = "settled";
+                        item.decision = result.decision;
+                        await persistReceipt();
+                      },
+                    );
+                    return;
+                  }
                   const executionEvidence = await retrieve(request, signal);
                   if (
                     !executionEvidence ||
@@ -1383,9 +1801,27 @@ export function createReflectionActor(
                       ),
                     );
                     step.state.invocations[invocation] = "settled";
+                    const current = step.state.reflection.requests.find(
+                      (r) => r.id === request.id,
+                    );
+                    if (current?.skillEvaluation) {
+                      // An admitted evaluation is once-only, including partial
+                      // failure/abort. Never run the remaining cases on replay.
+                      if (current.status === "pending")
+                        current.status = "stopped";
+                      if (current.skillEvaluation.status !== "invalidated")
+                        current.skillEvaluation.status =
+                          current.skillEvaluation.cases.every(
+                            (item) => item.status === "settled",
+                          )
+                            ? "settled"
+                            : "uncertain";
+                      step.vars.publishingEvaluations.add(request.id);
+                    }
                   }
                   trimCandidates(step.state);
                   await step.vars.persist();
+                  step.vars.publishingEvaluations.delete(request.id);
                   // Publication linearizes at the final checks + synchronous
                   // candidate/settled assignment. Later occupancy revokes effects,
                   // not that publication; the flush ACK only gates read visibility.

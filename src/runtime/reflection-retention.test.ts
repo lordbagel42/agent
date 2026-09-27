@@ -276,3 +276,75 @@ it("reads both historical and simulated deep curiosity without rewriting either 
     expect(await actions.candidate(c, id)).toBeNull();
   }
 });
+
+it("bounds held-out result bodies with their publication while retaining dedupe and unknown holds", async () => {
+  const { c, actions, add, now } = await fixture();
+  c.state.candidateFormatVersion = 1;
+  const ids: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    const id = add(`evaluated-${i}`);
+    ids.push(id);
+    const candidate = required(c.state.candidates[id]);
+    candidate.createdAt = now - 1000 + i;
+    c.state.reflection.requests.push({
+      id: `evaluation-${i}`,
+      scope: candidate.scope,
+      evidenceIds: [
+        `evaluated-${i}`,
+        ...Array.from({ length: 5 }, (_, j) => `case-${i}-${j}`),
+      ],
+      kind: "reflection",
+      evaluationFor: reflectionCandidateId(id),
+      createdAt: now,
+      attempts: 1,
+      status: "stopped",
+      skillEvaluation: {
+        candidateId: reflectionCandidateId(id),
+        skillChangeId: `skill-${i}`,
+        candidateDigest: "c".repeat(64),
+        sourceRequestId: candidate.requestId,
+        heldOutEvidenceIds: Array.from(
+          { length: 5 },
+          (_, j) => `case-${i}-${j}`,
+        ),
+        status: "settled",
+        cases: Array.from({ length: 5 }, (_, j) => ({
+          evidenceId: `case-${i}-${j}`,
+          status: "settled",
+          decision: {
+            answer: "yes",
+            rationale: `PRIVATE${"夢".repeat(3993)}`,
+            evidenceIds: [`case-${i}-${j}`],
+          },
+        })),
+      },
+    });
+  }
+  c.state.invocations["uncertain-evaluation"] = "uncertain";
+  expect(JSON.stringify(actions.status(c)).includes("PRIVATE")).toBe(false);
+  await actions.occupancy(c, "trim-results", true);
+  expect(
+    Buffer.byteLength(
+      JSON.stringify({
+        candidates: c.state.candidates,
+        evaluations: c.state.reflection.requests.flatMap((r) =>
+          r.skillEvaluation ? [r.skillEvaluation] : [],
+        ),
+      }),
+    ),
+  ).toBeLessThanOrEqual(256 * 1024);
+  expect(c.state.candidates[required(ids[0])]).toBeUndefined();
+  expect(c.state.candidates[required(ids[5])]?.decision.rationale).toBe(
+    "evaluated-5",
+  );
+  expect(c.state.reflection.requests).toHaveLength(12);
+  expect(
+    c.state.reflection.requests.find((r) => r.id === "evaluation-0")
+      ?.evaluationFor,
+  ).toBe(reflectionCandidateId(required(ids[0])));
+  expect(c.state.invocations["uncertain-evaluation"]).toBe("uncertain");
+  expect(
+    c.state.reflection.requests.find((r) => r.id === "evaluation-0")
+      ?.skillEvaluation,
+  ).toMatchObject({ status: "invalidated" });
+});

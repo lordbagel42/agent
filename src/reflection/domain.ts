@@ -1,3 +1,5 @@
+import type { Decision } from "./evaluator.js";
+
 /** Scope and provenance are supplied by trusted ingress/memory, never a model. */
 export interface Evidence {
   id: string;
@@ -76,6 +78,8 @@ export interface RequestInput {
   scope: string;
   evidenceIds: string[];
   kind: "curiosity" | "reflection";
+  /** Host-validated immutable candidate alias; separates evaluation from generation. */
+  evaluationFor?: string;
 }
 
 export interface ReflectionRequest extends RequestInput {
@@ -83,6 +87,22 @@ export interface ReflectionRequest extends RequestInput {
   createdAt: number;
   attempts: number;
   status: "pending" | "running" | "cancelling" | "cancelled" | "stopped";
+  /** Receipt only; the immutable proposal body remains in candidate retention. */
+  skillEvaluation?: SkillEvaluationReceipt;
+}
+
+export interface SkillEvaluationReceipt {
+  candidateId: string;
+  skillChangeId: string;
+  candidateDigest: string;
+  sourceRequestId: string;
+  heldOutEvidenceIds: string[];
+  status: "pending" | "started" | "settled" | "uncertain" | "invalidated";
+  cases: {
+    evidenceId: string;
+    status: "pending" | "started" | "settled" | "uncertain";
+    decision?: Decision;
+  }[];
 }
 
 export interface ScopeProgress {
@@ -181,10 +201,16 @@ export function requestKey(input: RequestInput): string {
   if (
     !input.scope.trim() ||
     !input.evidenceIds.length ||
-    input.evidenceIds.some((id) => !id.trim())
+    input.evidenceIds.some((id) => !id.trim()) ||
+    (input.evaluationFor !== undefined &&
+      !/^[a-f0-9]{64}$/.test(input.evaluationFor))
   )
     throw new Error("Scope and evidence required");
-  return JSON.stringify([input.scope, [...new Set(input.evidenceIds)].sort()]);
+  return JSON.stringify([
+    input.scope,
+    [...new Set(input.evidenceIds)].sort(),
+    ...(input.evaluationFor === undefined ? [] : [input.evaluationFor]),
+  ]);
 }
 
 export function enqueue(

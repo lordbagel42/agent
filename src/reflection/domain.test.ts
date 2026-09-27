@@ -98,6 +98,29 @@ describe("serializable reflection admission", () => {
     expect(JSON.parse(JSON.stringify(again.state))).toEqual(again.state);
   });
 
+  it("separates exact skill evaluations from generation without changing existing keys", () => {
+    const generation = enqueue(initialState(), request, now);
+    expect(generation.id).toBe('["owner/dm",["a"]]');
+    const first = enqueue(
+      generation.state,
+      { ...request, evaluationFor: "a".repeat(64) },
+      now,
+    );
+    expect(first.accepted).toBe(true);
+    expect(first.id).not.toBe(generation.id);
+    expect(
+      enqueue(first.state, { ...request, evaluationFor: "a".repeat(64) }, now)
+        .accepted,
+    ).toBe(false);
+    expect(
+      enqueue(first.state, { ...request, evaluationFor: "b".repeat(64) }, now)
+        .accepted,
+    ).toBe(true);
+    expect(() =>
+      enqueue(first.state, { ...request, evaluationFor: "unbound" }, now),
+    ).toThrow();
+  });
+
   it("reserves capacity and holds cancellation capacity until work settles", () => {
     let state = initialState();
     const ids: string[] = [];
