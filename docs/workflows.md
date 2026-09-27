@@ -103,6 +103,14 @@ deployment. Forgetting invalidates old definitions/runs and suppresses results;
 it is not physical erasure of Rivet journals or backups. Keep the engine and
 inspector private and follow the repository's storage/retention policy.
 
+Resumable forgetting must call `workflowLibrary.invalidate(cutoff)` with a
+persisted cutoff: current deletion revision plus one, saved before tombstoning
+alongside the frozen cleanup targets. It removes only definitions, runs and
+versioned mutation receipts older than that cutoff. Reuse the same cutoff on
+every retry; equal/newer work survives. Legacy unversioned receipts retain their
+deduplication evidence because their age is unknown. Omitting the argument
+retains the administrative clear-all behavior and is not retry-safe forgetting.
+
 Limits: 24,000 source bytes; 16,384 JSON bytes per input, operation and result;
 32 MiB guest heap; 512 KiB guest stack; 2 seconds guest CPU per replay; 256
 operations per run; 8 tool calls per join; 30 days per delay/finite wait; 256

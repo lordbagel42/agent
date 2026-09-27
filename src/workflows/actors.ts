@@ -447,7 +447,7 @@ type RunRegistry = Registry<{
 interface LibraryState {
   definitions: Record<string, Definition>;
   runs: Record<string, RunSpec>;
-  receipts: Record<string, string>;
+  receipts: Record<string, string | { deletionRevision: number; text: string }>;
 }
 
 export function createWorkflowLibraryActor(deps: Dependencies) {
@@ -477,20 +477,36 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
           lock.resolve();
         }
       },
-      invalidate: async (c) => {
+      invalidate: async (c, beforeDeletionRevision?: number) => {
+        if (beforeDeletionRevision !== undefined)
+          z.number().int().nonnegative().parse(beforeDeletionRevision);
         const previous = c.vars.tail;
         const lock = Promise.withResolvers<void>();
         c.vars.tail = lock.promise;
         await previous;
         try {
-          c.state.definitions = {};
-          for (const id of Object.keys(c.state.runs))
+          const remove = (entry: { deletionRevision: number }) =>
+            beforeDeletionRevision === undefined ||
+            entry.deletionRevision < beforeDeletionRevision;
+          for (const [name, definition] of Object.entries(c.state.definitions))
+            if (remove(definition)) delete c.state.definitions[name];
+          for (const [id, spec] of Object.entries(c.state.runs)) {
+            if (!remove(spec)) continue;
             await c
               .client<RunRegistry>()
               .workflowRun.getOrCreate([deps.owner.id, id])
               .cancel(true);
-          c.state.runs = {};
-          c.state.receipts = {};
+            delete c.state.runs[id];
+          }
+          for (const [id, receipt] of Object.entries(c.state.receipts)) {
+            // Legacy receipts have no revision. Retain their deduplication
+            // evidence on bounded cleanup rather than guessing their age.
+            if (
+              beforeDeletionRevision === undefined ||
+              (typeof receipt !== "string" && remove(receipt))
+            )
+              delete c.state.receipts[id];
+          }
           await c.saveState({ immediate: true });
         } finally {
           lock.resolve();
@@ -521,8 +537,13 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
           const write = ["define", "start", "signal", "cancel"].includes(
             command.action,
           );
-          if (write && Object.hasOwn(c.state.receipts, receiptId))
-            return c.state.receipts[receiptId] as string;
+          if (write && Object.hasOwn(c.state.receipts, receiptId)) {
+            const receipt = c.state.receipts[receiptId];
+            if (typeof receipt === "string") return receipt;
+            if (!receipt || receipt.deletionRevision !== deletionRevision)
+              throw new Error("workflow_revoked");
+            return receipt.text;
+          }
           if (
             write &&
             command.action !== "cancel" &&
@@ -671,7 +692,7 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
             throw new Error("workflow_revoked");
           const text = JSON.stringify(report);
           if (write && Object.keys(c.state.receipts).length < 1024) {
-            c.state.receipts[receiptId] = text;
+            c.state.receipts[receiptId] = { deletionRevision, text };
             await c.saveState({ immediate: true });
           }
           if (text.length <= 3000 && command.offset === 0) return text;

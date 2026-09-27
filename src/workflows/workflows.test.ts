@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { expect, it } from "vitest";
 import { z } from "zod";
 import { setupTest } from "../../tests/rivet.js";
@@ -6,6 +7,7 @@ import type {
   MessageEvent,
   OutboundMessage,
 } from "../core/contracts.js";
+import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { createLifecycle } from "../runtime/lifecycle.js";
 import { createJuneRegistry } from "../runtime/registry.js";
@@ -335,3 +337,66 @@ it("stops uncertain effects, rejects duplicate names, and suppresses late result
   release?.();
   expect(calls).toEqual(["unknown", "once", "late"]);
 }, 45_000);
+
+it("retries revision-bound forgetting without erasing newer runs, definitions or receipts", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const registry = createJuneRegistry({
+    owner,
+    channels: {},
+    model: {
+      async reply() {
+        return { text: "" };
+      },
+    },
+    memory: { store, source: () => undefined },
+    workflows: { tools: {} },
+  });
+  const { client } = await setupTest(t, registry);
+  const library = client.workflowLibrary.getOrCreate([owner.id]);
+  const manage = (id: string, action: string, extra = {}) =>
+    library.manage(
+      event(id),
+      id,
+      command(action, extra),
+      store.deletionRevision(),
+    );
+  await manage("old", "start", {
+    name: "kept",
+    source: 'await workflow.wait("hold");',
+  });
+  store.deleteSource("forgotten-source");
+  const cutoff = store.deletionRevision();
+  expect(cutoff).toBe(1);
+  const started = JSON.parse(
+    await manage("new", "start", {
+      name: "kept",
+      source: "return 17;",
+    }),
+  );
+  const run = client.workflowRun.getOrCreate([owner.id, started.runId]);
+  await expect
+    .poll(async () => (await run.inspect()).result, { timeout: 15000 })
+    .toBe(17);
+  const saved = await manage("saved", "define", {
+    name: "kept",
+    source: "return 29;",
+  });
+  await manage("edited", "define", { name: "kept", source: "return 31;" });
+  for (let retry = 0; retry < 2; retry++) {
+    await library.invalidate(cutoff);
+    // If cleanup discarded this receipt, replay would overwrite the newer edit.
+    expect(
+      await manage("saved", "define", { name: "kept", source: "return 29;" }),
+    ).toBe(saved);
+    expect(
+      JSON.parse(await manage("inspect", "inspect", { name: "kept" })).source,
+    ).toBe("return 31;");
+    expect((await run.inspect()).result).toBe(17);
+    expect(
+      JSON.parse(await manage("list", "list")).runs.map(
+        (r: { runId: string }) => r.runId,
+      ),
+    ).toEqual([started.runId]);
+  }
+}, 30_000);
