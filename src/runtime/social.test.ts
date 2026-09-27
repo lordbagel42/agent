@@ -17,6 +17,12 @@ import { routeEvent } from "../core/routing.js";
 import { RAYGEN_SLACK_ID, type SocialAction } from "../core/social.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
+import {
+  beginSessionMigration,
+  finishSessionMigration,
+  inspectLegacyDrain,
+  observeLegacyBarrier,
+} from "../sessions/migration.js";
 import { createLifecycle } from "./lifecycle.js";
 import { createPriorityAdmission } from "./priority.js";
 import {
@@ -1485,6 +1491,29 @@ it("delivers a reviewed interruption once through June, retaining quiet holds an
   };
   await command(`!allow ${uncertain}`);
   expect(recipientMessages()).toHaveLength(2);
+  const unknownApprovalId = createHash("sha256")
+    .update(JSON.stringify(["slack", "T1", `review-${turn}`]))
+    .digest("hex");
+  const migrationSnapshot = await conversation.snapshot();
+  expect(
+    migrationSnapshot.legacyCoverage?.turns[unknownApprovalId]?.untrackedEffect,
+  ).toBe(true);
+  // Exercise only a copy: archival coverage and a FIFO barrier cannot certify
+  // the independent social outbox's unknown recipient delivery.
+  const migration = beginSessionMigration(
+    migrationSnapshot,
+    ["private", owner.id],
+    "e".repeat(64),
+  );
+  observeLegacyBarrier(migrationSnapshot, migration.epoch, migration.barrier);
+  migration.archivedInputs = [...migration.legacyInputs];
+  const replayed = JSON.parse(JSON.stringify(migrationSnapshot));
+  expect(inspectLegacyDrain(replayed, ["private", owner.id]).reasons).toEqual([
+    "untrackedTurnEffects",
+  ]);
+  expect(() =>
+    finishSessionMigration(replayed, ["private", owner.id]),
+  ).toThrow();
   const reopened = new SocialPermissions(options);
   try {
     for (const [proposal, status] of [

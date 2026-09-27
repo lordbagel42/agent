@@ -21,6 +21,7 @@ import {
   reflectionDriveHalfLifeMs,
   reflectionPriority,
 } from "../reflection/domain.js";
+import type { inspectLegacyDrain } from "../sessions/migration.js";
 import type { McpConnections } from "../tools/connections.js";
 import type { Delivery } from "./delivery.js";
 import { executionLimits } from "./execution.js";
@@ -341,7 +342,7 @@ export function outstandingOperationMetadata(state: {
 
 export type OutstandingOperationSnapshot = ReturnType<
   typeof outstandingOperationMetadata
->;
+> & { migration?: ReturnType<typeof inspectLegacyDrain> };
 
 function jsonPage(json: string, offset: number) {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > json.length)
@@ -485,7 +486,7 @@ export function createInspectionReader(deps: {
           .catch(() => undefined);
         if (!snapshot)
           return `${health}\nDurable operation diagnostics are unavailable; unresolved counts are unknown, not zero. Settlement cannot be inferred.`;
-        return `${health}\nOwner-private conversation markers only, not all actors or external operations. ${JSON.stringify(snapshot)}\nListed operations are unresolved, not failed or successful. Started/sending may still be active, including this inspection's model turn. Uncertain/unknown has no confirmed outcome. Settled invocations are omitted, not proof of success. Missing marker maps and zero counts do not establish complete coverage; older operations may be unrecorded. Process health, idle state and restart do not prove settlement or stoppage. IDs are hashed; no message bodies, queries, destinations, errors or credentials are returned. No retry, cancellation, reconciliation or admission release was performed.`;
+        return `${health}\nOwner-private conversation markers only, not all actors or external operations. ${JSON.stringify(snapshot)}\nListed operations are unresolved, not failed or successful. Started/sending may still be active, including this inspection's model turn. Uncertain/unknown has no confirmed outcome. Settled invocations are omitted, not proof of success. Missing marker maps and zero counts do not establish complete coverage; older operations may be unrecorded. Process health, idle state and restart do not prove settlement or stoppage. Migration reasons are separate conservative cutover holds, not failures or new permissions; absent migration metadata is unknown. Provider settlement, exact barrier/admission accounting and archival coverage are all required. confirmedStopped alone does not resolve message delivery or permit replay. No conversation-clearing endpoint is available under this migration. IDs are hashed; no message bodies, queries, destinations, errors or credentials are returned. No retry, cancellation, reconciliation or admission release was performed.`;
       }
       case "mcp-connections":
         return deps.mcp

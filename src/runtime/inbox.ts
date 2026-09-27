@@ -48,7 +48,13 @@ export interface ConversationIngress {
   sequence: number;
   receipts: Record<
     string,
-    { sequence: number; receivedAt: number; kind: "message" | "notification" }
+    {
+      sequence: number;
+      receivedAt: number;
+      kind: "message" | "notification";
+      /** Absent old receipts remain legacy, never retroactively reassigned. */
+      lane?: "legacy" | "session";
+    }
   >;
 }
 
@@ -66,6 +72,7 @@ export function recordConversationIngress(
   state.receipts[id] = {
     sequence: ++state.sequence,
     receivedAt: state.receivedThrough,
+    lane: "legacy",
     kind:
       input.type === "event" && input.event.type === "message"
         ? "message"

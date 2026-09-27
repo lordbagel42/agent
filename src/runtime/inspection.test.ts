@@ -989,6 +989,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(operations).toContain(
     "Process health, idle state and restart do not prove settlement",
   );
+  expect(operations).toContain('"migration":{"phase":"legacy"');
+  expect(operations).toContain("modelSettlementUnproven");
+  expect(operations).toContain("barrierNotObserved");
+  expect(operations).toContain(
+    "confirmedStopped alone does not resolve message delivery or permit replay",
+  );
   expect(requests.at(-1)?.system).toContain('set inspection to "operations"');
   expect(requests).toHaveLength(9);
   expect(reads).toBe(8);

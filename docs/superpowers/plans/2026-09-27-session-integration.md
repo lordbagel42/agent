@@ -61,7 +61,7 @@ legacy -> draining(epoch, barrier, frozen legacy admissions, coverage, holds)
 - [ ] Fence new legacy admission under the existing receive serializer, repair saved legacy publication gaps, then enqueue one stable barrier. New input waits durably without blocking ingress on the whole drain.
 - [ ] Add a post-receive workflow version branch for routing control. Old iterations retain their original journal path; no retroactive effect invocation or successful receipt is manufactured.
 - [ ] Require the exact barrier, all frozen admissions, complete historical effect coverage, no live/uncertain effects or pending retries, and acknowledged archival coverage before activation. Missing historical coverage remains held. Re-published legacy admissions behind the token still prevent activation.
-- [ ] Expose bounded hold reasons through owner-private inspection. Keep inspection read-only; it cannot clear, retry or reclassify an effect.
+- [x] Expose bounded hold reasons through owner-private operations inspection. Keep inspection read-only; it cannot clear, retry or reclassify an effect.
 
 Prospective admission alone is not a migration certificate. It does not change
 session routing or certify existing model/web invocations or delivery outcomes.
@@ -71,6 +71,24 @@ and a callback admitted between frozen forget targets and ledger tombstoning;
 cleanup matches those callbacks to the frozen jobs/workers/origins, preserving
 unrelated fresh work. Legacy `##` callbacks are acknowledged without retaining or
 publishing the excluded input.
+
+The migration transition module and prospective coverage receipts are prepared;
+the runtime does not yet initiate a handoff or publish/consume its barrier.
+Creation-only lineage comes from `onCreate`, never static state defaults or
+`onWake`: Rivet 2.3.21 can reconstruct default state for an existing actor's empty
+snapshot. Missing lineage remains held, including after new turns finish.
+The gate currently admits only fully covered, archived turns without recorded
+conversation model/web invocations or untracked app/social approvals. All existing
+model/web markers remain held even when labelled settled: HTTP local timeouts and
+hot Codex answers before retirement do not provide a generic provider settlement
+receipt. No reconciliation action or provider contract is invented here. These
+checks are not an activation claim; actor routing and archive acknowledgments
+still need wiring below.
+
+Review found that no-model `!allow` commands can deliver through the independent
+social outbox. They now record a write-ahead coverage hold before dispatch; the
+existing interruption fixture reproduces an unknown recipient send alongside a
+successful owner acknowledgment and requires the hold to survive serialization.
 
 ## Task 4: Distinct activity actors and late results
 

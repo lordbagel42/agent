@@ -148,6 +148,13 @@ const registry = createJuneRegistry({
 const conversationConfig = registry.config.use.conversation.config;
 if (!("createVars" in conversationConfig) || !conversationConfig.createVars)
   throw new Error("Missing conversation vars");
+// One fixture begins with legacy state. Upgrading the host must not mint a
+// creation-only lineage marker on wake, even when new turns subsequently finish.
+if (
+  process.env.FIXTURE_PHASE === "interrupt" &&
+  process.env.FIXTURE_CODING_BOUNDARY === "before-session"
+)
+  delete conversationConfig.onCreate;
 const createVars = conversationConfig.createVars;
 conversationConfig.createVars = async (c, input) => {
   const vars = await createVars(c, input);

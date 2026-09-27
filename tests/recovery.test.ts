@@ -211,6 +211,14 @@ it.for(["before-session", "after-session"])(
       firstReceiptStart,
     );
     expect(admissionReceipt?.receivedAt).toBeLessThanOrEqual(Date.now());
+    expect(admissionReceipt?.lane).toBe("legacy");
+    if (humanAdmission)
+      expect(beforeAdmissionCrash.legacyCoverage).toBeUndefined();
+    else
+      expect(beforeAdmissionCrash.legacyCoverage).toMatchObject({
+        version: 1,
+        scope: '["private","fixture"]',
+      });
     const exited = once(first, "exit");
     first.kill("SIGKILL");
     await exited;
@@ -463,6 +471,15 @@ it.for(["before-session", "after-session"])(
     expect(recovered.ingress?.receipts[admissionId]).toEqual(admissionReceipt);
     expect(recovered.pendingInputs).toEqual({});
     expect(recovered.pendingNotifications).toEqual({});
+    if (humanAdmission) expect(recovered.legacyCoverage).toBeUndefined();
+    else
+      expect(recovered.legacyCoverage?.turns[admissionId]).toEqual({
+        finished: true,
+      });
+    const drain = (await june.outstandingOperations()).migration;
+    expect(drain.ready).toBe(false);
+    expect(drain.reasons).toContain("modelSettlementUnproven");
+    expect(drain.reasons.includes("missingCoverage")).toBe(humanAdmission);
     expect(
       messages.filter((message) => message.kind === "notification"),
     ).toHaveLength(1);

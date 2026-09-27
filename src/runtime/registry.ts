@@ -28,6 +28,11 @@ import type { EvidenceStore, Source } from "../memory/store.js";
 import type { JevObserver, JevQuestion } from "../models/jev.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type { createJuryTool } from "../reflection/jury.js";
+import {
+  inspectLegacyDrain,
+  type LegacyCoverage,
+  type SessionMigration,
+} from "../sessions/migration.js";
 import type { McpConnections } from "../tools/connections.js";
 import type {
   WebSearchCitation,
@@ -218,6 +223,8 @@ export interface ConversationState extends ScopeCatalog {
   >;
   /** Prospective host receipts, not proof of legacy effect coverage. */
   ingress?: ConversationIngress;
+  legacyCoverage?: LegacyCoverage;
+  migration?: SessionMigration;
   latestInputs?: Record<string, { id: string; occurredAt: number }>;
   memoryContexts?: Record<string, MemoryReference>;
   forgottenEvents?: string[];
@@ -359,6 +366,16 @@ export function createJuneRegistry(deps: Dependencies) {
       jobs: {},
       lastInbound: {},
     } as ConversationState,
+    onCreate: (c) => {
+      // Not a default-state field: Rivet may reconstruct initial state during
+      // recovery of an existing actor's empty snapshot without calling onCreate.
+      // A lost creation marker holds migration rather than inventing coverage.
+      c.state.legacyCoverage = {
+        version: 1,
+        scope: JSON.stringify(c.key),
+        turns: {},
+      };
+    },
     createVars: (
       c,
     ): { persist: () => Promise<void>; receiving: Promise<void> } => ({
@@ -545,7 +562,10 @@ export function createJuneRegistry(deps: Dependencies) {
           throw new Error(
             "Durable diagnostics require the owner-private conversation",
           );
-        return outstandingOperationMetadata(c.state);
+        return {
+          ...outstandingOperationMetadata(c.state),
+          migration: inspectLegacyDrain(c.state, c.key),
+        };
       },
       canResumeJob: (c, id: string) => {
         const reference = c.state.memoryContexts?.[id];
@@ -840,6 +860,10 @@ export function createJuneRegistry(deps: Dependencies) {
             2,
           );
           const ingressVersion = await loop.getVersion("durable-ingress", 2);
+          const coverageVersion = await loop.getVersion(
+            "legacy-effect-coverage",
+            2,
+          );
           const body = message.body;
           // Old actors can be asleep in a pre-v9 queue wait. A wakeup could
           // never have entered those old journals, so its new path is safe.
@@ -1073,6 +1097,8 @@ export function createJuneRegistry(deps: Dependencies) {
                   return false;
                 }
                 step.state.events[eventId] = { event, done: false };
+                if (coverageVersion >= 2 && step.state.legacyCoverage)
+                  step.state.legacyCoverage.turns[eventId] = {};
                 if (
                   event.type === "message" &&
                   body.type === "event" &&
@@ -1646,6 +1672,13 @@ export function createJuneRegistry(deps: Dependencies) {
                     return {
                       text: "Send !deploy-app as a fresh plain-text owner Slack DM, not a quote, code block, attachment or forwarded message. No deployment was approved.",
                     };
+                  // The app client owns external deployment receipts; its text
+                  // response (including caught failures) is no drain proof here.
+                  const coverage = step.state.legacyCoverage?.turns[eventId];
+                  if (coverage) {
+                    coverage.untrackedEffect = true;
+                    await step.vars.persist();
+                  }
                   return {
                     text:
                       plan.apps &&
@@ -1837,22 +1870,31 @@ export function createJuneRegistry(deps: Dependencies) {
                 deps.social?.command(event)
               ) {
                 const social = deps.social;
-                reply = await loop.step("social-command", async (step) => ({
-                  text: await social.decide(
-                    event,
-                    interruptionReview && deps.reflection && valid(step.state)
-                      ? (proposalId, reference, commandId) =>
-                          step
-                            .client<JuneClientRegistry>()
-                            .reflection.getOrCreate([deps.owner.id])
-                            .deliverInterruption(
-                              proposalId,
-                              reference,
-                              commandId,
-                            )
-                      : undefined,
-                  ),
-                }));
+                reply = await loop.step("social-command", async (step) => {
+                  // !allow can send through the independent social outbox. An
+                  // acknowledgment string cannot prove the recipient's outcome.
+                  const coverage = step.state.legacyCoverage?.turns[eventId];
+                  if (coverage && social.command(event)?.[1] === "allow") {
+                    coverage.untrackedEffect = true;
+                    await step.vars.persist();
+                  }
+                  return {
+                    text: await social.decide(
+                      event,
+                      interruptionReview && deps.reflection && valid(step.state)
+                        ? (proposalId, reference, commandId) =>
+                            step
+                              .client<JuneClientRegistry>()
+                              .reflection.getOrCreate([deps.owner.id])
+                              .deliverInterruption(
+                                proposalId,
+                                reference,
+                                commandId,
+                              )
+                        : undefined,
+                    ),
+                  };
+                });
               } else if (command) {
                 reply = await loop.step(
                   "coding-command",
@@ -4776,6 +4818,8 @@ export function createJuneRegistry(deps: Dependencies) {
             await loop.step("finish-event", async (step) => {
               const record = step.state.events[eventId];
               if (record) record.done = true;
+              const coverage = step.state.legacyCoverage?.turns[eventId];
+              if (coverageVersion >= 2 && coverage) coverage.finished = true;
               await step.vars.persist();
             });
             if (body.type === "event" && event.type === "message")
