@@ -127,6 +127,79 @@ includes provider error text. Expiry is not a ready/healthy claim, and does not 
 anything: each further page still needs explicit operator confirmation. Status
 inspection makes no provider/credential calls and schedules no retries.
 
+## Small-import envelope and configured ceiling
+
+Configure the single ledger-wide budget above through `memory.importBudget`.
+Optional `sources`, `claims` and `serializedBytes` overrides are positive safe
+integers; omitted fields retain the store defaults. For example, to reduce only
+the byte ceiling:
+
+```json
+{
+  "memory": {
+    "directory": "/private/june-memory",
+    "keyEnv": "MEMORY_KEY",
+    "importBudget": { "serializedBytes": 2097152 }
+  }
+}
+```
+
+June can request owner-private `inspection: "imports"` for the effective limits,
+last in-process budget rejection, and this measured guidance. `inspection:
+"memory"` reports process-local retrieval/persistence counters since opening;
+they reset on restart, are not percentiles, and do not include network/model
+latency. No imports or model calls run for inspection. A missing last rejection
+does not prove that another page will fit. Larger configured limits remain
+operator overrides, not an expanded measured support claim. The 1,000-claim
+default is a protective ceiling, not a claim-heavy performance guarantee. This is
+small-import support, not a whole-mailbox archive or a provider response limit.
+
+### Bounded disposable measurements (LEGION, 2026-09-27)
+
+Node 24.21.0, Intel i9-14900HX, disk-backed disposable SQLite with the store's
+normal encrypted snapshot, DELETE journal and FULL synchronization. One process,
+one synthetic owner audience, no claims or model extraction, no network or
+production access. Each run seeded bounded pages, then timed five final
+15-source `HistoryImports.start` calls with per-source tombstone filtering and
+seven `retrieve` calls (result limit 20 / character budget 16,000; all sources
+match). Times include synchronous work, not provider cooldown waits. Source
+bodies were ASCII; UTF-8 byte-boundary enforcement was checked separately.
+
+Initial baselines below predate page-budget enforcement and timing counters;
+they are exploratory comparisons, not measurements of the instrumented revision.
+
+| Sources | Full snapshot bytes | Page median / max | Retrieval median / max |
+| --- | --- | --- | --- |
+| 1,000 | 1,661,346 | 119 / 145 ms | 20 / 22 ms |
+| 1,000 | 4,191,346 | 202 / 222 ms | 25 / 28 ms |
+| 10,000 (exploration, above defaults) | 16,610,348 | 1,159 / 1,683 ms | 212 / 256 ms |
+
+With page-budget enforcement and both operation counters:
+
+| Revision | Sources | Full snapshot bytes | Page median / max | Retrieval median / max |
+| --- | --- | --- | --- | --- |
+| [Before import membership](https://github.com/lordbagel42/agent/commit/4e60549ead5f592e6bbf010a90b4fbb272a370c4) | 1,000 | 4,191,385 | 295 / 314 ms | 31 / 37 ms |
+| [With import membership](https://github.com/lordbagel42/agent/commit/339d2d42bff5475ef7ca6617c1fb96c1e5b5563e) | 1,000 | 4,189,439 | 179 / 237 ms | 24 / 32 ms |
+
+The final run used 4,170 serialized bytes/source (down from 4,190 to leave room
+for selection/source membership), an 8,327,168-byte SQLite file and approximately
+387 MiB peak process RSS. Its counters recorded 17 completed persistence attempts
+(including setup) totaling 370.9 ms, maximum 27.6 ms, and seven completed retrievals
+totaling 170.5 ms, maximum 31.5 ms; neither had failures.
+June's memory and imports inspections exposed the counters and limits without
+fetching a page. The shared host's one-minute loads were 16.01 and 6.66 respectively,
+versus about 4 in the baselines; these runs do not isolate instrumentation or
+membership overhead.
+
+Disk/RAM headroom must exceed the JSON cap. These small samples support starting
+at 1,000 sources / 4 MiB, not an SLA or proof that all workloads below the cap are
+fast. Claim-heavy graphs,
+large bodies, accumulated metadata, multiple audiences, slower hardware, concurrent
+live work and remote APIs were not characterized. Retrieval and persistence
+reprocess the snapshot synchronously; monitor the actual host's counters and
+lower the cap if latency interferes with live conversations. Do not load-test
+production or infer whole-account archival support from this fixture.
+
 ## Canonical sources and live overlap
 
 Both live Slack ingestion and this historical connector must call the exported

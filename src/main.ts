@@ -503,6 +503,7 @@ async function main() {
     const store = new EvidenceStore(
       join(config.memory.directory, "evidence.sqlite"),
       key,
+      config.memory.importBudget,
     );
     key.fill(0);
     let personality: CuratedPersonalityStore | undefined;

@@ -685,11 +685,11 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(memoryReport.length).toBeLessThan(4000);
   action = { text: "", inspection: "imports" };
   const importReport = await deliver();
-  expect(importReport).toContain("Configured selections: 12; showing 10");
+  expect(importReport).toContain("Configured selections: 12; showing 4");
   expect(importReport).toContain('"pages":1,"complete":false');
-  expect(importReport.match(/"notBefore":1000000/g)).toHaveLength(10);
-  expect(importReport.match(/"cooldownReason":"rate_limit"/g)).toHaveLength(10);
-  expect(importReport.match(/"coolingDown":true/g)).toHaveLength(10);
+  expect(importReport.match(/"notBefore":1000000/g)).toHaveLength(4);
+  expect(importReport.match(/"cooldownReason":"rate_limit"/g)).toHaveLength(4);
+  expect(importReport.match(/"coolingDown":true/g)).toHaveLength(4);
   expect(importReport).toContain("not provider readiness");
   expect(importReport).toContain("no polling or automatic retry");
   expect(importReport).toContain('"lastConflict":"immutable_source"');
@@ -712,7 +712,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(importReport).toContain(
     "Zero recorded gaps is not proof of completeness",
   );
-  expect(importReport.length).toBeLessThan(6000);
+  expect(importReport.length).toBeLessThan(4000);
   action = { text: "", inspection: "reflection" };
   const reflectionReport = await deliver();
   expect(reflectionReport).toContain('"pending":1,"running":0');

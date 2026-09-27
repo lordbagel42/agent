@@ -254,6 +254,13 @@ const schema = z
       .strictObject({
         directory: absolutePath,
         keyEnv: envName,
+        importBudget: z
+          .strictObject({
+            sources: z.number().int().positive().safe().optional(),
+            claims: z.number().int().positive().safe().optional(),
+            serializedBytes: z.number().int().positive().safe().optional(),
+          })
+          .optional(),
         extraction: decisionModel
           .pick({ protocol: true, model: true, apiKeyEnv: true, baseUrl: true })
           .optional(),
