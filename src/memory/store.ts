@@ -203,6 +203,13 @@ export class ImmutableSourceConflictError extends Error {
   }
 }
 
+// Process-local cancellation only. Durable tombstones/admission remain the
+// authority, including when another store instance performs the deletion.
+const activeExtractions = new WeakMap<
+  EvidenceStore,
+  Map<AbortController, string[]>
+>();
+
 // Never include input data in validation errors (these may reach operator logs).
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
@@ -228,7 +235,7 @@ function dependencies(claim: Claim): string[] {
   ];
 }
 
-function removeEvidence(state: State, sourceIds: string[]): void {
+function removeEvidence(state: State, sourceIds: string[]): Set<string> {
   const removed = new Set(sourceIds);
   // References only point backwards, but fixed point also handles rebuilding.
   let changed = true;
@@ -262,6 +269,7 @@ function removeEvidence(state: State, sourceIds: string[]): void {
   for (const entry of state.extractions)
     entry.proposalIds = entry.proposalIds.filter((id) => !removed.has(id));
   state.tombstones = [...new Set([...state.tombstones, ...removed])];
+  return removed;
 }
 
 // Count records and measure the exact supplied object, including its metadata.
@@ -1358,11 +1366,17 @@ export class EvidenceStore {
 
   deleteSource(sourceId: string): void {
     parse(id, sourceId);
+    let removed = new Set<string>();
     this.transaction((state) => {
       if (state.claims.some((c) => c.id === sourceId))
         throw new Error("Expected source ID");
-      removeEvidence(state, [sourceId]);
+      removed = removeEvidence(state, [sourceId]);
     });
+    // Tombstone first: abort listeners must observe the committed deletion.
+    // Do not release admission here; the provider may ignore cancellation.
+    for (const [controller, evidenceIds] of activeExtractions.get(this) ?? [])
+      if (evidenceIds.some((id) => removed.has(id)))
+        controller.abort(new Error("Memory changed during extraction"));
   }
 
   rebuildIndex(): void {
@@ -1548,12 +1562,29 @@ export async function extractMemory(
     limit: 20,
     maxCharacters: 16000,
   });
-  const output = await extract(sources, claims, signal);
-  signal?.throwIfAborted();
-  // Even an unreferenced context claim may have influenced the proposal text.
-  if (store.deletionRevision() !== revision)
-    throw new Error("Memory changed during extraction");
-  return store.stageProposals(audience, selected, output);
+  const controller = new AbortController();
+  const combined = signal
+    ? AbortSignal.any([signal, controller.signal])
+    : controller.signal;
+  let active = activeExtractions.get(store);
+  if (!active) {
+    active = new Map();
+    activeExtractions.set(store, active);
+  }
+  active.set(controller, [...selected, ...claims.map((claim) => claim.id)]);
+  try {
+    // Await the provider itself, not an abort race that could free admission
+    // while an uncooperative provider is still running.
+    const output = await extract(sources, claims, combined);
+    combined.throwIfAborted();
+    // Even an unreferenced context claim may have influenced the proposal text.
+    if (store.deletionRevision() !== revision)
+      throw new Error("Memory changed during extraction");
+    return store.stageProposals(audience, selected, output);
+  } finally {
+    active.delete(controller);
+    if (!active.size) activeExtractions.delete(store);
+  }
 }
 
 /** Read-only ingestion: no tools, actions, instruction replay, or model calls.

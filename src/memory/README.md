@@ -326,8 +326,14 @@ even across different batches. IDs already bind immutable source records; change
 content under the same ID still fails ingestion rather than being merged.
 This does not prevent a provider call: runtime intent tracking
 owns paid-call retries. The async helper awaits actual provider settlement;
-abort/deletion prevents later staging. Older snapshots have no admission receipts;
-their first post-upgrade admission records one without rewriting existing proposals.
+forgetting a batch source or a comparison claim's underlying evidence first
+commits tombstones, then aborts matching extractions on that store instance.
+It does not signal unrelated batches or release admission early. A provider may
+ignore abort; its eventual output is still rejected. Deletion through another
+process/store instance cannot signal these local providers, but the durable
+staging checks still reject their output. Older snapshots have no admission
+receipts; their first post-upgrade admission records one without rewriting
+existing proposals.
 
 Operator APIs:
 

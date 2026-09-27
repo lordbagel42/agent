@@ -1309,12 +1309,98 @@ it("projects only scoped reviewed patterns with intact provenance and forgets th
   expect(open(path).store.reviewedPatterns("private")).toEqual([]);
 });
 
-it("does not publish an extraction completed after deletion or turn historical messages into owner corrections", async () => {
+it("aborts a forgotten extraction batch without settling an uncooperative provider or cancelling unrelated extraction", async () => {
   const { store } = open();
+  for (const id of ["cited", "uncited", "unrelated"])
+    store.appendSource(source(id));
+  const output = (id: string): MemoryProposalInput[] => [
+    {
+      subjectSourceId: id,
+      text: "a private hypothesis",
+      category: "preference",
+      citations: [{ sourceId: id, quote: "sensitive kumquat" }],
+      confidence: 0.6,
+      validFrom: null,
+      validTo: null,
+      contradicts: [],
+      supersedes: [],
+    },
+  ];
+  const provider = Promise.withResolvers<MemoryProposalInput[]>();
+  const unrelatedProvider = Promise.withResolvers<MemoryProposalInput[]>();
+  const caller = new AbortController();
+  let providerSignal: AbortSignal | undefined;
+  let unrelatedSignal: AbortSignal | undefined;
+  let tombstonedOnAbort = false;
+  let settled = false;
+  const pending = extractMemory(
+    store,
+    "private",
+    ["cited", "uncited"],
+    async (_sources, _claims, signal) => {
+      providerSignal = signal;
+      signal?.addEventListener("abort", () => {
+        tombstonedOnAbort = store.isDeleted("uncited");
+      });
+      return provider.promise;
+    },
+    caller.signal,
+  );
+  void pending.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  const unrelated = extractMemory(
+    store,
+    "private",
+    ["unrelated"],
+    async (_sources, _claims, signal) => {
+      unrelatedSignal = signal;
+      return unrelatedProvider.promise;
+    },
+  );
+  // The provider eventually cites only "cited", but it saw "uncited" too.
+  store.deleteSource("uncited");
+  expect(providerSignal?.aborted).toBe(true);
+  expect(tombstonedOnAbort).toBe(true);
+  expect(caller.signal.aborted).toBe(false);
+  expect(unrelatedSignal?.aborted).toBe(false);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+  const rejected = expect(pending).rejects.toThrow();
+  // Preserve the conservative ledger-revision barrier even for an unrelated
+  // batch: no abort is sent, but output spanning any deletion is discarded.
+  const invalidated = expect(unrelated).rejects.toThrow(
+    "Memory changed during extraction",
+  );
+  provider.resolve(output("cited"));
+  unrelatedProvider.resolve(output("unrelated"));
+  await Promise.all([rejected, invalidated]);
+  expect(store.proposals("private")).toEqual([]);
+  const admitted = await extractMemory(
+    store,
+    "private",
+    ["unrelated"],
+    async () => output("unrelated"),
+  );
+  expect(admitted).toHaveLength(1);
+  expect(store.proposals("private")).toEqual(admitted);
+  expect(admitted[0]?.claim.dependsOn).toEqual(["unrelated"]);
+  expect(store.source("private", "cited")).toBeDefined();
+});
+
+it("does not publish an extraction completed after deletion or turn historical messages into owner corrections", async () => {
+  const { store, path } = open();
+  const other = open(path).store;
   store.appendSource(source());
   await expect(
     extractMemory(store, "private", ["s1"], async () => {
-      store.deleteSource("s1");
+      // A separate store cannot abort this provider; admission must still fail.
+      other.deleteSource("s1");
       return [];
     }),
   ).rejects.toThrow();
@@ -1372,23 +1458,29 @@ it("scopes extraction claims, excludes opted-out derivatives, and rejects deleti
     return [];
   });
   await expect(
-    extractMemory(store, "private", ["s1"], async (_sources, claims) => {
-      expect(claims).toEqual([claim]);
-      store.deleteSource("prior");
-      return [
-        {
-          subjectSourceId: "s1",
-          text: "a proposal influenced by deleted context",
-          category: "claim",
-          citations: [{ sourceId: "s1", quote: "sensitive kumquat" }],
-          confidence: 0.5,
-          validFrom: null,
-          validTo: null,
-          contradicts: [],
-          supersedes: [],
-        },
-      ];
-    }),
+    extractMemory(
+      store,
+      "private",
+      ["s1"],
+      async (_sources, claims, signal) => {
+        expect(claims).toEqual([claim]);
+        store.deleteSource("prior");
+        expect(signal?.aborted).toBe(true);
+        return [
+          {
+            subjectSourceId: "s1",
+            text: "a proposal influenced by deleted context",
+            category: "claim",
+            citations: [{ sourceId: "s1", quote: "sensitive kumquat" }],
+            confidence: 0.5,
+            validFrom: null,
+            validTo: null,
+            contradicts: [],
+            supersedes: [],
+          },
+        ];
+      },
+    ),
   ).rejects.toThrow("Memory changed during extraction");
   expect(store.proposals("private")).toEqual([]);
 });
