@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import { afterEach, expect, test } from "vitest";
 import { createConnectionRoutes } from "../src/console/connections.js";
 import type { ModelRequest } from "../src/core/contracts.js";
-import { parseReply } from "../src/models/provider.js";
+import { parseReply, replyJsonSchema } from "../src/models/provider.js";
 import { buildModelRequest } from "../src/runtime/prompt.js";
 import { McpConnections } from "../src/tools/connections.js";
 
@@ -129,7 +129,9 @@ test("discovery grants nothing, read results are transient and credentials stay 
   await f.invoke();
   expect(f.calls).toHaveLength(0);
   f.store.permit(f.id, f.connection().revision, "lookup", "read");
+  f.request.latencyAvailable = true;
   let evidence = "";
+  let synthesis: ModelRequest | undefined;
   await f.store
     .wrap({
       reply: async (request) => {
@@ -143,11 +145,20 @@ test("discovery grants nothing, read results are transient and credentials stay 
             },
           };
         evidence = request.system;
+        synthesis = request;
         return { text: "summarized answer" };
       },
     })
     .reply(f.request);
   expect(f.calls).toEqual([{ name: "lookup", arguments: { id: "record-9" } }]);
+  assert(synthesis);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "latency",
+  );
+  expect(() =>
+    parseReply('{"text":"","latency":"recent"}', [], synthesis),
+  ).toThrow();
+  expect(f.request.latencyAvailable).toBe(true);
   expect(evidence).toContain("private result [credential redacted]");
   expect(evidence).not.toContain("private-token");
   expect(JSON.stringify(f.store.list())).not.toContain("private-token");

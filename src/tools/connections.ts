@@ -475,6 +475,7 @@ export class McpConnections {
                 webSearchAvailable: false,
                 escalationAvailable: false,
                 releaseAvailable: false,
+                latencyAvailable: false,
                 socialAvailable: false,
                 usageStage: "synthesis",
                 system:
