@@ -4,6 +4,18 @@
 - Keep unit tests few and focused. Prioritize thorough manual testing of real workflows, edge cases, and failure paths.
 - Always have a more capable or higher-effort agent review changes before pushing (for example, Oracle in Amp or Opus at higher effort in Claude Code).
 
+## Slack app configuration
+
+- Additive June Slack app changes managed through the Slack CLI (or equivalent
+  Slack app-management APIs) are pre-authorized: add features, scopes, event
+  subscriptions, and the installation updates needed to enable them without
+  asking Raygen again.
+- Ask Raygen before removing or disabling existing Slack app features,
+  permissions, subscriptions, or installations. Start from a fresh live manifest
+  and preserve unrelated settings, including OAuth redirects and MCP settings.
+- This permission concerns Slack app configuration, not unrelated infrastructure,
+  private credential disclosure, or bypassing June's runtime permission checks.
+
 ## June-facing capabilities
 
 - Every tool or feature built for June must be accessible to June herself, not
