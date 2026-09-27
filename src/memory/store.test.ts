@@ -267,6 +267,62 @@ it("counts only authorized capacity without leaking other audiences or deleted e
   expect(reopened.capacity("private")).toEqual(empty);
 });
 
+it("keeps supersession expansion scoped, opt-out aware and forgotten across reopen", () => {
+  const { store, path } = open();
+  store.appendSource({ ...source(), audiences: ["private", "other"] });
+  store.appendSource(source("foreign-source", "other"));
+  store.appendSource({ ...source("opt-out"), text: "## do not retain" });
+  const claim = {
+    id: "old",
+    entity: "owner",
+    text: "older observation",
+    audiences: ["private", "other"],
+    kind: "evidence" as const,
+    dependsOn: ["s1"],
+    contradicts: [],
+    supersedes: [] as string[],
+  };
+  store.appendClaim(claim);
+  store.appendClaim({
+    ...claim,
+    id: "update",
+    text: "recorded update",
+    audiences: ["private"],
+    supersedes: ["old"],
+  });
+  const before = store.inspectSupersession("private", "old");
+  expect(before.claims.map((c) => c.id)).toEqual(["update", "old"]);
+  expect(before.claims[0]?.supersedes).toEqual(["old"]);
+  expect(before.claims[1]?.supersededBy).toEqual(["update"]);
+  store.appendClaim({
+    ...claim,
+    id: "foreign-update",
+    audiences: ["other"],
+    dependsOn: ["foreign-source"],
+    supersedes: ["old"],
+  });
+  store.appendClaim({
+    ...claim,
+    id: "ignored-update",
+    audiences: ["private"],
+    dependsOn: ["opt-out"],
+    supersedes: ["old"],
+  });
+  expect(store.inspectSupersession("private", "old")).toEqual(before);
+  for (const hidden of ["foreign-update", "ignored-update", "missing"])
+    expect(store.inspectSupersession("private", hidden)).toEqual({
+      claims: [],
+      incomplete: false,
+      cyclic: false,
+    });
+  store.deleteSource("s1");
+  store.close();
+  const reopened = open(path).store;
+  expect(reopened.inspectSupersession("private", "old").claims).toEqual([]);
+  expect(reopened.inspectSupersession("private", "update").claims).toEqual([]);
+  expect(reopened.source("other", "foreign-source")).toBeDefined();
+});
+
 it("keeps identities distinct, grounded contradictions and supersession, and invalidates derivatives transitively", () => {
   const { store, path } = open();
   store.appendSource(source());

@@ -222,6 +222,22 @@ privacy/retention review. Recall needs no extractor, reflection model, or accoun
 import. Nothing here enables those features or physically erases old journals,
 backups, or messages already accepted by a platform.
 
+To inspect recorded updates to a known claim, June can use
+`recall: {kind: "supersession", claimId: "exact-claim-id"}`. The host calls
+`inspectSupersession(audience, claimId, {limit?, maxCharacters?})`, following only
+explicit supersession edges in both directions from an accepted claim. Defaults
+are six visited claims and 3,000 serialized JSON characters (hard maxima 100 and
+100,000); the host also bounds escaped output. Visible branches remain separate;
+nodes are ordered newer-to-older by recorded edges, not dates or verification.
+Each node carries `supersedes` and `supersededBy` IDs only for included endpoints.
+`incomplete` means endpoints were omitted by bounds or could not be resolved;
+`cyclic` means the visited graph cannot be ordered. Empty `supersededBy` means no
+newer update is shown, never proof of current truth. Foreign incoming updates
+cannot affect the result; missing, foreign, opted-out and forgotten roots have
+the same absence. This is a scoped view, not proof the entire history is known.
+Claims remain untrusted; inspection does not accept or mutate them, and inherits
+recall's owner-private authorization, deletion checks and provenance binding.
+
 ## Import coverage and edits
 
 `persistPage(expectedProgress, page, now)` checks coverage and persists sources

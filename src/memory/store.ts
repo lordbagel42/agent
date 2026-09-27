@@ -156,6 +156,15 @@ export type DependentClaims = {
   derived: number;
   omitted: number;
 };
+export type SupersessionInspection = {
+  // Newer recorded updates precede older claims unless cyclic is true.
+  claims: (Pick<Claim, "id" | "text" | "kind"> & {
+    supersedes: string[];
+    supersededBy: string[];
+  })[];
+  incomplete: boolean;
+  cyclic: boolean;
+};
 export type ImportCoverage = z.infer<typeof coverageSchema>;
 export type ImportProgress = z.infer<typeof progressSchema>;
 export type ImportPage = z.infer<typeof pageSchema>;
@@ -1116,19 +1125,135 @@ export class EvidenceStore {
     };
   }
 
+  /** Explicit updates only, in both directions from an accepted claim. Scope
+   * filtering precedes expansion; no inferred relation, date ordering or truth
+   * winner. Missing/foreign roots are indistinguishable. Bounds omit whole nodes
+   * and their edges, never leave dangling endpoints or expose hidden IDs. */
+  inspectSupersession(
+    audience: string,
+    claimId: string,
+    options: { limit?: number; maxCharacters?: number } = {},
+  ): SupersessionInspection {
+    parse(id, claimId);
+    const limit = parse(z.number().int().min(1).max(100), options.limit ?? 6);
+    const budget = parse(
+      z.number().int().min(100).max(100000),
+      options.maxCharacters ?? 3000,
+    );
+    const visible = this.search(audience, "");
+    const ignored = new Set(
+      visible.sources
+        .filter((s) => s.platform === "slack" && s.text.startsWith("##"))
+        .map((s) => s.id),
+    );
+    // Opt-outs cannot be recovered via a relation or a derived claim.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const claim of visible.claims) {
+        if (
+          !ignored.has(claim.id) &&
+          dependencies(claim).some((ref) => ignored.has(ref))
+        ) {
+          ignored.add(claim.id);
+          changed = true;
+        }
+      }
+    }
+    const claims = new Map(
+      visible.claims.filter((c) => !ignored.has(c.id)).map((c) => [c.id, c]),
+    );
+    const result: SupersessionInspection = {
+      claims: [],
+      incomplete: false,
+      cyclic: false,
+    };
+    if (!claims.has(claimId)) return result;
+    const newer = new Map<string, string[]>();
+    const older = new Map<string, string[]>();
+    for (const claim of claims.values()) {
+      const refs = [...new Set(claim.supersedes)].filter((ref) =>
+        claims.has(ref),
+      );
+      older.set(claim.id, refs.sort());
+      for (const ref of refs) {
+        const incoming = newer.get(ref) ?? [];
+        incoming.push(claim.id);
+        newer.set(ref, incoming);
+      }
+    }
+    const selected = new Set([claimId]);
+    for (const ref of selected) {
+      if (claims.get(ref)?.supersedes.some((target) => !claims.has(target)))
+        result.incomplete = true;
+      for (const neighbor of [
+        ...(newer.get(ref) ?? []),
+        ...(older.get(ref) ?? []),
+      ].sort()) {
+        if (selected.has(neighbor)) continue;
+        if (selected.size < limit) selected.add(neighbor);
+        else result.incomplete = true;
+      }
+    }
+    // Topological order preserves branching updates; visited sets also keep a
+    // malformed authenticated snapshot from looping on a supersession cycle.
+    const remaining = new Set(selected);
+    const ordered: string[] = [];
+    while (remaining.size) {
+      const heads = [...remaining]
+        .filter((ref) => !(newer.get(ref) ?? []).some((n) => remaining.has(n)))
+        .sort();
+      if (!heads.length) {
+        result.cyclic = true;
+        ordered.push(...[...remaining].sort());
+        break;
+      }
+      for (const ref of heads) {
+        remaining.delete(ref);
+        ordered.push(ref);
+      }
+    }
+    const project = () =>
+      ordered
+        .filter((ref) => selected.has(ref))
+        .map((ref) => {
+          const claim = claims.get(ref) as Claim;
+          return {
+            id: claim.id,
+            text: claim.text,
+            kind: claim.kind,
+            supersedes: (older.get(ref) ?? []).filter((n) => selected.has(n)),
+            supersededBy: (newer.get(ref) ?? [])
+              .filter((n) => selected.has(n))
+              .sort(),
+          };
+        });
+    result.claims = project();
+    while (JSON.stringify(result).length > budget) {
+      // Prefer retaining the requested anchor; do not clip claim text.
+      const removed =
+        [...selected].reverse().find((ref) => ref !== claimId) ?? claimId;
+      selected.delete(removed);
+      result.incomplete = true;
+      result.claims = project();
+    }
+    return result;
+  }
+
   /** Unique original source IDs, never a count of dream/claim repetitions. */
   independentEvidence(claimId: string, audience: string): string[] {
     parse(id, claimId);
     const visible = this.search(audience, "");
     const found = new Set<string>();
-    const visit = (ref: string) => {
-      if (visible.sources.some((s) => s.id === ref)) found.add(ref);
+    const sources = new Set(visible.sources.map((s) => s.id));
+    const claims = new Map(visible.claims.map((c) => [c.id, c]));
+    const visited = new Set([claimId]);
+    for (const ref of visited) {
+      if (sources.has(ref)) found.add(ref);
       else
-        for (const parent of visible.claims.find((c) => c.id === ref)
-          ?.dependsOn ?? [])
-          visit(parent);
-    };
-    visit(claimId);
+        for (const parent of claims.get(ref)?.dependsOn ?? [])
+          visited.add(parent);
+    }
     return [...found].sort();
   }
 

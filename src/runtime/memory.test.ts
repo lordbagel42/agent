@@ -952,3 +952,144 @@ it("holds owner-wide reflection occupancy for overlapping live calls until each 
     .send("inbox", { type: "event", event });
   expect((await reflection.status()).activeTurnIds).toEqual([]);
 });
+
+it("keeps supersession receipts private and suppresses retry after a chain source is forgotten", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const audience = JSON.stringify(["private", "owner"]);
+  for (const id of ["old", "new"]) {
+    store.appendSource({
+      id: `source-${id}`,
+      audiences: [audience],
+      platform: "slack",
+      account: "T1",
+      conversation: "D1",
+      author: "U1",
+      observedAt: 1,
+      sourceUrl: `https://example.com/${id}`,
+      text: `PRIVATE ${id}`,
+    });
+    store.appendClaim({
+      id,
+      audiences: [audience],
+      entity: "owner",
+      // Fits the store budget, but requires whole-node omission after escaping.
+      text: `PRIVATE ${id} <@U2>${id === "old" ? "<".repeat(500) : ""}`,
+      kind: "evidence",
+      dependsOn: [`source-${id}`],
+      contradicts: [],
+      supersedes: id === "new" ? ["old"] : [],
+    });
+  }
+  const requests: ModelRequest[] = [];
+  const sent: OutboundMessage[] = [];
+  let forgetOnSend = false;
+  const owner = {
+    id: "owner",
+    identities: [
+      { channel: "slack" as const, accountId: "T1", senderId: "U1" },
+    ],
+  };
+  const registry = createJuneRegistry({
+    owner,
+    memory: { store, source: () => undefined },
+    model: {
+      async reply(request) {
+        requests.push(structuredClone(request));
+        return { text: "", recall: { kind: "supersession", claimId: "new" } };
+      },
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        async receive() {
+          return { response: new Response(), events: [] };
+        },
+        async send(message) {
+          sent.push(JSON.parse(JSON.stringify(message)));
+          if (forgetOnSend) {
+            store.deleteSource("source-old");
+            return {
+              status: "rejected",
+              code: "rate_limited",
+              retryable: true,
+              retryAfterMs: 1,
+            };
+          }
+          return { status: "sent", messageId: "out" };
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const turn = async (id: string, direct = true, senderId = "U1") => {
+    const event: MessageEvent = {
+      type: "message",
+      id,
+      messageId: `${Date.now()}.000001`,
+      occurredAt: Date.now(),
+      direct,
+      senderId,
+      text: "inspect recorded updates",
+      metadata: { channelType: direct ? "im" : "channel" },
+      address: {
+        channel: "slack",
+        accountId: "T1",
+        conversationId: direct ? "D1" : "C1",
+      },
+    };
+    const scope = routeEvent(event, owner);
+    if (!scope) throw new Error("Missing test scope");
+    const june = client.conversation.getOrCreate(scope.key);
+    await june.send("inbox", { type: "event", event });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).some(
+            (record) => record.event.id === id && record.done,
+          ),
+        { timeout: 5000 }, // The durable retry backoff is at least one second.
+      )
+      .toBe(true);
+    return june.snapshot();
+  };
+  const first = await turn("chain");
+  expect(requests[0]?.system).toContain("supersession");
+  expect(requests[0]?.recallAvailable).toBe(true);
+  const output = sent[0]?.content;
+  if (output?.type !== "text") throw new Error("Missing chain receipt");
+  expect(output.text).toContain("not verified truth");
+  expect(output.text).not.toContain("<@U2>");
+  expect(output.text.length).toBeLessThanOrEqual(3500);
+  expect(output.text.split("\n").at(-1)?.length).toBeLessThanOrEqual(3000);
+  const result = JSON.parse(output.text.split("\n").at(-1) ?? "{}");
+  expect(result.claims.map((c: { id: string }) => c.id)).toEqual(["new"]);
+  expect(result.claims[0].supersedes).toEqual([]);
+  expect(result.claims[0].supersededBy).toEqual([]);
+  expect(result.incomplete).toBe(true);
+  expect(
+    Object.values(first.memoryContexts ?? {}).flatMap((c) => c.sourceIds),
+  ).toEqual(["source-new"]);
+  for (const [id, direct, sender] of [
+    ["public", false, "U1"],
+    ["guest", true, "U2"],
+  ] as const) {
+    await turn(id, direct, sender);
+    expect(requests.at(-1)?.recallAvailable).toBe(false);
+    expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE");
+  }
+  // Deleting an omitted relation endpoint invalidates the visible claim even
+  // though its direct original source survives. Do not rely on source IDs alone.
+  const before = sent.length;
+  forgetOnSend = true;
+  const after = await turn("forget");
+  expect(sent.length).toBe(before + 1);
+  expect(Object.values(after.deliveries).at(-1)?.result).toEqual({
+    status: "rejected",
+    code: "memory_invalidated",
+    retryable: false,
+  });
+  expect(after.history).toEqual([]);
+  expect(requests).toHaveLength(4); // No extra model pass to render the chain.
+});

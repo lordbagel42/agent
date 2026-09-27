@@ -191,6 +191,10 @@ const companionReplySchema = z.strictObject({
         kind: z.literal("contradictions"),
         claimId: z.string().min(1).max(2048),
       }),
+      z.strictObject({
+        kind: z.literal("supersession"),
+        claimId: z.string().min(1).max(2048),
+      }),
     ])
     .optional(),
   pendingMemory: z.literal(true).optional(),
@@ -521,9 +525,22 @@ export function replyJsonSchema(
                   },
                   required: ["kind", "claimId"],
                 },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", enum: ["supersession"] },
+                    claimId: {
+                      type: "string",
+                      description:
+                        "Exact retained claim ID, 1–2048 characters.",
+                    },
+                  },
+                  required: ["kind", "claimId"],
+                },
               ],
               description:
-                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with optional category, exact entity and time filters, or explicit contradiction-neighbor inspection by claim ID. Unknown categories and invalid time windows are rejected, never broadened. Unknown entity IDs return no matches, never name-based alternatives. The host returns bounded evidence with provenance directly, without deciding truth. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
+                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with optional category, exact entity and time filters, or explicit contradiction-neighbor/supersession inspection by exact claim ID. Unknown categories and invalid time windows are rejected, never broadened. Unknown entity IDs return no matches, never name-based alternatives. The host returns bounded recorded evidence with provenance directly, not verified truth. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
             },
           }
         : {}),
