@@ -1369,8 +1369,14 @@ export function createReflectionActor(
         scope: string,
         id: string,
         subjectSourceId: string,
+        expectedDeletionRevision: number,
       ) => {
-        if (c.key.length !== 1 || c.key[0] !== deps.ownerId || !deps.memory)
+        if (
+          c.key.length !== 1 ||
+          c.key[0] !== deps.ownerId ||
+          !deps.memory ||
+          expectedDeletionRevision !== (deps.deletionRevision?.() ?? 0)
+        )
           return null;
         const epoch = c.state.epoch;
         await c.vars.prepareCandidates();
@@ -1382,6 +1388,7 @@ export function createReflectionActor(
         );
         const text = `Reflection hypothesis: ${decision.rationale}`;
         if (
+          expectedDeletionRevision !== (deps.deletionRevision?.() ?? 0) ||
           epoch !== c.state.epoch ||
           c.state.liveActive > 0 ||
           isQuiet(Date.now(), deps.policy.quiet) ||

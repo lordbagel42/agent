@@ -41,6 +41,10 @@ it("stages only current original-source reflection hypotheses through private Ju
   let entered = Promise.withResolvers<void>();
   let release = Promise.withResolvers<void>();
   t.onTestFinished(() => release.resolve());
+  let pauseBeforeStage = false;
+  const stageEntered = Promise.withResolvers<void>();
+  const stageRelease = Promise.withResolvers<void>();
+  t.onTestFinished(() => stageRelease.resolve());
   const sent: OutboundMessage[] = [];
   const registry = createJuneRegistry({
     owner: {
@@ -152,7 +156,14 @@ it("stages only current original-source reflection hypotheses through private Ju
         modelCalls++;
         expect(request.reflectionMemoryAvailable).toBe(true);
         expect((await reflection.status()).liveActive).toBe(1);
-        expect(await reflection.stageMemory(scope, id, "subject")).toBeNull();
+        expect(
+          await reflection.stageMemory(
+            scope,
+            id,
+            "subject",
+            store.deletionRevision(),
+          ),
+        ).toBeNull();
         return {
           text: "",
           reflectionMemory: { id, subjectSourceId: "subject" },
@@ -160,6 +171,19 @@ it("stages only current original-source reflection hypotheses through private Ju
       },
     },
   });
+  const actorConfig = registry.config.use.reflection?.config;
+  if (!actorConfig?.actions) throw new Error("Missing reflection actions");
+  const stage = actorConfig.actions.stageMemory;
+  actorConfig.actions.stageMemory = async (c, ...args) => {
+    // Hold the RPC after the registry's caller check but before actor entry.
+    // The fake model's live-occupancy probe must not enter this window.
+    if (pauseBeforeStage && c.state.liveActive === 0) {
+      pauseBeforeStage = false;
+      stageEntered.resolve();
+      await stageRelease.promise;
+    }
+    return stage(c, ...args);
+  };
   const { client } = await setupTest(t, registry);
   const reflection = (
     client as Client<JuneClientRegistry>
@@ -178,23 +202,56 @@ it("stages only current original-source reflection hypotheses through private Ju
   const raw = (await reflection.status()).candidateIds[0];
   if (!raw) throw new Error("Missing fixture candidate");
   const id = reflectionCandidateId(raw);
-  expect(await reflection.stageMemory("public", id, "subject")).toBeNull();
-  expect(await reflection.stageMemory(scope, id, "uncited")).toBeNull();
+  expect(
+    await reflection.stageMemory(
+      "public",
+      id,
+      "subject",
+      store.deletionRevision(),
+    ),
+  ).toBeNull();
+  expect(
+    await reflection.stageMemory(
+      scope,
+      id,
+      "uncited",
+      store.deletionRevision(),
+    ),
+  ).toBeNull();
   for (const source of ["support", "uncited"]) {
     dream = source;
-    expect(await reflection.stageMemory(scope, id, "subject")).toBeNull();
+    expect(
+      await reflection.stageMemory(
+        scope,
+        id,
+        "subject",
+        store.deletionRevision(),
+      ),
+    ).toBeNull();
   }
   dream = undefined;
   expect(store.proposals(scope)).toEqual([]);
 
   revokeAfterValidation = true;
-  expect(await reflection.stageMemory(scope, id, "subject")).toBeNull();
+  expect(
+    await reflection.stageMemory(
+      scope,
+      id,
+      "subject",
+      store.deletionRevision(),
+    ),
+  ).toBeNull();
   expect(store.proposals(scope)).toEqual([]);
   revoked = false;
 
   const generationEpoch = (await reflection.candidate(id, scope))?.epoch;
   pause = true;
-  const interrupted = reflection.stageMemory(scope, id, "subject");
+  const interrupted = reflection.stageMemory(
+    scope,
+    id,
+    "subject",
+    store.deletionRevision(),
+  );
   await entered.promise;
   await reflection.occupancy("intervening-live-turn", true);
   await reflection.occupancy("intervening-live-turn", false);
@@ -237,6 +294,36 @@ it("stages only current original-source reflection hypotheses through private Ju
     messageId: "1790000000.000002",
     text: `Stage reflection ${id} about subject as a pending memory hypothesis.`,
   };
+  const sentBeforeInvalidation = sent.length;
+  pauseBeforeStage = true;
+  await june.send("inbox", {
+    type: "event",
+    event: {
+      ...command,
+      id: "invalidated-stage",
+      messageId: "1790000000.000004",
+    },
+  });
+  await stageEntered.promise;
+  expect(store.source(scope, "inbound:invalidated-stage")).toBeDefined();
+  const beforeDeletion = await reflection.status();
+  store.deleteSource("inbound:invalidated-stage");
+  // No reflection.cancel or actor cleanup: all candidate evidence remains current.
+  expect(await reflection.status()).toEqual(beforeDeletion);
+  expect(await reflection.inspectCandidate(scope, id)).not.toBeNull();
+  stageRelease.resolve();
+  await expect
+    .poll(
+      async () =>
+        Object.values((await june.snapshot()).events).find(
+          (record) => record.event.id === "invalidated-stage",
+        )?.done,
+      { timeout: 10000 },
+    )
+    .toBe(true);
+  expect(sent).toHaveLength(sentBeforeInvalidation);
+  expect(store.proposals(scope)).toEqual([]);
+
   await june.send("inbox", { type: "event", event: command });
   await expect
     .poll(
@@ -279,9 +366,16 @@ it("stages only current original-source reflection hypotheses through private Ju
   expect(store.retrieve(scope, "").sources).toHaveLength(4);
   expect(store.source(scope, "inbound:stage")?.text).toBe(command.text);
   expect(store.source(scope, "inbound:inspect")).toBeUndefined();
-  expect([modelCalls, extracts]).toEqual([1, 0]);
+  expect([modelCalls, extracts]).toEqual([2, 0]);
   expect((await reflection.status()).candidateIds).toEqual([raw]);
-  expect(await reflection.stageMemory(scope, id, "support")).toEqual({
+  expect(
+    await reflection.stageMemory(
+      scope,
+      id,
+      "support",
+      store.deletionRevision(),
+    ),
+  ).toEqual({
     id: proposal.id,
     status: "pending",
   });
@@ -308,13 +402,18 @@ it("stages only current original-source reflection hypotheses through private Ju
     )
     .toBe(true);
   expect(store.proposals(scope)).toEqual([proposal]);
-  expect([modelCalls, extracts]).toEqual([1, 0]);
+  expect([modelCalls, extracts]).toEqual([2, 0]);
   expect(store.source(scope, "inbound:retry")).toBeUndefined();
 
   entered = Promise.withResolvers<void>();
   release = Promise.withResolvers<void>();
   pause = true;
-  const staging = reflection.stageMemory(scope, id, "subject");
+  const staging = reflection.stageMemory(
+    scope,
+    id,
+    "subject",
+    store.deletionRevision(),
+  );
   await entered.promise;
   store.deleteSource("uncited");
   release.resolve();
@@ -322,7 +421,14 @@ it("stages only current original-source reflection hypotheses through private Ju
   expect(store.proposals(scope)).toEqual([]);
   expect(store.isDeleted(proposal.id)).toBe(true);
   expect(store.source(scope, "subject")).toBeDefined();
-  expect(await reflection.stageMemory(scope, id, "subject")).toBeNull();
+  expect(
+    await reflection.stageMemory(
+      scope,
+      id,
+      "subject",
+      store.deletionRevision(),
+    ),
+  ).toBeNull();
 
   pause = false;
   const original = store.source(scope, "support");
@@ -352,14 +458,26 @@ it("stages only current original-source reflection hypotheses through private Ju
   );
   if (!next) throw new Error("Missing second fixture candidate");
   const alias = reflectionCandidateId(next);
-  const staged = await reflection.stageMemory(scope, alias, "subject");
+  const staged = await reflection.stageMemory(
+    scope,
+    alias,
+    "subject",
+    store.deletionRevision(),
+  );
   if (!staged) throw new Error("Missing second proposal");
   expect(staged.status).toBe("pending");
   failRejection = true;
   await expect(reflection.rejectCandidate(scope, alias)).rejects.toThrow();
   expect((await reflection.status()).candidateIds).toContain(next);
   expect(store.proposal(scope, staged.id)?.status).toBe("rejected");
-  expect(await reflection.stageMemory(scope, alias, "subject")).toBeNull();
+  expect(
+    await reflection.stageMemory(
+      scope,
+      alias,
+      "subject",
+      store.deletionRevision(),
+    ),
+  ).toBeNull();
   expect(await reflection.rejectCandidate(scope, alias)).toBe(true);
   expect(await reflection.rejectCandidate(scope, alias)).toBe(true);
   expect(rejections).toBe(3);
@@ -367,6 +485,13 @@ it("stages only current original-source reflection hypotheses through private Ju
   expect(() => store.reviewProposal(scope, staged.id, "accepted")).toThrow(
     "already reviewed",
   );
-  expect(await reflection.stageMemory(scope, alias, "subject")).toBeNull();
+  expect(
+    await reflection.stageMemory(
+      scope,
+      alias,
+      "subject",
+      store.deletionRevision(),
+    ),
+  ).toBeNull();
   expect(store.source(scope, "subject")).toBeDefined();
 });

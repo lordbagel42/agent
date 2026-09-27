@@ -572,6 +572,9 @@ immutable publication, not model replacements. The host dispatches only after
 the inference occupancy has actually settled. It captures the current operation
 epoch before validation and rechecks it, live occupancy and quiet hours before
 the synchronous ledger write. The candidate's generation epoch is never restamped.
+The originating turn's captured deletion revision is passed across the actor RPC
+and checked at entry and before the write; deletion invalidating that caller
+blocks staging even when all candidate evidence remains current.
 The capability is frozen in the turn plan and absent from guest/public turns,
 worker results and read-only reflection/search synthesis. Reading a candidate
 does not grant staging permission to a continuation; staging needs its own

@@ -4459,6 +4459,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                     audience,
                                     reflectionReview.id,
                                     reflectionReview.subjectSourceId,
+                                    deletionRevision,
                                   );
                                 if (result)
                                   text = `${PRIVATE_REFLECTION_REVIEW_PREFIX}Reflection memory proposal ${result.id}: ${result.status} at this staging check. This is a hypothesis grounded in original source quotations, not a new observation. No claim acceptance occurred here; use separate memory review.`;
