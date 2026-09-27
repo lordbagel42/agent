@@ -544,7 +544,11 @@ export class EvidenceStore {
   retrieve(
     audience: string,
     query: string,
-    options: { limit?: number; maxCharacters?: number } = {},
+    options: {
+      limit?: number;
+      maxCharacters?: number;
+      claimsOnly?: boolean;
+    } = {},
   ): MemoryRetrieval {
     parse(z.string().max(10000), query);
     const limit = parse(z.number().int().min(1).max(100), options.limit ?? 12);
@@ -568,7 +572,7 @@ export class EvidenceStore {
     ];
     const candidates = [
       ...visible.sources
-        .filter((item) => !ignored.has(item.id))
+        .filter((item) => !options.claimsOnly && !ignored.has(item.id))
         .map((item) => ({ type: "source" as const, item })),
       ...visible.claims
         .filter(
@@ -816,14 +820,27 @@ export async function extractMemory(
   store: EvidenceStore,
   audience: string,
   sourceIds: string[],
-  extract: (sources: Source[], signal?: AbortSignal) => Promise<unknown>,
+  extract: (
+    sources: Source[],
+    existingClaims: Claim[],
+    signal?: AbortSignal,
+  ) => Promise<unknown>,
   signal?: AbortSignal,
 ): Promise<MemoryProposal[]> {
   signal?.throwIfAborted();
   const selected = [...sourceIds];
+  const revision = store.deletionRevision();
   const sources = store.extractionContext(audience, selected);
-  const output = await extract(sources, signal);
+  const { claims } = store.retrieve(audience, "", {
+    claimsOnly: true,
+    limit: 20,
+    maxCharacters: 16000,
+  });
+  const output = await extract(sources, claims, signal);
   signal?.throwIfAborted();
+  // Even an unreferenced context claim may have influenced the proposal text.
+  if (store.deletionRevision() !== revision)
+    throw new Error("Memory changed during extraction");
   return store.stageProposals(audience, selected, output);
 }
 

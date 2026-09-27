@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
 import {
+  type Claim,
   EvidenceStore,
   extractMemory,
   type ImportCoverage,
@@ -464,6 +465,66 @@ it("does not publish an extraction completed after deletion or turn historical m
     })),
   ).rejects.toThrow();
   expect(store.search("private", "").sources).toEqual([]);
+});
+
+it("scopes extraction claims, excludes opted-out derivatives, and rejects deletion of unreferenced context", async () => {
+  const { store } = open();
+  store.appendSource(source());
+  store.appendSource(source("prior"));
+  store.appendSource(source("public", "public"));
+  store.appendSource({ ...source("ignored"), text: "## do not remember" });
+  const claim: Claim = {
+    id: "visible",
+    entity: "owner",
+    text: "a prior hypothesis",
+    audiences: ["private"],
+    kind: "evidence",
+    dependsOn: ["prior"],
+    contradicts: [],
+    supersedes: [],
+  };
+  store.appendClaim(claim);
+  store.appendClaim({ ...claim, id: "ignored-claim", dependsOn: ["ignored"] });
+  store.appendClaim({
+    ...claim,
+    id: "ignored-derivative",
+    dependsOn: ["ignored-claim"],
+  });
+  store.appendClaim({
+    ...claim,
+    id: "public-claim",
+    audiences: ["public"],
+    dependsOn: ["public"],
+  });
+  await extractMemory(store, "private", ["s1"], async (sources, claims) => {
+    expect(sources).toEqual([source()]);
+    expect(claims).toEqual([claim]);
+    return [];
+  });
+  await extractMemory(store, "public", ["public"], async (_sources, claims) => {
+    expect(claims.map((c) => c.id)).toEqual(["public-claim"]);
+    return [];
+  });
+  await expect(
+    extractMemory(store, "private", ["s1"], async (_sources, claims) => {
+      expect(claims).toEqual([claim]);
+      store.deleteSource("prior");
+      return [
+        {
+          subjectSourceId: "s1",
+          text: "a proposal influenced by deleted context",
+          category: "claim",
+          citations: [{ sourceId: "s1", quote: "sensitive kumquat" }],
+          confidence: 0.5,
+          validFrom: null,
+          validTo: null,
+          contradicts: [],
+          supersedes: [],
+        },
+      ];
+    }),
+  ).rejects.toThrow("Memory changed during extraction");
+  expect(store.proposals("private")).toEqual([]);
 });
 
 it("accepts canonical Slack conversations under channel coverage without widening thread grants or bypassing edits and tombstones", async () => {

@@ -9,7 +9,8 @@ import type {
   OutboundMessage,
 } from "../core/contracts.js";
 import { slackSource } from "../imports/index.js";
-import { EvidenceStore } from "../memory/store.js";
+import { type Claim, EvidenceStore, extractMemory } from "../memory/store.js";
+import { createMemoryExtractor } from "../models/extraction.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
 it.for(["reply", "deep"] as const)(
@@ -37,9 +38,38 @@ it.for(["reply", "deep"] as const)(
       senderId: "U1",
       text: "PRIVATE heron observation",
     };
+    store.appendSource(source(event, scope));
+    const claim: Claim = {
+      id: "private-claim",
+      entity: JSON.stringify(["slack", "T1", "U1"]),
+      text: "PRIVATE heron hypothesis",
+      audiences: [scope],
+      kind: "evidence",
+      dependsOn: [source(event, scope).id],
+      contradicts: [],
+      supersedes: [],
+    };
+    store.appendClaim(claim);
     const requests: ModelRequest[] = [];
     const sent: OutboundMessage[] = [];
     const extracted: string[][] = [];
+    const contexts: unknown[] = [];
+    const extractor = createMemoryExtractor({
+      protocol: "anthropic",
+      model: "fixture",
+      apiKey: "fixture",
+      async fetch(_url, init) {
+        contexts.push(
+          JSON.parse(JSON.parse(String(init?.body)).messages[0].content),
+        );
+        return Response.json({
+          type: "message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: '{"proposals":[]}' }],
+        });
+      },
+    });
     const pending = Promise.withResolvers<CompanionReply>();
     t.onTestFinished(() => {
       pending.resolve({ text: "" });
@@ -53,7 +83,8 @@ it.for(["reply", "deep"] as const)(
       memory: {
         store,
         source,
-        async extract(_audience, ids) {
+        async extract(audience, ids, signal) {
+          await extractMemory(store, audience, ids, extractor, signal);
           extracted.push(ids);
         },
       },
@@ -103,6 +134,12 @@ it.for(["reply", "deep"] as const)(
     await june.send("inbox", { type: "event", event });
     await expect.poll(done).toBe(1);
     expect(extracted).toEqual([[source(event, scope).id]]);
+    expect(contexts).toEqual([
+      {
+        sources: [source(event, scope)],
+        existingClaims: [claim],
+      },
+    ]);
     await june.send("inbox", { type: "event", event });
     const publicJune = client.conversation.getOrCreate([
       "slack",
@@ -130,6 +167,7 @@ it.for(["reply", "deep"] as const)(
     await expect.poll(() => requests.length).toBe(2);
     expect(JSON.stringify(requests[1])).not.toContain("PRIVATE");
     expect(extracted).toHaveLength(1);
+    expect(contexts).toHaveLength(1);
     await june.send("inbox", {
       type: "event",
       event: {

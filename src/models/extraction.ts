@@ -1,4 +1,4 @@
-import type { Source } from "../memory/store.js";
+import type { Claim, Source } from "../memory/store.js";
 import { createJsonProvider, type JsonProviderOptions } from "./provider.js";
 
 const strings = { type: "array", items: { type: "string" }, maxItems: 20 };
@@ -56,14 +56,24 @@ const schema = {
   },
 };
 
-/** Called only with extractionContext from the scoped ledger. No tools or sends.
- * The store rechecks citations and deletion after this transport settles. */
+/** Called only with scoped sources and claims from extractMemory. No tools or
+ * sends. The store rechecks citations and deletion after transport settles. */
 export function createMemoryExtractor(options: JsonProviderOptions) {
   const generate = createJsonProvider(options);
-  return async (sources: Source[], signal?: AbortSignal): Promise<unknown> => {
-    const content = JSON.stringify(sources);
-    if (!sources.length || sources.length > 20 || content.length > 64_000)
+  return async (
+    sources: Source[],
+    existingClaims: Claim[],
+    signal?: AbortSignal,
+  ): Promise<unknown> => {
+    if (
+      !sources.length ||
+      sources.length > 20 ||
+      JSON.stringify(sources).length > 64_000 ||
+      existingClaims.length > 20 ||
+      JSON.stringify(existingClaims).length > 16_000
+    )
       throw new Error("Extraction input budget exceeded");
+    const content = JSON.stringify({ sources, existingClaims });
     return generate(
       {
         name: "memory_proposals",
