@@ -164,6 +164,7 @@ const companionReplySchema = z.strictObject({
       "snapshot-retention",
       "operations",
       "mcp-connections",
+      "personality",
     ])
     .optional(),
   recall: z
@@ -594,10 +595,11 @@ export function replyJsonSchema(
                 "snapshot-retention",
                 "operations",
                 "mcp-connections",
+                "personality",
                 null,
               ],
               description:
-                "Read owner-private bounded subsystem metadata, MCP connection inventory (even disconnected), interrupted inference receipts, capability-route status, native-coding preflight, credential-binding configuration, public Slack search readiness or unresolved durable operation markers, not recalled content or secrets. retention explains retained-copy categories and logical deletion versus unverified physical erasure without scanning copies. snapshot-retention separately inspects bounded curated snapshot metadata for an operator-review dry run, never deletion permission. Leave text empty and all other actions unset. No deletions, approvals, retries, admission release, searches, credential resolution, native execution, network probes, imports, reflection triggers or mutations are performed.",
+                "Read owner-private bounded subsystem metadata, MCP connection inventory (even disconnected), interrupted inference receipts, capability-route status, native-coding preflight, credential-binding configuration, public Slack search readiness or unresolved durable operation markers, not recalled content or secrets. personality returns pending global suggestions with exact proposalId/expectedVersion, fixed-vocabulary changes and safe provenance fingerprints, never private rationale or evidence bodies. retention explains retained-copy categories and logical deletion versus unverified physical erasure without scanning copies. snapshot-retention separately inspects bounded curated snapshot metadata for an operator-review dry run, never deletion permission. Leave text empty and all other actions unset. No deletions, approvals, retries, admission release, searches, credential resolution, native execution, network probes, imports, reflection triggers or mutations are performed.",
             },
           }
         : {}),

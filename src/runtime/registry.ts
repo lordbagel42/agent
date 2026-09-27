@@ -108,7 +108,10 @@ export interface Dependencies {
   latency?: LatencyDiagnostics;
   analytics?: (days: 1 | 7 | 30) => string;
   inspection?: (
-    target: Exclude<NonNullable<CompanionReply["inspection"]>, "inference">,
+    target: Exclude<
+      NonNullable<CompanionReply["inspection"]>,
+      "inference" | "personality"
+    >,
     event: MessageEvent,
   ) => Promise<string>;
   jury?: ReturnType<typeof createJuryTool>;
@@ -2829,6 +2832,13 @@ export function createJuneRegistry(deps: Dependencies) {
                                       events,
                                       step.state.forgottenEvents,
                                     );
+                                  } else if (
+                                    checked.inspection === "personality"
+                                  ) {
+                                    text = await step
+                                      .client<JuneClientRegistry>()
+                                      .personality.getOrCreate([deps.owner.id])
+                                      .pending(event);
                                   } else if (checked.inspection) {
                                     text = await deps.inspection(
                                       checked.inspection,

@@ -47,7 +47,7 @@ export const defaultGlobalPersonality: GlobalPersonality = {
   },
 };
 
-export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Reset just one named trait with !personality reset {"expectedVersion":VERSION,"trait":"humor","explanation":"Restore default humor","publish":true}. Defaults are tone=warm, verbosity=balanced, humor=subtle, curiosity=occasional. Reset preserves other traits and appends a revision without clearing history; propose this command, not a whole-profile rollback, when the owner asks to reset one trait. Approve an exact staged suggestion for all conversations with !personality approve {"proposalId":"ID","expectedVersion":VERSION,"publish":true}; its staged version and evidence must still be current. Approval publishes only style, never its private evidence or rationale. Grounded fields return to defaults if their evidence expires or is forgotten, including on rollback. Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Reject a staged suggestion with !personality reject {"proposalId":"ID"}; rejection is permanent for that ID and does not change my global voice. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
+export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality pending for up to five unreviewed suggestion summaries with exact proposalId/expectedVersion and safe provenance fingerprints. Pending inspection is read-only, not approval or evidence recall. Use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Reset just one named trait with !personality reset {"expectedVersion":VERSION,"trait":"humor","explanation":"Restore default humor","publish":true}. Defaults are tone=warm, verbosity=balanced, humor=subtle, curiosity=occasional. Reset preserves other traits and appends a revision without clearing history; propose this command, not a whole-profile rollback, when the owner asks to reset one trait. Approve an exact staged suggestion for all conversations with !personality approve {"proposalId":"ID","expectedVersion":VERSION,"publish":true}; its staged version and evidence must still be current. Approval publishes only style, never its private evidence or rationale. Grounded fields return to defaults if their evidence expires or is forgotten, including on rollback. Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Reject a staged suggestion with !personality reject {"proposalId":"ID"}; rejection is permanent for that ID and does not change my global voice. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
 
 export function isPersonalityCommand(text: string): boolean {
   return /^!personality(?:\s|$)/.test(text.trim());
@@ -212,9 +212,56 @@ export function createPersonalityActor(
       ...(provenance ? { provenance } : {}),
     };
   };
+  const inspectPending = (state: State, scope: string): string => {
+    if (!curated)
+      return "Pending personality suggestions are unavailable: curated memory is disabled. Nothing changed.";
+    try {
+      const now = Date.now();
+      const head = state.revisions.at(-1) ?? defaultGlobalPersonality;
+      const proposals = curated.pendingGlobalProposals(
+        scope,
+        6,
+        now,
+        Object.keys(state.proposalDecisions ?? {}),
+      );
+      // Select public-safe values only. Raw IDs, evidence and rationale may
+      // contain private text; never copy them into command receipts/history.
+      const rows = proposals.slice(-5).map((proposal) => ({
+        proposalId: proposal.id,
+        expectedVersion: proposal.expectedVersion,
+        changes: proposal.changes,
+        reviewState:
+          proposal.expectedVersion === head.version
+            ? "pending owner review; not applied"
+            : "stale target; fresh suggestion required",
+        sourceCount: proposal.sourceIds.length,
+        sourceRefs: proposal.sourceIds
+          .slice(0, 3)
+          .map(
+            (id) => `sha256:${createHash("sha256").update(id).digest("hex")}`,
+          ),
+      }));
+      return `Owner-private pending personality snapshot at ${new Date(now).toISOString()}. Current global version: ${head.version}. Showing ${rows.length} latest suggestions (limit 5). ${proposals.length > 5 ? "Additional pending suggestions are omitted." : rows.length ? "" : "No currently valid pending suggestions."}\n${JSON.stringify(rows)}\nSupport was revalidated for this read; decided, expired and invalidated suggestions are excluded. Nothing was approved or applied. A matching version is not approval. Review uses the exact proposalId and expectedVersion; stale targets must not be rebased automatically. sourceRefs are SHA-256 of original UTF-8 source IDs (up to 3 per suggestion), not recall IDs or evidence text. Raw rationale, source IDs, URLs and bodies remain private in encrypted storage; this snapshot is not current truth on later turns.`;
+    } catch {
+      return "Pending personality inspection is unavailable; no review state can be inferred. Nothing changed.";
+    }
+  };
   return actor({
     state: { revisions: [] } as State,
     actions: {
+      pending: (c, event: MessageEvent): string => {
+        if (c.key.length !== 1 || c.key[0] !== owner.id)
+          throw new Error("Wrong personality owner");
+        const scope = routeEvent(event, owner);
+        if (
+          !scope?.private ||
+          !isOwner(event, owner) ||
+          (event.address.channel === "slack" &&
+            event.metadata?.channelType !== "im")
+        )
+          return "Pending personality inspection requires an owner-private turn.";
+        return inspectPending(c.state, JSON.stringify(scope.key));
+      },
       read: async (c) => {
         if (c.key.length !== 1 || c.key[0] !== owner.id)
           throw new Error("Wrong personality owner");
@@ -278,6 +325,8 @@ export function createPersonalityActor(
         }
         if (!ownerPrivate)
           return "Only my owner can inspect personality history or publish revisions with a fresh, plain-text command in an owner-private DM (not a quote or code block).";
+        if (input === "pending")
+          return inspectPending(c.state, JSON.stringify(scope.key));
         if (input.length > 2000) return "Personality command is too long.";
         if (/^history(?:\s|$)/.test(input)) {
           await c.saveState({ immediate: true });

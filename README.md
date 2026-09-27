@@ -700,8 +700,22 @@ quotes, code blocks or attachment captions):
 !personality revise {"expectedVersion":0,"changes":{"tone":"dry","verbosity":"concise"},"explanation":"Try a shorter, drier voice","publish":true}
 !personality reset {"expectedVersion":1,"trait":"tone","explanation":"Restore default tone, keeping concise replies","publish":true}
 !personality history
+!personality pending
 !personality rollback {"expectedVersion":2,"targetVersion":0,"explanation":"Restore the initial voice","publish":true}
 ```
+
+With curated memory enabled, ask June privately to inspect pending personality
+suggestions (`inspection:"personality"`), or send `!personality pending`. Both
+return at most five latest unreviewed summaries: exact proposal ID and target
+`expectedVersion`, fixed-vocabulary changes, review state, source count and up to
+three SHA-256 fingerprints of original source IDs. Fingerprints are not recall
+IDs. Decided proposals are excluded before limiting; support is revalidated for
+audience, expiry and forgetting on every read. A stale target requires a fresh
+suggestion, not automatic rebasing. Empty, disabled and failed reads are distinct.
+Inspection changes nothing and does not approve a proposal. Private rationale,
+raw source IDs, URLs and evidence bodies are not copied into replies; the private
+payload remains in encrypted storage. A saved report is a snapshot, not proof of
+current validity on a later turn. Public and guest turns cannot use this reader.
 
 Use the current version shown by `!personality`; stale edits are rejected and
 duplicate events do not append twice. Ask June to reset one trait and she can

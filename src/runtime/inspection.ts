@@ -191,7 +191,10 @@ export function createInspectionReader(deps: {
     }
   >;
 }): (
-  target: Exclude<NonNullable<CompanionReply["inspection"]>, "inference">,
+  target: Exclude<
+    NonNullable<CompanionReply["inspection"]>,
+    "inference" | "personality"
+  >,
   event?: MessageEvent,
 ) => Promise<string> {
   return async (target, event) => {

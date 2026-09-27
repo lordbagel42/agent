@@ -74,6 +74,7 @@ it("publishes one bounded voice without sharing private explanations or granting
   });
   const { client } = await setupTest(t, registry);
   const profile = client.personality.getOrCreate([owner.id]);
+  expect(await profile.pending(event)).toContain("curated memory is disabled");
   const send = async (source: MessageEvent, id: string, text: string) => {
     const next = { ...source, id, messageId: id, text };
     const key = routeEvent(next, owner)?.key;
