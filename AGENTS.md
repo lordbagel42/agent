@@ -12,3 +12,14 @@
 - For example, analytics tooling must let June query and inspect her own
   analytics. Apply the same requirement to every other capability.
 - Verify the June-facing workflow before considering a feature complete.
+
+## Deployed June
+
+- June runs in LXC 215 at `192.168.0.215`. Health: `curl -fsS http://192.168.0.215:3080/health`.
+- On `homelab-amp`, run `bash .amp/in/june-ops/ssh-june '<command>'` from `/home/amp/workspaces/pulumi-homelab-june`. It uses existing private credentials and pinned host verification; do not copy keys or weaken SSH checks.
+- App logs: `journalctl -u june.service -n 100 --no-pager`. Status: `systemctl status june.service june-deploy.service --no-pager`.
+- Deployment logs: `journalctl -u june-deploy.service -n 100 --no-pager`. Safe deployment feed: `/var/lib/june-deploy/public/events.json`.
+- Verify the running revision using health and `readlink /proc/$(systemctl show june.service -p MainPID --value)/cwd`, not just GitHub or the `current` symlink.
+- Config is `/etc/june/config.json`; persistent data is `/var/lib/june/rivet`. Never print credentials, Codex auth, or private message bodies, and never restore old conversation data to roll back code.
+- Rivet UI is `http://127.0.0.1:6420/ui/` on June. Use an authorized SSH tunnel for access; it has administrative controls, so do not expose it publicly or assume browsing is read-only.
+- Main pushes deploy automatically. Follow `docs/deployment.md` for recovery and coordinated config changes; config is bound to immutable releases. Do not run the old provisioner or change config/services concurrently with deployment.
