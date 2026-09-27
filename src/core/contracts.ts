@@ -249,6 +249,8 @@ export interface CompanionReply {
   reflectionRequest?: {
     evidenceIds: string[];
     mode: "idle" | "deep";
+    /** Omitted by older replies; defaults to reflection. No additional sources/tools. */
+    kind?: "reflection" | "curiosity";
   };
   /** Owner one-to-one Slack DM only; volatile read-only Rivet inspection. */
   rivet?: import("./rivet.js").RivetRequest;

@@ -65,17 +65,37 @@ the model, and on every candidate read. No raw evidence enters state or journal.
 Host actions:
 
 ```ts
+request({evidenceIds, mode: "idle" | "deep", kind?: "reflection" | "curiosity"}):
+  Promise<{status: "queued" | "duplicate" | "unavailable"}>
 enqueue({scope, evidenceIds, kind: "reflection" | "curiosity",
          mode: "interaction" | "idle" | "deep"}): Promise<{id, accepted}>
 cancel(id): Promise<boolean>
 occupancy(id: string, active: boolean): Promise<void>
 trigger({id, type: "interaction" | "idle", liveActive}): Promise<void>
-status(): Promise<{reflection, invocations, candidateIds, liveActive, activeTurnIds, epoch}>
+status(): Promise<{reflection, invocations, decisionOutcomes, candidateIds, liveActive, activeTurnIds, epoch}>
 isSettled(): Promise<boolean>
 listCandidates(scope): Promise<{status, checkedAt, ids, truncated}>
 candidate(id): Promise<ReflectionCandidate | null>
 reconcile(requestId, confirmedStopped): Promise<boolean>
 ```
+
+June uses `reflectionRequest` with `kind: "curiosity"` in an enabled
+owner-private turn to evaluate 1–20 currently permitted retained source IDs.
+Omitted kind defaults to `reflection` for older replies. The host fixes the
+audience and uses the same scheduler, delays, quiet hours, capacity, attempt
+limits and cross-kind evidence-set dedupe. A duplicate preserves the original
+kind and mode. Curiosity currently uses **existing evidence only**: no public
+search is performed, and there is no query, URL fetch, private account crawl,
+tool execution or new permission grant. Existing public search remains a
+separate capability, not a fallback for missing evidence.
+
+`decisionOutcomes` records only validated `yes`/`no`/`abstain` judgments after
+current evidence and execution checks. Missing entries (including older state)
+are unknown/not evaluated; a settled invocation alone is not success. `abstain`
+may come from host/provider validation or timeout; it does not establish a
+successful model evaluation. These are historical judgments, not new observations, current authorization or proof
+that a candidate exists. Later deletion/interaction can invalidate a candidate;
+use its revalidated read path, never this metadata, to consume it.
 
 These are trusted host APIs, not public authorization endpoints. Authenticate
 the operator before forwarding them, especially `reconcile`. Status includes

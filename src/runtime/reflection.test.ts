@@ -178,6 +178,9 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     )
     .toBe("stopped");
   expect((await handle.status()).candidateIds).toEqual([]);
+  expect(
+    (await handle.status()).decisionOutcomes?.[JSON.stringify([late.id, 1])],
+  ).toBeUndefined();
   deleted = false;
   const cancelled = await handle.enqueue({
     ...input,
@@ -242,6 +245,7 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   expect(calls).toBe(2);
   const queued = await handle.enqueue({
     ...input,
+    kind: "curiosity",
     evidenceIds: ["read-after-delete"],
   });
   await expect
@@ -260,6 +264,18 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     .toBe(1);
   const candidateId = (await handle.status()).candidateIds[0];
   if (!candidateId) throw new Error("Missing fixture candidate");
+  expect(await handle.candidate(candidateId)).toMatchObject({
+    kind: "interruption-candidate",
+    decision: { answer: "yes" },
+  });
+  expect((await handle.status()).decisionOutcomes).toMatchObject({
+    [JSON.stringify([queued.id, 1])]: "yes",
+  });
+  // Switching kinds cannot spend a second attempt over the same evidence set.
+  expect(
+    (await handle.enqueue({ ...input, evidenceIds: ["read-after-delete"] }))
+      .accepted,
+  ).toBe(false);
   deleted = true;
   expect(await handle.candidate(candidateId)).toBeNull();
   deleted = false;
@@ -368,6 +384,9 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
       .accepted,
   ).toBe(false);
   expect(calls).toBe(4);
+  expect(
+    (await handle.status()).decisionOutcomes?.[invocation],
+  ).toBeUndefined();
 
   // Settlement must allow sustained fresh work, not just one more provider call.
   // Nested state-proxy layers previously stalled persistence/status by this point.

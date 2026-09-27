@@ -44,12 +44,17 @@ it("admits explicit private reflection once without bypassing evidence or schedu
   store.deleteSource("deleted");
   const sent: OutboundMessage[] = [];
   const requests: ModelRequest[] = [];
-  const decisions: { at: number; ids: string[] }[] = [];
+  const decisions: { at: number; ids: string[]; question: string }[] = [];
   const action: CompanionReply = {
     text: "",
-    reflectionRequest: { evidenceIds: ["b", "a", "a"], mode: "deep" },
+    reflectionRequest: {
+      evidenceIds: ["b", "a", "a"],
+      mode: "deep",
+      kind: "curiosity",
+    },
   };
   let search = false;
+  let searches = 0;
   const policy = {
     totalCapacity: 1,
     liveReserve: 1,
@@ -84,8 +89,12 @@ it("admits explicit private reflection once without bypassing evidence or schedu
             "reflectionRequest",
           ),
         ).toBe(request.reflectionRequestAvailable);
-        if (request.reflectionRequestAvailable)
+        if (request.reflectionRequestAvailable) {
           expect(request.system).toContain("set reflectionRequest");
+          expect(request.system).toContain(
+            "Curiosity performs no public search",
+          );
+        }
         if (search && request.webSearchAvailable)
           return { text: "", webSearch: "public query" };
         // Custom providers must not bypass host revalidation.
@@ -96,6 +105,7 @@ it("admits explicit private reflection once without bypassing evidence or schedu
       available: true,
       description: "fixture",
       async search() {
+        searches++;
         return {
           status: "ready",
           results: [
@@ -121,6 +131,7 @@ it("admits explicit private reflection once without bypassing evidence or schedu
         decisions.push({
           at: Date.now(),
           ids: input.evidence.map((e) => e.id),
+          question: input.question,
         });
         return {
           answer: "yes",
@@ -170,12 +181,13 @@ it("admits explicit private reflection once without bypassing evidence or schedu
     {
       scope: audience,
       evidenceIds: ["a", "b"],
+      kind: "curiosity",
       status: "pending",
       attempts: 0,
     },
   ]);
   for (const evidenceIds of [["missing"], ["hidden"], ["stale"], ["deleted"]]) {
-    action.reflectionRequest = { evidenceIds, mode: "idle" };
+    action.reflectionRequest = { evidenceIds, mode: "idle", kind: "curiosity" };
     expect(await deliver()).toContain("Reflection unavailable");
   }
   action.reflectionRequest = { evidenceIds: ["c"], mode: "idle" };
@@ -186,10 +198,12 @@ it("admits explicit private reflection once without bypassing evidence or schedu
     expect(await deliver(extra)).toContain("require an owner-private turn");
     expect(requests.at(-1)?.reflectionRequestAvailable).toBe(false);
   }
+  expect(searches).toBe(0); // Missing evidence never expands into public search.
   search = true;
   expect(await deliver()).toContain("require an owner-private turn");
   expect(requests.at(-1)?.usageStage).toBe("synthesis");
   expect(requests.at(-1)?.reflectionRequestAvailable).toBe(false);
+  expect(searches).toBe(1); // Only the separate explicit webSearch directive.
   search = false;
   const enabled = deps.reflection;
   deps.reflection = undefined;
@@ -228,6 +242,7 @@ it("admits explicit private reflection once without bypassing evidence or schedu
   await expect.poll(() => decisions.length, { timeout: 5000 }).toBe(1);
   expect(decisions[0]?.at).toBeGreaterThanOrEqual(interactionAt + 800);
   expect(decisions[0]?.ids).toEqual(["a", "b"]);
+  expect(decisions[0]?.question).toBe("interruption-cost");
   await expect
     .poll(
       async () => (await reflection.status()).reflection.requests[0]?.status,
@@ -240,10 +255,12 @@ it("admits explicit private reflection once without bypassing evidence or schedu
     (idleRequest?.createdAt ?? Infinity) + 300,
   );
   expect(decisions[1]?.ids).toEqual(["c"]);
+  expect(decisions[1]?.question).toBe("novelty"); // Older replies omit kind.
   expect(await deliver()).toContain("already requested");
   await setTimeout(900);
   expect(decisions).toHaveLength(2);
   expect((await reflection.status()).reflection.requests).toHaveLength(2);
+  expect(searches).toBe(1);
   expect(JSON.stringify(sent)).not.toContain("PRIVATE");
   for (const input of [
     { evidenceIds: [], mode: "idle" },
@@ -253,6 +270,13 @@ it("admits explicit private reflection once without bypassing evidence or schedu
       mode: "idle",
     },
     { evidenceIds: ["a"], mode: "idle", scope: "other-audience" },
+    { evidenceIds: ["a"], mode: "idle", kind: "public-search" },
+    {
+      evidenceIds: ["a"],
+      mode: "idle",
+      kind: "curiosity",
+      query: "private account query",
+    },
   ])
     expect(() =>
       parseReply(JSON.stringify({ text: "", reflectionRequest: input }), [], {

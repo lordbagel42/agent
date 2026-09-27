@@ -83,6 +83,10 @@ export interface ReflectionRuntimeState {
   reflection: ReflectionState;
   modes: Record<string, ReflectionMode>;
   invocations: Record<string, "started" | "settled" | "uncertain">;
+  /** Optional for older actors. Settlement alone is not a completed evaluation.
+   * Outcomes are judgments over existing evidence, never new observations.
+   */
+  decisionOutcomes?: Record<string, Decision["answer"]>;
   candidates: Record<string, ReflectionCandidate>;
   liveActive: number;
   /** Optional for actors persisted before ID-based occupancy was introduced. */
@@ -143,6 +147,7 @@ export function createReflectionActor(
       reflection: initialState(),
       modes: {},
       invocations: {},
+      decisionOutcomes: {},
       candidates: {},
       liveActive: 0,
       liveTurns: [],
@@ -169,7 +174,7 @@ export function createReflectionActor(
     }),
     queues: { wake: queue<{ wake: true }>() },
     actions: {
-      /** June's explicit owner-private request. No model-controlled scope, kind,
+      /** June's explicit owner-private request. No model-controlled scope,
        * evidence body or immediate mode; the existing scheduler owns admission.
        */
       request: async (
@@ -180,6 +185,8 @@ export function createReflectionActor(
           throw new Error("Wrong reflection owner");
         if (
           !["idle", "deep"].includes(input.mode) ||
+          (input.kind !== undefined &&
+            !["reflection", "curiosity"].includes(input.kind)) ||
           !Array.isArray(input.evidenceIds) ||
           !input.evidenceIds.length ||
           input.evidenceIds.length > 20 ||
@@ -192,7 +199,7 @@ export function createReflectionActor(
           scope: JSON.stringify(["private", deps.ownerId]),
           evidenceIds: [...new Set(input.evidenceIds)].sort(),
           mode: input.mode,
-          kind: "reflection",
+          kind: input.kind ?? "reflection",
         };
         const evidence = await retrieve(
           request,
@@ -301,6 +308,7 @@ export function createReflectionActor(
       status: (c) => ({
         reflection: c.state.reflection,
         invocations: { ...c.state.invocations },
+        decisionOutcomes: { ...c.state.decisionOutcomes },
         candidateIds: Object.keys(c.state.candidates),
         liveActive: c.state.liveActive,
         activeTurnIds: (c.state.liveTurns ?? [])
@@ -568,9 +576,10 @@ export function createReflectionActor(
                         ? "interruption-cost"
                         : "novelty",
                     prompt:
-                      mode === "deep"
+                      "Use only the supplied existing evidence. No web search was performed for this request; do not request additional sources, private account access or tool execution. " +
+                      (mode === "deep"
                         ? "Consider patterns and alternative interpretations. Dreams are hypotheses, never independent evidence. Stage a proposal only; no actions or permission changes."
-                        : "Evaluate whether these episodes support a useful reflection proposal or interruption candidate. Silence is normal; do not repeatedly contact an idle owner. No actions or permission changes.",
+                        : "Evaluate whether these episodes support a useful reflection proposal or interruption candidate. Silence is normal; do not repeatedly contact an idle owner. No actions or permission changes."),
                     now: Date.now(),
                     evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
                     evidence: executionEvidence,
@@ -591,9 +600,10 @@ export function createReflectionActor(
                     running?.status === "running" &&
                     epoch === step.state.epoch &&
                     !step.state.liveActive &&
-                    !isQuiet(Date.now(), deps.policy.quiet) &&
-                    decision.answer === "yes"
+                    !isQuiet(Date.now(), deps.policy.quiet)
                   ) {
+                    step.state.decisionOutcomes ??= {};
+                    step.state.decisionOutcomes[invocation] = decision.answer;
                     const interruption = request.kind === "curiosity";
                     const hypothesisOnly = !current.some(
                       (e) =>
@@ -601,9 +611,10 @@ export function createReflectionActor(
                         decision.evidenceIds.includes(e.id),
                     );
                     if (
-                      !interruption ||
-                      (!hypothesisOnly &&
-                        step.state.interruptionEpoch !== epoch)
+                      decision.answer === "yes" &&
+                      (!interruption ||
+                        (!hypothesisOnly &&
+                          step.state.interruptionEpoch !== epoch))
                     ) {
                       step.state.candidates[invocation] = {
                         id: invocation,

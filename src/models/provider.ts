@@ -217,6 +217,7 @@ const companionReplySchema = z.strictObject({
     .strictObject({
       evidenceIds: z.array(z.string().trim().min(1).max(2048)).min(1).max(20),
       mode: z.enum(["idle", "deep"]),
+      kind: z.enum(["reflection", "curiosity"]).optional(),
     })
     .optional(),
   rivet: rivetRequestSchema.optional(),
@@ -744,10 +745,11 @@ export function replyJsonSchema(
                     "1–20 existing retained source IDs, each 1–2048 characters; never invent IDs or provide evidence text. Existing evidence-size limits also apply.",
                 },
                 mode: { type: "string", enum: ["idle", "deep"] },
+                kind: { type: "string", enum: ["reflection", "curiosity"] },
               },
-              required: ["evidenceIds", "mode"],
+              required: ["evidenceIds", "mode", "kind"],
               description:
-                "Request owner-private reflection through the existing scheduler. Leave text empty and all other actions unset. Queuing does not mean evaluation or delivery; idle, quiet-hour and capacity rules still apply.",
+                "Request owner-private reflection or curiosity over existing evidence through the same scheduler. No search, private account crawling or tools. Leave text empty and all other actions unset. Queuing does not mean evaluation or delivery; idle, quiet-hour and capacity rules still apply.",
             },
           }
         : {}),
