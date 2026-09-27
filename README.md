@@ -450,14 +450,23 @@ After an uncertain result, first inspect the saved native session and workspace 
 confirm the old worker is no longer running. Only then send
 `/resume-stopped <job-prefix>`. Do not resume a job with an unknown live worker.
 If a worktree exists but no thread ID was saved, even confirmed-stopped resume
-is rejected: manual reconciliation only, never a replacement session. A failure
-before worktree preparation may be explicitly resumed under the same binding.
+is rejected: manual reconciliation only, never a replacement session. June's job
+report explains that the external run may still be active. The operator must
+inspect the isolated workspace and native runtime's sessions/processes, identify
+any existing run and confirm it stopped, and inspect workspace admission and
+reconcile any retained admission record before separately approved work. Preserve
+the workspace and any retained admission record until that review is complete;
+cancellation or host restart alone is not proof the run stopped. There is no
+automatic session rebinding or lease reset.
+A failure before worktree preparation may be explicitly resumed under the same
+binding.
 
 The pinned Amp SDK writes a string prompt before output consumption. Awaiting
 `onThread` therefore does **not** prove that the native session was saved before
 work began. Natural iterator exhaustion validates the owned process exit, not
-descendant or remote-tool quiescence. The existing hard-kill fixture interrupts
-after the ID callback; it does not exercise real pre-ID Amp crash/recovery.
+descendant or remote-tool quiescence. The hard-kill fixture interrupts a mock
+native runtime both before and after the ID callback, checking durable recovery,
+June's report input and retained admission; it does not prove real Amp recovery.
 Unknown startup/cancellation retains admission, including without a saved ID.
 
 Private operator endpoints require `Authorization: Bearer <operator-token>`:

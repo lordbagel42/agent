@@ -75,6 +75,9 @@ export function codingJobMetadata(id: string, state: CodingState) {
   };
 }
 
+const missingSessionReport =
+  "No confirmed completion. No native session/thread ID was saved; the external run may still be active. Do not retry or launch a replacement. /resume-stopped cannot resume this job, even after confirming the worker stopped. Manual operator reconciliation is required: inspect the isolated workspace and the native runtime's sessions/processes, identify any existing run and confirm it stopped, and inspect workspace admission and reconcile any retained admission record before separately approved work. Preserve the workspace and any retained admission record until reconciliation is complete. Cancellation or host restart is not proof that the external run stopped.";
+
 export function createCodingActor(coding: CodingDependencies | undefined) {
   return actor({
     state: {
@@ -163,7 +166,9 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
               if (step.state.status === "running") {
                 step.state.status = "needs_review";
                 step.state.report =
-                  "The coding run was interrupted. Check its saved thread and process before resuming.";
+                  step.state.worktree && !step.state.threadId
+                    ? missingSessionReport
+                    : "The coding run was interrupted. Check its saved thread and process before resuming.";
                 await step.vars.persist();
               }
               return;
@@ -284,7 +289,9 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
             } catch {
               step.state.status = "needs_review";
               step.state.report =
-                "No confirmed completion. Admission, cancellation, worker execution, or verification needs review. Inspect the isolated workspace and saved thread; unknown execution must be confirmed stopped before resuming.";
+                step.state.worktree && !step.state.threadId
+                  ? missingSessionReport
+                  : "No confirmed completion. Admission, cancellation, worker execution, or verification needs review. Inspect the isolated workspace and saved thread; unknown execution must be confirmed stopped before resuming.";
             } finally {
               acceptingThread = false;
               signal.removeEventListener("abort", onAbort);

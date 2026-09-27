@@ -40,7 +40,8 @@ const coding: CodingDependencies = {
   timeoutMs: 60_000,
   runtime: {
     async run(input) {
-      await input.onThread("T-fixture-saved");
+      if (process.env.FIXTURE_CODING_BOUNDARY !== "before-session")
+        await input.onThread("T-fixture-saved");
       process.send?.({ kind: "coding" });
       return new Promise<never>(() => {});
     },
@@ -53,7 +54,9 @@ const registry = createJuneRegistry({
     identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
   },
   model: {
-    async reply() {
+    async reply(request) {
+      if (request.system.includes("Coding completion"))
+        process.send?.({ kind: "coding-report", text: request.system });
       return { text: "The heron is remembered." };
     },
   },

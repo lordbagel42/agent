@@ -900,70 +900,81 @@ describe("separate coding supervisor", () => {
     });
   });
 
-  it("cancels an uncooperative runtime without releasing uncertain execution capacity", async (t) => {
-    let launches = 0;
-    let lateThread: ((thread: string) => Promise<void>) | undefined;
-    const { registry, manager } = await fixture(t, {
-      async run(input) {
-        launches++;
-        lateThread = input.onThread;
-        await input.onThread("T-cancelled");
-        return new Promise<never>(() => {});
-      },
-    });
-    const { client } = await setupTest(t, registry);
-    const job = client.job.getOrCreate(["raygen", "cancelled"]);
-    await job.send("commands", {
-      type: "propose",
-      proposal: {
-        id: "cancelled",
-        source,
-        workspace: "june",
-        goal: "Approved task",
-      },
-    });
-    await job.send("commands", { type: "approve", commandId: "approval" });
-    await expect.poll(() => launches).toBe(1);
-    await job.cancel();
-    await expect
-      .poll(async () => (await job.snapshot()).status)
-      .toBe("needs_review");
-    await lateThread?.("T-late-untrusted");
-    expect((await job.snapshot()).threadId).toBe("T-cancelled");
-    await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
-    await job.send("commands", { type: "approve", commandId: "approval" });
-    await expect
-      .poll(async () => (await job.snapshot()).cancelRequested)
-      .toBe(true);
-    expect(launches).toBe(1);
-    expect((await job.snapshot()).verification).toBeUndefined();
-    await job.cancel(true);
-    await job.send("commands", {
-      type: "resume",
-      commandId: "revoked-resume",
-      confirmedStopped: true,
-    });
-    await expect
-      .poll(
-        async () => (await job.snapshot()).commandApprovals["revoked-resume"],
-      )
-      .toBeNull();
-    expect(launches).toBe(1);
-    expect((await job.snapshot()).cancelRequested).toBe(true);
-    await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
-    await expect
-      .poll(
-        async () =>
-          Object.values(
-            (
-              await client.conversation
-                .getOrCreate(["private", "raygen"])
-                .snapshot()
-            ).events,
-          ).filter((event) => event.done).length,
-      )
-      .toBe(1);
-  });
+  it.for(["T-cancelled", undefined])(
+    "cancels an uncooperative runtime without releasing uncertain execution capacity (saved ID=%s)",
+    async (threadId, t) => {
+      let launches = 0;
+      let lateThread: ((thread: string) => Promise<void>) | undefined;
+      const { registry, manager } = await fixture(t, {
+        async run(input) {
+          launches++;
+          lateThread = input.onThread;
+          if (threadId) await input.onThread(threadId);
+          return new Promise<never>(() => {});
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const job = client.job.getOrCreate(["raygen", "cancelled"]);
+      await job.send("commands", {
+        type: "propose",
+        proposal: {
+          id: "cancelled",
+          source,
+          workspace: "june",
+          goal: "Approved task",
+        },
+      });
+      await job.send("commands", { type: "approve", commandId: "approval" });
+      await expect.poll(() => launches).toBe(1);
+      await job.cancel();
+      await expect
+        .poll(async () => (await job.snapshot()).status)
+        .toBe("needs_review");
+      await lateThread?.("T-late-untrusted");
+      expect((await job.snapshot()).threadId).toBe(threadId);
+      if (!threadId) {
+        expect((await job.snapshot()).report).toContain(
+          "No native session/thread ID was saved",
+        );
+        expect((await job.snapshot()).report).toContain(
+          "/resume-stopped cannot resume this job",
+        );
+      }
+      await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+      await job.send("commands", { type: "approve", commandId: "approval" });
+      await expect
+        .poll(async () => (await job.snapshot()).cancelRequested)
+        .toBe(true);
+      expect(launches).toBe(1);
+      expect((await job.snapshot()).verification).toBeUndefined();
+      await job.cancel(true);
+      await job.send("commands", {
+        type: "resume",
+        commandId: "revoked-resume",
+        confirmedStopped: true,
+      });
+      await expect
+        .poll(
+          async () => (await job.snapshot()).commandApprovals["revoked-resume"],
+        )
+        .toBeNull();
+      expect(launches).toBe(1);
+      expect((await job.snapshot()).cancelRequested).toBe(true);
+      await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+      await expect
+        .poll(
+          async () =>
+            Object.values(
+              (
+                await client.conversation
+                  .getOrCreate(["private", "raygen"])
+                  .snapshot()
+              ).events,
+            ).filter((event) => event.done).length,
+        )
+        .toBe(1);
+    },
+  );
 
   it("cancels an unsettled verifier and ignores its late receipt without releasing admission", async (t) => {
     const { registry, manager } = await fixture(t, {
