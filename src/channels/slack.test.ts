@@ -148,6 +148,41 @@ describe("createSlackAdapter", () => {
     expect(unsigned.events).toEqual([]);
   });
 
+  it("marks reflection review eligible only for ordinary signed owner-DM input", async () => {
+    const adapter = makeAdapter();
+    const text = "!reflection list";
+    const event = {
+      type: "message",
+      channel_type: "im",
+      channel: "D1",
+      user: "U_HUMAN",
+      ts: "123.456",
+      text,
+    };
+    for (const type of [
+      "rich_text_section",
+      "rich_text_quote",
+      "rich_text_preformatted",
+    ]) {
+      const result = await adapter.receive(
+        signedRequest(
+          eventBody({
+            ...event,
+            blocks: [
+              {
+                type: "rich_text",
+                elements: [{ type, elements: [{ type: "text", text }] }],
+              },
+            ],
+          }),
+        ),
+      );
+      expect((result.events[0] as MessageEvent).reflectionReviewEligible).toBe(
+        type === "rich_text_section",
+      );
+    }
+  });
+
   it("admits owner follow-ups only in threads June successfully posted to", async (t) => {
     const root = mkdtempSync(join(tmpdir(), "june-slack-threads-"));
     const file = join(root, "threads.sqlite");

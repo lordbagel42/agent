@@ -788,6 +788,19 @@ Reconciliation does not prove reflection succeeded, approve a candidate, clear
 dedupe or retry work. June cannot perform it. Ordinary live occupancy can include
 the inspection itself and is not evidence of interruption.
 
+To list current private reflection candidates, the authenticated owner sends
+exactly `!reflection list` as an ordinary message in a private conversation
+(not a Slack slash command). The host returns at most ten
+opaque candidate IDs after checking current evidence authorization, deletion,
+freshness, epoch, quiet hours and live occupancy. It checks at most twenty scoped
+candidates and explicitly reports possible omissions. Blocked, unavailable and
+empty eligible results are distinct; generic inspection counts are not validated
+eligibility. No evidence or rationale is returned. This exact command bypasses
+inference and automatic memory ingestion/extraction/reflection enqueue, so review
+does not erase its own candidates. Ordinary conversation still invalidates them.
+The list is constructed only at delivery, not retained in history or journaled
+reply content. It is not approval, a memory write, or permission to send.
+
 The existing `conversation-v1` workflow remains. Journaled old iterations stay
 on their old path; new iterations persist optional feature choices before use.
 New live/extraction attempts persist intent before provider work and never

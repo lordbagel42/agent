@@ -72,6 +72,7 @@ occupancy(id: string, active: boolean): Promise<void>
 trigger({id, type: "interaction" | "idle", liveActive}): Promise<void>
 status(): Promise<{reflection, invocations, candidateIds, liveActive, activeTurnIds, epoch}>
 isSettled(): Promise<boolean>
+listCandidates(scope): Promise<{status, checkedAt, ids, truncated}>
 candidate(id): Promise<ReflectionCandidate | null>
 reconcile(requestId, confirmedStopped): Promise<boolean>
 ```
@@ -95,6 +96,16 @@ the memory store alone does not erase a candidate from actor storage/backups.
   process drain; provider cancellation alone is not settlement. Automatic
   deployment with reflection remains unsupported until the complete lifecycle,
   recovery and transport behavior is proven. No feature is enabled by this wiring.
+
+`listCandidates` accepts only the exact owner's private scope. It checks up to
+twenty same-scope/current-epoch candidates, revalidates all request evidence and
+returns at most ten opaque `reflectionCandidateId(rawId)` SHA256 tokens, not the
+internal IDs (which embed source IDs). `truncated` reports possible omissions;
+`status` distinguishes `ready`, `live`, `quiet` and `changed` during the read.
+The exact authenticated `!reflection list` ordinary message calls it only at send,
+without inference, retention, extraction or enqueue. Errors report unavailable,
+never an empty success. It leaves occupancy and ordinary preemption unchanged.
+
 - Before live model work, await `occupancy(turnAttemptId, true)` with a stable,
   owner-wide unique turn/attempt ID. The owner actor derives occupancy from
   durable active IDs, so overlapping conversation actors never read/modify/write

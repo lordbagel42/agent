@@ -68,6 +68,7 @@ import { createPriorityAdmission } from "./priority.js";
 import { buildModelRequest, type PromptInput } from "./prompt.js";
 import {
   createReflectionActor,
+  parseReflectionReviewCommand,
   type ReflectionDependencies,
 } from "./reflection.js";
 import type { SocialPermissions } from "./social.js";
@@ -347,6 +348,12 @@ export function createJuneRegistry(deps: Dependencies) {
             count: 1,
           });
           if (!message) return;
+          // After receipt: an upgraded actor parked on the inbox can review its
+          // first new message, while already-journaled turns keep the old path.
+          const reflectionReviewVersion = await loop.getVersion(
+            "reflection-review",
+            2,
+          );
           const body = message.body;
           // Old actors can be asleep in a pre-v9 queue wait. A wakeup could
           // never have entered those old journals, so its new path is safe.
@@ -385,6 +392,16 @@ export function createJuneRegistry(deps: Dependencies) {
               );
               if (!claimed) return;
             }
+            const reflectionReview =
+              reflectionReviewVersion >= 2 &&
+              ownerTurn &&
+              scope.private &&
+              body.type === "event" &&
+              event.type === "message" &&
+              (event.address.channel !== "slack" ||
+                event.reflectionReviewEligible === true)
+                ? parseReflectionReviewCommand(event.text)
+                : undefined;
             if (version >= 5 && !ownerTurn) {
               const admitted = await loop.step("guest-admission", async () =>
                 priority.acceptGuest(
@@ -685,6 +702,7 @@ export function createJuneRegistry(deps: Dependencies) {
               await loop.step("memory-ingest", async (step) => {
                 if (
                   !plan.memory ||
+                  reflectionReview ||
                   event.type !== "message" ||
                   body.type !== "event" ||
                   !valid(step.state)
@@ -872,6 +890,12 @@ export function createJuneRegistry(deps: Dependencies) {
                       : "",
                   }),
                 );
+              } else if (reflectionReview) {
+                // Resolve only inside the durable send callback. Review must not
+                // start inference/extraction occupancy and erase its candidates.
+                reply = {
+                  text: "[Private reflection review; content not retained]",
+                };
               } else if (
                 version >= 5 &&
                 body.type === "event" &&
@@ -2958,6 +2982,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     step.state.deliveries[ids[0]] = {
                       phase: "ready",
                       attempts: 0,
+                      ...(reflectionReview ? { ephemeral: true as const } : {}),
                       message: {
                         id: randomUUID(),
                         address: replyAddress,
@@ -3010,6 +3035,40 @@ export function createJuneRegistry(deps: Dependencies) {
                               code: "memory_invalidated",
                               retryable: false,
                             };
+                          }
+                          if (reflectionReview?.action === "list") {
+                            let text =
+                              "Reflection is unavailable; no candidate status can be inferred.";
+                            if (plan.reflection && deps.reflection) {
+                              try {
+                                const result = await step
+                                  .client<JuneClientRegistry>()
+                                  .reflection.getOrCreate([deps.owner.id])
+                                  .listCandidates(audience);
+                                text = `Private reflection candidates at ${new Date(result.checkedAt).toISOString()}. ${
+                                  result.status === "ready"
+                                    ? `Current authorized IDs (showing ${result.ids.length}, at most 10): ${JSON.stringify(result.ids)}. ${result.truncated ? "Bounded scan; additional candidates may be omitted." : "No additional eligible candidates in this snapshot."}`
+                                    : result.status === "live"
+                                      ? "Review blocked by active or unresolved live work; no eligible count inferred."
+                                      : result.status === "quiet"
+                                        ? "Review blocked by quiet hours; no eligible count inferred."
+                                        : "Review changed during the read; request a fresh list."
+                                } Candidates are provisional hypotheses, not approved messages or permission to act. No evidence or rationale returned; no reflection was started.`;
+                              } catch {
+                                text =
+                                  "Reflection review is unavailable; no candidate status can be inferred.";
+                              }
+                            }
+                            if (!valid(step.state) || step.abortSignal.aborted)
+                              return {
+                                status: "rejected",
+                                code: "memory_invalidated",
+                                retryable: false,
+                              };
+                            return send(
+                              { ...outbound, content: { type: "text", text } },
+                              "text",
+                            );
                           }
                           return send(outbound, outbound.content.type);
                         },
@@ -3140,6 +3199,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     if (
                       !plan.extraction ||
                       correctionCommand ||
+                      reflectionReview ||
                       !sourceId ||
                       body.type !== "event" ||
                       !deps.memory?.extract ||
@@ -3189,6 +3249,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   )?.sourceId;
                   if (
                     !plan.reflection ||
+                    reflectionReview ||
                     !deps.reflection ||
                     !sourceId ||
                     body.type !== "event" ||

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type { CompanionReply } from "../core/contracts.js";
@@ -23,6 +24,27 @@ import {
 import type { Lifecycle } from "./lifecycle.js";
 
 export type ReflectionMode = "interaction" | "idle" | "deep";
+
+/** Exact host commands only; quoted text and model output never select review. */
+export function parseReflectionReviewCommand(
+  text: string,
+): { action: "list" } | undefined {
+  return text.trim() === "!reflection list" ? { action: "list" } : undefined;
+}
+
+/** Internal IDs embed evidence IDs; private review uses bounded opaque tokens. */
+export function reflectionCandidateId(id: string): string {
+  return createHash("sha256").update(id).digest("hex");
+}
+
+export interface ReflectionCandidateList {
+  status: "ready" | "live" | "quiet" | "changed";
+  checkedAt: number;
+  ids: string[];
+  /** A bounded scan, not a claim that the complete candidate set was read. */
+  truncated: boolean;
+}
+
 export interface ReflectionInput extends RequestInput {
   mode: ReflectionMode;
 }
@@ -291,6 +313,89 @@ export function createReflectionActor(
         !c.state.reflection.requests.some((request) =>
           ["running", "cancelling"].includes(request.status),
         ),
+      /** Owner-private metadata only, with the same current-evidence read gates.
+       * Never use the unvalidated status().candidateIds as reviewable candidates.
+       */
+      listCandidates: async (
+        c,
+        scope: string,
+      ): Promise<ReflectionCandidateList> => {
+        if (
+          c.key.length !== 1 ||
+          c.key[0] !== deps.ownerId ||
+          scope !== JSON.stringify(["private", deps.ownerId])
+        )
+          throw new Error("Private reflection review required");
+        const epoch = c.state.epoch;
+        const blocked = (): ReflectionCandidateList["status"] | undefined =>
+          c.state.liveActive > 0
+            ? "live"
+            : isQuiet(Date.now(), deps.policy.quiet)
+              ? "quiet"
+              : c.state.epoch !== epoch
+                ? "changed"
+                : undefined;
+        const initialBlock = blocked();
+        if (initialBlock)
+          return {
+            status: initialBlock,
+            checkedAt: Date.now(),
+            ids: [],
+            truncated: false,
+          };
+        const selected: ReflectionCandidate[] = [];
+        let truncated = false;
+        for (const id in c.state.candidates) {
+          const candidate = c.state.candidates[id];
+          if (
+            !candidate ||
+            candidate.scope !== scope ||
+            candidate.epoch !== epoch
+          )
+            continue;
+          if (selected.length === 20) {
+            truncated = true;
+            break;
+          }
+          selected.push(candidate);
+        }
+        const signal = AbortSignal.timeout(Math.min(deps.timeoutMs, 5000));
+        const checked = await Promise.all(
+          selected.map(async (candidate) => {
+            const request = c.state.reflection.requests.find(
+              (r) => r.id === candidate.requestId && r.scope === scope,
+            );
+            if (
+              !request ||
+              ["cancelled", "cancelling"].includes(request.status) ||
+              c.state.invocations[candidate.id] !== "settled"
+            )
+              return null;
+            const evidence = await retrieve(request, signal);
+            return evidence ? { candidate, evidence } : null;
+          }),
+        );
+        const checkedAt = Date.now();
+        const finalBlock = blocked();
+        if (finalBlock)
+          return { status: finalBlock, checkedAt, ids: [], truncated: false };
+        if (signal.aborted) throw new Error("Reflection review timed out");
+        const current = checked.flatMap((entry) =>
+          entry &&
+          c.state.candidates[entry.candidate.id] === entry.candidate &&
+          entry.evidence.every((e) =>
+            freshEvidence(e, scope, checkedAt, deps.policy.evidenceMaxAgeMs),
+          )
+            ? [reflectionCandidateId(entry.candidate.id)]
+            : [],
+        );
+        return {
+          status: "ready",
+          checkedAt,
+          ids: current.slice(0, 10),
+          truncated: truncated || current.length > 10,
+        };
+      },
       /** Recheck memory on every read, including after actor recovery or forgetting. */
       candidate: async (c, id: string) => {
         const candidate = c.state.candidates[id];

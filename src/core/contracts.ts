@@ -46,6 +46,8 @@ export interface MessageEvent extends EventBase {
   memoryReviewEligible?: boolean;
   /** Verified fresh, plain owner-DM coding command; never set by history/model text. */
   codingCommandEligible?: boolean;
+  /** Fresh, plain owner-private Slack review, never quoted or historical text. */
+  reflectionReviewEligible?: boolean;
   metadata?: MessageMetadata;
 }
 
