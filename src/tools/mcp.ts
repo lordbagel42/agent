@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -16,6 +17,58 @@ export interface McpToolConfig {
   allowedOrigins: readonly string[];
   timeoutMs?: number;
   maxResponseBytes?: number;
+  /** Explicit operator review, NOT a server readOnlyHint. Enables read() only
+   * for this exact tool contract; execute() continues discarding all output. */
+  readContractDigest?: string;
+}
+
+/** Untrusted, ephemeral data. Never journal, log, or treat as instructions. */
+export interface McpReadResult {
+  text: string;
+  truncated: boolean;
+}
+
+/** Compute from the operator-inspected tools/list entry, never auto-approve it.
+ * Pins descriptions/annotations too: any changed contract needs fresh review. */
+export function mcpToolContractDigest(tool: Tool): string {
+  function sorted(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sorted);
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([, child]) => child !== undefined)
+          .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+          .map(([key, child]) => [key, sorted(child)]),
+      );
+    return value;
+  }
+  return createHash("sha256")
+    .update(JSON.stringify(sorted(tool)))
+    .digest("hex");
+}
+
+function readText(text: string, token: string): McpReadResult {
+  // Remove the released credential before truncating, including common wire
+  // encodings. A trusted remote server can encode secrets arbitrarily; this is
+  // not a DLP sandbox and does not make a malicious server safe.
+  for (const secret of new Set([
+    token,
+    encodeURIComponent(token),
+    Buffer.from(token).toString("base64"),
+  ]))
+    text = text.replaceAll(secret, "[credential redacted]");
+  text = text.replace(/[\p{Cc}\p{Cf}]/gu, (c) =>
+    c === "\n" || c === "\t" ? c : " ",
+  );
+  const bytes = Buffer.from(text);
+  if (bytes.length <= 12_000) return { text, truncated: false };
+  return {
+    text: `${bytes
+      .subarray(0, 11_980)
+      .toString("utf8")
+      .replace(/\uFFFD$/u, "")}\n[truncated]`,
+    truncated: true,
+  };
 }
 
 export class McpAdapterError extends Error {
@@ -63,11 +116,12 @@ function compileSchema(schema: object) {
   return (input: unknown): boolean => validate(input) === true;
 }
 
-/** Streamable HTTP MCP adapter; one statically registered broker tool per instance.
- * The broker MUST grant the complete action and persist unknown intent first.
+/** Streamable HTTP MCP adapter; one statically registered tool per instance.
+ * For mutations the broker MUST grant the action and persist unknown intent first.
  * No OAuth/upscoping, redirects, reconnects, task execution, sampling, roots,
  * elicitation, stdio, or server-instruction handling. Not a network sandbox.
- * Results/descriptions never become authority and are deliberately discarded.
+ * execute() discards results. Explicitly reviewed read() returns bounded text;
+ * caller must enforce its private audience and current read authorization.
  */
 export class McpToolAdapter implements ToolAdapter {
   readonly #config: Readonly<McpToolConfig>;
@@ -114,7 +168,9 @@ export class McpToolAdapter implements ToolAdapter {
       timeoutMs > 120000 ||
       !Number.isSafeInteger(maxResponseBytes) ||
       maxResponseBytes < 1024 ||
-      maxResponseBytes > 4194304
+      maxResponseBytes > 4194304 ||
+      (config.readContractDigest !== undefined &&
+        !/^[a-f0-9]{64}$/u.test(config.readContractDigest))
     )
       throw new McpAdapterError("not_started");
     this.#config = Object.freeze({
@@ -136,6 +192,29 @@ export class McpToolAdapter implements ToolAdapter {
   }
 
   async execute(action: ToolAction, credential: unknown): Promise<void> {
+    await this.#invoke(action, credential);
+  }
+
+  /** Only for operator-reviewed reads. This does not grant authorization and
+   * must not wrap mutations. Rechecks current authority after async discovery.
+   * No automatic OAuth, retry, or second tool call. */
+  async read(
+    action: ToolAction,
+    credential: unknown,
+    authorized: () => boolean,
+  ): Promise<McpReadResult> {
+    if (!this.#config.readContractDigest)
+      throw new McpAdapterError("not_started");
+    const result = await this.#invoke(action, credential, authorized);
+    if (!result) throw new McpAdapterError("unknown");
+    return result;
+  }
+
+  async #invoke(
+    action: ToolAction,
+    credential: unknown,
+    read?: () => boolean,
+  ): Promise<McpReadResult | undefined> {
     const config = this.#config;
     if (
       action.tool !== config.tool ||
@@ -144,7 +223,8 @@ export class McpToolAdapter implements ToolAdapter {
       action.origin !== config.origin
     )
       throw new McpAdapterError("not_started");
-    // Snapshot before the first await; the broker already canonicalized strict JSON.
+    // Snapshot before the first await. Mutation callers must already have gone
+    // through the broker's strict JSON canonicalization and exact grant binding.
     let args: Record<string, unknown>;
     try {
       const encoded = JSON.stringify(action.arguments);
@@ -155,7 +235,7 @@ export class McpToolAdapter implements ToolAdapter {
     } catch {
       throw new McpAdapterError("not_started");
     }
-    await this.#run(credential, args);
+    return this.#run(credential, args, read);
   }
 
   /** Stops local work; cancellation is NOT proof that a remote effect stopped. */
@@ -168,7 +248,8 @@ export class McpToolAdapter implements ToolAdapter {
   async #run(
     credential: unknown,
     args?: Record<string, unknown>,
-  ): Promise<void> {
+    read?: () => boolean,
+  ): Promise<McpReadResult | undefined> {
     if (this.#closed) throw new McpAdapterError("not_started");
     let token: string;
     try {
@@ -349,8 +430,13 @@ export class McpToolAdapter implements ToolAdapter {
       const validateOutput = selected.outputSchema
         ? compileSchema(selected.outputSchema)
         : undefined;
+      if (
+        config.readContractDigest &&
+        mcpToolContractDigest(selected) !== config.readContractDigest
+      )
+        throw new Error();
       if (args !== undefined) {
-        if (!validate(args)) throw new Error();
+        if (!validate(args) || (read && read() !== true)) throw new Error();
         controller.signal.throwIfAborted();
         const result = await client.callTool(
           { name: config.remoteTool, arguments: args },
@@ -362,7 +448,23 @@ export class McpToolAdapter implements ToolAdapter {
           (validateOutput && !validateOutput(result.structuredContent))
         )
           throw new Error();
-        // Never expose arbitrary server content or echoed credentials to the model.
+        if (read) {
+          // No resource fetching, media, _meta, annotations, or server prompts.
+          // Structured-only results remain data, serialized rather than executed.
+          const content = result.content as { type: string; text?: string }[];
+          const texts = content
+            .filter(
+              (block) =>
+                block.type === "text" && typeof block.text === "string",
+            )
+            .map((block) => block.text);
+          const text = texts.length
+            ? texts.join("\n")
+            : result.structuredContent === undefined
+              ? ""
+              : JSON.stringify(result.structuredContent);
+          return readText(text, token);
+        }
       }
     } catch {
       throw new McpAdapterError(dispatched ? "unknown" : "not_started");
