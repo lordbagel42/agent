@@ -496,7 +496,9 @@ prompt. This is not physical deletion of old journals.
 Optional `memory.extraction` and `reflection.model` use explicit API-key
 OpenAI/Anthropic structured-output providers; `JUNE_ALLOW_MEMORY_MODELS=1` is a
 separate provider/privacy gate, not subscription authentication. Extraction sees
-only original inbound source IDs, stages pending claims and cannot accept them.
+scoped original sources and a bounded existing-claim context. It can propose
+explicit contradictions or replacements of supplied claims, but stages only
+pending proposals and cannot accept them, including proposals from imports.
 Reflection enqueues one idle proposal per evidence set, uses durable timers and
 owner-wide live turn IDs, and never sends a message or changes permissions.
 

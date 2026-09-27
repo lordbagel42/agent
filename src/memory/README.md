@@ -124,10 +124,19 @@ of at most 20 objects with **exactly** this shape:
   confidence: number; // [0,1], an estimate, not calibrated truth or authority
   validFrom: number | null; // epoch milliseconds; null means unknown
   validTo: number | null; // exclusive
-  contradicts: string[]; // existing authorized claim IDs, or []
-  supersedes: string[]; // existing authorized claim IDs, or []
+  contradicts: string[]; // at most 20 supplied existingClaims IDs, or []
+  supersedes: string[]; // at most 20 supplied existingClaims IDs, or []
 }
 ```
+
+The model adapter permits explicit relation proposals only to supplied claim IDs,
+with schema constraints and a local output guard. An empty claim context requires
+empty relation arrays. `contradicts` records a source-supported conflict about the
+same subject and fact; `supersedes` requires an explicit update or replacement,
+not just a newer observation or higher confidence. Old claims cannot supply new
+citations. These edges stay pending, including for imported evidence, and never
+resolve or erase earlier claims automatically. Owner review determines whether
+the proposed relation is actually supported.
 
 The result goes to `stageProposals(audience, sourceIds, output)`. It checks exact
 source quotations and current dependencies, derives scope and stable entity IDs,
