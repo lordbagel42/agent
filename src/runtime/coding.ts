@@ -61,14 +61,55 @@ type Command =
   | { type: "approve"; commandId: string }
   | { type: "resume"; commandId: string; confirmedStopped: boolean };
 
+const recoveryGuidance = {
+  runtime_binding_missing:
+    "This saved job lacks a preview-time or execution runtime binding. Operator reconciliation is required; June cannot infer a binding or resume it.",
+  runtime_binding_mismatch:
+    "This job's saved runtime/execution policy differs from the current configuration. Approval and resume are blocked; operator reconciliation is required, not automatic rebinding.",
+  saved_session_missing:
+    "Prepared work has no saved session. A worker may have started; even confirmed-stopped resume is blocked. Reconcile manually, never launch a replacement session.",
+  isolated_worktree_missing:
+    "A saved session has no isolated worktree record. Operator reconciliation is required; June cannot continue it in a replacement worktree.",
+  review_required:
+    "The recorded outcome needs review; its cause is not established by this snapshot. Inspect the saved session and workspace and confirm prior work stopped before requesting resume. This is not proof of resume eligibility.",
+} as const;
+
 /** Explicit projection: never return goals, source messages, paths or raw reports. */
-export function codingJobMetadata(id: string, state: CodingState) {
+export function codingJobMetadata(
+  id: string,
+  state: CodingState,
+  currentRuntimeId: string | undefined,
+) {
   const verification = state.verification;
+  // Compare bindings without exposing either digest or the configuration it binds.
+  const runtimeBinding = !state.proposal
+    ? "pending"
+    : !state.runtimeId || !state.proposal.runtimeId
+      ? "missing"
+      : currentRuntimeId === undefined
+        ? "unavailable"
+        : state.runtimeId === currentRuntimeId &&
+            state.proposal.runtimeId === currentRuntimeId
+          ? "matched"
+          : "mismatch";
+  let reason: keyof typeof recoveryGuidance | undefined;
+  if (runtimeBinding === "missing") reason = "runtime_binding_missing";
+  else if (runtimeBinding === "mismatch") reason = "runtime_binding_mismatch";
+  else if (state.threadId && !state.worktree)
+    reason = "isolated_worktree_missing";
+  else if (state.status === "needs_review")
+    reason =
+      state.worktree && !state.threadId
+        ? "saved_session_missing"
+        : "review_required";
   return {
     id,
     workspace: state.proposal?.workspace.slice(0, 80) ?? null,
     status: state.status === "empty" ? "proposal_pending" : state.status,
     attempts: state.attempts,
+    runtimeBinding,
+    // Current blockers only, not a diagnosis reconstructed from raw errors.
+    recovery: reason ? { reason, guidance: recoveryGuidance[reason] } : null,
     cancelRequested: state.cancelRequested === true,
     threadId: state.threadId?.slice(0, 256) ?? null,
     worktreePrepared: !!state.worktree,
@@ -98,9 +139,8 @@ export function codingJobMetadata(id: string, state: CodingState) {
       limitations:
         "Command outcome only; no immutable artifact binding or deployment attestation. Historical receipts do not verify current files.",
     },
-    // A missing saved ID is not proof that a worker never started.
     manualReconciliationRequired:
-      state.status === "needs_review" && !!state.worktree && !state.threadId,
+      reason !== undefined && reason !== "review_required",
   };
 }
 

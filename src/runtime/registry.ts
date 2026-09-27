@@ -1468,7 +1468,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                         state = await job.snapshot();
                                       }
                                       if (!state.revoked && visible(id))
-                                        text = `${heading}\n${request.action === "cancel" ? "Cancellation requested durably; not confirmed stopped.\n" : ""}${JSON.stringify(codingJobMetadata(id, state))}\n${caution} Inspect the saved thread and isolated workspace before owner-only /resume-stopped ID; prepared work without a saved thread requires manual reconciliation, never a replacement launch.`;
+                                        text = `${heading}\n${request.action === "cancel" ? "Cancellation requested durably; not confirmed stopped.\n" : ""}${JSON.stringify(codingJobMetadata(id, state, deps.coding?.runtimeId))}\n${caution} Binding/recovery metadata describes current blockers, not a proven historical failure cause or permission to resume. Inspect the saved thread and isolated workspace before owner-only /resume-stopped ID; prepared work without a saved thread requires manual reconciliation, never a replacement launch.`;
                                     }
                                   }
                                 }

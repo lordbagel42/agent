@@ -467,6 +467,15 @@ HEAD is captured before the command, not bound to immutable file contents.
 Historical receipts do not verify current files. Command output stays omitted;
 these results neither attest a deployment nor authorize one.
 
+Ask June privately “why is coding job ID blocked?” to use the same `inspect`
+directive. Its `runtimeBinding` is `pending`, `missing`, `unavailable`, `matched`
+or `mismatch`; no binding digest or configuration values are returned. A bounded
+`recovery` reason/guidance explains missing/mismatched bindings, prepared work
+without a saved session, a legacy session without an isolated worktree, or an
+otherwise unresolved review. These are current blockers, not a reconstruction of
+the original failure. A match or absent recovery reason is not permission to
+resume or evidence of provider health. Inspection never repairs/rebinds a job.
+
 After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
 `/resume-stopped <job-prefix>`. Do not resume a job with an unknown live worker.

@@ -17,7 +17,11 @@ import type {
 import { routeEvent } from "../core/routing.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
-import type { CodingDependencies } from "./coding.js";
+import {
+  type CodingDependencies,
+  type CodingState,
+  codingJobMetadata,
+} from "./coding.js";
 import { executionKey } from "./execution.js";
 import { createJuneRegistry, type Dependencies } from "./registry.js";
 
@@ -317,6 +321,116 @@ describe("separate coding supervisor", () => {
     },
   );
 
+  it("projects only bounded recovery facts without binding values, paths or raw errors", () => {
+    const secret = `/private/SECRET-${"credential".repeat(500)}`;
+    const proposal = {
+      id: "a".repeat(64),
+      workspace: "june",
+      goal: secret,
+      source: { ...source, text: secret },
+      runtimeId: secret,
+    };
+    const state: CodingState = {
+      proposal,
+      status: "needs_review",
+      attempts: 1,
+      commandApprovals: {},
+      runtimeId: secret,
+      threadId: "T-saved",
+      worktree: {
+        version: 1,
+        jobId: "a".repeat(64),
+        repositoryRoot: secret,
+        worktreeRoot: secret,
+        cwd: secret,
+        baseCommit: "b".repeat(40),
+      },
+      report: secret,
+      workerClaim: secret,
+    };
+    for (const [changes, current, binding, reason, manual] of [
+      [{}, secret, "matched", "review_required", false],
+      [{}, `${secret}-changed`, "mismatch", "runtime_binding_mismatch", true],
+      [
+        { proposal: { ...proposal, runtimeId: undefined } },
+        secret,
+        "missing",
+        "runtime_binding_missing",
+        true,
+      ],
+      [
+        { proposal: { ...proposal, runtimeId: `${secret}-changed` } },
+        secret,
+        "mismatch",
+        "runtime_binding_mismatch",
+        true,
+      ],
+      [
+        { runtimeId: `${secret}-changed` },
+        secret,
+        "mismatch",
+        "runtime_binding_mismatch",
+        true,
+      ],
+      [
+        { runtimeId: undefined },
+        secret,
+        "missing",
+        "runtime_binding_missing",
+        true,
+      ],
+      [{}, undefined, "unavailable", "review_required", false],
+      [
+        { threadId: undefined },
+        secret,
+        "matched",
+        "saved_session_missing",
+        true,
+      ],
+      [
+        { worktree: undefined },
+        secret,
+        "matched",
+        "isolated_worktree_missing",
+        true,
+      ],
+      [
+        { worktree: undefined, threadId: undefined },
+        secret,
+        "matched",
+        "review_required",
+        false,
+      ],
+      [{ status: "completed" }, secret, "matched", null, false],
+      [
+        {
+          status: "empty",
+          proposal: null,
+          worktree: undefined,
+          threadId: undefined,
+          runtimeId: undefined,
+        },
+        secret,
+        "pending",
+        null,
+        false,
+      ],
+    ] as const) {
+      const input = { ...state, ...changes };
+      const before = structuredClone(input);
+      const metadata = codingJobMetadata("a".repeat(64), input, current);
+      expect(metadata.runtimeBinding).toBe(binding);
+      expect(metadata.recovery?.reason ?? null).toBe(reason);
+      expect(metadata.manualReconciliationRequired).toBe(manual);
+      if (reason) expect(metadata.recovery?.guidance.length).toBeGreaterThan(0);
+      const encoded = JSON.stringify(metadata);
+      expect(encoded).not.toContain("SECRET");
+      expect(encoded).not.toContain("/private/");
+      expect(encoded.length).toBeLessThan(1500);
+      expect(input).toEqual(before);
+    }
+  });
+
   it("exposes private lifecycle commands without granting launch or stop authority", async (t) => {
     let action: CompanionReply = {
       text: "",
@@ -387,6 +501,7 @@ describe("separate coding supervisor", () => {
     expect(available).not.toContain("Keep native execution disabled");
     const request = modelRequests.at(-1);
     expect(request?.system).toContain("Use codingJob");
+    expect(request?.system).toContain("current runtime-binding status");
     expect(replyJsonSchema([], request).properties).toHaveProperty("codingJob");
     expect(parseReply(JSON.stringify(action), [], request)).toEqual(action);
     expect(() => parseReply(JSON.stringify(action), [])).toThrow();
@@ -414,7 +529,21 @@ describe("separate coding supervisor", () => {
     };
     const inspection = (await deliver()).text;
     expect(inspection).toContain('"attempts":0');
+    expect(inspection).toContain('"runtimeBinding":"matched"');
+    expect(inspection).toContain('"recovery":null');
     expect(inspection).not.toContain("SECRET");
+    const originalRuntimeId = coding.runtimeId;
+    coding.runtimeId = "/private/SECRET-CURRENT-BINDING";
+    const mismatch = (await deliver()).text;
+    expect(mismatch).toContain('"reason":"runtime_binding_mismatch"');
+    expect(mismatch).toContain('"manualReconciliationRequired":true');
+    expect(mismatch).not.toContain("SECRET");
+    expect(mismatch).not.toContain(originalRuntimeId);
+    const denied = await deliver({ text: `/approve ${proposal.key}` });
+    await expect
+      .poll(async () => (await job.snapshot()).commandApprovals[denied.key])
+      .toBeNull();
+    expect(launches).toBe(0);
     action = { text: "", codingJob: { action: "cancel", id: proposal.key } };
     for (const extra of [
       {
@@ -424,10 +553,13 @@ describe("separate coding supervisor", () => {
       },
       { senderId: "U2", metadata: { channelType: "im" as const } },
     ]) {
-      expect((await deliver(extra)).text).toContain("owner-private turn");
+      const denied = (await deliver(extra)).text;
+      expect(denied).toContain("owner-private turn");
+      expect(denied).not.toContain("runtime_binding_mismatch");
       expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(false);
       expect((await job.snapshot()).cancelRequested).toBeUndefined();
     }
+    coding.runtimeId = originalRuntimeId;
     action = {
       ...action,
       coding: { workspace: "june", goal: "FORBIDDEN MIX" },
@@ -453,6 +585,7 @@ describe("separate coding supervisor", () => {
     expect(unknown).toContain('"cancelRequested":true');
     expect(unknown).toContain('"threadId":null');
     expect(unknown).toContain('"manualReconciliationRequired":true');
+    expect(unknown).toContain('"reason":"saved_session_missing"');
     expect(unknown).not.toContain("SECRET");
     const resume = await deliver({ text: `/resume-stopped ${proposal.key}` });
     await expect
