@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createSlackAdapter } from "../channels/slack.js";
 import { createSlackIngressDiagnostics } from "../channels/slack-ingress.js";
 import type { ChannelEvent } from "../core/contracts.js";
+import { createLifecycle } from "../runtime/lifecycle.js";
 import { createHttpApp, type HttpDependencies } from "./app.js";
 
 const token = "operator-test-token-not-a-real-key-12345";
@@ -50,6 +51,7 @@ function dependencies(
         botToken: "unused",
         teamId: "T1",
         botUserId: "B1",
+        ownerUserIds: ["U1"],
         ingressDiagnostics: overrides.slackIngressDiagnostics,
         now: () => now,
       }),
@@ -73,6 +75,121 @@ function dependencies(
 }
 
 describe("webhook and operator HTTP boundary", () => {
+  it("requires a separate deploy credential and fences new work until resumed", async () => {
+    const lifecycle = createLifecycle();
+    const deployToken = "dedicated-deploy-fixture-token-123456789";
+    const revision = "a".repeat(40);
+    let submissions = 0;
+    const reads: Array<[string, number | undefined]> = [];
+    const app = createHttpApp(
+      dependencies({
+        lifecycle,
+        revision,
+        deployment: {
+          token: deployToken,
+          supported: true,
+          async read(principal, after) {
+            reads.push([principal, after]);
+            return {
+              version: 1,
+              repository: "lordbagel42/agent",
+              branch: "main",
+              lastHealthyRevision: "b".repeat(40),
+              blocked: false,
+              events: [],
+            };
+          },
+        },
+        async submit() {
+          submissions++;
+        },
+      }),
+    );
+    const drain = (credential: string, method = "POST") =>
+      app.request("/operator/deployment/drain", {
+        method,
+        headers: { authorization: `Bearer ${credential}` },
+      });
+    expect((await drain(token)).status).toBe(401);
+    expect(lifecycle.ready).toBe(true);
+    expect(await (await app.request("/health")).json()).toEqual({
+      name: "June",
+      ready: true,
+      revision,
+    });
+    const release = await lifecycle.enter(new AbortController().signal);
+    const pending = drain(deployToken);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((await app.request(signed())).status).toBe(503);
+    expect(submissions).toBe(0);
+    expect((await app.request("/health")).status).toBe(503);
+    release();
+    expect(await (await pending).json()).toEqual({ revision, drained: true });
+    expect((await drain(deployToken, "DELETE")).status).toBe(200);
+    expect((await app.request(signed())).status).toBe(200);
+    expect(submissions).toBe(1);
+    expect(
+      (
+        await app.request("/operator/conversation", {
+          headers: { authorization: `Bearer ${deployToken}` },
+        })
+      ).status,
+    ).toBe(401);
+    const events = "/operator/deployment/events?after=7";
+    for (const credential of [undefined, deployToken]) {
+      expect(
+        (
+          await app.request(events, {
+            headers: credential
+              ? { authorization: `Bearer ${credential}` }
+              : {},
+          })
+        ).status,
+      ).toBe(401);
+    }
+    expect(reads).toEqual([]);
+    const status = await app.request(events, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(status.status).toBe(200);
+    expect(status.headers.get("cache-control")).toBe("no-store, private");
+    expect((await status.json()).lastHealthyRevision).toBe("b".repeat(40));
+    expect(reads).toEqual([["raygen", 7]]);
+    expect(
+      (
+        await app.request(events, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+        })
+      ).status,
+    ).toBe(404);
+    expect(reads).toHaveLength(1);
+    lifecycle.fail();
+    expect((await drain(deployToken)).status).toBe(409);
+    expect((await app.request("/health")).status).toBe(503);
+  });
+
+  it("refuses drain when raw background work cannot be accounted for", async () => {
+    const lifecycle = createLifecycle();
+    const deployToken = "dedicated-deploy-fixture-token-123456789";
+    const app = createHttpApp(
+      dependencies({
+        lifecycle,
+        revision: "a".repeat(40),
+        deployment: { token: deployToken, supported: false },
+      }),
+    );
+    expect(
+      (
+        await app.request("/operator/deployment/drain", {
+          method: "POST",
+          headers: { authorization: `Bearer ${deployToken}` },
+        })
+      ).status,
+    ).toBe(409);
+    expect(lifecycle.ready).toBe(true);
+  });
+
   it("confines browser sessions to the optional read-only console, never operator mutations", async () => {
     const unmounted = createHttpApp(dependencies());
     expect((await unmounted.request("/console")).status).toBe(404);

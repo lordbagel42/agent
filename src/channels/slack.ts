@@ -316,6 +316,60 @@ export function createSlackAdapter({
     capabilities: { text: true, reactions: true, threads: true },
     ...(search === undefined ? {} : { search: search.search }),
     ...(contextEnabled ? { context: context.context } : {}),
+    async setTyping(event, active, signal) {
+      const { address } = event;
+      // Slack's status UI is thread-scoped and can auto-open that thread. Never
+      // invent one for top-level replies or use a placeholder chat message.
+      // https://docs.slack.dev/reference/methods/assistant.threads.setStatus/
+      if (
+        address.channel !== "slack" ||
+        address.accountId !== teamId ||
+        !owners.has(event.senderId) ||
+        event.senderId === botUserId ||
+        event.metadata?.channelType === "mpim" ||
+        !address.threadId ||
+        signal?.aborted
+      )
+        return;
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+      const timer = setTimeout(abort, 1_000);
+      let response: Response | undefined;
+      try {
+        response = await fetchImpl(
+          "https://slack.com/api/assistant.threads.setStatus",
+          {
+            method: "POST",
+            redirect: "error",
+            credentials: "omit",
+            headers: {
+              authorization: `Bearer ${botToken}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              channel_id: address.conversationId,
+              thread_ts: address.threadId,
+              status: active ? "is thinking…" : "",
+            }),
+            signal: controller.signal,
+          },
+        );
+        if (!response.ok) throw new Error("typing_unavailable");
+        const result: unknown = await response.json();
+        if (!isJsonObject(result) || result.ok !== true)
+          throw new Error("typing_unavailable");
+        // No remote response content, source text or credential reaches history.
+      } catch {
+        throw new Error("typing_unavailable");
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        controller.abort();
+        await response?.body?.cancel().catch(() => {});
+      }
+    },
     async receive(request: Request) {
       ingressDiagnostics?.record(request, "adapter_received");
       let rawBody: Uint8Array;

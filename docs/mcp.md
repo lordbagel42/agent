@@ -1,9 +1,9 @@
 # MCP adapter
 
-`src/tools/mcp.ts` uses the official MCP TypeScript SDK. The integration owner
-must add exact direct dependencies `@modelcontextprotocol/sdk: 1.30.1` and
-`ajv: 8.20.0` and regenerate the root lockfile. No root configuration or startup
-wiring is included in this independently owned workstream.
+`src/tools/mcp.ts` uses the pinned official MCP TypeScript SDK (`1.30.1`) and
+Ajv (`8.20.0`). General execution remains receipt-only. The optional Puck
+connector adds a separately reviewed private read boundary; neither path is
+mounted by `main.ts` without dedicated authorization and host wiring.
 
 ## Mounting
 
@@ -39,10 +39,10 @@ prevention. Never call `execute` outside that boundary.
 It performs initialization and paginated discovery/schema checks, makes no tool
 call, and returns only the configured `{ serverId, tool }`. It does not grant
 authority. Server-supplied names other than the configured name, descriptions,
-annotations, instructions, and results never create permissions. This adapter
-discards result content even on success, consistent with the current broker's
-privacy contract; it is not yet a model-facing result retrieval API. This also
-prevents a server from echoing released credentials into model context.
+annotations, instructions, and results never create permissions. `execute`
+discards result content even on success, consistent with the broker's privacy
+contract. Only the private read boundary below can return bounded, redacted
+evidence; ordinary tool receipts never carry server content into model context.
 
 Call `await adapter.close()` during application shutdown, before closing the
 broker. It rejects new work, requests abort, and drains actual fetches, body reads,
@@ -94,6 +94,33 @@ HTTPS endpoint (TLS), not its self-reported `serverInfo` name. Keep host allowli
 and configuration outside the model's writable authority. Never reuse a tool
 registration for a different server or operation while old grants remain valid;
 revoke outstanding grants before remapping a registration.
+
+## Puck private reads and dedicated consent
+
+`createPuckConnection` in `src/tools/puck.ts` fixes the endpoint to
+`https://ampcode.com/mcp`. Configure only actual read/search tools reviewed from
+an authenticated `tools/list`, pin their contract digest, and supply a trusted
+schema-specific argument policy limited to June's own saved coding threads.
+The local operation names are not claims about remote tool names. No broad
+discovery, mutation, automatic retry, or deployment capability is enabled.
+
+Reads require a current dedicated grant for the verified owner/account and
+the exact private audience. A result is a one-use closure for that turn,
+rechecked at consumption, capped at 12 KB and secret-redacted. Treat it as
+untrusted evidence; never persist or journal its text. Capability status reports
+configuration, missing authorization, and the last verified request, not live
+health. Coding requests remain proposals for the existing approval supervisor.
+
+`createPuckOAuth` in `src/tools/puck-oauth.ts` supplies an operator-only bootstrap
+using the SDK's authorization-code/S256/CIMD flow. It pins the Amp issuer and
+resource, accepts one expiring callback state, and attempts one token exchange.
+Before use, the host must publish its generated metadata at the exact public
+HTTPS client ID URL, bind/forward the exact loopback callback, obtain owner
+consent, verify identity, and persist tokens outside repositories/journals.
+Refresh and revocation remain credential-store responsibilities. Request
+`offline_access` only when unattended refresh is intended. Do not import CLI or
+browser credentials. No metadata host, callback, token store, live grant, or
+authenticated tool registration is configured by the default runtime.
 
 ## Offline verification
 

@@ -24,11 +24,44 @@ const decisionModel = z.strictObject({
   timeoutMs: z.number().int().min(1000).max(300000).default(60000),
   reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
 });
+const companionModel = z.discriminatedUnion("protocol", [
+  z
+    .strictObject({
+      protocol: z.enum(["openai", "anthropic"]),
+      model: nonempty,
+      apiKeyEnv: envName,
+      baseUrl: baseUrl.optional(),
+      maxOutputTokens: z.number().int().min(1).max(32768).optional(),
+      timeoutMs: z.number().int().min(1000).max(300000).optional(),
+      reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
+    })
+    .refine(
+      (value) => value.protocol === "openai" || !value.reasoningEffort,
+      "Reasoning effort is supported only for OpenAI and Codex",
+    ),
+  z.strictObject({
+    protocol: z.literal("codex"),
+    model: nonempty,
+    home: nonempty.refine(isAbsolute, "Codex home must be absolute"),
+    executable: nonempty.optional(),
+    timeoutMs: z.number().int().min(1000).max(300000).optional(),
+    reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
+    serviceTier: z.enum(["fast", "default"]).optional(),
+  }),
+]);
 const schema = z
   .strictObject({
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    deployment: z
+      .strictObject({
+        tokenEnv: envName.default("JUNE_DEPLOY_TOKEN"),
+        eventsFile: absolutePath.default(
+          "/var/lib/june-deploy/public/events.json",
+        ),
+      })
+      .optional(),
     console: z
       .strictObject({
         origin: z.url().refine((value) => {
@@ -67,20 +100,15 @@ const schema = z
           "Duplicate identity",
         ),
     }),
-    model: z.discriminatedUnion("protocol", [
-      z.strictObject({
-        protocol: z.enum(["openai", "anthropic"]),
-        model: nonempty,
-        apiKeyEnv: envName,
-        baseUrl: baseUrl.optional(),
-      }),
-      z.strictObject({
-        protocol: z.literal("codex"),
-        model: nonempty,
-        home: nonempty.refine(isAbsolute, "Codex home must be absolute"),
-        executable: nonempty.optional(),
-      }),
-    ]),
+    model: companionModel,
+    deepModel: companionModel.optional(),
+    webSearch: z
+      .strictObject({
+        provider: z.literal("tavily"),
+        apiKeyEnv: envName.default("TAVILY_API_KEY"),
+        timeoutMs: z.number().int().min(1000).max(15000).default(10000),
+      })
+      .optional(),
     slack: z
       .strictObject({
         teamId: nonempty,
@@ -88,6 +116,8 @@ const schema = z
         signingSecretEnv: envName,
         botTokenEnv: envName,
         searchEnabled: z.boolean().default(false),
+        participateInOwnerChannels: z.boolean().default(false),
+        contextEnabled: z.boolean().default(false),
         workspaceUrl: z
           .url()
           .refine((value) => {

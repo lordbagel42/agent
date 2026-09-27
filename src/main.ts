@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { serve } from "@hono/node-server";
 import { createClient } from "rivetkit/client";
@@ -20,6 +21,7 @@ import type {
   ChannelAdapter,
   CodingRuntime,
 } from "./core/contracts.js";
+import { createDeploymentReader } from "./deployment/feed.js";
 import { createHttpApp } from "./http/app.js";
 import { createImportRoutes } from "./http/imports.js";
 import { createMemoryRoutes } from "./http/memory.js";
@@ -36,11 +38,13 @@ import { createDecisionProvider } from "./models/decision.js";
 import { createMemoryExtractor } from "./models/extraction.js";
 import { createModelProvider } from "./models/provider.js";
 import { freshEvidence } from "./reflection/domain.js";
+import { createLifecycle } from "./runtime/lifecycle.js";
 import {
   createJuneRegistry,
   type Dependencies,
   type JuneClientRegistry,
 } from "./runtime/registry.js";
+import { createTavilyWebSearchProvider } from "./tools/web-search.js";
 
 let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
 
@@ -91,6 +95,36 @@ async function main() {
       await readFile(process.env.JUNE_CONFIG ?? "config.local.json", "utf8"),
     ),
   );
+  startupStage = "immutable release marker";
+  // Resolve from this loaded source, never from a later-switched current symlink.
+  const releaseRoot = dirname(
+    dirname(await realpath(fileURLToPath(import.meta.url))),
+  );
+  const marker = await readFile(
+    join(releaseRoot, ".june-release.json"),
+    "utf8",
+  ).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT" && !config.deployment) return undefined;
+    throw error;
+  });
+  const release =
+    marker === undefined
+      ? undefined
+      : z
+          .strictObject({
+            revision: z.string().regex(/^[a-f0-9]{40}$/),
+            compatibility: z.string().regex(/^[a-f0-9]{64}$/),
+            binding: z.string().regex(/^[a-f0-9]{64}$/),
+            artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .parse(JSON.parse(marker));
+  const lifecycle = createLifecycle();
+  const readDeployment = config.deployment
+    ? createDeploymentReader({
+        file: config.deployment.eventsFile,
+        ownerId: config.owner.id,
+      })
+    : undefined;
   let coding: Dependencies["coding"];
   const isolation: NonNullable<Dependencies["coding"]>["isolation"] = {};
   if (config.coding.enabled) {
@@ -215,13 +249,34 @@ async function main() {
   const operatorToken = secret(config.operatorTokenEnv);
   if (operatorToken.length < 32) throw new Error("Short operator token");
   startupStage = "model credentials";
-  const model =
-    config.model.protocol === "codex"
-      ? createCodexProvider(config.model)
+  const provider = (selection: typeof config.model) =>
+    selection.protocol === "codex"
+      ? createCodexProvider(selection)
       : createModelProvider({
-          ...config.model,
-          apiKey: secret(config.model.apiKeyEnv),
+          ...selection,
+          apiKey: secret(selection.apiKeyEnv),
         });
+  const model = provider(config.model);
+  const deepModel = config.deepModel && provider(config.deepModel);
+  const models = {
+    current: { provider: config.model.protocol, model: config.model.model },
+    fast: { provider: config.model.protocol, model: config.model.model },
+    ...(config.deepModel
+      ? {
+          deep: {
+            provider: config.deepModel.protocol,
+            model: config.deepModel.model,
+          },
+        }
+      : {}),
+  };
+  startupStage = "web search configuration";
+  const webSearch =
+    config.webSearch &&
+    createTavilyWebSearchProvider({
+      apiKey: process.env[config.webSearch.apiKeyEnv],
+      timeoutMs: config.webSearch.timeoutMs,
+    });
   const ownerAudience = JSON.stringify(["private", config.owner.id]);
   const audience = (value: unknown) => {
     if (value === undefined || value === ownerAudience) return ownerAudience;
@@ -416,6 +471,13 @@ async function main() {
     startupStage = "Slack credentials";
     channels.slack = createSlackAdapter({
       ...config.slack,
+      ownerUserIds: config.owner.identities
+        .filter(
+          (identity) =>
+            identity.channel === "slack" &&
+            identity.accountId === config.slack?.teamId,
+        )
+        .map((identity) => identity.senderId),
       signingSecret: secret(config.slack.signingSecretEnv),
       botToken: secret(config.slack.botTokenEnv),
       ingressDiagnostics: slackIngressDiagnostics,
@@ -437,6 +499,24 @@ async function main() {
     owner: config.owner,
     channels,
     model,
+    deepModel,
+    models,
+    webSearch,
+    lifecycle,
+    deploymentStatus: readDeployment
+      ? async () => {
+          const feed = await readDeployment(config.owner.id).catch(
+            () => undefined,
+          );
+          if (!feed) return undefined;
+          return JSON.stringify({
+            runningRevision: release?.revision,
+            lastHealthyRevision: feed.lastHealthyRevision,
+            blocked: feed.blocked,
+            recentEvents: feed.events.slice(-5),
+          });
+        }
+      : undefined,
     memory,
     reflection,
     coding,
@@ -459,6 +539,17 @@ async function main() {
     owner: config.owner,
     channels,
     operatorToken,
+    revision: release?.revision,
+    lifecycle,
+    deployment: config.deployment
+      ? {
+          token: secret(config.deployment.tokenEnv),
+          read: readDeployment,
+          // These optional paths can outlive a cancelled actor callback. Do not
+          // confuse an idle workflow/status with settled native children/transports.
+          supported: !coding && !reflection && !channels.whatsapp,
+        }
+      : undefined,
     slackIngressDiagnostics,
     console: config.console
       ? {

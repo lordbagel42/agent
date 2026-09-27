@@ -104,10 +104,11 @@ already have a newer marker. Initial live → integrated migration must also dra
 old paid/native calls; legacy in-flight model replay can repeat a call. Never use
 old database snapshots to make a downgrade appear healthy.
 
-## Parent application wiring
+## Application lifecycle and private status
 
-The parent owns `main`, config, registry and HTTP integration. These are required
-before activation; the deployment package does not implement a pretend drain:
+`main.ts` wires the lifecycle fence for HTTP requests and conversation turns.
+Enable the private controller endpoints with `deployment` configuration only
+after provisioning its dedicated credential and an immutable release marker:
 
 - Read `.june-release.json` from the immutable working directory **once at
   startup**. `/health` returns `{name:"June", ready:true, revision:<full SHA>}`
@@ -125,8 +126,16 @@ before activation; the deployment package does not implement a pretend drain:
 - `createDeploymentReader({file, ownerId})` in `src/deployment/feed.ts` reads only
   the root-owned bounded feed. Call `read(authenticatedOwnerId, afterSequence)`
   from an already-authorized **owner-private** context, not arbitrary channels.
-  Optionally mount `createDeploymentRoutes({read, authenticate})` at
-  `/operator/deployment`; it provides only `GET /events?after=N`.
+  The configured host mounts `GET /operator/deployment/events?after=N` behind
+  owner bearer authentication. Private model requests receive bounded read-only
+  status, including the loaded running revision separately from historical
+  `lastHealthyRevision`; unavailable status never blocks a conversational reply.
+
+Conversation admission remains held through status/typing cleanup and final
+persistence. Normal Rivet queue/sleep suspension is not a workflow failure;
+the public workflow error hook latches actual failures. Forced aborts cannot
+certify natural drain. Native coding, reflection and WhatsApp currently make
+the controller drain endpoint refuse certification even if the inbox is idle.
 
 The feed is `/var/lib/june-deploy/public/events.json`, atomic root:june `0640`.
 It exposes the last 100 events with a monotonically increasing sequence, exact

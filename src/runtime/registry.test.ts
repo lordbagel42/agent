@@ -605,6 +605,7 @@ describe("Rivet conversation workflow", () => {
       const sent: OutboundMessage[] = [];
       const fast: ModelRequest[] = [];
       const deep: ModelRequest[] = [];
+      const typing: { active: boolean; threadId: string | undefined }[] = [];
       const admission = Promise.withResolvers<void>();
       let waiting = 0;
       let active = 0;
@@ -627,13 +628,20 @@ describe("Rivet conversation workflow", () => {
           },
         },
         channels: {
-          slack: transport(
-            "slack",
-            sent,
-            scenario.unknown
-              ? { status: "unknown", code: "timeout" }
-              : { status: "sent", messageId: "ack-or-answer" },
-          ),
+          slack: {
+            ...transport(
+              "slack",
+              sent,
+              scenario.unknown
+                ? { status: "unknown", code: "timeout" }
+                : { status: "sent", messageId: "ack-or-answer" },
+            ),
+            async setTyping(event, value) {
+              expect(active).toBe(1);
+              typing.push({ active: value, threadId: event.address.threadId });
+              if (scenario.unknown) throw new Error("typing unavailable");
+            },
+          },
         },
         model: {
           async reply(request) {
@@ -694,6 +702,7 @@ describe("Rivet conversation workflow", () => {
       await expect.poll(() => waiting).toBe(1);
       expect(fast).toEqual([]);
       expect(sent).toEqual([]);
+      expect(typing).toEqual([]);
       expect((await june.snapshot()).events).toEqual({});
       admission.resolve();
       await expect.poll(done).toBe(1);
@@ -701,6 +710,16 @@ describe("Rivet conversation workflow", () => {
       expect(failed).toBe(false);
       const expectedThread =
         scenario.thread ?? (scenario.place ? source.messageId : undefined);
+      expect(typing).toEqual([
+        { active: true, threadId: scenario.thread },
+        { active: false, threadId: scenario.thread },
+        ...(scenario.unknown
+          ? []
+          : [
+              { active: true, threadId: expectedThread },
+              { active: false, threadId: expectedThread },
+            ]),
+      ]);
       expect(sent).toHaveLength(scenario.unknown ? 1 : 2);
       expect(
         sent.every(({ address }) => address.threadId === expectedThread),
@@ -731,6 +750,7 @@ describe("Rivet conversation workflow", () => {
       expect(fast).toHaveLength(2);
       expect(deep).toHaveLength(scenario.unknown ? 0 : 1);
       expect(sent).toHaveLength(scenario.unknown ? 2 : 3);
+      expect(typing).toHaveLength(scenario.unknown ? 4 : 6);
     },
   );
 

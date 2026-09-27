@@ -3,12 +3,10 @@
 One personal companion across platforms, with separate execution workers. June
 uses she/her pronouns; her personality is meant to develop with her owner.
 
-**Status: the homelab service and private console are running, but genuine Slack
-DM delivery is blocked upstream of June's HTTP receiver. A synthetic signed
-webhook → real model → Slack reply smoke test passed; it did not establish real
-Slack event delivery. Events API enablement and URL verification still need an
-authenticated App Management check. Search and coding remain disabled. Not
-production-hardened.**
+**Status: the homelab service and private console are running. Genuine human
+Slack DM → model → reply delivery is verified, including text replies and native
+reactions, after enabling organization-ready deployment for the enterprise
+installation. Search and coding remain disabled. Not production-hardened.**
 TypeScript, Node 24, Rivet actors and journaled workflows. No Temporal and no
 custom workflow engine. See the [architecture](docs/architecture.md) for
 the evidence graph, Git memory, personality, dreaming, and later capabilities.
@@ -22,6 +20,9 @@ into June or tested with a real account.
 
 - Slack DMs and mentions, WhatsApp Cloud API text, and native reactions. Webhooks
   are verified before accepting events; unknown identities and bots are ignored.
+- Optional owner-only participation in channels containing `raygen`, scoped
+  surrounding messages, sender names/IDs, exact Slack timestamps and file
+  descriptors. Other participants provide context, never authorization.
 - Linked owner DMs share history. Public Slack threads have separate context and
   cannot access private history or approve coding tasks.
 - Durable inbox, serial turns, event deduplication, and a persisted outbox.
@@ -42,7 +43,7 @@ acknowledgment no longer forces an extra text message. Delivery history records
 what the platform accepted, including uncertain or rejected reactions.
 
 Incoming reactions and delivery receipts are recorded; they do not trigger an
-LLM turn yet. Images, attachments, voice, WhatsApp templates, proactive schedules,
+LLM turn yet. Reading image/attachment bytes, voice, WhatsApp templates, proactive schedules,
 Claude subscription auth, self-deployment, and configuration changes from the
 console are unavailable. Memory, imports,
 reflection and tool modules are local integration work, not evidence of live
@@ -133,6 +134,31 @@ operator, and engine endpoints remain private. The homelab service stops its
 entire cgroup, including Rivet's detached engine, on restart; that differs from
 plain local `pnpm start`.
 
+### Fast replies, deeper reasoning and public web search
+
+`model` is the primary conversational pass. Optional `deepModel` uses the same
+configuration shape. The primary model can request one deeper pass with a
+contextual acknowledgment; the deep pass cannot escalate again. Interrupted
+model/search calls remain uncertain rather than being automatically repeated.
+API providers accept `maxOutputTokens` and `timeoutMs`; OpenAI also accepts
+`reasoningEffort`. Codex accepts `reasoningEffort` and `serviceTier` (`fast` or
+`default`), but has no hard output-token cap. Defaults are unchanged.
+
+For the existing dedicated Codex login, an initial configuration is Astra
+`low`/`fast`/15000ms for `model`, Astra `high`/`default`/75000ms for `deepModel`.
+Astra already defaults to low reasoning. Fast-tier availability and improvement
+over the measured 7–8 second live replies have not been verified; a catalog
+entry is not proof of entitlement. There is no extra classifier invocation.
+
+Enable replaceable public search with
+`"webSearch": {"provider":"tavily","apiKeyEnv":"TAVILY_API_KEY"}` and load the
+credential through the service's private environment. Missing credentials mean
+unavailable, not failed startup. One explicit public query permits one synthesis
+pass with further searches/escalation disabled. Queries must not contain private
+Slack/history/memory; result snippets are untrusted evidence, not instructions.
+Tavily is temporary: Raygen wants a free or self-hosted replacement. No live
+Tavily request is implied by configuration or offline verification.
+
 ## Platform configuration
 
 **Slack:** create/install a bot, enable Event Subscriptions and its App Home
@@ -141,7 +167,39 @@ Messages tab, and configure the public HTTPS `/webhooks/slack` URL. Subscribe to
 scopes `im:history`, `app_mentions:read`, `chat:write`, `reactions:read`, and
 `reactions:write`. Supply its signing secret, bot token, workspace ID, and bot
 user ID. The owner's allowlist uses the **human user's** ID, not the bot's.
-Public-channel interaction currently requires a mention; replies stay threaded.
+Only configured owners can initiate turns, including mentions. Set
+`slack.participateInOwnerChannels: true` to also accept their unmentioned messages
+in channels whose verified current name contains `raygen`. Group DMs remain
+excluded. Existing threads stay threaded; on top-level input June can choose
+channel or thread placement from context.
+
+Adapters can implement optional `setTyping` for ephemeral activity during new
+model and lookup calls. Updates run alongside work, refresh without overlapping,
+and attempt to clear on success, failure or cancellation; they never create
+messages or journal entries. Slack uses `assistant.threads.setStatus` with existing
+`chat:write` permission. It is thread-scoped (including DM threads), not the
+ordinary top-level DM typing bubble. June never invents a thread just to show
+status; a deeper pass uses the reply thread already selected by the fast pass.
+Unsupported surfaces and status failures do not prevent a reply. Live Slack
+status rendering still needs verification after an authorized rollout.
+
+Set `slack.contextEnabled: true` for one bounded same-channel/thread context page.
+It preserves the initiating message once and the original sender of each
+surrounding message. No cross-channel fallback, file downloads or raw response
+cache is used. Missing read grants degrade to current-message context. Channel
+prompts exclude owner-private memory and unprovenanced/foreign-surface history.
+
+The checked-in manifest additionally requests `channels:read`, `channels:history`
+and `message.channels` for public participation; `groups:read`, `groups:history`
+and `message.groups` for private channels; and `users:read` for display names.
+These new grants/events are **not yet verified live**. Apply/reinstall only after
+reviewing the intended scopes; no MPIM scope, user token or files scope is needed.
+
+For an enterprise-installed app (`is_enterprise_install: true`), also enable
+[organization-ready deployment](https://docs.slack.dev/enterprise/developing-for-enterprise-orgs/#enable-organization-wide-installation)
+with `settings.org_deploy_enabled: true`. June's manifest includes this flag to
+match its CLI installation. This does not add workspace grants; keep the actual
+installation restricted to the intended workspace.
 
 Verify the Request URL in Slack's App Management Event Subscriptions page and
 save the settings. A manifest containing the URL does not prove that events are

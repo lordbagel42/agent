@@ -20,7 +20,9 @@
     "teamId": "T_REPLACE_ME",
     "botUserId": "U_BOT_REPLACE_ME",
     "signingSecretEnv": "SLACK_SIGNING_SECRET",
-    "botTokenEnv": "SLACK_BOT_TOKEN"
+    "botTokenEnv": "SLACK_BOT_TOKEN",
+    "contextEnabled": true,
+    "participateInOwnerChannels": false
   },
   "coding": {
     "enabled": false,

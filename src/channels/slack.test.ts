@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { OutboundMessage } from "../core/contracts.js";
+import type { MessageEvent, OutboundMessage } from "../core/contracts.js";
 import { createSlackAdapter } from "./slack.js";
 import {
   createSlackIngressDiagnostics,
@@ -91,6 +91,53 @@ function jsonResponse(
 }
 
 describe("createSlackAdapter", () => {
+  it("keeps typing owner-scoped and never creates a thread or placeholder message", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ ok: true }));
+    const adapter = makeAdapter(fetchImpl);
+    const event: MessageEvent = {
+      type: "message",
+      id: "typing-event",
+      occurredAt: now,
+      messageId: "1712345678.002",
+      senderId: "U_HUMAN",
+      direct: false,
+      text: "private input must not enter a status request",
+      address: {
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "C_CONTEXT",
+      },
+    };
+    await adapter.setTyping?.(event, true);
+    const threaded = {
+      ...event,
+      address: { ...event.address, threadId: "1712345678.001" },
+    };
+    await adapter.setTyping?.({ ...threaded, senderId: "U_OTHER" }, true);
+    await adapter.setTyping?.(
+      { ...threaded, address: { ...threaded.address, accountId: "T_OTHER" } },
+      true,
+    );
+    await adapter.setTyping?.(threaded, true, AbortSignal.abort());
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await adapter.setTyping?.(threaded, true);
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    await adapter.setTyping?.(threaded, false);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    for (const [index, [url, init]] of fetchImpl.mock.calls.entries()) {
+      expect(url).toBe("https://slack.com/api/assistant.threads.setStatus");
+      expect(init?.redirect).toBe("error");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        channel_id: "C_CONTEXT",
+        thread_ts: "1712345678.001",
+        status: index === 0 ? "is thinking…" : "",
+      });
+    }
+    expect(event.address.threadId).toBeUndefined();
+  });
+
   it("diagnoses rejection without relaxing signature or workspace enforcement", async () => {
     const ingressDiagnostics = createSlackIngressDiagnostics();
     const adapter = createSlackAdapter({

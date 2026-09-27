@@ -16,11 +16,23 @@ import type {
   Owner,
 } from "../core/contracts.js";
 import { routeEvent, type Scope } from "../core/routing.js";
+import {
+  type createDeploymentReader,
+  createDeploymentRoutes,
+} from "../deployment/feed.js";
+import type { Lifecycle } from "../runtime/lifecycle.js";
 
 export interface HttpDependencies {
   channels: Partial<Record<Channel, ChannelAdapter>>;
   owner: Owner;
   operatorToken: string;
+  revision?: string;
+  lifecycle?: Lifecycle;
+  deployment?: {
+    token: string;
+    supported: boolean;
+    read?: ReturnType<typeof createDeploymentReader>;
+  };
   slackIngressDiagnostics?: SlackIngressDiagnostics;
   console?: { origin: string; inspect(): Promise<ConsoleSnapshot> };
   submit(scope: Scope, event: ChannelEvent): Promise<void>;
@@ -34,8 +46,58 @@ export interface HttpDependencies {
 export function createHttpApp(deps: HttpDependencies) {
   if (deps.operatorToken.length < 32)
     throw new Error("Operator token must contain at least 32 characters");
+  if (
+    deps.deployment &&
+    (!deps.lifecycle ||
+      !deps.revision ||
+      deps.deployment.token.length < 32 ||
+      deps.deployment.token === deps.operatorToken)
+  )
+    throw new Error("Deployment requires a distinct credential and release");
   const app = new Hono<{ Variables: { slackRequest?: Request } }>();
   app.onError((_error, c) => c.json({ error: "request_failed" }, 500));
+  // Include operator writers, imports and actor-backed console reads. Only
+  // health and the separately authenticated drain/resume endpoint bypass this.
+  app.use("*", async (c, next) => {
+    if (
+      !deps.lifecycle ||
+      c.req.path === "/health" ||
+      c.req.path === "/operator/deployment/drain"
+    )
+      return next();
+    const release = deps.lifecycle.tryEnter();
+    if (!release) {
+      c.header("Retry-After", "5");
+      return c.json({ error: "admission_paused" }, 503);
+    }
+    try {
+      await next();
+    } finally {
+      release();
+    }
+  });
+  if (deps.deployment && deps.lifecycle) {
+    const deployment = deps.deployment;
+    const lifecycle = deps.lifecycle;
+    const credential = Buffer.from(`Bearer ${deployment.token}`);
+    app.on(["POST", "DELETE"], "/operator/deployment/drain", async (c) => {
+      c.header("Cache-Control", "no-store");
+      const supplied = Buffer.from(c.req.header("authorization") ?? "");
+      if (
+        supplied.length !== credential.length ||
+        !timingSafeEqual(supplied, credential)
+      )
+        return c.json({ error: "unauthorized" }, 401);
+      if (c.req.method === "DELETE") {
+        lifecycle.resume();
+        return c.json({ revision: deps.revision, drained: false });
+      }
+      if (!deployment.supported)
+        return c.json({ error: "drain_unsupported_configuration" }, 409);
+      const drained = await lifecycle.drain();
+      return c.json({ revision: deps.revision, drained }, drained ? 200 : 409);
+    });
+  }
   const expected = Buffer.from(`Bearer ${deps.operatorToken}`);
   const authenticate = async (request: Request) => {
     const supplied = Buffer.from(request.headers.get("authorization") ?? "");
@@ -116,8 +178,17 @@ export function createHttpApp(deps: HttpDependencies) {
     }),
   );
   app.get("/health", async (c) => {
-    const ready = await deps.ready().catch(() => false);
-    return c.json({ name: "June", ready }, ready ? 200 : 503);
+    const ready =
+      (deps.lifecycle?.ready ?? true) &&
+      (await deps.ready().catch(() => false));
+    return c.json(
+      {
+        name: "June",
+        ready,
+        ...(deps.revision ? { revision: deps.revision } : {}),
+      },
+      ready ? 200 : 503,
+    );
   });
   for (const [channel, adapter] of Object.entries(deps.channels)) {
     app.on(
@@ -159,6 +230,12 @@ export function createHttpApp(deps: HttpDependencies) {
     }
     await next();
   });
+  if (deps.deployment?.read) {
+    app.route(
+      "/operator/deployment",
+      createDeploymentRoutes({ read: deps.deployment.read, authenticate }),
+    );
+  }
   app.get("/operator/conversation", async () =>
     Response.json(await deps.inspectConversation()),
   );

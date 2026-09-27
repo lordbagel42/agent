@@ -156,8 +156,11 @@ class FixtureHost(deploy.Host):
 class DeploymentSafety(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
         self.host = FixtureHost(root)
+        # tearDown is skipped if startup health fails in setUp.
+        self.addCleanup(self.host.service, "stop")
         self.first = self.host.commit("src/console/view.ts", "one")
         self.host.prepare(self.first)
         self.host.switch(self.first)

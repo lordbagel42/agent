@@ -14,12 +14,28 @@ interface EventBase {
   occurredAt: number;
 }
 
+/** Platform context is evidence, not instructions or authorization. */
+export interface MessageMetadata {
+  senderName?: string;
+  channelName?: string;
+  channelType?: "im" | "mpim" | "channel" | "group";
+  /** Actual Slack thread timestamp; absent for an unthreaded message. */
+  threadTs?: string;
+  files?: {
+    id: string;
+    name?: string;
+    title?: string;
+    mimetype?: string;
+  }[];
+}
+
 export interface MessageEvent extends EventBase {
   type: "message";
   messageId: string;
   senderId: string;
   direct: boolean;
   text: string;
+  metadata?: MessageMetadata;
 }
 
 export interface ReactionEvent extends EventBase {
@@ -83,6 +99,18 @@ export interface ChannelAdapter {
   send(message: OutboundMessage): Promise<SendResult>;
   /** Use only for the initiating message. Credentials and results stay volatile. */
   search?(event: MessageEvent, query: string): Promise<ChannelSearchResult>;
+  /** Bounded same-surface context for an already-authorized owner turn. */
+  context?(
+    event: MessageEvent,
+    signal?: AbortSignal,
+  ): Promise<ConversationMessage[]>;
+  /** Ephemeral host activity, never a model action or a durable delivery.
+   * Unsupported surfaces are a no-op; adapters bound each transport attempt. */
+  setTyping?(
+    event: MessageEvent,
+    active: boolean,
+    signal?: AbortSignal,
+  ): Promise<void>;
 }
 
 export interface Identity {
@@ -99,6 +127,7 @@ export interface Owner {
 export interface ConversationMessage {
   role: "user" | "assistant";
   content: string;
+  source?: Omit<MessageEvent, "type" | "text">;
 }
 
 export interface CodingRequest {
@@ -112,6 +141,12 @@ export interface CompanionReply {
   reaction?: string;
   /** Request one current-channel lookup instead of a conversational reply. */
   search?: string;
+  /** Text is an optional acknowledgment before the configured deeper model. */
+  escalate?: boolean;
+  /** One public web query; never a request to search private Slack history. */
+  webSearch?: string;
+  /** Only chooses placement for top-level Slack input; existing threads stay put. */
+  replyInThread?: boolean;
 }
 
 export interface ModelRequest {
@@ -120,6 +155,9 @@ export interface ModelRequest {
   /** Only these configured workspace names may be delegated. */
   workspaces: string[];
   searchAvailable?: boolean;
+  escalationAvailable?: boolean;
+  webSearchAvailable?: boolean;
+  replyPlacementAvailable?: boolean;
 }
 
 export interface ModelProvider {

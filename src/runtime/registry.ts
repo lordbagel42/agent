@@ -29,6 +29,7 @@ import {
   createReflectionActor,
   type ReflectionDependencies,
 } from "./reflection.js";
+import { withTyping } from "./typing.js";
 
 export interface Dependencies {
   owner: Owner;
@@ -479,9 +480,12 @@ export function createJuneRegistry(deps: Dependencies) {
                             return null;
                           // The provider sees only the explicit public query, never
                           // a model request, private history, memory or source IDs.
-                          const result = await deps.webSearch.search(
-                            query,
+                          const search = deps.webSearch;
+                          const result = await withTyping(
+                            deps.channels[replyAddress.channel],
+                            { ...event, address: replyAddress },
                             step.abortSignal,
+                            () => search.search(query, step.abortSignal),
                           );
                           settled =
                             !step.abortSignal.aborted &&
@@ -818,14 +822,24 @@ export function createJuneRegistry(deps: Dependencies) {
                               phase === "deep" ? deps.deepModel : deps.model;
                             if (!model)
                               return { reply: { text: "" }, retryable: false };
-                            generated = await model.reply(
-                              {
-                                ...modelRequest,
-                                system:
-                                  modelRequest.system +
-                                  (version < 3 ? memory : ""),
-                              },
+                            // Only an actual new invocation shows activity. Replay
+                            // holds and legacy turns never issue status updates.
+                            generated = await withTyping(
+                              version >= 3
+                                ? deps.channels[replyAddress.channel]
+                                : undefined,
+                              { ...event, address: replyAddress },
                               signal,
+                              () =>
+                                model.reply(
+                                  {
+                                    ...modelRequest,
+                                    system:
+                                      modelRequest.system +
+                                      (version < 3 ? memory : ""),
+                                  },
+                                  signal,
+                                ),
                             );
                           } finally {
                             // Await the raw provider, never race its settlement with
@@ -971,7 +985,12 @@ export function createJuneRegistry(deps: Dependencies) {
                             code: "channel_disabled",
                             retryable: false,
                           };
-                        const found = await adapter.search?.(event, query);
+                        const found = await withTyping(
+                          version >= 3 ? adapter : undefined,
+                          { ...event, address: outbound.address },
+                          step.abortSignal,
+                          async () => adapter.search?.(event, query),
+                        );
                         if (!valid(step.state))
                           return {
                             status: "rejected",
