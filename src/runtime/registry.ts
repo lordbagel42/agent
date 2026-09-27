@@ -380,6 +380,8 @@ export function createJuneRegistry(deps: Dependencies) {
             "coding-command-ingress",
             2,
           );
+          // An absent version marker resolves to 1 during old-journal replay.
+          const backupVersion = await loop.getVersion("memory-backup", 2);
           const [message] = await loop.queue.nextBatch("inbox", {
             names: ["inbox"],
             count: 1,
@@ -883,6 +885,16 @@ export function createJuneRegistry(deps: Dependencies) {
                       /^!memory-(accept|reject) (proposal:[a-f0-9]{64})$/,
                     )
                   : null;
+              const backupCommand =
+                backupVersion >= 2 &&
+                body.type === "event" &&
+                ownerTurn &&
+                scope.private &&
+                event.direct &&
+                event.address.channel === "slack" &&
+                event.metadata?.channelType === "im" &&
+                event.memoryBackupEligible === true &&
+                event.text === "!memory-backup";
               if (body.type === "job_result" && version < 7) {
                 reply = { text: body.text };
               } else if (correctionCommand) {
@@ -1026,6 +1038,31 @@ export function createJuneRegistry(deps: Dependencies) {
                     text: "Use !mcp-cancel <exact proposal UUID>, or !mcp-reconcile <exact proposal UUID> confirmed-stopped verified-succeeded (or verified-failed) only after independently checking both worker stoppage and the external result. Stopped with an unknown result must stay unknown. No tool was run or retried.",
                   };
                 });
+              } else if (backupCommand) {
+                reply = await loop.step(
+                  "memory-backup-command",
+                  async (step) => {
+                    if (
+                      !valid(step.state) ||
+                      step.abortSignal.aborted ||
+                      !plan.memory ||
+                      !deps.memory
+                    )
+                      return {
+                        text: "Local memory backup is unavailable; no new backup confirmed.",
+                      };
+                    try {
+                      const manifest = deps.memory.store.backup(eventId);
+                      return {
+                        text: `Local encrypted evidence-ledger backup confirmed: ${JSON.stringify(manifest)}. No keys or evidence bodies returned. Personality, journals and external retention are not included. Later tombstones must be retained independently and replayed before restore.`,
+                      };
+                    } catch {
+                      return {
+                        text: "Local memory backup is unavailable; no new backup confirmed.",
+                      };
+                    }
+                  },
+                );
               } else if (
                 version >= 5 &&
                 body.type === "event" &&

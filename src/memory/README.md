@@ -738,3 +738,61 @@ and bounds, never IDs or an unbounded export. Public/guest and synthesis turns
 cannot call it. Neither this status nor an API read records or proves independent
 retention, performs a restore, or changes live backups. Replay before restored
 memory becomes readable remains a separate restore operation.
+
+## Local encrypted evidence backup
+
+With the existing memory opt-in enabled, the verified owner can send the exact
+`!memory-backup` command as plain text in a private Slack direct message to June.
+Verified ingress marks fresh plain commands; old queued messages, rich-text
+quotes/code, attachments, model output and other participants cannot authorize it.
+The host uses the event's stable ID for idempotency; replay cannot create a second
+artifact or replace the original with newer data. June can call
+`inspection: "backup"` for a read-only content-free status receipt. The prompt
+explains both paths. Neither path reveals a key, evidence body, or local path.
+
+The existing bearer-only operator API also exposes `POST /operator/memory/backup`
+with exactly `{id: "<64 lowercase hex characters>", confirmed: true}` and
+`GET /operator/memory/backup` for status. Reuse the request ID only to recover the
+same backup; a new explicit request needs a new ID. No caller chooses a path.
+The result is a manifest, not a download. Authentication and `no-store` remain
+the enclosing operator router's responsibility.
+
+`EvidenceStore.backup(id)` copies the current `records` payload byte-for-byte to
+`<memory-directory>/backups/<id>/evidence.sqlite`, retaining the ledger's existing
+AES-256-GCM envelope and externally managed key. This copies only the current
+encrypted snapshot, not historical SQLite free pages. It writes a sibling
+`manifest.json`: `{version:1, format:"june-evidence-v1", id, createdAt,
+ciphertextBytes, ciphertextSha256, tombstoneWatermark}`. The watermark comes from
+authenticating those exact bytes, not a separate live-state read. Backups require
+the persisted encrypted ledger identity; retries and status reject missing or
+different identities, including a different ledger encrypted with the same key.
+Directories are owner-only `0700`, files `0600`; symlink destinations, relative/in-memory stores,
+and nonprivate directories fail closed. Artifacts are never overwritten.
+An incomplete artifact fails closed on retry and needs operator reconciliation.
+
+`backupStatus()` authenticates the artifact referenced by the last successful
+receipt (`backups/latest.json`), even after restart, and returns
+`{latest, tombstoneWatermark, independentRetentionVerified:false,
+scope:"evidence-ledger-only"}`. Latest means the last confirmed request, which
+may be a retry of an older artifact. The manifest's timestamp/ID and SHA-256 are
+metadata and mismatch checks, not cryptographic proof of provenance. The
+tombstone count is checked against the authenticated snapshot; it is not a
+global deletion clock or independent retention receipt.
+
+Trusted offline tooling can use `readEvidenceBackup(directory)` to obtain
+`{manifest,payload}` with read-only SQLite and hash/schema checks. This helper
+rejects WAL headers and journal/WAL/shared-memory sidecars before SQLite opens;
+it never converts or recovers the candidate database. Only a closed
+rollback-journal artifact is accepted. This helper does **not** authenticate
+the ciphertext or authorize restoration; never expose
+its payload to chat, HTTP, logs, or workflow journals. Restore must separately
+authenticate with the existing secret key, validate the snapshot schema and
+ledger identity, and replay later independently retained tombstones before any
+memory becomes readable. A backup receipt is not restore readiness.
+
+This is only the evidence ledger (including its proposals, import progress and
+tombstones), not curated personality, Rivet journals, credentials, or a whole
+June installation. Local disk loss still loses the backup. Nothing is uploaded,
+physically purged, expired automatically, or independently retained by this
+command. Verification uses disposable local data only; no live export or
+production replacement is part of acceptance.

@@ -96,58 +96,71 @@ function jsonResponse(
 }
 
 describe("createSlackAdapter", () => {
-  it("marks only fresh plain owner-DM personality commands as eligible", async () => {
-    const adapter = makeAdapter();
-    const text =
-      '!personality revise {"expectedVersion":0,"changes":{"tone":"dry"},"explanation":"Try it","publish":true}';
-    const event = {
-      type: "message",
-      channel_type: "im",
-      channel: "D1",
-      user: "U_HUMAN",
-      ts: "123.456",
-      text,
-    };
-    const normalize = async (changes: Record<string, unknown> = {}) => {
-      const result = await adapter.receive(
-        signedRequest(eventBody({ ...event, ...changes })),
+  it.each([
+    {
+      kind: "personality",
+      text: '!personality revise {"expectedVersion":0,"changes":{"tone":"dry"},"explanation":"Try it","publish":true}',
+      field: "personalityCommandEligible" as const,
+    },
+    {
+      kind: "backup",
+      text: "!memory-backup",
+      field: "memoryBackupEligible" as const,
+    },
+  ])(
+    "marks only fresh plain owner-DM $kind commands as eligible",
+    async ({ text, field }) => {
+      const adapter = makeAdapter();
+      const event = {
+        type: "message",
+        channel_type: "im",
+        channel: "D1",
+        user: "U_HUMAN",
+        ts: "123.456",
+        text,
+      };
+      const normalize = async (changes: Record<string, unknown> = {}) => {
+        const result = await adapter.receive(
+          signedRequest(eventBody({ ...event, ...changes })),
+        );
+        return result.events[0] as MessageEvent;
+      };
+      expect((await normalize())[field]).toBe(true);
+      for (const type of [
+        "rich_text_section",
+        "rich_text_quote",
+        "rich_text_preformatted",
+      ]) {
+        const normalized = await normalize({
+          blocks: [
+            {
+              type: "rich_text",
+              elements: [{ type, elements: [{ type: "text", text }] }],
+            },
+          ],
+        });
+        expect(normalized[field]).toBe(type === "rich_text_section");
+      }
+      for (const changes of [
+        { user: "U_GUEST" },
+        { attachments: [] },
+        { subtype: "me_message" },
+        { text: "ordinary chat" },
+        {
+          text:
+            field === "personalityCommandEligible"
+              ? text.replace("Try it", "`Try it`")
+              : `\`${text}\``,
+        },
+      ]) {
+        expect((await normalize(changes))[field]).not.toBe(true);
+      }
+      const unsigned = await adapter.receive(
+        signedRequest(eventBody(event), Math.floor(now / 1000), "wrong-body"),
       );
-      return result.events[0] as MessageEvent;
-    };
-    expect((await normalize()).personalityCommandEligible).toBe(true);
-    for (const type of [
-      "rich_text_section",
-      "rich_text_quote",
-      "rich_text_preformatted",
-    ]) {
-      const normalized = await normalize({
-        blocks: [
-          {
-            type: "rich_text",
-            elements: [{ type, elements: [{ type: "text", text }] }],
-          },
-        ],
-      });
-      expect(normalized.personalityCommandEligible).toBe(
-        type === "rich_text_section",
-      );
-    }
-    for (const changes of [
-      { user: "U_GUEST" },
-      { attachments: [] },
-      { subtype: "me_message" },
-      { text: "ordinary chat" },
-      { text: text.replace("Try it", "`Try it`") },
-    ]) {
-      expect((await normalize(changes)).personalityCommandEligible).not.toBe(
-        true,
-      );
-    }
-    const unsigned = await adapter.receive(
-      signedRequest(eventBody(event), Math.floor(now / 1000), "wrong-body"),
-    );
-    expect(unsigned.events).toEqual([]);
-  });
+      expect(unsigned.events).toEqual([]);
+    },
+  );
 
   it("marks reflection review eligible only for ordinary signed owner-DM input", async () => {
     const adapter = makeAdapter();

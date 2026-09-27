@@ -281,6 +281,10 @@ export function createInspectionReader(deps: {
           "Delivered messages: platform and recipient copies may remain after local history or delivery text is cleared. Logical forgetting does not retract already delivered messages or already submitted model requests. Platform, recipient and provider retention is unknown; no remote lookup or deletion was attempted.",
           "Physical erasure is unverified for every category. Logical deletion means removal from active use, not proof that all bytes or external copies are gone. Unknown does not mean absent; an unconfigured subsystem does not prove older copies are absent. This report contains no content, IDs, paths or keys, performs no deletion, and certifies no individual deletion request.",
         ].join("\n");
+      case "backup": {
+        if (!deps.memory) return `${heading}\nMemory backup is unavailable.`;
+        return `${heading}\n${JSON.stringify(deps.memory.store.backupStatus())}\nLocal evidence-ledger copy only; personality, journals and external retention are not included. A watermark counts tombstone IDs in this ledger history, not global identity or retention proof. Retain later tombstones independently before restoring. This inspection created no backup. In chat, only the owner's exact private !memory-backup command creates one.`;
+      }
       case "memory": {
         if (!deps.memory)
           return `${heading}\nMemory is disabled or unavailable. Counts, size and operation history are unknown, not zero.`;

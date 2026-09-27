@@ -42,6 +42,16 @@ export function createMemoryRoutes(deps: {
     // Ledger-wide owner export. Tombstones intentionally retain no audiences.
     return c.json(deps.store.exportTombstones(options));
   });
+  app.get("/backup", (c) => c.json(deps.store.backupStatus()));
+  app.post("/backup", async (c) => {
+    const input = z
+      .strictObject({
+        id: z.string().regex(/^[a-f0-9]{64}$/),
+        confirmed: z.literal(true),
+      })
+      .parse(await c.req.json());
+    return c.json({ manifest: deps.store.backup(input.id) });
+  });
   app.post("/proposals/:id/review", async (c) => {
     const input = z
       .strictObject({

@@ -314,6 +314,9 @@ async function normalizeEvent(
         /^!mcp-(cancel|reconcile)(?:\s|$)/.test(event.text.trim())
           ? { mcpCommandEligible: isPlainSlackCommand(event) }
           : {}),
+        ...(owner && channelType === "im" && event.text === "!memory-backup"
+          ? { memoryBackupEligible: isPlainSlackCommand(event) }
+          : {}),
         metadata: {
           ...slackMetadata(event, channelType),
           ...(channelName ? { channelName } : {}),

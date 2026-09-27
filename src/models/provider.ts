@@ -170,6 +170,7 @@ const companionReplySchema = z.strictObject({
         "operations",
         "mcp-connections",
         "personality",
+        "backup",
       ]),
       z.strictObject({
         target: z.literal("imports"),
@@ -629,6 +630,7 @@ export function replyJsonSchema(
                     "operations",
                     "mcp-connections",
                     "personality",
+                    "backup",
                     null,
                   ],
                 },

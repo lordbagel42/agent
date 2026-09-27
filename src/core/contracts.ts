@@ -53,6 +53,8 @@ export interface MessageEvent extends EventBase {
   /** Verified live plain command, never forwarded/quoted/history text.
    * The host separately requires an owner-private turn. */
   mcpCommandEligible?: boolean;
+  /** Verified fresh plain Slack backup command; absent on old/context events. */
+  memoryBackupEligible?: boolean;
   metadata?: MessageMetadata;
 }
 
@@ -227,6 +229,7 @@ export interface CompanionReply {
     | "snapshot-retention"
     | "mcp-connections"
     | "personality"
+    | "backup"
     | { target: "imports"; selection: string | null; offset: number };
   /** One owner-private query of retained evidence, never a permission grant. */
   recall?:

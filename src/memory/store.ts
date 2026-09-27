@@ -8,11 +8,25 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import { chmodSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { Evidence } from "../reflection/domain.js";
+import {
+  type EvidenceBackupManifest,
+  latestEvidenceBackup,
+  readEvidenceBackup,
+  recordLatestEvidenceBackup,
+  writeEvidenceBackup,
+} from "./backup.js";
+
+export {
+  type EvidenceBackupManifest,
+  evidenceBackupManifestSchema,
+  readEvidenceBackup,
+} from "./backup.js";
 
 const id = z.string().min(1).max(2048);
 const ids = z
@@ -517,7 +531,7 @@ export class EvidenceStore {
   >();
 
   constructor(
-    path: string,
+    private readonly path: string,
     key: Uint8Array,
     importBudget: Partial<ImportBudget> = {},
   ) {
@@ -594,15 +608,16 @@ export class EvidenceStore {
     };
   }
 
-  private read(): State {
+  private read(payload?: Uint8Array): State {
     const attemptedAt = Date.now();
     try {
       if (this.closed) throw new Error("Memory store closed");
-      const row = this.db
-        .prepare("SELECT payload FROM records WHERE id=1")
-        .get();
-      if (!row || !(row.payload instanceof Uint8Array)) throw new Error();
-      const bytes = Buffer.from(row.payload);
+      const value =
+        payload ??
+        this.db.prepare("SELECT payload FROM records WHERE id=1").get()
+          ?.payload;
+      if (!(value instanceof Uint8Array)) throw new Error();
+      const bytes = Buffer.from(value);
       const decipher = createDecipheriv(
         "aes-256-gcm",
         this.key,
@@ -623,14 +638,16 @@ export class EvidenceStore {
       // Older snapshots may still contain grounding-only derivatives of a
       // tombstoned source. Hide them on every read; the next write persists this.
       if (state.tombstones.length) removeEvidence(state, state.tombstones);
-      this.readStatus = {
-        status: "succeeded",
-        attemptedAt,
-        lastSucceededAt: Date.now(),
-      };
+      if (!payload)
+        this.readStatus = {
+          status: "succeeded",
+          attemptedAt,
+          lastSucceededAt: Date.now(),
+        };
       return state;
     } catch {
-      this.readStatus = { ...this.readStatus, status: "failed", attemptedAt };
+      if (!payload)
+        this.readStatus = { ...this.readStatus, status: "failed", attemptedAt };
       throw new Error(
         this.closed
           ? "Memory store closed"
@@ -800,6 +817,85 @@ export class EvidenceStore {
     }
     page.mac = tombstoneExportMac(this.key, page).toString("hex");
     return page;
+  }
+
+  private backupRoot(): string {
+    if (this.closed || this.path === ":memory:" || !isAbsolute(this.path))
+      throw new Error("Local memory backup unavailable");
+    const directory = dirname(this.path);
+    const stat = lstatSync(directory);
+    if (
+      realpathSync(directory) !== directory ||
+      !stat.isDirectory() ||
+      (stat.mode & 0o077) !== 0 ||
+      stat.uid !== process.getuid?.()
+    )
+      throw new Error("Private memory directory required");
+    return join(directory, "backups");
+  }
+
+  private authenticatedBackup(root: string, backupId: string) {
+    const { manifest, payload } = readEvidenceBackup(join(root, backupId));
+    const state = this.read(payload);
+    if (
+      manifest.id !== backupId ||
+      !state.ledgerId ||
+      state.ledgerId !== this.read().ledgerId ||
+      state.tombstones.length !== manifest.tombstoneWatermark
+    )
+      throw new Error("Memory backup authentication failed");
+    return manifest;
+  }
+
+  /** Host-authorized local copy only. A stable request ID never overwrites or
+   * recreates a completed artifact, even if the live ledger has since changed.
+   */
+  backup(backupId: string): EvidenceBackupManifest {
+    try {
+      parse(z.string().regex(/^[a-f0-9]{64}$/), backupId);
+      const root = this.backupRoot();
+      let manifest: EvidenceBackupManifest;
+      if (existsSync(join(root, backupId))) {
+        manifest = this.authenticatedBackup(root, backupId);
+      } else {
+        const payload = this.db
+          .prepare("SELECT payload FROM records WHERE id=1")
+          .get()?.payload;
+        if (!(payload instanceof Uint8Array)) throw new Error();
+        // Authenticate exactly the bytes being copied: no later watermark read.
+        const state = this.read(payload);
+        if (!state.ledgerId) throw new Error("Memory ledger identity required");
+        manifest = {
+          version: 1,
+          format: "june-evidence-v1",
+          id: backupId,
+          createdAt: Date.now(),
+          ciphertextBytes: payload.byteLength,
+          ciphertextSha256: createHash("sha256").update(payload).digest("hex"),
+          tombstoneWatermark: state.tombstones.length,
+        };
+        writeEvidenceBackup(root, manifest, payload);
+      }
+      recordLatestEvidenceBackup(root, manifest);
+      return manifest;
+    } catch {
+      throw new Error("Memory backup unavailable; no new backup confirmed");
+    }
+  }
+
+  backupStatus() {
+    try {
+      const root = this.backupRoot();
+      const receipt = latestEvidenceBackup(root);
+      return {
+        latest: receipt ? this.authenticatedBackup(root, receipt.id) : null,
+        tombstoneWatermark: this.deletionRevision(),
+        independentRetentionVerified: false as const,
+        scope: "evidence-ledger-only" as const,
+      };
+    } catch {
+      throw new Error("Memory backup status unavailable");
+    }
   }
 
   source(audience: string, sourceId: string): Source | undefined {
