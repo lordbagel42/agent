@@ -23,7 +23,11 @@ import {
 } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import { pendingMemoryView } from "../memory/pending.js";
-import type { EvidenceStore, Source } from "../memory/store.js";
+import type {
+  EvidenceStore,
+  MemoryRetrieval,
+  Source,
+} from "../memory/store.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type {
   WebSearchCitation,
@@ -1665,31 +1669,33 @@ export function createJuneRegistry(deps: Dependencies) {
                                             kind: "search" as const,
                                             query: checked.recall,
                                             category: undefined,
+                                            cursor: undefined,
                                           }
                                         : checked.recall;
                                     const contradictionsOf =
                                       request.kind === "contradictions"
                                         ? request.claimId
                                         : undefined;
-                                    const retrieved = store.retrieve(
-                                      audience,
-                                      request.kind === "search"
-                                        ? request.query
-                                        : "",
-                                      {
-                                        limit: 6,
-                                        maxCharacters: 3000,
-                                        category:
-                                          request.kind === "search"
-                                            ? request.category
-                                            : undefined,
-                                        contradictionsOf,
-                                      },
-                                    );
                                     // Keep exact JSON values without activating
                                     // retained mentions, markup or link previews.
-                                    const serialize = () => {
-                                      const json = JSON.stringify(retrieved);
+                                    const serialize = (json: string) => {
+                                      const page = JSON.parse(
+                                        json,
+                                      ) as MemoryRetrieval;
+                                      // The model's directive is not conversation
+                                      // history. Preserve exact continuation inputs
+                                      // in the same measured, redacted envelope.
+                                      json = JSON.stringify({
+                                        ...page,
+                                        ...(page.nextCursor
+                                          ? {
+                                              search: {
+                                                ...request,
+                                                cursor: undefined,
+                                              },
+                                            }
+                                          : {}),
+                                      });
                                       // Redact before escaping: provider redaction
                                       // recognizes plain credential URLs, not their
                                       // reversible Unicode representation in history.
@@ -1702,15 +1708,46 @@ export function createJuneRegistry(deps: Dependencies) {
                                           `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
                                       );
                                     };
-                                    let evidence = serialize();
-                                    while (evidence.length > 3000) {
+                                    const retrieved = store.retrieve(
+                                      audience,
+                                      request.kind === "search"
+                                        ? request.query
+                                        : "",
+                                      {
+                                        limit: 6,
+                                        maxCharacters: 3000,
+                                        category:
+                                          request.kind === "search"
+                                            ? request.category
+                                            : undefined,
+                                        cursor:
+                                          request.kind === "search"
+                                            ? request.cursor
+                                            : undefined,
+                                        contradictionsOf,
+                                        paginate: request.kind === "search",
+                                        measureCharacters: (json) =>
+                                          serialize(json).length,
+                                      },
+                                    );
+                                    let evidence = serialize(
+                                      JSON.stringify(retrieved),
+                                    );
+                                    // Graph inspection is not paginated; retain
+                                    // its existing whole-record display bound.
+                                    while (
+                                      contradictionsOf !== undefined &&
+                                      evidence.length > 3000
+                                    ) {
                                       if (retrieved.claims.length)
                                         retrieved.claims.pop();
                                       else retrieved.sources.pop();
                                       retrieved.truncated = true;
                                       retrieved.omitted =
                                         (retrieved.omitted ?? 0) + 1;
-                                      evidence = serialize();
+                                      evidence = serialize(
+                                        JSON.stringify(retrieved),
+                                      );
                                     }
                                     // Bind the direct result before returning it to
                                     // the journal/outbox. Later replies inherit these
@@ -1754,7 +1791,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                     error instanceof ModelError &&
                                     error.code === "invalid_recall_category"
                                       ? invalidRecallCategory
-                                      : "Memory recall is unavailable; no evidence can be inferred from this failure.";
+                                      : "Memory recall is unavailable or the search changed. Repeat the search without a cursor; no evidence can be inferred from this failure.";
                                 }
                               }
                               generated = {

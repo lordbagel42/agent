@@ -2,7 +2,9 @@ import {
   createCipheriv,
   createDecipheriv,
   createHash,
+  createHmac,
   randomBytes,
+  timingSafeEqual,
 } from "node:crypto";
 import { chmodSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -142,6 +144,7 @@ export type MemoryRetrieval = {
   // Present only when matching, authorized records were omitted by a bound.
   truncated?: true;
   omitted?: number;
+  nextCursor?: string;
 };
 export type DependentClaims = {
   claims: {
@@ -812,6 +815,10 @@ export class EvidenceStore {
       category?: MemoryProposalInput["category"];
       /** Exact claim plus one-hop explicit contradiction neighbors; no text query. */
       contradictionsOf?: string;
+      paginate?: boolean;
+      cursor?: string;
+      // Trusted host presentation measurement; never supplied by the model.
+      measureCharacters?: (json: string) => number;
     } = {},
   ): MemoryRetrieval {
     parse(z.string().max(10000), query);
@@ -829,8 +836,13 @@ export class EvidenceStore {
     if (contradictionsOf !== undefined && query !== "")
       throw new Error("Invalid memory input");
     const limit = parse(z.number().int().min(1).max(100), options.limit ?? 12);
+    const paginate = options.paginate || options.cursor !== undefined;
     const budget = parse(
-      z.number().int().min(100).max(100000),
+      z
+        .number()
+        .int()
+        .min(paginate ? 200 : 100)
+        .max(100000),
       options.maxCharacters ?? 16000,
     );
     const visible = this.search(audience, "");
@@ -897,6 +909,90 @@ export class EvidenceStore {
       }))
       .filter((entry) => !words.length || entry.score > 0)
       .sort((a, b) => b.score - a.score || a.item.id.localeCompare(b.item.id));
+    if (paginate) {
+      // Immutable records make this a scoped dataset revision. Bind all effective
+      // filters/bounds, not only matching IDs: even equivalent searches are not
+      // interchangeable. Invisible records never enter the fingerprint.
+      const fingerprint = createHash("sha256")
+        .update(
+          JSON.stringify([
+            audience,
+            query,
+            Object.entries({ ...options, limit, maxCharacters: budget })
+              .filter(
+                ([key, value]) =>
+                  key !== "cursor" && key !== "paginate" && value !== undefined,
+              )
+              .sort(([a], [b]) => a.localeCompare(b)),
+            candidates.map(({ item, score }) => [item.id, score]),
+          ]),
+        )
+        .digest("hex");
+      const cursorFor = (recordId: string) =>
+        createHmac("sha256", this.key)
+          .update(
+            JSON.stringify(["june-recall-page-v1", fingerprint, recordId]),
+          )
+          .digest("base64url");
+      let start = 0;
+      if (options.cursor !== undefined) {
+        const cursor = options.cursor;
+        const boundary = /^[A-Za-z0-9_-]{43}$/.test(cursor)
+          ? candidates.findIndex(({ item }) =>
+              timingSafeEqual(
+                Buffer.from(cursorFor(item.id)),
+                Buffer.from(cursor),
+              ),
+            )
+          : -1;
+        if (boundary < 0)
+          throw new Error("Invalid recall cursor; restart the search");
+        start = boundary + 1;
+      }
+      const result: MemoryRetrieval = { sources: [], claims: [] };
+      let count = 0;
+      let scanned = start;
+      const page = (): MemoryRetrieval => {
+        const omitted = candidates.length - start - count;
+        const boundary = candidates[scanned - 1];
+        return {
+          ...result,
+          ...(omitted ? { truncated: true, omitted } : {}),
+          ...(boundary && scanned > start && scanned < candidates.length
+            ? { nextCursor: cursorFor(boundary.item.id) }
+            : {}),
+        };
+      };
+      const fits = (value: MemoryRetrieval) => {
+        const json = JSON.stringify(value);
+        return (
+          json.length <= budget &&
+          (options.measureCharacters?.(json) ?? json.length) <= budget
+        );
+      };
+      for (const candidate of candidates.slice(start)) {
+        if (count >= limit) break;
+        if (candidate.type === "source") result.sources.push(candidate.item);
+        else result.claims.push(candidate.item);
+        count++;
+        scanned++;
+        if (fits(page())) continue;
+        if (candidate.type === "source") result.sources.pop();
+        else result.claims.pop();
+        count--;
+        if (scanned > start + 1) {
+          // Even previous omissions can consume this page's budget. Retry the
+          // whole record on a fresh page before deciding it cannot fit alone.
+          scanned--;
+          break;
+        }
+        // A record that cannot fit alone is omitted; advance to avoid a loop.
+      }
+      const resultPage = page();
+      if (!fits(resultPage))
+        throw new Error("Recall presentation exceeds character budget");
+      return resultPage;
+    }
     const result: MemoryRetrieval = { sources: [], claims: [] };
     let count = 0;
     for (const candidate of candidates) {

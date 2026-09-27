@@ -72,6 +72,20 @@ trusted host APIs, not autonomous model tools.
   resolved facts. Label all returned data as untrusted evidence, never instructions.
   Do not cache across deletion or scope changes. RTS results do not belong in this
   ledger. `search` is an unbounded trusted lookup, not a prompt/recall projection.
+- `retrieve(..., {paginate:true, cursor?})` adds optional `nextCursor` within
+  the same record/JSON bounds (minimum paginated budget: 200 characters). Tokens
+  are fixed-size authenticated opaque boundaries, not encoded offsets, queries,
+  IDs or counts. Repeat the exact query, filters and bounds with `cursor` to
+  continue; omission counts describe authorized matches excluded from this page,
+  not a global ledger total. Matching insertions or deletions invalidate the
+  cursor with a generic restart-search error; unrelated or invisible records do
+  not affect it. Tokens survive reopening the unchanged ledger with its key.
+  Authorization and matching are recomputed on every page, before cursor checks.
+  Oversized whole records may be skipped; an empty truncated page can still have
+  a continuation. Absence of `nextCursor` means no further page, not that omitted
+  evidence is false. Trusted hosts can supply `measureCharacters(json)` to enforce
+  their escaped presentation budget during selection, rather than dropping
+  records after the cursor has advanced. Never trim a paginated result afterward.
 - With memory enabled, June's owner-private model context also includes
   `relationships: [{entity, claimIds}]`, indexing only the evidence-kind claims
   in that turn's bounded recall. Ask about a person in an owner DM to use this
@@ -124,6 +138,16 @@ and `omitted`, including any whole records omitted to fit display escaping.
 Mentions, markup and URL slashes use JSON Unicode escapes; dashboard sign-in
 credentials are redacted before escaping without changing stored evidence.
 Slack opt-out records remain excluded under the existing retrieval policy.
+
+For more results, June repeats the query and filters in
+`recall: {...search, cursor: nextCursor}` using the host-provided `search` object
+beside `nextCursor`, including on omission-only pages. The host measures
+this metadata and the escaped evidence while selecting whole records, so advancing the cursor
+never hides a record subsequently dropped by formatting. A stale, changed-query,
+cross-audience or forged cursor returns a generic restart instruction with no
+evidence or counts. Restart without a cursor after matching data changes;
+reusing a cursor against unchanged data returns the same page. The response may
+include `nextCursor` even when all records on that page were too large to return.
 
 For a category-specific request (for example, "Recall my preferences about tea"),
 June can use `recall: {kind: "search", query: "tea", category: "preference"}`.

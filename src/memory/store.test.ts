@@ -54,6 +54,86 @@ const coverage: ImportCoverage = {
   audiences: ["private"],
 };
 
+it("binds recall cursors to audience, query and bounds without observing invisible changes", () => {
+  const { store, path } = open();
+  for (const id of ["a", "b", "c"])
+    store.appendSource({ ...source(id), audiences: ["private", "shared"] });
+  const options = { paginate: true, limit: 1 };
+  const first = store.retrieve("private", "kumquat", options);
+  expect(first.sources.map((item) => item.id)).toEqual(["a"]);
+  expect(first.nextCursor).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  const cursor = first.nextCursor;
+  if (!cursor) throw new Error("Missing cursor");
+  for (const [audience, query, bounds] of [
+    ["shared", "kumquat", options],
+    ["private", "sensitive", options],
+    ["private", "kumquat", { ...options, limit: 2 }],
+  ] as const)
+    expect(() =>
+      store.retrieve(audience, query, { ...bounds, cursor }),
+    ).toThrow("Invalid recall cursor; restart the search");
+  expect(() =>
+    store.retrieve("private", "kumquat", {
+      ...options,
+      cursor: `${cursor.slice(0, -1)}!`,
+    }),
+  ).toThrow("Invalid recall cursor");
+  store.appendSource(source("hidden", "elsewhere"));
+  store.appendSource({ ...source("unrelated"), text: "pear" });
+  expect(store.retrieve("private", "kumquat", options)).toEqual(first);
+  store.deleteSource("hidden");
+  store.close();
+  const reopened = open(path).store;
+  const second = reopened.retrieve("private", "kumquat", {
+    ...options,
+    cursor,
+  });
+  expect(second.sources.map((item) => item.id)).toEqual(["b"]);
+  const last = reopened.retrieve("private", "kumquat", {
+    ...options,
+    cursor: second.nextCursor,
+  });
+  expect(last).toEqual({
+    sources: [{ ...source("c"), audiences: ["private", "shared"] }],
+    claims: [],
+  });
+});
+
+it("invalidates recall continuations after matching insertions and cascading deletion", () => {
+  const { store } = open();
+  store.appendSource(source("a"));
+  store.appendSource({ ...source("z"), text: "pear" });
+  store.appendClaim({
+    id: "m",
+    entity: "owner",
+    text: "kumquat",
+    audiences: ["private"],
+    kind: "evidence",
+    dependsOn: ["z"],
+    contradicts: [],
+    supersedes: [],
+  });
+  const options = { paginate: true, limit: 1 };
+  const original = store.retrieve("private", "kumquat", options).nextCursor;
+  store.appendSource(source("0-new-before-boundary"));
+  expect(() =>
+    store.retrieve("private", "kumquat", { ...options, cursor: original }),
+  ).toThrow("Invalid recall cursor");
+  const fresh = store.retrieve("private", "kumquat", options).nextCursor;
+  store.deleteSource("z");
+  expect(() =>
+    store.retrieve("private", "kumquat", { ...options, cursor: fresh }),
+  ).toThrow("Invalid recall cursor");
+  expect(
+    store
+      .retrieve("private", "kumquat", { paginate: true })
+      .sources.map((item) => item.id),
+  ).toEqual(["0-new-before-boundary", "a"]);
+  expect(
+    store.retrieve("private", "kumquat", { paginate: true }).claims,
+  ).toEqual([]);
+});
+
 it("excludes legacy ## Slack evidence from automatic memory but permits explicit lookup", () => {
   const { store } = open();
   store.appendSource({ ...source("ignored"), text: "## secret" });

@@ -154,6 +154,11 @@ const companionReplySchema = z.strictObject({
         category: recallCategorySchema
           .nullish()
           .transform((value) => value ?? undefined),
+        cursor: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{43}$/)
+          .nullish()
+          .transform((value) => value ?? undefined),
       }),
       z.strictObject({
         kind: z.literal("contradictions"),
@@ -413,8 +418,14 @@ export function replyJsonSchema(
                       description:
                         "Exact stored claim category; null preserves unfiltered recall. Raw sources have no category.",
                     },
+                    cursor: {
+                      type: ["string", "null"],
+                      pattern: "^[A-Za-z0-9_-]{43}$",
+                      description:
+                        "Copy nextCursor from the last page with the same query and filters. Null starts a search. Changed matching data invalidates the cursor; restart without it. Never invent offsets or cursors.",
+                    },
                   },
-                  required: ["kind", "query", "category"],
+                  required: ["kind", "query", "category", "cursor"],
                 },
                 {
                   type: "object",

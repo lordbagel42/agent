@@ -89,6 +89,7 @@ it("recalls only for the owner privately and invalidates recalled and derived re
   let forgetOnSend = false;
   let web = false;
   let validate = false;
+  let continueRecall = false;
   const deps: Dependencies = {
     owner,
     memory: { store, source: () => undefined },
@@ -123,6 +124,20 @@ it("recalls only for the owner privately and invalidates recalled and derived re
         ).toBe(request.recallAvailable);
         if (request.recallAvailable)
           expect(request.system).toContain("set recall to one concise keyword");
+        if (continueRecall) {
+          const previous = request.messages
+            .filter((message) => message.role === "assistant")
+            .at(-1);
+          if (!previous) throw new Error("Missing recorded page");
+          const recorded = JSON.parse(previous.content).text as string;
+          const page = JSON.parse(recorded.slice(recorded.indexOf("\n") + 1));
+          expect(page.search.kind).toBe("search");
+          expect(page.nextCursor).toMatch(/^[A-Za-z0-9_-]{43}$/);
+          return {
+            text: "",
+            recall: { ...page.search, cursor: page.nextCursor },
+          };
+        }
         // Deliberately bypass provider validation to exercise the host guard.
         return web && request.webSearchAvailable
           ? { text: "", webSearch: "public query" }
@@ -200,6 +215,41 @@ it("recalls only for the owner privately and invalidates recalled and derived re
   expect(evidence.claims[0].dependsOn).toEqual([source.id]);
   expect(first.state.history.at(-1)?.context?.sourceIds).toEqual([source.id]);
   expect(first.state.jobs).toEqual({});
+  expect(evidence.nextCursor).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  const recalled: string[] = evidence.claims.map((claim: Claim) => claim.id);
+  let cursor: string | undefined = evidence.nextCursor;
+  let pages = 0;
+  continueRecall = true;
+  while (cursor) {
+    await turn();
+    const output = sent.at(-1)?.content;
+    if (output?.type !== "text") throw new Error("Missing continuation");
+    expect(output.text.length).toBeLessThanOrEqual(3500);
+    expect(output.text).not.toContain("FORBIDDEN");
+    const next = JSON.parse(output.text.slice(output.text.indexOf("\n") + 1));
+    expect(next.sources).toEqual([]);
+    recalled.push(...next.claims.map((claim: Claim) => claim.id));
+    expect(next.nextCursor).not.toBe(cursor);
+    cursor = next.nextCursor;
+    expect(++pages).toBeLessThan(5);
+  }
+  continueRecall = false;
+  expect(recalled).toEqual(Array.from({ length: 10 }, (_, i) => `claim-${i}`));
+  store.appendSource({ ...source, id: "new-page-record", text: "heron added" });
+  action = {
+    text: "",
+    recall: {
+      kind: "search",
+      query: "violet heron",
+      cursor: evidence.nextCursor,
+    },
+  };
+  await turn();
+  expect(JSON.stringify(sent.at(-1))).toContain(
+    "Repeat the search without a cursor",
+  );
+  expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE violet");
+  expect(requests.at(-1)?.system).toContain("copy nextCursor");
   action = { text: "Derived color answer" };
   const derived = await turn();
   expect(JSON.stringify(requests.at(-1)?.messages)).toContain("PRIVATE violet");
@@ -266,6 +316,48 @@ it("recalls only for the owner privately and invalidates recalled and derived re
   expect(neighbors.state.history.at(-1)?.context?.sourceIds.toSorted()).toEqual(
     ["contrary-source", source.id],
   );
+  action = {
+    text: "",
+    recall: { kind: "search", query: "", category: "preference" },
+  };
+  for (const id of ["0-large-preference", "1-large-preference"])
+    store.appendClaim({
+      ...categoryEvidence.claims[0],
+      id,
+      text: "x".repeat(4000),
+    });
+  await turn();
+  const omittedOutput = sent.at(-1)?.content;
+  if (omittedOutput?.type !== "text") throw new Error("Missing omission page");
+  const omitted = JSON.parse(
+    omittedOutput.text.slice(omittedOutput.text.indexOf("\n") + 1),
+  );
+  expect(omitted.claims).toEqual([]);
+  expect(omitted.search).toEqual({
+    kind: "search",
+    query: "",
+    category: "preference",
+  });
+  expect(omitted.nextCursor).toBeTruthy();
+  continueRecall = true;
+  await turn();
+  continueRecall = false;
+  const continuedOutput = sent.at(-1)?.content;
+  if (continuedOutput?.type !== "text")
+    throw new Error("Missing category continuation");
+  const continued = JSON.parse(
+    continuedOutput.text.slice(continuedOutput.text.indexOf("\n") + 1),
+  );
+  expect(continued.claims.map((claim: Claim) => claim.id)).toEqual(["claim-9"]);
+  expect(continued.nextCursor).toBeUndefined();
+  action = {
+    text: "",
+    recall: {
+      kind: "search",
+      query: "violet heron",
+      cursor: evidence.nextCursor,
+    },
+  };
   for (const extra of [
     {
       direct: false,
