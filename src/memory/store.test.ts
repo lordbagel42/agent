@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createCipheriv, createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1484,6 +1484,311 @@ it("scopes extraction claims, excludes opted-out derivatives, and rejects deleti
   ).rejects.toThrow("Memory changed during extraction");
   expect(store.proposals("private")).toEqual([]);
 });
+
+it.each(["pending", "accepted"] as const)(
+  "forgets %s proposals influenced by comparison context without counting it as evidence",
+  async (status) => {
+    const { store, path } = open();
+    store.appendSource({ ...source("prior"), text: "private original" });
+    store.appendSource({ ...source("new"), text: "new observation" });
+    store.appendClaim({
+      id: "context",
+      entity: "owner",
+      text: "private comparison claim",
+      audiences: ["private"],
+      kind: "evidence",
+      dependsOn: ["prior"],
+      contradicts: [],
+      supersedes: [],
+    });
+    const input: MemoryProposalInput = {
+      subjectSourceId: "new",
+      text: "private comparison claim",
+      category: "claim",
+      citations: [{ sourceId: "new", quote: "new observation" }],
+      confidence: 0.5,
+      validFrom: null,
+      validTo: null,
+      contradicts: [],
+      supersedes: [],
+    };
+    const [proposal] = await extractMemory(
+      store,
+      "private",
+      ["new"],
+      async (_sources, claims) => {
+        expect(claims.map((claim) => claim.id)).toEqual(["context"]);
+        claims.length = 0; // Provider mutation cannot erase the host's snapshot.
+        return [input];
+      },
+    );
+    if (!proposal) throw new Error("Missing proposal");
+    expect(proposal.claim.dependsOn).toEqual(["new"]);
+    expect(proposal.claim.extractionContext).toEqual({
+      sourceIds: ["new"],
+      claimIds: ["context"],
+    });
+    expect(proposal.claim.grounding?.citations).toEqual([
+      { sourceId: "new", quote: "new observation" },
+    ]);
+    if (status === "accepted") {
+      store.reviewProposal("private", proposal.id, "accepted");
+      expect(store.independentEvidence(proposal.id, "private")).toEqual([
+        "new",
+      ]);
+      expect(store.dependentClaims("private", "prior")?.claims).toContainEqual({
+        id: proposal.id,
+        kind: "evidence",
+        dependency: "derived",
+      });
+    }
+    store.close();
+    const reopened = open(path).store;
+    expect(
+      reopened.proposal("private", proposal.id)?.claim.extractionContext
+        ?.claimIds,
+    ).toEqual(["context"]);
+    reopened.deleteSource("prior");
+    expect(reopened.proposal("private", proposal.id)).toBeUndefined();
+    expect(reopened.search("private", "").claims).toEqual([]);
+    expect(reopened.isDeleted(proposal.id)).toBe(true);
+    expect(reopened.source("private", "new")).toBeDefined();
+    reopened.close();
+    const forgotten = open(path).store;
+    expect(forgotten.proposals("private")).toEqual([]);
+    expect(forgotten.search("private", "").claims).toEqual([]);
+    // A receipt for B must not resurrect its removed proposal after A is gone.
+    expect(
+      await extractMemory(forgotten, "private", ["new"], async () => [input]),
+    ).toEqual([]);
+    expect(forgotten.proposals("private")).toEqual([]);
+  },
+);
+
+it("binds review identity to all supplied inputs while retaining the first source-set admission", () => {
+  const { store } = open();
+  store.appendSource(source("cited"));
+  store.appendSource(source("extra"));
+  const input: MemoryProposalInput = {
+    subjectSourceId: "cited",
+    text: "candidate",
+    category: "claim",
+    citations: [{ sourceId: "cited", quote: "sensitive kumquat" }],
+    confidence: 0.5,
+    validFrom: null,
+    validTo: null,
+    contradicts: [],
+    supersedes: [],
+  };
+  const [first] = store.stageProposals("private", ["cited"], [input]);
+  if (!first) throw new Error("Missing proposal");
+  store.reviewProposal("private", first.id, "accepted");
+  const [broader] = store.stageProposals(
+    "private",
+    ["extra", "cited"],
+    [input],
+  );
+  expect(broader?.id).not.toBe(first.id);
+  expect(broader?.status).toBe("pending");
+  expect(
+    store.stageProposals("private", ["cited", "extra"], [input], [first.id]),
+  ).toEqual([broader]);
+  store.deleteSource("extra");
+  expect(store.proposals("private").map((proposal) => proposal.id)).toEqual([
+    first.id,
+  ]);
+});
+
+it.each(["pending", "accepted"] as const)(
+  "forgets %s proposals influenced by uncited raw inputs",
+  async (status) => {
+    const { store, path } = open();
+    store.appendSource({ ...source("uncited"), text: "private original" });
+    store.appendSource({ ...source("cited"), text: "new observation" });
+    const input: MemoryProposalInput = {
+      subjectSourceId: "cited",
+      text: "private original",
+      category: "claim",
+      citations: [{ sourceId: "cited", quote: "new observation" }],
+      confidence: 0.5,
+      validFrom: null,
+      validTo: null,
+      contradicts: [],
+      supersedes: [],
+    };
+    const [proposal] = await extractMemory(
+      store,
+      "private",
+      ["uncited", "cited"],
+      async (sources) => {
+        expect(sources.map((source) => source.id)).toEqual([
+          "uncited",
+          "cited",
+        ]);
+        sources.length = 0;
+        return [input];
+      },
+    );
+    if (!proposal) throw new Error("Missing proposal");
+    expect(proposal.claim.dependsOn).toEqual(["cited"]);
+    expect(proposal.claim.extractionContext).toEqual({
+      sourceIds: ["cited", "uncited"],
+      claimIds: [],
+    });
+    if (status === "accepted") {
+      store.reviewProposal("private", proposal.id, "accepted");
+      expect(store.independentEvidence(proposal.id, "private")).toEqual([
+        "cited",
+      ]);
+    }
+    store.close();
+    const reopened = open(path).store;
+    reopened.deleteSource("uncited");
+    expect(reopened.proposal("private", proposal.id)).toBeUndefined();
+    expect(reopened.search("private", "").claims).toEqual([]);
+    expect(reopened.source("private", "cited")).toBeDefined();
+    reopened.close();
+    const forgotten = open(path).store;
+    expect(forgotten.proposals("private")).toEqual([]);
+    expect(forgotten.search("private", "").claims).toEqual([]);
+    await expect(
+      extractMemory(forgotten, "private", ["uncited", "cited"], async () => [
+        input,
+      ]),
+    ).rejects.toThrow("Missing or unauthorized source");
+    expect(forgotten.proposals("private")).toEqual([]);
+  },
+);
+
+it.each(
+  [false, true].flatMap((alreadyDeleted) =>
+    ["present", "absent", "empty"].map((receipts) => ({
+      alreadyDeleted,
+      receipts,
+    })),
+  ),
+)(
+  "invalidates untracked legacy extraction with tombstones=$alreadyDeleted and receipts=$receipts",
+  ({ alreadyDeleted, receipts }) => {
+    const { store, path } = open();
+    store.close();
+    const input: MemoryProposalInput = {
+      subjectSourceId: "s1",
+      text: "legacy private hypothesis",
+      category: "claim",
+      citations: [{ sourceId: "s1", quote: "sensitive kumquat" }],
+      confidence: 0.5,
+      validFrom: null,
+      validTo: null,
+      contradicts: [],
+      supersedes: [],
+    };
+    const accepted: Claim = {
+      id: `proposal:${createHash("sha256")
+        .update(JSON.stringify(["private", input]))
+        .digest("hex")}`,
+      entity: "owner",
+      text: input.text,
+      audiences: ["private"],
+      kind: "evidence",
+      dependsOn: ["s1"],
+      contradicts: [],
+      supersedes: [],
+      grounding: input,
+    };
+    const pending = { ...accepted, id: "legacy-pending" };
+    // A saved-before-fix snapshot: context was never recorded. Do not use the
+    // current staging code to manufacture a supposedly legacy tracked record.
+    const snapshot = {
+      version: 1,
+      sources: [source(), ...(alreadyDeleted ? [] : [source("old-context")])],
+      claims: [
+        accepted,
+        { ...accepted, id: "descendant", dependsOn: [accepted.id] },
+      ],
+      tombstones: alreadyDeleted ? ["old-context"] : [],
+      imports: [],
+      proposals: [
+        {
+          id: accepted.id,
+          audience: "private",
+          claim: accepted,
+          status: "accepted",
+        },
+        {
+          id: pending.id,
+          audience: "private",
+          claim: pending,
+          status: "pending",
+        },
+      ],
+      extractions:
+        receipts === "absent"
+          ? undefined
+          : receipts === "empty"
+            ? []
+            : [
+                {
+                  audience: "private",
+                  sourceIds: ["s1"],
+                  proposalIds: [accepted.id, pending.id],
+                },
+              ],
+    };
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", key, nonce);
+    cipher.setAAD(Buffer.from("june-evidence-v1"));
+    const encrypted = Buffer.concat([
+      cipher.update(JSON.stringify(snapshot)),
+      cipher.final(),
+    ]);
+    const db = new DatabaseSync(path);
+    db.prepare("UPDATE records SET payload = ?").run(
+      Buffer.concat([nonce, cipher.getAuthTag(), encrypted]),
+    );
+    db.close();
+
+    const reopened = open(path).store;
+    if (!alreadyDeleted) {
+      expect(reopened.proposals("private")).toHaveLength(2);
+      if (receipts !== "present")
+        expect(reopened.stageProposals("private", ["s1"], [input])).toEqual([]);
+      reopened.deleteSource("old-context");
+    }
+    expect(reopened.proposals("private")).toEqual([]);
+    expect(reopened.search("private", "").claims).toEqual([]);
+    expect(reopened.source("private", "s1")).toEqual(source());
+    for (const id of [accepted.id, pending.id, "descendant"])
+      expect(reopened.isDeleted(id)).toBe(true);
+    expect(reopened.stageProposals("private", ["s1"], [input])).toEqual([]);
+    // Known-empty fresh context is not mistaken for legacy/untracked context.
+    reopened.appendSource(source("fresh"));
+    const [fresh] = reopened.stageProposals(
+      "private",
+      ["fresh"],
+      [
+        {
+          ...input,
+          subjectSourceId: "fresh",
+          citations: [{ sourceId: "fresh", quote: "sensitive kumquat" }],
+        },
+      ],
+    );
+    expect(fresh?.claim.extractionContext).toEqual({
+      sourceIds: ["fresh"],
+      claimIds: [],
+    });
+    reopened.deleteSource("old-context");
+    expect(reopened.proposals("private")).toEqual([fresh]);
+    reopened.close();
+    const final = open(path).store;
+    expect(final.proposals("private")).toEqual([fresh]);
+    expect(final.stageProposals("private", ["s1"], [input])).toEqual([]);
+    expect(
+      final.stageProposals("private", ["s1"], [{ ...input, confidence: 0.9 }]),
+    ).toEqual([]);
+  },
+);
 
 it("accepts canonical Slack conversations under channel coverage without widening thread grants or bypassing edits and tombstones", async () => {
   const { store, path } = open();

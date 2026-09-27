@@ -320,10 +320,34 @@ successful admission for an audience and exact source-ID set is durable, even
 when it produces no proposals. Reordering those IDs or changing model wording or
 confidence returns the original proposals with their current review decisions;
 it cannot add hypotheses from the same extraction input on retry. Other audiences
-and different source-ID sets have separate admissions. Identical grounded proposals
-within one audience still share their existing proposal ID and review decision,
-even across different batches. IDs already bind immutable source records; changed
-content under the same ID still fails ingestion rather than being merged.
+and different source-ID sets have separate admissions. New proposal IDs bind both
+grounding and all canonical supplied input IDs. Different input context does not
+inherit an earlier review. Source-set receipts still preserve
+the first admitted result, including an exhausted receipt after forgetting.
+Changed source content under the same ID still fails ingestion rather than merging.
+
+The host records `claim.extractionContext = {sourceIds, claimIds}` from the exact
+pre-inference inputs, including uncited raw sources and `claimIds: []` for known-empty
+comparison context. This is deletion-only provenance:
+it never adds citations, `dependsOn` edges, or independent corroboration, and the
+model cannot set it. Forgetting any supplied source or comparison evidence removes
+its influenced pending/accepted proposals and descendants, even if the output
+named no citation or relation to that input.
+Context IDs are revalidated for scope/existence within admission's transaction.
+
+Legacy extracted proposals have no extraction-context marker. On any deletion,
+they and their accepted descendants are conservatively invalidated; opening a
+ledger with existing tombstones applies the same closure before returning data.
+This can discard unrelated legacy derived claims because their independence is
+unknown. Original sources, tombstones, and exhausted source-set receipts remain;
+retry cannot refill those receipts or relabel old output as tracked. Historical
+context is never guessed from current retrieval. For pre-receipt snapshots,
+identical legacy output or its grounding-only tombstone is also rejected before
+minting a new context-bound ID; that admission remains exhausted.
+This is logical invalidation,
+not physical purge. Older strict readers cannot read the new claim field, so
+rolling back the binary requires a compatible reader, not restoring old data.
+
 This does not prevent a provider call: runtime intent tracking
 owns paid-call retries. The async helper awaits actual provider settlement;
 forgetting a batch source or a comparison claim's underlying evidence first
@@ -346,7 +370,8 @@ Operator APIs:
   including contradiction/supersession dependencies and all explicit references
   in `grounding`, and tombstones their IDs. Snapshot reads reapply tombstones to
   hide grounding-only derivatives left by older writers; the next write persists
-  that cleanup. Unrelated sources and claims remain available.
+  that cleanup. Unrelated sources and tracked claims remain available; untracked
+  legacy extracted output follows the conservative policy above.
   The host must also suppress associated conversation history, in-flight context,
   reflection candidates, and any external summaries/caches before future prompts.
 

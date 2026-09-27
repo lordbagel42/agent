@@ -65,6 +65,14 @@ const claimSchema = z.strictObject({
   dependsOn: ids,
   contradicts: z.array(id).max(1000),
   supersedes: z.array(id).max(1000),
+  // All host-supplied inputs: deletion dependencies, never corroboration.
+  // Missing means legacy/untracked; claimIds: [] records known-empty context.
+  extractionContext: z
+    .strictObject({
+      sourceIds: ids,
+      claimIds: z.array(id).max(20),
+    })
+    .optional(),
   grounding: proposalInputSchema.optional(),
 });
 const proposalSchema = z.strictObject({
@@ -224,6 +232,8 @@ function dependencies(claim: Claim): string[] {
     ...claim.dependsOn,
     ...claim.contradicts,
     ...claim.supersedes,
+    ...(claim.extractionContext?.sourceIds ?? []),
+    ...(claim.extractionContext?.claimIds ?? []),
     ...(grounding
       ? [
           grounding.subjectSourceId,
@@ -236,7 +246,14 @@ function dependencies(claim: Claim): string[] {
 }
 
 function removeEvidence(state: State, sourceIds: string[]): Set<string> {
-  const removed = new Set(sourceIds);
+  // Old extracted outputs cannot prove independence from any forgotten input.
+  // Keep their source-set receipts exhausted, never infer or refill provenance.
+  const removed = new Set([
+    ...sourceIds,
+    ...state.proposals
+      .filter((proposal) => proposal.claim.extractionContext === undefined)
+      .map((proposal) => proposal.id),
+  ]);
   // References only point backwards, but fixed point also handles rebuilding.
   let changed = true;
   while (changed) {
@@ -263,9 +280,7 @@ function removeEvidence(state: State, sourceIds: string[]): Set<string> {
     removed.add(p.id);
     return false;
   });
-  state.extractions = state.extractions.filter(
-    (entry) => !entry.sourceIds.some((id) => removed.has(id)),
-  );
+  // Admission receipts survive forgetting, even when all results are removed.
   for (const entry of state.extractions)
     entry.proposalIds = entry.proposalIds.filter((id) => !removed.has(id));
   state.tombstones = [...new Set([...state.tombstones, ...removed])];
@@ -346,7 +361,11 @@ function insertClaim(state: State, claim: Claim): void {
     )
       throw new Error("Missing or unauthorized evidence");
   }
-  for (const ref of [...claim.contradicts, ...claim.supersedes]) {
+  for (const ref of [
+    ...claim.contradicts,
+    ...claim.supersedes,
+    ...(claim.extractionContext?.claimIds ?? []),
+  ]) {
     if (!state.claims.some((c) => c.id === ref))
       throw new Error("Relations require claims");
   }
@@ -645,9 +664,17 @@ export class EvidenceStore {
     audience: string,
     sourceIds: string[],
     output: unknown,
+    contextClaimIds: string[] = [],
   ): MemoryProposal[] {
     const inputs = parse(z.array(proposalInputSchema).max(20), output);
     const sources = this.extractionContext(audience, sourceIds);
+    const selected = sources.map((source) => source.id).sort();
+    const context = {
+      sourceIds: selected,
+      claimIds: [
+        ...new Set(parse(z.array(id).max(20), contextClaimIds)),
+      ].sort(),
+    };
     const proposals = inputs.map((input): MemoryProposal => {
       const subject = sources.find((s) => s.id === input.subjectSourceId);
       if (!subject || !input.citations.some((c) => c.sourceId === subject.id))
@@ -672,7 +699,7 @@ export class EvidenceStore {
         supersedes: [...new Set(input.supersedes)].sort(),
       };
       const proposalId = `proposal:${createHash("sha256")
-        .update(JSON.stringify([audience, grounding]))
+        .update(JSON.stringify([audience, grounding, context]))
         .digest("hex")}`;
       return parse(proposalSchema, {
         id: proposalId,
@@ -693,11 +720,11 @@ export class EvidenceStore {
           ].sort(),
           contradicts: grounding.contradicts,
           supersedes: grounding.supersedes,
+          extractionContext: context,
           grounding,
         },
       });
     });
-    const selected = sources.map((source) => source.id).sort();
     let admitted: string[] = [];
     this.transaction((state) => {
       // Source IDs are immutable revision identities. Admission belongs to the
@@ -712,6 +739,14 @@ export class EvidenceStore {
         )
           throw new Error("Missing or unauthorized source");
       }
+      // Recheck even empty outputs inside the same admission transaction.
+      for (const ref of context.claimIds)
+        if (
+          !state.claims.some(
+            (claim) => claim.id === ref && claim.audiences.includes(audience),
+          )
+        )
+          throw new Error("Missing or unauthorized comparison claim");
       const previous = state.extractions.find(
         (entry) =>
           entry.audience === audience &&
@@ -721,14 +756,27 @@ export class EvidenceStore {
         admitted = previous.proposalIds;
         return;
       }
-      for (const proposal of proposals) {
+      const fresh = proposals.filter((proposal) => {
+        // Pre-receipt snapshots used grounding-only identities. Never launder
+        // their unknown context (or tombstones) into a newly tracked identity.
+        const legacyId = `proposal:${createHash("sha256")
+          .update(JSON.stringify([audience, proposal.claim.grounding]))
+          .digest("hex")}`;
+        return (
+          !state.tombstones.includes(legacyId) &&
+          !state.proposals.some(
+            (p) => p.id === legacyId && p.claim.extractionContext === undefined,
+          )
+        );
+      });
+      for (const proposal of fresh) {
         // Validate against today's state within the write transaction, including
         // deletion while extraction was in flight. Do not publish pending claims.
         insertClaim({ ...state, claims: [...state.claims] }, proposal.claim);
         if (!state.proposals.some((p) => p.id === proposal.id))
           state.proposals.push(proposal);
       }
-      admitted = proposals.map((proposal) => proposal.id);
+      admitted = fresh.map((proposal) => proposal.id);
       state.extractions.push({
         audience,
         sourceIds: selected,
@@ -1562,6 +1610,7 @@ export async function extractMemory(
     limit: 20,
     maxCharacters: 16000,
   });
+  const contextClaimIds = claims.map((claim) => claim.id);
   const controller = new AbortController();
   const combined = signal
     ? AbortSignal.any([signal, controller.signal])
@@ -1571,7 +1620,7 @@ export async function extractMemory(
     active = new Map();
     activeExtractions.set(store, active);
   }
-  active.set(controller, [...selected, ...claims.map((claim) => claim.id)]);
+  active.set(controller, [...selected, ...contextClaimIds]);
   try {
     // Await the provider itself, not an abort race that could free admission
     // while an uncooperative provider is still running.
@@ -1580,7 +1629,7 @@ export async function extractMemory(
     // Even an unreferenced context claim may have influenced the proposal text.
     if (store.deletionRevision() !== revision)
       throw new Error("Memory changed during extraction");
-    return store.stageProposals(audience, selected, output);
+    return store.stageProposals(audience, selected, output, contextClaimIds);
   } finally {
     active.delete(controller);
     if (!active.size) activeExtractions.delete(store);
