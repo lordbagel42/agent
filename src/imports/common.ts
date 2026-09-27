@@ -117,6 +117,7 @@ export function limited(
       nextCursor: cursor,
       rateLimited: true,
       retryAfterMs: error.retryMs,
+      cooldownReason: error.status === 503 ? "provider_backoff" : "rate_limit",
     };
 }
 

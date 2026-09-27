@@ -92,9 +92,16 @@ describe("history privacy boundaries", () => {
       const progress = await imports.start("first");
       expect(progress.cursor).toBe('{"index":0,"token":"page-2"}');
       expect(progress.notBefore).toBe(160_000);
+      expect(progress.cooldownReason).toBe("pacing");
+      expect(imports.status("replay")).toMatchObject({
+        progress: undefined,
+        notBefore: 160_000,
+        cooldownReason: "pacing",
+        coolingDown: true,
+      });
       expect(urls[1]?.searchParams.get("oldest")).toBe("1.000000");
       expect(urls[1]?.searchParams.get("latest")).toBe("4.999999");
-      await imports.start("replay");
+      expect((await imports.start("replay")).cooldownReason).toBe("pacing");
       expect(urls).toHaveLength(2);
       now = 160_000;
       await imports.start("replay");
@@ -110,6 +117,99 @@ describe("history privacy boundaries", () => {
       store.close();
     }
   });
+
+  it.each([
+    [429, "rate_limit"],
+    [503, "provider_backoff"],
+  ] as const)(
+    "persists %i cooldowns across restart without retrying or advancing pages",
+    async (status, reason) => {
+      const dir = mkdtempSync(join(tmpdir(), "june-import-cooldown-"));
+      const path = join(dir, "evidence.db");
+      const key = new Uint8Array(32);
+      let store = new EvidenceStore(path, key);
+      let now = 100_000;
+      let limited = true;
+      let calls = 0;
+      const fetchPage = createSlackHistoryFetcher({
+        coverage: slack,
+        accessToken: credentials,
+        transport: async (input) => {
+          calls++;
+          if (limited)
+            return new Response("SECRET PROVIDER ERROR", {
+              status,
+              headers: { "retry-after": "6" },
+            });
+          return Response.json(
+            String(input).endsWith("auth.test")
+              ? { ok: true, team_id: "T1", url: "https://fixture.slack.com/" }
+              : {
+                  ok: true,
+                  messages: [],
+                  response_metadata: { next_cursor: "next" },
+                },
+          );
+        },
+      });
+      const selections = {
+        first: { coverage: slack, fetchPage },
+        blocked: { coverage: slack, fetchPage },
+        other: { coverage: { ...slack, account: "T2" }, fetchPage },
+      };
+      try {
+        let imports = new HistoryImports(store, selections, () => now);
+        const saved = await imports.start("first");
+        expect(saved).toMatchObject({
+          pages: 0,
+          cursor: null,
+          complete: false,
+          notBefore: 106_000,
+          cooldownReason: reason,
+        });
+        expect(JSON.stringify(saved)).not.toContain("SECRET");
+        expect(calls).toBe(1);
+        store.close();
+        store = new EvidenceStore(path, key);
+        imports = new HistoryImports(store, selections, () => now);
+        expect(imports.status("first").progress).toEqual(saved);
+        expect(imports.status("blocked")).toMatchObject({
+          progress: undefined,
+          notBefore: 106_000,
+          cooldownReason: reason,
+          coolingDown: true,
+        });
+        expect(imports.status("other")).toMatchObject({
+          notBefore: 0,
+          cooldownReason: null,
+          coolingDown: false,
+        });
+        now = 105_999;
+        expect(await imports.start("first")).toEqual(saved);
+        expect(await imports.start("blocked")).toMatchObject({
+          pages: 0,
+          notBefore: 106_000,
+          cooldownReason: reason,
+        });
+        expect(calls).toBe(1);
+        now = 106_000;
+        expect(imports.status("first").coolingDown).toBe(false);
+        expect(calls).toBe(1); // Expiry/inspection is not a retry.
+        limited = false;
+        expect(await imports.start("first")).toMatchObject({
+          pages: 1,
+          complete: false,
+          notBefore: 166_000,
+          cooldownReason: "pacing",
+        });
+        expect(calls).toBe(3); // Exactly one explicit auth + page fetch.
+        expect(imports.status("blocked").cooldownReason).toBe("pacing");
+      } finally {
+        store.close();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each(["live-first", "history-first"])(
     "canonical Slack roots and replies deduplicate %s without hiding edits or tombstones",

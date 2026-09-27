@@ -46,7 +46,8 @@ export function createInspectionReader(deps: {
           ([, coverage]) => coverage.audiences.includes(deps.audience),
         );
         const rows = selections.slice(0, 10).map(([id, coverage]) => {
-          const { running, progress } = imports.status(id);
+          const { running, progress, notBefore, cooldownReason, coolingDown } =
+            imports.status(id);
           if (progress && !isDeepStrictEqual(progress.coverage, coverage))
             throw new Error("Import coverage changed");
           return {
@@ -58,11 +59,13 @@ export function createInspectionReader(deps: {
             started: progress !== undefined,
             pages: progress?.pages ?? 0,
             complete: progress?.complete ?? false,
-            notBefore: progress?.notBefore ?? null,
+            notBefore,
+            cooldownReason,
+            coolingDown,
             gapCount: progress?.gaps.length ?? 0,
           };
         });
-        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nComplete means the selected window was exhausted, not complete account history. Gap contents, cursors, credentials and message bodies are omitted. No import was started or cancelled.`;
+        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nnotBefore is the persisted account cooldown deadline (epoch milliseconds); cooldownReason is rate_limit, provider_backoff, pacing, unknown for legacy deadlines, or null. coolingDown is only the time gate at this snapshot, not provider readiness. Wait until notBefore; no polling or automatic retry. Resuming requires explicit operator confirmation, even after expiry or restart. Complete means the selected window was exhausted, not complete account history. Gap contents, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.`;
       }
       case "reflection": {
         if (!deps.reflection) return `${heading}\nReflection is unavailable.`;

@@ -82,6 +82,12 @@ const coverageSchema = z
     audiences: ids,
   })
   .refine((v) => v.from < v.to);
+const cooldownReasonSchema = z.enum([
+  "rate_limit",
+  "provider_backoff",
+  "pacing",
+  "unknown",
+]);
 const progressSchema = z.strictObject({
   id,
   coverage: coverageSchema,
@@ -89,6 +95,8 @@ const progressSchema = z.strictObject({
   pages: timestamp,
   complete: z.boolean(),
   notBefore: timestamp,
+  // Older snapshots have a deadline but no recorded reason.
+  cooldownReason: cooldownReasonSchema.nullable().optional(),
   gaps: z.array(z.string().max(10000)),
 });
 const stateSchema = z.strictObject({
@@ -119,6 +127,7 @@ const pageSchema = z.strictObject({
   gaps: z.array(z.string().max(10000)).max(1000).optional(),
   retryAfterMs: timestamp.optional(),
   rateLimited: z.boolean().optional(),
+  cooldownReason: cooldownReasonSchema.optional(),
 });
 export type Source = z.infer<typeof sourceSchema>;
 export type Claim = z.infer<typeof claimSchema>;
@@ -837,6 +846,7 @@ export class EvidenceStore {
         if (page.sources.length || !page.retryAfterMs)
           throw new Error("Invalid rate limit boundary");
         progress.notBefore = parse(timestamp, now + page.retryAfterMs);
+        progress.cooldownReason = page.cooldownReason ?? "rate_limit";
         return;
       }
       if (page.nextCursor !== null && page.nextCursor === progress.cursor)
@@ -881,6 +891,7 @@ export class EvidenceStore {
       progress.complete = page.nextCursor === null;
       progress.pages++;
       progress.notBefore = parse(timestamp, now + (page.retryAfterMs ?? 0));
+      progress.cooldownReason = page.retryAfterMs ? "pacing" : null;
       progress.gaps.push(...(page.gaps ?? []));
     });
   }

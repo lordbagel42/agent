@@ -12,7 +12,10 @@ never expose them as model tools. Route wiring belongs to the integration host.
 
 Signatures: `start(id: string): Promise<ImportProgress>`;
 `status(id: string)` and `cancel(id: string)` return
-`{ running: boolean, progress: ImportProgress | undefined }`.
+`{ running, progress, notBefore, cooldownReason, coolingDown }`. `progress`
+is the selection's durable progress (or undefined); the top-level cooldown is
+the maximum persisted deadline across registered selections for that account.
+`coolingDown` compares the current clock with that deadline, not provider health.
 Cancellation has no durable flag in the baseline store: it discards in-flight
 work, preserves the durable cursor, and leaves the job idle. Restart never
 automatically resumes any job. A host scheduler must persist its own disabled
@@ -71,6 +74,16 @@ return durable retry boundaries; other errors stop the job. Within a service,
 registered jobs sharing an account are serialized and share persisted cooldowns.
 The host must serialize/rate-limit accounts across service instances and respect
 `notBefore` (do not busy-poll).
+
+June can report these deadlines through owner-private `inspection: "imports"`.
+The metadata receipt includes the effective account `notBefore` (epoch
+milliseconds), `coolingDown`, and a persisted fixed `cooldownReason`:
+`rate_limit` for rate-limit responses, `provider_backoff` for HTTP 503,
+`pacing` for successful-page spacing, or `unknown` for older deadlines without
+a recorded reason. An account with no deadline reports `0`/`null`. It never
+includes provider error text. Expiry is not a ready/healthy claim, and does not resume
+anything: each further page still needs explicit operator confirmation. Status
+inspection makes no provider/credential calls and schedules no retries.
 
 ## Canonical sources and live overlap
 

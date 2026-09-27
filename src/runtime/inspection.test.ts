@@ -87,6 +87,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         },
       ]),
     ),
+    () => 500_000,
   );
   store.beginImport("selection-0", coverage);
   const initial = store.importProgress("selection-0");
@@ -114,6 +115,18 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     1,
   );
   expect(store.source(audience, forgotten.id)).toBeUndefined();
+  const page = store.importProgress("selection-0");
+  if (!page) throw new Error("Missing fixture page");
+  store.persistPage(
+    page,
+    {
+      sources: [],
+      nextCursor: page.cursor,
+      rateLimited: true,
+      retryAfterMs: 999_998,
+    },
+    2,
+  );
   const progress = store.importProgress("selection-0");
   const sent: OutboundMessage[] = [];
   const requests: ModelRequest[] = [];
@@ -278,6 +291,11 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   const importReport = await deliver();
   expect(importReport).toContain("Configured selections: 12; showing 10");
   expect(importReport).toContain('"pages":1,"complete":false');
+  expect(importReport.match(/"notBefore":1000000/g)).toHaveLength(10);
+  expect(importReport.match(/"cooldownReason":"rate_limit"/g)).toHaveLength(10);
+  expect(importReport.match(/"coolingDown":true/g)).toHaveLength(10);
+  expect(importReport).toContain("not provider readiness");
+  expect(importReport).toContain("no polling or automatic retry");
   expect(importReport).toContain('"gapCount":2');
   expect(importReport.length).toBeLessThan(4000);
   action = { text: "", inspection: "reflection" };

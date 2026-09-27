@@ -38,10 +38,30 @@ export class HistoryImports {
   }
 
   status(id: string) {
-    this.selection(id);
+    const selection = this.selection(id);
+    const progress = this.store.importProgress(id);
+    let cooldown = progress;
+    for (const [otherId, other] of this.selections) {
+      if (
+        other.coverage.platform !== selection.coverage.platform ||
+        other.coverage.account !== selection.coverage.account
+      )
+        continue;
+      const saved = this.store.importProgress(otherId);
+      if (saved && saved.notBefore > (cooldown?.notBefore ?? 0))
+        cooldown = saved;
+    }
+    const notBefore = cooldown?.notBefore ?? 0;
+    const cooldownReason =
+      notBefore > 0 && cooldown?.cooldownReason === undefined
+        ? "unknown"
+        : (cooldown?.cooldownReason ?? null);
     return {
       running: this.active.has(id),
-      progress: this.store.importProgress(id),
+      progress,
+      notBefore,
+      cooldownReason,
+      coolingDown: this.now() < notBefore,
     };
   }
 
@@ -55,9 +75,8 @@ export class HistoryImports {
     const selection = this.selection(id);
     if (this.active.has(id)) throw new Error("Import already running");
     this.store.beginImport(id, selection.coverage);
-    const progress = this.store.importProgress(id);
+    const { progress, notBefore, cooldownReason } = this.status(id);
     if (!progress) throw new Error("Missing import progress");
-    let notBefore = progress.notBefore;
     for (const [otherId, other] of this.selections) {
       if (
         other.coverage.platform !== selection.coverage.platform ||
@@ -66,10 +85,6 @@ export class HistoryImports {
         continue;
       if (this.active.has(otherId))
         throw new Error("Account import already running");
-      notBefore = Math.max(
-        notBefore,
-        this.store.importProgress(otherId)?.notBefore ?? 0,
-      );
     }
     const now = this.now();
     if (!progress.complete && now >= progress.notBefore && now < notBefore) {
@@ -80,10 +95,15 @@ export class HistoryImports {
           nextCursor: progress.cursor,
           rateLimited: true,
           retryAfterMs: notBefore - now,
+          cooldownReason: cooldownReason ?? "unknown",
         },
         now,
       );
-      return { ...progress, notBefore };
+      return {
+        ...progress,
+        notBefore,
+        cooldownReason: cooldownReason ?? "unknown",
+      };
     }
     const controller = new AbortController();
     this.active.set(id, controller);
