@@ -24,6 +24,7 @@ import {
   GLOBAL_PROPOSAL_MAX_AGE_MS,
   type GlobalPersonalityProposal,
   globalProposalInputSchema,
+  type ReflectionProposalBinding,
 } from "../reflection/global-proposal.js";
 import {
   CHARTER,
@@ -51,6 +52,7 @@ type Snapshot = {
   state: PersonalityState;
   provenance: Provenance[];
   globalProposals?: GlobalPersonalityProposal[];
+  rejectedReflectionCandidates?: { scope: string; id: string }[];
 };
 
 /** Reject symlinks in every existing path component, not just the leaf. */
@@ -389,12 +391,26 @@ export class CuratedPersonalityStore {
     const parent = this.head();
     const snapshot = this.load(parent);
     const proposals = snapshot.globalProposals ?? [];
-    const retained = proposals.filter(
-      (proposal) =>
-        ![...proposal.evidenceIds, ...proposal.sourceIds].some((id) =>
-          this.evidence.isDeleted(id),
-        ),
-    );
+    const retained = proposals.filter((proposal) => {
+      const forgotten = [...proposal.evidenceIds, ...proposal.sourceIds].some(
+        (id) => this.evidence.isDeleted(id),
+      );
+      if (forgotten && proposal.reflectionCandidateId) {
+        snapshot.rejectedReflectionCandidates ??= [];
+        if (
+          !snapshot.rejectedReflectionCandidates.some(
+            (candidate) =>
+              candidate.scope === proposal.scope &&
+              candidate.id === proposal.reflectionCandidateId,
+          )
+        )
+          snapshot.rejectedReflectionCandidates.push({
+            scope: proposal.scope,
+            id: proposal.reflectionCandidateId,
+          });
+      }
+      return !forgotten;
+    });
     if (retained.length === proposals.length) return;
     this.persist({ ...snapshot, globalProposals: retained }, parent);
   }
@@ -406,24 +422,41 @@ export class CuratedPersonalityStore {
     scope: string,
     input: unknown,
     now = Date.now(),
+    reflection?: ReflectionProposalBinding,
   ): GlobalPersonalityProposal {
     this.forgetGlobalProposals();
     const parsed = globalProposalInputSchema.safeParse(input);
+    const reflectionCandidateId = reflection?.candidateId;
     if (
       !parsed.success ||
       !scope.trim() ||
       scope.length > 2048 ||
       !Number.isSafeInteger(now) ||
-      now < 0
+      now < 0 ||
+      (reflection !== undefined &&
+        (!hex.safeParse(reflectionCandidateId).success ||
+          !Number.isSafeInteger(reflection.expiresAt) ||
+          reflection.expiresAt <= now ||
+          !Array.isArray(reflection.sourceIds) ||
+          reflection.sourceIds.length > 100 ||
+          !parsed.data.evidenceIds.every((id) =>
+            reflection.sourceIds.includes(id),
+          )))
     )
       throw new Error("Invalid global personality suggestion");
     const value = {
       ...parsed.data,
-      evidenceIds: [...parsed.data.evidenceIds].sort(),
+      evidenceIds: reflection
+        ? [...parsed.data.evidenceIds]
+        : [...parsed.data.evidenceIds].sort(),
+      ...(reflectionCandidateId ? { reflectionCandidateId } : {}),
     };
+    const sourceIds = [
+      ...new Set(reflection?.sourceIds ?? value.evidenceIds),
+    ].sort();
     const grounded = this.evidence.reflectionEvidence(
       scope,
-      value.evidenceIds,
+      sourceIds,
       GLOBAL_PROPOSAL_MAX_AGE_MS,
     );
     if (
@@ -434,16 +467,34 @@ export class CuratedPersonalityStore {
       throw new Error("Global suggestion requires fresh original evidence");
     const parent = this.head();
     const snapshot = this.load(parent);
-    const id = `personality:${this.opaque(["global-proposal", scope, value])}`;
-    const previous = snapshot.globalProposals?.find((p) => p.id === id);
+    const id = `personality:${this.opaque(["global-proposal", scope, value, ...(reflection ? [sourceIds, reflection.expiresAt] : [])])}`;
+    if (
+      reflectionCandidateId &&
+      snapshot.rejectedReflectionCandidates?.some(
+        (candidate) =>
+          candidate.scope === scope && candidate.id === reflectionCandidateId,
+      )
+    )
+      throw new Error("Reflection candidate was rejected");
+    const previous = snapshot.globalProposals?.find(
+      (p) =>
+        p.id === id ||
+        (reflectionCandidateId !== undefined &&
+          p.scope === scope &&
+          p.reflectionCandidateId === reflectionCandidateId),
+    );
     if (previous) {
+      // Bind once in the same encrypted commit as the payload. Even after a
+      // lost receipt/restart, an edited payload or moved head cannot retarget it.
+      if (previous.id !== id)
+        throw new Error(
+          "Reflection candidate already bound to another suggestion",
+        );
       if (!this.validGlobalProposal(snapshot, previous, scope, now))
         throw new Error("Global suggestion is no longer valid");
       return structuredClone(previous);
     }
-    const provenance = value.evidenceIds.map((id) =>
-      this.provenance(scope, id),
-    );
+    const provenance = sourceIds.map((id) => this.provenance(scope, id));
     for (const current of provenance) {
       const saved = snapshot.provenance.find(
         (p) => p.scope === scope && p.id === current.id,
@@ -458,7 +509,10 @@ export class CuratedPersonalityStore {
       scope,
       sourceIds: [...new Set(provenance.flatMap((p) => p.sources))].sort(),
       createdAt: now,
-      expiresAt: Math.min(...grounded.map((e) => e.expiresAt)),
+      expiresAt: Math.min(
+        ...grounded.map((e) => e.expiresAt),
+        reflection?.expiresAt ?? Number.MAX_SAFE_INTEGER,
+      ),
       status: "pending",
     };
     snapshot.globalProposals ??= [];
@@ -473,23 +527,55 @@ export class CuratedPersonalityStore {
     return structuredClone(proposal);
   }
 
+  /** Revoke pending incorporation before the reflection actor acknowledges
+   * rejection. Never erase the binding or roll back an already published style. */
+  rejectReflectionProposals(scope: string, candidateId: string): void {
+    this.check();
+    if (
+      !scope.trim() ||
+      scope.length > 2048 ||
+      !hex.safeParse(candidateId).success
+    )
+      throw new Error("Invalid reflection rejection");
+    const parent = this.head();
+    const snapshot = this.load(parent);
+    snapshot.rejectedReflectionCandidates ??= [];
+    if (
+      snapshot.rejectedReflectionCandidates.some(
+        (candidate) =>
+          candidate.scope === scope && candidate.id === candidateId,
+      )
+    )
+      return;
+    snapshot.rejectedReflectionCandidates.push({ scope, id: candidateId });
+    this.persist(snapshot, parent);
+  }
+
   private validGlobalProposal(
     snapshot: Snapshot,
     proposal: GlobalPersonalityProposal,
     scope: string,
     now: number,
+    published = false,
   ): boolean {
     if (
       proposal.scope !== scope ||
       !Number.isSafeInteger(now) ||
       now < proposal.createdAt ||
-      now >= proposal.expiresAt
+      now >= proposal.expiresAt ||
+      (!published &&
+        proposal.reflectionCandidateId !== undefined &&
+        snapshot.rejectedReflectionCandidates?.some(
+          (candidate) =>
+            candidate.scope === scope &&
+            candidate.id === proposal.reflectionCandidateId,
+        ))
     )
       return false;
     try {
       const grounded = this.evidence.reflectionEvidence(
         scope,
-        proposal.evidenceIds,
+        proposal.sourceIds,
         GLOBAL_PROPOSAL_MAX_AGE_MS,
       );
       return grounded.every(
@@ -517,6 +603,24 @@ export class CuratedPersonalityStore {
     const proposal = snapshot.globalProposals?.find((p) => p.id === id);
     return proposal && this.validGlobalProposal(snapshot, proposal, scope, now)
       ? structuredClone(proposal)
+      : undefined;
+  }
+
+  /** Grounding only for IDs already recorded on published actor revisions.
+   * Reflection rejection revokes pending incorporation, not earlier approval.
+   * The caller proves publication; this grants no approval and returns no body.
+   * Forgetting, provenance and expiry remain authoritative after publication. */
+  publishedGlobalProposalExpiry(
+    scope: string,
+    id: string,
+    now = Date.now(),
+  ): number | undefined {
+    this.forgetGlobalProposals();
+    const snapshot = this.load(this.head());
+    const proposal = snapshot.globalProposals?.find((p) => p.id === id);
+    return proposal &&
+      this.validGlobalProposal(snapshot, proposal, scope, now, true)
+      ? proposal.expiresAt
       : undefined;
   }
 

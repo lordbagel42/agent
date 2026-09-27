@@ -27,11 +27,28 @@ export const globalProposalInputSchema = z.strictObject({
   confidence: z.number().min(0).max(1),
 });
 
+/** The host derives evidence and rationale from a revalidated publication. */
+export const reflectionPersonalitySuggestionSchema = globalProposalInputSchema
+  .pick({ expectedVersion: true, changes: true })
+  .extend({ candidateId: z.string().regex(/^[a-f0-9]{64}$/) });
+export type ReflectionPersonalitySuggestion = z.infer<
+  typeof reflectionPersonalitySuggestionSchema
+>;
+
+/** Supplied only by fresh host admission, never by the model directive. */
+export interface ReflectionProposalBinding {
+  candidateId: string;
+  sourceIds: string[];
+  expiresAt: number;
+}
+
 export type GlobalProposalInput = z.infer<typeof globalProposalInputSchema>;
 export interface GlobalPersonalityProposal extends GlobalProposalInput {
   id: string;
   scope: string;
   sourceIds: string[];
+  /** Trusted bridge binding, never model-supplied evidence or approval. */
+  reflectionCandidateId?: string;
   createdAt: number;
   expiresAt: number;
   /** Staging marker only. The personality actor owns terminal decisions. */

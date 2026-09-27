@@ -245,6 +245,7 @@ it("keeps global suggestions private, immutable and bound to original live sourc
     for (const [id, audiences, observedAt] of [
       ["original", ["private"], 100],
       ["unrelated", ["private"], 200],
+      ["context-only", ["private"], 150],
       ["other-audience", ["channel"], 100],
     ] as const)
       evidence.appendSource({
@@ -311,11 +312,109 @@ it("keeps global suggestions private, immutable and bound to original live sourc
         .pendingGlobalProposals("private", 1, 400, [next.id])
         .map((p) => p.id),
     ).toEqual([proposal.id]);
+    const candidateId = "a".repeat(64);
+    const bridgeInput = { ...input, evidenceIds: ["unrelated", "original"] };
+    const binding = {
+      candidateId,
+      sourceIds: ["unrelated", "original", "context-only"],
+      expiresAt: 450,
+    };
+    const bound = curated.stageGlobalProposal(
+      "private",
+      bridgeInput,
+      400,
+      binding,
+    );
+    expect(bound).toMatchObject({
+      reflectionCandidateId: candidateId,
+      evidenceIds: ["unrelated", "original"],
+      sourceIds: ["context-only", "original", "unrelated"],
+      expiresAt: 450,
+    });
+    expect(curated.pendingGlobalProposal("private", bound.id, 449)).toEqual(
+      bound,
+    );
+    expect(
+      curated.pendingGlobalProposal("private", bound.id, 450),
+    ).toBeUndefined();
+    expect(() =>
+      curated.stageGlobalProposal("private", bridgeInput, 450, binding),
+    ).toThrow();
     curated.close();
     curated = new CuratedPersonalityStore(join(root, "curated"), key, evidence);
+    const boundCommit = curated.ownerHistory().commit;
+    expect(
+      curated.stageGlobalProposal("private", bridgeInput, 401, binding),
+    ).toEqual(bound);
+    expect(
+      curated.stageGlobalProposal("private", bridgeInput, 401, {
+        ...binding,
+        sourceIds: [...binding.sourceIds].reverse(),
+      }),
+    ).toEqual(bound);
+    for (const changed of [
+      { ...bridgeInput, expectedVersion: 4 },
+      { ...bridgeInput, changes: { tone: "playful" } },
+      { ...bridgeInput, evidenceIds: ["original"] },
+      { ...bridgeInput, evidenceIds: ["original", "unrelated"] },
+    ])
+      expect(() =>
+        curated.stageGlobalProposal("private", changed, 401, binding),
+      ).toThrow();
+    expect(() =>
+      curated.stageGlobalProposal("private", bridgeInput, 401, {
+        ...binding,
+        expiresAt: 451,
+      }),
+    ).toThrow();
+    for (const sourceIds of [
+      ["unrelated", "original"],
+      [...binding.sourceIds, "other-audience"],
+    ])
+      expect(() =>
+        curated.stageGlobalProposal("private", bridgeInput, 401, {
+          ...binding,
+          sourceIds,
+        }),
+      ).toThrow();
+    expect(curated.ownerHistory().commit).toBe(boundCommit);
+    curated.rejectReflectionProposals("other-scope", candidateId);
+    expect(curated.pendingGlobalProposal("private", bound.id, 401)).toEqual(
+      bound,
+    );
+    curated.rejectReflectionProposals("private", candidateId);
+    curated.close();
+    curated = new CuratedPersonalityStore(join(root, "curated"), key, evidence);
+    const rejectedCommit = curated.ownerHistory().commit;
+    curated.rejectReflectionProposals("private", candidateId);
+    expect(curated.ownerHistory().commit).toBe(rejectedCommit);
+    expect(
+      curated.pendingGlobalProposal("private", bound.id, 402),
+    ).toBeUndefined();
+    expect(
+      curated.publishedGlobalProposalExpiry("private", bound.id, 449),
+    ).toBe(450);
+    expect(
+      curated.publishedGlobalProposalExpiry("private", bound.id, 450),
+    ).toBeUndefined();
+    expect(() =>
+      curated.stageGlobalProposal("private", bridgeInput, 402, binding),
+    ).toThrow();
+    // A rejection racing the first stage must leave a durable tombstone too.
+    const neverStaged = "b".repeat(64);
+    curated.rejectReflectionProposals("private", neverStaged);
+    expect(() =>
+      curated.stageGlobalProposal("private", bridgeInput, 402, {
+        ...binding,
+        candidateId: neverStaged,
+      }),
+    ).toThrow();
     evidence.deleteSource("original");
     expect(
       curated.pendingGlobalProposal("private", proposal.id, 400),
+    ).toBeUndefined();
+    expect(
+      curated.publishedGlobalProposalExpiry("private", bound.id, 400),
     ).toBeUndefined();
     expect(
       curated.pendingGlobalProposals("private", 10, 400).map((p) => p.id),
@@ -388,7 +487,13 @@ it("removes forgotten suggestion payloads durably on reads, reopen and staging w
       explanation: "PRIVATE copied source detail",
       confidence: 0.8,
     };
-    const direct = curated.stageGlobalProposal("private", input, 300);
+    const candidateId = "c".repeat(64);
+    const direct = curated.stageGlobalProposal(
+      "private",
+      { ...input, evidenceIds: ["fresh"] },
+      300,
+      { candidateId, sourceIds: ["original", "fresh"], expiresAt: 1000 },
+    );
     curated.stageGlobalProposal(
       "private",
       {
@@ -433,6 +538,18 @@ it("removes forgotten suggestion payloads durably on reads, reopen and staging w
     curated.close();
     curated = new CuratedPersonalityStore(path, key, evidence);
     expect(activePayload().globalProposals).toEqual([keep]);
+    expect(() =>
+      curated.stageGlobalProposal(
+        "private",
+        {
+          ...input,
+          evidenceIds: ["fresh"],
+          expectedVersion: 1,
+        },
+        400,
+        { candidateId, sourceIds: ["fresh"], expiresAt: 1000 },
+      ),
+    ).toThrow();
     evidence.deleteSource("unrelated");
     const fresh = curated.stageGlobalProposal(
       "private",

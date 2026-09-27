@@ -7,7 +7,10 @@ import { setupTest } from "../../tests/rivet.js";
 import type { MessageEvent, OutboundMessage } from "../core/contracts.js";
 import { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
-import { GLOBAL_PROPOSAL_MAX_AGE_MS } from "../reflection/global-proposal.js";
+import {
+  GLOBAL_PROPOSAL_MAX_AGE_MS,
+  type ReflectionProposalBinding,
+} from "../reflection/global-proposal.js";
 import { createJuneRegistry } from "./registry.js";
 
 it("approves only the exact live suggestion at its staged head through owner-private June ingress", async (t) => {
@@ -73,6 +76,7 @@ it("approves only the exact live suggestion at its staged head through owner-pri
     expectedVersion: number,
     age = 0,
     audience = scope,
+    reflection?: ReflectionProposalBinding,
   ) => {
     const now = Date.now() - age;
     evidence.appendSource({
@@ -96,11 +100,17 @@ it("approves only the exact live suggestion at its staged head through owner-pri
         confidence: 0.8,
       },
       now,
+      reflection,
     );
   };
   const command = (proposalId: string, expectedVersion: number) =>
     `!personality approve ${JSON.stringify({ proposalId, expectedVersion, publish: true })}`;
-  const valid = stage("fresh", 0);
+  const candidateId = "a".repeat(64);
+  const valid = stage("fresh", 0, 0, scope, {
+    candidateId,
+    sourceIds: ["fresh"],
+    expiresAt: Date.now() + 1_000_000,
+  });
   const oldHead = stage("old-head", 0);
   const rejected = stage("reject-me", 0);
   expect(
@@ -180,6 +190,13 @@ it("approves only the exact live suggestion at its staged head through owner-pri
       humor: "subtle",
       curiosity: "occasional",
     },
+  });
+  // Rejection revokes pending incorporation, not an earlier owner publication.
+  curated.rejectReflectionProposals(scope, candidateId);
+  expect(curated.pendingGlobalProposal(scope, valid.id)).toBeUndefined();
+  expect(await profile.read()).toMatchObject({
+    version: 1,
+    style: { tone: "dry", verbosity: "concise" },
   });
   expect(
     await profile.command({

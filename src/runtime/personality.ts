@@ -5,7 +5,10 @@ import type { MessageEvent, Owner } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
-import type { GlobalProposalInput } from "../reflection/global-proposal.js";
+import type {
+  GlobalProposalInput,
+  ReflectionProposalBinding,
+} from "../reflection/global-proposal.js";
 import { CHARTER } from "../reflection/personality.js";
 
 // A closed vocabulary is intentional: private evidence, arbitrary instructions,
@@ -214,7 +217,7 @@ export function createPersonalityActor(
       let expiresAt = 0;
       try {
         expiresAt =
-          curated?.pendingGlobalProposal(privateScope, id)?.expiresAt ?? 0;
+          curated?.publishedGlobalProposalExpiry(privateScope, id) ?? 0;
       } catch {
         // Unavailable evidence cannot sustain a published grounded trait.
       }
@@ -306,6 +309,7 @@ export function createPersonalityActor(
         c,
         event: MessageEvent,
         input: GlobalProposalInput,
+        reflection?: ReflectionProposalBinding,
       ): Promise<string> => {
         if (c.key.length !== 1 || c.key[0] !== owner.id)
           throw new Error("Wrong personality owner");
@@ -322,10 +326,13 @@ export function createPersonalityActor(
         if (input?.expectedVersion !== head.version)
           return `Personality suggestion not staged: current version is ${head.version}. Review the current profile before suggesting again; nothing was applied.`;
         // No await between head check, current ledger validation and encrypted
-        // CAS write. No profile fields or revisions are changed here.
+        // CAS write. The optional binding comes from fresh host admission, never
+        // model output. No profile fields or revisions are changed here.
         const proposal = curated.stageGlobalProposal(
           JSON.stringify(scope.key),
           input,
+          Date.now(),
+          reflection,
         );
         const decision = c.state.proposalDecisions?.[proposal.id];
         if (decision) {
