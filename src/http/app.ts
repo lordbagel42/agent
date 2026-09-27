@@ -131,6 +131,7 @@ export function createHttpApp(deps: HttpDependencies) {
     const security = {
       origin: deps.console.origin,
       csrfSecret: randomBytes(32).toString("base64url"),
+      signInPath: "/console/session/login",
       authenticate,
     };
     const sessions = createConsoleSessionBridge(security, "/console");

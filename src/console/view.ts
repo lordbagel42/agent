@@ -85,11 +85,12 @@ export function messagePage(
   title: string,
   detail: string,
   code: number,
+  recovery?: { label: string; href: string },
 ) {
   return page(
     title,
     nonce,
-    html`<section class="panel"><div class="panel-body"><div class="error-code">HTTP ${code} / PRIVATE CONSOLE</div><div class="callout ${code >= 500 ? "warning" : "danger"}"><strong>${title}</strong><p>${detail}</p></div><p class="hint">No action has been confirmed by this response.</p></div></section>`,
+    html`<section class="panel"><div class="panel-body"><div class="error-code">HTTP ${code} / PRIVATE CONSOLE</div><div class="callout ${code >= 500 ? "warning" : "danger"}"><strong>${title}</strong><p>${detail}</p></div><p class="hint">No action has been confirmed by this response.</p>${recovery ? html`<div class="actions"><a class="button" href="${recovery.href}">${recovery.label}</a></div>` : ""}</div></section>`,
     { narrow: true },
   );
 }

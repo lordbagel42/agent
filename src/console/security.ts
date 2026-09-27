@@ -13,6 +13,8 @@ export interface PrivateRouteSecurity {
   /** Canonical externally visible origin. Never derive this from Host headers. */
   origin: string;
   csrfSecret: string;
+  /** Set only when this host mounts the browser session bridge. */
+  signInPath?: string;
   /** Trusted owner/session identity, never a request field. Undefined denies access. */
   authenticate(request: Request): Promise<string | undefined>;
 }
@@ -63,6 +65,12 @@ export function privateRoutes(security: PrivateRouteSecurity) {
           "Authentication required",
           "Sign in through this host's private session entry point, then open the console or original action link again.",
           401,
+          security.signInPath
+            ? {
+                label: "Sign in →",
+                href: `${security.signInPath}${c.req.method === "GET" ? `?returnTo=${encodeURIComponent(new URL(c.req.url).pathname)}` : ""}`,
+              }
+            : undefined,
         ),
         401,
       );
@@ -109,6 +117,21 @@ export function privateRoutes(security: PrivateRouteSecurity) {
     }),
   );
   return app;
+}
+
+/** Keep recovery local and query-free: never carry OAuth codes or replay a POST. */
+export function sessionReturnPath(value: unknown, fallback: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length > 1024 ||
+    !value.startsWith("/") ||
+    value.startsWith("//") ||
+    /[\\%\s?#]/u.test(value)
+  )
+    return fallback;
+  return new URL(value, "https://local.invalid").pathname === value
+    ? value
+    : fallback;
 }
 
 export function binding(value: unknown): string {

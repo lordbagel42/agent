@@ -5,6 +5,7 @@ import {
   confirmations,
   type PrivateRouteSecurity,
   privateRoutes,
+  sessionReturnPath,
 } from "./security.js";
 import { badge, confirmForm, messagePage, page } from "./view.js";
 
@@ -59,23 +60,29 @@ export function createConsoleSessionBridge(
     ...security,
     authenticate: async () => "login",
   });
-  routes.get("/login", (c) =>
-    c.html(
+  routes.get("/login", (c) => {
+    const returnTo = sessionReturnPath(c.req.query("returnTo"), consolePath);
+    return c.html(
       page(
         "Sign in to June",
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-body"><h2>Operator authentication</h2><p class="small">Use the token for this trusted private host. It never appears in a URL or browser storage.</p><form method="post" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue("login", new URL(c.req.url).pathname, "login")}"><label class="field" for="operator-token">Operator token</label><input id="operator-token" name="token" type="password" autocomplete="off" required maxlength="4096"><button class="full" type="submit">Sign in</button></form></div><div class="login-note">15-minute session · Token held in server memory<br>Signing in does not grant additional tool permissions.</div></section>`,
+        html`<section class="panel"><div class="panel-body"><h2>Operator authentication</h2><p class="small">Use the token for this trusted private host. It never appears in a URL or browser storage.</p><form method="post" autocomplete="off"><input type="hidden" name="returnTo" value="${returnTo}"><input type="hidden" name="proof" value="${proof.issue("login", new URL(c.req.url).pathname, returnTo)}"><label class="field" for="operator-token">Operator token</label><input id="operator-token" name="token" type="password" autocomplete="off" required maxlength="4096"><button class="full" type="submit">Sign in</button></form></div><div class="login-note">15-minute session · Token held in server memory<br>Signing in does not grant additional tool permissions.</div></section>`,
         {
           narrow: true,
           description: "Your private workspace. Owner access only.",
         },
       ),
-    ),
-  );
+    );
+  });
   routes.post("/login", async (c) => {
     const form = await c.req.parseBody();
+    const returnTo = sessionReturnPath(form.returnTo, consolePath);
+    const recovery = {
+      label: "Return to sign in",
+      href: `${new URL(c.req.url).pathname}?returnTo=${encodeURIComponent(returnTo)}`,
+    };
     if (
-      !proof.verify("login", new URL(c.req.url).pathname, "login", form.proof)
+      !proof.verify("login", new URL(c.req.url).pathname, returnTo, form.proof)
     )
       return c.html(
         messagePage(
@@ -83,6 +90,7 @@ export function createConsoleSessionBridge(
           "Sign-in confirmation rejected",
           "Open the private login page again for a fresh form.",
           403,
+          recovery,
         ),
         403,
       );
@@ -98,6 +106,7 @@ export function createConsoleSessionBridge(
           "Sign-in rejected",
           "The token could not be authenticated. Return to the private login page to try again.",
           401,
+          recovery,
         ),
         401,
       );
@@ -109,6 +118,7 @@ export function createConsoleSessionBridge(
           "Sign-in rejected",
           "The token could not be authenticated. Return to the private login page to try again.",
           401,
+          recovery,
         ),
         401,
       );
@@ -139,7 +149,7 @@ export function createConsoleSessionBridge(
       page(
         "Signed in",
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-body">${badge("Active")}<p>Your private session is active for 15 minutes. The host rechecks your token on every request.</p><div class="actions"><a class="button" href="${consolePath}">Open console →</a><a class="button secondary" href="${new URL(c.req.url).pathname.replace(/\/login$/, "/logout")}">End this session</a></div></div></section>`,
+        html`<section class="panel"><div class="panel-body">${badge("Active")}<p>Your private session is active for 15 minutes. The host rechecks your token on every request.</p><div class="actions"><a class="button" href="${returnTo}">${returnTo === consolePath ? "Open console →" : "Continue →"}</a><a class="button secondary" href="${new URL(c.req.url).pathname.replace(/\/login$/, "/logout")}">End this session</a></div></div></section>`,
         {
           narrow: true,
           description:
@@ -157,6 +167,10 @@ export function createConsoleSessionBridge(
           "Authentication required",
           "There is no authenticated session to end. Open the private login page to sign in.",
           401,
+          {
+            label: "Sign in →",
+            href: new URL(c.req.url).pathname.replace(/\/logout$/, "/login"),
+          },
         ),
         401,
       );
