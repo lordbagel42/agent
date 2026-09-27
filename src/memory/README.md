@@ -238,6 +238,30 @@ the same absence. This is a scoped view, not proof the entire history is known.
 Claims remain untrusted; inspection does not accept or mutate them, and inherits
 recall's owner-private authorization, deletion checks and provenance binding.
 
+### Inspect claims that depend on a source
+
+In an owner-private conversation, ask June which claims depend on an exact source
+ID. June requests `recall: {kind:"dependents", sourceId:"<exact ID>"}` with empty
+text and no other action. The host uses the existing recall authorization and
+deletion checks, never a model-supplied audience or a second graph database.
+
+`dependentClaims(audience, sourceId, {limit?, maxCharacters?})` returns bounded
+`claims: [{id, kind, dependency}]` plus `direct`, `derived`, and `omitted` counts.
+A direct claim references the source in `dependsOn` or grounding; a derived claim
+reaches it through other claims, including contradiction/supersession dependencies,
+just as logical deletion does. A claim with both paths is counted once as direct.
+Counts include only authorized stored claims, never unrelated or foreign claims
+or pending and rejected proposals. Claim IDs and kinds are metadata, not a statement
+of truth; source bodies, claim text, entity IDs and quotations are not returned here.
+
+Defaults are 12 records / 3,000 serialized JSON characters; hard limits are 100
+records / 100,000 characters. June uses at most six records and 3,000 characters
+after display escaping. Whole records are omitted rather than clipping IDs;
+`omitted` and counts share the budget. Missing, deleted and unauthorized sources return
+`undefined`, and June reports the same unavailable response. An authorized source
+with no dependents returns zero counts. Results are read-only snapshots, not
+complete import coverage or a forget preview; this action cannot delete anything.
+
 ## Import coverage and edits
 
 `persistPage(expectedProgress, page, now)` checks coverage and persists sources

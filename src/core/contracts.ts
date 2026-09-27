@@ -217,6 +217,7 @@ export interface CompanionReply {
   /** One owner-private query of retained evidence, never a permission grant. */
   recall?:
     | string
+    | { kind: "dependents"; sourceId: string }
     | {
         kind: "search";
         query: string;
