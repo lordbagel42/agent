@@ -43,6 +43,7 @@ it("publishes one bounded voice without sharing private explanations or granting
   const sent: OutboundMessage[] = [];
   const proposal =
     '!personality revise {"expectedVersion":0,"changes":{"tone":"dry","verbosity":"concise"},"explanation":"PRIVATE reason","publish":true}';
+  let modelReply: string | undefined;
   const registry = createJuneRegistry({
     owner,
     channels: {
@@ -62,9 +63,11 @@ it("publishes one bounded voice without sharing private explanations or granting
       async reply(request) {
         requests.push(structuredClone(request));
         return {
-          text: request.system.includes('"version":0,"style"')
-            ? proposal
-            : "Shared voice.",
+          text:
+            modelReply ??
+            (request.system.includes('"version":0,"style"')
+              ? proposal
+              : "Shared voice."),
         };
       },
     },
@@ -154,6 +157,13 @@ it("publishes one bounded voice without sharing private explanations or granting
         ...source,
         id: "forged",
         text: proposal.replace('"expectedVersion":0', '"expectedVersion":1'),
+      }),
+    ).not.toContain("Saved global");
+    expect(
+      await profile.command({
+        ...source,
+        id: "forged-reset",
+        text: '!personality reset {"expectedVersion":1,"trait":"tone","explanation":"Reset","publish":true}',
       }),
     ).not.toContain("Saved global");
     expect(
@@ -283,6 +293,81 @@ it("publishes one bounded voice without sharing private explanations or granting
   await send(channel, "origin-chat", "Which revision gave you this tone?");
   expect(requests.at(-1)?.system).toContain(JSON.stringify(restored));
   expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE");
+
+  // All four traits differ from defaults: a whole-profile reset must fail this.
+  await profile.command({
+    ...event,
+    id: "distinct-traits",
+    text: '!personality revise {"expectedVersion":6,"changes":{"tone":"direct","verbosity":"concise","humor":"none","curiosity":"eager"},"explanation":"Distinct traits","publish":true}',
+  });
+  const beforeReset = await profile.read();
+  expect(beforeReset.version).toBe(7);
+  const historyBeforeReset = (
+    await profile.command({ ...event, text: "!personality history" })
+  ).split("\nCurrent version:")[0];
+  const reset = {
+    expectedVersion: 7,
+    trait: "humor",
+    explanation: "Restore default humor",
+    publish: true,
+  };
+  for (const invalid of [
+    { trait: "unknown" },
+    { trait: ["humor", "tone"] },
+    { publish: false },
+    { changes: { tone: "warm" } },
+  ]) {
+    expect(
+      await profile.command({
+        ...event,
+        id: "invalid-reset",
+        text: `!personality reset ${JSON.stringify({ ...reset, ...invalid })}`,
+      }),
+    ).toContain("Invalid personality revision");
+  }
+  modelReply = `!personality reset ${JSON.stringify(reset)}`;
+  await send(event, "ask-reset", "Reset only your humor to its default.");
+  expect(requests.at(-1)?.system).toContain("Reset just one named trait");
+  expect(requests.at(-1)?.system).toContain("!personality reset");
+  expect(sent.at(-1)?.content).toEqual({ type: "text", text: modelReply });
+  expect(await profile.read()).toEqual(beforeReset); // Proposal is not approval.
+
+  await send(event, "reset-humor", modelReply);
+  const afterReset = await profile.read();
+  expect(afterReset.version).toBe(8);
+  expect(afterReset.style).toEqual({
+    tone: "direct",
+    verbosity: "concise",
+    humor: "subtle",
+    curiosity: "eager",
+  });
+  expect(afterReset.provenance).toEqual({
+    ...beforeReset.provenance,
+    humor: { kind: "owner-publication", originVersion: 8, appliedVersion: 8 },
+  });
+  // The pre-reset page is unchanged below the new revision's stable boundary.
+  expect(
+    await profile.command({ ...event, text: "!personality history 8" }),
+  ).toContain(historyBeforeReset);
+  expect(
+    await profile.command({ ...event, id: "reset-humor", text: modelReply }),
+  ).toContain("already saved");
+  expect(
+    await profile.command({ ...event, id: "stale-reset", text: modelReply }),
+  ).toContain("nothing was overwritten");
+  expect(await profile.read()).toEqual(afterReset);
+  modelReply = undefined;
+  await send(guest, "guest-after-reset", "Describe your voice.");
+  expect(requests.at(-1)?.system).toContain(JSON.stringify(afterReset));
+  await profile.command({
+    ...event,
+    id: "restore-before-reset",
+    text: '!personality rollback {"expectedVersion":8,"targetVersion":1,"explanation":"Original revision remains available","publish":true}',
+  });
+  expect(await profile.read()).toMatchObject({
+    version: 9,
+    style: published.style,
+  });
 });
 
 it("projects only bounded provenance and leaves legacy origins unknown", () => {

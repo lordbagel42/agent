@@ -663,13 +663,20 @@ quotes, code blocks or attachment captions):
 ```text
 !personality
 !personality revise {"expectedVersion":0,"changes":{"tone":"dry","verbosity":"concise"},"explanation":"Try a shorter, drier voice","publish":true}
+!personality reset {"expectedVersion":1,"trait":"tone","explanation":"Restore default tone, keeping concise replies","publish":true}
 !personality history
-!personality rollback {"expectedVersion":1,"targetVersion":0,"explanation":"Restore the initial voice","publish":true}
+!personality rollback {"expectedVersion":2,"targetVersion":0,"explanation":"Restore the initial voice","publish":true}
 ```
 
 Use the current version shown by `!personality`; stale edits are rejected and
-duplicate events do not append twice. Rollback can restore any saved version and
-always appends a new revision. History returns up to five revisions, newest first,
+duplicate events do not append twice. Ask June to reset one trait and she can
+propose the exact `!personality reset` confirmation. Reset accepts one `trait`:
+`tone` (default `warm`), `verbosity` (`balanced`), `humor` (`subtle`), or `curiosity`
+(`occasional`). It preserves all other current traits and appends a revision,
+even if that trait is already at its default; it never clears history. Rollback
+can restore any saved version and always appends a new revision.
+
+History returns up to five revisions, newest first,
 with explanations and a next command when older revisions exist. Follow
 `!personality history BEFORE_VERSION` with the supplied saved revision number
 to read strictly older revisions. The cursor is a stable revision ID, not an

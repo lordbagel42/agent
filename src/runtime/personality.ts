@@ -47,7 +47,7 @@ export const defaultGlobalPersonality: GlobalPersonality = {
   },
 };
 
-export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
+export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Reset just one named trait with !personality reset {"expectedVersion":VERSION,"trait":"humor","explanation":"Restore default humor","publish":true}. Defaults are tone=warm, verbosity=balanced, humor=subtle, curiosity=occasional. Reset preserves other traits and appends a revision without clearing history; propose this command, not a whole-profile rollback, when the owner asks to reset one trait. Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
 
 export function isPersonalityCommand(text: string): boolean {
   return /^!personality(?:\s|$)/.test(text.trim());
@@ -141,6 +141,10 @@ const reviseSchema = z.strictObject({
 const rollbackSchema = z.strictObject({
   ...commandFields,
   targetVersion: z.number().int().nonnegative(),
+});
+const resetSchema = z.strictObject({
+  ...commandFields,
+  trait: globalStyleSchema.keyof(),
 });
 
 /** One actor per owner, shared by ALL surfaces. Its actions are host-only APIs;
@@ -238,7 +242,7 @@ export function createPersonalityActor(
           await c.saveState({ immediate: true });
           return `Personality revisions, newest first (up to 5; explanations are owner-private; version 0 is the initial style):\n${history.join("\n\n") || "No earlier revisions."}\nCurrent version: ${head.version}. Rollback appends a revision, never erases history.\n${next}`;
         }
-        const match = input.match(/^(revise|rollback)\s+([\s\S]+)$/);
+        const match = input.match(/^(revise|rollback|reset)\s+([\s\S]+)$/);
         if (!match) return personalityHelp;
         let value: unknown;
         try {
@@ -266,11 +270,15 @@ export function createPersonalityActor(
           match[1] === "revise" ? reviseSchema.safeParse(value) : undefined;
         const rollback =
           match[1] === "rollback" ? rollbackSchema.safeParse(value) : undefined;
+        const reset =
+          match[1] === "reset" ? resetSchema.safeParse(value) : undefined;
         const command = revise?.success
           ? revise.data
           : rollback?.success
             ? rollback.data
-            : undefined;
+            : reset?.success
+              ? reset.data
+              : undefined;
         if (!command)
           return `Invalid personality revision.\n${personalityHelp}`;
         if (command.expectedVersion !== head.version)
@@ -287,7 +295,13 @@ export function createPersonalityActor(
         const style = globalStyleSchema.parse(
           revise?.success
             ? { ...head.style, ...revise.data.changes }
-            : restored?.style,
+            : reset?.success
+              ? {
+                  ...head.style,
+                  [reset.data.trait]:
+                    defaultGlobalPersonality.style[reset.data.trait],
+                }
+              : restored?.style,
         );
         // Guard + append are synchronous: concurrent actions cannot both pass
         // the same version. Flush before acknowledging, including duplicate calls.
