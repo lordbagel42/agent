@@ -141,9 +141,11 @@ it("lists only current private candidates without inference, extraction, retenti
     .toBe(3);
   const before = await reflection.status();
   reads = 0;
-  expect(await reflection.listCandidates(scope)).toMatchObject({
+  const listed = await reflection.listCandidates(scope);
+  // Candidate insertion follows scheduler completion, not enqueue order.
+  expect({ ...listed, ids: [...listed.ids].sort() }).toMatchObject({
     status: "ready",
-    ids: ids.slice(0, 2),
+    ids: ids.slice(0, 2).sort(),
     truncated: false,
   });
   expect(reads).toBe(2);

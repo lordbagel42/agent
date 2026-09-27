@@ -128,11 +128,24 @@ The exact authenticated `!reflection list` ordinary message calls it only at sen
 without inference, retention, extraction or enqueue. Errors report unavailable,
 never an empty success. It leaves occupancy and ordinary preemption unchanged.
 
+Settled publications retain their original generation epoch and an immutable
+`publication: {version: 1, expiresAt}` ceiling across later interactions. The
+ceiling covers every original input, including uncited evidence, at execution
+and final validation. Reads cannot expose a publication before its flush ACK;
+late preempted generation never publishes. Retention is bounded to 50 bodies
+and 256 KiB of serialized UTF-8, evicting expired and oldest bodies without
+removing request, invocation or rejection receipts. Candidate format migration
+drops legacy bodies with no provable original expiry cap; only verifiable,
+settled capped records survive, and migration can only shorten their cap.
+Retention does not reauthorize effects: `candidate()` and the current command
+list still require the original epoch, no live work and non-quiet time.
+
 - Before live model work, await `occupancy(turnAttemptId, true)` with a stable,
   owner-wide unique turn/attempt ID. The owner actor derives occupancy from
   durable active IDs, so overlapping conversation actors never read/modify/write
   an absolute count. A first start resets idle age, advances the interaction
-  epoch, invalidates candidates and aborts background work. Duplicate starts are
+  epoch, invalidates candidate effects and aborts background work while retaining
+  bounded published bodies. Duplicate starts are
   inert. After the actual provider/worker settles, await `occupancy(id, false)`
   with the same ID. Duplicate or unmatched finishes cannot release another
   turn; finished IDs remain tombstoned and cannot reopen on replay, even if the
@@ -143,7 +156,7 @@ never an empty success. It leaves occupancy and ordinary preemption unchanged.
 - `trigger` remains a legacy/operator API. Its absolute `liveActive` is a
   separate hold added to ID-based occupancy; a legacy zero cannot clear tracked
   turns. Do not report the same turn through both APIs. Legacy interaction
-  events still reset idle age/epoch and invalidate candidates; idle events do
+  events still reset idle age/epoch and invalidate candidate effects; idle events do
   not. Duplicate event IDs are inert. Older persisted absolute occupancy is
   retained as a legacy hold when first using the ID-based action; clear it only
   after confirming the old live work stopped.

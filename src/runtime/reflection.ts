@@ -78,8 +78,10 @@ export interface ReflectionCandidate {
   hypothesisOnly: boolean;
   decision: Decision;
   createdAt: number;
-  /** Invalidated by a subsequent interaction; never an authorization to send. */
+  /** Generation epoch: later interactions revoke effects, not published review. */
   epoch: number;
+  /** Set only by settled publication or conservative legacy migration. */
+  publication?: { version: 1; expiresAt: number };
 }
 
 export interface ReflectionRuntimeState {
@@ -91,6 +93,8 @@ export interface ReflectionRuntimeState {
    */
   decisionOutcomes?: Record<string, Decision["answer"]>;
   candidates: Record<string, ReflectionCandidate>;
+  /** Separate from the scheduler domain format; absent on legacy actors. */
+  candidateFormatVersion?: 1;
   liveActive: number;
   /** Optional for actors persisted before ID-based occupancy was introduced. */
   liveTurns?: { id: string; active: boolean }[];
@@ -149,7 +153,13 @@ export function createReflectionActor(
    * Without one, preserve the trusted operator's legacy internal-ID API.
    */
   async function readCandidate(
-    c: { readonly state: ReflectionRuntimeState },
+    c: {
+      readonly state: ReflectionRuntimeState;
+      vars: {
+        prepareCandidates: () => Promise<void>;
+        publishingCandidates: Set<string>;
+      };
+    },
     id: string,
     scope?: string,
   ) {
@@ -159,6 +169,7 @@ export function createReflectionActor(
         !/^[a-f0-9]{64}$/.test(id))
     )
       return null;
+    await c.vars.prepareCandidates();
     const candidate =
       scope === undefined
         ? c.state.candidates[id]
@@ -173,6 +184,11 @@ export function createReflectionActor(
     if (!candidate || !request) return null;
     const current = () =>
       c.state.candidates[candidate.id]?.id === candidate.id &&
+      c.state.candidates[candidate.id]?.publication?.version === 1 &&
+      (c.state.candidates[candidate.id]?.publication?.expiresAt ?? 0) >
+        Date.now() &&
+      c.state.invocations[candidate.id] === "settled" &&
+      !c.vars.publishingCandidates.has(candidate.id) &&
       candidate.epoch === c.state.epoch &&
       !c.state.liveActive &&
       !isQuiet(Date.now(), deps.policy.quiet) &&
@@ -197,6 +213,59 @@ export function createReflectionActor(
     return decision.answer === "yes" ? { candidate, evidence, decision } : null;
   }
 
+  const expiresAt = (evidence: Evidence[]) =>
+    Math.min(
+      ...evidence.flatMap((e) => [
+        e.expiresAt,
+        e.observedAt + deps.policy.evidenceMaxAgeMs,
+      ]),
+    );
+
+  // Remove bodies only. Request/invocation/rejection receipts remain authoritative
+  // and prevent eviction or expiry from restarting a previously admitted attempt.
+  function trimCandidates(state: ReflectionRuntimeState): boolean {
+    let changed = false;
+    const remove = (id: string) => {
+      delete state.candidates[id];
+      changed = true;
+    };
+    for (const [id, candidate] of Object.entries(state.candidates)) {
+      if (
+        !candidate ||
+        typeof candidate !== "object" ||
+        candidate.id !== id ||
+        typeof candidate.requestId !== "string" ||
+        typeof candidate.scope !== "string" ||
+        !Number.isSafeInteger(candidate.attempt) ||
+        candidate.attempt < 1 ||
+        !Number.isSafeInteger(candidate.epoch) ||
+        !Number.isFinite(candidate.createdAt) ||
+        typeof candidate.hypothesisOnly !== "boolean" ||
+        !["interaction", "idle", "deep"].includes(candidate.mode) ||
+        !["proposal", "interruption-candidate"].includes(candidate.kind) ||
+        candidate.publication?.version !== 1 ||
+        !Number.isFinite(candidate.publication.expiresAt) ||
+        candidate.publication.expiresAt <= Date.now()
+      )
+        remove(id);
+    }
+    const oldest = Object.entries(state.candidates).sort(
+      ([aId, a], [bId, b]) =>
+        a.createdAt - b.createdAt || aId.localeCompare(bId),
+    );
+    let remaining = oldest.length;
+    for (const [id] of oldest) {
+      if (
+        remaining <= 50 &&
+        Buffer.byteLength(JSON.stringify(state.candidates)) <= 256 * 1024
+      )
+        break;
+      remove(id);
+      remaining--;
+    }
+    return changed;
+  }
+
   return actor({
     state: {
       reflection: initialState(),
@@ -204,6 +273,7 @@ export function createReflectionActor(
       invocations: {},
       decisionOutcomes: {},
       candidates: {},
+      candidateFormatVersion: 1,
       liveActive: 0,
       liveTurns: [],
       legacyLiveActive: 0,
@@ -218,15 +288,106 @@ export function createReflectionActor(
       persist: () => Promise<void>;
       replaceReflection: (reflection: ReflectionState) => void;
       active: Map<string, AbortController>;
-    } => ({
-      persist: () => c.saveState({ immediate: true }),
-      replaceReflection: (reflection) => {
-        // Domain spreads retain proxied children. Only Rivet's whole-state setter
-        // unwraps them; workflow steps expose state through a getter only.
-        c.state = { ...c.state, reflection };
-      },
-      active: new Map<string, AbortController>(),
-    }),
+      prepareCandidates: () => Promise<void>;
+      publishingCandidates: Set<string>;
+    } => {
+      let prepared: Promise<void> | undefined;
+      return {
+        persist: () => c.saveState({ immediate: true }),
+        replaceReflection: (reflection) => {
+          // Domain spreads retain proxied children. Only Rivet's whole-state setter
+          // unwraps them; workflow steps expose state through a getter only.
+          c.state = { ...c.state, reflection };
+        },
+        active: new Map<string, AbortController>(),
+        publishingCandidates: new Set<string>(),
+        prepareCandidates: () =>
+          (prepared ??= (async () => {
+            if (c.state.candidateFormatVersion === 1) return;
+            if (c.state.candidateFormatVersion !== undefined)
+              throw new Error("Unsupported reflection candidate format");
+            // Old records did not capture their original expiry policy. Current
+            // retrieval cannot prove that cap after a TTL increase. Drop those
+            // bodies, retaining receipts; only capped partial migrations qualify.
+            trimCandidates(c.state);
+            const epoch = c.state.epoch;
+            const signal = AbortSignal.timeout(Math.min(deps.timeoutMs, 5000));
+            for (const id of Object.keys(c.state.candidates)) {
+              const candidate = c.state.candidates[id];
+              const request = c.state.reflection.requests.find(
+                (r) => r.id === candidate?.requestId,
+              );
+              const bound = () => {
+                const current = c.state.candidates[id];
+                const latest = c.state.reflection.requests.find(
+                  (r) => r.id === request?.id,
+                );
+                return (
+                  current &&
+                  request &&
+                  latest &&
+                  current.id === id &&
+                  id === JSON.stringify([request.id, current.attempt]) &&
+                  current.scope === request.scope &&
+                  current.epoch === epoch &&
+                  c.state.epoch === epoch &&
+                  Number.isSafeInteger(current.attempt) &&
+                  current.attempt > 0 &&
+                  current.attempt <= latest.attempts &&
+                  c.state.invocations[id] === "settled" &&
+                  !["cancelled", "cancelling"].includes(latest.status) &&
+                  current.kind ===
+                    (request.kind === "curiosity"
+                      ? "interruption-candidate"
+                      : "proposal") &&
+                  ["interaction", "idle", "deep"].includes(current.mode) &&
+                  Number.isFinite(current.createdAt)
+                );
+              };
+              const evidence =
+                bound() && request
+                  ? await retrieve(request, signal).catch(() => null)
+                  : null;
+              const current = c.state.candidates[id];
+              if (
+                !evidence ||
+                !bound() ||
+                !current?.publication ||
+                current.publication.expiresAt <= Date.now() ||
+                validateDecision(current.decision, {
+                  scope: current.scope,
+                  question: "novelty",
+                  prompt: "Validate legacy publication",
+                  now: Date.now(),
+                  evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
+                  evidence,
+                }).answer !== "yes" ||
+                current.hypothesisOnly !==
+                  !evidence.some(
+                    (e) =>
+                      e.source !== "dream" &&
+                      current.decision.evidenceIds.includes(e.id),
+                  ) ||
+                (current.kind === "interruption-candidate" &&
+                  current.hypothesisOnly)
+              ) {
+                delete c.state.candidates[id];
+                continue;
+              }
+              current.publication = {
+                version: 1,
+                expiresAt: Math.min(
+                  current.publication.expiresAt,
+                  expiresAt(evidence),
+                ),
+              };
+            }
+            c.state.candidateFormatVersion = 1;
+            trimCandidates(c.state);
+            await c.saveState({ immediate: true });
+          })()),
+      };
+    },
     queues: { wake: queue<{ wake: true }>() },
     actions: {
       /** June's explicit owner-private request. No model-controlled scope,
@@ -304,6 +465,8 @@ export function createReflectionActor(
           throw new Error("Wrong reflection owner");
         if (!id.trim() || typeof active !== "boolean")
           throw new Error("Invalid reflection occupancy");
+        await c.vars.prepareCandidates();
+        trimCandidates(c.state);
         c.state.legacyLiveActive ??= c.state.liveActive;
         c.state.liveTurns ??= [];
         const turns = c.state.liveTurns;
@@ -322,7 +485,6 @@ export function createReflectionActor(
         if (active) {
           c.state.lastInteractionAt = Date.now();
           c.state.epoch++;
-          c.state.candidates = {};
         }
         await c.vars.persist();
         if (active)
@@ -343,6 +505,8 @@ export function createReflectionActor(
           event.liveActive < 0
         )
           throw new Error("Invalid reflection trigger");
+        await c.vars.prepareCandidates();
+        trimCandidates(c.state);
         if (c.state.triggerIds.includes(event.id)) return;
         c.state.triggerIds.push(event.id);
         c.state.legacyLiveActive = event.liveActive;
@@ -352,7 +516,6 @@ export function createReflectionActor(
         if (event.type === "interaction") {
           c.state.lastInteractionAt = Date.now();
           c.state.epoch++;
-          c.state.candidates = {};
         }
         await c.vars.persist();
         if (event.liveActive > 0 || event.type === "interaction")
@@ -395,6 +558,7 @@ export function createReflectionActor(
           scope !== JSON.stringify(["private", deps.ownerId])
         )
           throw new Error("Private reflection review required");
+        await c.vars.prepareCandidates();
         const epoch = c.state.epoch;
         const blocked = (): ReflectionCandidateList["status"] | undefined =>
           c.state.liveActive > 0
@@ -419,7 +583,10 @@ export function createReflectionActor(
           if (
             !candidate ||
             candidate.scope !== scope ||
-            candidate.epoch !== epoch
+            candidate.epoch !== epoch ||
+            candidate.publication?.version !== 1 ||
+            candidate.publication.expiresAt <= Date.now() ||
+            c.vars.publishingCandidates.has(id)
           )
             continue;
           if (selected.length === 20) {
@@ -452,6 +619,8 @@ export function createReflectionActor(
         const current = checked.flatMap((entry) =>
           entry &&
           c.state.candidates[entry.candidate.id] === entry.candidate &&
+          !c.vars.publishingCandidates.has(entry.candidate.id) &&
+          (entry.candidate.publication?.expiresAt ?? 0) > checkedAt &&
           entry.evidence.every((e) =>
             freshEvidence(e, scope, checkedAt, deps.policy.evidenceMaxAgeMs),
           )
@@ -548,6 +717,8 @@ export function createReflectionActor(
               run: async (step) => {
                 if (step.key.length !== 1 || step.key[0] !== deps.ownerId)
                   return;
+                await step.vars.prepareCandidates();
+                if (trimCandidates(step.state)) await step.vars.persist();
                 // A started marker with no local worker means an interrupted step.
                 // Never repeat a possibly completed external generation on replay.
                 let recovered = false;
@@ -697,6 +868,7 @@ export function createReflectionActor(
                         (!hypothesisOnly &&
                           step.state.interruptionEpoch !== epoch))
                     ) {
+                      step.vars.publishingCandidates.add(invocation);
                       step.state.candidates[invocation] = {
                         id: invocation,
                         requestId: request.id,
@@ -710,6 +882,13 @@ export function createReflectionActor(
                         decision,
                         createdAt: Date.now(),
                         epoch,
+                        publication: {
+                          version: 1,
+                          expiresAt: Math.min(
+                            expiresAt(executionEvidence),
+                            expiresAt(current),
+                          ),
+                        },
                       };
                       if (interruption) step.state.interruptionEpoch = epoch;
                     }
@@ -736,7 +915,14 @@ export function createReflectionActor(
                     );
                     step.state.invocations[invocation] = "settled";
                   }
+                  trimCandidates(step.state);
                   await step.vars.persist();
+                  // Publication linearizes at the final checks + synchronous
+                  // candidate/settled assignment. Later occupancy revokes effects,
+                  // not that publication; the flush ACK only gates read visibility.
+                  // Failed flushes remain hidden for this process. Recovery reads
+                  // only the candidate plus matching receipt that reached disk.
+                  step.vars.publishingCandidates.delete(invocation);
                 }
               },
             });
