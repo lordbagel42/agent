@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { isAbsolute } from "node:path";
 import type { BrokerOptions, ToolAction } from "../tools/broker.js";
+import type { BrowserOperation } from "../tools/browser.js";
 
 export type Credential =
   | Readonly<{ bearerToken: string }>
@@ -41,6 +42,8 @@ export type BitwardenCredentialResolver = BrokerOptions["resolveCredential"] & {
     configuredBindings: number;
     bindings: { binding: number; field: BitwardenBinding["field"] }[];
   };
+  /** Pair a host-validated browser recipe with this resolver, without vault access. */
+  assertBrowserBinding(recipe: BrowserOperation): void;
 };
 
 const runCommand: BitwardenCommand = (executable, args, options) =>
@@ -155,5 +158,20 @@ export function createBitwardenCredentialResolver(
         field: binding.field,
       })),
     }),
+    assertBrowserBinding(recipe: BrowserOperation): void {
+      const binding = bindings.find(
+        (candidate) => scopeKey(candidate) === scopeKey(recipe),
+      );
+      const logins =
+        recipe.steps?.filter((step) => step.kind === "login").length ?? 0;
+      const bearer = recipe.requests.some((request) => request.credential);
+      if (
+        !binding ||
+        (binding.field === "login"
+          ? logins !== 1 || bearer
+          : logins !== 0 || !bearer)
+      )
+        throw new Error("invalid_credential_configuration");
+    },
   });
 }

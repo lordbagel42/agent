@@ -96,6 +96,8 @@ test("rejects scope/argument widening before network access and never returns re
   const credential = { bearerToken: "local-fixture-secret" };
   for (const invalid of [
     { ...action, origin: `${origin}/` },
+    { ...action, origin: origin.replace("127.0.0.1", "localhost") },
+    { ...action, origin: "https://127.0.0.1.evil.example" },
     { ...action, account: "other" },
     { ...action, item: "other" },
     { ...action, arguments: { operation: "check", url: `${origin}/extra` } },
@@ -130,11 +132,11 @@ test("blocks redirect, cross-origin subresources and popup requests before they 
     },
   );
   let html = "";
-  let redirect = true;
+  let redirect: string | undefined = `${foreign}/`;
   const origin = await server((request, response) => {
     if (request.url === "/secondary") escaped++;
     if (redirect) {
-      response.writeHead(302, { location: `${foreign}/` });
+      response.writeHead(302, { location: redirect });
       response.end();
     } else response.end(html);
   });
@@ -145,10 +147,18 @@ test("blocks redirect, cross-origin subresources and popup requests before they 
     ],
   });
   const credential = { bearerToken: "never-cross-origins" };
-  await expect(adapter.execute(action, credential)).rejects.toThrow(
-    "browser_action_failed",
-  );
-  redirect = false;
+  for (const destination of [
+    `${foreign}/`, // Same hostname, different port.
+    `${origin}/secondary`, // Even a configured same-origin request cannot redirect.
+    `${origin.replace("127.0.0.1", "localhost")}/secondary`,
+    "https://127.0.0.1.evil.example/",
+  ]) {
+    redirect = destination;
+    await expect(adapter.execute(action, credential)).rejects.toThrow(
+      "browser_action_failed",
+    );
+  }
+  redirect = undefined;
   for (const attempt of [
     `<img src="${foreign}/secret">`,
     `<script>window.open('${foreign}/secret')</script>`,

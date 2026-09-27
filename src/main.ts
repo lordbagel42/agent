@@ -26,6 +26,8 @@ import type {
   CodingRuntime,
   ModelProvider,
 } from "./core/contracts.js";
+import { createBitwardenCredentialResolver } from "./credentials/bitwarden.js";
+import { createBitwardenFileSession } from "./credentials/session.js";
 import {
   createDeploymentReader,
   createReleaseTool,
@@ -145,6 +147,20 @@ async function main() {
         ownerId: config.owner.id,
       })
     : undefined;
+  startupStage = "private credential bindings";
+  let credentials:
+    | ReturnType<typeof createBitwardenCredentialResolver>
+    | undefined;
+  if (config.credentials) {
+    await privateDirectory(config.credentials.appDataDir);
+    await privateDirectory(dirname(config.credentials.sessionFile));
+    credentials = createBitwardenCredentialResolver({
+      executable: config.credentials.executable,
+      appDataDir: config.credentials.appDataDir,
+      bindings: config.credentials.bindings,
+      session: createBitwardenFileSession(config.credentials.sessionFile),
+    });
+  }
   let coding: Dependencies["coding"];
   const isolation: NonNullable<Dependencies["coding"]>["isolation"] = {};
   if (config.coding.enabled) {
@@ -774,6 +790,7 @@ async function main() {
       memory,
       imports,
       selections,
+      credentials: credentials ? { inspect: credentials.inspect } : undefined,
       capabilities: () =>
         [
           capabilities

@@ -50,14 +50,65 @@ session is available, and never includes operator strings, vault IDs, paths,
 credential values, auth tokens or vault item bodies. Reading or modifying a
 returned snapshot cannot change resolver bindings.
 
-Trusted host wiring passes `{inspect: resolver.inspect}` as `credentials` to
-`createInspectionReader`, using the same resolver as the broker. Without that
-dependency June reports the resolver **absent**; a configured resolver reports
+Current startup passes only `{inspect: resolver.inspect}` as `credentials` to
+`createInspectionReader`. The anonymous browser broker never receives this
+resolver; an explicitly approved credentialed integration must reuse it rather
+than creating another binding source. Without the inspection dependency June
+reports the resolver **absent**; a configured resolver reports
 its binding count, including zero. Vault authentication and item availability
 remain **unverified**, not inferred from configuration or earlier resolution.
 Inspection never unlocks, resolves, authorizes, enables, or tests credentials.
 The default startup has no Bitwarden resolver and therefore reports absent;
 this slice does not provision a profile/session or activate vault access.
+
+## Opt-in host configuration
+
+The optional top-level `credentials` configuration contains only host paths and
+explicit bindings, never a session key, password, or model-selected vault search:
+
+```json
+{
+  "credentials": {
+    "executable": "/opt/bitwarden/bw",
+    "appDataDir": "/var/lib/june-vault/profile",
+    "sessionFile": "/run/june-vault/session.json",
+    "bindings": [{
+      "account": "mail",
+      "item": "login",
+      "origin": "https://mail.example",
+      "vaultItemId": "12345678-1234-1234-1234-123456789abc",
+      "field": "login"
+    }]
+  }
+}
+```
+
+Absent configuration creates no resolver. Configuring it does not unlock a vault
+or approve a browser operation. The host requires canonical private owner-only
+profile and lease-parent directories outside repositories. Keep the executable,
+profile and lease outside model-writable storage; same-account native coding is
+not a secret isolation boundary. Use private tmpfs for the lease when available.
+
+The owner separately provisions a mode-0600 regular JSON lease file containing
+`{key, expiresAt}` (Unix milliseconds); the resolver requires at most 60 seconds
+remaining. It reads that file only after an exact bound scope is requested, not
+at startup or during June's `inspection: "credentials"`. Reads reject symlinks,
+hard links, nonregular/group-accessible files, oversized or malformed content.
+There is no session cache, renewal, unlock automation, or environment variable
+handoff to the model. A missing/expired lease yields only `credential_unavailable`.
+Inspection reports configured metadata with authentication and item availability
+still **unverified**; it is not evidence that an operation is permitted or usable.
+
+Credentialed browser integration must call `resolver.assertBrowserBinding(recipe)`
+before resolving: account and item aliases, canonical origin and credential kind
+must all match the same validated resolver snapshot. Anonymous or mixed-credential
+recipes cannot use this check to fall back to a vault credential. Account aliases
+are explicit owner mappings to exact item UUIDs, not proof of the website's logged-in
+identity or the vault's signed-in account. Hostnames, ports and schemes are never
+approximately matched: subdomains, lookalikes, alternate ports and userinfo URLs
+do not inherit a binding. All browser redirects, even same-origin, remain denied.
+The browser integration separately owns exact-operation approval and isolated
+execution; this configuration alone exposes no secret-reading tool to June.
 
 ## Trusted host setup
 

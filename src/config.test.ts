@@ -44,6 +44,7 @@ describe("configuration boundary", () => {
       readOperations: [],
       timeoutMs: 15000,
     });
+    expect(config.credentials).toBeUndefined();
     expect(config.owner.identities).toEqual([
       { channel: "slack", accountId: "T1", senderId: "U08R4KDL6UF" },
     ]);
@@ -126,6 +127,42 @@ describe("configuration boundary", () => {
       "https://june.example?token=secret",
     ])
       expect(() => parseConfig({ ...input, console: { origin } })).toThrow();
+  });
+  it("accepts only explicit vault aliases, canonical origins and private lease paths, never inline secrets", () => {
+    const binding = {
+      account: "mail",
+      item: "login",
+      origin: "https://mail.example:8443",
+      vaultItemId: "12345678-1234-1234-1234-123456789abc",
+      field: "login",
+    };
+    const credentials = {
+      executable: "/opt/bitwarden/bw",
+      appDataDir: "/private/bitwarden",
+      sessionFile: "/private/leases/session.json",
+      bindings: [binding],
+    };
+    expect(parseConfig({ ...input, credentials }).credentials).toEqual(
+      credentials,
+    );
+    for (const invalid of [
+      { ...credentials, sessionFile: "./lease.json" },
+      { ...credentials, sessionEnv: "BW_SESSION" },
+      { ...credentials, key: "synthetic-secret" },
+      { ...credentials, bindings: [{ ...binding, password: "synthetic" }] },
+      ...[
+        "http://mail.example",
+        "https://mail.example/",
+        "https://mail.example:443",
+        "https://user:secret@mail.example",
+      ].map((origin) => ({
+        ...credentials,
+        bindings: [{ ...binding, origin }],
+      })),
+    ])
+      expect(() => parseConfig({ ...input, credentials: invalid })).toThrow(
+        /^Invalid June configuration/,
+      );
   });
   it("requires explicit runtime selection and rejects credential or permission shortcuts", () => {
     const coding = {

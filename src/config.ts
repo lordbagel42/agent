@@ -85,6 +85,32 @@ const schema = z
       })
       .optional(),
     capabilities: z.strictObject({ directory: absolutePath }).optional(),
+    credentials: z
+      .strictObject({
+        executable: absolutePath,
+        appDataDir: absolutePath,
+        sessionFile: absolutePath,
+        bindings: z
+          .array(
+            z.strictObject({
+              account: name,
+              item: name,
+              origin: z.url().refine((value) => {
+                const url = new URL(value);
+                return url.protocol === "https:" && url.origin === value;
+              }, "Use an exact canonical HTTPS origin"),
+              vaultItemId: z
+                .string()
+                .regex(
+                  /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu,
+                ),
+              field: z.enum(["bearer", "login"]),
+            }),
+          )
+          .min(1)
+          .max(64),
+      })
+      .optional(),
     mcp: z
       .strictObject({
         directory: absolutePath,
