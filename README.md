@@ -881,6 +881,29 @@ days. Confidence is not approval authority. At most 20 unexpired suggestions per
 audience are staged; identical content deduplicates. Receipts contain only the
 opaque suggestion ID and target version, not rationale or source text.
 
+With reflection also configured, June can use `reflectionPersonalitySuggestion`
+with `{candidateId, expectedVersion, changes}` in an owner-private turn, with
+empty text and no other action. The opaque candidate ID comes from private
+reflection review. The host supplies the original decision citations and all
+request sources; generated rationale is a hypothesis, never new evidence.
+Candidates without a reported confidence cannot stage; the host never invents
+one. Confidence remains a self-report, not approval authority.
+Each candidate binds to one encrypted pending payload and exact profile head.
+An identical retry returns the same suggestion; changing its payload or target
+version fails instead of silently retargeting it. Its deadline cannot exceed the
+original publication or source expiry. Candidate rejection blocks pending
+incorporation without undoing earlier owner approval; forgetting and expiry still
+remove support for evidence-grounded style fields.
+
+Staging releases only this settled inference's occupancy, then requests fresh
+reflection admission. The current operation epoch must remain unchanged across
+that admission's awaits, with no live work or quiet-hours block. The personality
+actor then checks the exact current profile head and synchronously validates
+all sources/rejection before the encrypted write. This is **admission-time
+eligibility**, not a distributed transaction across actors: a new interaction
+after admission may overlap the already-admitted inert pending write. Review
+alone grants no staging authority; staging never applies or approves a profile.
+
 `CuratedPersonalityStore.pendingGlobalProposal(scope,id,now)` synchronously
 revalidates provenance, expiry and deletion; `pendingGlobalProposals(scope,limit,
 now,excludedIds)` excludes decided IDs before applying its 1–20 result bound.
@@ -889,6 +912,11 @@ actor owns later accept/reject decisions; the payload's `pending` marker only
 means staged, never approved. A changed global head must be reviewed again;
 suggestions never retarget automatically. Deletion hides affected suggestions,
 but old encrypted snapshots/backups are not physically purged by this check.
+For proposal IDs already recorded on published actor revisions,
+`publishedGlobalProposalExpiry(scope,id,now)` validates source provenance,
+forgetting and expiry without treating later reflection rejection as a rollback.
+That read returns only a deadline, never approval authority or a private payload;
+new approval and pending reads always retain the rejection check.
 
 Opt-in `reflection.juryEnabled: true` exposes an explicit owner-private `jury`
 directive with empty text and no other actions: `{question: "relevance" |

@@ -470,6 +470,10 @@ export function createJuneRegistry(deps: Dependencies) {
           // A parked inbox can use the jury on its first new turn; journals
           // already processing a turn retain the original capability plan.
           const juryVersion = await loop.getVersion("jury-request", 2);
+          const reflectionPersonalityVersion = await loop.getVersion(
+            "reflection-personality",
+            2,
+          );
           const body = message.body;
           // Old actors can be asleep in a pre-v9 queue wait. A wakeup could
           // never have entered those old journals, so its new path is safe.
@@ -766,6 +770,7 @@ export function createJuneRegistry(deps: Dependencies) {
               extraction: boolean;
               reflection: boolean;
               reflectionMemory?: boolean;
+              reflectionPersonality?: boolean;
               workspaces: string[];
               search: boolean;
               slackHistory?: boolean;
@@ -798,6 +803,15 @@ export function createJuneRegistry(deps: Dependencies) {
                       scope.private &&
                       !!deps.memory &&
                       !!deps.reflection,
+                    ...(reflectionPersonalityVersion >= 2
+                      ? {
+                          reflectionPersonality:
+                            ownerTurn &&
+                            scope.private &&
+                            !!deps.reflection &&
+                            !!deps.memory?.personality,
+                        }
+                      : {}),
                     jev: ownerTurn && scope.private && !!deps.jev,
                     ...(juryVersion >= 2
                       ? {
@@ -2009,6 +2023,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                   (event.address.channel !== "slack" ||
                                     event.metadata?.channelType === "im") &&
                                   !!deps.memory?.personality,
+                                reflectionPersonalitySuggestionAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  !!plan.reflectionPersonality,
                                 jevObservationAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2988,6 +3006,77 @@ export function createJuneRegistry(deps: Dependencies) {
                                 } catch {
                                   text =
                                     "Pending memory claims are unavailable; no review or other action was taken.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (
+                              generated.reflectionPersonalitySuggestion !==
+                              undefined
+                            ) {
+                              let text =
+                                "Reflection personality suggestion not staged. Fresh owner-private admission, settled inference and a current profile are required; nothing was applied.";
+                              const allowed = () =>
+                                modelRequest.reflectionPersonalitySuggestionAvailable ===
+                                  true &&
+                                ownerTurn &&
+                                scope.private &&
+                                body.type === "event" &&
+                                !signal.aborted &&
+                                valid(step.state);
+                              if (allowed() && reflection) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  ).reflectionPersonalitySuggestion;
+                                  if (
+                                    checked &&
+                                    checked.expectedVersion ===
+                                      globalPersonality?.version
+                                  ) {
+                                    // The raw provider has returned. Release only
+                                    // this inference, never another active hold.
+                                    await reflection.occupancy(
+                                      invocation,
+                                      false,
+                                    );
+                                    if (allowed()) {
+                                      const admission =
+                                        await reflection.stageAdmission(
+                                          audience,
+                                          checked.candidateId,
+                                        );
+                                      if (admission && allowed())
+                                        text = await step
+                                          .client<JuneClientRegistry>()
+                                          .personality.getOrCreate([
+                                            deps.owner.id,
+                                          ])
+                                          .stage(
+                                            event,
+                                            {
+                                              expectedVersion:
+                                                checked.expectedVersion,
+                                              changes: checked.changes,
+                                              evidenceIds:
+                                                admission.evidenceIds,
+                                              explanation:
+                                                admission.explanation,
+                                              confidence: admission.confidence,
+                                            },
+                                            admission.binding,
+                                          );
+                                    }
+                                  }
+                                } catch {
+                                  text =
+                                    "Could not confirm whether the private personality suggestion was staged. Nothing was applied.";
                                 }
                               }
                               generated = {

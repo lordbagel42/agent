@@ -960,6 +960,37 @@ export function createReflectionActor(
           ? { ...read.candidate, evidenceIds: read.evidence.map((e) => e.id) }
           : null;
       },
+      /** Admit inert pending staging against the operation's current epoch,
+       * never the historical publication's generation. This is not a lock
+       * through the destination actor's later synchronous store write.
+       */
+      stageAdmission: async (c, scope: string, id: string) => {
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId) return null;
+        const epoch = c.state.epoch;
+        const eligible = () =>
+          c.state.epoch === epoch &&
+          !c.state.liveActive &&
+          !isQuiet(Date.now(), deps.policy.quiet);
+        if (!eligible()) return null;
+        const read = await reviewCandidate(c, id, scope);
+        if (
+          !read?.isCurrent() ||
+          !eligible() ||
+          !read.candidate.publication ||
+          read.decision.confidence === undefined
+        )
+          return null;
+        return {
+          evidenceIds: read.decision.evidenceIds,
+          explanation: read.decision.rationale.trim().slice(0, 240),
+          confidence: read.decision.confidence,
+          binding: {
+            candidateId: id,
+            sourceIds: read.evidence.map((item) => item.id),
+            expiresAt: read.candidate.publication.expiresAt,
+          },
+        };
+      },
       /** Bounded historical metadata for model review, never a readiness grant. */
       reviewCandidates: async (c, scope: string) => {
         if (

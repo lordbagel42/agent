@@ -12,7 +12,10 @@ import {
 } from "../core/rivet.js";
 import { slackHistorySchema } from "../core/slack-history.js";
 import { socialActionSchema } from "../core/social.js";
-import { globalProposalInputSchema } from "../reflection/global-proposal.js";
+import {
+  globalProposalInputSchema,
+  reflectionPersonalitySuggestionSchema,
+} from "../reflection/global-proposal.js";
 import { juryRequestSchema } from "../reflection/jury.js";
 import {
   globalStyleSchema,
@@ -247,6 +250,8 @@ const companionReplySchema = z.strictObject({
     .optional(),
   pendingMemory: z.literal(true).optional(),
   personalitySuggestion: globalProposalInputSchema.optional(),
+  reflectionPersonalitySuggestion:
+    reflectionPersonalitySuggestionSchema.optional(),
   jevObservation: z.boolean().optional(),
   reflectionRequest: z
     .strictObject({
@@ -306,6 +311,7 @@ export type ReplyCapabilities = Pick<
   | "recallAvailable"
   | "pendingMemoryAvailable"
   | "personalitySuggestionAvailable"
+  | "reflectionPersonalitySuggestionAvailable"
   | "jevObservationAvailable"
   | "reflectionRequestAvailable"
   | "juryAvailable"
@@ -354,6 +360,7 @@ export function replyJsonSchema(
     recallAvailable,
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
+    reflectionPersonalitySuggestionAvailable,
     jevObservationAvailable,
     reflectionRequestAvailable,
     juryAvailable,
@@ -927,6 +934,46 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(reflectionPersonalitySuggestionAvailable
+        ? {
+            reflectionPersonalitySuggestion: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                candidateId: {
+                  type: "string",
+                  description:
+                    "Exact 64-character lowercase hexadecimal candidate ID from private reflection review; never invent an ID.",
+                },
+                expectedVersion: {
+                  type: "integer",
+                  description: "Exact supplied current global profile version.",
+                },
+                changes: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: Object.fromEntries(
+                    Object.entries(globalStyleSchema.shape).map(
+                      ([name, schema]) => [
+                        name,
+                        {
+                          type: ["string", "null"],
+                          enum: [...schema.options, null],
+                        },
+                      ],
+                    ),
+                  ),
+                  required: Object.keys(globalStyleSchema.shape),
+                  description:
+                    "Set unchanged fields to null; change at least one style field.",
+                },
+              },
+              required: ["candidateId", "expectedVersion", "changes"],
+              description:
+                "Stage one private personality suggestion from a revalidated reflection publication. The host supplies original sources and private rationale. Never approves or applies. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(reflectionRequestAvailable
         ? {
             reflectionRequest: {
@@ -1264,6 +1311,9 @@ export function replyJsonSchema(
       ...(recallAvailable ? ["recall"] : []),
       ...(pendingMemoryAvailable ? ["pendingMemory"] : []),
       ...(personalitySuggestionAvailable ? ["personalitySuggestion"] : []),
+      ...(reflectionPersonalitySuggestionAvailable
+        ? ["reflectionPersonalitySuggestion"]
+        : []),
       ...(jevObservationAvailable ? ["jevObservation"] : []),
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
       ...(juryAvailable ? ["jury"] : []),
@@ -1458,6 +1508,7 @@ export function parseReply(
     recallAvailable,
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
+    reflectionPersonalitySuggestionAvailable,
     jevObservationAvailable,
     reflectionRequestAvailable,
     juryAvailable,
@@ -1509,6 +1560,7 @@ export function parseReply(
     "recall",
     "pendingMemory",
     "personalitySuggestion",
+    "reflectionPersonalitySuggestion",
     "jevObservation",
     "reflectionRequest",
     "jury",
@@ -1567,6 +1619,8 @@ export function parseReply(
     (reply.pendingMemory !== undefined && !pendingMemoryAvailable) ||
     (reply.personalitySuggestion !== undefined &&
       !personalitySuggestionAvailable) ||
+    (reply.reflectionPersonalitySuggestion !== undefined &&
+      !reflectionPersonalitySuggestionAvailable) ||
     (reply.jevObservation !== undefined && !jevObservationAvailable) ||
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
     (reply.jury !== undefined && !juryAvailable) ||
@@ -1607,6 +1661,7 @@ export function parseReply(
     Number(reply.recall !== undefined) +
     Number(reply.pendingMemory === true) +
     Number(reply.personalitySuggestion !== undefined) +
+    Number(reply.reflectionPersonalitySuggestion !== undefined) +
     Number(reply.jevObservation === true) +
     Number(reply.reflectionRequest !== undefined) +
     Number(reply.jury !== undefined) +
@@ -1642,6 +1697,7 @@ export function parseReply(
       reply.recall !== undefined ||
       reply.pendingMemory === true ||
       reply.personalitySuggestion !== undefined ||
+      reply.reflectionPersonalitySuggestion !== undefined ||
       reply.jevObservation === true ||
       reply.reflectionRequest !== undefined ||
       reply.jury !== undefined ||

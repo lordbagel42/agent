@@ -220,6 +220,8 @@ it("requires exact owner identity, private audience and enabled memory rather th
     capabilities: {
       memoryAvailable: true,
       latencyAvailable: true,
+      personalitySuggestionAvailable: true,
+      reflectionPersonalitySuggestionAvailable: true,
       workspaces: ["permitted"],
     },
     memory: {
@@ -235,6 +237,7 @@ it("requires exact owner identity, private audience and enabled memory rather th
   expect(allowed.system).toContain('"version":9,"style":{"tone":"dry"');
   expect(allowed.workspaces).toEqual(["permitted"]);
   expect(allowed.latencyAvailable).toBe(true);
+  expect(allowed.reflectionPersonalitySuggestionAvailable).toBe(true);
   for (const override of [
     { capabilities: {} },
     {
@@ -257,6 +260,10 @@ it("requires exact owner identity, private audience and enabled memory rather th
     // private diagnostics grant. A disabled capability or group turn removes it.
     expect(
       buildModelRequest({ ...privateInput, ...override }).latencyAvailable,
+    ).toBe("memory" in override && !("event" in override));
+    expect(
+      buildModelRequest({ ...privateInput, ...override })
+        .reflectionPersonalitySuggestionAvailable,
     ).toBe("memory" in override && !("event" in override));
     expect(
       buildModelRequest({ ...privateInput, ...override }).system,

@@ -266,6 +266,8 @@ export interface CompanionReply {
   pendingMemory?: true;
   /** Privately stage evidence-grounded style only; never approve or publish. */
   personalitySuggestion?: import("../reflection/global-proposal.js").GlobalProposalInput;
+  /** Stage from one retained reflection publication, never its generated text as evidence. */
+  reflectionPersonalitySuggestion?: import("../reflection/global-proposal.js").ReflectionPersonalitySuggestion;
   /** Observe only the current owner-private message with a fixed Jev rubric. */
   jevObservation?: boolean;
   /** Request bounded owner-private reflection, not immediate evaluation or delivery. */
@@ -335,6 +337,7 @@ export interface ModelRequest {
   recallAvailable?: boolean;
   pendingMemoryAvailable?: boolean;
   personalitySuggestionAvailable?: boolean;
+  reflectionPersonalitySuggestionAvailable?: boolean;
   jevObservationAvailable?: boolean;
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;

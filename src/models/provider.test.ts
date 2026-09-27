@@ -578,6 +578,80 @@ describe("createModelProvider", () => {
     });
   });
 
+  it("requires a capability and host-owned evidence for reflection personality staging", async () => {
+    const suggestion = {
+      candidateId: "a".repeat(64),
+      expectedVersion: 3,
+      changes: { tone: "dry" },
+    };
+    const reply = { text: "", reflectionPersonalitySuggestion: suggestion };
+    const available = {
+      ...request,
+      personalitySuggestionAvailable: true,
+      reflectionPersonalitySuggestionAvailable: true,
+    };
+    expect(replyJsonSchema([], request).properties).not.toHaveProperty(
+      "reflectionPersonalitySuggestion",
+    );
+    expect(
+      replyJsonSchema([], available).properties.reflectionPersonalitySuggestion,
+    ).toMatchObject({
+      additionalProperties: false,
+      required: ["candidateId", "expectedVersion", "changes"],
+    });
+    await expect(
+      openAIProviderReturning(reply).reply(available),
+    ).resolves.toEqual(reply);
+    await expect(
+      openAIProviderReturning(reply).reply(request),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+    for (const invalid of [
+      { ...reply, text: "Applied" },
+      { ...reply, reaction: "heart" },
+      {
+        ...reply,
+        personalitySuggestion: {
+          expectedVersion: 3,
+          changes: { tone: "dry" },
+          evidenceIds: ["original"],
+          explanation: "Private rationale",
+          confidence: 0.8,
+        },
+      },
+      ...[
+        { evidenceIds: ["invented"] },
+        { sourceIds: ["invented"] },
+        { expiresAt: 123456 },
+        { explanation: "Injected rationale" },
+        { confidence: 0.8 },
+      ].map((fields) => ({
+        ...reply,
+        reflectionPersonalitySuggestion: { ...suggestion, ...fields },
+      })),
+      {
+        ...reply,
+        reflectionPersonalitySuggestion: { ...suggestion, expectedVersion: -1 },
+      },
+      {
+        ...reply,
+        reflectionPersonalitySuggestion: {
+          ...suggestion,
+          candidateId: "guessed",
+        },
+      },
+      {
+        ...reply,
+        reflectionPersonalitySuggestion: {
+          ...suggestion,
+          changes: { tone: "private identifying detail" },
+        },
+      },
+    ])
+      await expect(
+        openAIProviderReturning(invalid).reply(available),
+      ).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
   it.each(["openai", "anthropic"] as const)(
     "advertises search in the %s wire schema only when available",
     async (protocol) => {

@@ -879,6 +879,7 @@ export class McpConnections {
                 jevObservationAvailable: false,
                 reflectionRequestAvailable: false,
                 reflectionMemoryAvailable: false,
+                reflectionPersonalitySuggestionAvailable: false,
                 juryAvailable: false,
                 rivetAvailable: false,
                 browserProposalAvailable: false,
