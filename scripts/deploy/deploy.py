@@ -27,10 +27,12 @@ from pathlib import Path, PurePosixPath
 REPOSITORY = "git@github.com:lordbagel42/agent.git"
 SOURCE = (
     "src",
+    "tests",
     "package.json",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "tsconfig.json",
+    "vitest.config.ts",
     "biome.json",
     ".npmrc",
     ".node-version",
