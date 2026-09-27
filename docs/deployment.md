@@ -64,7 +64,7 @@ looks up its stable external ID before creating another check. A legacy status
 POST with a lost response may create a duplicate status on retry, but reporting
 never repeats a deployment.
 
-June can inspect the same underlying evidence through her existing owner-private
+June can inspect the same underlying evidence for the verified owner through her
 `release: {"action":"inspect","revision":"<SHA>"}` directive described below.
 The local feed does not attest GitHub delivery; if the two disagree, use the
 controller evidence and inspect the operator log for publication failures.
@@ -188,7 +188,7 @@ lack a proven lifecycle fence. These paths are disabled in the current live
 configuration. Rivet shutdown is not drain evidence: its bounded race can swallow
 errors. A drain timeout resumes admission without cancelling effects.
 
-June's owner-private release inspection reports controller evidence; it cannot
+June's owner-authenticated release inspection reports controller evidence; it cannot
 drain or activate a release. A coding cancellation acknowledgment or isolation
 preflight is not proof of stopped execution or permission to bypass this gate.
 
@@ -253,9 +253,9 @@ after provisioning its dedicated credential and an immutable release marker:
   console cookies and model tools do not authorize them.
 - `createDeploymentReader({file, ownerId})` in `src/deployment/feed.ts` reads only
   the root-owned bounded feed. Call `read(authenticatedOwnerId, afterSequence)`
-  from an already-authorized **owner-private** context, not arbitrary channels.
+  from an already-authorized **owner** context, including the owner's channel turns.
   The configured host mounts `GET /operator/deployment/events?after=N` behind
-  owner bearer authentication. Private model requests receive bounded read-only
+  owner bearer authentication. Owner model requests receive bounded read-only
   status, including the loaded running revision separately from historical
   `lastHealthyRevision`; unavailable status never blocks a conversational reply.
 
@@ -291,7 +291,7 @@ durable journal, with the existing audience/send restrictions.
 
 ### June's deployment tracking
 
-When deployment configuration is present, June's owner-private reply schema and
+When deployment configuration is present, June's owner-authenticated reply schema and
 prompt advertise a `release` directive. This is the same agent-callable structured
 action interface used for search and coding proposals, not a CLI or a new poller:
 
@@ -312,8 +312,15 @@ June can separately register an explicitly requested owner-DM notification throu
 [durable wakeups](wakeups.md), such as a one-time `deployment`/`healthy` watch.
 There is no failed-release retry,
 approval token, drain access, policy editing, reconciliation or service control
-in this tool. The legacy supervisor remains inactive. Public/channel turns and
-non-owner senders cannot invoke the tool or receive its private evidence.
+in this tool. The legacy supervisor remains inactive. Verified owner requests can
+use it in DMs or channels; non-owner senders cannot invoke it. The bounded receipt
+goes to the requesting conversation. June's instructions treat disclosure as an
+audience-sensitive judgment, not a blanket ban on deployment facts outside DMs:
+commit hashes and ordinary status are not inherently secret. For genuinely
+sensitive details, prefer Raygen's DM; consider a narrow public disclosure only
+if verified Raygen is extremely persistent and explicit after hearing the concern,
+and still prefer a DM. This does not open private history or memory to channel
+turns, expose credentials/access links, or change action approvals.
 
 Receipts report stage outcomes, fixed failure reasons and next steps; individual
 check logs are not exposed by the controller feed. No evidence means unknown,
@@ -356,7 +363,7 @@ whether the inspected commit is an ancestor of the currently running revision.
 
 The same feed optionally includes `controllerRevision`, an exact source SHA from
 separately provisioned controller installation provenance. June reports it through
-`release: {"action":"inspect","revision":null}` and owner-private deployment
+`release: {"action":"inspect","revision":null}` and owner-authenticated deployment
 context, separately from `runningRevision` and `lastHealthyRevision`. Missing,
 null, invalid or unavailable provenance means **unknown**, not the app revision,
 main head, or any candidate event. Different SHAs alone do not establish age or

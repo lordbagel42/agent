@@ -545,7 +545,7 @@ describe("Rivet conversation workflow", () => {
     expect(inspections).toBe(1);
   });
 
-  it("dispatches release tools only in owner-private turns and journals the result", async (t) => {
+  it("dispatches release inspection for owner DMs and channels, never guests", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];
     const revision = "b".repeat(40);
@@ -580,7 +580,7 @@ describe("Rivet conversation workflow", () => {
             expect(replyJsonSchema([], request).properties).not.toHaveProperty(
               "release",
             );
-            // A nonconforming provider must not bypass the runtime audience gate.
+            // A nonconforming provider must not bypass owner authentication.
             return { text: "", release: directive };
           }
           expect(replyJsonSchema([], request).properties).toHaveProperty(
@@ -697,6 +697,7 @@ describe("Rivet conversation workflow", () => {
     expect(JSON.stringify(sent[6]?.content)).toContain(
       `Running revision: ${running}`,
     );
+    await writeFile(file, JSON.stringify(feed), { mode: 0o640 });
     const channel = client.conversation.getOrCreate(["slack", "T1", "C1", ""]);
     await channel.send("inbox", {
       type: "event",
@@ -708,8 +709,33 @@ describe("Rivet conversation workflow", () => {
       },
     });
     await expect.poll(async () => sent.length).toBe(8);
-    expect(JSON.stringify(sent[7]?.content)).toContain("owner-private turn");
-    expect(JSON.stringify(sent[7]?.content)).not.toContain(running);
+    expect(requests[7]?.releaseAvailable).toBe(true);
+    expect(requests[7]?.system).toContain("including channels");
+    expect(JSON.stringify(sent[7]?.content)).toContain(
+      `Running revision: ${running}`,
+    );
+    expect(JSON.stringify(sent[7]?.content)).toContain(
+      "Controller verified this revision healthy at",
+    );
+    expect(sent[7]?.address.conversationId).toBe("C1");
+    await client.conversation
+      .getOrCreate(["guest", "slack", "T1", "C1", "", "U2"])
+      .send("inbox", {
+        type: "event",
+        event: {
+          ...message,
+          id: "guest-release",
+          senderId: "U2",
+          direct: false,
+          botMentioned: true,
+          metadata: { channelType: "channel", senderName: "Raygen" },
+          address: { ...message.address, conversationId: "C1" },
+        },
+      });
+    await expect.poll(async () => sent.length).toBe(9);
+    expect(requests[8]?.releaseAvailable).toBe(false);
+    expect(JSON.stringify(sent[8]?.content)).toContain("verified owner");
+    expect(JSON.stringify(sent[8]?.content)).not.toContain(running);
     expect(sent[0]?.address.threadId).toBe("123.0");
     for (const release of [
       { action: "approve", revision },
@@ -1145,7 +1171,11 @@ describe("Rivet conversation workflow", () => {
         content: event.text,
         source: {
           ...source,
-          metadata: { senderName: "Raygen", threadTs: "234.567" },
+          metadata: {
+            ...source.metadata,
+            senderName: "Raygen",
+            threadTs: "234.567",
+          },
         },
       };
       return [
@@ -1178,7 +1208,7 @@ describe("Rivet conversation workflow", () => {
       channels: { slack: adapter },
       deploymentStatus: async () => {
         statusReads++;
-        return "PRIVATE_DEPLOYMENT_REVISION_17";
+        return "DEPLOYMENT_REVISION_17";
       },
       model: {
         async reply(request) {
@@ -1225,8 +1255,9 @@ describe("Rivet conversation workflow", () => {
       { role: "user", content: "Hey June" },
     ]);
     expect(JSON.stringify(requests[1])).not.toContain("PRIVATE");
-    expect(requests[0]?.system).toContain("PRIVATE_DEPLOYMENT_REVISION_17");
-    expect(statusReads).toBe(1);
+    expect(requests[0]?.system).toContain("DEPLOYMENT_REVISION_17");
+    expect(requests[1]?.system).toContain("DEPLOYMENT_REVISION_17");
+    expect(statusReads).toBe(2);
     expect(
       requests[1]?.messages.map(({ content }) => JSON.parse(content).source),
     ).toMatchObject([
@@ -1240,6 +1271,27 @@ describe("Rivet conversation workflow", () => {
     ]);
     expect(requests[1]?.workspaces).toEqual([]);
     expect(sent[1]?.address.threadId).toBe("234.567");
+    await client.conversation
+      .getOrCreate(["guest", "slack", "T1", "C1", "234.567", "U2"])
+      .send("inbox", {
+        type: "event",
+        event: {
+          ...message,
+          id: "guest-status",
+          senderId: "U2",
+          direct: false,
+          botMentioned: true,
+          metadata: { channelType: "channel" },
+          address: {
+            ...message.address,
+            conversationId: "C1",
+            threadId: "234.567",
+          },
+        },
+      });
+    await expect.poll(() => sent.length).toBe(3);
+    expect(requests[2]?.system).not.toContain("DEPLOYMENT_REVISION_17");
+    expect(statusReads).toBe(2);
   });
 
   it("records an ambiguous send without retrying it on webhook redelivery", async (t) => {

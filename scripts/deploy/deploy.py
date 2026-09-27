@@ -528,7 +528,7 @@ class GitHubStatuses:
             f"Observation → latest event: {latest['elapsedMs'] / 1000:.2f} s"
             if latest["elapsedMs"] is not None
             else "Observation duration: unknown (no earlier received event).",
-            "This is historical deployment evidence, not a claim that this revision is currently running or healthy. June's owner-private release inspection reports loaded process identity separately.",
+            "This is historical deployment evidence, not a claim that this revision is currently running or healthy. June's owner-authenticated release inspection reports loaded process identity separately.",
         ]
         if first["committedAt"] is not None:
             summary.insert(

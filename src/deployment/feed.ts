@@ -222,7 +222,7 @@ export function createReleaseTool(options: {
 }
 
 /** The principal comes from host authentication, never a model/request field.
- * Call for the private owner conversation only; these are facts, not commands. */
+ * Call only for the verified owner, including channels; these are facts, not commands. */
 export function createDeploymentReader(options: {
   file: string;
   ownerId: string;
