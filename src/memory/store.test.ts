@@ -302,6 +302,11 @@ it.for([
     expect(reader.retrieve("private", "kumquat").claims).toContainEqual(
       derived,
     );
+    expect(reader.dependentClaims("private", "s1")).toMatchObject({
+      direct: grounding.subjectSourceId || grounding.citations ? 2 : 1,
+      derived: grounding.subjectSourceId || grounding.citations ? 1 : 2,
+      omitted: 0,
+    });
     store.deleteSource("s1");
     const fresh = { ...source("fresh"), text: "fresh kumquat" };
     store.appendSource(fresh);
@@ -320,6 +325,131 @@ it.for([
     }
   },
 );
+
+it("filters dependent-claim scope before traversal, counts and bounds, and forgets every edge kind", () => {
+  const { store, path } = open();
+  for (const id of ["root", "other"])
+    store.appendSource({ ...source(id), audiences: ["private", "public"] });
+  store.appendSource(source("foreign", "public"));
+  const append = (
+    id: string,
+    dependsOn: string[],
+    audience = "private",
+    contradicts: string[] = [],
+    supersedes: string[] = [],
+  ) =>
+    store.appendClaim({
+      id,
+      entity: "private-entity",
+      text: "private claim body",
+      audiences: [audience],
+      kind: "evidence",
+      dependsOn,
+      contradicts,
+      supersedes,
+    });
+  append("a-hidden", ["root"], "public");
+  append("b-hidden", ["a-hidden"], "public");
+  append("direct", ["root"]);
+  append("derived", ["direct"]);
+  append("contradiction", ["other"], "private", ["direct"]);
+  append("supersession", ["other"], "private", [], ["contradiction"]);
+  append("both", ["root", "derived"]);
+  append("unrelated", ["other"]);
+  store.stageProposals(
+    "private",
+    ["root"],
+    [
+      {
+        subjectSourceId: "root",
+        text: "pending claim",
+        category: "claim",
+        citations: [{ sourceId: "root", quote: "sensitive kumquat" }],
+        confidence: 0.5,
+        validFrom: null,
+        validTo: null,
+        contradicts: [],
+        supersedes: [],
+      },
+    ],
+  );
+  const revision = store.deletionRevision();
+  expect(store.dependentClaims("private", "root")).toEqual({
+    claims: [
+      { id: "both", kind: "evidence", dependency: "direct" },
+      { id: "direct", kind: "evidence", dependency: "direct" },
+      { id: "contradiction", kind: "evidence", dependency: "derived" },
+      { id: "derived", kind: "evidence", dependency: "derived" },
+      { id: "supersession", kind: "evidence", dependency: "derived" },
+    ],
+    direct: 2,
+    derived: 3,
+    omitted: 0,
+  });
+  expect(store.dependentClaims("private", "root", { limit: 1 })).toEqual({
+    claims: [{ id: "both", kind: "evidence", dependency: "direct" }],
+    direct: 2,
+    derived: 3,
+    omitted: 4,
+  });
+  expect(store.dependentClaims("public", "root")).toMatchObject({
+    direct: 1,
+    derived: 1,
+    omitted: 0,
+  });
+  for (const id of ["missing", "foreign", "direct"])
+    expect(store.dependentClaims("private", id)).toBeUndefined();
+  expect(store.dependentClaims("unknown", "root")).toBeUndefined();
+  expect(store.deletionRevision()).toBe(revision);
+  expect(store.proposals("private")[0]?.status).toBe("pending");
+  store.deleteSource("root");
+  expect(store.dependentClaims("private", "root")).toBeUndefined();
+  store.close();
+  const reopened = open(path).store;
+  expect(reopened.dependentClaims("private", "root")).toBeUndefined();
+  expect(reopened.dependentClaims("private", "other")).toEqual({
+    claims: [{ id: "unrelated", kind: "evidence", dependency: "direct" }],
+    direct: 1,
+    derived: 0,
+    omitted: 0,
+  });
+});
+
+it("bounds complete dependent records and authorized omission metadata, without hiding later small records", () => {
+  const { store } = open();
+  store.appendSource(source());
+  for (const id of [`a${'"'.repeat(2047)}`, "z-small"])
+    store.appendClaim({
+      id,
+      entity: "owner",
+      text: "sensitive claim text",
+      audiences: ["private"],
+      kind: "dream",
+      dependsOn: ["s1"],
+      contradicts: [],
+      supersedes: [],
+    });
+  const result = store.dependentClaims("private", "s1", {
+    maxCharacters: 120,
+  });
+  expect(result).toEqual({
+    claims: [{ id: "z-small", kind: "dream", dependency: "direct" }],
+    direct: 2,
+    derived: 0,
+    omitted: 1,
+  });
+  expect(JSON.stringify(result).length).toBeLessThanOrEqual(120);
+  expect(
+    store.dependentClaims("private", "s1", { maxCharacters: 100 }),
+  ).toEqual({
+    claims: [],
+    direct: 2,
+    derived: 0,
+    omitted: 2,
+  });
+  for (const options of [{ limit: 0 }, { limit: 101 }, { maxCharacters: 99 }])
+    expect(() => store.dependentClaims("private", "s1", options)).toThrow();
+});
 
 it("fails closed on wrong keys and modified ciphertext", () => {
   const { store, path } = open();
@@ -641,6 +771,12 @@ it("stages quoted proposals without granting authority, scopes before ranking, a
   expect(pending?.status).toBe("pending");
   if (!rejected) throw new Error("Missing proposal");
   store.reviewProposal("private", rejected.id, "rejected");
+  expect(store.dependentClaims("private", "s1")).toEqual({
+    claims: [{ id: proposal.id, kind: "evidence", dependency: "direct" }],
+    direct: 1,
+    derived: 0,
+    omitted: 0,
+  });
   expect(
     store
       .stageProposals(

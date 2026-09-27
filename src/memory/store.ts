@@ -143,6 +143,16 @@ export type MemoryRetrieval = {
   truncated?: true;
   omitted?: number;
 };
+export type DependentClaims = {
+  claims: {
+    id: string;
+    kind: Claim["kind"];
+    dependency: "direct" | "derived";
+  }[];
+  direct: number;
+  derived: number;
+  omitted: number;
+};
 export type ImportCoverage = z.infer<typeof coverageSchema>;
 export type ImportProgress = z.infer<typeof progressSchema>;
 export type ImportPage = z.infer<typeof pageSchema>;
@@ -811,6 +821,80 @@ export class EvidenceStore {
     };
     visit(claimId);
     return [...found].sort();
+  }
+
+  /** Scope before traversal. Shared by bounded inspection projections. */
+  private sourceDependents(
+    audience: string,
+    sourceId: string,
+  ): Claim[] | undefined {
+    parse(id, sourceId);
+    const visible = this.search(audience, "");
+    // Missing, deleted and foreign sources have indistinguishable absence.
+    if (!visible.sources.some((source) => source.id === sourceId))
+      return undefined;
+    const reached = new Set([sourceId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const claim of visible.claims) {
+        if (
+          !reached.has(claim.id) &&
+          dependencies(claim).some((ref) => reached.has(ref))
+        ) {
+          reached.add(claim.id);
+          changed = true;
+        }
+      }
+    }
+    return visible.claims.filter((claim) => reached.has(claim.id));
+  }
+
+  /** Read-only reverse dependency view of stored claims, not pending proposals.
+   * Match deletion's dependency edges, but authorize before traversal/counts.
+   * Return whole ID/kind records only; claim/source content is separate recall. */
+  dependentClaims(
+    audience: string,
+    sourceId: string,
+    options: { limit?: number; maxCharacters?: number } = {},
+  ): DependentClaims | undefined {
+    const limit = parse(z.number().int().min(1).max(100), options.limit ?? 12);
+    const budget = parse(
+      z.number().int().min(100).max(100000),
+      options.maxCharacters ?? 3000,
+    );
+    const claims = this.sourceDependents(audience, sourceId);
+    if (!claims) return undefined;
+    const candidates = claims
+      .map((claim) => ({
+        id: claim.id,
+        kind: claim.kind,
+        dependency: dependencies(claim).includes(sourceId)
+          ? ("direct" as const)
+          : ("derived" as const),
+      }))
+      .sort(
+        (a, b) =>
+          Number(b.dependency === "direct") -
+            Number(a.dependency === "direct") || a.id.localeCompare(b.id),
+      );
+    const direct = candidates.filter((c) => c.dependency === "direct").length;
+    const result: DependentClaims = {
+      claims: [],
+      direct,
+      derived: candidates.length - direct,
+      omitted: candidates.length,
+    };
+    for (const candidate of candidates) {
+      if (result.claims.length >= limit) break;
+      result.claims.push(candidate);
+      result.omitted--;
+      if (JSON.stringify(result).length > budget) {
+        result.claims.pop();
+        result.omitted++;
+      }
+    }
+    return result;
   }
 
   deleteSource(sourceId: string): void {
