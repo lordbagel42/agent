@@ -3171,6 +3171,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                               confidence: admission.confidence,
                                             },
                                             admission.binding,
+                                            deletionRevision,
                                           );
                                     }
                                   }
@@ -3213,6 +3214,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                       .stage(
                                         event,
                                         checked.personalitySuggestion,
+                                        undefined,
+                                        deletionRevision,
                                       );
                                 } catch {
                                   text =

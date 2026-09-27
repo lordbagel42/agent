@@ -313,6 +313,7 @@ export function createPersonalityActor(
         event: MessageEvent,
         input: GlobalProposalInput,
         reflection?: ReflectionProposalBinding,
+        callerDeletionRevision?: number,
       ): Promise<string> => {
         if (c.key.length !== 1 || c.key[0] !== owner.id)
           throw new Error("Wrong personality owner");
@@ -325,6 +326,8 @@ export function createPersonalityActor(
             event.metadata?.channelType !== "im")
         )
           return "Personality suggestion not staged. An owner-private turn and curated memory are required; nothing was applied.";
+        if (reflection && callerDeletionRevision === undefined)
+          return "Personality suggestion not staged. Current caller validity is required; nothing was applied.";
         const head = c.state.revisions.at(-1) ?? defaultGlobalPersonality;
         if (input?.expectedVersion !== head.version)
           return `Personality suggestion not staged: current version is ${head.version}. Review the current profile before suggesting again; nothing was applied.`;
@@ -336,6 +339,7 @@ export function createPersonalityActor(
           input,
           Date.now(),
           reflection,
+          callerDeletionRevision,
         );
         const decision = c.state.proposalDecisions?.[proposal.id];
         if (decision) {

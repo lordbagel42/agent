@@ -73,7 +73,24 @@ it("stages retained reflection through June without applying it or bypassing liv
         },
       },
     },
-    memory: { store, personality: curated, source: () => undefined },
+    memory: {
+      store,
+      personality: curated,
+      source(event, audience) {
+        if (event.id !== "origin-turn") return undefined;
+        return {
+          id: event.id,
+          audiences: [audience],
+          platform: "slack",
+          account: "T",
+          conversation: "D",
+          author: "U",
+          observedAt: event.occurredAt,
+          sourceUrl: "https://example.invalid/inbound",
+          text: event.text,
+        };
+      },
+    },
     model: {
       async reply(request) {
         requests.push(request);
@@ -300,6 +317,8 @@ it("stages retained reflection through June without applying it or bypassing liv
     "missing-confidence",
     "rejection",
     "forgetting",
+    "origin",
+    "unrelated-deletion",
     "head",
   ]) {
     const ids = [race, `${race}-context-only`];
@@ -316,10 +335,23 @@ it("stages retained reflection through June without applying it or bypassing liv
       .poll(() => reflection.candidate(candidateId, scope), { timeout: 10000 })
       .not.toBeNull();
     const calls = stageCalls;
+    let deletedOrigin = false;
+    const evidenceBefore = store.reflectionEvidence(scope, ids, 600_000);
+    if (race === "unrelated-deletion") append("unrelated-turn-context");
     beforeStage = async () => {
       if (race === "rejection")
         expect(await reflection.rejectCandidate(scope, candidateId)).toBe(true);
       if (race === "forgetting") store.deleteSource(`${race}-context-only`);
+      // Cross the registry allowed() -> actor entry boundary using only the
+      // ledger tombstone: no candidate deletion and no reflection.cancel RPC.
+      if (race === "origin") {
+        deletedOrigin =
+          store.reflectionEvidence(scope, ["origin-turn"], 600_000).length ===
+          1;
+        store.deleteSource("origin-turn");
+      }
+      if (race === "unrelated-deletion")
+        store.deleteSource("unrelated-turn-context");
       if (race === "head")
         expect(
           await profile.command({
@@ -336,10 +368,29 @@ it("stages retained reflection through June without applying it or bypassing liv
           }),
         ).toContain("Saved global personality revision 1");
     };
-    const receipt = await deliver();
+    const receipt = await deliver(
+      race === "origin" ? { id: "origin-turn" } : {},
+    );
     expect(stageCalls - calls).toBe(race === "missing-confidence" ? 0 : 1);
     beforeStage = undefined;
+    if (race === "origin" || race === "unrelated-deletion") {
+      if (race === "origin") expect(deletedOrigin).toBe(true);
+      expect(store.reflectionEvidence(scope, ids, 600_000)).toEqual(
+        evidenceBefore,
+      );
+    }
     expect(curated.pendingGlobalProposals(scope)).toEqual([]);
+    if (race === "origin" || race === "unrelated-deletion") {
+      // Revocation invalidates this caller, not the still-supported candidate.
+      // A fresh turn captures the new revision and can stage normally.
+      expect(await deliver()).toMatchObject({
+        text: expect.stringContaining("Staged private personality suggestion"),
+      });
+      expect(curated.pendingGlobalProposals(scope)).toEqual([
+        expect.objectContaining({ reflectionCandidateId: candidateId }),
+      ]);
+      await reflection.rejectCandidate(scope, candidateId);
+    }
     if (race === "head") {
       expect(receipt).toMatchObject({
         text: expect.stringContaining("current version is 1"),

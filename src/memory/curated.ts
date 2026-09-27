@@ -433,7 +433,16 @@ export class CuratedPersonalityStore {
     input: unknown,
     now = Date.now(),
     reflection?: ReflectionProposalBinding,
+    callerDeletionRevision?: number,
   ): GlobalPersonalityProposal {
+    // A turn can be revoked by deletion outside the candidate's evidence.
+    // Keep this fence and the encrypted write synchronous; never refresh the
+    // caller's captured revision or include it in immutable payload identity.
+    if (
+      callerDeletionRevision !== undefined &&
+      callerDeletionRevision !== this.evidence.deletionRevision()
+    )
+      throw new Error("Personality suggestion caller was invalidated");
     this.forgetGlobalProposals();
     const parsed = globalProposalInputSchema.safeParse(input);
     const reflectionCandidateId = reflection?.candidateId;

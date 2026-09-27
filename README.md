@@ -899,7 +899,10 @@ Staging releases only this settled inference's occupancy, then requests fresh
 reflection admission. The current operation epoch must remain unchanged across
 that admission's awaits, with no live work or quiet-hours block. The personality
 actor then checks the exact current profile head and synchronously validates
-all sources/rejection before the encrypted write. This is **admission-time
+all sources/rejection before the encrypted write. The caller's captured deletion
+revision must still match at that write, even when only the originating message
+or unrelated turn context was forgotten and candidate evidence remains current.
+This is **admission-time
 eligibility**, not a distributed transaction across actors: a new interaction
 after admission may overlap the already-admitted inert pending write. Review
 alone grants no staging authority; staging never applies or approves a profile.
