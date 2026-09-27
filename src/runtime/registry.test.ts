@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
+import { createConsoleLoginLinks } from "../console/session.js";
 import type {
   ChannelAdapter,
   CompanionReply,
@@ -71,6 +72,122 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("lets June issue login links only in owner-private turns, never public or synthesis turns", async (t) => {
+    const links = createConsoleLoginLinks("https://june.example");
+    const sent: OutboundMessage[] = [];
+    const requests: ModelRequest[] = [];
+    let search = false;
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack: transport("slack", sent) },
+      dashboardLogin: links,
+      webSearch: {
+        available: true,
+        description: "fixture",
+        async search() {
+          return {
+            status: "ready",
+            results: [
+              {
+                title: "fixture",
+                url: "https://example.com",
+                snippet: "public evidence",
+              },
+            ],
+          };
+        },
+      },
+      model: links.wrapModel({
+        async reply(request) {
+          requests.push(request);
+          if (search && request.webSearchAvailable)
+            return { text: "", webSearch: "public query" };
+          if (request.dashboardLoginAvailable) {
+            expect(replyJsonSchema([], request).properties).toHaveProperty(
+              "dashboardLogin",
+            );
+            return parseReply('{"text":"","dashboardLogin":true}', [], request);
+          }
+          expect(replyJsonSchema([], request).properties).not.toHaveProperty(
+            "dashboardLogin",
+          );
+          // Even a provider ignoring the schema cannot mint a private login link.
+          return { text: "", dashboardLogin: true };
+        },
+      }),
+    });
+    const { client } = await setupTest(t, registry);
+    const deliver = async (
+      id: string,
+      extra: Partial<MessageEvent> = {},
+      key = ["private", "raygen"],
+    ) => {
+      const actor = client.conversation.getOrCreate(key);
+      const done = Object.values((await actor.snapshot()).events).filter(
+        (event) => event.done,
+      ).length;
+      await actor.send("inbox", {
+        type: "event",
+        event: {
+          ...message,
+          id,
+          messageId: id,
+          text: "Give me a dashboard login link",
+          ...extra,
+        },
+      });
+      await expect
+        .poll(
+          async () =>
+            Object.values((await actor.snapshot()).events).filter(
+              (event) => event.done,
+            ).length,
+        )
+        .toBe(done + 1);
+    };
+    await deliver("login-link");
+    const text = JSON.stringify(sent[0]?.content ?? "");
+    const url = text.match(/https:\/\/june\.example\/([A-Za-z0-9_-]{24})/);
+    expect(url).not.toBeNull();
+    expect(links.has(url?.[1] ?? "")).toBe(true);
+    expect(requests).toHaveLength(1);
+    await deliver("login-followup", { text: `Can you repeat ${url?.[0]}?` });
+    expect(JSON.stringify(requests.at(-1))).not.toContain(url?.[1]);
+    // The delivery record still holds the actual link; model history does not.
+    expect(JSON.stringify(sent[0]?.content)).toContain(url?.[0]);
+    await deliver(
+      "public-link",
+      { direct: false, address: { ...message.address, conversationId: "C1" } },
+      ["slack", "T1", "C1", ""],
+    );
+    expect(JSON.stringify(sent.at(-1)?.content)).not.toContain(
+      "https://june.example/",
+    );
+    expect(requests.at(-1)?.dashboardLoginAvailable).toBe(false);
+    await deliver(
+      "guest-link",
+      { senderId: "U2", metadata: { channelType: "im" } },
+      ["guest", "slack", "T1", "D1", "", "U2"],
+    );
+    expect(JSON.stringify(sent.at(-1)?.content)).not.toContain(
+      "https://june.example/",
+    );
+    search = true;
+    await deliver("synthesis-link");
+    expect(requests.at(-1)?.dashboardLoginAvailable).toBe(false);
+    expect(JSON.stringify(sent.at(-1)?.content)).not.toContain(
+      "https://june.example/",
+    );
+    expect(() => parseReply('{"text":"","dashboardLogin":true}', [])).toThrow();
+    expect(() =>
+      parseReply(
+        '{"text":"","dashboardLogin":true,"analytics":{"days":7}}',
+        [],
+        { dashboardLoginAvailable: true, analyticsAvailable: true },
+      ),
+    ).toThrow();
+  });
+
   it("reads analytics once through June and denies public, guest, synthesis and failed reads without leaking data", async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "june-analytics-"));
     const usage = new UsageLedger(join(directory, "usage.sqlite"));

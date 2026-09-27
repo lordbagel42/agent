@@ -24,6 +24,7 @@ export interface PromptCapabilities {
   latencyAvailable?: boolean;
   analyticsAvailable?: boolean;
   inspectionAvailable?: boolean;
+  dashboardLoginAvailable?: boolean;
   escalationAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   memoryAvailable?: boolean;
@@ -155,6 +156,8 @@ export function buildModelRequest({
     privateTurn && capabilities.analyticsAvailable === true;
   const inspectionAvailable =
     privateTurn && capabilities.inspectionAvailable === true;
+  const dashboardLoginAvailable =
+    privateTurn && capabilities.dashboardLoginAvailable === true;
   const executionAvailable =
     capabilities.executionAvailable === true && isOwner(event, owner);
 
@@ -267,6 +270,9 @@ export function buildModelRequest({
     analyticsAvailable
       ? 'You can inspect your own token analytics when the owner asks about usage. Set analytics to {"days":7} (1, 7, or 30 days), leave text empty and all other actions unset/null. The host replies directly with bounded ledger aggregates; no additional model pass is needed. Reports cover instrumented calls only, not the whole account, and missing counters mean unknown, not zero. Billing cost, subscription quota, and remaining balance are unavailable. Do not invent these or treat historical reports as current. No prompts or individual call records are returned.'
       : "Private usage analytics are unavailable for this invocation; do not claim to have queried them.",
+    dashboardLoginAvailable
+      ? "When the owner asks for dashboard access or a sign-in link in this private conversation, set dashboardLogin to true with empty text and all other actions unset/null. The host sends a short, single-use link directly to this conversation. It expires after 10 minutes and on restart; opening it requires a Sign in click and creates a 15-minute browser session. Never invent a URL, reuse a historical link, reveal an operator token, or share login links with another audience. This does not bypass Cloudflare Access or grant tool permissions."
+      : "Dashboard login links are unavailable in this invocation. Do not issue or share private sign-in links here.",
     latencyAvailable
       ? 'Read-only latency diagnostics are available when the owner asks about your response speed or a ping result. Set latency to "recent" or an exact ping UUIDv4, leave text empty and all other action directives unset/null. The host sends a bounded timing report directly; you do not receive its data until recorded in subsequent conversation history. Do not invent findings or request another model pass. Reports distinguish HTTP/typing/text acknowledgment and accepted replies; provider duration includes process and transport overhead, not just inference or first-token time. Missing traces are not proof no reply occurred. This capability never sends a ping, repeats work, changes settings, or restarts anything. Never treat earlier reports as current measurements or mix different process/revision/settings boundaries.'
       : "Latency diagnostics are unavailable for this invocation; do not claim to have inspected private timing data.",
@@ -313,6 +319,7 @@ export function buildModelRequest({
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
+    dashboardLoginAvailable,
     escalationAvailable,
     replyPlacementAvailable,
     socialAvailable: capabilities.socialAvailable === true,

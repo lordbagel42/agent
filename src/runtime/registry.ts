@@ -66,6 +66,9 @@ export interface Dependencies {
   inspection?: (
     target: NonNullable<CompanionReply["inspection"]>,
   ) => Promise<string>;
+  dashboardLogin?: {
+    issue(): { url: string; expiresAt: string } | undefined;
+  };
   runningRevision?: string;
   lifecycle?: {
     enter(signal: AbortSignal): Promise<() => void>;
@@ -1087,6 +1090,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   scope.private &&
                                   !!deps.inspection,
+                                dashboardLoginAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.dashboardLogin,
                                 replyPlacementAvailable:
                                   body.type === "event" &&
                                   (version < 4 || version >= 6) &&
@@ -1271,6 +1279,34 @@ export function createJuneRegistry(deps: Dependencies) {
                                   text =
                                     "Subsystem inspection is unavailable; no status can be inferred and no action was taken.";
                                 }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (generated.dashboardLogin === true) {
+                              let text =
+                                "Dashboard login links require an owner-private conversation and an available dashboard.";
+                              if (
+                                scope.private &&
+                                modelRequest.dashboardLoginAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                deps.dashboardLogin
+                              ) {
+                                // Validate before issuing a credential. Keep this in the
+                                // existing receipt; replay must not mint another link.
+                                parseReply(
+                                  JSON.stringify(generated),
+                                  workspaces,
+                                  modelRequest,
+                                );
+                                const link = deps.dashboardLogin.issue();
+                                text = link
+                                  ? `Sign in to your dashboard: ${link.url}\nSingle use; expires at ${link.expiresAt} (10 minutes), or when June restarts. Open it and click Sign in for a 15-minute session. Keep this link private; Cloudflare Access still applies.`
+                                  : "Too many unused dashboard sign-in links. Wait for an existing link to expire, then ask again.";
                               }
                               generated = {
                                 text,

@@ -26,6 +26,19 @@ POST logout revokes that session; restarting the process revokes all sessions.
 Use a single private host process or sticky routing; this is not distributed session
 storage. Limit/rate-limit login at private ingress. Disable request-body logging.
 
+The optional third bridge argument `{ links, token }` enables `/link/:id`
+GET/HEAD preview and confirmed POST redemption. `links` is the shared
+`createConsoleLoginLinks(origin)` process-local store used by the owner-private
+June directive and Bearer-only `POST /operator/console/login-links`. `token` stays
+host-side and is reauthenticated before redemption. The HTTP host redirects
+root `/<24-character-id>` URLs to this session route. Links are single-use,
+expire after 10 minutes, and never extend the existing 15-minute session or
+authorize operator endpoints. At most 32 unused links exist per process.
+GET/HEAD do not consume links. Same-origin, path-bound confirmation and atomic
+consumption are mandatory. Expired/used/restart-invalidated links fail closed.
+These links do not bypass private ingress authentication such as Cloudflare Access.
+Disable/redact URL capture for both the root short link and session routes.
+
 The console reads `ConsoleSnapshot` from the same host APIs used by chat. Omitted
 sections explicitly report unavailable. Supply owner-safe configuration, capability,
 job, memory/proposal, reflection, approval and revocation records. No independent

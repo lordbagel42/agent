@@ -105,6 +105,7 @@ const companionReplySchema = z.strictObject({
     })
     .optional(),
   modelStatus: z.boolean().optional(),
+  dashboardLogin: z.boolean().optional(),
 });
 
 type JsonObject = Record<string, unknown>;
@@ -124,6 +125,7 @@ export type ReplyCapabilities = Pick<
   | "latencyAvailable"
   | "analyticsAvailable"
   | "inspectionAvailable"
+  | "dashboardLoginAvailable"
   | "replyPlacementAvailable"
   | "socialAvailable"
   | "executionAvailable"
@@ -151,6 +153,7 @@ export function replyJsonSchema(
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
+    dashboardLoginAvailable,
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
@@ -274,6 +277,15 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(dashboardLoginAvailable
+        ? {
+            dashboardLogin: {
+              type: ["boolean", "null"],
+              description:
+                "Issue a one-time dashboard sign-in link only when the owner asks privately. Leave text empty and other actions unset. Never invent or share a link with another audience.",
+            },
+          }
+        : {}),
       ...(socialAvailable
         ? {
             social: {
@@ -377,6 +389,7 @@ export function replyJsonSchema(
       ...(latencyAvailable ? ["latency"] : []),
       ...(analyticsAvailable ? ["analytics"] : []),
       ...(inspectionAvailable ? ["inspection"] : []),
+      ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
       ...(socialAvailable ? ["social"] : []),
     ],
@@ -551,6 +564,7 @@ export function parseReply(
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
+    dashboardLoginAvailable,
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
@@ -580,6 +594,7 @@ export function parseReply(
     "latency",
     "analytics",
     "inspection",
+    "dashboardLogin",
     "replyInThread",
     "social",
   ]) {
@@ -609,6 +624,7 @@ export function parseReply(
     (reply.latency !== undefined && !latencyAvailable) ||
     (reply.analytics !== undefined && !analyticsAvailable) ||
     (reply.inspection !== undefined && !inspectionAvailable) ||
+    (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
@@ -626,6 +642,7 @@ export function parseReply(
     Number(reply.latency !== undefined) +
     Number(reply.analytics !== undefined) +
     Number(reply.inspection !== undefined) +
+    Number(reply.dashboardLogin === true) +
     Number(reply.escalate === true);
   if (
     directiveCount > 1 ||
@@ -640,6 +657,7 @@ export function parseReply(
       reply.mcpCatalog !== undefined ||
       reply.analytics !== undefined ||
       reply.inspection !== undefined ||
+      reply.dashboardLogin === true ||
       reply.latency !== undefined) &&
       reply.text.trim().length > 0)
   ) {

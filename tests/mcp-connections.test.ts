@@ -6,6 +6,7 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Hono } from "hono";
 import { afterEach, expect, test } from "vitest";
 import { createConnectionRoutes } from "../src/console/connections.js";
+import { createConsoleLoginLinks } from "../src/console/session.js";
 import type { ModelRequest } from "../src/core/contracts.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
 import { buildModelRequest } from "../src/runtime/prompt.js";
@@ -27,6 +28,7 @@ async function fixture(
   const directory = await mkdtemp(join(tmpdir(), "june-mcp-"));
   const calls: unknown[] = [];
   let description = "Look up a record";
+  let resultText = "private result private-token";
   let onList = () => {};
   const open = () =>
     new McpConnections(
@@ -71,9 +73,7 @@ async function fixture(
                       ],
                     }
                   : {
-                      content: [
-                        { type: "text", text: "private result private-token" },
-                      ],
+                      content: [{ type: "text", text: resultText }],
                     },
           });
         },
@@ -133,8 +133,45 @@ async function fixture(
     duringList: (fn: () => void) => {
       onList = fn;
     },
+    result: (text: string) => {
+      resultText = text;
+    },
   };
 }
+
+test("dashboard credentials from MCP results never reach the synthesis provider", async () => {
+  const f = await fixture();
+  const links = createConsoleLoginLinks("https://june.example");
+  const link = links.issue();
+  assert(link);
+  const id = new URL(link.url).pathname.slice(1);
+  f.result(
+    `Open ${link.url} or https://june.example/console/session/link/${id}`,
+  );
+  f.store.permit(f.id, f.connection().revision, "lookup", "read");
+  const requests: ModelRequest[] = [];
+  const model = links.wrapModel({
+    async reply(request) {
+      requests.push(request);
+      return request.mcpAvailable
+        ? {
+            text: "",
+            mcp: {
+              connection: f.id,
+              tool: "lookup",
+              argumentsJson: '{"id":"record-9"}',
+            },
+          }
+        : { text: "A sign-in link was found; ask for a fresh one." };
+    },
+  });
+  const answer = await f.store.wrap(model).reply(f.request);
+  expect(answer.text).toContain("ask for a fresh one");
+  expect(requests).toHaveLength(2);
+  expect(requests[1]?.system).toContain("credential omitted");
+  expect(JSON.stringify(requests)).not.toContain(id);
+  expect(links.has(id)).toBe(true);
+});
 
 test("Add commands stay consumed across permission changes, disconnection and restart", async () => {
   const f = await fixture();

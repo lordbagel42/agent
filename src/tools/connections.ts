@@ -576,6 +576,7 @@ export class McpConnections {
                 latencyAvailable: false,
                 analyticsAvailable: false,
                 inspectionAvailable: false,
+                dashboardLoginAvailable: false,
                 modelStatusAvailable: false,
                 socialAvailable: false,
                 usageStage: "synthesis",

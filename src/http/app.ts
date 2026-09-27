@@ -12,7 +12,10 @@ import {
   type ConsoleSnapshot,
   createConsoleRoutes,
 } from "../console/routes.js";
-import { createConsoleSessionBridge } from "../console/session.js";
+import {
+  createConsoleLoginLinks,
+  createConsoleSessionBridge,
+} from "../console/session.js";
 import { messagePage } from "../console/view.js";
 import type {
   Channel,
@@ -43,6 +46,7 @@ export interface HttpDependencies {
   latency?: LatencyDiagnostics;
   console?: {
     origin: string;
+    loginLinks?: ReturnType<typeof createConsoleLoginLinks>;
     inspect(): Promise<ConsoleSnapshot>;
     usage?: ConsoleDependencies["usage"];
     connections?: ConnectionDependencies;
@@ -127,6 +131,9 @@ export function createHttpApp(deps: HttpDependencies) {
       ? deps.owner.id
       : undefined;
   };
+  const loginLinks = deps.console
+    ? (deps.console.loginLinks ?? createConsoleLoginLinks(deps.console.origin))
+    : undefined;
   if (deps.console) {
     const security = {
       origin: deps.console.origin,
@@ -134,7 +141,17 @@ export function createHttpApp(deps: HttpDependencies) {
       signInPath: "/console/session/login",
       authenticate,
     };
-    const sessions = createConsoleSessionBridge(security, "/console");
+    const sessions = createConsoleSessionBridge(
+      security,
+      "/console",
+      loginLinks ? { links: loginLinks, token: deps.operatorToken } : undefined,
+    );
+    app.get("/:id{[A-Za-z0-9_-]{24}}", (c) => {
+      c.header("Cache-Control", "no-store, private");
+      c.header("Referrer-Policy", "no-referrer");
+      c.header("X-Robots-Tag", "noindex, nofollow, noarchive");
+      return c.redirect(`/console/session/link/${c.req.param("id")}`, 303);
+    });
     let windowStart = 0;
     let loginAttempts = 0;
     app.use("/console/session/login", async (c, next) => {
@@ -273,6 +290,14 @@ export function createHttpApp(deps: HttpDependencies) {
     }
     await next();
   });
+  if (loginLinks) {
+    app.post("/operator/console/login-links", (c) => {
+      const link = loginLinks.issue();
+      return link
+        ? c.json(link, 201)
+        : c.json({ error: "login_link_capacity" }, 429);
+    });
+  }
   if (deps.deployment?.read) {
     app.route(
       "/operator/deployment",

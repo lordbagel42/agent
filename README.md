@@ -557,12 +557,50 @@ limited to ten per minute across this owner-only host. Sign out at
 `/console/session/logout`. Browser cookies authorize only the console, not the
 Bearer-only operator API. Existing operator clients are unchanged.
 
+### One-time dashboard sign-in links
+
+Ask June **in your private conversation** for a dashboard login link. Her
+`dashboardLogin: true` action sends a short URL such as
+`https://june.raygen.dev/<random-id>` directly to that conversation; it is not
+available to guests, public channels, execution workers, or synthesis passes.
+She must not reuse old links or invent URLs. Amp and trusted operators can create
+the same links through the private listener:
+
+```sh
+curl --fail --request POST \
+  --header "Authorization: Bearer $JUNE_OPERATOR_TOKEN" \
+  http://127.0.0.1:3080/operator/console/login-links
+```
+
+The response is `201` JSON with `url` and `expiresAt`. URLs use the configured
+console origin, never request headers. Each link has a random 144-bit identifier,
+expires after **10 minutes**, and can create exactly one **15-minute** session.
+Opening it shows a **Sign in** button; only that same-origin confirmed POST
+consumes it, so GET/HEAD previews do not burn the link. Expired, used, and
+restart-invalidated links return `410` with recovery instructions. At most 32
+unexpired unused links are held in memory; issuance at capacity returns `429`.
+Restarts revoke links and sessions. The operator token never appears in a link.
+
+The delivery record retains the link, but the host redacts login URLs from
+June's subsequent conversation-model inputs, including history and fetched
+platform context. The model does not need the credential to remember that a
+link was sent.
+
+Treat these links as temporary credentials: share them only with the owner,
+never in public channels, logs, screenshots, or analytics. Proxy routing for the
+private dashboard must forward root `/<24-character-id>` GET/HEAD requests and
+`/console/session/link/*` GET/HEAD/POST requests as well as `/console/*`; keep
+`/operator/*` private. Disable/redact URL and body logs on those routes. Links do
+**not** bypass Cloudflare Access, SSH, or other private-ingress authentication,
+and they do not grant tool permissions. No arbitrary redirect destinations are
+accepted; redemption always opens `/console`.
+
 The overview shows selected configuration facts, content-free Slack ingress
 counts, durable event counts, capability gates and saved proposal counts. It
 does not show credentials, conversation text, job goals/reports, provider paths,
 or infer provider health from configuration. Unconnected memory, reflection,
 approval and revocation sections remain unavailable. No action callbacks or
-opaque-link routes are mounted; viewing the page cannot approve or run work.
+action-link routes are mounted; viewing the page cannot approve or run work.
 
 ### Token intelligence
 

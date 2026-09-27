@@ -17,6 +17,7 @@ import { createCodexRuntime } from "./coding/codex.js";
 import { createPiRuntime } from "./coding/pi.js";
 import { createWorktreeManager } from "./coding/worktree.js";
 import { parseConfig, secret } from "./config.js";
+import { createConsoleLoginLinks } from "./console/session.js";
 import type {
   Channel,
   ChannelAdapter,
@@ -260,6 +261,9 @@ async function main() {
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);
   if (operatorToken.length < 32) throw new Error("Short operator token");
+  const loginLinks = config.console
+    ? createConsoleLoginLinks(config.console.origin)
+    : undefined;
   startupStage = "private usage ledger";
   process.env.RIVETKIT_STORAGE_PATH ??= resolve(".data");
   const usage = new UsageLedger(
@@ -273,16 +277,19 @@ async function main() {
           throw new Error("Inference disabled in setup mode");
         },
       };
+    let model: ModelProvider;
     if (selection.protocol === "codex") {
       const hot = createHotCodexProvider({ ...selection, usage });
       hotProviders.push(hot);
-      return hot;
+      model = hot;
+    } else {
+      model = createModelProvider({
+        ...selection,
+        usage,
+        apiKey: secret(selection.apiKeyEnv),
+      });
     }
-    return createModelProvider({
-      ...selection,
-      usage,
-      apiKey: secret(selection.apiKeyEnv),
-    });
+    return loginLinks ? loginLinks.wrapModel(model) : model;
   };
   const model = provider(config.model);
   const deepModel = config.deepModel && provider(config.deepModel);
@@ -613,6 +620,7 @@ async function main() {
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
         : undefined,
     }),
+    dashboardLogin: loginLinks,
     release: readDeployment
       ? createReleaseTool({
           read: () => readDeployment(config.owner.id),
@@ -672,6 +680,7 @@ async function main() {
     console: config.console
       ? {
           origin: config.console.origin,
+          loginLinks,
           connections: connections
             ? { store: connections, slack: slackMcp }
             : undefined,

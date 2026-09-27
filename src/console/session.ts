@@ -1,13 +1,71 @@
 import { randomBytes } from "node:crypto";
+import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html } from "hono/html";
+import type { ModelProvider } from "../core/contracts.js";
 import {
   confirmations,
+  type PrivateEnv,
   type PrivateRouteSecurity,
   privateRoutes,
   sessionReturnPath,
 } from "./security.js";
 import { badge, confirmForm, messagePage, page } from "./view.js";
+
+/** Process-local bearer links. Restart revokes all outstanding links. */
+export function createConsoleLoginLinks(origin: string) {
+  const links = new Map<string, number>();
+  const credentialUrl = new RegExp(
+    `${origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?:console/session/link/)?[A-Za-z0-9_-]{24}(?![A-Za-z0-9_-])`,
+    "g",
+  );
+  const prune = () => {
+    for (const [id, expires] of links)
+      if (expires <= Date.now()) links.delete(id);
+  };
+  // Match URL shape, not live entries: also redact consumed/restarted links.
+  const redact = (text: string) =>
+    text.replace(credentialUrl, "[dashboard sign-in credential omitted]");
+  return {
+    // Install inside any tool wrapper so later MCP synthesis is protected too.
+    wrapModel(model: ModelProvider): ModelProvider {
+      return {
+        reply: (request, signal) =>
+          model.reply(
+            {
+              ...request,
+              system: redact(request.system),
+              messages: request.messages.map(({ role, content }) => ({
+                role,
+                content: redact(content),
+              })),
+            },
+            signal,
+          ),
+      };
+    },
+    issue() {
+      prune();
+      if (links.size >= 32) return;
+      const id = randomBytes(18).toString("base64url");
+      const expires = Date.now() + 600_000;
+      links.set(id, expires);
+      return {
+        url: `${origin}/${id}`,
+        expiresAt: new Date(expires).toISOString(),
+      };
+    },
+    has(id: string) {
+      prune();
+      return links.has(id);
+    },
+    consume(id: string) {
+      prune();
+      // Delete synchronously: concurrent redemptions can have only one winner.
+      return links.delete(id);
+    },
+  };
+}
 
 /** Optional browser bridge for the host's existing Bearer authentication.
  * Mount routes on private ingress only. Tokens stay in server memory for at most
@@ -15,6 +73,7 @@ import { badge, confirmForm, messagePage, page } from "./view.js";
 export function createConsoleSessionBridge(
   security: PrivateRouteSecurity,
   consolePath = "/console",
+  login?: { links: ReturnType<typeof createConsoleLoginLinks>; token: string },
 ) {
   if (
     !consolePath.startsWith("/") ||
@@ -35,6 +94,20 @@ export function createConsoleSessionBridge(
   const prune = () => {
     for (const [id, session] of sessions)
       if (session.expires <= Date.now()) sessions.delete(id);
+  };
+  const setSession = (c: Context, token: string) => {
+    const previous = getCookie(c, cookie);
+    if (previous) sessions.delete(previous);
+    const id = randomBytes(32).toString("base64url");
+    sessions.set(id, { token, expires: Date.now() + 900_000 });
+    setTimeout(() => sessions.delete(id), 900_000).unref();
+    setCookie(c, cookie, id, {
+      httpOnly: true,
+      secure,
+      sameSite: "Strict",
+      path: "/",
+      maxAge: 900,
+    });
   };
   const authenticate: PrivateRouteSecurity["authenticate"] = async (
     request,
@@ -60,6 +133,60 @@ export function createConsoleSessionBridge(
     ...security,
     authenticate: async () => "login",
   });
+  if (login) {
+    const unavailable = (c: Context<PrivateEnv>) =>
+      c.html(
+        page(
+          "This sign-in link is no longer available",
+          c.get("nonce"),
+          html`<section class="panel"><div class="panel-body"><p>It may have expired, already been used, or been cleared by a restart.</p><p>Ask June in your private conversation, or ask Amp, for a new link.</p><div class="actions"><a class="button secondary" href="${consolePath}/session/login">Use an operator token</a></div></div></section>`,
+          { narrow: true, description: "No new session was created." },
+        ),
+        410,
+      );
+    routes.get("/link/:id", (c) => {
+      if (!login.links.has(c.req.param("id"))) return unavailable(c);
+      return c.html(
+        page(
+          "Sign in to June",
+          c.get("nonce"),
+          html`<section class="panel"><div class="panel-body"><h2>One-time dashboard access</h2><p>Continue to your private dashboard. Only use this link if you requested it from June or Amp.</p><form method="post" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue("login", new URL(c.req.url).pathname, "link")}"><input type="hidden" name="confirmed" value="yes"><button class="full" type="submit">Sign in</button></form></div><div class="login-note">Single-use link · Expires 10 minutes after creation<br>Your browser session lasts 15 minutes. Tool permissions are unchanged.</div></section>`,
+          { narrow: true, description: "No operator token to copy or paste." },
+        ),
+      );
+    });
+    routes.post("/link/:id", async (c) => {
+      const form = await c.req.parseBody();
+      if (
+        form.confirmed !== "yes" ||
+        !proof.verify("login", new URL(c.req.url).pathname, "link", form.proof)
+      )
+        return c.html(
+          messagePage(
+            c.get("nonce"),
+            "Sign-in confirmation rejected",
+            "Open your sign-in link again and use its Sign in button.",
+            403,
+          ),
+          403,
+        );
+      if (!(await authenticateToken(login.token))) return unavailable(c);
+      prune();
+      if (sessions.size >= 64)
+        return c.html(
+          messagePage(
+            c.get("nonce"),
+            "Session capacity reached",
+            "Try again after an existing session expires. Your link has not been used.",
+            503,
+          ),
+          503,
+        );
+      if (!login.links.consume(c.req.param("id"))) return unavailable(c);
+      setSession(c, login.token);
+      return c.redirect(consolePath, 303);
+    });
+  }
   routes.get("/login", (c) => {
     const returnTo = sessionReturnPath(c.req.query("returnTo"), consolePath);
     return c.html(
@@ -133,18 +260,7 @@ export function createConsoleSessionBridge(
         ),
         503,
       );
-    const previous = getCookie(c, cookie);
-    if (previous) sessions.delete(previous);
-    const id = randomBytes(32).toString("base64url");
-    sessions.set(id, { token: form.token, expires: Date.now() + 900_000 });
-    setTimeout(() => sessions.delete(id), 900_000).unref();
-    setCookie(c, cookie, id, {
-      httpOnly: true,
-      secure,
-      sameSite: "Strict",
-      path: "/",
-      maxAge: 900,
-    });
+    setSession(c, form.token);
     return c.html(
       page(
         "Signed in",

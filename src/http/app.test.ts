@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createSlackAdapter } from "../channels/slack.js";
 import { createSlackIngressDiagnostics } from "../channels/slack-ingress.js";
 import type { ChannelEvent } from "../core/contracts.js";
@@ -75,6 +75,93 @@ function dependencies(
 }
 
 describe("webhook and operator HTTP boundary", () => {
+  it("issues short login links only to operators and redeems exactly once after confirmation", async () => {
+    const deps = dependencies({
+      console: {
+        origin: "https://june.example",
+        inspect: async () => ({ observedAt: "now", sections: {} }),
+      },
+    });
+    const app = createHttpApp(deps);
+    const issue = () =>
+      app.request("/operator/console/login-links", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, host: "evil.example" },
+      });
+    expect((await issue()).status).toBe(201);
+    expect(
+      (await app.request("/operator/console/login-links", { method: "POST" }))
+        .status,
+    ).toBe(401);
+    const issued = await issue();
+    expect(issued.headers.get("cache-control")).toContain("no-store");
+    const link = await issued.json();
+    expect(link.url).toMatch(/^https:\/\/june\.example\/[A-Za-z0-9_-]{24}$/);
+    expect(JSON.stringify(link)).not.toContain(token);
+    const path = new URL(link.url).pathname;
+    const redirect = await app.request(path);
+    expect(redirect.status).toBe(303);
+    expect(redirect.headers.get("referrer-policy")).toBe("no-referrer");
+    const target = redirect.headers.get("location") ?? "";
+    // Unfurlers and HEAD requests must not create sessions or consume links.
+    for (const method of ["GET", "HEAD", "GET"]) {
+      const preview = await app.request(target, { method });
+      expect(preview.status).toBe(200);
+      expect(preview.headers.get("set-cookie")).toBeNull();
+    }
+    const form = await (await app.request(target)).text();
+    const proof = form.match(/name="proof" value="([^"]+)"/)?.[1] ?? "";
+    const redeem = (origin = "https://june.example", value = proof) =>
+      app.request(target, {
+        method: "POST",
+        headers: {
+          origin,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ confirmed: "yes", proof: value }),
+      });
+    expect((await redeem("https://evil.example")).status).toBe(403);
+    expect((await redeem("https://june.example", "bad")).status).toBe(403);
+    const responses = await Promise.all([redeem(), redeem()]);
+    expect(responses.map((r) => r.status).sort()).toEqual([303, 410]);
+    const login = responses.find((r) => r.status === 303);
+    if (!login) throw new Error("No successful redemption");
+    expect(login.headers.get("location")).toBe("/console");
+    const setCookie = login.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("Secure");
+    expect(setCookie).toContain("SameSite=Strict");
+    expect(setCookie).not.toContain(token);
+    const cookie = setCookie.split(";")[0] ?? "";
+    expect(
+      (await app.request("/console", { headers: { cookie } })).status,
+    ).toBe(200);
+    expect(
+      (
+        await app.request("/operator/console/login-links", {
+          method: "POST",
+          headers: { cookie },
+        })
+      ).status,
+    ).toBe(401);
+    expect((await app.request(target)).status).toBe(410);
+    const expires = await (await issue()).json();
+    const expiredTarget =
+      (await app.request(new URL(expires.url).pathname)).headers.get(
+        "location",
+      ) ?? "";
+    const restarted = createHttpApp(deps);
+    expect((await restarted.request(expiredTarget)).status).toBe(410);
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(expires.expiresAt) - 1);
+    expect((await app.request(expiredTarget)).status).toBe(200);
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(expires.expiresAt));
+    try {
+      expect((await app.request(expiredTarget)).status).toBe(410);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it("requires a separate deploy credential and fences new work until resumed", async () => {
     const lifecycle = createLifecycle();
     const deployToken = "dedicated-deploy-fixture-token-123456789";
