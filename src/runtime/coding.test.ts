@@ -12,6 +12,7 @@ import type {
   MessageEvent,
   ModelRequest,
   OutboundMessage,
+  SendResult,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { EvidenceStore } from "../memory/store.js";
@@ -38,7 +39,11 @@ async function fixture(
   t: TestContext,
   runtime: CodingRuntime,
   memory?: Dependencies["memory"],
-  options?: { reply?: () => CompanionReply; disabled?: boolean },
+  options?: {
+    reply?: () => CompanionReply;
+    disabled?: boolean;
+    send?: (message: OutboundMessage) => Promise<SendResult>;
+  },
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "june-supervisor-"));
   t.onTestFinished(() => rm(root, { recursive: true, force: true }));
@@ -98,6 +103,7 @@ async function fixture(
         },
         async send(message) {
           sent.push(JSON.parse(JSON.stringify(message)) as OutboundMessage);
+          if (options?.send) return options.send(message);
           return { status: "sent", messageId: `sent-${sent.length}` };
         },
       },
@@ -334,6 +340,136 @@ describe("separate coding supervisor", () => {
       "disabled or unavailable; no native execution can be requested",
     );
   });
+
+  it.for([false, true])(
+    "redacts pending completion after forgetting without discarding job metadata (cleanup=%s)",
+    async (cleanup, t) => {
+      const store = new EvidenceStore(":memory:", randomBytes(32));
+      t.onTestFinished(() => store.close());
+      const audience = JSON.stringify(["private", "raygen"]);
+      store.appendSource({
+        id: "ancestor",
+        platform: "slack",
+        account: "T1",
+        conversation: "D1",
+        author: "U1",
+        audiences: [audience],
+        observedAt: Date.now(),
+        sourceUrl: "https://fixture.slack.com/archives/D1/p1000001",
+        text: "Fix the reaction handling in June. ANCESTOR",
+      });
+      let completionSends = 0;
+      const { registry } = await fixture(
+        t,
+        {
+          async run() {
+            return {
+              threadId: "T-finished",
+              report: "ANCESTOR-derived report",
+            };
+          },
+        },
+        {
+          store,
+          source(e, scope) {
+            return {
+              id: `live:${e.id}`,
+              platform: "slack",
+              account: "T1",
+              conversation: "D1",
+              author: "U1",
+              audiences: [scope],
+              observedAt: e.occurredAt,
+              sourceUrl: "https://fixture.slack.com/archives/D1/p2000001",
+              text: e.text,
+            };
+          },
+        },
+        {
+          async send(message) {
+            if (
+              message.content.type === "text" &&
+              message.content.text.startsWith("The worker reports")
+            ) {
+              completionSends++;
+              return {
+                status: "rejected",
+                code: "rate_limited",
+                retryable: true,
+                retryAfterMs: 2000,
+              };
+            }
+            return { status: "sent", messageId: "fixture-message" };
+          },
+        },
+      );
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", "raygen"]);
+      await june.send("inbox", { type: "event", event: source });
+      await expect
+        .poll(async () => Object.keys((await june.snapshot()).jobs).length, {
+          timeout: 15000,
+        })
+        .toBe(1);
+      const proposal = await june.snapshot();
+      const id = Object.keys(proposal.jobs)[0];
+      if (!id) throw new Error("No proposal");
+      expect(proposal.memoryContexts?.[id]?.contextSourceIds).toContain(
+        "ancestor",
+      );
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "approve-pending",
+          messageId: "200.000001",
+          text: `/approve ${id}`,
+        },
+      });
+      await expect.poll(() => completionSends, { timeout: 15000 }).toBe(1);
+      const pending = Object.entries((await june.snapshot()).deliveries).find(
+        ([, delivery]) =>
+          delivery.message.content.type === "text" &&
+          delivery.message.content.text.startsWith("The worker reports"),
+      );
+      if (!pending) throw new Error("Missing completion delivery");
+      const [deliveryId, delivery] = pending;
+      // Tombstoning commits first; runtime cleanup may fail or be delayed.
+      store.deleteSource("ancestor");
+      if (cleanup) await june.forget("ancestor");
+      await expect
+        .poll(
+          async () => (await june.snapshot()).deliveries[deliveryId]?.result,
+          { timeout: 15000 },
+        )
+        .toEqual({
+          status: "rejected",
+          code: "memory_invalidated",
+          retryable: false,
+        });
+      const state = await june.snapshot();
+      expect(completionSends).toBe(1);
+      expect(state.deliveries[deliveryId]?.message).toEqual({
+        ...delivery.message,
+        content: { type: "text", text: "" },
+      });
+      expect(
+        state.history.some(
+          (entry) => entry.id === `${deliveryId.slice(0, -5)}:reply`,
+        ),
+      ).toBe(false);
+      expect(state.jobs[id]?.workspace).toBe("june");
+      expect(await june.canResumeJob(id)).toBe(false);
+      expect(
+        await client.job.getOrCreate(["raygen", id]).snapshot(),
+      ).toMatchObject({
+        status: "completed",
+        attempts: 1,
+        threadId: "T-finished",
+        proposal: { id, workspace: "june" },
+      });
+    },
+  );
 
   it.for([false, true])(
     "invalidates execution-derived coding before approval or completion (approved=%s)",

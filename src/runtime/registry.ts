@@ -1963,12 +1963,17 @@ export function createJuneRegistry(deps: Dependencies) {
                         delivery,
                         step.vars.persist,
                         async (outbound) => {
-                          if (!valid(step.state))
+                          if (!valid(step.state)) {
+                            // Ledger deletion may outlive interrupted cleanup.
+                            // Retain the receipt/identity, not forgotten content.
+                            if (outbound.content.type === "text")
+                              outbound.content.text = "";
                             return {
                               status: "rejected",
                               code: "memory_invalidated",
                               retryable: false,
                             };
+                          }
                           return send(outbound, outbound.content.type);
                         },
                       );
