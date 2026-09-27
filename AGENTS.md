@@ -25,3 +25,13 @@
 - Still run the formatter, linter, and typechecker for code changes and use
   relevant existing tests when useful. Report meaningful verification limits.
 - Do not remove existing tests solely because of this policy.
+
+## June-facing capabilities
+
+- Every tool or feature built for June must be accessible to June herself, not
+  only to humans through dashboards, CLIs, or developer-only workflows.
+- Provide a discoverable, agent-callable interface and instructions so she can
+  use each capability within the existing permission and safety boundaries.
+- For example, analytics tooling must let June query and inspect her own
+  analytics. Apply the same requirement to every other capability.
+- Verify the June-facing workflow before considering a feature complete.
