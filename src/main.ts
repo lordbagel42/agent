@@ -764,7 +764,8 @@ async function main() {
     jev,
     lifecycle,
     latency,
-    analytics: (days) => usage.report(days),
+    analytics: (days) =>
+      `${usage.report(days)}\n\n${memory?.store.operationReport() ?? "Memory operation metrics are unavailable; memory is disabled."}`,
     rivet: createRivetReader({
       owner: config.owner,
       connection: (): {

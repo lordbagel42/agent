@@ -576,6 +576,10 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(memoryReport).toMatch(
     /"persistence":\{"calls":\d+,"completed":\d+,"failed":\d+,"totalDurationMs":[\d.]+,"maxDurationMs":[\d.]+\}/,
   );
+  expect(memoryReport).toContain(
+    '"retrieval":{"calls":0,"completed":0,"failed":0,"totalDurationMs":0,"maxDurationMs":null}',
+  );
+  expect(memoryReport).toContain("duration totals/max are elapsed ms");
   expect(memoryReport).toContain("Open is not a health check");
   expect(memoryReport.length).toBeLessThan(4000);
   action = { text: "", inspection: "imports" };

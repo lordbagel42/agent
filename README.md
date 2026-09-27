@@ -827,6 +827,18 @@ does not erase its own candidates. Ordinary conversation still invalidates them.
 The list is constructed only at delivery, not retained in history or journaled
 reply content. It is not approval, a memory write, or permission to send.
 
+Owner-private `analytics: {"days":7}` also returns memory retrieval counters
+when memory is enabled: calls, completed, failed, total duration and maximum
+duration in milliseconds. `inspection: "memory"` exposes the same aggregates
+through `operationStatus().retrieval`. They cover all `retrieve()` attempts,
+including validation/read failures, since the current store opening—not the
+selected 1/7/30-day token usage window. Reopening/restarting resets them; no
+samples means an unknown maximum, not a measured zero. They exclude separate
+`search()` and reflection-evidence reads, retain no query, evidence, identity,
+error, or per-call rows, and use fixed scalar counters capped at
+`Number.MAX_SAFE_INTEGER`. Timing includes synchronous retrieval work, not model
+inference or end-to-end replies, and is not proof of memory completeness/health.
+
 ### Rivet inspection in the owner's DM
 
 June also has a `rivet` read tool, available **only to the configured owner in a

@@ -754,7 +754,7 @@ export function replyJsonSchema(
               properties: { days: { type: "integer", enum: [1, 7, 30] } },
               required: ["days"],
               description:
-                "Read owner-private aggregate token usage for the last 1, 7, or 30 days. Leave text empty and other actions unset. No billing or quota data.",
+                "Read owner-private aggregate token usage for the last 1, 7, or 30 days plus process-local memory retrieval counts and durations when enabled. Memory metrics cover the current store opening, not the selected day window. Leave text empty and other actions unset. No billing or quota data.",
             },
           }
         : {}),

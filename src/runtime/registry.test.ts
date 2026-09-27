@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,7 @@ import {
   createReleaseTool,
   type DeploymentFeed,
 } from "../deployment/feed.js";
+import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { UsageLedger } from "../models/usage.js";
 import { createLifecycle } from "./lifecycle.js";
@@ -191,10 +193,16 @@ describe("Rivet conversation workflow", () => {
   it("reads analytics once through June and denies public, guest, synthesis and failed reads without leaking data", async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "june-analytics-"));
     const usage = new UsageLedger(join(directory, "usage.sqlite"));
+    const memory = new EvidenceStore(":memory:", randomBytes(32));
     t.onTestFinished(async () => {
       usage.close();
+      memory.close();
       await rm(directory, { recursive: true, force: true });
     });
+    memory.retrieve("private-audience", "SECRET MEMORY QUERY");
+    expect(() =>
+      memory.retrieve("private-audience", "SECRET FAILED QUERY", { limit: 0 }),
+    ).toThrow();
     await usage.track(
       { provider: "codex", model: "private-model-name", stage: "fast" },
       async (report) => {
@@ -244,6 +252,7 @@ describe("Rivet conversation workflow", () => {
             expect(request.system).toContain(
               "inspect your own token analytics",
             );
+            expect(request.system).toContain("memory retrieval timing");
             expect(replyJsonSchema([], request).properties).toHaveProperty(
               "analytics",
             );
@@ -263,7 +272,7 @@ describe("Rivet conversation workflow", () => {
       analytics: (days) => {
         reads++;
         if (fail) throw new Error("private database path and secret");
-        return usage.report(days);
+        return `${usage.report(days)}\n\n${memory.operationReport()}`;
       },
     });
     const { client } = await setupTest(t, registry);
@@ -302,6 +311,11 @@ describe("Rivet conversation workflow", () => {
     expect(report).toContain("cache writes: unknown");
     expect(report).toContain("remaining balance: unavailable");
     expect(report).not.toContain("private-model-name");
+    expect(report).toContain("Memory operation snapshot");
+    expect(report).toContain('\\"calls\\":2,\\"completed\\":1,\\"failed\\":1');
+    expect(report).toContain("not the selected usage day window");
+    expect(report).not.toContain("SECRET");
+    expect(report).not.toContain("private-audience");
     expect(report.length).toBeLessThan(3500);
     expect(reads).toBe(1);
     expect(requests).toHaveLength(1);

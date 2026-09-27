@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   type Claim,
   EvidenceStore,
@@ -132,6 +132,67 @@ it("invalidates recall continuations after matching insertions and cascading del
   expect(
     store.retrieve("private", "kumquat", { paginate: true }).claims,
   ).toEqual([]);
+});
+
+it("keeps retrieval timing content-free across success, failure, and reopening", () => {
+  const { store, path } = open();
+  store.appendSource(source());
+  const before = readFileSync(path);
+  const empty = {
+    calls: 0,
+    completed: 0,
+    failed: 0,
+    totalDurationMs: 0,
+    maxDurationMs: null,
+  };
+  expect(store.operationStatus().retrieval).toEqual(empty);
+  using clock = vi.spyOn(performance, "now");
+  clock.mockReturnValueOnce(10).mockReturnValueOnce(12.5);
+  expect(store.retrieve("private", "kumquat").sources).toEqual([source()]);
+  expect(store.operationStatus().retrieval).toEqual({
+    calls: 1,
+    completed: 1,
+    failed: 0,
+    totalDurationMs: 2.5,
+    maxDurationMs: 2.5,
+  });
+  clock.mockReturnValueOnce(15).mockReturnValueOnce(18);
+  expect(
+    store.retrieve("private", "kumquat", { paginate: true }).sources,
+  ).toEqual([source()]);
+  clock.mockReturnValueOnce(20).mockReturnValueOnce(27.25);
+  expect(() => store.retrieve("private", "SECRET QUERY", { limit: 0 })).toThrow(
+    "Invalid memory input",
+  );
+  store.close();
+  clock.mockReturnValueOnce(30).mockReturnValueOnce(31.25);
+  expect(() => store.retrieve("private", "SECRET READ QUERY")).toThrow();
+  const expected = {
+    calls: 4,
+    completed: 2,
+    failed: 2,
+    totalDurationMs: 14,
+    maxDurationMs: 7.25,
+  };
+  expect(store.operationStatus().retrieval).toEqual(expected);
+  store.operationStatus().retrieval.calls = 999;
+  expect(store.operationStatus().retrieval).toEqual(expected);
+  const report = store.operationReport();
+  for (const secret of [
+    "SECRET",
+    "kumquat",
+    "workspace-secret",
+    "dm-secret",
+    "user-secret",
+    "private-message",
+    "Invalid memory input",
+  ])
+    expect(report).not.toContain(secret);
+  expect(report).toContain('"totalDurationMs":14,"maxDurationMs":7.25');
+  expect(report).toContain("not the selected usage day window");
+  expect(report.length).toBeLessThan(2200);
+  expect(readFileSync(path)).toEqual(before);
+  expect(open(path).store.operationStatus().retrieval).toEqual(empty);
 });
 
 it("excludes legacy ## Slack evidence from automatic memory but permits explicit lookup", () => {

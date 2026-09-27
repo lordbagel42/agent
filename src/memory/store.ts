@@ -403,6 +403,13 @@ export class EvidenceStore {
     totalDurationMs: 0,
     maxDurationMs: null as number | null,
   };
+  private readonly retrieval = {
+    calls: 0,
+    completed: 0,
+    failed: 0,
+    totalDurationMs: 0,
+    maxDurationMs: null as number | null,
+  };
   private readonly index = new Map<
     string,
     { sources: Source[]; claims: Claim[] }
@@ -476,6 +483,7 @@ export class EvidenceStore {
       read: { ...this.readStatus },
       transaction: { ...this.transactionStatus },
       persistence: { ...this.persistence },
+      retrieval: { ...this.retrieval },
     };
   }
 
@@ -915,262 +923,299 @@ export class EvidenceStore {
       validAt?: number;
     } = {},
   ): MemoryRetrieval {
-    parse(z.string().max(10000), query);
-    const entity = parse(id.optional(), options.entity);
-    const category = proposalInputSchema.shape.category
-      .optional()
-      .safeParse(options.category);
-    if (!category.success)
-      throw new Error(
-        "Invalid memory category; expected claim, preference, commitment, or pattern",
+    const started = performance.now();
+    let completed = true;
+    try {
+      parse(z.string().max(10000), query);
+      const entity = parse(id.optional(), options.entity);
+      const category = proposalInputSchema.shape.category
+        .optional()
+        .safeParse(options.category);
+      if (!category.success)
+        throw new Error(
+          "Invalid memory category; expected claim, preference, commitment, or pattern",
+        );
+      const contradictionsOf =
+        options.contradictionsOf === undefined
+          ? undefined
+          : parse(id, options.contradictionsOf);
+      if (contradictionsOf !== undefined && query !== "")
+        throw new Error("Invalid memory input");
+      const limit = parse(
+        z.number().int().min(1).max(100),
+        options.limit ?? 12,
       );
-    const contradictionsOf =
-      options.contradictionsOf === undefined
-        ? undefined
-        : parse(id, options.contradictionsOf);
-    if (contradictionsOf !== undefined && query !== "")
-      throw new Error("Invalid memory input");
-    const limit = parse(z.number().int().min(1).max(100), options.limit ?? 12);
-    const paginate = options.paginate || options.cursor !== undefined;
-    const budget = parse(
-      z
-        .number()
-        .int()
-        .min(paginate ? 200 : 100)
-        .max(100000),
-      options.maxCharacters ?? 16000,
-    );
-    const observedFrom = parse(timestamp.optional(), options.observedFrom);
-    const observedTo = parse(timestamp.optional(), options.observedTo);
-    const validAt = parse(timestamp.optional(), options.validAt);
-    if (
-      observedFrom !== undefined &&
-      observedTo !== undefined &&
-      observedFrom >= observedTo
-    )
-      throw new Error("Invalid memory observation window");
-    const visible = this.search(audience, "");
-    // Original observation time, never ingestion time or a claim repetition.
-    const observed =
-      observedFrom !== undefined || observedTo !== undefined
-        ? new Set(
-            visible.sources
-              .filter(
-                (source) =>
-                  (observedFrom === undefined ||
-                    source.observedAt >= observedFrom) &&
-                  (observedTo === undefined || source.observedAt < observedTo),
-              )
-              .map((source) => source.id),
-          )
-        : undefined;
-    // Legacy imports may predate Slack's opt-out. Automatic context must not
-    // include those originals or claims derived from them; explicit search stays available.
-    const ignored = new Set(
-      visible.sources
-        .filter(
-          (source) =>
-            source.platform === "slack" && source.text.startsWith("##"),
-        )
-        .map((source) => source.id),
-    );
-    const parents = new Map(
-      visible.claims.map((claim) => [
-        claim.id,
-        [
-          ...claim.dependsOn,
-          ...(claim.grounding
-            ? [
-                claim.grounding.subjectSourceId,
-                ...claim.grounding.citations.map(
-                  (citation) => citation.sourceId,
-                ),
-              ]
-            : []),
-        ],
-      ]),
-    );
-    const words = [
-      ...new Set(query.toLocaleLowerCase().split(/\s+/u).filter(Boolean)),
-    ];
-    const eligible = [
-      ...visible.sources
-        .filter(
-          (item) =>
-            !options.claimsOnly &&
-            category.data === undefined &&
-            validAt === undefined &&
-            !ignored.has(item.id) &&
-            (!observed || observed.has(item.id)) &&
-            (entity === undefined ||
-              JSON.stringify([item.platform, item.account, item.author]) ===
-                entity),
-        )
-        .map((item) => ({ type: "source" as const, item })),
-      ...visible.claims
-        .filter(
-          (item) =>
-            category.data === undefined ||
-            item.grounding?.category === category.data,
-        )
-        .filter((item) => {
-          if (entity !== undefined && item.entity !== entity) return false;
-          // Unknown bounds are not infinite bounds; no validity is invented.
-          if (
-            validAt !== undefined &&
-            (item.grounding?.validFrom == null ||
-              item.grounding.validTo == null ||
-              validAt < item.grounding.validFrom ||
-              validAt >= item.grounding.validTo)
-          )
-            return false;
-          if (!observed && ignored.size === 0) return true;
-          // Walk this authorized snapshot once per ancestor, even for a shared
-          // dependency DAG. Check opt-outs outside the observation window too.
-          const pending = [item.id];
-          const visited = new Set<string>();
-          let matchesObservation = !observed;
-          while (pending.length) {
-            const ref = pending.pop();
-            if (ref === undefined || visited.has(ref)) continue;
-            visited.add(ref);
-            if (ignored.has(ref)) return false;
-            if (observed?.has(ref)) matchesObservation = true;
-            pending.push(...(parents.get(ref) ?? []));
-          }
-          return matchesObservation;
-        })
-        .map((item) => ({ type: "claim" as const, item })),
-    ];
-    // Resolve the root only after scope/opt-out filtering. Missing and hidden
-    // roots have identical empty results; never synthesize an edge endpoint.
-    const root = eligible.find(
-      (entry) => entry.type === "claim" && entry.item.id === contradictionsOf,
-    );
-    const candidates = eligible
-      .filter(
-        (entry) =>
-          contradictionsOf === undefined ||
-          (root?.type === "claim" &&
-            entry.type === "claim" &&
-            (entry.item.id === root.item.id ||
-              root.item.contradicts.includes(entry.item.id) ||
-              entry.item.contradicts.includes(root.item.id))),
+      const paginate = options.paginate || options.cursor !== undefined;
+      const budget = parse(
+        z
+          .number()
+          .int()
+          .min(paginate ? 200 : 100)
+          .max(100000),
+        options.maxCharacters ?? 16000,
+      );
+      const observedFrom = parse(timestamp.optional(), options.observedFrom);
+      const observedTo = parse(timestamp.optional(), options.observedTo);
+      const validAt = parse(timestamp.optional(), options.validAt);
+      if (
+        observedFrom !== undefined &&
+        observedTo !== undefined &&
+        observedFrom >= observedTo
       )
-      .map((entry) => ({
-        ...entry,
-        score:
-          entry.item.id === contradictionsOf
-            ? 1
-            : words.filter((word) =>
-                entry.item.text.toLocaleLowerCase().includes(word),
-              ).length,
-      }))
-      .filter((entry) => !words.length || entry.score > 0)
-      .sort((a, b) => b.score - a.score || a.item.id.localeCompare(b.item.id));
-    if (paginate) {
-      // Immutable records make this a scoped dataset revision. Bind all effective
-      // filters/bounds, not only matching IDs: even equivalent searches are not
-      // interchangeable. Invisible records never enter the fingerprint.
-      const fingerprint = createHash("sha256")
-        .update(
-          JSON.stringify([
-            audience,
-            query,
-            Object.entries({ ...options, limit, maxCharacters: budget })
-              .filter(
-                ([key, value]) =>
-                  key !== "cursor" && key !== "paginate" && value !== undefined,
-              )
-              .sort(([a], [b]) => a.localeCompare(b)),
-            candidates.map(({ item, score }) => [item.id, score]),
-          ]),
-        )
-        .digest("hex");
-      const cursorFor = (recordId: string) =>
-        createHmac("sha256", this.key)
-          .update(
-            JSON.stringify(["june-recall-page-v1", fingerprint, recordId]),
-          )
-          .digest("base64url");
-      let start = 0;
-      if (options.cursor !== undefined) {
-        const cursor = options.cursor;
-        const boundary = /^[A-Za-z0-9_-]{43}$/.test(cursor)
-          ? candidates.findIndex(({ item }) =>
-              timingSafeEqual(
-                Buffer.from(cursorFor(item.id)),
-                Buffer.from(cursor),
-              ),
+        throw new Error("Invalid memory observation window");
+      const visible = this.search(audience, "");
+      // Original observation time, never ingestion time or a claim repetition.
+      const observed =
+        observedFrom !== undefined || observedTo !== undefined
+          ? new Set(
+              visible.sources
+                .filter(
+                  (source) =>
+                    (observedFrom === undefined ||
+                      source.observedAt >= observedFrom) &&
+                    (observedTo === undefined ||
+                      source.observedAt < observedTo),
+                )
+                .map((source) => source.id),
             )
-          : -1;
-        if (boundary < 0)
-          throw new Error("Invalid recall cursor; restart the search");
-        start = boundary + 1;
+          : undefined;
+      // Legacy imports may predate Slack's opt-out. Automatic context must not
+      // include those originals or claims derived from them; explicit search stays available.
+      const ignored = new Set(
+        visible.sources
+          .filter(
+            (source) =>
+              source.platform === "slack" && source.text.startsWith("##"),
+          )
+          .map((source) => source.id),
+      );
+      const parents = new Map(
+        visible.claims.map((claim) => [
+          claim.id,
+          [
+            ...claim.dependsOn,
+            ...(claim.grounding
+              ? [
+                  claim.grounding.subjectSourceId,
+                  ...claim.grounding.citations.map(
+                    (citation) => citation.sourceId,
+                  ),
+                ]
+              : []),
+          ],
+        ]),
+      );
+      const words = [
+        ...new Set(query.toLocaleLowerCase().split(/\s+/u).filter(Boolean)),
+      ];
+      const eligible = [
+        ...visible.sources
+          .filter(
+            (item) =>
+              !options.claimsOnly &&
+              category.data === undefined &&
+              validAt === undefined &&
+              !ignored.has(item.id) &&
+              (!observed || observed.has(item.id)) &&
+              (entity === undefined ||
+                JSON.stringify([item.platform, item.account, item.author]) ===
+                  entity),
+          )
+          .map((item) => ({ type: "source" as const, item })),
+        ...visible.claims
+          .filter(
+            (item) =>
+              category.data === undefined ||
+              item.grounding?.category === category.data,
+          )
+          .filter((item) => {
+            if (entity !== undefined && item.entity !== entity) return false;
+            // Unknown bounds are not infinite bounds; no validity is invented.
+            if (
+              validAt !== undefined &&
+              (item.grounding?.validFrom == null ||
+                item.grounding.validTo == null ||
+                validAt < item.grounding.validFrom ||
+                validAt >= item.grounding.validTo)
+            )
+              return false;
+            if (!observed && ignored.size === 0) return true;
+            // Walk this authorized snapshot once per ancestor, even for a shared
+            // dependency DAG. Check opt-outs outside the observation window too.
+            const pending = [item.id];
+            const visited = new Set<string>();
+            let matchesObservation = !observed;
+            while (pending.length) {
+              const ref = pending.pop();
+              if (ref === undefined || visited.has(ref)) continue;
+              visited.add(ref);
+              if (ignored.has(ref)) return false;
+              if (observed?.has(ref)) matchesObservation = true;
+              pending.push(...(parents.get(ref) ?? []));
+            }
+            return matchesObservation;
+          })
+          .map((item) => ({ type: "claim" as const, item })),
+      ];
+      // Resolve the root only after scope/opt-out filtering. Missing and hidden
+      // roots have identical empty results; never synthesize an edge endpoint.
+      const root = eligible.find(
+        (entry) => entry.type === "claim" && entry.item.id === contradictionsOf,
+      );
+      const candidates = eligible
+        .filter(
+          (entry) =>
+            contradictionsOf === undefined ||
+            (root?.type === "claim" &&
+              entry.type === "claim" &&
+              (entry.item.id === root.item.id ||
+                root.item.contradicts.includes(entry.item.id) ||
+                entry.item.contradicts.includes(root.item.id))),
+        )
+        .map((entry) => ({
+          ...entry,
+          score:
+            entry.item.id === contradictionsOf
+              ? 1
+              : words.filter((word) =>
+                  entry.item.text.toLocaleLowerCase().includes(word),
+                ).length,
+        }))
+        .filter((entry) => !words.length || entry.score > 0)
+        .sort(
+          (a, b) => b.score - a.score || a.item.id.localeCompare(b.item.id),
+        );
+      if (paginate) {
+        // Immutable records make this a scoped dataset revision. Bind all effective
+        // filters/bounds, not only matching IDs: even equivalent searches are not
+        // interchangeable. Invisible records never enter the fingerprint.
+        const fingerprint = createHash("sha256")
+          .update(
+            JSON.stringify([
+              audience,
+              query,
+              Object.entries({ ...options, limit, maxCharacters: budget })
+                .filter(
+                  ([key, value]) =>
+                    key !== "cursor" &&
+                    key !== "paginate" &&
+                    value !== undefined,
+                )
+                .sort(([a], [b]) => a.localeCompare(b)),
+              candidates.map(({ item, score }) => [item.id, score]),
+            ]),
+          )
+          .digest("hex");
+        const cursorFor = (recordId: string) =>
+          createHmac("sha256", this.key)
+            .update(
+              JSON.stringify(["june-recall-page-v1", fingerprint, recordId]),
+            )
+            .digest("base64url");
+        let start = 0;
+        if (options.cursor !== undefined) {
+          const cursor = options.cursor;
+          const boundary = /^[A-Za-z0-9_-]{43}$/.test(cursor)
+            ? candidates.findIndex(({ item }) =>
+                timingSafeEqual(
+                  Buffer.from(cursorFor(item.id)),
+                  Buffer.from(cursor),
+                ),
+              )
+            : -1;
+          if (boundary < 0)
+            throw new Error("Invalid recall cursor; restart the search");
+          start = boundary + 1;
+        }
+        const result: MemoryRetrieval = { sources: [], claims: [] };
+        let count = 0;
+        let scanned = start;
+        const page = (): MemoryRetrieval => {
+          const omitted = candidates.length - start - count;
+          const boundary = candidates[scanned - 1];
+          return {
+            ...result,
+            ...(omitted ? { truncated: true, omitted } : {}),
+            ...(boundary && scanned > start && scanned < candidates.length
+              ? { nextCursor: cursorFor(boundary.item.id) }
+              : {}),
+          };
+        };
+        const fits = (value: MemoryRetrieval) => {
+          const json = JSON.stringify(value);
+          return (
+            json.length <= budget &&
+            (options.measureCharacters?.(json) ?? json.length) <= budget
+          );
+        };
+        for (const candidate of candidates.slice(start)) {
+          if (count >= limit) break;
+          if (candidate.type === "source") result.sources.push(candidate.item);
+          else result.claims.push(candidate.item);
+          count++;
+          scanned++;
+          if (fits(page())) continue;
+          if (candidate.type === "source") result.sources.pop();
+          else result.claims.pop();
+          count--;
+          if (scanned > start + 1) {
+            // Even previous omissions can consume this page's budget. Retry the
+            // whole record on a fresh page before deciding it cannot fit alone.
+            scanned--;
+            break;
+          }
+          // A record that cannot fit alone is omitted; advance to avoid a loop.
+        }
+        const resultPage = page();
+        if (!fits(resultPage))
+          throw new Error("Recall presentation exceeds character budget");
+        return resultPage;
       }
       const result: MemoryRetrieval = { sources: [], claims: [] };
       let count = 0;
-      let scanned = start;
-      const page = (): MemoryRetrieval => {
-        const omitted = candidates.length - start - count;
-        const boundary = candidates[scanned - 1];
-        return {
-          ...result,
-          ...(omitted ? { truncated: true, omitted } : {}),
-          ...(boundary && scanned > start && scanned < candidates.length
-            ? { nextCursor: cursorFor(boundary.item.id) }
-            : {}),
-        };
-      };
-      const fits = (value: MemoryRetrieval) => {
-        const json = JSON.stringify(value);
-        return (
-          json.length <= budget &&
-          (options.measureCharacters?.(json) ?? json.length) <= budget
-        );
-      };
-      for (const candidate of candidates.slice(start)) {
+      for (const candidate of candidates) {
         if (count >= limit) break;
         if (candidate.type === "source") result.sources.push(candidate.item);
         else result.claims.push(candidate.item);
-        count++;
-        scanned++;
-        if (fits(page())) continue;
-        if (candidate.type === "source") result.sources.pop();
-        else result.claims.pop();
-        count--;
-        if (scanned > start + 1) {
-          // Even previous omissions can consume this page's budget. Retry the
-          // whole record on a fresh page before deciding it cannot fit alone.
-          scanned--;
-          break;
-        }
-        // A record that cannot fit alone is omitted; advance to avoid a loop.
+        const omitted = candidates.length - count - 1;
+        if (
+          JSON.stringify({
+            ...result,
+            ...(omitted ? { truncated: true, omitted } : {}),
+          }).length > budget
+        ) {
+          if (candidate.type === "source") result.sources.pop();
+          else result.claims.pop();
+        } else count++;
       }
-      const resultPage = page();
-      if (!fits(resultPage))
-        throw new Error("Recall presentation exceeds character budget");
-      return resultPage;
+      const omitted = candidates.length - count;
+      return { ...result, ...(omitted ? { truncated: true, omitted } : {}) };
+    } catch (error) {
+      completed = false;
+      throw error;
+    } finally {
+      // Fixed scalar aggregates only: never retain query, audience, evidence,
+      // or error details. Failed attempts contribute to duration too.
+      const cap = Number.MAX_SAFE_INTEGER;
+      const duration = Math.min(cap, Math.max(0, performance.now() - started));
+      const timing = this.retrieval;
+      timing.calls = Math.min(cap, timing.calls + 1);
+      const outcome = completed ? "completed" : "failed";
+      timing[outcome] = Math.min(cap, timing[outcome] + 1);
+      timing.totalDurationMs = Math.min(cap, timing.totalDurationMs + duration);
+      timing.maxDurationMs = Math.max(timing.maxDurationMs ?? 0, duration);
     }
-    const result: MemoryRetrieval = { sources: [], claims: [] };
-    let count = 0;
-    for (const candidate of candidates) {
-      if (count >= limit) break;
-      if (candidate.type === "source") result.sources.push(candidate.item);
-      else result.claims.push(candidate.item);
-      const omitted = candidates.length - count - 1;
-      if (
-        JSON.stringify({
-          ...result,
-          ...(omitted ? { truncated: true, omitted } : {}),
-        }).length > budget
-      ) {
-        if (candidate.type === "source") result.sources.pop();
-        else result.claims.pop();
-      } else count++;
-    }
-    const omitted = candidates.length - count;
-    return { ...result, ...(omitted ? { truncated: true, omitted } : {}) };
+  }
+
+  /** Aggregate-only owner report; authorization belongs to the host caller. */
+  operationReport(): string {
+    const status = this.operationStatus();
+    return [
+      `Memory operation snapshot at ${new Date().toISOString()}: ${JSON.stringify(status)}.`,
+      `Process-local since store opened at ${new Date(status.sinceOpenedAt).toISOString()}; resets on reopen/restart, not the selected usage day window. Past success is not proof of current health or complete recall.`,
+      "Retrieval covers all retrieve() attempts across audiences (including validation/read failures); excludes separate search() and reflection-evidence reads. Durations are milliseconds for the whole synchronous operation, not model or end-to-end latency. Total and max include failures; null max means unobserved, not zero. Counters saturate at Number.MAX_SAFE_INTEGER. No queries, evidence, identities, errors or per-call records retained.",
+      "Persistence timing, when present, counts settled evidence transaction attempts (including no-op commits), not records: completion requires COMMIT; durations include BEGIN, read/change/encrypt/write, COMMIT and any rollback. Initial empty-ledger creation, pre-transaction validation, curated Git saves and historical writes are excluded.",
+    ].join("\n");
   }
 
   search(
