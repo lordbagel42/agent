@@ -900,6 +900,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "snapshot-retention",
     "operations",
     "mcp-connections",
+    "mcp-enrollment",
     { target: "imports", selection: "selection-11", offset: 0 },
   ] as const;
   for (const inspection of deniedInspections) {
@@ -919,7 +920,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         senderId: `guest-${Math.floor(guestCase++ / 4)}`,
         metadata: { channelType: "im" as const },
       },
-      ...(inspection === "mcp-connections"
+      ...(inspection === "mcp-connections" || inspection === "mcp-enrollment"
         ? [{ metadata: { channelType: "mpim" as const } }]
         : []),
     ]) {
@@ -953,6 +954,11 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(readiness).toContain("Live search access is unverified");
   expect(readiness).toContain("No Slack request was made");
   expect(reads).toBe(14);
+  action = { text: "", inspection: "mcp-enrollment" };
+  expect(await deliver()).toContain("Host configuration required");
+  expect(requests.at(-1)?.system).toContain('inspection to "mcp-enrollment"');
+  expect(requests.at(-1)?.mcpAvailable).toBe(false);
+  expect(reads).toBe(15);
   action = { text: "", inspection: "credentials" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
@@ -1091,7 +1097,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       }),
     ).toThrow();
   expect(() => parseReply('{"text":"","inspection":"memory"}', [])).toThrow();
-}, 60_000);
+}, 90_000);
 
 it("keeps interrupted reflection inspection bounded, private and read-only without claiming settlement", async () => {
   const audience = "owner-private";

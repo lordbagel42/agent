@@ -178,6 +178,37 @@ async function fixture(
   };
 }
 
+test("enrollment inspection reveals no credentials or private configuration and grants nothing", async () => {
+  const f = await fixture({
+    name: "PRIVATE NAME",
+    url: "https://private.example/secret-path",
+    token: "private-token",
+  });
+  const before = f.connection();
+  const requests = f.requests;
+  const report = await createInspectionReader({
+    audience: "owner",
+    selections: {},
+    mcp: f.store,
+  })("mcp-enrollment");
+  expect(report).toContain('"next":"owner_tool_consent_required"');
+  expect(report).toContain("Browser consent/save progress is unknown");
+  expect(report).toContain("do not prove current authorization");
+  for (const secret of [
+    "PRIVATE NAME",
+    "private.example",
+    "secret-path",
+    "private-token",
+    f.id,
+    "Look up a record",
+  ])
+    expect(report).not.toContain(secret);
+  expect(f.requests).toBe(requests);
+  expect(f.calls).toEqual([]);
+  expect(f.store.proposals()).toEqual([]);
+  expect(f.connection()).toEqual(before);
+});
+
 test.each([
   ["missing", "unavailable", 0],
   ["disabled", "denied", 0],

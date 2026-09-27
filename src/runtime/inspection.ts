@@ -319,6 +319,7 @@ export function createInspectionReader(deps: {
   /** The host's HTTP readiness predicate, not a workflow progress check. */
   processHealth?: () => Promise<boolean>;
   capabilityMatrix?: () => ReturnType<typeof capabilitySnapshot>;
+  slackMcpConfigured?: boolean;
   nativeCoding?: () => Promise<string>;
   capabilities?: () => string;
   credentials?: Pick<BitwardenCredentialResolver, "inspect">;
@@ -414,6 +415,72 @@ export function createInspectionReader(deps: {
         return deps.mcp
           ? `${heading}\n${JSON.stringify(deps.mcp.inventory())}\nAt most 20 connections. Configuration, saved credentials and past discovery are not live health or verified authorization. Refs are opaque display labels, not catalog IDs. Names, endpoints, credentials and tool contracts are omitted. No server was contacted or permission changed.`
           : `${heading}\nMCP is disconnected: integration disabled; no active connection inventory. No server was contacted and no health or authorization is inferred.`;
+      case "mcp-enrollment": {
+        const caution =
+          "No enrollment, authentication, discovery or permission change was performed. Saved credentials and past discovery do not prove current authorization or server availability. Never send credentials in chat.";
+        if (!deps.mcp)
+          return `${heading}\nHost configuration required: MCP integration is disabled. The owner/operator must review and configure the private console and encrypted MCP store before enrollment. This is not a server outage; owner consent is not established. ${caution}`;
+        const inventory = deps.mcp.inventory();
+        const steps = {
+          renew_authentication:
+            "Saved credential expired. The owner must renew authentication in Connections; Slack reconnect resets tool permissions.",
+          owner_authentication_required:
+            "No Slack authorization is saved. The owner must review Slack consent and save authorization in Connections; bot login is not user consent.",
+          owner_discovery_required:
+            "Not tested. The owner can review the destination and choose Test & discover tools; discovery sends any saved credential but runs no tools.",
+          review_discovery_failure:
+            "Discovery failed; cause unknown. The owner must check the endpoint, authentication/account permissions and server availability before deliberately testing again. This does not prove a server outage.",
+          no_tools_discovered:
+            "Past discovery returned no tools. The owner must check the intended account/server configuration; granting permission cannot create tools.",
+          owner_tool_consent_required:
+            "Discovered tools are disabled. The owner must review contracts and grant the intended permissions in Connections; do not enable tools automatically.",
+          no_enrollment_step_known:
+            "Saved tool permissions exist. No further enrollment step is known locally; approval-required tools still need exact single-use owner approval.",
+        };
+        const rows = inventory.connections.map((connection) => {
+          const { tools } = connection;
+          const next =
+            connection.credential === "expired"
+              ? "renew_authentication"
+              : connection.kind === "slack" &&
+                  connection.credential === "absent"
+                ? "owner_authentication_required"
+                : connection.lastDiscovery === "not_tested"
+                  ? "owner_discovery_required"
+                  : connection.lastDiscovery === "failed"
+                    ? "review_discovery_failure"
+                    : tools.disabled + tools.read + tools.approval === 0
+                      ? "no_tools_discovered"
+                      : tools.read + tools.approval === 0
+                        ? "owner_tool_consent_required"
+                        : "no_enrollment_step_known";
+          return {
+            ref: connection.ref,
+            kind: connection.kind,
+            credential: connection.credential,
+            next,
+          } as const;
+        });
+        const slack = inventory.connections.find((row) => row.kind === "slack");
+        const slackEnrollment = slack
+          ? ""
+          : inventory.truncated
+            ? "Slack enrollment status is unknown because inventory is truncated. Check the existing connection in Connections before any sign-in."
+            : "No saved Slack authorization is visible. To use Slack, the owner must review user consent and save authorization after host setup.";
+        const report = () => {
+          const guidance = [...new Set(rows.map((row) => row.next))]
+            .map((step) => `${step}: ${steps[step]}`)
+            .join("\n");
+          return `${heading}\nHost configuration loaded. Saved connections: ${inventory.configuredConnections}; showing ${rows.length}; omitted: ${inventory.configuredConnections - rows.length}. Check Connections for omitted rows.\n${inventory.configuredConnections === 0 ? "Owner enrollment required: no connections saved. The owner can add a trusted server in Connections; no consent or server health is established.\n" : ""}Slack OAuth setup (optional for other servers): ${deps.slackMcpConfigured ? "configured locally; provider app setup is not verified" : "configuration required for Slack enrollment/reconnect; the owner/operator must configure the Slack app and dashboard callback"}. ${slackEnrollment}\nBrowser consent/save progress is unknown here. The owner should check Connections for Resume Slack setup before starting another sign-in. Saving authorization does not enable tools.\n${JSON.stringify(rows)}\n${guidance}\nFor remote servers, an absent credential is not automatically a blocker: public servers may need none; the server's requirement is unknown here. ${caution}`;
+        };
+        let text = report();
+        // Preserve the checklist and caveats within the smallest chat limit.
+        while (text.length > 3500 && rows.length) {
+          rows.pop();
+          text = report();
+        }
+        return text;
+      }
       case "native-coding":
         return deps.nativeCoding
           ? deps.nativeCoding()

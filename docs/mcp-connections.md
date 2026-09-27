@@ -103,6 +103,33 @@ forwarded/quoted/history text, worker results, guests and public messages cannot
 reconcile. Slack quote/code blocks and WhatsApp forwarded messages cannot cancel
 either; send a new plain message from the authenticated owner account.
 
+## Ask June what enrollment still needs
+
+In an owner-private turn, ask “What is missing before I can use MCP?” June can
+return `{"text":"","inspection":"mcp-enrollment"}` without other actions,
+even when MCP is disabled. The host sends a timestamped, credential-free
+checklist using the bounded connection inventory, not a live server probe.
+The full report is capped at 3,500 characters with explicit shown/omitted counts;
+check Connections for omitted entries. Missing Slack in a truncated inventory
+means unknown enrollment, not a reason to reconnect.
+
+The checklist distinguishes missing host configuration, no saved enrollment,
+expired authentication, untested connections, failed discovery, no discovered
+tools, and missing owner tool consent. Slack app setup is separate from the
+owner's user consent and final dashboard save. Browser-bound consent progress is
+unknown to this inspection: check **Connections** for **Resume Slack setup**
+before starting another sign-in. Slack setup is optional for other MCP servers.
+
+For a remote server, no saved credential may be intentional public access; the
+host cannot infer that server's authentication requirements. Failed discovery
+does not prove an outage or distinguish rejected credentials from server failure.
+Saved credentials, past successful discovery and saved permissions do not prove
+current authorization or availability. Each connection's next step is guidance
+for the owner, never authority for June to enroll, authenticate, discover, or
+grant permissions. No endpoints, login URLs, credential values, connection names,
+tool contracts or raw errors are returned. Public/guest turns and synthesis
+cannot invoke the checklist.
+
 ## Host configuration
 
 Enable the existing private console and add this optional configuration:

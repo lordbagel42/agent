@@ -237,6 +237,7 @@ export interface CompanionReply {
     | "mcp-connections"
     | "personality"
     | "backup"
+    | "mcp-enrollment"
     | { target: "imports"; selection: string | null; offset: number }
     | { target: "import-approval"; selection: string };
   /** One owner-private query of retained evidence, never a permission grant. */

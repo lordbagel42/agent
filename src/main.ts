@@ -984,6 +984,7 @@ async function main() {
         lifecycle.ready && (await registry.routes.health()).ok,
       capabilityMatrix: () =>
         capabilitySnapshot(config, dependencies, !!imports),
+      slackMcpConfigured: !!slackMcp,
       nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
       slackSearch: config.slack
         ? {
