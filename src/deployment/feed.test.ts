@@ -33,7 +33,7 @@ test("release inspection preserves global blocks and unknown candidate/identity 
     runningRevision: undefined,
   });
   const unknown = await release({
-    action: "request",
+    action: "inspect",
     revision: "c".repeat(40),
   });
   expect(unknown).toContain("Running revision: unknown");
@@ -49,6 +49,32 @@ test("release inspection preserves global blocks and unknown candidate/identity 
   expect(fetchOnly).toContain("Reason is outside the bounded feed");
   expect(fetchOnly).not.toContain(
     "Last recorded candidate status: fetch_failed",
+  );
+  feed.events = [
+    { ...event, sequence: 1, status: "healthy", reason: null },
+    ...[2, 3, 4].map((sequence) => ({ ...event, sequence })),
+  ];
+  const historical = await release({
+    action: "inspect",
+    revision: event.revision,
+  });
+  expect(historical).toContain(
+    "Controller verified this revision healthy at 1970-01-01T00:00:02.000Z",
+  );
+  expect(historical).toContain(
+    "Exact revision matches running process: unknown",
+  );
+  const current = createReleaseTool({
+    read: async () => ({ ...feed, events: [] }),
+    runningRevision: event.revision,
+  });
+  const matching = await current({
+    action: "inspect",
+    revision: event.revision,
+  });
+  expect(matching).toContain("Exact revision matches running process: yes");
+  expect(matching).toContain(
+    "No healthy/reconciled observation for this revision in the bounded feed",
   );
 });
 

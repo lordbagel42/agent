@@ -86,7 +86,7 @@ const reasons: Record<
 };
 
 /** No controller mutations: main is already watched under installed policy.
- * The conversation journal records request intent and this bounded receipt. */
+ * The conversation journal records this bounded inspection receipt. */
 export function createReleaseTool(options: {
   read: () => Promise<DeploymentFeed>;
   runningRevision: string | undefined;
@@ -98,17 +98,19 @@ export function createReleaseTool(options: {
     const running =
       options.runningRevision ?? "unknown (no immutable release identity)";
     const lines = [
-      request.action === "request"
-        ? `Release request recorded in this conversation for ${request.revision}. This is tracking intent only, not approval, queue admission, activation, or a scheduled follow-up.`
-        : `Release inspection: ${request.revision ?? "recent controller events"}.`,
+      `Deployment inspection: ${request.revision ?? "recent controller events"}.`,
       `Running revision: ${running} (loaded process identity, observed ${observedAt}; not a fresh independent controller health attestation).`,
       "Policy: independent controller follows trusted lordbagel42/agent main. This tool cannot push, approve, deploy, retry, reconcile, or change policy.",
     ];
+    if (request.revision)
+      lines.push(
+        `Exact revision matches running process: ${options.runningRevision ? (request.revision === options.runningRevision ? "yes" : "no") : "unknown"}. This compares exact identities, not commit ancestry or current health.`,
+      );
     const feed = await options.read().catch(() => undefined);
     if (!feed)
       return [
         ...lines,
-        "Controller feed unavailable. Checks, blockers, and release acceptance are unknown; no deployment action was taken.",
+        "Controller feed unavailable. Progress, checks, blockers, and historical healthy observations are unknown; no deployment action was taken.",
       ].join("\n\n");
     const events = request.revision
       ? feed.events.filter((event) => event.revision === request.revision)
@@ -116,6 +118,16 @@ export function createReleaseTool(options: {
     // Fetch failures describe controller observation, not candidate lifecycle.
     // Match the controller's Store.status lookup.
     const latest = events.findLast((event) => event.status !== "fetch_failed");
+    if (request.revision) {
+      const healthy = events.findLast(
+        (event) => event.status === "healthy" || event.status === "reconciled",
+      );
+      lines.push(
+        healthy
+          ? `Controller verified this revision healthy at ${new Date(healthy.at).toISOString()} (event ${healthy.sequence}, ${healthy.status}). Historical evidence that it was live then, not proof it is running or healthy now.`
+          : "No healthy/reconciled observation for this revision in the bounded feed; whether it previously became live is unknown, not disproven.",
+      );
+    }
     const blocker = feed.events.findLast((event) => event.status === "blocked");
     lines.push(
       `Controller blocked: ${feed.blocked ? "yes" : "no (as last published; not a liveness guarantee)"}.${feed.blocked ? ` ${blocker?.reason ? `${blocker.reason}: ${reasons[blocker.reason]}` : "Reason is outside the bounded feed; operator inspection required."}` : ""}`,

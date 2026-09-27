@@ -50,13 +50,12 @@ const companionReplySchema = z.strictObject({
   webSearch: searchQuerySchema.optional(),
   release: z
     .strictObject({
-      action: z.enum(["request", "inspect"]),
+      action: z.literal("inspect"),
       revision: z
         .string()
         .regex(/^[a-f0-9]{40}$/)
         .nullable(),
     })
-    .refine((value) => value.action !== "request" || value.revision !== null)
     .optional(),
   mcp: z
     .strictObject({
@@ -158,16 +157,16 @@ export function replyJsonSchema(
               type: ["object", "null"],
               additionalProperties: false,
               properties: {
-                action: { type: "string", enum: ["request", "inspect"] },
+                action: { type: "string", enum: ["inspect"] },
                 revision: {
                   type: ["string", "null"],
                   description:
-                    "Exact lowercase 40-character SHA; required for request, null inspects recent events.",
+                    "Exact lowercase 40-character SHA to track, or null to inspect recent events.",
                 },
               },
               required: ["action", "revision"],
               description:
-                "Request release tracking or inspect controller evidence. No activation, approval, push, or retry. Leave text empty and other actions unset.",
+                "Inspect deployment progress, blockers, and revision identity using existing controller evidence. Read-only; no activation, approval, push, or retry. Leave text empty and other actions unset.",
             },
           }
         : {}),

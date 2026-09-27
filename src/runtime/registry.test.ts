@@ -143,8 +143,8 @@ describe("Rivet conversation workflow", () => {
       blocked: false,
       events: [],
     };
-    let directive: NonNullable<CompanionReply["release"]> = {
-      action: "request",
+    const directive: NonNullable<CompanionReply["release"]> = {
+      action: "inspect",
       revision,
     };
     const registry = createJuneRegistry({
@@ -225,7 +225,6 @@ describe("Rivet conversation workflow", () => {
         elapsedMs: index,
       });
       await writeFile(file, JSON.stringify(feed), { mode: 0o640 });
-      directive = { action: index === 0 ? "request" : "inspect", revision };
       await june.send("inbox", {
         type: "event",
         event: {
@@ -255,8 +254,14 @@ describe("Rivet conversation workflow", () => {
       expect(content.text).toContain("not individual check logs");
       expect(content.text.length).toBeLessThan(3500);
     }
-    expect(requests[0]?.system).toContain("Release tracking");
-    expect(JSON.stringify(sent[0]?.content)).toContain("tracking intent only");
+    expect(requests[0]?.system).toContain("Deployment tracking");
+    expect(JSON.stringify(sent[0]?.content)).not.toContain("request recorded");
+    expect(JSON.stringify(sent[4]?.content)).toContain(
+      "Controller verified this revision healthy at",
+    );
+    expect(JSON.stringify(sent[4]?.content)).toContain(
+      "Exact revision matches running process: no",
+    );
     await rm(file);
     await june.send("inbox", {
       type: "event",
@@ -285,8 +290,8 @@ describe("Rivet conversation workflow", () => {
     expect(sent[0]?.address.threadId).toBe("123.0");
     for (const release of [
       { action: "approve", revision },
-      { action: "request", revision: null },
-      { action: "request", revision: "main" },
+      { action: "request", revision },
+      { action: "inspect", revision: "main" },
       { action: "inspect", revision, principal: owner.id },
     ]) {
       expect(() =>
@@ -297,7 +302,7 @@ describe("Rivet conversation workflow", () => {
     }
     expect(() =>
       parseReply(
-        JSON.stringify({ text: "", release: { action: "request", revision } }),
+        JSON.stringify({ text: "", release: { action: "inspect", revision } }),
         [],
         {},
       ),

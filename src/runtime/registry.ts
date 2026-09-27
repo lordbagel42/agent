@@ -987,7 +987,7 @@ export function createJuneRegistry(deps: Dependencies) {
                               deps.latency?.mark(event, `${stage}_finished`);
                             }
                             if (generated.release) {
-                              // Read-only controller inspection plus conversational intent.
+                              // Read-only controller inspection.
                               // Keep the result in the existing model step's receipt: no
                               // new workflow position or replayable activation side effect.
                               generated = {
