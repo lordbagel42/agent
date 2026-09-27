@@ -3,6 +3,21 @@ import { type Browser, type BrowserContext, chromium } from "playwright";
 import { z } from "zod";
 import type { ToolAction, ToolAdapter } from "./broker.js";
 
+const unsafeEnvironmentVariables = [
+  "DEBUG",
+  "PWDEBUG",
+  "NODE_DEBUG",
+  "NODE_DEBUG_NATIVE",
+  "npm_config_pwdebug",
+  "npm_package_config_pwdebug",
+  "SELENIUM_REMOTE_URL",
+  "SELENIUM_REMOTE_HEADERS",
+  "SELENIUM_REMOTE_CAPABILITIES",
+];
+// Libraries may cache diagnostic settings at import: clearing env is not enough.
+const unsafeEnvironmentAtImport = unsafeEnvironmentVariables.some(
+  (name) => process.env[name],
+);
 const selector = z.string().min(1).max(512);
 const step = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("click"), selector }),
@@ -46,6 +61,24 @@ export function browserOperationDigest(recipe: BrowserOperation): string {
     .update(JSON.stringify(browserOperationSchema.parse(recipe)))
     .digest("hex");
 }
+
+/** Host credential recipes contain references/selectors, never literal secrets or output. */
+export const browserCredentialOperationSchema = browserOperationSchema.refine(
+  (recipe) => {
+    const logins = recipe.steps.filter(
+      (entry) => entry.kind === "login",
+    ).length;
+    const bearer = recipe.requests.some((entry) => entry.credential);
+    return (
+      /^[a-z][a-z0-9_-]{0,63}$/u.test(recipe.name) &&
+      (bearer ? logins === 0 : logins === 1) &&
+      !recipe.steps.some((entry) => entry.kind === "fill") &&
+      recipe.outputSelector === undefined &&
+      JSON.stringify(recipe).length <= 1400
+    );
+  },
+  "Credential operations require a short lowercase name, one credential kind, no literal fills or output, and at most 1400 JSON characters",
+);
 
 export interface BrowserOptions {
   operations: BrowserOperation[];
@@ -203,6 +236,18 @@ export class BrowserAdapter implements ToolAdapter {
     credential: unknown,
     signal?: AbortSignal,
   ): Promise<BrowserResult> {
+    return this.executeWithCredentialResolver(
+      action,
+      async () => credential,
+      signal,
+    );
+  }
+
+  async executeWithCredentialResolver(
+    action: ToolAction,
+    resolveCredential: () => Promise<unknown>,
+    signal?: AbortSignal,
+  ): Promise<BrowserResult> {
     let browser: Browser | undefined;
     let context: BrowserContext | undefined;
     let stopped = false;
@@ -282,11 +327,13 @@ export class BrowserAdapter implements ToolAdapter {
         denied();
       const bearer = recipe.requests.some((request) => request.credential);
       const login = recipe.steps.some((step) => step.kind === "login");
-      const secret = bearer
-        ? bearerCredential.parse(credential).bearerToken
-        : undefined;
-      const credentials = login ? loginCredential.parse(credential) : undefined;
-      if (!bearer && !login && credential !== null && credential !== undefined)
+      // Logs/remote-browser controls can disclose headers, DOM and evaluation
+      // arguments. Refuse secret use rather than redact every representation.
+      if (
+        (bearer || login) &&
+        (unsafeEnvironmentAtImport ||
+          unsafeEnvironmentVariables.some((name) => process.env[name]))
+      )
         denied();
       this.#active.set(
         cancel,
@@ -296,6 +343,14 @@ export class BrowserAdapter implements ToolAdapter {
       );
       signal?.addEventListener("abort", abort, { once: true });
       timer = setTimeout(abort, this.#timeout);
+      const credential = await resolveCredential();
+      if (stopped || signal?.aborted) denied();
+      const secret = bearer
+        ? bearerCredential.parse(credential).bearerToken
+        : undefined;
+      const credentials = login ? loginCredential.parse(credential) : undefined;
+      if (!bearer && !login && credential !== null && credential !== undefined)
+        denied();
       browser = await chromium.launch({
         headless: true,
         chromiumSandbox: true,

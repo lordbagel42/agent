@@ -2,7 +2,10 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { RAYGEN_SLACK_ID } from "./core/social.js";
 import { jevQuestionSchema } from "./models/jev.js";
-import { browserOperationSchema } from "./tools/browser.js";
+import {
+  browserCredentialOperationSchema,
+  browserOperationSchema,
+} from "./tools/browser.js";
 import { browserMutationSchema } from "./tools/browser-proposals.js";
 
 const nonempty = z.string().trim().min(1);
@@ -147,6 +150,10 @@ const schema = z
           .max(64)
           .default([]),
         mutationOperations: z.array(browserMutationSchema).max(16).default([]),
+        credentialOperations: z
+          .array(browserCredentialOperationSchema)
+          .max(64)
+          .default([]),
         timeoutMs: z.number().int().min(100).max(60000).default(15000),
         execution: z
           .strictObject({
@@ -164,7 +171,9 @@ const schema = z
         (browser) =>
           !browser.enabled ||
           (!!browser.execution &&
-            browser.readOperations.length + browser.mutationOperations.length >
+            browser.readOperations.length +
+              browser.mutationOperations.length +
+              browser.credentialOperations.length >
               0),
         "Enabled browsing requires explicit isolated execution and named recipes",
       )

@@ -68,7 +68,7 @@ import {
 import { createRivetReader } from "./runtime/rivet-inspection.js";
 import { SocialPermissions } from "./runtime/social.js";
 import { CapabilityBroker } from "./tools/broker.js";
-import { BrowserAdapter } from "./tools/browser.js";
+import { BrowserAdapter, browserOperationDigest } from "./tools/browser.js";
 import { createBrowserProposal } from "./tools/browser-proposals.js";
 import { McpConnections } from "./tools/connections.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
@@ -304,9 +304,10 @@ async function main() {
   if (operatorToken.length < 32) throw new Error("Short operator token");
   startupStage = "isolated browser execution prerequisites";
   const browserHostGate = process.env.JUNE_ALLOW_ISOLATED_BROWSER === "1";
-  const anonymousBrowserOperations = [
+  const browserOperations = [
     ...config.browser.readOperations,
     ...config.browser.mutationOperations,
+    ...config.browser.credentialOperations,
   ];
   let browser: BrowserAdapter | undefined;
   if (config.browser.enabled && browserHostGate) {
@@ -322,6 +323,7 @@ async function main() {
         "DEBUG",
         "PWDEBUG",
         "NODE_DEBUG",
+        "NODE_DEBUG_NATIVE",
         "npm_config_pwdebug",
         "npm_package_config_pwdebug",
         "SELENIUM_REMOTE_URL",
@@ -332,8 +334,12 @@ async function main() {
       throw new Error("Browser isolation prerequisites not met");
     await privateDirectory(execution.home);
     await privateDirectory(execution.tempDirectory);
+    for (const recipe of config.browser.credentialOperations) {
+      if (!credentials) throw new Error("Browser credential binding required");
+      credentials.assertBrowserBinding(recipe);
+    }
     browser = new BrowserAdapter({
-      operations: anonymousBrowserOperations,
+      operations: browserOperations,
       timeoutMs: config.browser.timeoutMs,
       requireRecipeDigest: true,
       environment: { HOME: execution.home, TMPDIR: execution.tempDirectory },
@@ -351,19 +357,33 @@ async function main() {
       {
         owner: config.owner.id,
         tools: browser ? { browser } : {},
-        resolveCredential: async (scope) => {
-          // Anonymous operations never consult a vault or ambient environment secret.
+        resolveCredential: async (scope, action) => {
+          const args = action?.arguments;
           if (
-            browser &&
-            anonymousBrowserOperations.some(
-              (recipe) =>
-                recipe.account === scope.account &&
-                recipe.item === scope.item &&
-                recipe.origin === scope.origin,
-            )
+            !browser ||
+            action?.tool !== "browser" ||
+            !args ||
+            typeof args !== "object" ||
+            Array.isArray(args)
           )
-            return null;
-          throw new Error("capability_credentials_unavailable");
+            throw new Error("capability_credentials_unavailable");
+          const recipe = browserOperations.find(
+            (entry) =>
+              entry.name === args.operation &&
+              browserOperationDigest(entry) === args.recipeDigest &&
+              entry.account === scope.account &&
+              entry.item === scope.item &&
+              entry.origin === scope.origin,
+          );
+          if (!recipe) throw new Error("capability_credentials_unavailable");
+          // The exact recipe, not just a shared scope, selects vault access.
+          if (config.browser.credentialOperations.includes(recipe)) {
+            if (!credentials)
+              throw new Error("capability_credentials_unavailable");
+            credentials.assertBrowserBinding(recipe);
+            return credentials(scope);
+          }
+          return null;
         },
       },
     );
@@ -857,9 +877,13 @@ async function main() {
         .flatMap(([, value]) => (value ? [value] : [])),
     }),
     browserProposal:
-      browser && capabilities && config.browser.mutationOperations.length
+      browser &&
+      capabilities &&
+      (config.browser.mutationOperations.length ||
+        config.browser.credentialOperations.length)
         ? createBrowserProposal({
             operations: config.browser.mutationOperations,
+            credentialOperations: config.browser.credentialOperations,
             browser,
             broker: capabilities,
           })
@@ -877,7 +901,7 @@ async function main() {
             ? `Generic capability routes are mounted at /operator/capabilities. Registered tools: ${capabilities.registeredToolCount}. GET /status and /audit inspect metadata; POST /proposals validates only; POST /grants requires owner bearer authority and an exact action. Execution requires an unexpired, unrevoked, single-use grant. Registration and mounting are not grants or live verification. June cannot mint grants or access credentials through inspection.`
             : "Generic capabilities are disabled; no generic capability routes or tools are mounted. Inspection grants nothing and does not enable them.",
           `Opaque action links: ${capabilities && config.console ? "mounted at /console/action-links; operator bearer-only /operator/capabilities/links issues exact owner-grant links and /operator/capabilities/links/:token/revoke revokes them. Opening a link only reviews; execution requires authenticated owner confirmation with a signed exact-action proof. Restart loses link payloads and disables outstanding links" : "disabled; both generic capabilities and the private console are required"}. These are not dashboard sign-in links. June cannot issue action links or confirm actions through inspection.`,
-          `Browser reads: ${JSON.stringify({
+          `Browser operations: ${JSON.stringify({
             state: !config.browser.enabled
               ? "disabled"
               : browser
@@ -885,8 +909,9 @@ async function main() {
                 : "blocked_host_gate",
             enabledRequested: config.browser.enabled,
             hostGate: browserHostGate,
-            configuredOperations: config.browser.readOperations.length,
-            operationNames: config.browser.readOperations
+            configuredOperations: browserOperations.length,
+            credentialOperations: config.browser.credentialOperations.length,
+            operationNames: browserOperations
               .slice(0, 10)
               .map((recipe) => recipe.name),
             configuredMutations: config.browser.mutationOperations.length,
@@ -894,11 +919,15 @@ async function main() {
               !!browser &&
               !!capabilities &&
               config.browser.mutationOperations.length > 0,
+            credentialProposalsAvailable:
+              !!browser &&
+              !!capabilities &&
+              config.browser.credentialOperations.length > 0,
             isolation: config.browser.execution
               ? "operator_acknowledged_not_verified"
               : "not_configured",
             liveVerified: "unknown",
-          })}. Browsing requires explicit browser.enabled, capabilities.directory, isolated execution configuration and JUNE_ALLOW_ISOLATED_BROWSER=1. Read recipes remain anonymous GET-only without interaction steps. Separately configured mutations permit one anonymous fill or click; browserProposal with operation:null lists names for exact proposals only. No vault access or model grant/execute path exists. Every execution requires its own exact recipe-digest/account/item/origin grant. Results are receipts only, not webpage content. Inspection does not launch Chromium or authorize actions; host isolation acknowledgements are not sandbox verification.`,
+          })}. Browsing requires explicit browser.enabled, capabilities.directory, isolated execution configuration and JUNE_ALLOW_ISOLATED_BROWSER=1. Read recipes are anonymous GETs without steps or vault lookup. Separately configured mutations permit one anonymous fill or click. CredentialOperations require exact validated credential bindings; browserProposal with operation:null lists names for exact proposals only. No model grant/execute or credential-reading path exists. Every execution requires its own exact recipe-digest/account/item/origin grant. Results are receipts only, not webpage content. Inspection does not launch Chromium, read credentials or authorize operations; host isolation acknowledgements are not sandbox verification.`,
           "Browser cancellation requests cleanup, not confirmed stoppage. Pending work retains admission until it settles. Cleanup failure leaves the receipt unknown and blocks new work on that adapter. Never describe unknown as success or safely retryable; owner reconciliation requires independently confirmed stoppage and outcome.",
         ].join("\n"),
       mcp: connections,

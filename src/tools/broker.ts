@@ -49,12 +49,22 @@ export interface ToolAdapter {
     authorized: () => boolean,
     signal?: AbortSignal,
   ): Promise<unknown>;
+  /** Optional deferred path: validate the exact operation before requesting its
+   * credential. Await the one-use callback before any external effect; never
+   * retain it or return its result. The broker rechecks authorization on release. */
+  executeWithCredentialResolver?(
+    action: ToolAction,
+    resolveCredential: () => Promise<unknown>,
+    signal?: AbortSignal,
+  ): Promise<unknown>;
 }
 export interface BrokerOptions {
   owner: string;
   tools: Record<string, ToolAdapter>;
   resolveCredential(
     scope: Readonly<Pick<ToolAction, "account" | "item" | "origin">>,
+    /** Exact broker-validated action for host recipe selection; never model authority. */
+    action?: Readonly<ToolAction>,
   ): Promise<unknown>;
   now?: () => number;
 }
@@ -161,6 +171,8 @@ export class CapabilityBroker {
         Object.freeze({
           execute: adapter.execute.bind(adapter),
           executeAuthorized: adapter.executeAuthorized?.bind(adapter),
+          executeWithCredentialResolver:
+            adapter.executeWithCredentialResolver?.bind(adapter),
         }),
       ]),
     );
@@ -384,39 +396,59 @@ export class CapabilityBroker {
     const controller = new AbortController();
     this.#active.set(grantId, controller);
     try {
-      const credential = await this.#options.resolveCredential(
-        Object.freeze({
-          account: action.account,
-          item: action.item,
-          origin: action.origin,
-        }),
-      );
-      // Atomic admission after asynchronous credential lookup. A cancellation
-      // committed before admission blocks the adapter; later cancellation cannot
-      // recall it. The event is intent, not proof the adapter actually ran.
-      this.#transaction(() => {
+      const scope = Object.freeze({
+        account: action.account,
+        item: action.item,
+        origin: action.origin,
+      });
+      let requested = false;
+      let admitted = false;
+      const authorize = () => {
+        if (!this.#active.has(grantId)) deny();
         this.#grant(principal, grantId);
         if (linkToken !== undefined) this.#link(principal, linkToken);
         if (this.#receipt(grantId)?.status !== "unknown") deny();
-        this.#event(grantId, "adapter_admitted");
-      });
+      };
       const authorized = () => {
         try {
-          this.#grant(principal, grantId);
-          if (linkToken !== undefined) this.#link(principal, linkToken);
-          return this.#receipt(grantId)?.status === "unknown";
+          authorize();
+          return true;
         } catch {
           return false;
         }
       };
-      if (adapter.executeAuthorized)
-        await adapter.executeAuthorized(
+      const resolveCredential = async () => {
+        if (requested) deny();
+        requested = true;
+        authorize();
+        const credential = await this.#options.resolveCredential(scope, action);
+        // Cancellation/expiry during lookup prevents releasing the secret to
+        // the adapter. A retained callback cannot resolve outside this execution.
+        this.#transaction(() => {
+          authorize();
+          this.#event(grantId, "adapter_admitted");
+          admitted = true;
+        });
+        return credential;
+      };
+      if (adapter.executeWithCredentialResolver)
+        await adapter.executeWithCredentialResolver(
           action,
-          credential,
-          authorized,
+          resolveCredential,
           controller.signal,
         );
-      else await adapter.execute(action, credential, controller.signal);
+      else {
+        const credential = await resolveCredential();
+        if (adapter.executeAuthorized)
+          await adapter.executeAuthorized(
+            action,
+            credential,
+            authorized,
+            controller.signal,
+          );
+        else await adapter.execute(action, credential, controller.signal);
+      }
+      if (!admitted) deny();
       // Await without a race. The adapter owns confirmation: a cancellation
       // request cannot erase an independently confirmed external outcome.
       this.#transaction(() => {

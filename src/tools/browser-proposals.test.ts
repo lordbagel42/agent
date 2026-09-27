@@ -281,3 +281,80 @@ test("exact human approval binds one browser mutation; fill grants cannot submit
   ])
     expect(browserMutationSchema.safeParse(invalid).success).toBe(false);
 });
+
+test("credential proposals expose references and credential kind without reading values or granting authority", async (t) => {
+  const bearer: BrowserOperation = {
+    name: "private-status",
+    account: "fixture",
+    item: "status",
+    origin: "https://fixture.invalid",
+    url: "https://fixture.invalid/status",
+    requests: [
+      {
+        url: "https://fixture.invalid/status",
+        method: "GET",
+        credential: true,
+      },
+    ],
+    success: { selector: "#ok", text: "ready" },
+  };
+  const login: BrowserOperation = {
+    ...bearer,
+    name: "private-login",
+    item: "login",
+    requests: [{ url: bearer.url, method: "GET" }],
+    steps: [
+      {
+        kind: "login",
+        usernameSelector: "#username",
+        passwordSelector: "#password",
+      },
+    ],
+  };
+  const browser = new BrowserAdapter({ operations: [bearer, login] });
+  let reads = 0;
+  const broker = new CapabilityBroker(":memory:", {
+    owner: "owner",
+    tools: { browser },
+    resolveCredential: async () => {
+      reads++;
+      return { bearerToken: "synthetic-value-never-for-review" };
+    },
+  });
+  t.onTestFinished(async () => {
+    await browser.close();
+    broker.close();
+  });
+  const options = {
+    operations: [],
+    credentialOperations: [bearer, login],
+    browser,
+    broker,
+  };
+  const propose = createBrowserProposal(options);
+  expect(propose(null)).toContain('"private-status","private-login"');
+  for (const [recipe, kind] of [
+    [bearer, "bearer"],
+    [login, "login"],
+  ] as const) {
+    const report = propose(recipe.name);
+    const encoded = report.slice(report.indexOf("\n") + 1);
+    const review = JSON.parse(encoded);
+    expect(review.credential).toEqual({ kind, values: "not_exposed" });
+    expect(review.recipe.url).toBe("https://fixture.invalid/status");
+    expect(review.recipe.steps).toEqual(recipe.steps ?? []);
+    expect(review.action.arguments.operation).toBe(recipe.name);
+    expect(encoded).not.toMatch(/[<>&`*_~@/.]/u);
+    expect(report).not.toContain("synthetic-value-never-for-review");
+    expect(report.length).toBeLessThan(3500);
+  }
+  expect(() => propose("unknown")).toThrow("browser_proposal_unavailable");
+  expect(() =>
+    createBrowserProposal({
+      ...options,
+      credentialOperations: [{ ...bearer, outputSelector: "#private" }],
+    }),
+  ).toThrow();
+  expect(reads).toBe(0);
+  expect(broker.auditEvents("owner")).toEqual([]);
+});

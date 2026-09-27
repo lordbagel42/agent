@@ -180,9 +180,9 @@ test("expired, revoked grants and malformed JSON fail closed", async () => {
   broker.close();
 });
 test("durable in-flight intent is unknown on reopen and cannot execute again", async () => {
-  let started = false;
+  const started = Promise.withResolvers<void>();
   const { broker, path, options } = setup(async () => {
-    started = true;
+    started.resolve();
     return new Promise(() => {});
   });
   const grant = broker.grant("owner", {
@@ -191,8 +191,7 @@ test("durable in-flight intent is unknown on reopen and cannot execute again", a
     expiresAt: Date.now() + 60_000,
   });
   void broker.execute("worker", grant, action);
-  await Promise.resolve();
-  expect(started).toBe(true);
+  await started.promise;
   broker.close();
   const reopened = new CapabilityBroker(path, options);
   expect((await reopened.execute("worker", grant, action)).status).toBe(
@@ -425,4 +424,95 @@ test("independent owner routes reject unauthenticated/cross-origin writes and pr
   expect((await success.json()).status).toBe("succeeded");
   expect(calls()).toBe(1);
   broker.close();
+});
+
+test("deferred credentials stay one-use and are not released after revocation or execution settlement", async () => {
+  for (const failure of [
+    "revoked",
+    "cancelled",
+    "expired",
+    "link-revoked",
+    "settled",
+    "pending-after-settlement",
+  ]) {
+    let now = 100;
+    const pending = Promise.withResolvers<unknown>();
+    const entered = Promise.withResolvers<void>();
+    let retained: (() => Promise<unknown>) | undefined;
+    let lateLookup: Promise<unknown> | undefined;
+    let executionSignal: AbortSignal | undefined;
+    let reads = 0;
+    let releases = 0;
+    const broker = new CapabilityBroker(":memory:", {
+      owner: "owner",
+      now: () => now,
+      resolveCredential: async () => {
+        reads++;
+        entered.resolve();
+        return pending.promise;
+      },
+      tools: {
+        "mail.send": {
+          execute: async () => {
+            throw new Error("must use deferred path");
+          },
+          executeWithCredentialResolver: async (_action, resolve, signal) => {
+            retained = resolve;
+            executionSignal = signal;
+            if (failure === "settled") return;
+            if (failure === "pending-after-settlement") {
+              lateLookup = resolve().then((credential) => {
+                releases++;
+                return credential;
+              });
+              return;
+            }
+            await resolve();
+            releases++;
+          },
+        },
+      },
+    });
+    try {
+      const grant = broker.grant("owner", {
+        audience: "worker",
+        action,
+        expiresAt: 200,
+      });
+      const link = broker.issueLink("owner", grant, 200);
+      const running = broker.execute("worker", grant, action, link);
+      if (failure !== "settled" && failure !== "pending-after-settlement") {
+        await entered.promise;
+        if (failure === "revoked") broker.revoke("owner", grant);
+        if (failure === "cancelled") {
+          broker.cancel("owner", grant);
+          expect(executionSignal?.aborted).toBe(true);
+          expect(() =>
+            broker.reconcile("owner", grant, {
+              confirmedStopped: true,
+              outcome: "failed",
+            }),
+          ).toThrow("capability_denied");
+        }
+        if (failure === "expired") now = 200;
+        if (failure === "link-revoked") broker.revokeLink("owner", link);
+        pending.resolve("synthetic-private-value");
+      }
+      const receipt = await running;
+      expect(receipt.status).toBe("unknown");
+      if (failure === "pending-after-settlement") {
+        pending.resolve("synthetic-private-value");
+        await expect(lateLookup).rejects.toThrow("capability_denied");
+      }
+      expect(retained).toBeDefined();
+      await expect(retained?.()).rejects.toThrow("capability_denied");
+      expect(reads).toBe(failure === "settled" ? 0 : 1);
+      expect(releases).toBe(0);
+      expect(JSON.stringify(broker.auditEvents("owner"))).not.toContain(
+        "synthetic-private-value",
+      );
+    } finally {
+      broker.close();
+    }
+  }
 });

@@ -5,7 +5,8 @@ import {
 } from "node:http";
 import { chromium } from "playwright";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ToolAction } from "./broker.js";
+import { createBitwardenCredentialResolver } from "../credentials/bitwarden.js";
+import { CapabilityBroker, type ToolAction } from "./broker.js";
 import { BrowserAdapter, type BrowserOperation } from "./browser.js";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -13,6 +14,7 @@ afterEach(async () => {
   for (const close of cleanup.reverse()) await close();
   cleanup.length = 0;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 async function server(
@@ -399,4 +401,191 @@ test("host read grants bind the recipe revision and do not inherit credentials",
     env: {},
   });
   expect(Object.keys(launch.mock.calls[0]?.[0]?.env ?? {})).toEqual([]);
+});
+
+test("approved browser operations alone resolve fake vault secrets and suppress reflected output and failures", async () => {
+  const secret = "synthetic-vault-password-134";
+  const session = "synthetic-session-134";
+  const seen: string[] = [];
+  const local = await server((request, response) => {
+    seen.push(request.headers.authorization ?? "");
+    response.end(
+      `<div id="ok">done</div><p>${secret} ${Buffer.from(secret).toString("base64")}</p>`,
+    );
+  });
+  const origin = "https://vault-fixture.invalid";
+  // Only the fixture transport maps HTTPS to loopback. The real browser,
+  // recipe validation, route admission and response handling remain in use.
+  const launch = chromium.launch.bind(chromium);
+  const launchSpy = vi
+    .spyOn(chromium, "launch")
+    .mockImplementation(async (options) => {
+      const browser = await launch(options);
+      const newContext = browser.newContext.bind(browser);
+      vi.spyOn(browser, "newContext").mockImplementation(async (options) => {
+        const context = await newContext(options);
+        const installRoute = context.route.bind(context);
+        vi.spyOn(context, "route").mockImplementation(
+          (pattern, handler, options) =>
+            installRoute(
+              pattern,
+              async (route, request) => {
+                const fetch = route.fetch.bind(route);
+                vi.spyOn(route, "fetch").mockImplementation((options) => {
+                  expect(request.url()).toBe(`${origin}/`);
+                  return fetch({ ...options, url: `${local}/` });
+                });
+                return handler(route, request);
+              },
+              options,
+            ),
+        );
+        return context;
+      });
+      return browser;
+    });
+  const { adapter } = setup(origin, {
+    requests: [{ url: `${origin}/`, method: "GET", credential: true }],
+  });
+  const action = adapter.action("check");
+  let reads = 0;
+  let transportFailure = false;
+  const id = "12345678-1234-1234-1234-123456789abc";
+  const resolver = createBitwardenCredentialResolver(
+    {
+      executable: "/fixture/bw",
+      appDataDir: "/fixture/profile",
+      bindings: [
+        {
+          account: action.account,
+          item: action.item,
+          origin,
+          vaultItemId: id,
+          field: "bearer",
+        },
+      ],
+      session: async () => ({ key: session, expiresAt: Date.now() + 10_000 }),
+    },
+    async () => {
+      reads++;
+      if (transportFailure) throw new Error(`${secret} ${session}`);
+      return JSON.stringify({
+        id,
+        type: 1,
+        login: { password: secret },
+        notes: session,
+      });
+    },
+  );
+  const broker = new CapabilityBroker(":memory:", {
+    owner: "owner",
+    tools: { browser: adapter },
+    resolveCredential: resolver,
+  });
+  const approve = (exact: ToolAction) =>
+    broker.grant("owner", {
+      audience: "june",
+      action: exact,
+      expiresAt: Date.now() + 60_000,
+    });
+  try {
+    const invalidActions: ToolAction[] = [
+      { ...action, arguments: { operation: "missing" } },
+      {
+        ...action,
+        arguments: { operation: "check", recipeDigest: "0".repeat(64) },
+      },
+      { ...action, account: "other" },
+      { ...action, origin: "https://vault-fixture.invalid.evil" },
+    ];
+    for (const invalid of invalidActions) {
+      const receipt = await broker.execute("june", approve(invalid), invalid);
+      expect(receipt.status).toBe("unknown");
+    }
+    for (const name of [
+      "DEBUG",
+      "PWDEBUG",
+      "NODE_DEBUG",
+      "NODE_DEBUG_NATIVE",
+      "npm_config_pwdebug",
+      "npm_package_config_pwdebug",
+      "SELENIUM_REMOTE_URL",
+      "SELENIUM_REMOTE_HEADERS",
+      "SELENIUM_REMOTE_CAPABILITIES",
+    ]) {
+      vi.stubEnv(name, "pw:protocol");
+      expect(
+        (await broker.execute("june", approve(action), action)).status,
+      ).toBe("unknown");
+      vi.unstubAllEnvs();
+    }
+    expect(reads).toBe(0);
+    expect(launchSpy).not.toHaveBeenCalled();
+    const grant = approve(action);
+    await expect(broker.execute("other", grant, action)).rejects.toThrow(
+      "capability_denied",
+    );
+    expect(reads).toBe(0);
+    const receipt = await broker.execute("june", grant, action);
+    expect(receipt.status).toBe("succeeded");
+    expect(await broker.execute("june", grant, action)).toEqual(receipt);
+    expect(reads).toBe(1);
+    expect(seen).toEqual([`Bearer ${secret}`]);
+    transportFailure = true;
+    const failedVault = await broker.execute("june", approve(action), action);
+    expect(failedVault.status).toBe("unknown");
+    transportFailure = false;
+    launchSpy.mockRejectedValueOnce(new Error(`${secret} ${session}`));
+    const failedBrowser = await broker.execute("june", approve(action), action);
+    expect(failedBrowser.status).toBe("unknown");
+    const visible = JSON.stringify([
+      receipt,
+      failedVault,
+      failedBrowser,
+      broker.auditEvents("owner"),
+    ]);
+    for (const value of [
+      secret,
+      session,
+      Buffer.from(secret).toString("base64"),
+    ])
+      expect(visible).not.toContain(value);
+    expect(reads).toBe(3);
+    expect(seen).toHaveLength(1);
+  } finally {
+    broker.close();
+  }
+});
+
+test("cancellation during credential lookup waits for settlement and never launches Chromium", async () => {
+  const launch = vi.spyOn(chromium, "launch");
+  const pending = Promise.withResolvers<unknown>();
+  const entered = Promise.withResolvers<void>();
+  const { adapter, action } = setup("https://fixture.invalid", {
+    requests: [
+      { url: "https://fixture.invalid/", method: "GET", credential: true },
+    ],
+  });
+  const controller = new AbortController();
+  const running = adapter.executeWithCredentialResolver(
+    action,
+    () => {
+      entered.resolve();
+      return pending.promise;
+    },
+    controller.signal,
+  );
+  await entered.promise;
+  controller.abort();
+  let closed = false;
+  const closing = adapter.close().then(() => {
+    closed = true;
+  });
+  await Promise.resolve();
+  expect(closed).toBe(false);
+  pending.resolve({ bearerToken: "synthetic-private-value" });
+  await expect(running).rejects.toThrow("browser_action_failed");
+  await closing;
+  expect(closed).toBe(true);
+  expect(launch).not.toHaveBeenCalled();
 });

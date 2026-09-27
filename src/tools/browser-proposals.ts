@@ -2,6 +2,7 @@ import type { CapabilityBroker } from "./broker.js";
 import {
   type BrowserAdapter,
   type BrowserOperation,
+  browserCredentialOperationSchema,
   browserOperationDigest,
   browserOperationSchema,
 } from "./browser.js";
@@ -35,11 +36,21 @@ function reviewJson(value: unknown): string {
 /** No grants, credential lookup, network access, or execution on the June path. */
 export function createBrowserProposal(options: {
   operations: BrowserOperation[];
+  credentialOperations?: BrowserOperation[];
   browser: Pick<BrowserAdapter, "action">;
   broker: Pick<CapabilityBroker, "propose">;
 }): (operation: string | null) => string {
-  const proposals = options.operations.map((input) => {
-    const recipe = browserMutationSchema.parse(input);
+  const recipes = [
+    ...options.operations.map((input) => ({
+      recipe: browserMutationSchema.parse(input),
+      credentialed: false,
+    })),
+    ...(options.credentialOperations ?? []).map((input) => ({
+      recipe: browserCredentialOperationSchema.parse(input),
+      credentialed: true,
+    })),
+  ];
+  const proposals = recipes.map(({ recipe, credentialed }) => {
     const action = options.broker.propose(options.browser.action(recipe.name));
     const expected = {
       tool: "browser",
@@ -53,11 +64,35 @@ export function createBrowserProposal(options: {
     };
     if (JSON.stringify(action) !== JSON.stringify(expected))
       throw new Error("browser_proposal_recipe_mismatch");
-    const report = `Browser proposal only. Nothing ran and no permission was granted. Review the entire recipe and action in escaped JSON below (JSON decoding restores exact values). A read grant cannot approve this mutation. The authenticated owner must grant this exact action at /operator/capabilities/grants, then execute it once at /operator/capabilities/grants/:id/execute. Never automatically retry an unknown receipt.\n${reviewJson({ recipe, action })}`;
+    // Credential recipes contain only validated references/selectors, never
+    // literal fills or output. Project those fields, not a credential/vault item.
+    const review = credentialed
+      ? {
+          name: recipe.name,
+          account: recipe.account,
+          item: recipe.item,
+          origin: recipe.origin,
+          url: recipe.url,
+          requests: recipe.requests,
+          steps: recipe.steps,
+          success: recipe.success,
+        }
+      : recipe;
+    const credential = credentialed
+      ? {
+          credential: {
+            kind: recipe.steps.some((step) => step.kind === "login")
+              ? "login"
+              : "bearer",
+            values: "not_exposed",
+          },
+        }
+      : {};
+    const report = `Browser proposal only. Nothing ran and no permission was granted. Review the entire recipe and action in escaped JSON below (JSON decoding restores exact values). ${credentialed ? "Credentials are host-resolved only after approval; anonymous grants cannot authorize this recipe." : "A read grant cannot approve this mutation."} The authenticated owner must grant this exact action at /operator/capabilities/grants, then execute it once at /operator/capabilities/grants/:id/execute. Never automatically retry an unknown receipt.\n${reviewJson({ recipe: review, action, ...credential })}`;
     if (report.length > 3500) throw new Error("browser_proposal_too_large");
     return { name: recipe.name, report };
   });
-  const catalog = `Configured browser mutation names (escaped JSON): ${reviewJson(proposals.map(({ name }) => name))}. Ask to propose one exact name for review. Nothing ran; configuration is not approval.`;
+  const catalog = `Configured browser mutation and credential-operation names (escaped JSON): ${reviewJson(proposals.map(({ name }) => name))}. Ask to propose one exact name for review. Nothing ran; configuration is not approval.`;
   if (catalog.length > 3500) throw new Error("browser_proposal_too_large");
   return (operation) => {
     if (operation === null) return catalog;

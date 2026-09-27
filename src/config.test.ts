@@ -43,6 +43,7 @@ describe("configuration boundary", () => {
       enabled: false,
       readOperations: [],
       mutationOperations: [],
+      credentialOperations: [],
       timeoutMs: 15000,
     });
     expect(config.credentials).toBeUndefined();

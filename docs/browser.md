@@ -21,7 +21,8 @@ generic `CapabilityBroker` only with all of:
 
 - `capabilities.directory`, the existing private broker ledger directory;
 - top-level `browser.enabled: true` and at least one named recipe in
-  `browser.readOperations` or the separate `browser.mutationOperations` opt-in below;
+  `browser.readOperations`, `browser.mutationOperations` or the separate
+  `browser.credentialOperations` opt-in below;
 - `browser.execution.kind: "isolated-host"`, dedicated absolute `home` and
   `tempDirectory`, and explicit `true` for `processIsolationAcknowledged`,
   `networkIsolationAcknowledged`, `ephemeralStorageAcknowledged`, and
@@ -29,7 +30,7 @@ generic `CapabilityBroker` only with all of:
 - the separate host gate `JUNE_ALLOW_ISOLATED_BROWSER=1`;
 - an unprivileged host, private canonical execution directories outside Git,
   `TMPDIR` equal to the configured temporary directory, and no `DEBUG`, `PWDEBUG`
-  or `NODE_DEBUG` diagnostics, npm `pwdebug` aliases, or `SELENIUM_REMOTE_URL`,
+  or `NODE_DEBUG`/`NODE_DEBUG_NATIVE` diagnostics, npm `pwdebug` aliases, or `SELENIUM_REMOTE_URL`,
   `SELENIUM_REMOTE_HEADERS`, `SELENIUM_REMOTE_CAPABILITIES` overrides. Playwright
   reads those controls in the parent process before applying the child environment.
 
@@ -59,6 +60,31 @@ Anonymous adapter output is capped at 4096 UTF-16 units but the broker discards
 it. Authenticated vault operations and mutations are separate capabilities, not
 implicitly authorized by read configuration.
 
+## Opt-in credential operations
+
+`browser.credentialOperations` is a separate, empty-by-default list of named
+recipes using bearer injection or exactly one login step. It requires the same
+browser isolation gates plus the protected `credentials` host configuration
+described in [Credential host wiring](../src/credentials/README.md). Each recipe's
+account/item/origin and credential kind must match a configured binding; the host
+checks this at startup and again before resolution. Validation, status inspection
+and proposals never read the session file or invoke the vault CLI.
+
+Credential recipes use short lowercase names (letters, digits, hyphen, underscore;
+maximum 64 characters), no literal `fill` steps or `outputSelector`, and at most
+1400 JSON characters. URLs, selectors, success text, names and aliases must be
+nonsecret configuration. Use a typed `login` step for both username and password;
+submission is a separately configured click, never appended automatically.
+The entire recipe is digest-bound, including exact requests and use budgets.
+
+June's owner-private `browserProposal` list/proposal path includes these recipes
+as credentialed proposals containing only configuration references and the exact
+action. It cannot read credentials, mint grants or execute. The owner must approve
+and execute through the authenticated capability routes. A credentialed recipe
+never returns page text, screenshots, vault item bodies or errors, only a receipt.
+An anonymous recipe sharing its account/item/origin still never reads the vault.
+No credential recipe, default binding or approval is installed automatically.
+
 ## Integration
 
 The repository pins `playwright: "1.63.0"`. Install its Chromium build with
@@ -70,6 +96,18 @@ profile/cookies, CDP port, or remote browser endpoint is used.
 An optional host-only `executablePath` selects an installed executable. Prefer
 the matching Playwright-managed build/cache; arbitrary system browser versions
 are not verified. `PLAYWRIGHT_BROWSERS_PATH` can select the host's managed cache.
+
+The broker uses `executeWithCredentialResolver` for browser actions: the browser
+validates the exact configured recipe before invoking the one-use credential
+callback. The callback checks grant/link validity both before lookup and after
+lookup, so revocation or expiry while the vault is pending cannot release the
+credential. A callback retained past execution cannot read the vault. Browser
+cancellation also covers the lookup interval. Direct `execute(action, credential)`
+is a trusted low-level fixture API, not a June-callable secret-reading tool.
+Credentialed operations refuse `DEBUG`, `PWDEBUG`, `NODE_DEBUG`, and
+`NODE_DEBUG_NATIVE`; protocol diagnostics are not a safe redaction surface.
+Keep diagnostics disabled from process startup for its entire lifetime; clearing
+an environment variable cannot disable logging already initialized elsewhere.
 
 ```typescript
 const browser = new BrowserAdapter({

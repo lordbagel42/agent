@@ -51,9 +51,9 @@ credential values, auth tokens or vault item bodies. Reading or modifying a
 returned snapshot cannot change resolver bindings.
 
 Current startup passes only `{inspect: resolver.inspect}` as `credentials` to
-`createInspectionReader`. The anonymous browser broker never receives this
-resolver; an explicitly approved credentialed integration must reuse it rather
-than creating another binding source. Without the inspection dependency June
+`createInspectionReader`. The browser broker uses this same resolver only for
+separately configured `browser.credentialOperations`, after exact recipe validation
+and broker authorization; anonymous recipes never consult it. Without the inspection dependency June
 reports the resolver **absent**; a configured resolver reports
 its binding count, including zero. Vault authentication and item availability
 remain **unverified**, not inferred from configuration or earlier resolution.
@@ -99,8 +99,8 @@ handoff to the model. A missing/expired lease yields only `credential_unavailabl
 Inspection reports configured metadata with authentication and item availability
 still **unverified**; it is not evidence that an operation is permitted or usable.
 
-Credentialed browser integration must call `resolver.assertBrowserBinding(recipe)`
-before resolving: account and item aliases, canonical origin and credential kind
+Credentialed browser integration calls `resolver.assertBrowserBinding(recipe)`
+at startup and before resolving: account and item aliases, canonical origin and credential kind
 must all match the same validated resolver snapshot. Anonymous or mixed-credential
 recipes cannot use this check to fall back to a vault credential. Account aliases
 are explicit owner mappings to exact item UUIDs, not proof of the website's logged-in
@@ -140,6 +140,12 @@ execution; this configuration alone exposes no secret-reading tool to June.
    enforce the approved origin through redirects/subrequests, never log secrets,
    never persist credentials/browser sessions, and never retry side effects.
    Resolve only on confirmed success. Results and exceptions are not exposed.
+   Browser adapters additionally support `executeWithCredentialResolver`: the
+   broker supplies a one-use callback, and the browser validates the recipe before
+   invoking it. Grant/link expiry and revocation are rechecked after lookup before
+   returning the secret. The broker's host resolver also receives the exact action
+   as an optional second argument, allowing anonymous and credentialed recipes at
+   the same scope to remain distinct. Never route anonymous operations to a vault.
    The broker snapshots its options and registered execute methods at construction;
    later caller-side registry or method replacements do not change existing bindings.
    Adapter-internal settings and callback closures still need trusted immutable
