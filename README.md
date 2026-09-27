@@ -145,11 +145,17 @@ API providers accept `maxOutputTokens` and `timeoutMs`; OpenAI also accepts
 `reasoningEffort`. Codex accepts `reasoningEffort` and `serviceTier` (`fast` or
 `default`), but has no hard output-token cap. Defaults are unchanged.
 
-For the existing dedicated Codex login, an initial configuration is Astra
-`low`/`fast`/15000ms for `model`, Astra `high`/`default`/75000ms for `deepModel`.
-Astra already defaults to low reasoning. Fast-tier availability and improvement
-over the measured 7–8 second live replies have not been verified; a catalog
-entry is not proof of entitlement. There is no extra classifier invocation.
+For the existing dedicated Codex login, configure Astra
+`low`/`fast`/15000ms for `model` and Astra `high`/`fast`/75000ms for `deepModel`.
+Web-search synthesis uses the primary model, so these settings request fast tier
+for every active conversational pass. Memory, reflection and coding have separate
+model configurations and remain disabled in this deployment.
+
+The current Astra backend rejects reasoning effort `none`; `low` is its lowest
+supported effort, not no-thinking mode. Fast-tier requests succeeded in controlled
+provider probes, but a real Slack end-to-end speedup has not been established.
+There is no extra classifier invocation. Coordinate live settings changes with
+the [deployment controller](docs/deployment.md); releases bind the exact config.
 
 Enable replaceable public search with
 `"webSearch": {"provider":"tavily","apiKeyEnv":"TAVILY_API_KEY"}` and load the
