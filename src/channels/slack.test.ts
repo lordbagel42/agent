@@ -91,7 +91,46 @@ function jsonResponse(
 }
 
 describe("createSlackAdapter", () => {
-  it("keeps typing owner-scoped and never creates a thread or placeholder message", async () => {
+  it("admits signed guest mentions and reuses native thread typing without capturing search authority", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse({ ok: true }));
+    const adapter = makeAdapter(fetchMock, { searchEnabled: true });
+    const result = await adapter.receive(
+      signedRequest(
+        eventBody({
+          type: "app_mention",
+          user: "U_STRANGER",
+          channel: "C123",
+          ts: "1712345678.000001",
+          text: "<@U_BOT> hey",
+          action_token: "guest-token",
+        }),
+      ),
+    );
+    const event = result.events[0];
+    expect(event?.type).toBe("message");
+    if (event?.type !== "message") throw new Error("missing guest message");
+    expect(event.botMentioned).toBe(true);
+    expect((await adapter.search?.(event, "private info"))?.status).toBe(
+      "unavailable",
+    );
+    await adapter.setTyping?.(
+      { ...event, address: { ...event.address, threadId: event.messageId } },
+      true,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://slack.com/api/assistant.threads.setStatus",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      channel_id: "C123",
+      thread_ts: event.messageId,
+      status: "is thinking…",
+    });
+  });
+
+  it("keeps typing scoped to admitted senders and never creates a thread or placeholder message", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse({ ok: true }));
@@ -414,6 +453,7 @@ describe("createSlackAdapter", () => {
           senderId: "U_HUMAN",
           direct: true,
           text: "keep my IDs exact",
+          botMentioned: false,
           metadata: { channelType: "im", threadTs: "1712345000.000100" },
         },
       ]);
@@ -456,13 +496,14 @@ describe("createSlackAdapter", () => {
           senderId: "U_HUMAN",
           direct: false,
           text: "<@U_BOT> status?",
+          botMentioned: true,
           metadata: { channelType: "channel", threadTs },
         },
       ]);
     },
   );
 
-  it("checks the human owner and surface before any channel-name lookup", async () => {
+  it("rejects unmentioned guests, bots and unsupported surfaces before channel-name lookup", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>();
     const adapter = makeAdapter(fetchMock, {
       participateInOwnerChannels: true,
@@ -479,7 +520,6 @@ describe("createSlackAdapter", () => {
     for (const override of [
       { user: "U_STRANGER" },
       { user: "U_STRANGER", type: "app_mention" },
-      { user: "U_STRANGER", channel_type: "im", channel: "D123" },
       { user: botUserId },
       { bot_id: "B123" },
       { app_id: "A123" },

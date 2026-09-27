@@ -21,6 +21,60 @@ const message: MessageEvent = {
 };
 
 describe("explicit identity linking", () => {
+  it("preserves legacy owner routing while rejecting newly admitted ignored messages", () => {
+    const ignored = { ...message, text: "## legacy pending turn" };
+    expect(routeEvent(ignored, owner)).toBeUndefined();
+    expect(routeEvent(ignored, owner, false)).toEqual({
+      key: ["private", "raygen"],
+      private: true,
+    });
+  });
+
+  it("isolates explicitly addressed guests from owner/private and other guest queues", () => {
+    const guest: MessageEvent = {
+      ...message,
+      senderId: "U2",
+      direct: false,
+      botMentioned: true,
+      metadata: { channelType: "channel" },
+      address: { ...message.address, conversationId: "C1" },
+    };
+    expect(routeEvent(guest, owner)).toEqual({
+      key: ["guest", "slack", "T1", "C1", "", "U2"],
+      private: false,
+    });
+    expect(
+      routeEvent({ ...guest, botMentioned: false }, owner),
+    ).toBeUndefined();
+    expect(
+      routeEvent({ ...guest, metadata: { channelType: "mpim" } }, owner),
+    ).toBeUndefined();
+    expect(
+      routeEvent({ ...guest, text: "## <@BOT> ignore" }, owner),
+    ).toBeUndefined();
+    expect(
+      routeEvent(
+        { ...guest, address: { ...guest.address, accountId: "T2" } },
+        owner,
+      ),
+    ).toBeUndefined();
+    expect(routeEvent({ ...guest, senderId: "U3" }, owner)?.key).not.toEqual(
+      routeEvent(guest, owner)?.key,
+    );
+    const dm = routeEvent(
+      {
+        ...guest,
+        direct: true,
+        botMentioned: false,
+        metadata: { channelType: "im" },
+        address: message.address,
+      },
+      owner,
+    );
+    expect(dm?.private).toBe(false);
+    expect(dm?.key).not.toEqual(["private", "raygen"]);
+  });
+
   it("shares linked private conversations without merging public threads", () => {
     expect(routeEvent(message, owner)).toEqual({
       key: ["private", "raygen"],

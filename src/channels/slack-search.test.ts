@@ -149,7 +149,12 @@ describe("Slack Real-time Search", () => {
     ["DM", {}, "D123ABC"],
     [
       "mention",
-      { type: "app_mention", channel: "C123ABC", channel_type: "channel" },
+      {
+        type: "app_mention",
+        channel: "C123ABC",
+        channel_type: "channel",
+        text: "<@U_BOT> search launch",
+      },
       "C123ABC",
     ],
   ])(
@@ -198,6 +203,7 @@ describe("Slack Real-time Search", () => {
       expect(JSON.stringify(event)).not.toContain("action_token");
       expect(Object.keys(event).sort()).toEqual([
         "address",
+        "botMentioned",
         "direct",
         "id",
         "messageId",

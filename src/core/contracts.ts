@@ -35,6 +35,8 @@ export interface MessageEvent extends EventBase {
   senderId: string;
   direct: boolean;
   text: string;
+  /** Set only by verified Slack ingress, never by model/context enrichment. */
+  botMentioned?: boolean;
   metadata?: MessageMetadata;
 }
 
@@ -137,6 +139,7 @@ export interface CodingRequest {
 
 export interface CompanionReply {
   text: string;
+  social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
   reaction?: string;
   /** Request one current-channel lookup instead of a conversational reply. */
@@ -163,6 +166,7 @@ export interface ModelRequest {
   webSearchAvailable?: boolean;
   releaseAvailable?: boolean;
   replyPlacementAvailable?: boolean;
+  socialAvailable?: boolean;
 }
 
 export interface ModelProvider {

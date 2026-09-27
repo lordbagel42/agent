@@ -19,7 +19,8 @@ into June or tested with a real account.
 ## What works in this increment
 
 - Slack DMs and mentions, WhatsApp Cloud API text, and native reactions. Webhooks
-  are verified before accepting events; unknown identities and bots are ignored.
+  are verified before accepting events; bots are ignored. Slack guests can
+  directly mention June or DM her without gaining owner privileges.
 - Optional owner-only participation in channels containing `raygen`, scoped
   surrounding messages, sender names/IDs, exact Slack timestamps and file
   descriptors. Other participants provide context, never authorization.
@@ -166,12 +167,59 @@ Messages tab, and configure the public HTTPS `/webhooks/slack` URL. Subscribe to
 `message.im`, `app_mention`, `reaction_added`, and `reaction_removed`; grant bot
 scopes `im:history`, `app_mentions:read`, `chat:write`, `reactions:read`, and
 `reactions:write`. Supply its signing secret, bot token, workspace ID, and bot
-user ID. The owner's allowlist uses the **human user's** ID, not the bot's.
-Only configured owners can initiate turns, including mentions. Set
-`slack.participateInOwnerChannels: true` to also accept their unmentioned messages
+user ID. Raygen's owner ID is fixed in code to `U08R4KDL6UF`, bound only to the
+configured workspace. Other configured Slack owner IDs are replaced, not merged.
+Anyone in that workspace can initiate a turn by directly mentioning June or
+messaging her 1:1. Group pings alone are not invitations. Set
+`slack.participateInOwnerChannels: true` to also accept Raygen's unmentioned messages
 in channels whose verified current name contains `raygen`. Group DMs remain
 excluded. Existing threads stay threaded; new top-level input starts a reply
 thread on the initiating message, including DMs, so Slack can show activity.
+Raw `##` messages are
+excluded, including from fetched context; `<>` and group pings require a direct
+mention.
+
+### Shared June, owner priority and approvals
+
+June keeps one identity and may be playfully sassy with people other than Raygen.
+Guest conversation state is isolated by participant and surface; it never joins
+Raygen's private history. Two active turn slots reserve at least one for Raygen,
+with owner waiters admitted first and at most one guest active. Existing work is
+not killed. Guests are limited to four admitted turns per minute per person and
+a bounded waiting queue. These process-local limits reset on restart.
+
+Guests initially receive text/reactions and same-surface context, not private
+memory, Slack search, coding, deep-model escalation or public web search.
+Relationship trust does not grant permissions. June has a structured `social`
+action and instructions to proactively ask Raygen when additional access helps:
+
+- `request_access`: names the person, conversation, purpose, exact shared excerpt,
+  requested tools (`webSearch`/`deep`), and notification placement (`dm`/`thread`).
+  Guests may request only their own tools on their current surface, without
+  proposing private excerpts. Owner-originated requests stay in Raygen's DM.
+- `outreach`: proposes one exact DM to a named person, from an owner-private
+  request. June previews the recipient and message privately before sending.
+- Raygen replies with exactly `!allow ID`, `!deny ID`, or `!revoke ID`. In a
+  channel, prefix that with June's mention. Quoted commands, model output and
+  other senders cannot approve anything. June can inspect the active grants
+  supplied to her prompt; Raygen's private turns also show recent proposals.
+
+Pending requests expire after 24 hours. Approved access is remembered for 30
+days, scoped to one person and conversation, and revocable. The approval preview
+explicitly covers the whole conversation, not only one thread; the purpose is
+guidance, not an automatic semantic access classifier. Only the exact reviewed
+excerpt is supplied to guests—never automatic retrieval from Raygen's memory.
+Grants are rechecked before dispatch and delivery. Revocation cannot undo an
+already dispatched effect or erase something previously shared.
+
+Approval notifications are bounded to two per guest per day and twenty total
+guest requests per day. Delivery uses persisted no-resend markers; uncertain
+outreach is not automatically repeated. Slack DMs use the recipient's user ID
+with `chat.postMessage` and existing `chat:write`; Slack may still reject an
+inaccessible recipient. Permission records, previews and receipts live in
+`social.sqlite` under `RIVETKIT_STORAGE_PATH`, private mode `0600`, outside releases.
+Like Rivet conversation history, this ledger is not encrypted at rest; include it
+in the same private storage/backup policy.
 
 Adapters can implement optional `setTyping` for ephemeral activity during new
 context loading, model and lookup calls. Updates run alongside work, refresh

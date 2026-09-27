@@ -27,6 +27,9 @@ describe("configuration boundary", () => {
     expect(config.coding.runtime).toBeUndefined();
     expect(config.coding.workspaces).toEqual({});
     expect(config.console).toBeUndefined();
+    expect(config.owner.identities).toEqual([
+      { channel: "slack", accountId: "T1", senderId: "U08R4KDL6UF" },
+    ]);
   });
   it("requires a fixed HTTPS or loopback console origin without URL credentials", () => {
     for (const origin of ["http://127.0.0.1:3080", "https://june.example"])

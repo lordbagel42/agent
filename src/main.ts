@@ -49,6 +49,7 @@ import {
   type Dependencies,
   type JuneClientRegistry,
 } from "./runtime/registry.js";
+import { SocialPermissions } from "./runtime/social.js";
 import { createTavilyWebSearchProvider } from "./tools/web-search.js";
 
 let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
@@ -508,9 +509,20 @@ async function main() {
     });
   }
   startupStage = "Rivet configuration/startup";
+  const social =
+    config.slack && channels.slack
+      ? new SocialPermissions({
+          file: join(process.env.RIVETKIT_STORAGE_PATH, "social.sqlite"),
+          owner: config.owner,
+          teamId: config.slack.teamId,
+          botUserId: config.slack.botUserId,
+          slack: channels.slack,
+        })
+      : undefined;
   process.env.RIVET_INSPECTOR_DISABLE ??= "1";
   const registry = createJuneRegistry({
     owner: config.owner,
+    social,
     channels,
     model,
     deepModel,
@@ -807,6 +819,7 @@ async function main() {
       await registry.shutdown();
       memory?.personality?.close();
       memory?.store.close();
+      social?.close();
       // Rivet's own signal handler terminates after draining. With custom signal
       // handling we own that final step too; native runtime handles may remain.
     })().then(

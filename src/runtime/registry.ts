@@ -16,6 +16,7 @@ import type {
   SendResult,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
+import { isOwner } from "../core/social.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import type { EvidenceStore, Source } from "../memory/store.js";
 import { ModelError } from "../models/provider.js";
@@ -31,15 +32,18 @@ import {
   latencyProbe,
   type ReplyKind,
 } from "./latency.js";
+import { createPriorityAdmission } from "./priority.js";
 import { buildModelRequest, type PromptInput } from "./prompt.js";
 import {
   createReflectionActor,
   type ReflectionDependencies,
 } from "./reflection.js";
+import type { SocialPermissions } from "./social.js";
 import { startTyping, withTyping } from "./typing.js";
 
 export interface Dependencies {
   owner: Owner;
+  social?: SocialPermissions;
   channels: Partial<Record<Channel, ChannelAdapter>>;
   model: ModelProvider;
   deepModel?: ModelProvider;
@@ -102,6 +106,7 @@ type Inbox =
     };
 
 export function createJuneRegistry(deps: Dependencies) {
+  const priority = createPriorityAdmission();
   const personality = (audience: string) =>
     deps.memory?.personality?.effectiveTraits(audience) ?? {};
   const personalityDigest = (audience: string) =>
@@ -173,9 +178,9 @@ export function createJuneRegistry(deps: Dependencies) {
     run: workflow(
       async (ctx) => {
         await ctx.loop("conversation-v1", async (loop) => {
-          // Preserve legacy journals and reply placement. Only fresh v4 turns
-          // default Slack replies to threads so status has a visible surface.
-          const version = await loop.getVersion("memory-dispatch", 4);
+          // Preserve legacy journals: v4 selected Slack reply threads; only
+          // fresh v5 turns gain social actions and journaled guest admission.
+          const version = await loop.getVersion("memory-dispatch", 5);
           const [message] = await loop.queue.nextBatch("inbox", {
             names: ["inbox"],
             count: 1,
@@ -188,6 +193,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // Host admission is deliberately outside the journal. A deployment
           // drain waits for whole turns, including receipts and final persistence.
           const release = await deps.lifecycle?.enter(ctx.abortSignal);
+          let releasePriority: (() => void) | undefined;
           let typingCleanup = Promise.resolve();
           const deferTypingCleanup = (cleanup: Promise<void>) => {
             typingCleanup = cleanup;
@@ -195,9 +201,23 @@ export function createJuneRegistry(deps: Dependencies) {
           try {
             if (body.type === "event" && event.type === "message")
               deps.latency?.mark(event, "admitted");
-            const scope = routeEvent(event, deps.owner);
+            const scope = routeEvent(event, deps.owner, version >= 5);
             if (!scope || JSON.stringify(scope.key) !== JSON.stringify(ctx.key))
               return;
+            const ownerTurn = isOwner(event, deps.owner);
+            if (version >= 5 && !ownerTurn) {
+              const admitted = await loop.step("guest-admission", async () =>
+                priority.acceptGuest(
+                  JSON.stringify([
+                    event.address.accountId,
+                    event.type === "receipt" ? "" : event.senderId,
+                  ]),
+                ),
+              );
+              if (!admitted) return;
+            }
+            releasePriority = await priority.enter(ownerTurn, ctx.abortSignal);
+            let grantFingerprint: string | undefined;
             const audience = JSON.stringify(scope.key);
             const eventId = createHash("sha256")
               .update(
@@ -209,6 +229,13 @@ export function createJuneRegistry(deps: Dependencies) {
               )
               .digest("hex");
             const valid = (state: ConversationState) => {
+              if (
+                !ownerTurn &&
+                event.type === "message" &&
+                grantFingerprint !== undefined &&
+                grantFingerprint !== (deps.social?.fingerprint(event) ?? "[]")
+              )
+                return false;
               if (
                 state.forgottenEvents?.includes(eventId) ||
                 (body.type === "job_result" &&
@@ -280,21 +307,41 @@ export function createJuneRegistry(deps: Dependencies) {
               deep?: boolean;
               web?: boolean;
               context?: boolean;
+              social?: boolean;
+              grantFingerprint?: string;
             } =
               version >= 2
                 ? await loop.step("turn-plan", async () => ({
                     memory: !!deps.memory && scope.private,
                     extraction: !!deps.memory?.extract && scope.private,
-                    reflection: !!deps.reflection,
+                    reflection: ownerTurn && !!deps.reflection,
                     workspaces:
                       scope.private && deps.coding
                         ? Object.keys(deps.coding.workspaces)
                         : [],
-                    search: !!deps.channels[event.address.channel]?.search,
+                    search:
+                      ownerTurn &&
+                      !!deps.channels[event.address.channel]?.search,
+                    ...(version >= 5 && event.type === "message"
+                      ? {
+                          social:
+                            event.address.channel === "slack" && !!deps.social,
+                          grantFingerprint:
+                            deps.social?.fingerprint(event) ?? "[]",
+                        }
+                      : {}),
                     ...(version >= 3
                       ? {
-                          deep: !!deps.deepModel,
-                          web: !!deps.webSearch?.available,
+                          deep:
+                            !!deps.deepModel &&
+                            (ownerTurn ||
+                              (event.type === "message" &&
+                                !!deps.social?.permits(event, "deep"))),
+                          web:
+                            !!deps.webSearch?.available &&
+                            (ownerTurn ||
+                              (event.type === "message" &&
+                                !!deps.social?.permits(event, "webSearch"))),
                           context:
                             !!deps.channels[event.address.channel]?.context,
                         }
@@ -310,6 +357,7 @@ export function createJuneRegistry(deps: Dependencies) {
                         : [],
                     search: !!deps.channels[event.address.channel]?.search,
                   };
+            grantFingerprint = plan.grantFingerprint;
             if (version >= 2) {
               await loop.step("memory-ingest", async (step) => {
                 if (
@@ -393,6 +441,11 @@ export function createJuneRegistry(deps: Dependencies) {
                   : null;
               if (body.type === "job_result") {
                 reply = { text: body.text };
+              } else if (version >= 5 && deps.social?.command(event)) {
+                const social = deps.social;
+                reply = await loop.step("social-command", async () => ({
+                  text: await social.decide(event),
+                }));
               } else if (command) {
                 reply = await loop.step(
                   "coding-command",
@@ -845,6 +898,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   scope.private &&
                                   !!deps.release,
+                                socialAvailable:
+                                  phase !== "synthesis" &&
+                                  !!plan.social &&
+                                  !!deps.social,
                                 workspaces:
                                   phase === "synthesis" ? [] : workspaces,
                                 searchAvailable:
@@ -871,6 +928,9 @@ export function createJuneRegistry(deps: Dependencies) {
                                 ? { memory: { audience, text: memory } }
                                 : {}),
                               ...(webResults ? { webResults } : {}),
+                              ...(plan.social && deps.social
+                                ? { social: deps.social.view(event) }
+                                : {}),
                             });
                             if (
                               version >= 4 &&
@@ -1007,6 +1067,18 @@ export function createJuneRegistry(deps: Dependencies) {
                       ...(reply.reaction ? { reaction: reply.reaction } : {}),
                     };
                 }
+              }
+              if (version >= 5 && reply.social) {
+                const action = reply.social;
+                reply = await loop.step("social-proposal", async (step) => ({
+                  text:
+                    plan.social &&
+                    deps.social &&
+                    valid(step.state) &&
+                    !step.abortSignal.aborted
+                      ? await deps.social.propose(event, action)
+                      : "Permission requests are unavailable; no access was granted.",
+                }));
               }
               if (reply.coding) {
                 const request = reply.coding;
@@ -1381,6 +1453,7 @@ export function createJuneRegistry(deps: Dependencies) {
               // successful deployment drain. No journal position is added.
               await typingCleanup;
             } finally {
+              releasePriority?.();
               release?.();
               if (body.type === "event" && event.type === "message")
                 deps.latency?.mark(event, "released");

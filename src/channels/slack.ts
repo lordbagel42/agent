@@ -129,10 +129,27 @@ async function normalizeEvent(
   }
 
   const event = payload.event;
-  // No lookup or action-token capture may precede the configured owner check.
-  if (!isHumanEvent(event, botUserId) || !ownerUserIds.has(event.user)) {
+  if (!isHumanEvent(event, botUserId) || ownerUserIds.size === 0) {
     return [];
   }
+  const owner = ownerUserIds.has(event.user);
+  const mentioned =
+    typeof event.text === "string" && event.text.includes(`<@${botUserId}>`);
+  if (
+    typeof event.text === "string" &&
+    (event.text.startsWith("##") ||
+      (!mentioned &&
+        (event.text.startsWith("<>") ||
+          /<!subteam\^|<!here>|<!channel>|<!everyone>/.test(event.text))))
+  )
+    return [];
+  // Guests must explicitly address June. Direct DMs also count as contact.
+  if (
+    !owner &&
+    !mentioned &&
+    !(event.type === "message" && event.channel_type === "im")
+  )
+    return [];
   if (event.type === "message" || event.type === "app_mention") {
     if (
       (event.subtype !== undefined &&
@@ -178,10 +195,8 @@ async function normalizeEvent(
       return [];
     if (event.type === "app_mention" && channelType === "im") return [];
 
-    const mentioned =
-      event.type === "app_mention" || event.text.includes(`<@${botUserId}>`);
     if (channelType !== "im" && !mentioned) {
-      if (!participateInOwnerChannels) return [];
+      if (!owner || !participateInOwnerChannels) return [];
       // Never authorize by an ID, event-supplied name, text, or stale name cache.
       const info = await context.conversation(
         event.channel,
@@ -212,6 +227,7 @@ async function normalizeEvent(
         senderId: event.user,
         direct: channelType === "im",
         text: event.text,
+        botMentioned: mentioned,
         metadata: {
           ...slackMetadata(event, channelType),
           ...(channelName ? { channelName } : {}),
@@ -222,7 +238,7 @@ async function normalizeEvent(
 
   if (event.type === "reaction_added" || event.type === "reaction_removed") {
     if (
-      !isHumanEvent(event, botUserId) ||
+      !owner ||
       !nonEmptyString(event.reaction) ||
       !isJsonObject(event.item) ||
       event.item.type !== "message" ||
@@ -327,7 +343,7 @@ export function createSlackAdapter({
       if (
         address.channel !== "slack" ||
         address.accountId !== teamId ||
-        !owners.has(event.senderId) ||
+        (!owners.has(event.senderId) && !event.botMentioned && !event.direct) ||
         event.senderId === botUserId ||
         event.metadata?.channelType === "mpim" ||
         !address.threadId ||
@@ -464,7 +480,7 @@ export function createSlackAdapter({
         // https://docs.slack.dev/ai/developing-agents#full-example
         // Capture only after signature, workspace and human normalization.
         for (const event of events) {
-          if (event.type === "message") {
+          if (event.type === "message" && owners.has(event.senderId)) {
             search.capture(event, payload.event.action_token);
           }
         }

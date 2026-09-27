@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { RAYGEN_SLACK_ID } from "./core/social.js";
 
 const nonempty = z.string().trim().min(1);
 const envName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/);
@@ -323,7 +324,22 @@ export function parseConfig(input: unknown): Config {
       `Invalid June configuration at ${result.error.issues.map((issue) => issue.path.join(".") || "root").join(", ")}`,
     );
   }
-  return result.data;
+  const config = result.data;
+  // June has one Slack owner. Display names and configurable extra Slack IDs
+  // cannot confer Raygen's authority; bind his fixed ID to this workspace only.
+  if (config.slack) {
+    config.owner.identities = [
+      ...config.owner.identities.filter(
+        (identity) => identity.channel !== "slack",
+      ),
+      {
+        channel: "slack",
+        accountId: config.slack.teamId,
+        senderId: RAYGEN_SLACK_ID,
+      },
+    ];
+  }
+  return config;
 }
 
 export function secret(

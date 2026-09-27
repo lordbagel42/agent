@@ -177,7 +177,9 @@ export function createSlackContext({
     if (
       event.address.channel !== "slack" ||
       event.address.accountId !== teamId ||
-      !ownerUserIds.has(event.senderId) ||
+      (!ownerUserIds.has(event.senderId) &&
+        !event.botMentioned &&
+        !event.direct) ||
       event.senderId === botUserId ||
       (type !== "im" && type !== "channel" && type !== "group") ||
       event.direct !== (type === "im") ||
@@ -229,6 +231,7 @@ export function createSlackContext({
           (message.channel !== undefined && message.channel !== channel) ||
           (message.team !== undefined && message.team !== teamId) ||
           message.hidden === true ||
+          (typeof message.text === "string" && message.text.startsWith("##")) ||
           message.subtype === "message_deleted" ||
           message.subtype === "message_changed" ||
           (thread

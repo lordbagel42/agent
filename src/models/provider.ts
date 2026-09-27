@@ -4,6 +4,7 @@ import type {
   ModelProvider,
   ModelRequest,
 } from "../core/contracts.js";
+import { socialActionSchema } from "../core/social.js";
 import {
   observeUsage,
   tokenUsage,
@@ -36,6 +37,7 @@ const searchQuerySchema = z
 
 const companionReplySchema = z.strictObject({
   text: z.string().refine((text) => Array.from(text).length <= 3_500),
+  social: socialActionSchema.optional(),
   coding: z
     .strictObject({
       workspace: z.string(),
@@ -72,6 +74,7 @@ export type ReplyCapabilities = Pick<
   | "webSearchAvailable"
   | "releaseAvailable"
   | "replyPlacementAvailable"
+  | "socialAvailable"
 >;
 
 function replyCapabilities(
@@ -92,7 +95,26 @@ export function replyJsonSchema(
     webSearchAvailable,
     releaseAvailable,
     replyPlacementAvailable,
+    socialAvailable,
   } = replyCapabilities(capabilities);
+  const { $schema: _schema, ...socialSchema } = z.toJSONSchema(
+    socialActionSchema.nullable(),
+    {
+      target: "draft-7",
+      override({ jsonSchema }) {
+        // Raw Anthropic structured outputs reject these constraints. Keep the
+        // strict Zod checks locally and describe the bounds on the wire.
+        for (const key of ["minLength", "maxLength", "maxItems"] as const) {
+          const limit = jsonSchema[key];
+          if (limit !== undefined) {
+            jsonSchema.description =
+              `${jsonSchema.description ?? ""} ${key}: ${limit}.`.trim();
+            delete jsonSchema[key];
+          }
+        }
+      },
+    },
+  );
   const permittedWorkspaces = [...new Set(workspaces)];
   const coding =
     permittedWorkspaces.length === 0
@@ -137,6 +159,15 @@ export function replyJsonSchema(
               required: ["action", "revision"],
               description:
                 "Request release tracking or inspect controller evidence. No activation, approval, push, or retry. Leave text empty and other actions unset.",
+            },
+          }
+        : {}),
+      ...(socialAvailable
+        ? {
+            social: {
+              ...socialSchema,
+              description:
+                "Propose explicit owner-approved sharing/tool access, or a frozen outreach message. This requests permission, never grants it. Leave text empty and other actions unset.",
             },
           }
         : {}),
@@ -186,6 +217,7 @@ export function replyJsonSchema(
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
+      ...(socialAvailable ? ["social"] : []),
     ],
   };
 }
@@ -354,6 +386,7 @@ export function parseReply(
     webSearchAvailable,
     releaseAvailable,
     replyPlacementAvailable,
+    socialAvailable,
   } = replyCapabilities(capabilities);
   let value: unknown;
   try {
@@ -374,6 +407,7 @@ export function parseReply(
     "webSearch",
     "release",
     "replyInThread",
+    "social",
   ]) {
     if (normalized[key] === null) delete normalized[key];
   }
@@ -394,6 +428,7 @@ export function parseReply(
     (reply.escalate !== undefined && !escalationAvailable) ||
     (reply.webSearch !== undefined && !webSearchAvailable) ||
     (reply.release !== undefined && !releaseAvailable) ||
+    (reply.social !== undefined && !socialAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);
@@ -402,6 +437,7 @@ export function parseReply(
     Number(reply.search !== undefined) +
     Number(reply.webSearch !== undefined) +
     Number(reply.release !== undefined) +
+    Number(reply.social !== undefined) +
     Number(reply.escalate === true);
   if (
     directiveCount > 1 ||
@@ -409,7 +445,8 @@ export function parseReply(
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
     ((reply.search !== undefined ||
       reply.webSearch !== undefined ||
-      reply.release !== undefined) &&
+      reply.release !== undefined ||
+      reply.social !== undefined) &&
       reply.text.trim().length > 0)
   ) {
     throw new ModelError("invalid_response", false);

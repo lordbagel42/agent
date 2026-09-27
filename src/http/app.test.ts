@@ -378,11 +378,15 @@ describe("webhook and operator HTTP boundary", () => {
     expect(await response.text()).not.toContain("secret database credentials");
   });
 
-  it("ignores unknown identities and rejects modified signatures before submission", async () => {
+  it("isolates guest DMs and rejects modified signatures before submission", async () => {
     const events: ChannelEvent[] = [];
     const app = createHttpApp(
       dependencies({
-        async submit(_scope, event) {
+        async submit(scope, event) {
+          expect(scope).toEqual({
+            key: ["guest", "slack", "T1", "D1", "", "U2"],
+            private: false,
+          });
           events.push(event);
         },
       }),
@@ -406,7 +410,7 @@ describe("webhook and operator HTTP boundary", () => {
       body: `${JSON.stringify(payload)} `,
     });
     expect((await app.request(modified)).status).toBe(401);
-    expect(events).toEqual([]);
+    expect(events).toEqual([expect.objectContaining({ senderId: "U2" })]);
   });
 
   it("requires bearer auth even on loopback and explicit stopped confirmation for resume", async () => {

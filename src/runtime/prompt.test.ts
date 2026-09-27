@@ -188,7 +188,7 @@ it("requires exact owner identity, private audience and enabled memory rather th
         ...privateInput,
         event: { ...privateEvent, address },
       }),
-    ).toThrow("authorized owner event");
+    ).toThrow("authorized event");
   }
 });
 
