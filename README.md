@@ -647,6 +647,17 @@ explanations. Guests and owner channel turns can read the public profile but
 cannot inspect history or publish changes. All new turns use the same revised
 voice; in-flight turns retain their snapshot.
 
+Ask June “which revision gave you this tone?” or read `!personality` on any
+surface. Each of the four effective traits has bounded public provenance:
+`originVersion` identifies the publication that established its value (0 is the
+built-in default), `appliedVersion` identifies its last change or rollback, and
+`kind` is `default`, `owner-publication`, or `rollback`. Rollbacks also report
+`restoredFromVersion`, preserving the trait's original publication even across
+nested rollbacks. Ordinary edits leave unchanged traits' provenance intact.
+This is not history or evidence recall: no private reasons, correction bodies,
+source IDs, command IDs or timestamps are included, even in owner-private reads.
+Older in-flight snapshots without provenance remain valid and do not invent it.
+
 No secret or configuration change is needed for this feature. State and private
 explanations live in the existing Rivet data/journal and backup retention domain,
 not the encrypted/forgettable evidence store; keep explanations non-sensitive.

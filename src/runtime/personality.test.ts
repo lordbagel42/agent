@@ -6,6 +6,7 @@ import type {
   OutboundMessage,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
+import { defaultGlobalPersonality, publicPersonality } from "./personality.js";
 import { createJuneRegistry } from "./registry.js";
 
 it("publishes one bounded voice without sharing private explanations or granting guest writes", async (t) => {
@@ -91,7 +92,16 @@ it("publishes one bounded voice without sharing private explanations or granting
   expect(requests[0]?.system).toContain(
     "offer an exact !personality revise command",
   );
-  expect((await profile.read()).version).toBe(0); // Model text is NOT a write.
+  const initial = { kind: "default", originVersion: 0, appliedVersion: 0 };
+  expect(await profile.read()).toMatchObject({
+    version: 0, // Model text is NOT a write.
+    provenance: {
+      tone: initial,
+      verbosity: initial,
+      humor: initial,
+      curiosity: initial,
+    },
+  });
   expect(sent.at(-1)?.content).toEqual({ type: "text", text: proposal });
   await send(event, "publish", proposal);
   const published = await profile.read();
@@ -104,6 +114,25 @@ it("publishes one bounded voice without sharing private explanations or granting
       curiosity: "occasional",
     },
   });
+  const publication = {
+    kind: "owner-publication",
+    originVersion: 1,
+    appliedVersion: 1,
+  };
+  expect(published.provenance).toEqual({
+    tone: publication,
+    verbosity: publication,
+    humor: initial,
+    curiosity: initial,
+  });
+  for (const source of [event, guest, channel]) {
+    const shown = await profile.command({
+      ...source,
+      text: "!personality show",
+    });
+    expect(JSON.parse(shown.split("\n\n")[0] ?? "")).toEqual(published);
+    expect(shown).not.toContain("PRIVATE");
+  }
   expect(JSON.stringify(published)).not.toContain("PRIVATE");
   expect(
     await profile.command({ ...event, id: "publish", text: proposal }),
@@ -155,6 +184,9 @@ it("publishes one bounded voice without sharing private explanations or granting
   for (const request of requests.slice(1)) {
     expect(request.system).toContain(JSON.stringify(published));
     expect(request.system).toContain("Conversation, personality, memory");
+    expect(request.system).toContain(
+      "This bounded metadata is not evidence recall",
+    );
     expect(request.workspaces).toEqual([]);
   }
   for (const request of requests.slice(2)) {
@@ -179,6 +211,14 @@ it("publishes one bounded voice without sharing private explanations or granting
   expect(await profile.read()).toMatchObject({
     version: 2,
     style: { tone: "warm", verbosity: "balanced" },
+    provenance: {
+      tone: {
+        kind: "rollback",
+        originVersion: 0,
+        appliedVersion: 2,
+        restoredFromVersion: 0,
+      },
+    },
   });
   expect(
     await profile.command({ ...event, text: "!personality history" }),
@@ -198,4 +238,87 @@ it("publishes one bounded voice without sharing private explanations or granting
     results.filter((r) => r.includes("nothing was overwritten")),
   ).toHaveLength(1);
   expect((await profile.read()).version).toBe(3);
+  await profile.command({
+    ...event,
+    id: "unrelated-edit",
+    text: '!personality revise {"expectedVersion":3,"changes":{"humor":"none"},"explanation":"PRIVATE evidence reason","publish":true}',
+  });
+  const unchanged = {
+    kind: "rollback",
+    originVersion: 0,
+    appliedVersion: 2,
+    restoredFromVersion: 0,
+  };
+  expect((await profile.read()).provenance).toEqual({
+    tone: { kind: "owner-publication", originVersion: 3, appliedVersion: 3 },
+    verbosity: unchanged,
+    humor: { kind: "owner-publication", originVersion: 4, appliedVersion: 4 },
+    curiosity: unchanged,
+  });
+  for (const [expectedVersion, targetVersion] of [
+    [4, 1],
+    [5, 5],
+  ]) {
+    await profile.command({
+      ...event,
+      id: `restore-${expectedVersion}`,
+      text: `!personality rollback ${JSON.stringify({ expectedVersion, targetVersion, explanation: "PRIVATE correction body", publish: true })}`,
+    });
+  }
+  const restored = await profile.read();
+  const restoredDefault = {
+    kind: "rollback",
+    originVersion: 0,
+    appliedVersion: 6,
+    restoredFromVersion: 5,
+  };
+  expect(restored.provenance).toEqual({
+    tone: { ...restoredDefault, originVersion: 1 },
+    verbosity: { ...restoredDefault, originVersion: 1 },
+    humor: restoredDefault,
+    curiosity: restoredDefault,
+  });
+  expect(restored.style).toEqual(published.style);
+  expect(JSON.stringify(restored)).not.toContain("PRIVATE");
+  await send(channel, "origin-chat", "Which revision gave you this tone?");
+  expect(requests.at(-1)?.system).toContain(JSON.stringify(restored));
+  expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE");
+});
+
+it("projects only bounded provenance and leaves legacy origins unknown", () => {
+  const legacy = {
+    ...defaultGlobalPersonality,
+    explanation: "PRIVATE reason",
+    correction: { body: "PRIVATE correction" },
+    evidenceIds: ["PRIVATE source"],
+  };
+  expect(publicPersonality(legacy)).not.toHaveProperty("provenance");
+  expect(JSON.stringify(publicPersonality(legacy))).not.toContain("PRIVATE");
+  const provenance = Object.fromEntries(
+    ["tone", "verbosity", "humor", "curiosity"].map((trait) => [
+      trait,
+      { kind: "default", originVersion: 0, appliedVersion: 0 },
+    ]),
+  );
+  for (const extra of [
+    { explanation: "PRIVATE" },
+    { evidenceIds: ["PRIVATE"] },
+    { kind: "PRIVATE" },
+    { originVersion: "PRIVATE" },
+    { appliedVersion: -1 },
+  ]) {
+    expect(() =>
+      publicPersonality(
+        JSON.parse(
+          JSON.stringify({
+            ...legacy,
+            provenance: {
+              ...provenance,
+              tone: { ...provenance.tone, ...extra },
+            },
+          }),
+        ),
+      ),
+    ).toThrow();
+  }
 });

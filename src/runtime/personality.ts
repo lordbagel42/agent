@@ -17,9 +17,25 @@ export const globalStyleSchema = z.strictObject({
   curiosity: z.enum(["occasional", "eager", "reserved"]),
 });
 type Style = z.infer<typeof globalStyleSchema>;
+const traitProvenanceSchema = z.strictObject({
+  kind: z.enum(["default", "owner-publication", "rollback"]),
+  originVersion: z.number().int().nonnegative(),
+  appliedVersion: z.number().int().nonnegative(),
+  restoredFromVersion: z.number().int().nonnegative().optional(),
+});
+const provenanceSchema = z.strictObject({
+  tone: traitProvenanceSchema,
+  verbosity: traitProvenanceSchema,
+  humor: traitProvenanceSchema,
+  curiosity: traitProvenanceSchema,
+});
+type TraitProvenance = z.infer<typeof traitProvenanceSchema>;
+type Provenance = z.infer<typeof provenanceSchema>;
 export interface GlobalPersonality {
   version: number;
   style: Style;
+  /** Absent on snapshots captured before provenance was introduced. */
+  provenance?: Provenance;
 }
 export const defaultGlobalPersonality: GlobalPersonality = {
   version: 0,
@@ -46,6 +62,9 @@ export function publicPersonality(profile: GlobalPersonality) {
     version,
     style,
     selfDescription: `I'm ${CHARTER.identity} (she/her), the same companion across conversations. My tone is ${style.tone}, my replies are ${style.verbosity}, my humor is ${style.humor}, and my curiosity is ${style.curiosity}.`,
+    ...(profile.provenance === undefined
+      ? {}
+      : { provenance: provenanceSchema.parse(profile.provenance) }),
   };
 }
 
@@ -58,6 +77,58 @@ interface Revision extends GlobalPersonality {
 interface State {
   revisions: Revision[];
 }
+
+/** Derive only the four effective traits' lineage, including pre-upgrade state.
+ * Private reasons, command IDs and evidence never participate in this read. */
+function currentPersonality(revisions: readonly Revision[]) {
+  const initial: TraitProvenance = {
+    kind: "default",
+    originVersion: 0,
+    appliedVersion: 0,
+  };
+  let provenance: Provenance = {
+    tone: initial,
+    verbosity: initial,
+    humor: initial,
+    curiosity: initial,
+  };
+  const byVersion = new Map([[0, provenance]]);
+  let head = defaultGlobalPersonality;
+  for (const revision of revisions) {
+    const restored =
+      revision.restoredFrom === undefined
+        ? undefined
+        : byVersion.get(revision.restoredFrom);
+    if (revision.restoredFrom !== undefined && !restored)
+      throw new Error("Missing personality rollback version");
+    const next = { ...provenance };
+    for (const trait of globalStyleSchema.keyof().options) {
+      if (restored) {
+        next[trait] = {
+          kind: "rollback",
+          originVersion: restored[trait].originVersion,
+          appliedVersion: revision.version,
+          restoredFromVersion: revision.restoredFrom,
+        };
+      } else if (revision.style[trait] !== head.style[trait]) {
+        next[trait] = {
+          kind: "owner-publication",
+          originVersion: revision.version,
+          appliedVersion: revision.version,
+        };
+      }
+    }
+    provenance = next;
+    byVersion.set(revision.version, provenance);
+    head = revision;
+  }
+  return publicPersonality({
+    version: head.version,
+    style: head.style,
+    provenance,
+  });
+}
+
 const commandFields = {
   expectedVersion: z.number().int().nonnegative(),
   explanation: z.string().trim().min(1).max(240),
@@ -84,9 +155,7 @@ export function createPersonalityActor(
       read: async (c) => {
         if (c.key.length !== 1 || c.key[0] !== owner.id)
           throw new Error("Wrong personality owner");
-        const result = publicPersonality(
-          c.state.revisions.at(-1) ?? defaultGlobalPersonality,
-        );
+        const result = currentPersonality(c.state.revisions);
         await c.saveState({ immediate: true });
         return result;
       },
@@ -133,7 +202,7 @@ export function createPersonalityActor(
         const head = c.state.revisions.at(-1) ?? defaultGlobalPersonality;
         const input = event.text.trim().slice("!personality".length).trim();
         if (!input || input === "show") {
-          const result = JSON.stringify(publicPersonality(head));
+          const result = JSON.stringify(currentPersonality(c.state.revisions));
           await c.saveState({ immediate: true });
           return `${result}\n\n${ownerPrivate ? personalityHelp : "This is my shared public style. Only my owner can revise it in a private DM."}`;
         }
@@ -212,8 +281,9 @@ export function createPersonalityActor(
           createdAt: Date.now(),
           ...(restored ? { restoredFrom: restored.version } : {}),
         });
+        const result = currentPersonality(c.state.revisions);
         await c.saveState({ immediate: true });
-        return `Saved global personality revision ${version}. New turns in every conversation use this style; already-started turns keep their snapshot. ${JSON.stringify(publicPersonality({ version, style }))} Explanations remain owner-private; permissions and tools are unchanged.`;
+        return `Saved global personality revision ${version}. New turns in every conversation use this style; already-started turns keep their snapshot. ${JSON.stringify(result)} Explanations remain owner-private; permissions and tools are unchanged.`;
       },
     },
   });
