@@ -12,7 +12,7 @@ never expose them as model tools. Route wiring belongs to the integration host.
 
 Signatures: `start(id: string): Promise<ImportProgress>`;
 `status(id: string)` and `cancel(id: string)` return
-`{ running, progress, notBefore, cooldownReason, coolingDown, budget }`. `progress`
+`{ running, progress, notBefore, cooldownReason, coolingDown, budget, lastConflict }`. `progress`
 is the selection's durable progress (or undefined); the top-level cooldown is
 the maximum persisted deadline across registered selections for that account.
 `coolingDown` compares the current clock with that deadline, not provider health.
@@ -44,6 +44,21 @@ cleared when a page advances its page count or the service is recreated.
 Cooldown-only updates do not clear it; null does not prove the next page fits.
 Reduce the selected import or have the operator review capacity. No automatic
 deletion, budget increase or resume occurs.
+
+`lastConflict` (`"immutable_source" | null`) is a content-free observation of the store's typed immutable-source
+rejection, not arbitrary provider error text. It is process-local and stays visible
+until that page advances; cancellation and unsuccessful/no-op retries do not clear
+it. A restart loses this observation, not the durable evidence or cursor. `null`
+therefore does not prove there are no conflicts. No source IDs or either version
+of the evidence are retained in the observation.
+
+June can explain observed conflicts in an owner-private turn using
+`{ "text": "", "inspection": "imports" }`. The bounded metadata report asks the
+owner to arrange explicit reconciliation through the authenticated operator before
+retrying. This is a request for review, not a queued repair or permission to rewrite
+evidence. June cannot fetch/retry, skip a conflict, invent another source ID, or
+perform reconciliation. Existing immutable identity and tombstone checks still
+apply to every attempt; owner assent in chat does not bypass them.
 
 Configure exact immutable coverage (`platform`, `account`, `conversations`,
 epoch-millisecond `[from,to)`, `audiences`) before starting. The fetcher rejects

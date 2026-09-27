@@ -86,6 +86,7 @@ export function createInspectionReader(deps: {
             cooldownReason,
             coolingDown,
             budget,
+            lastConflict,
           } = imports.status(id);
           if (progress && !isDeepStrictEqual(progress.coverage, coverage))
             throw new Error("Import coverage changed");
@@ -103,9 +104,15 @@ export function createInspectionReader(deps: {
             coolingDown,
             gapCount: progress?.gaps.length ?? 0,
             budgetRejected: budget.lastRejection,
+            lastConflict,
           };
         });
-        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nnotBefore is the persisted account cooldown deadline (epoch milliseconds); cooldownReason is rate_limit, provider_backoff, pacing, unknown for legacy deadlines, or null. coolingDown is only the time gate at this snapshot, not provider readiness. Wait until notBefore; no polling or automatic retry. Resuming requires explicit operator confirmation, even after expiry or restart.\nBudget rejections are last observed this process, cleared when a page advances its page count or the service is recreated; cooldown-only updates do not clear them. Null is not proof a page will fit. A rejection means the whole page exceeded a ledger-wide source, claim, or full-snapshot UTF-8 byte budget; no page evidence or progress committed. Reduce the import or ask the operator to review capacity. Complete means the selected window was exhausted, not complete account history. Gap contents, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.`;
+        const reconciliation = rows.some(
+          (row) => row.lastConflict === "immutable_source",
+        )
+          ? "\nImmutable-source conflict: a page reused a source ID with changed fields. Rejected page: stored evidence and cursor unchanged. Saved evidence is not proof of current content. Please arrange explicit reconciliation through the authenticated operator before retrying. I cannot overwrite evidence, skip conflicts, invent replacement IDs, or authorize reconciliation. This is operator review, not a queued or completed repair."
+          : "";
+        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nnotBefore: persisted account cooldown deadline (epoch ms). cooldownReason: rate_limit, provider_backoff, pacing, unknown (legacy), or null. coolingDown is a time gate, not provider readiness. Wait until notBefore; no polling or automatic retry. Explicit operator confirmation is needed to resume, even after expiry/restart.\nbudgetRejected and lastConflict are last observed this process; page-count advancement or restart clears them, but cooldown-only updates do not. Null proves neither capacity nor absence of conflicts. Budget rejection: whole page exceeds ledger-wide source/claim/full-snapshot UTF-8 byte ceilings; no page evidence or progress committed. Reduce import or request operator capacity review. Complete means selected window exhausted, not complete account history. Gap contents, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.${reconciliation}`;
       }
       case "reflection": {
         if (!deps.reflection) return `${heading}\nReflection is unavailable.`;

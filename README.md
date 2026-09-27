@@ -612,6 +612,13 @@ retention deadlines, external copies and individual deletion status remain
 unknown. This is a category inventory, not a copy census or deletion certificate;
 it neither deletes anything nor authorizes a scan or purge.
 
+For "why did that import conflict?", June uses the same `inspection: "imports"`
+action. Observed immutable-source conflicts explain that the rejected page left
+old evidence and its cursor intact, and request explicit authenticated operator
+reconciliation. This does not queue a repair, retry, overwrite, skip, or create
+replacement IDs. Conflict observations are process-local and page-bound; absence
+after restart is not proof of no conflict. Existing identity checks remain intact.
+
 The existing `conversation-v1` workflow remains. Journaled old iterations stay
 on their old path; new iterations persist optional feature choices before use.
 New live/extraction attempts persist intent before provider work and never

@@ -183,6 +183,14 @@ export class ImportBudgetExceeded extends Error {
   }
 }
 
+/** Content-free classification; never attach either version of the source. */
+export class ImmutableSourceConflictError extends Error {
+  constructor() {
+    super("Source IDs are immutable");
+    this.name = "ImmutableSourceConflictError";
+  }
+}
+
 // Never include input data in validation errors (these may reach operator logs).
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
@@ -288,7 +296,7 @@ function insertSource(state: State, source: Source) {
   const previous = state.sources.find((s) => s.id === source.id);
   if (previous) {
     if (!isDeepStrictEqual(previous, source))
-      throw new Error("Source IDs are immutable");
+      throw new ImmutableSourceConflictError();
     return;
   }
   if (state.claims.some((c) => c.id === source.id))

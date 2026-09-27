@@ -312,9 +312,23 @@ describe("history privacy boundaries", () => {
         root.text = "edited historical text";
         store.beginImport("edit", coverage);
         const beforeEdit = store.importProgress("edit");
-        await expect(
-          importHistory(store, "edit", coverage, fetchPage),
-        ).rejects.toThrow("immutable");
+        const imports = new HistoryImports(store, {
+          edit: { coverage, fetchPage },
+          deleted: { coverage, fetchPage },
+          provider: {
+            coverage,
+            async fetchPage() {
+              // Identical error wording from a provider is not a store conflict.
+              throw new Error("Source IDs are immutable");
+            },
+          },
+        });
+        expect(imports.status("edit").lastConflict).toBeNull();
+        await expect(imports.start("edit")).rejects.toThrow("immutable");
+        expect(imports.status("edit").lastConflict).toBe("immutable_source");
+        expect(imports.cancel("edit").lastConflict).toBe("immutable_source");
+        await expect(imports.start("provider")).rejects.toThrow("immutable");
+        expect(imports.status("provider").lastConflict).toBeNull();
         expect(store.importProgress("edit")).toEqual(beforeEdit);
         expect(store.search("owner", "").sources).toEqual(expected);
         for (const source of live)
@@ -323,6 +337,8 @@ describe("history privacy boundaries", () => {
           ).toThrow("immutable");
 
         root.text = liveRoot.text;
+        await imports.start("edit");
+        expect(imports.status("edit").lastConflict).toBeNull();
         store.deleteSource("slack:T1:C1:1.234999");
         store.beginImport("deleted", coverage);
         await expect(
@@ -336,6 +352,7 @@ describe("history privacy boundaries", () => {
             "C1: channel timeline only; replies require separately authorized channel/thread selections, including threads with older roots.",
           ],
         });
+        expect(imports.status("deleted").lastConflict).toBeNull();
         expect(() => store.appendSource(liveRoot)).toThrow("Tombstoned");
         expect(store.search("owner", "").sources).toEqual([expected[1]]);
       } finally {

@@ -1,5 +1,6 @@
 import {
   type EvidenceStore,
+  ImmutableSourceConflictError,
   type ImportBudget,
   ImportBudgetExceeded,
   type ImportCoverage,
@@ -19,6 +20,9 @@ export { createSlackHistoryFetcher } from "./slack.js";
 export class HistoryImports {
   private readonly active = new Map<string, AbortController>();
   private readonly budgetRejections = new Map<string, keyof ImportBudget>();
+  // Process-local, content-free observation bound to the rejected page. A
+  // cancelled/no-op/failed retry is not evidence the conflict was reconciled.
+  private readonly conflicts = new Map<string, number>();
   private readonly selections: Map<
     string,
     { coverage: ImportCoverage; fetchPage: PageFetcher }
@@ -43,6 +47,7 @@ export class HistoryImports {
   status(id: string) {
     const selection = this.selection(id);
     const progress = this.store.importProgress(id);
+    const conflictAtPage = this.conflicts.get(id);
     let cooldown = progress;
     for (const [otherId, other] of this.selections) {
       if (
@@ -69,6 +74,10 @@ export class HistoryImports {
         limits: this.store.importBudget,
         lastRejection: this.budgetRejections.get(id) ?? null,
       },
+      lastConflict:
+        conflictAtPage !== undefined && conflictAtPage === progress?.pages
+          ? ("immutable_source" as const)
+          : null,
     };
   }
 
@@ -127,6 +136,8 @@ export class HistoryImports {
     } catch (error) {
       if (error instanceof ImportBudgetExceeded)
         this.budgetRejections.set(id, error.dimension);
+      if (error instanceof ImmutableSourceConflictError)
+        this.conflicts.set(id, progress.pages);
       throw error;
     } finally {
       this.active.delete(id);

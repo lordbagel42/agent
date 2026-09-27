@@ -72,8 +72,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     id: "secret-source",
     audiences: [audience],
     platform: "slack",
-    account: "T1",
-    conversation: "D1",
+    account: "private-account",
+    conversation: "private-channel",
     author: "U1",
     observedAt: 1,
     sourceUrl: "https://example.com/private",
@@ -124,7 +124,10 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
           coverage,
           async fetchPage() {
             fetches++;
-            throw new Error("must not fetch");
+            return {
+              sources: [{ ...retainedSource, text: "SECRET REPLACEMENT" }],
+              nextCursor: null,
+            };
           },
         },
       ]),
@@ -159,6 +162,9 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(store.source(audience, forgotten.id)).toBeUndefined();
   const page = store.importProgress("selection-0");
   if (!page) throw new Error("Missing fixture page");
+  await expect(imports.start("selection-0")).rejects.toThrow("immutable");
+  expect(fetches).toBe(1);
+  expect(store.importProgress("selection-0")).toEqual(page);
   store.persistPage(
     page,
     {
@@ -346,6 +352,9 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(importReport).toContain("not provider readiness");
   expect(importReport).toContain("no polling or automatic retry");
   expect(importReport).toContain('"gapCount":2');
+  expect(importReport).toContain('"lastConflict":"immutable_source"');
+  expect(importReport).toContain("Please arrange explicit reconciliation");
+  expect(importReport).toContain("not a queued or completed repair");
   expect(importReport.length).toBeLessThan(4000);
   action = { text: "", inspection: "reflection" };
   expect(await deliver()).toContain('"pending":1,"running":0');
@@ -442,8 +451,10 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   action = { text: "", inspection: "capabilities" };
   expect(await deliver()).toContain("Generic capabilities are disabled");
   expect(JSON.stringify(sent)).not.toContain("SECRET");
+  expect(JSON.stringify(sent)).not.toContain("secret-source");
   expect(JSON.stringify(sent)).not.toContain("private-account");
-  expect(fetches).toBe(0);
+  expect(fetches).toBe(1); // Inspection never retried the rejected page.
+  expect(store.source(audience, retainedSource.id)).toEqual(retainedSource);
   expect(store.importProgress("selection-0")).toEqual(progress);
   expect(store.proposals(audience)[0]?.status).toBe("pending");
   disabled = false;
