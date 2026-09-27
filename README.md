@@ -195,12 +195,19 @@ memory, Slack search, coding, deep-model escalation or public web search.
 Relationship trust does not grant permissions. June has a structured `social`
 action and instructions to proactively ask Raygen when additional access helps:
 
+- `post`: on Raygen's turns, sends immediately to any Slack conversation/user ID
+  the bot can address, with an optional thread timestamp (`null` for unthreaded).
+  June chooses `conversationId`, `threadId`, and `text`; the host fixes the
+  workspace. One model pass performs the send and returns a delivery receipt,
+  with no second approval round trip. Guests cannot use it. Slack permissions
+  still apply; this does not connect RCS or bypass channel membership. Replayed
+  sends retain their original payload and uncertain sends are not repeated.
 - `request_access`: names the person, conversation, purpose, exact shared excerpt,
   requested tools (`webSearch`/`deep`), and notification placement (`dm`/`thread`).
   Guests may request only their own tools on their current surface, without
   proposing private excerpts. Owner-originated requests stay in Raygen's DM.
-- `outreach`: proposes one exact DM to a named person, from an owner-private
-  request. June previews the recipient and message privately before sending.
+- `outreach`: an opt-in preview/approval flow for one exact DM, from an
+  owner-private request. Ordinary owner-directed sends use `post` instead.
 - Raygen replies with exactly `!allow ID`, `!deny ID`, or `!revoke ID`. In a
   channel, prefix that with June's mention. Quoted commands, model output and
   other senders cannot approve anything. June can inspect the active grants
@@ -237,6 +244,11 @@ The original inbound scope/context is preserved. Existing journaled turns retain
 their earlier placement policy, including an inbox iteration already waiting at
 upgrade; the next fresh iteration enables June's placement choice. Typing is
 best-effort and never dictates where the reply belongs.
+Unthreaded Slack DMs use a temporary `hourglass_flowing_sand` reaction instead of
+the unavailable native typing bubble. It starts alongside context/model work,
+is not repeatedly added, and is removed on completion/cancellation. An ambiguous
+add, failed cleanup, or process crash can leave it behind; reactions have no Slack-side TTL.
+An existing reaction not added by this activity run is left alone.
 Unsupported surfaces and status failures do not prevent a reply. Live Slack
 status rendering still needs verification after an authorized rollout.
 

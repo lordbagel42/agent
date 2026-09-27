@@ -330,6 +330,7 @@ export function createSlackAdapter({
         privateSearch,
       })
     : undefined;
+  const thinkingReactions = new Set<string>();
   return {
     channel: "slack",
     capabilities: { text: true, reactions: true, threads: true },
@@ -337,8 +338,8 @@ export function createSlackAdapter({
     ...(contextEnabled ? { context: context.context } : {}),
     async setTyping(event, active, signal) {
       const { address } = event;
-      // Slack's status UI is thread-scoped and can auto-open that thread. The
-      // caller must supply its selected reply thread; never post a placeholder.
+      // Slack's status UI is thread-scoped and can auto-open that thread.
+      // Plain DMs use a temporary reaction instead; never invent a thread.
       // https://docs.slack.dev/reference/methods/assistant.threads.setStatus/
       if (
         address.channel !== "slack" ||
@@ -346,10 +347,16 @@ export function createSlackAdapter({
         (!owners.has(event.senderId) && !event.botMentioned && !event.direct) ||
         event.senderId === botUserId ||
         event.metadata?.channelType === "mpim" ||
-        !address.threadId ||
+        (!address.threadId && !event.direct) ||
         signal?.aborted
       )
         return;
+      const reaction = !address.threadId;
+      const reactionKey = JSON.stringify([
+        address.conversationId,
+        event.messageId,
+      ]);
+      if (reaction && thinkingReactions.has(reactionKey) === active) return;
       const controller = new AbortController();
       const abort = () => controller.abort();
       signal?.addEventListener("abort", abort, { once: true });
@@ -359,7 +366,9 @@ export function createSlackAdapter({
       try {
         if (active) latency?.mark(event, "typing_started");
         response = await fetchImpl(
-          "https://slack.com/api/assistant.threads.setStatus",
+          reaction
+            ? `https://slack.com/api/reactions.${active ? "add" : "remove"}`
+            : "https://slack.com/api/assistant.threads.setStatus",
           {
             method: "POST",
             redirect: "error",
@@ -368,24 +377,41 @@ export function createSlackAdapter({
               authorization: `Bearer ${botToken}`,
               "content-type": "application/json",
             },
-            body: JSON.stringify({
-              channel_id: address.conversationId,
-              thread_ts: address.threadId,
-              status: active ? "is thinking…" : "",
-            }),
+            body: JSON.stringify(
+              reaction
+                ? {
+                    channel: address.conversationId,
+                    timestamp: event.messageId,
+                    name: "hourglass_flowing_sand",
+                  }
+                : {
+                    channel_id: address.conversationId,
+                    thread_ts: address.threadId,
+                    status: active ? "is thinking…" : "",
+                  },
+            ),
             signal: controller.signal,
           },
         );
         if (!response.ok) throw new Error("typing_unavailable");
         const result: unknown = await response.json();
+        if (
+          reaction &&
+          active &&
+          isJsonObject(result) &&
+          result.error === "already_reacted"
+        )
+          return;
         if (!isJsonObject(result) || result.ok !== true)
           throw new Error("typing_unavailable");
+        if (reaction && active) thinkingReactions.add(reactionKey);
         latency?.mark(event, active ? "typing_accepted" : "typing_cleared");
         // No remote response content, source text or credential reaches history.
       } catch {
         latency?.mark(event, "typing_unavailable");
         throw new Error("typing_unavailable");
       } finally {
+        if (reaction && !active) thinkingReactions.delete(reactionKey);
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
         controller.abort();

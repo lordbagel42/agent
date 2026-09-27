@@ -176,7 +176,7 @@ export function replyJsonSchema(
             social: {
               ...socialSchema,
               description:
-                "Propose explicit owner-approved sharing/tool access, or a frozen outreach message. This requests permission, never grants it. Leave text empty and other actions unset.",
+                "For Raygen's current turn, post sends directly to a chosen Slack destination. request_access and outreach create approval proposals, never grant permission. Leave text empty and other actions unset.",
             },
           }
         : {}),

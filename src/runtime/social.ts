@@ -23,7 +23,7 @@ interface Proposal {
   id: string;
   accountId: string;
   requester: string;
-  action: SocialAction;
+  action: Exclude<SocialAction, { kind: "post" }>;
   status: "pending" | "approved" | "denied" | "revoked";
   created: number;
   expires: number;
@@ -202,6 +202,20 @@ export class SocialPermissions {
     if (!this.authorized(event)) return "This conversation is not authorized.";
     const action = socialActionSchema.parse(input);
     const owner = this.owner(event);
+    if (action.kind === "post") {
+      if (!owner) return "Only Raygen's turns can post to other destinations.";
+      const result = await this.send(
+        JSON.stringify([event.address.accountId, event.id, "post"]),
+        {
+          channel: "slack",
+          accountId: this.options.teamId,
+          conversationId: action.conversationId,
+          ...(action.threadId ? { threadId: action.threadId } : {}),
+        },
+        action.text,
+      );
+      return `Post delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived or repeat an uncertain send."}`;
+    }
     if (
       action.userId === RAYGEN_SLACK_ID ||
       action.userId === this.options.botUserId

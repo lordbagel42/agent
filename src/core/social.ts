@@ -16,6 +16,15 @@ export function isOwner(event: ChannelEvent, owner: Owner): boolean {
 
 export const socialActionSchema = z.union([
   z.strictObject({
+    kind: z.literal("post"),
+    conversationId: z.string().regex(/^[CDGUW][A-Z0-9]+$/),
+    threadId: z
+      .string()
+      .regex(/^\d+\.\d+$/)
+      .nullable(),
+    text: z.string().trim().min(1).max(3000),
+  }),
+  z.strictObject({
     kind: z.literal("request_access"),
     userId: z.string().regex(/^[UW][A-Z0-9]+$/),
     conversationId: z.string().regex(/^[CDG][A-Z0-9]+$/),

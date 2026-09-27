@@ -99,6 +99,100 @@ function fixture(t: { onTestFinished(fn: () => void): void }) {
   };
 }
 
+it("lets the owner post directly to chosen Slack destinations once, but rejects guests", async (t) => {
+  const { social, sent, options, slack } = fixture(t);
+  const action = parseReply(
+    JSON.stringify({
+      text: "",
+      social: {
+        kind: "post",
+        conversationId: "CDEST",
+        threadId: "777.123",
+        text: "Hello there.",
+      },
+    }),
+    [],
+    { socialAvailable: true },
+  ).social;
+  if (action?.kind !== "post") throw new Error("missing post action");
+  expect(await social.propose(guest, action)).toContain("Only Raygen");
+  expect(sent).toEqual([]);
+  expect(await social.propose(raygen, action)).toContain("sent");
+  expect(sent).toHaveLength(1);
+  expect(sent[0]?.address).toEqual({
+    channel: "slack",
+    accountId: "T1",
+    conversationId: "CDEST",
+    threadId: "777.123",
+  });
+  expect(sent[0]?.content).toEqual({ type: "text", text: "Hello there." });
+  await social.propose(raygen, action);
+  expect(sent).toHaveLength(1);
+  slack.send = async (message) => {
+    sent.push(message);
+    return { status: "unknown", code: "timeout" };
+  };
+  const uncertain = { ...raygen, id: "uncertain-post" };
+  expect(await social.propose(uncertain, action)).toContain("unknown");
+  const reopened = new SocialPermissions(options);
+  try {
+    expect(
+      await reopened.propose(uncertain, {
+        ...action,
+        conversationId: "CDIFFERENT",
+        text: "Changed replay payload",
+      }),
+    ).toContain("unknown");
+    expect(sent).toHaveLength(2);
+  } finally {
+    reopened.close();
+  }
+});
+
+it("executes June's direct-post tool in one model pass from an owner channel turn", async (t) => {
+  const { social, slack, sent } = fixture(t);
+  const source = { ...guest, id: "owner-post", senderId: RAYGEN_SLACK_ID };
+  let calls = 0;
+  const registry = createJuneRegistry({
+    owner,
+    social,
+    channels: { slack },
+    model: {
+      async reply(request) {
+        calls++;
+        return parseReply(
+          JSON.stringify({
+            text: "",
+            social: {
+              kind: "post",
+              conversationId: "UOTHER",
+              threadId: null,
+              text: "Meet me here.",
+            },
+          }),
+          [],
+          request,
+        );
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const actor = client.conversation.getOrCreate(["slack", "T1", "C1", ""]);
+  await actor.send("inbox", { type: "event", event: source });
+  await expect.poll(() => sent.length).toBe(2);
+  expect(calls).toBe(1);
+  expect(sent[0]?.address).toEqual({
+    channel: "slack",
+    accountId: "T1",
+    conversationId: "UOTHER",
+  });
+  expect(sent[0]?.content).toEqual({ type: "text", text: "Meet me here." });
+  expect(sent[1]?.content).toEqual({
+    type: "text",
+    text: "Post delivery sent. Slack accepted the message.",
+  });
+});
+
 it("requires exact owner approval, isolates scope, persists grants, and revokes or expires them", async (t) => {
   const { social, sent, options, expire } = fixture(t);
   const result = await social.propose(guest, access);

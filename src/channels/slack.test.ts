@@ -130,6 +130,46 @@ describe("createSlackAdapter", () => {
     });
   });
 
+  it("shows and clears a thinking reaction in unthreaded DMs without creating a thread", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => jsonResponse({ ok: true }));
+    const adapter = makeAdapter(fetchImpl);
+    const event: MessageEvent = {
+      type: "message",
+      id: "dm-thinking",
+      occurredAt: now,
+      messageId: "1712345678.002",
+      senderId: "U_HUMAN",
+      direct: true,
+      text: "hello",
+      address: { channel: "slack", accountId: teamId, conversationId: "D123" },
+    };
+    await adapter.setTyping?.(event, true);
+    await adapter.setTyping?.(event, true);
+    await adapter.setTyping?.(event, false);
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      "https://slack.com/api/reactions.add",
+      "https://slack.com/api/reactions.remove",
+    ]);
+    for (const [, init] of fetchImpl.mock.calls)
+      expect(JSON.parse(String(init?.body))).toEqual({
+        channel: "D123",
+        timestamp: event.messageId,
+        name: "hourglass_flowing_sand",
+      });
+    expect(event.address.threadId).toBeUndefined();
+    fetchImpl.mockResolvedValueOnce(
+      jsonResponse({ ok: false, error: "already_reacted" }),
+    );
+    await adapter.setTyping?.(event, true);
+    await adapter.setTyping?.(event, false);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe(
+      "https://slack.com/api/reactions.add",
+    );
+  });
+
   it("keeps typing scoped to admitted senders and never creates a thread or placeholder message", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
