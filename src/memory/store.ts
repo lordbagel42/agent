@@ -744,9 +744,17 @@ export class EvidenceStore {
       limit?: number;
       maxCharacters?: number;
       claimsOnly?: boolean;
+      category?: MemoryProposalInput["category"];
     } = {},
   ): MemoryRetrieval {
     parse(z.string().max(10000), query);
+    const category = proposalInputSchema.shape.category
+      .optional()
+      .safeParse(options.category);
+    if (!category.success)
+      throw new Error(
+        "Invalid memory category; expected claim, preference, commitment, or pattern",
+      );
     const limit = parse(z.number().int().min(1).max(100), options.limit ?? 12);
     const budget = parse(
       z.number().int().min(100).max(100000),
@@ -768,9 +776,19 @@ export class EvidenceStore {
     ];
     const candidates = [
       ...visible.sources
-        .filter((item) => !options.claimsOnly && !ignored.has(item.id))
+        .filter(
+          (item) =>
+            !options.claimsOnly &&
+            category.data === undefined &&
+            !ignored.has(item.id),
+        )
         .map((item) => ({ type: "source" as const, item })),
       ...visible.claims
+        .filter(
+          (item) =>
+            category.data === undefined ||
+            item.grounding?.category === category.data,
+        )
         .filter(
           (item) =>
             ignored.size === 0 ||

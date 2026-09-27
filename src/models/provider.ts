@@ -35,6 +35,13 @@ const searchQuerySchema = z
   .min(1)
   .refine((value) => Array.from(value).length <= 500);
 
+const recallCategorySchema = z.enum([
+  "claim",
+  "preference",
+  "commitment",
+  "pattern",
+]);
+
 const companionReplySchema = z.strictObject({
   text: z.string().refine((text) => Array.from(text).length <= 3_500),
   execution: z
@@ -118,7 +125,21 @@ const companionReplySchema = z.strictObject({
   inspection: z
     .enum(["memory", "imports", "reflection", "native-coding", "retention"])
     .optional(),
-  recall: searchQuerySchema.optional(),
+  recall: z
+    .union([
+      searchQuerySchema,
+      z.strictObject({
+        kind: z.literal("search"),
+        query: z
+          .string()
+          .trim()
+          .refine((value) => Array.from(value).length <= 500),
+        category: recallCategorySchema
+          .nullish()
+          .transform((value) => value ?? undefined),
+      }),
+    ])
+    .optional(),
   pendingMemory: z.literal(true).optional(),
   analytics: z
     .strictObject({
@@ -323,9 +344,30 @@ export function replyJsonSchema(
       ...(recallAvailable
         ? {
             recall: {
-              type: ["string", "null"],
+              anyOf: [
+                { type: ["string", "null"] },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", enum: ["search"] },
+                    query: {
+                      type: "string",
+                      description:
+                        "At most 500 Unicode characters; empty for category-only recall.",
+                    },
+                    category: {
+                      type: ["string", "null"],
+                      enum: [...recallCategorySchema.options, null],
+                      description:
+                        "Exact stored claim category; null preserves unfiltered recall. Raw sources have no category.",
+                    },
+                  },
+                  required: ["kind", "query", "category"],
+                },
+              ],
               description:
-                "One owner-private retained-memory query, 1–500 Unicode characters. The host returns bounded evidence with provenance directly. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
+                "One owner-private retained-memory query: a 1–500 character keyword string, or a search object with an optional category filter. Unknown categories are rejected, never broadened. The host returns bounded evidence with provenance directly. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
             },
           }
         : {}),
@@ -704,6 +746,14 @@ export function parseReply(
 
   const parsed = companionReplySchema.safeParse(normalized);
   if (!parsed.success) {
+    if (
+      recallAvailable &&
+      isJsonObject(normalized.recall) &&
+      normalized.recall.kind === "search" &&
+      !recallCategorySchema.nullish().safeParse(normalized.recall.category)
+        .success
+    )
+      throw new ModelError("invalid_recall_category", false);
     throw new ModelError("invalid_response", false);
   }
   const reply = parsed.data;

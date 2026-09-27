@@ -51,10 +51,16 @@ trusted host APIs, not autonomous model tools.
   Imports separately enforce ledger-global source/claim/full-snapshot byte
   ceilings via `importBudget` (see `../imports/README.md`). Scoped usage cannot
   be subtracted from those global limits. Retrieval/extraction limits are separate.
-- `retrieve(audience, query, {limit?, maxCharacters?})` returns `{sources,claims}`.
+- `retrieve(audience, query, {limit?, maxCharacters?, category?})` returns `{sources,claims}`.
   Authorization precedes lexical ranking. Defaults: 12 combined records, 16,000
   serialized JSON characters; hard limits: 100 records, 100,000 characters and a
   10,000-character input query. Invalid bounds or oversized queries are rejected.
+  A category filter selects only grounded claims with exactly that stored category
+  (`claim`, `preference`, `commitment`, or `pattern`); raw sources and ungrounded
+  legacy claims are excluded rather than guessed into a category. Unknown category
+  values fail explicitly, never fall back to unfiltered recall. Scope and category
+  filtering precede ranking, result limits, and omission counts. An empty query
+  permits category-only retrieval; omitting the category preserves normal recall.
   Oversized records are omitted, not cut into misleading evidence; smaller,
   lower-ranked matches can still fit. Incomplete results include `truncated:true`
   and `omitted` (the number of matching, authorized, non-opt-out records excluded
@@ -108,6 +114,15 @@ and `omitted`, including any whole records omitted to fit display escaping.
 Mentions, markup and URL slashes use JSON Unicode escapes; dashboard sign-in
 credentials are redacted before escaping without changing stored evidence.
 Slack opt-out records remain excluded under the existing retrieval policy.
+
+For a category-specific request (for example, "Recall my preferences about tea"),
+June can use `recall: {kind: "search", query: "tea", category: "preference"}`.
+Only existing `claim`, `preference`, `commitment`, and `pattern` categories are
+accepted. `query: ""` permits category-only recall; other queries remain bounded
+to 500 Unicode characters. Omitting `category` (or setting it to `null` on the
+provider wire) preserves unfiltered recall. Unknown categories are rejected
+explicitly without searching more broadly. The same owner-private authorization,
+six-record/3,000-character limits, provenance and deletion guards apply.
 
 The host derives the audience from routing; the model cannot choose an audience,
 limit, provider, account, or permission. Recall is absent from guest/public,

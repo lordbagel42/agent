@@ -189,7 +189,13 @@ export interface CompanionReply {
     | "native-coding"
     | "retention";
   /** One owner-private query of retained evidence, never a permission grant. */
-  recall?: string;
+  recall?:
+    | string
+    | {
+        kind: "search";
+        query: string;
+        category?: "claim" | "preference" | "commitment" | "pattern";
+      };
   /** Owner-private bounded view of unaccepted memory claims; never review. */
   pendingMemory?: true;
   /** Issue one short-lived dashboard login link to the owner privately. */

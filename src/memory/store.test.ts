@@ -1217,3 +1217,88 @@ it("accepts canonical Slack conversations under channel coverage without widenin
     claims: [],
   });
 });
+
+it("filters authorized grounded categories before ranking and bounds without widening invalid filters", () => {
+  const { store } = open();
+  const categories = ["claim", "preference", "commitment", "pattern"] as const;
+  store.appendSource({ ...source(), text: "apricot banana cherry" });
+  const input: MemoryProposalInput = {
+    subjectSourceId: "s1",
+    text: "apricot banana cherry",
+    category: "claim",
+    citations: [{ sourceId: "s1", quote: "apricot" }],
+    confidence: 0.6,
+    validFrom: null,
+    validTo: null,
+    contradicts: [],
+    supersedes: [],
+  };
+  const proposals = store.stageProposals(
+    "private",
+    ["s1"],
+    [
+      ...categories.map((category) => ({
+        ...input,
+        category,
+        text: category === "preference" ? "apricot" : input.text,
+      })),
+      { ...input, category: "preference", text: "apricot banana" },
+      { ...input, category: "preference" },
+    ],
+  );
+  for (const proposal of proposals.slice(0, 5))
+    store.reviewProposal("private", proposal.id, "accepted");
+  const extra = proposals[4];
+  if (!extra) throw new Error("Missing proposal");
+  store.appendSource({ ...source("foreign", "other"), text: input.text });
+  const [foreign] = store.stageProposals(
+    "other",
+    ["foreign"],
+    [
+      {
+        ...input,
+        category: "preference",
+        subjectSourceId: "foreign",
+        citations: [{ sourceId: "foreign", quote: "apricot" }],
+      },
+    ],
+  );
+  if (!foreign) throw new Error("Missing proposal");
+  store.reviewProposal("other", foreign.id, "accepted");
+  store.appendClaim({ ...extra.claim, id: "ungrounded", grounding: undefined });
+
+  for (const category of categories) {
+    const result = store.retrieve("private", "", { category });
+    expect(result.sources).toEqual([]);
+    expect(result.claims.map((claim) => claim.grounding?.category)).toEqual(
+      category === "preference" ? [category, category] : [category],
+    );
+    expect(result.omitted).toBeUndefined();
+  }
+  expect(
+    store.retrieve("private", "apricot banana cherry", {
+      category: "preference",
+      limit: 1,
+    }),
+  ).toEqual({
+    sources: [],
+    claims: [extra.claim],
+    truncated: true,
+    omitted: 1,
+  });
+  expect(
+    store.retrieve("private", "", {
+      category: "preference",
+      maxCharacters: 100,
+    }),
+  ).toEqual({ sources: [], claims: [], truncated: true, omitted: 2 });
+  expect(store.retrieve("unknown", "", { category: "preference" })).toEqual({
+    sources: [],
+    claims: [],
+  });
+  expect(() =>
+    store.retrieve("private", "", {
+      category: "preferences" as MemoryProposalInput["category"],
+    }),
+  ).toThrow("Invalid memory category");
+});

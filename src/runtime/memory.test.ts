@@ -67,12 +67,28 @@ it("recalls only for the owner privately and invalidates recalled and derived re
       dependsOn: [source.id],
       contradicts: [],
       supersedes: [],
+      ...(i === 9
+        ? {
+            grounding: {
+              subjectSourceId: source.id,
+              text: "heron hypothesis",
+              category: "preference",
+              citations: [{ sourceId: source.id, quote: "violet heron" }],
+              confidence: 0.6,
+              validFrom: null,
+              validTo: null,
+              contradicts: [],
+              supersedes: [],
+            },
+          }
+        : {}),
     });
   const sent: OutboundMessage[] = [];
   const requests: ModelRequest[] = [];
   let action: CompanionReply = { text: "", recall: "violet heron" };
   let forgetOnSend = false;
   let web = false;
+  let validate = false;
   const deps: Dependencies = {
     owner,
     memory: { store, source: () => undefined },
@@ -110,7 +126,9 @@ it("recalls only for the owner privately and invalidates recalled and derived re
         // Deliberately bypass provider validation to exercise the host guard.
         return web && request.webSearchAvailable
           ? { text: "", webSearch: "public query" }
-          : action;
+          : validate
+            ? parseReply(JSON.stringify(action), [], request)
+            : action;
       },
     }),
     webSearch: {
@@ -188,7 +206,26 @@ it("recalls only for the owner privately and invalidates recalled and derived re
   expect(JSON.stringify(requests)).not.toContain(credential);
   expect(JSON.stringify(requests.at(-1))).toContain("credential omitted");
   expect(derived.state.history.at(-1)?.context?.sourceIds).toEqual([source.id]);
-  action = { text: "", recall: "violet heron" };
+  action = {
+    text: "",
+    recall: { kind: "search", query: "", category: "preference" },
+  };
+  const categorized = await turn();
+  const categoryOutput = sent.at(-1)?.content;
+  if (categoryOutput?.type !== "text")
+    throw new Error("Missing category output");
+  const categoryEvidence = JSON.parse(
+    categoryOutput.text.slice(categoryOutput.text.indexOf("\n") + 1),
+  );
+  expect(categoryEvidence.sources).toEqual([]);
+  expect(categoryEvidence.claims.map((claim: Claim) => claim.id)).toEqual([
+    "claim-9",
+  ]);
+  expect(categoryEvidence.omitted).toBeUndefined();
+  expect(categorized.state.history.at(-1)?.context?.sourceIds).toEqual([
+    source.id,
+  ]);
+  expect(requests.at(-1)?.system).toContain("category-filtered recall");
   for (const extra of [
     {
       direct: false,
@@ -212,6 +249,18 @@ it("recalls only for the owner privately and invalidates recalled and derived re
   expect(requests.at(-1)?.recallAvailable).toBe(false);
   expect(JSON.stringify(sent.at(-1))).toContain("owner-private turn");
   web = false;
+  for (validate of [false, true]) {
+    action = {
+      text: "",
+      recall: { kind: "search", query: "", category: "preferences" },
+    } as unknown as CompanionReply;
+    await turn();
+    expect(JSON.stringify(sent.at(-1))).toContain(
+      "category must be claim, preference, commitment, or pattern",
+    );
+    expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE violet");
+  }
+  validate = false;
   action = { text: "", recall: "violet heron", inspection: "memory" };
   await turn();
   expect(JSON.stringify(sent.at(-1))).toContain("recall is unavailable");
@@ -247,6 +296,14 @@ it("recalls only for the owner privately and invalidates recalled and derived re
     " ",
     "x".repeat(501),
     { query: "bird", audience: "other-owner" },
+    { kind: "search", query: "bird", category: "preferences" },
+    {
+      kind: "search",
+      query: "bird",
+      category: "preference",
+      audience: "other-owner",
+    },
+    { kind: "search", query: "x".repeat(501), category: "preference" },
   ])
     expect(() =>
       parseReply(JSON.stringify({ text: "", recall }), [], {
@@ -254,6 +311,13 @@ it("recalls only for the owner privately and invalidates recalled and derived re
       }),
     ).toThrow();
   expect(() => parseReply('{"text":"","recall":"bird"}', [])).toThrow();
+  expect(
+    parseReply(
+      '{"text":"","recall":{"kind":"search","query":"bird","category":null}}',
+      [],
+      { recallAvailable: true },
+    ).recall,
+  ).toEqual({ kind: "search", query: "bird", category: undefined });
 });
 
 it.for(["reply", "deep"] as const)(
