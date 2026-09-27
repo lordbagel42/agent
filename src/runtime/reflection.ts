@@ -29,8 +29,10 @@ export type ReflectionMode = "interaction" | "idle" | "deep";
 /** Exact host commands only; quoted text and model output never select review. */
 export function parseReflectionReviewCommand(
   text: string,
-): { action: "list" } | undefined {
-  return text.trim() === "!reflection list" ? { action: "list" } : undefined;
+): { action: "list" } | { action: "inspect"; id: string } | undefined {
+  if (text.trim() === "!reflection list") return { action: "list" };
+  const match = /^!reflection inspect ([a-f0-9]{64})$/.exec(text.trim());
+  return match?.[1] ? { action: "inspect", id: match[1] } : undefined;
 }
 
 /** Internal IDs embed evidence IDs; private review uses bounded opaque tokens. */
@@ -141,6 +143,58 @@ export function createReflectionActor(
     )
       return null;
     return structuredClone(result.evidence);
+  }
+
+  /** With a scope, accept only opaque aliases in the configured private audience.
+   * Without one, preserve the trusted operator's legacy internal-ID API.
+   */
+  async function readCandidate(
+    c: { readonly state: ReflectionRuntimeState },
+    id: string,
+    scope?: string,
+  ) {
+    if (
+      scope !== undefined &&
+      (scope !== JSON.stringify(["private", deps.ownerId]) ||
+        !/^[a-f0-9]{64}$/.test(id))
+    )
+      return null;
+    const candidate =
+      scope === undefined
+        ? c.state.candidates[id]
+        : Object.values(c.state.candidates).find(
+            (item) =>
+              item.scope === scope && reflectionCandidateId(item.id) === id,
+          );
+    const request = c.state.reflection.requests.find(
+      (item) =>
+        item.id === candidate?.requestId && item.scope === candidate?.scope,
+    );
+    if (!candidate || !request) return null;
+    const current = () =>
+      c.state.candidates[candidate.id]?.id === candidate.id &&
+      candidate.epoch === c.state.epoch &&
+      !c.state.liveActive &&
+      !isQuiet(Date.now(), deps.policy.quiet) &&
+      !["cancelled", "cancelling"].includes(
+        c.state.reflection.requests.find((item) => item.id === request.id)
+          ?.status ?? "cancelled",
+      );
+    if (!current()) return null;
+    const evidence = await retrieve(
+      request,
+      AbortSignal.timeout(deps.timeoutMs),
+    ).catch(() => null);
+    if (!evidence || !current()) return null;
+    const decision = validateDecision(candidate.decision, {
+      scope: candidate.scope,
+      question: "novelty",
+      prompt: "Inspect the existing hypothesis; do not generate evidence.",
+      now: Date.now(),
+      evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
+      evidence,
+    });
+    return decision.answer === "yes" ? { candidate, evidence, decision } : null;
   }
 
   return actor({
@@ -412,27 +466,45 @@ export function createReflectionActor(
         };
       },
       /** Recheck memory on every read, including after actor recovery or forgetting. */
-      candidate: async (c, id: string) => {
-        const candidate = c.state.candidates[id];
-        const request = c.state.reflection.requests.find(
-          (r) => r.id === candidate?.requestId,
-        );
-        if (!candidate || !request) return null;
-        const evidence = await retrieve(
-          request,
-          AbortSignal.timeout(deps.timeoutMs),
-        );
-        const current = c.state.candidates[id];
+      candidate: async (c, id: string, scope?: string) => {
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId) return null;
+        return (await readCandidate(c, id, scope))?.candidate ?? null;
+      },
+      /** Exact owner-private inspection, not evidence or authorization for an effect.
+       * Project only after current provenance checks; omit the whole result if it
+       * exceeds the byte budget rather than silently clipping the rationale.
+       */
+      inspectCandidate: async (c, scope: string, id: string) => {
         if (
-          !evidence ||
-          !current ||
-          current.id !== candidate.id ||
-          current.epoch !== c.state.epoch ||
-          isQuiet(Date.now(), deps.policy.quiet) ||
-          c.state.liveActive > 0
+          c.key.length !== 1 ||
+          c.key[0] !== deps.ownerId ||
+          scope !== JSON.stringify(["private", deps.ownerId])
         )
           return null;
-        return current;
+        const read = await readCandidate(c, id, scope);
+        if (!read) return null;
+        const { candidate, evidence, decision } = read;
+        const result = {
+          checkedAt: Date.now(),
+          candidate: {
+            id,
+            kind: candidate.kind,
+            mode: candidate.mode,
+            createdAt: candidate.createdAt,
+            hypothesisOnly: candidate.hypothesisOnly,
+            decision,
+          },
+          evidence: evidence.map(({ id, source, observedAt, expiresAt }) => ({
+            id,
+            source,
+            observedAt,
+            expiresAt,
+            cited: decision.evidenceIds.includes(id),
+          })),
+        };
+        return Buffer.byteLength(JSON.stringify(result), "utf8") <= 24000
+          ? result
+          : null;
       },
       /** Operator-only recovery after confirming the old worker/provider has stopped.
        * Never retries this request or clears its dedupe tombstone.

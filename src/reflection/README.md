@@ -204,6 +204,41 @@ RivetKit 2.3.21 still emits the repository's documented native
 `transaction_closed` shutdown diagnostic; passing checks are not a claim of
 production engine readiness.
 
+### Exact private candidate inspection
+
+After `!reflection list`, send June `!reflection inspect <64hex>` with the full
+opaque candidate ID in an authenticated owner-private conversation. The host
+handles this exact command without inference, memory ingestion/extraction or
+automatic reflection enqueue. Ordinary conversation still invalidates candidates;
+inspection does not weaken live-work preemption or approve any later action.
+
+`inspectCandidate(scope, id)` returns one exact generated decision/rationale and
+current provenance metadata for **all** source inputs, marking which IDs the
+decision cited. It binds the configured owner-private scope and rechecks source
+authorization, deletion, freshness, candidate epoch/presence, live occupancy and
+quiet hours on every read. The DTO has a 24,000-byte UTF-8 JSON ceiling: oversized
+results are unavailable, never silently clipped. Source bodies are not separately
+returned; the exact generated rationale may itself quote its support.
+The rationale and any simulations remain generated hypotheses, never independent
+evidence, even when `hypothesisOnly` is false (that flag describes the support).
+
+The private reply is constructed only inside the existing delivery callback.
+Retries re-read current evidence; interrupted sends remain unknown, not repeated.
+Conversation history/outbox retain only a content-free receipt, not the rationale
+or provenance payload. Reflection actor storage still contains the candidate;
+inspection is not physical deletion of it, backups, or already delivered replies.
+Slack sends the report as literal text without link/media unfurls and excludes
+June-authored review reports from automatic platform context. This command does
+not supply the inspected body to June's model; a model-readable continuation is
+a separate capability, not implied by listing or inspecting through a command.
+
+Trusted host integrations can call `candidate(alias, ownerPrivateScope)` for the
+full current candidate. Omitting the scope preserves the operator's legacy
+internal-ID lookup. Neither read is approval, a durable reservation, nor a later
+send/staging grant: consumers must recheck authority and eligibility at their
+effect boundary. `src/runtime/reflection-inspection.test.ts` exercises the private
+June command, no-retention boundary, read races and invalidated send retries.
+
 ## Semantics and limits
 
 - Scope is an opaque, trusted owner/audience key. Dedupe is the canonical JSON

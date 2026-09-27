@@ -7,6 +7,7 @@ import type {
   OutboundMessage,
   SendResult,
 } from "../core/contracts.js";
+import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
@@ -619,7 +620,16 @@ export function createSlackAdapter({
       let body: JsonObject;
       let successMessageId: string;
       if (message.content.type === "text") {
-        if (Array.from(message.content.text).length > SLACK_TEXT_LIMIT) {
+        const privateReview = message.content.text.startsWith(
+          PRIVATE_REFLECTION_REVIEW_PREFIX,
+        );
+        const text = privateReview
+          ? message.content.text
+              .replaceAll("&", "&amp;")
+              .replaceAll("<", "&lt;")
+              .replaceAll(">", "&gt;")
+          : message.content.text;
+        if (Array.from(text).length > SLACK_TEXT_LIMIT) {
           return rejected("message_too_long");
         }
         endpoint = "https://slack.com/api/chat.postMessage";
@@ -627,7 +637,7 @@ export function createSlackAdapter({
         const threadId = message.address.threadId ?? message.content.replyTo;
         body = {
           channel: message.address.conversationId,
-          text: message.content.text,
+          text,
           client_msg_id: message.id,
           ...(message.content.plainText
             ? {
@@ -640,6 +650,15 @@ export function createSlackAdapter({
           ...(threadId === undefined ? {} : { thread_ts: threadId }),
           ...(message.content.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)
             ? { unfurl_links: false, unfurl_media: false }
+            : {}),
+          ...(privateReview
+            ? {
+                mrkdwn: false,
+                parse: "none",
+                link_names: false,
+                unfurl_links: false,
+                unfurl_media: false,
+              }
             : {}),
         };
       } else {

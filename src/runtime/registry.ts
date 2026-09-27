@@ -15,6 +15,7 @@ import type {
   Owner,
   SendResult,
 } from "../core/contracts.js";
+import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { isOwnerRivetDm, RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
@@ -375,7 +376,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // first new message, while already-journaled turns keep the old path.
           const reflectionReviewVersion = await loop.getVersion(
             "reflection-review",
-            2,
+            3,
           );
           // A parked inbox can use the jury on its first new turn; journals
           // already processing a turn retain the original capability plan.
@@ -418,7 +419,7 @@ export function createJuneRegistry(deps: Dependencies) {
               );
               if (!claimed) return;
             }
-            const reflectionReview =
+            const parsedReflectionReview =
               reflectionReviewVersion >= 2 &&
               ownerTurn &&
               scope.private &&
@@ -428,6 +429,11 @@ export function createJuneRegistry(deps: Dependencies) {
                 event.reflectionReviewEligible === true)
                 ? parseReflectionReviewCommand(event.text)
                 : undefined;
+            const reflectionReview =
+              parsedReflectionReview?.action === "inspect" &&
+              reflectionReviewVersion < 3
+                ? undefined
+                : parsedReflectionReview;
             if (version >= 5 && !ownerTurn) {
               const admitted = await loop.step("guest-admission", async () =>
                 priority.acceptGuest(
@@ -3522,6 +3528,35 @@ export function createJuneRegistry(deps: Dependencies) {
                                 text =
                                   "Reflection review is unavailable; no candidate status can be inferred.";
                               }
+                            }
+                            if (!valid(step.state) || step.abortSignal.aborted)
+                              return {
+                                status: "rejected",
+                                code: "memory_invalidated",
+                                retryable: false,
+                              };
+                            return send(
+                              { ...outbound, content: { type: "text", text } },
+                              "text",
+                            );
+                          }
+                          if (reflectionReview?.action === "inspect") {
+                            let text =
+                              "Reflection inspection is unavailable; the candidate may be missing, invalidated, blocked, or too large.";
+                            if (plan.reflection && deps.reflection) {
+                              const result = await step
+                                .client<JuneClientRegistry>()
+                                .reflection.getOrCreate([deps.owner.id])
+                                .inspectCandidate(audience, reflectionReview.id)
+                                .catch(() => null);
+                              if (!result && delivery.attempts > 1)
+                                return {
+                                  status: "rejected",
+                                  code: "reflection_unavailable",
+                                  retryable: false,
+                                };
+                              if (result)
+                                text = `${PRIVATE_REFLECTION_REVIEW_PREFIX}Rationale and alternatives are generated hypotheses, never independent evidence or permission to act. ${JSON.stringify(result)}`;
                             }
                             if (!valid(step.state) || step.abortSignal.aborted)
                               return {

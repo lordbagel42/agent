@@ -3,6 +3,7 @@ import type {
   MessageEvent,
   MessageMetadata,
 } from "../core/contracts.js";
+import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 
@@ -245,7 +246,8 @@ export function createSlackContext({
           message.hidden === true ||
           (message.user === botUserId &&
             typeof message.text === "string" &&
-            message.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)) ||
+            (message.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX) ||
+              message.text.startsWith(PRIVATE_REFLECTION_REVIEW_PREFIX))) ||
           (typeof message.text === "string" &&
             (message.text.startsWith("##") ||
               message.text.includes(RIVET_REPLY_PREFIX))) ||
