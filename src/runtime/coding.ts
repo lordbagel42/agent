@@ -3,6 +3,7 @@ import { workflow } from "rivetkit/workflow";
 import {
   type createWorktreeManager,
   type VerificationResult,
+  verificationArtifact,
   WorkspaceOccupiedError,
   type WorktreeManifest,
 } from "../coding/worktree.js";
@@ -85,6 +86,7 @@ export function codingJobMetadata(
   currentRuntimeId: string | undefined,
 ) {
   const verification = state.verification;
+  const artifact = verificationArtifact(verification?.artifact);
   // Compare bindings without exposing either digest or the configuration it binds.
   const runtimeBinding = !state.proposal
     ? "pending"
@@ -144,9 +146,14 @@ export function codingJobMetadata(
       )
         ? verification?.headCommit
         : null,
+      artifact: artifact ?? null,
+      artifactMatches:
+        artifact && typeof verification?.artifactMatches === "boolean"
+          ? verification.artifactMatches
+          : null,
       output: "omitted",
       limitations:
-        "Command outcome only; no immutable artifact binding or deployment attestation. Historical receipts do not verify current files.",
+        "Command outcome and local source identity only; not deployment evidence. artifactMatches false invalidates equivalence; null means unknown. Ignored files and external dependencies are excluded. Historical receipts are not new verification; this grants no push or deployment authority.",
     },
     manualReconciliationRequired:
       reason !== undefined && reason !== "review_required",
@@ -174,7 +181,28 @@ export function createCodingActor(
     }),
     queues: { commands: queue<Command>() },
     actions: {
-      snapshot: (c): CodingState => c.state,
+      snapshot: async (c): Promise<CodingState> => {
+        const state = JSON.parse(JSON.stringify(c.state)) as CodingState;
+        if (state.verification && state.proposal) {
+          const manager = coding?.isolation?.[state.proposal.workspace];
+          state.verification.artifactMatches =
+            state.status === "running"
+              ? null
+              : ((await manager?.checkArtifact(
+                  state.proposal.id,
+                  state.verification,
+                )) ?? null);
+          if (
+            state.status === "completed" &&
+            state.verification.artifactMatches !== true
+          ) {
+            state.status = "needs_review";
+            state.report =
+              "The recorded verifier outcome does not verify the current source artifact; deployment is not verified.";
+          }
+        }
+        return state;
+      },
       // Host must expose this only through authenticated owner/operator ingress.
       cancel: async (c, revoke = false) => {
         // Forgetting is permanent, including when it overtakes a queued proposal
@@ -228,6 +256,26 @@ export function createCodingActor(
                 Object.hasOwn(step.state.commandApprovals, command.commandId)
               ) {
                 return step.state.commandApprovals[command.commandId] ?? null;
+              }
+              if (
+                command.type === "resume" &&
+                command.confirmedStopped &&
+                step.state.status === "completed" &&
+                step.state.proposal &&
+                !step.state.revoked &&
+                step.state.runtimeId === coding.runtimeId
+              ) {
+                const manager =
+                  coding.isolation?.[step.state.proposal.workspace];
+                const matches = step.state.verification
+                  ? await manager?.checkArtifact(
+                      step.state.proposal.id,
+                      step.state.verification,
+                    )
+                  : null;
+                // Inspection stays read-only. Only this explicit resume reconciles
+                // durable completion with a stale/unknown source artifact.
+                if (matches !== true) step.state.status = "needs_review";
               }
               const allowed =
                 step.state.proposal &&
@@ -379,8 +427,12 @@ export function createCodingActor(
                   step.state.report = verification.replayed
                     ? "Only a historical verifier receipt is available; current workspace changes are not verified."
                     : `Separate operator verifier: ${verification.status}. This is evidence only for that command at ${verification.finishedAt}, not approval to push or deploy.`;
+                  if (verification.artifact) {
+                    step.state.report += ` Source artifact SHA-256: ${verification.artifact.digest}; HEAD: ${verification.artifact.headCommit}; artifact match: ${verification.artifactMatches ?? "unknown"}. Scope: tracked and nonignored untracked files only; ignored files and external dependencies excluded. Deployment is not verified.`;
+                  }
                   step.state.status =
                     verification.status === "passed" &&
+                    verification.artifactMatches === true &&
                     !verification.replayed &&
                     !signal.aborted
                       ? "completed"

@@ -97,6 +97,11 @@ async function fixture(
   await mkdir(repositoryRoot);
   await mkdir(worktreeRoot);
   execFileSync("git", ["init"], { cwd: repositoryRoot, stdio: "pipe" });
+  await writeFile(path.join(repositoryRoot, ".gitignore"), "verified\n");
+  execFileSync("git", ["add", ".gitignore"], {
+    cwd: repositoryRoot,
+    stdio: "pipe",
+  });
   execFileSync(
     "git",
     [
@@ -1321,17 +1326,23 @@ describe("separate coding supervisor", () => {
 
   it("requires a private approval, then reports the worker result without pretending it verified it", async (t) => {
     const launches: { prompt: string; cwd: string }[] = [];
+    const options: { reply?: () => CompanionReply } = {};
     const { registry, sent, modelRequests, repositoryRoot, worktreeRoot } =
-      await fixture(t, {
-        async run(input) {
-          launches.push({ prompt: input.prompt, cwd: input.cwd });
-          await input.onThread("T-coding-worker");
-          return {
-            threadId: "T-coding-worker",
-            report: "Changed reactions and ran the checks.",
-          };
+      await fixture(
+        t,
+        {
+          async run(input) {
+            launches.push({ prompt: input.prompt, cwd: input.cwd });
+            await input.onThread("T-coding-worker");
+            return {
+              threadId: "T-coding-worker",
+              report: "Changed reactions and ran the checks.",
+            };
+          },
         },
-      });
+        undefined,
+        options,
+      );
     const { client } = await setupTest(t, registry);
     const june = client.conversation.getOrCreate(["private", "raygen"]);
     await june.send("inbox", {
@@ -1441,6 +1452,70 @@ describe("separate coding supervisor", () => {
       )
       .toBe(5);
     expect(launches).toHaveLength(1);
+
+    const id = Object.keys((await june.snapshot()).jobs).find((id) =>
+      id.startsWith(approval),
+    );
+    if (!id) throw new Error("Job missing");
+    const job = client.job.getOrCreate(["raygen", id]);
+    const completed = await job.snapshot();
+    expect(completed.status).toBe("completed");
+    expect(completed.verification?.artifactMatches).toBe(true);
+    await writeFile(path.join(cwd, "post-verification"), "unchecked change");
+    const stale = await job.snapshot();
+    expect(stale.status).toBe("needs_review");
+    expect(stale.verification?.artifactMatches).toBe(false);
+    expect(stale.verification?.artifact).toEqual(
+      completed.verification?.artifact,
+    );
+    options.reply = () => ({ text: "", codingJob: { action: "inspect", id } });
+    await june.send("inbox", {
+      type: "event",
+      event: {
+        ...source,
+        id: "inspect-stale",
+        messageId: "inspect-stale",
+        text: "Which artifact was verified?",
+      },
+    });
+    await expect
+      .poll(() =>
+        sent.some(
+          (message) =>
+            message.content.type === "text" &&
+            message.content.text.includes('"artifactMatches":false'),
+        ),
+      )
+      .toBe(true);
+    const inspection = sent.find(
+      (message) =>
+        message.content.type === "text" &&
+        message.content.text.includes('"artifactMatches":false'),
+    )?.content;
+    if (inspection?.type !== "text") throw new Error("Inspection missing");
+    expect(inspection.text).toContain(completed.verification?.artifact?.digest);
+    expect(inspection.text).toContain(completed.verification?.headCommit);
+    expect(inspection.text).toContain("not deployment evidence");
+    expect(inspection.text).not.toContain(
+      "Changed reactions and ran the checks.",
+    );
+    const resume = {
+      type: "resume" as const,
+      commandId: "stale-resume",
+      confirmedStopped: true,
+    };
+    await job.send("commands", resume);
+    await job.send("commands", resume);
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("completed");
+    // Queue a sentinel after both copies to prove duplicate processing completed.
+    await job.send("commands", { type: "approve", commandId: "after-resume" });
+    await expect
+      .poll(async () => (await job.snapshot()).commandApprovals["after-resume"])
+      .toBeNull();
+    expect((await job.snapshot()).attempts).toBe(2);
+    expect(launches).toHaveLength(2);
   });
 
   it("gives changed June requests separate previews without widening the original approval", async (t) => {

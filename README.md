@@ -565,9 +565,16 @@ Ask June “inspect the independent verifier outcome for coding job ID” to rea
 legacy job says completed. A recorded receipt exposes the operator verifier's
 status, tri-state pass result, exit code, bounded base/HEAD commit IDs, original
 receipt time, and historical flag; missing or invalid provenance is null.
-HEAD is captured before the command, not bound to immutable file contents.
-Historical receipts do not verify current files. Command output stays omitted;
-these results neither attest a deployment nor authorize one.
+New receipts also bind HEAD to a SHA-256 source artifact fingerprint covering
+tracked and nonignored untracked paths, file bytes, permission bits and symlink
+targets. Ignored files, external dependencies and symlink target contents outside
+that source set are excluded; submodules/unsupported entries fail closed.
+Inspection rechecks identity without rerunning the command.
+`artifactMatches: false` invalidates current equivalence; null means unknown, including legacy or
+unreadable identity. A verifier that changes source cannot certify the resulting
+artifact. Historical receipts are not new verification. Command output stays
+omitted; local source identity is never proof of publication or deployment, nor
+authority to do either.
 
 Ask June privately “why is coding job ID blocked?” to use the same `inspect`
 directive. Its `runtimeBinding` is `pending`, `missing`, `unavailable`, `matched`

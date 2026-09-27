@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readlink, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -39,10 +39,15 @@ export class WorkspaceOccupiedError extends Error {
   }
 }
 
-/**
- * Command-outcome evidence only, never release authorization. HEAD is captured
- * before execution; no immutable content/artifact or verifier digest is bound.
- */
+export interface VerificationArtifact {
+  version: 1;
+  scope: "tracked-and-untracked-nonignored";
+  headCommit: string;
+  /** SHA-256 of HEAD, paths, file modes, bytes and symlink targets. */
+  digest: string;
+}
+
+/** Command-outcome evidence for a local source artifact, never deployment proof. */
 export interface VerificationResult {
   status:
     | "passed"
@@ -61,6 +66,10 @@ export interface VerificationResult {
   finishedAt: string;
   /** A replay is historical evidence, NOT verification of current file contents. */
   replayed: boolean;
+  /** Absent on legacy receipts. Ignored files and external dependencies are excluded. */
+  artifact?: VerificationArtifact;
+  /** False invalidates this evidence; null/absent means identity is unknown. */
+  artifactMatches?: boolean | null;
   /** Untrusted command output is deliberately neither retained nor returned. */
   output: "omitted";
 }
@@ -129,7 +138,7 @@ async function readJson(file: string): Promise<unknown> {
   }
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
+async function git(cwd: string, args: string[], trim = true): Promise<string> {
   try {
     const { stdout } = await exec(
       "git",
@@ -147,10 +156,85 @@ async function git(cwd: string, args: string[]): Promise<string> {
         maxBuffer: 1024 * 1024,
       },
     );
-    return stdout.trim();
+    return trim ? stdout.trim() : stdout;
   } catch {
     return fail("Git operation failed; inspect locally before retrying");
   }
+}
+
+export function verificationArtifact(
+  value: unknown,
+): VerificationArtifact | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const artifact = value as VerificationArtifact;
+  if (
+    artifact.version !== 1 ||
+    artifact.scope !== "tracked-and-untracked-nonignored" ||
+    typeof artifact.headCommit !== "string" ||
+    typeof artifact.digest !== "string" ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(artifact.headCommit) ||
+    !/^[a-f0-9]{64}$/.test(artifact.digest)
+  )
+    return undefined;
+  return {
+    version: 1,
+    scope: artifact.scope,
+    headCommit: artifact.headCommit,
+    digest: artifact.digest,
+  };
+}
+
+async function identifyArtifact(cwd: string): Promise<VerificationArtifact> {
+  const headCommit = await git(cwd, ["rev-parse", "--verify", "HEAD^{commit}"]);
+  const names = await git(
+    cwd,
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    false,
+  );
+  if (names.includes("\uFFFD")) fail("unsupported artifact filename encoding");
+  const digest = createHash("sha256").update(`june-source-v1\0${headCommit}\0`);
+  for (const name of [...new Set(names.split("\0").filter(Boolean))].sort()) {
+    const file = path.join(cwd, name);
+    if (!within(cwd, file) || file === cwd) fail("invalid artifact path");
+    const stat = await lstat(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!stat) {
+      digest.update(JSON.stringify([name, "deleted"]));
+      continue;
+    }
+    if ((await realpath(path.dirname(file))) !== path.dirname(file))
+      fail("artifact parent must not be a symlink");
+    if (stat.isSymbolicLink()) {
+      const target = await readlink(file, { encoding: "buffer" });
+      digest.update(JSON.stringify([name, "symlink", target.toString("hex")]));
+    } else if (stat.isFile()) {
+      const handle = await open(
+        file,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      const content = createHash("sha256");
+      try {
+        for await (const chunk of handle.createReadStream({ autoClose: false }))
+          content.update(chunk);
+      } finally {
+        await handle.close();
+      }
+      digest.update(
+        JSON.stringify([name, stat.mode & 0o7777, content.digest("hex")]),
+      );
+    } else {
+      // In particular, do not silently certify unchecked submodule contents.
+      fail("unsupported artifact entry");
+    }
+  }
+  return {
+    version: 1,
+    scope: "tracked-and-untracked-nonignored",
+    headCommit,
+    digest: digest.digest("hex"),
+  };
 }
 
 /**
@@ -265,7 +349,35 @@ export function createWorktreeManager(input: WorktreeConfig) {
     }
   }
 
+  async function checkArtifact(
+    jobId: string,
+    receipt: VerificationResult,
+  ): Promise<boolean | null> {
+    const artifact = verificationArtifact(receipt.artifact);
+    if (
+      !artifact ||
+      artifact.headCommit !== receipt.headCommit ||
+      typeof receipt.artifactMatches !== "boolean"
+    )
+      return null;
+    // A command that changed its own input never checked a stable artifact.
+    if (!receipt.artifactMatches) return false;
+    try {
+      const manifest = await owned(jobId);
+      const current = await identifyArtifact(manifest.cwd);
+      return (
+        receipt.baseCommit === manifest.baseCommit &&
+        artifact.headCommit === current.headCommit &&
+        artifact.digest === current.digest
+      );
+    } catch {
+      return null;
+    }
+  }
+
   return {
+    /** Read-only freshness check; never launches or replays a verifier command. */
+    checkArtifact,
     /** Read only after fencing launches. Absence of a lease covers this root
      * only, not legacy sessions or workspaces removed from configuration. */
     async isSettled(): Promise<boolean> {
@@ -424,14 +536,13 @@ export function createWorktreeManager(input: WorktreeConfig) {
               ? saved.finishedAt
               : "",
           replayed: true,
+          artifact: verificationArtifact(saved.artifact),
+          artifactMatches: await checkArtifact(jobId, saved),
           output: "omitted",
         };
       }
-      const headCommit = await git(manifest.cwd, [
-        "rev-parse",
-        "--verify",
-        "HEAD^{commit}",
-      ]);
+      const artifact = await identifyArtifact(manifest.cwd);
+      const headCommit = artifact.headCommit;
       const result = (
         status: VerificationResult["status"],
         exitCode: number | null = null,
@@ -445,6 +556,8 @@ export function createWorktreeManager(input: WorktreeConfig) {
         headCommit,
         finishedAt: new Date().toISOString(),
         replayed: false,
+        artifact,
+        artifactMatches: null,
         output: "omitted",
       });
       const verifier = config.verifier;
@@ -466,6 +579,7 @@ export function createWorktreeManager(input: WorktreeConfig) {
           {
             startedAt: new Date().toISOString(),
             headCommit,
+            artifact,
           },
         );
       } catch (error) {
@@ -521,6 +635,10 @@ export function createWorktreeManager(input: WorktreeConfig) {
             ),
           ),
         );
+      });
+      checked.artifactMatches = await checkArtifact(jobId, {
+        ...checked,
+        artifactMatches: true,
       });
       await directory(record);
       await writeNew(resultPath, checked);

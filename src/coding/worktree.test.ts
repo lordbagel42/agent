@@ -140,11 +140,21 @@ test("verification never repeats a command on replay and omits private output", 
       },
     });
     const { manifest } = await manager.prepare("verify-1");
+    // The fixture's invocation counter is not part of the source artifact.
+    await writeFile(path.join(manifest.cwd, ".gitignore"), "runs\n");
     const first = await manager.verify("verify-1");
     expect(first.status).toBe("passed");
+    expect(first.artifact?.digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.artifactMatches).toBe(true);
+    expect(await manager.checkArtifact("verify-1", first)).toBe(true);
     expect(JSON.stringify(first)).not.toContain("private-output");
     await writeFile(path.join(manifest.cwd, "later-change"), "not checked");
-    expect((await manager.verify("verify-1")).replayed).toBe(true);
+    expect(await manager.checkArtifact("verify-1", first)).toBe(false);
+    expect(await manager.verify("verify-1")).toMatchObject({
+      replayed: true,
+      artifact: first.artifact,
+      artifactMatches: false,
+    });
     expect(await readFile(path.join(manifest.cwd, "runs"), "utf8")).toBe("1");
     const metadata = path.join(
       worktreeRoot,
