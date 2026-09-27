@@ -38,12 +38,20 @@ trusted host APIs, not autonomous model tools.
   `isDeleted(sourceId)` is only for trusted ingestion/replay filtering; it is
   not a model-visible existence oracle. Tombstones must outlive replayable data.
 - `retrieve(audience, query, {limit?, maxCharacters?})` returns `{sources,claims}`.
-  Authorization precedes lexical ranking. Defaults: 12 records, 16,000 serialized
-  JSON characters; hard limits: 100 records, 100,000 characters. Oversized records
-  are omitted, not cut into misleading evidence. Contradictions and supersession
-  remain explicit edges, not silently resolved facts. Label all returned data as
-  untrusted evidence, never instructions. Do not cache across deletion or scope
-  changes. RTS results do not belong in this ledger.
+  Authorization precedes lexical ranking. Defaults: 12 combined records, 16,000
+  serialized JSON characters; hard limits: 100 records, 100,000 characters and a
+  10,000-character input query. Invalid bounds or oversized queries are rejected.
+  Oversized records are omitted, not cut into misleading evidence; smaller,
+  lower-ranked matches can still fit. Incomplete results include `truncated:true`
+  and `omitted` (the number of matching, authorized, non-opt-out records excluded
+  by the count or character budget). This metadata counts toward the JSON budget;
+  no matches returns empty arrays without truncation metadata. June's scoped
+  prompt receives these fields with the evidence, so an empty truncated result
+  is not evidence of no memories. Explicit recall callers must preserve that
+  distinction. Contradictions and supersession remain explicit edges, not silently
+  resolved facts. Label all returned data as untrusted evidence, never instructions.
+  Do not cache across deletion or scope changes. RTS results do not belong in this
+  ledger. `search` is an unbounded trusted lookup, not a prompt/recall projection.
 
 ## Import coverage and edits
 

@@ -115,7 +115,13 @@ export type Source = z.infer<typeof sourceSchema>;
 export type Claim = z.infer<typeof claimSchema>;
 export type MemoryProposalInput = z.infer<typeof proposalInputSchema>;
 export type MemoryProposal = z.infer<typeof proposalSchema>;
-export type MemoryRetrieval = { sources: Source[]; claims: Claim[] };
+export type MemoryRetrieval = {
+  sources: Source[];
+  claims: Claim[];
+  // Present only when matching, authorized records were omitted by a bound.
+  truncated?: true;
+  omitted?: number;
+};
 export type ImportCoverage = z.infer<typeof coverageSchema>;
 export type ImportProgress = z.infer<typeof progressSchema>;
 export type ImportPage = z.infer<typeof pageSchema>;
@@ -496,7 +502,8 @@ export class EvidenceStore {
 
   /** Scope filtering precedes lexical ranking. Bounded JSON data, not executable
    * instructions; callers must label this untrusted evidence in model context.
-   * Keep contradictory and superseded hypotheses, with their explicit edges. */
+   * Keep contradictory and superseded hypotheses, with their explicit edges.
+   * Omit whole records, never clip evidence; omission metadata shares the budget. */
   retrieve(
     audience: string,
     query: string,
@@ -550,12 +557,19 @@ export class EvidenceStore {
       if (count >= limit) break;
       if (candidate.type === "source") result.sources.push(candidate.item);
       else result.claims.push(candidate.item);
-      if (JSON.stringify(result).length > budget) {
+      const omitted = candidates.length - count - 1;
+      if (
+        JSON.stringify({
+          ...result,
+          ...(omitted ? { truncated: true, omitted } : {}),
+        }).length > budget
+      ) {
         if (candidate.type === "source") result.sources.pop();
         else result.claims.pop();
       } else count++;
     }
-    return result;
+    const omitted = candidates.length - count;
+    return { ...result, ...(omitted ? { truncated: true, omitted } : {}) };
   }
 
   search(
