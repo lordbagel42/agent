@@ -252,6 +252,7 @@ async function main() {
       ...config.coding,
       isolation,
       runtime: worker,
+      runtimeKind: selection.kind,
       // Config contains references to secrets, not their values. Changing the
       // runtime, session roots or execution policy cannot rebind existing jobs.
       runtimeId: createHash("sha256")

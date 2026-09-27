@@ -84,10 +84,15 @@ async function fixture(
   });
   const coding: CodingDependencies = {
     runtime,
+    runtimeKind: "amp",
     runtimeId: "fixture-runtime-v1",
     workspaces: { june: repositoryRoot },
     timeoutMs: 5000,
     isolation: { june: manager },
+  };
+  const codingRequest = {
+    workspace: "june",
+    goal: "Fix reaction handling. Run its tests.",
   };
   const sent: OutboundMessage[] = [];
   const modelRequests: ModelRequest[] = [];
@@ -135,10 +140,7 @@ async function fixture(
         async reply() {
           return {
             text: "Scope prepared, not executed.",
-            coding: {
-              workspace: "june",
-              goal: "Fix reaction handling. Run its tests.",
-            },
+            coding: { ...codingRequest },
           };
         },
       },
@@ -153,6 +155,7 @@ async function fixture(
     repositoryRoot,
     worktreeRoot,
     coding,
+    codingRequest,
   };
 }
 
@@ -597,6 +600,16 @@ describe("separate coding supervisor", () => {
           (await client.job.getOrCreate(["raygen", id]).snapshot()).status,
         ).toBe("awaiting_approval");
       }
+      expect(snapshot.jobs[id]?.preview).toContain(
+        "Fix reaction handling. Run its tests.",
+      );
+      await june.forget("ancestor");
+      const forgotten = (await june.snapshot()).jobs;
+      expect(forgotten[id]?.goal).toBe("");
+      expect(forgotten[id]?.preview).toBeUndefined();
+      expect(JSON.stringify(forgotten)).not.toContain(
+        "Fix reaction handling. Run its tests.",
+      );
     },
   );
 
@@ -635,6 +648,17 @@ describe("separate coding supervisor", () => {
     const content = sent.find(
       (m) => m.content.type === "text" && m.content.text.includes("/approve"),
     )?.content;
+    expect(content).toMatchObject({
+      type: "text",
+      text: expect.stringContaining(
+        `Repository: ${JSON.stringify(repositoryRoot)}\nRuntime: amp`,
+      ),
+    });
+    expect(content).toMatchObject({
+      text: expect.stringContaining(
+        "No push, deployment, publication, shared-infrastructure changes, or credential access is authorized.",
+      ),
+    });
     const approval =
       content?.type === "text"
         ? content.text.match(/\/approve ([a-f0-9]+)/)?.[1]
@@ -713,6 +737,86 @@ describe("separate coding supervisor", () => {
     expect(launches).toHaveLength(1);
   });
 
+  it("gives changed June requests separate previews without widening the original approval", async (t) => {
+    const launches: { prompt: string; cwd: string }[] = [];
+    const { registry, sent, coding, codingRequest, repositoryRoot } =
+      await fixture(t, {
+        async run(input) {
+          launches.push({ prompt: input.prompt, cwd: input.cwd });
+          await input.onThread("T-original-task");
+          return { threadId: "T-original-task", report: "Local edits only." };
+        },
+      });
+    // The second repository need not exist: previewing must not prepare or run it.
+    coding.workspaces.other = path.join(path.dirname(repositoryRoot), "other");
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    const previews = () =>
+      sent.flatMap((m) =>
+        m.content.type === "text" &&
+        m.content.text.startsWith("Coding proposal for ")
+          ? [m.content.text]
+          : [],
+      );
+    await june.send("inbox", { type: "event", event: source });
+    await expect.poll(() => previews().length, { timeout: 15000 }).toBe(1);
+    const original = previews()[0] ?? "";
+    const approval = original.match(/\/approve ([a-f0-9]+)/)?.[1];
+    if (!approval) throw new Error("No original approval");
+    codingRequest.workspace = "other";
+    codingRequest.goal = "Change the other repository, push it, and deploy it.";
+    await june.send("inbox", {
+      type: "event",
+      event: {
+        ...source,
+        id: "changed-request",
+        messageId: "123.570",
+        text: codingRequest.goal,
+      },
+    });
+    await expect.poll(() => previews().length, { timeout: 15000 }).toBe(2);
+    const changed = previews()[1] ?? "";
+    expect(changed).toContain("Coding proposal for other:");
+    expect(changed).toContain(
+      `Repository: ${JSON.stringify(coding.workspaces.other)}\nRuntime: amp`,
+    );
+    expect(changed).toContain(codingRequest.goal);
+    expect(changed).toContain(
+      "No push, deployment, publication, shared-infrastructure changes, or credential access is authorized.",
+    );
+    expect(changed.match(/\/approve ([a-f0-9]+)/)?.[1]).not.toBe(approval);
+    expect(launches).toEqual([]);
+    await june.send("inbox", {
+      type: "event",
+      event: {
+        ...source,
+        id: "approve-original",
+        messageId: "123.571",
+        text: `/approve ${approval}`,
+      },
+    });
+    await expect.poll(() => launches.length, { timeout: 5000 }).toBe(1);
+    expect(launches[0]?.prompt).toContain(
+      "Fix reaction handling. Run its tests.",
+    );
+    expect(launches[0]?.prompt).not.toContain(codingRequest.goal);
+    expect(launches[0]?.prompt).toContain("Do not push, deploy, publish");
+    const jobs = Object.keys((await june.snapshot()).jobs);
+    const originalId = jobs.find((id) => id.startsWith(approval));
+    const changedId = jobs.find((id) => !id.startsWith(approval));
+    if (!originalId || !changedId) throw new Error("Missing proposals");
+    const originalJob = client.job.getOrCreate(["raygen", originalId]);
+    await expect
+      .poll(async () => (await originalJob.snapshot()).status)
+      .toBe("completed");
+    expect((await originalJob.snapshot()).worktree?.repositoryRoot).toBe(
+      repositoryRoot,
+    );
+    expect(
+      (await client.job.getOrCreate(["raygen", changedId]).snapshot()).status,
+    ).toBe("awaiting_approval");
+  });
+
   it("holds an interrupted worker for review and resumes only a confirmed-stopped saved thread", async (t) => {
     const threads: (string | undefined)[] = [];
     const { registry } = await fixture(t, {
@@ -772,10 +876,13 @@ describe("separate coding supervisor", () => {
     });
     const { client } = await setupTest(t, registry);
     const job = client.job.getOrCreate(["raygen", "bound-runtime"]);
+    // Simulate a config change between the preview and queued proposal delivery.
+    coding.runtimeId = "different-runtime";
     await job.send("commands", {
       type: "propose",
       proposal: {
         id: "bound-runtime",
+        runtimeId: "fixture-runtime-v1",
         source,
         workspace: "june",
         goal: "Task",
@@ -784,7 +891,6 @@ describe("separate coding supervisor", () => {
     await expect
       .poll(async () => (await job.snapshot()).runtimeId)
       .toBe("fixture-runtime-v1");
-    coding.runtimeId = "different-runtime";
     await job.send("commands", {
       type: "approve",
       commandId: "wrong-approval",

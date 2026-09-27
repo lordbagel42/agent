@@ -120,7 +120,10 @@ interface ConversationState {
     }
   >;
   deliveries: Record<string, Delivery>;
-  jobs: Record<string, CodingRequest>;
+  jobs: Record<
+    string,
+    CodingRequest & { runtimeId?: string; preview?: string }
+  >;
   lastInbound: Record<string, number>;
   memoryContexts?: Record<string, MemoryReference>;
   forgottenEvents?: string[];
@@ -239,7 +242,10 @@ export function createJuneRegistry(deps: Dependencies) {
         for (const delivery of Object.values(c.state.deliveries))
           if (delivery.message.content.type === "text")
             delivery.message.content.text = "";
-        for (const job of Object.values(c.state.jobs)) job.goal = "";
+        for (const job of Object.values(c.state.jobs)) {
+          job.goal = "";
+          delete job.preview;
+        }
         await c.vars.persist();
         for (const id of Object.values(forgottenAgents))
           await c
@@ -1795,7 +1801,14 @@ export function createJuneRegistry(deps: Dependencies) {
                         )
                       )
                         return false;
-                      step.state.jobs[eventId] = request;
+                      // Persist the exact preview before enqueueing. A retry after
+                      // a config change must not describe a different authority.
+                      step.state.jobs[eventId] ??= {
+                        ...request,
+                        runtimeId: deps.coding.runtimeId,
+                        preview: `Coding proposal for ${request.workspace}:\nRepository: ${JSON.stringify(deps.coding.workspaces[request.workspace])}\nRuntime: ${deps.coding.runtimeKind}\n\nTask:\n${request.goal}\n\nReply /approve ${eventId.slice(0, 12)} to authorize only this task in an isolated local checkout of that repository. No push, deployment, publication, shared-infrastructure changes, or credential access is authorized. Native execution is not a sandbox. A changed task, workspace, or runtime requires a fresh proposal.`,
+                      };
+                      const proposal = step.state.jobs[eventId];
                       if (version >= 7 && body.type === "execution_result") {
                         step.state.jobAgents ??= {};
                         step.state.jobAgents[eventId] = {
@@ -1809,15 +1822,23 @@ export function createJuneRegistry(deps: Dependencies) {
                         .job.getOrCreate([deps.owner.id, eventId])
                         .send("commands", {
                           type: "propose",
-                          proposal: { ...request, id: eventId, source: event },
+                          proposal: {
+                            workspace: proposal.workspace,
+                            goal: proposal.goal,
+                            runtimeId: proposal.runtimeId,
+                            id: eventId,
+                            source: event,
+                          },
                         });
-                      return true;
+                      return proposal.preview ?? true;
                     },
                   );
                   reply.text =
-                    version < 2 || proposed
-                      ? `Coding proposal for ${request.workspace}:\n${request.goal}\n\nReply /approve ${eventId.slice(0, 12)} to allow this local coding task. No push or deployment is authorized.`
-                      : "The coding integration is no longer available for that proposal.";
+                    typeof proposed === "string"
+                      ? proposed
+                      : version < 2 || proposed
+                        ? `Coding proposal for ${request.workspace}:\n${request.goal}\n\nReply /approve ${eventId.slice(0, 12)} to allow this local coding task. No push or deployment is authorized.`
+                        : "The coding integration is no longer available for that proposal.";
                 } else
                   reply = {
                     text: "I couldn't create that coding proposal. It needs a permitted workspace and a concise scope, sent privately.",

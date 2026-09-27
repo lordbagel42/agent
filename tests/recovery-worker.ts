@@ -34,6 +34,7 @@ if (process.env.FIXTURE_PHASE === "interrupt") {
   );
 }
 const coding: CodingDependencies = {
+  runtimeKind: "amp",
   runtimeId: "fixture-runtime-v1",
   workspaces: { june: repositoryRoot },
   isolation: { june: createWorktreeManager({ repositoryRoot, worktreeRoot }) },

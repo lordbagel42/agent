@@ -14,6 +14,7 @@ import type { JuneRegistry } from "./registry.js";
 
 export interface CodingDependencies {
   runtime: CodingRuntime;
+  runtimeKind: "amp" | "codex" | "claude" | "pi";
   /** Stable binding to the operator's runtime selection and execution policy. */
   runtimeId: string;
   workspaces: Record<string, string>;
@@ -25,6 +26,8 @@ export interface CodingDependencies {
 export interface JobProposal extends CodingRequest {
   id: string;
   source: MessageEvent;
+  /** Bind new previews before queue delivery; absent on legacy proposals. */
+  runtimeId?: string;
 }
 export interface CodingState {
   proposal: JobProposal | null;
@@ -126,7 +129,8 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
             )
               return;
             step.state.proposal = command.proposal;
-            step.state.runtimeId = coding.runtimeId;
+            step.state.runtimeId =
+              command.proposal.runtimeId ?? coding.runtimeId;
             step.state.status = "awaiting_approval";
             await step.vars.persist();
           });

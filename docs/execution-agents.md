@@ -24,6 +24,14 @@ Worker completions wake June to synthesize findings or stay silent if redundant.
 Completion turns cannot dispatch new actions. Coding proposals retain the existing
 private `/approve` requirement; coding results return to June and worker history.
 
+The host's coding preview names the exact workspace alias, canonical repository
+path, configured native runtime, and task. `/approve ID` authorizes only that
+local task in an isolated checkout—not pushing, deploying, publishing, shared
+infrastructure changes, or credential access. Native execution is not a sandbox.
+Changed tasks or workspaces get a fresh proposal and approval ID; changed runtime
+or execution policy cannot reuse the old approval. June must not present a coding
+approval or a passing verifier result as delivery authority.
+
 ## Boundaries and recovery
 
 - Enabled by default outside setup mode; workers use `deepModel ?? model`.
