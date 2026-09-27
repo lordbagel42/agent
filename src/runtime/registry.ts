@@ -321,6 +321,10 @@ export function createJuneRegistry(deps: Dependencies) {
             "global-personality",
             2,
           );
+          const memoryReviewVersion = await loop.getVersion(
+            "memory-claim-review",
+            2,
+          );
           const [message] = await loop.queue.nextBatch("inbox", {
             names: ["inbox"],
             count: 1,
@@ -765,6 +769,12 @@ export function createJuneRegistry(deps: Dependencies) {
                 correctionVersion >= 2 &&
                 body.type === "event" &&
                 isMemoryCorrectionCommand(event.text);
+              // Only the current inbound message can confirm an immutable ID.
+              // Model output, imports, history and worker results never enter here.
+              const memoryCommand =
+                memoryReviewVersion >= 2 && body.type === "event"
+                  ? event.text.match(/^!memory-accept (proposal:[a-f0-9]{64})$/)
+                  : null;
               if (body.type === "job_result" && version < 7) {
                 reply = { text: body.text };
               } else if (correctionCommand) {
@@ -779,6 +789,47 @@ export function createJuneRegistry(deps: Dependencies) {
                         )
                       : "",
                   }),
+                );
+              } else if (memoryCommand && memoryCommand[0] === event.text) {
+                // Full-match equality also rejects the final newline allowed by $.
+                reply = await loop.step(
+                  "memory-review-command",
+                  async (step): Promise<CompanionReply> => {
+                    if (!ownerTurn || !scope.private)
+                      return {
+                        text: "Memory confirmation requires the owner's private conversation. No proposal was accepted.",
+                      };
+                    if (
+                      event.address.channel !== "slack" ||
+                      event.memoryReviewEligible !== true
+                    )
+                      return {
+                        text: "Send the memory confirmation as a new plain-text Slack DM, not a quote, code block, attachment or forwarded message. No proposal was accepted.",
+                      };
+                    if (!plan.memory || !deps.memory)
+                      return {
+                        text: "Retained memory is unavailable. No proposal was accepted.",
+                      };
+                    if (!valid(step.state) || step.abortSignal.aborted)
+                      return { text: "" };
+                    const id = memoryCommand[1] as string;
+                    try {
+                      // The store revalidates audience and source dependencies;
+                      // repeated acceptance is safe after an interrupted receipt.
+                      deps.memory.store.reviewProposal(
+                        audience,
+                        id,
+                        "accepted",
+                      );
+                    } catch {
+                      return {
+                        text: "That memory proposal is unavailable for acceptance. Ask to review current pending claims; rejected or forgotten claims cannot be promoted.",
+                      };
+                    }
+                    return {
+                      text: `Memory proposal ${id} is accepted for owner-private recall. This does not change personality or grant permissions.`,
+                    };
+                  },
                 );
               } else if (
                 personalityVersion >= 2 &&

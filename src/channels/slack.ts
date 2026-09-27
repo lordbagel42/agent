@@ -287,6 +287,12 @@ async function normalizeEvent(
         /^!personality(?:\s|$)/.test(event.text.trim())
           ? { personalityCommandEligible: isPlainSlackCommand(event) }
           : {}),
+        ...(/^!memory-(?:accept|reject)\b/.test(event.text)
+          ? {
+              memoryReviewEligible:
+                owner && channelType === "im" && isPlainSlackCommand(event),
+            }
+          : {}),
         metadata: {
           ...slackMetadata(event, channelType),
           ...(channelName ? { channelName } : {}),

@@ -354,6 +354,21 @@ pending retries. Listing never mutates proposals or starts extraction/imports.
 General `inspection: "memory"` stays metadata-only. This local capability does
 not activate memory, create imports, or prove live provider access.
 
+June also accepts an explicit owner confirmation: after reviewing a pending claim,
+send exactly `!memory-accept proposal:<full 64-character lowercase hex ID>` in
+the authenticated owner's Slack DM as a new plain-text message. Verified ingress
+must establish it is not quoted, code-formatted, or an attachment fallback;
+historical events without that check cannot confirm. The command identifies one
+immutable proposal, not a batch or an inferred claim from a conversational “yes.”
+The host calls the same `reviewProposal` API and sends a receipt without invoking
+the conversational model. Public or guest messages cannot authorize it, even with
+the correct ID. Quoted commands, model output, worker results, and imported history
+never execute as confirmations. Missing, foreign, rejected, or forgotten proposals
+cannot be accepted; repeated acceptance leaves a single claim. Extraction remains
+pending-only. Acceptance changes neither personality nor permissions and does not
+create an owner correction. The command is version-gated to fresh workflow turns;
+already-journaled turns retain their prior path.
+
 ## Reflection and personality
 
 `reflectionEvidence(audience, sourceIds, maxAgeMs): Evidence[]` returns original

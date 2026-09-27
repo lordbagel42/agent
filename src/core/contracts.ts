@@ -42,6 +42,8 @@ export interface MessageEvent extends EventBase {
   ownerCorrectionEligible?: boolean;
   /** Fresh, plain owner-private Slack command; quoted/history text cannot publish. */
   personalityCommandEligible?: boolean;
+  /** Verified live, unquoted Slack memory command; never inferred from fallback text. */
+  memoryReviewEligible?: boolean;
   metadata?: MessageMetadata;
 }
 
