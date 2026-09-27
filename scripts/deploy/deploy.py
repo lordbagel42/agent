@@ -258,18 +258,72 @@ class Deployer:
         h, s = self.host, self.store
         head = revision(h.fetch())
         before = s.get("observed")
-        if head != before:
+        saved = s.get("queue")
+        admission = json.loads(saved) if saved else None
+        # Queue admission can survive a crash before the observation cursor.
+        # Its ancestry boundary must survive completion/removal of queue entries.
+        for anchor in {before, admission["tip"] if admission else before} - {head}:
             try:
-                h.git("merge-base", "--is-ancestor", before, head)
+                h.git("merge-base", "--is-ancestor", anchor, head)
             except subprocess.CalledProcessError:
                 s.event(head, "received", committed_at=h.committed_at(head))
                 s.block(head, "non_fast_forward")
                 return head
+        if admission:
+            queued = admission["pending"]
+        else:
+            # One-time adoption of unfinished legacy work in receipt order.
+            # An interrupted old observation may have recorded an intermediate
+            # as received without ever admitting that head. Only adopt received
+            # history covered by its durable observed cursor; preparation or
+            # deferral independently proves that a candidate was picked up.
+            queued = []
+            pending = s.db.execute("""
+                SELECT revision,status FROM events AS latest WHERE sequence IN (
+                  SELECT MAX(sequence) FROM events WHERE status!='fetch_failed'
+                  GROUP BY revision
+                ) AND status IN ('received','preparing','deferred')
+                ORDER BY (SELECT MIN(sequence) FROM events WHERE revision=latest.revision)
+            """).fetchall()
+            for row in pending:
+                if row["status"] == "received":
+                    try:
+                        h.git("merge-base", "--is-ancestor", row["revision"], before)
+                    except subprocess.CalledProcessError as error:
+                        if error.returncode == 1:
+                            continue
+                        raise
+                queued.append(row["revision"])
+        queued = [
+            commit
+            for commit in queued
+            if s.status(commit) in (None, "received", "preparing", "deferred")
+        ]
+        if (
+            head != before
+            and head not in queued
+            and s.status(head)
+            in (
+                None,
+                "received",
+                "preparing",
+                "deferred",
+            )
+        ):
+            queued.append(head)
+        # Admission precedes receipts and the observation cursor. A restart can
+        # replay observation without dropping this head or admitting intermediates.
+        admission = json.dumps({"tip": head, "pending": queued})
+        if admission != saved:
+            s.set("queue", admission)
+        for commit in queued:
+            if s.status(commit) is None:
+                s.event(commit, "received", committed_at=h.committed_at(commit))
+        if head != before:
             commits = h.git("rev-list", "--reverse", f"{before}..{head}").splitlines()
             for commit in commits:
-                s.event(commit, "received", committed_at=h.committed_at(commit))
-                if commit != head:
-                    s.event(commit, "superseded")
+                if commit not in queued and s.status(commit) in (None, "received"):
+                    s.event(commit, "superseded", committed_at=h.committed_at(commit))
             s.set("observed", head)
         return head
 
@@ -292,20 +346,36 @@ class Deployer:
     def deploy(self):
         h, s = self.host, self.store
         try:
-            target = self.observe()
+            self.observe()
         except Exception:  # noqa: BLE001 - never log SSH/credential-helper errors
             s.event(s.get("observed"), "fetch_failed", "fetch_failed")
             return
-        if (
-            s.get("blocked")
-            or target == s.get("active")
-            or s.status(target) in ("healthy", "failed", "rolled_back", "superseded")
-        ):
+        if s.get("blocked"):
             return
+        queued = json.loads(s.get("queue"))["pending"]
+        if not queued:
+            return
+        target = queued[0]
         previous = s.get("active")
         try:
             if not h.running(previous) or not h.settled():
                 s.block(target, "current_unhealthy")
+                return
+            if target == previous:
+                s.event(target, "superseded")
+                return
+            try:
+                h.git("merge-base", "--is-ancestor", previous, target)
+            except subprocess.CalledProcessError:
+                try:
+                    h.git("merge-base", "--is-ancestor", target, previous)
+                except subprocess.CalledProcessError:
+                    s.block(target, "non_fast_forward")
+                else:
+                    # Legacy pending work (or an operator's forward jump) may
+                    # already be contained by active. Skip, never downgrade or
+                    # falsely claim that this exact revision was deployed.
+                    s.event(target, "superseded")
                 return
             h.prune(s.obsolete({previous, target}))
             # Check before recording preparation so capacity deferrals do not
@@ -317,8 +387,9 @@ class Deployer:
             candidate = h.prepare(target)
             prior = h.manifest(previous)
             rollback_safe = h.rollback_safe(prior, candidate)
-            if self.observe() != target or s.get("blocked"):
-                s.event(target, "superseded")
+            self.observe()
+            if s.get("blocked"):
+                s.block(target, s.get("blocked"))
                 return
             if not h.healthy(previous):
                 s.block(target, "current_unhealthy")
@@ -337,9 +408,11 @@ class Deployer:
                 s.event(target, "deferred", "drain_busy")
                 self.resume(target)
                 return
-            # Refresh after a potentially slow drain. Never activate stale work.
-            if self.observe() != target or s.get("blocked"):
-                s.event(target, "superseded")
+            # Refresh ancestry after drain. Descendant arrivals wait for the
+            # next tick; a rewrite still blocks activation and resumes admission.
+            self.observe()
+            if s.get("blocked"):
+                s.block(target, s.get("blocked"))
                 self.resume(target)
                 return
         except Exception:  # noqa: BLE001 - resume even after an ambiguous HTTP error

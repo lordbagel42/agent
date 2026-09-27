@@ -73,10 +73,33 @@ controller evidence and inspect the operator log for publication failures.
 
 One process holds a nonblocking filesystem lock for its lifetime. Every five
 seconds it fetches the fixed main ref, checks fast-forward ancestry, and durably
-records newly observed commits. It retains only the latest observed head for
-activation, refreshing after preflight and again after draining. An arrival
-during activation waits for the next iteration. A force-push/backwards ref blocks
-activation rather than selecting a stale revision.
+records newly observed commits. Each observed main head is admitted to a durable
+FIFO in the existing SQLite state before its receipt or observation cursor is
+written. The same atomic state write retains the newest admitted head as an
+ancestry boundary, even after its queue entry completes; a crash before the
+cursor update must not allow a later rewind. Historical intermediate commits first discovered within a single fetch
+are recorded as `superseded` without admission. An admitted received, preparing
+or deferred head keeps its place across newer pushes, busy drains, low capacity,
+and controller restarts. Only an intentional terminal outcome removes it; an
+ambiguous activation or blocked controller still requires operator recovery.
+
+Each selected candidate must descend from the identified running release.
+Refreshes after preflight and drain still require fast-forward observed history;
+a rewind/divergence blocks activation, and a post-drain block resumes admission
+on the current service. New descendant arrivals do not discard completed work.
+Config/artifact binding, rollback compatibility, readiness and drain checks are
+unchanged. The next tick takes the next admitted head, not whichever head is
+newest then. Sustained arrivals faster than deployment can grow the queue; this
+policy preserves accepted work rather than promising bounded deployment lag.
+
+On upgrade, unfinished preparing/deferred work and received history covered by
+the old durable observation cursor are adopted in receipt order. An interrupted
+legacy observation's unconfirmed intermediates are not promoted into queued
+work. A pending revision already contained in the identified active release
+(legacy stale records or an operator's forward jump) is skipped as `superseded`,
+never deployed backwards or falsely reported as having run itself. Supersession
+is non-deployment accounting, not a failure, active-release or cleanup claim.
+There is no publication freeze or bypass of blocked safety/capacity/drain checks.
 
 For each candidate it:
 

@@ -39,6 +39,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers()
         self.wfile.write(json.dumps({"revision": release["revision"], "drained": not (data / "busy").exists()}).encode())
     def do_DELETE(self):
+        with (data / "resumes").open("a") as f: f.write(release["revision"] + "\\n")
         self.send_response(200); self.end_headers()
         self.wfile.write(json.dumps({"revision": release["revision"], "drained": False}).encode())
 HTTPServer.allow_reuse_address = True
@@ -630,8 +631,10 @@ class DeploymentSafety(unittest.TestCase):
             return_value=disk._replace(free=4 * 1024**3 - 1),
         ):
             self.loop.tick()
+            newer = self.host.commit("src/console/view.ts", "queued during low disk")
             self.loop.tick()
         self.assertEqual(self.store.status(target), "deferred")
+        self.assertEqual(self.store.status(newer), "received")
         self.assertEqual(self.store.get("active"), self.first)
         self.assertFalse(self.store.get("intent"))
         self.assertFalse((self.host.releases / target).exists())
@@ -641,9 +644,9 @@ class DeploymentSafety(unittest.TestCase):
         )
         events = json.loads(self.store.feed.read_text())["events"]
         self.assertEqual(
-            [event["status"] for event in events], ["received", "deferred"]
+            [event["status"] for event in events], ["received", "deferred", "received"]
         )
-        self.assertEqual(events[-1]["reason"], "insufficient_disk")
+        self.assertEqual(events[1]["reason"], "insufficient_disk")
 
         available = 4 * 1024**3
         build = self.host.build
@@ -671,6 +674,12 @@ class DeploymentSafety(unittest.TestCase):
         ):
             self.loop.tick()
         self.assertEqual(self.store.get("active"), target)
+        self.loop.tick()
+        self.assertEqual(self.store.get("active"), newer)
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(),
+            [self.first, target, newer],
+        )
         self.assertEqual(
             (self.host.data / "messages").read_text(), "new messages must survive\n"
         )
@@ -796,39 +805,245 @@ class DeploymentSafety(unittest.TestCase):
             (self.host.data / "starts").read_text().splitlines(), [self.first]
         )
 
-    def test_new_head_coalesces_and_force_push_cannot_reactivate_old_revision(self):
-        stale = self.host.commit("src/console/view.ts", "two")
-        newest = []
-        self.host.after_prepare = lambda: newest.append(
-            self.host.commit("src/console/view.ts", "three")
-        )
+    def test_prepared_candidates_progress_during_continuous_forward_arrivals(self):
+        target = self.host.commit("src/console/view.ts", "two")
+        queued = [target]
+        started = [self.first]
+        drain = self.host.drain
+        for attempt in range(3):
+            target = queued[attempt]
+            arrivals = []
+            self.host.after_prepare = lambda arrivals=arrivals, attempt=attempt: (
+                arrivals.append(
+                    self.host.commit("src/console/view.ts", f"prepared {attempt}")
+                )
+            )
+
+            def drain_with_arrival(previous, arrivals=arrivals, attempt=attempt):
+                result = drain(previous)
+                arrivals.append(
+                    self.host.commit("src/console/view.ts", f"drained {attempt}")
+                )
+                return result
+
+            with patch.object(self.host, "drain", side_effect=drain_with_arrival):
+                self.loop.tick()
+            self.assertEqual(self.store.get("active"), target)
+            self.assertTrue(self.host.running(target))
+            self.assertEqual(self.store.status(target), "healthy")
+            self.assertNotIn(
+                "superseded",
+                [
+                    event["status"]
+                    for event in json.loads(self.store.feed.read_text())["events"]
+                    if event["revision"] == target
+                ],
+            )
+            self.assertEqual(self.store.status(arrivals[0]), "received")
+            self.assertEqual(self.store.status(arrivals[1]), "received")
+            self.assertFalse(self.store.get("intent"))
+            started.append(target)
+            queued.extend(arrivals)
+
+        # Once pushes stop, finish every admitted head in FIFO order.
+        for target in queued[3:]:
+            self.loop.tick()
+            self.assertEqual(self.store.get("active"), target)
+            started.append(target)
         self.loop.tick()
-        self.assertEqual(self.store.get("active"), self.first)
+        self.host.git("reset", "--hard", started[1])
         self.loop.tick()
-        self.assertEqual(self.store.get("active"), newest[0])
-        self.host.git("reset", "--hard", stale)
-        self.loop.tick()
-        self.assertEqual(self.store.get("active"), newest[0])
+        self.assertEqual(self.store.get("active"), target)
         self.assertEqual(self.store.get("blocked"), "non_fast_forward")
+        self.assertEqual((self.host.data / "starts").read_text().splitlines(), started)
+
+    def test_divergence_after_preparation_blocks_candidate_without_drain(self):
+        target = self.host.commit("src/console/view.ts", "candidate")
+
+        def diverge():
+            self.host.git("reset", "--hard", self.first)
+            self.host.commit("src/console/view.ts", "divergent head")
+
+        self.host.after_prepare = diverge
+        self.loop.tick()
+        self.assertEqual(self.store.get("blocked"), "non_fast_forward")
+        self.assertEqual(self.store.status(target), "blocked")
+        self.assertTrue(self.host.running(self.first))
+        self.assertFalse(self.store.get("intent"))
+        self.assertFalse((self.host.data / "drains").exists())
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(), [self.first]
+        )
+        events = json.loads(self.store.feed.read_text())["events"]
+        candidate = [event for event in events if event["revision"] == target]
+        self.assertEqual(candidate[-1]["reason"], "non_fast_forward")
+        self.assertNotIn("superseded", [event["status"] for event in candidate])
+
+    def test_rewind_after_drain_blocks_candidate_and_resumes_current(self):
+        target = self.host.commit("src/console/view.ts", "two")
+        self.host.after_prepare = lambda: self.host.commit(
+            "src/console/view.ts", "newer head"
+        )
+        drain = self.host.drain
+
+        def rewind_after_drain(previous):
+            result = drain(previous)
+            self.host.git("reset", "--hard", target)
+            return result
+
+        with patch.object(self.host, "drain", side_effect=rewind_after_drain):
+            self.loop.tick()
+        self.assertEqual(self.store.get("blocked"), "non_fast_forward")
+        self.assertEqual(self.store.status(target), "blocked")
+        self.assertEqual(self.store.get("active"), self.first)
+        self.assertTrue(self.host.running(self.first))
+        self.assertFalse(self.store.get("intent"))
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(), [self.first]
+        )
+        self.assertEqual(
+            (self.host.data / "resumes").read_text().splitlines(), [self.first]
+        )
+
+    def test_already_contained_pending_candidate_never_downgrades_running_release(self):
+        target = self.host.commit("src/console/view.ts", "two")
+        self.store.event(target, "received")
+        self.store.event(target, "deferred", "insufficient_disk")
+        running = self.host.commit("src/console/view.ts", "three")
+        self.host.prepare(running)
+        self.host.service("stop")
+        self.host.switch(running)
+        self.host.service("start")
+        self.loop.reconcile(running)
+        received = self.host.commit("src/console/view.ts", "legacy received")
+        self.store.event(received, "received")
+        preparing = self.host.commit("src/console/view.ts", "legacy preparing")
+        self.store.event(preparing, "received")
+        self.store.event(preparing, "preparing")
+        self.store.set("observed", preparing)
+        unconfirmed = self.host.commit(
+            "src/console/view.ts", "legacy partial observation"
+        )
+        self.store.event(unconfirmed, "received")
+        newest = self.host.commit("src/console/view.ts", "new head")
+        self.loop.tick()
+        self.assertFalse(self.store.get("blocked"))
+        self.assertEqual(self.store.status(target), "superseded")
+        self.assertTrue(self.host.running(running))
+        self.assertEqual(self.store.get("active"), running)
+        self.assertFalse((self.host.data / "drains").exists())
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(), [self.first, running]
+        )
+        self.assertEqual(self.store.status(unconfirmed), "superseded")
+        for candidate in (received, preparing, newest):
+            self.loop.tick()
+            self.assertTrue(self.host.running(candidate))
         self.assertEqual(
             (self.host.data / "starts").read_text().splitlines(),
-            [self.first, newest[0]],
+            [self.first, running, received, preparing, newest],
         )
+
+    def test_admission_survives_observer_crash_without_admitting_intermediates(self):
+        skipped = self.host.commit("src/console/view.ts", "unobserved intermediate")
+        picked = self.host.commit("src/console/view.ts", "picked head")
+        save = self.store.set
+
+        def interrupt_observed(key, value):
+            if key == "observed":
+                raise OSError("fixture observer crash")
+            save(key, value)
+
+        with patch.object(self.store, "set", side_effect=interrupt_observed):
+            self.loop.tick()
+        self.assertTrue(self.host.running(self.first))
+        self.assertEqual(self.store.status(skipped), "superseded")
+        feed = self.store.feed
+        self.store.close()
+        self.store = deploy.Store(self.host.root / "records", feed, self.first)
+        self.loop = deploy.Deployer(self.host, self.store)
+        newest = self.host.commit("src/console/view.ts", "newer after restart")
+        self.loop.tick()
+        self.assertEqual(self.store.get("active"), picked)
+        self.assertEqual(self.store.status(newest), "received")
+        self.loop.tick()
+        self.assertEqual(self.store.get("active"), newest)
+        self.assertEqual(self.store.status(skipped), "superseded")
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(),
+            [self.first, picked, newest],
+        )
+
+        for boundary in ("cursor", "receipt"):
+            running = self.store.get("active")
+            admitted = self.host.commit("src/console/view.ts", f"admitted {boundary}")
+            save = self.store.set
+
+            def interrupt(key, value, boundary=boundary, save=save):
+                if key == "observed" and boundary == "cursor":
+                    raise OSError("fixture before cursor")
+                save(key, value)
+                if key == "queue" and boundary == "receipt":
+                    raise OSError("fixture after admission, before receipt")
+
+            with patch.object(self.store, "set", side_effect=interrupt):
+                self.loop.tick()
+            self.store.close()
+            self.store = deploy.Store(self.host.root / "records", feed, self.first)
+            self.loop = deploy.Deployer(self.host, self.store)
+            starts = (self.host.data / "starts").read_text()
+            drains = (self.host.data / "drains").read_text()
+            self.host.git("reset", "--hard", running)
+            for change in ("rewind", "diverge"):
+                if change == "diverge":
+                    self.loop.reconcile(running)
+                    self.host.commit("src/console/view.ts", f"diverge {boundary}")
+                self.loop.tick()
+                self.assertEqual(self.store.get("blocked"), "non_fast_forward")
+                self.assertTrue(self.host.running(running))
+                self.assertEqual((self.host.data / "starts").read_text(), starts)
+                self.assertEqual((self.host.data / "drains").read_text(), drains)
+                self.assertFalse(self.store.get("intent"))
+            # Restoring the admitted history and explicitly reconciling is safe.
+            self.host.git("reset", "--hard", admitted)
+            self.loop.reconcile(running)
+            self.loop.tick()
+            self.assertTrue(self.host.running(admitted))
 
     def test_busy_workers_and_preflight_failure_preserve_current_and_changed_contract_can_forward(
         self,
     ):
         target = self.host.commit("src/console/view.ts", "two")
+        newer = []
+        self.host.after_prepare = lambda: newer.append(
+            self.host.commit("src/console/view.ts", "newer while busy")
+        )
         (self.host.data / "busy").touch()
         self.loop.tick()
         self.assertEqual(self.store.get("active"), self.first)
+        self.assertEqual(self.store.status(target), "deferred")
+        third = self.host.commit("src/console/view.ts", "third while busy")
+        self.loop.tick()
+        feed = self.store.feed
+        self.store.close()
+        self.store = deploy.Store(self.host.root / "records", feed, self.first)
+        self.loop = deploy.Deployer(self.host, self.store)
         (self.host.data / "busy").unlink()
         self.loop.tick()
         self.assertEqual(self.store.get("active"), target)
+        self.assertEqual(self.store.status(target), "healthy")
+        self.loop.tick()
+        self.assertEqual(self.store.get("active"), newer[0])
+        self.loop.tick()
+        self.assertEqual(self.store.get("active"), third)
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(),
+            [self.first, target, newer[0], third],
+        )
         bad = self.host.commit("src/broken", "SECRET_FROM_BUILD")
         self.loop.tick()
         self.loop.tick()
-        self.assertEqual(self.store.get("active"), target)
+        self.assertEqual(self.store.get("active"), third)
         self.assertEqual(self.store.status(bad), "failed")
         self.assertNotIn("SECRET", self.store.feed.read_text())
         (self.host.repo / "src/broken").unlink()
