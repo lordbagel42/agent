@@ -11,6 +11,7 @@ const feedSchema = z.strictObject({
   repository: z.literal("lordbagel42/agent"),
   branch: z.literal("main"),
   lastHealthyRevision: revision,
+  controllerRevision: revision.nullable().optional(),
   blocked: z.boolean(),
   events: z
     .array(
@@ -101,12 +102,16 @@ export function createReleaseTool(options: {
       `Deployment inspection: ${request.revision ?? "recent controller events"}.`,
       `Running revision: ${running} (loaded process identity, observed ${observedAt}; not a fresh independent controller health attestation).`,
       "Policy: independent controller follows trusted lordbagel42/agent main. This tool cannot push, approve, deploy, retry, reconcile, or change policy.",
+      "Controller installation is separate: pushing app main does not install controller changes. App revisions, candidate events, and lastHealthyRevision do not identify the installed controller.",
     ];
     if (request.revision)
       lines.push(
         `Exact revision matches running process: ${options.runningRevision ? (request.revision === options.runningRevision ? "yes" : "no") : "unknown"}. This compares exact identities, not commit ancestry or current health.`,
       );
     const feed = await options.read().catch(() => undefined);
+    lines.push(
+      `Installed controller revision: ${feed?.controllerRevision ?? "unknown (no verified installation provenance available)"}. This is the controller's last published startup installation observation, not a fresh liveness or current installed-files check.`,
+    );
     if (!feed)
       return [
         ...lines,

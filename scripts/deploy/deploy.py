@@ -91,9 +91,12 @@ def atomic_json(path, value, mode=0o600, gid=None):
 
 
 class Store:
-    def __init__(self, root, feed, initial, feed_gid=None):
+    def __init__(self, root, feed, initial, feed_gid=None, controller_revision=None):
         self.feed, self.feed_gid = feed, feed_gid
         self.initial = revision(initial)
+        self.controller_revision = (
+            revision(controller_revision) if controller_revision is not None else None
+        )
         root.mkdir(mode=0o700, exist_ok=True)
         self.db = sqlite3.connect(root / "deploy.sqlite")
         self.db.row_factory = sqlite3.Row
@@ -198,6 +201,13 @@ class Store:
                 "repository": "lordbagel42/agent",
                 "branch": "main",
                 "lastHealthyRevision": self.get("active"),
+                # Legacy readers reject additional keys. Publish this extension
+                # only after the operator provisions verified install provenance.
+                **(
+                    {"controllerRevision": self.controller_revision}
+                    if self.controller_revision is not None
+                    else {}
+                ),
                 "blocked": bool(self.get("blocked")),
                 "events": events,
             },
@@ -1173,6 +1183,27 @@ def tree_digest(root):
     return digest.hexdigest()
 
 
+def installed_controller_revision(provenance):
+    """Operator installation record, never app/main identity. Read once at startup."""
+    if not isinstance(provenance, dict) or set(provenance) != {"revision", "digest"}:
+        return None
+    try:
+        commit = revision(provenance["revision"])
+        root = Path(__file__).parent
+        if (
+            root.resolve() != root
+            or not isinstance(provenance["digest"], str)
+            or not HASH.fullmatch(provenance["digest"])
+            or tree_digest(root) != provenance["digest"]
+        ):
+            return None
+        return commit
+    except (OSError, ValueError):
+        # Missing, changed or mutable installation is unknown, not an app SHA
+        # fallback or a reason to interrupt otherwise safe deployment observation.
+        return None
+
+
 def private_file(path):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd) as file:
@@ -1246,6 +1277,7 @@ def main():
             Path("/var/lib/june-deploy/public/events.json"),
             initial,
             pwd.getpwnam("june").pw_gid,
+            controller_revision=installed_controller_revision(config.get("controller")),
         )
         statuses = GitHubStatuses(store)
         loop = Deployer(host, store, statuses)

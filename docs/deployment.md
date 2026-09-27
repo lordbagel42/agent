@@ -290,6 +290,49 @@ still reported separately while checks and blockers remain explicitly unknown.
 An exact identity match is reported separately; a nonmatch does not establish
 whether the inspected commit is an ancestor of the currently running revision.
 
+### Installed controller identity is not app identity
+
+The same feed optionally includes `controllerRevision`, an exact source SHA from
+separately provisioned controller installation provenance. June reports it through
+`release: {"action":"inspect","revision":null}` and owner-private deployment
+context, separately from `runningRevision` and `lastHealthyRevision`. Missing,
+null, invalid or unavailable provenance means **unknown**, not the app revision,
+main head, or any candidate event. Different SHAs alone do not establish age or
+ancestry. Pushing app main does not install controller changes.
+
+New app readers accept feeds with or without this field. **Deploy compatible app
+readers before enabling publication:** older readers reject extra keys. Without
+provenance the controller omits the field, preserving the legacy feed shape.
+Before an app downgrade to an older reader, an authorized operator must disable
+this extension and republish the legacy feed under the normal maintenance rules.
+
+During a separately authorized controller installation, with the old controller
+stopped and operations settled, verify that installed `deploy.py` and
+`preflight.sh` come from the recorded exact repository revision. Then provision
+this optional entry in root-owned `0600` `/etc/june/deploy.json`:
+
+```json
+"controller": {
+  "revision": "<exact installed controller source SHA>",
+  "digest": "<tree_digest of /usr/local/lib/june-deploy>"
+}
+```
+
+Use the installed `deploy.py`'s existing `tree_digest(Path(...))` function on the
+protected installation directory to obtain the digest, with Python bytecode
+writing disabled. Keep that directory root-owned, non-writable by other users,
+and unchanged while the controller is running. This binds the operator's source
+provenance to installed code bytes and modes, not to app releases or systemd
+configuration. At controller startup a missing/malformed record, changed digest,
+or unsafe installation yields unknown; only a matching installation publishes
+the SHA. No app code can write this record or install controller code.
+
+The feed records the controller's **startup installation observation**, not a
+fresh liveness check or proof that files were not replaced since startup. It
+may be stale if the controller stopped. Replacing controller files/configuration
+or restarting it still requires separate operator authorization; neither an app
+push nor June's read-only inspection grants it.
+
 ## One-time bootstrap and access checklist
 
 The existing homelab provisioner remains the source for June's Node installation,

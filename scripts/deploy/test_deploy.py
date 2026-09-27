@@ -209,6 +209,64 @@ class GitHubFixture:
         return response
 
 
+class ControllerProvenance(unittest.TestCase):
+    def test_only_matching_protected_installation_attests_controller_revision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed = root / "installed"
+            installed.mkdir(mode=0o700)
+            script = installed / "deploy.py"
+            script.write_text("# installed controller\n")
+            script.chmod(0o600)
+            preflight = installed / "preflight.sh"
+            preflight.write_text("# installed preflight\n")
+            preflight.chmod(0o600)
+            provenance = {"revision": "c" * 40, "digest": deploy.tree_digest(installed)}
+            with patch.object(deploy, "__file__", str(script)):
+                for missing in (None, {}, "a" * 40, {"revision": "a" * 40}):
+                    self.assertIsNone(deploy.installed_controller_revision(missing))
+                self.assertEqual(
+                    deploy.installed_controller_revision(provenance), "c" * 40
+                )
+                for field, value in (("revision", "not-a-sha"), ("digest", "d" * 64)):
+                    self.assertIsNone(
+                        deploy.installed_controller_revision(
+                            {**provenance, field: value}
+                        )
+                    )
+                preflight.write_text("# replaced preflight\n")
+                self.assertIsNone(deploy.installed_controller_revision(provenance))
+                preflight.write_text("# installed preflight\n")
+                installed.chmod(0o777)
+                self.assertIsNone(deploy.installed_controller_revision(provenance))
+                installed.chmod(0o700)
+                link = root / "linked"
+                link.symlink_to(installed)
+                with patch.object(deploy, "__file__", str(link / "deploy.py")):
+                    self.assertIsNone(deploy.installed_controller_revision(provenance))
+                controller = deploy.installed_controller_revision(provenance)
+            store = deploy.Store(root / "records", root / "feed.json", "a" * 40)
+            try:
+                self.assertNotIn(
+                    "controllerRevision", json.loads(store.feed.read_text())
+                )
+            finally:
+                store.close()
+            store = deploy.Store(
+                root / "records",
+                root / "feed.json",
+                "a" * 40,
+                controller_revision=controller,
+            )
+            try:
+                store.event("b" * 40, "healthy")
+                feed = json.loads(store.feed.read_text())
+                self.assertEqual(feed["lastHealthyRevision"], "b" * 40)
+                self.assertEqual(feed["controllerRevision"], "c" * 40)
+            finally:
+                store.close()
+
+
 class DeploymentSafety(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

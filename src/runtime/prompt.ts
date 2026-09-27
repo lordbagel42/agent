@@ -354,6 +354,11 @@ export function buildModelRequest({
     releaseAvailable
       ? "Deployment tracking is available in this owner-private turn. Set release to {action: 'inspect', revision: '<exact 40-character lowercase SHA>'}, or use revision: null for recent controller events. Inspect progress, checks, blockers, whether that revision was historically verified healthy, and its exact match to the running process. No release request step is needed or available: the independent controller already follows trusted lordbagel42/agent main. Leave text empty and all other actions unset/null; the host sends evidence directly. This is read-only, not activation or approval. No automatic follow-up is scheduled; inspect again when asked. A healthy/reconciled event establishes historical controller verification, not current health. Only the loaded runningRevision establishes process identity; a different SHA does not establish commit ancestry. Missing or aged-out evidence means unknown. Never infer current deployment from the inspected SHA, main, a coding receipt, or lastHealthyRevision. Historical receipts are not fresh status. Failed/blocked/unknown checks require the reported owner/operator action, never self-approval."
       : "Deployment inspection is unavailable in this invocation. Do not claim to inspect, approve, or activate a release.",
+    ...(privateTurn
+      ? [
+          "controllerRevision is the installed controller's last published startup provenance, separate from the running app revision. Missing/null means unknown, never the app SHA or main head. A different controller SHA does not by itself establish ancestry or age. Pushing app main does not install controller changes; installation requires a separate authorized operator action. Inspection cannot install or restart the controller, and a published identity is not a fresh liveness check.",
+        ]
+      : []),
     privateTurn && capabilities.modelStatusAvailable
       ? "You can inspect your model runtime in this owner-private turn: set modelStatus true with empty text and all other actions unset/null. The host returns a current sanitized pool snapshot directly. Idle threads are unused, not proof prewarm succeeded. This is read-only and cannot restart, reconfigure, or retry inference."
       : "Model runtime inspection is unavailable in this invocation.",

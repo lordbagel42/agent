@@ -653,6 +653,7 @@ async function main() {
           if (!feed) return undefined;
           return JSON.stringify({
             runningRevision: release?.revision,
+            controllerRevision: feed.controllerRevision ?? null,
             lastHealthyRevision: feed.lastHealthyRevision,
             blocked: feed.blocked,
             recentEvents: feed.events.slice(-5),
