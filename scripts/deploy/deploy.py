@@ -492,11 +492,10 @@ class Host:
                 os.chmod(
                     path, 0o755 if path.is_dir() or meta.st_mode & 0o111 else 0o644
                 )
-                if path.is_file():
-                    with path.open("rb") as file:
-                        os.fsync(file.fileno())
-                else:
-                    sync_directory(path)
+        # The build cgroup has settled. Flush this filesystem once after sealing
+        # all data/metadata, not one journal commit per dependency file. The
+        # marker and promotion directory are still fsynced separately afterwards.
+        subprocess.run(["sync", "--file-system", str(stage)], check=True)
 
     def binding(self):
         # Includes config, unit's namespace/state/env references, and pinned Node.
