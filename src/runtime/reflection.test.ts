@@ -209,23 +209,39 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   await handle.occupancy("turn-c", true);
   expect(providerSignal?.aborted).toBe(true);
   await handle.occupancy("turn-c", false);
+  const invocation = JSON.stringify([blocked.id, 1]);
+  const held = await handle.status();
   expect(
-    (await handle.status()).reflection.requests.find((r) => r.id === blocked.id)
-      ?.status,
-  ).toBe("running");
+    held.reflection.requests.find((r) => r.id === blocked.id),
+  ).toMatchObject({ status: "running", attempts: 1 });
+  expect(held.invocations[invocation]).toBe("started");
   release();
+  // The real-engine flush and status RPC share this deadline with settlement;
+  // the default 1s poll limit is not a provider-settlement contract.
   await expect
     .poll(
-      async () =>
-        (await handle.status()).reflection.requests.find(
-          (r) => r.id === blocked.id,
-        )?.status,
+      async () => {
+        const status = await handle.status();
+        return {
+          request: status.reflection.requests.find((r) => r.id === blocked.id),
+          invocation: status.invocations[invocation],
+        };
+      },
+      { timeout: 5000 },
     )
-    .toBe("stopped");
+    .toMatchObject({
+      request: { status: "stopped", attempts: 1 },
+      invocation: "settled",
+    });
   expect(await handle.status()).toMatchObject({
     liveActive: 0,
     epoch: epoch + 3,
     activeTurnIds: [],
     candidateIds: [],
   });
+  expect(
+    (await handle.enqueue({ ...input, evidenceIds: ["occupancy-blocked"] }))
+      .accepted,
+  ).toBe(false);
+  expect(calls).toBe(4);
 });
