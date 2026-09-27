@@ -1055,6 +1055,18 @@ Historical reads require the trusted synchronous `evidenceCurrent(scope,evidence
 dependency; absent that fence they fail closed. Production rechecks the actual
 memory store, so deletion revokes a read before asynchronous actor cancellation.
 
+Ask June privately to review or explain a reflection. When enabled, she can use
+`{"text":"","reflectionReview":{"action":"list"}}` or an exact
+`{"text":"","reflectionReview":{"action":"inspect","id":"<64hex>"}}`.
+The host allows at most list → one inspect → text synthesis, with all effects
+disabled, including memory/personality/interruption staging and MCP tools. It
+revalidates every consumed publication and original source before and after
+inference, and again before each delivery attempt. The DTO and synthesis stay
+transient: neither enters conversation history, the workflow journal, extraction
+or memory. Only a content-free receipt and placeholder persist. Recovery never
+regenerates a private answer or repeats an uncertain send; an interrupted review
+can remain unknown. Review is interpretation, not evidence or permission to act.
+
 Owner-private `analytics: {"days":7}` also returns memory retrieval counters
 when memory is enabled: calls, completed, failed, total duration and maximum
 duration in milliseconds. `inspection: "memory"` exposes the same aggregates

@@ -270,6 +270,8 @@ export interface CompanionReply {
   reflectionPersonalitySuggestion?: import("../reflection/global-proposal.js").ReflectionPersonalitySuggestion;
   /** Observe only the current owner-private message with a fixed Jev rubric. */
   jevObservation?: boolean;
+  /** Read existing private hypotheses through an effect-free model continuation. */
+  reflectionReview?: import("./reflection-review.js").ReflectionReview;
   /** Request bounded owner-private reflection, not immediate evaluation or delivery. */
   reflectionRequest?: {
     evidenceIds: string[];
@@ -344,6 +346,7 @@ export interface ModelRequest {
   personalitySuggestionAvailable?: boolean;
   reflectionPersonalitySuggestionAvailable?: boolean;
   jevObservationAvailable?: boolean;
+  reflectionReviewAvailable?: boolean;
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;
   reflectionMemoryAvailable?: boolean;

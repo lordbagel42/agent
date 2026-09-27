@@ -5,6 +5,7 @@ import type {
   ModelProvider,
   ModelRequest,
 } from "../core/contracts.js";
+import { reflectionReviewSchema } from "../core/reflection-review.js";
 import {
   rivetActorNames,
   rivetRequestSchema,
@@ -253,6 +254,7 @@ const companionReplySchema = z.strictObject({
   reflectionPersonalitySuggestion:
     reflectionPersonalitySuggestionSchema.optional(),
   jevObservation: z.boolean().optional(),
+  reflectionReview: reflectionReviewSchema.optional(),
   reflectionRequest: z
     .strictObject({
       evidenceIds: z.array(z.string().trim().min(1).max(2048)).min(1).max(20),
@@ -323,6 +325,7 @@ export type ReplyCapabilities = Pick<
   | "personalitySuggestionAvailable"
   | "reflectionPersonalitySuggestionAvailable"
   | "jevObservationAvailable"
+  | "reflectionReviewAvailable"
   | "reflectionRequestAvailable"
   | "juryAvailable"
   | "reflectionMemoryAvailable"
@@ -373,6 +376,7 @@ export function replyJsonSchema(
     personalitySuggestionAvailable,
     reflectionPersonalitySuggestionAvailable,
     jevObservationAvailable,
+    reflectionReviewAvailable,
     reflectionRequestAvailable,
     juryAvailable,
     reflectionMemoryAvailable,
@@ -986,6 +990,32 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(reflectionReviewAvailable
+        ? {
+            reflectionReview: {
+              anyOf: [
+                { type: "null" },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: { action: { type: "string", enum: ["list"] } },
+                  required: ["action"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    action: { type: "string", enum: ["inspect"] },
+                    id: { type: "string", pattern: "^[a-f0-9]{64}$" },
+                  },
+                  required: ["action", "id"],
+                },
+              ],
+              description:
+                "Read existing private hypotheses. List then at most one inspect; no effects or approval. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(reflectionRequestAvailable
         ? {
             reflectionRequest: {
@@ -1351,6 +1381,7 @@ export function replyJsonSchema(
         ? ["reflectionPersonalitySuggestion"]
         : []),
       ...(jevObservationAvailable ? ["jevObservation"] : []),
+      ...(reflectionReviewAvailable ? ["reflectionReview"] : []),
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
       ...(juryAvailable ? ["jury"] : []),
       ...(reflectionMemoryAvailable ? ["reflectionMemory"] : []),
@@ -1547,6 +1578,7 @@ export function parseReply(
     personalitySuggestionAvailable,
     reflectionPersonalitySuggestionAvailable,
     jevObservationAvailable,
+    reflectionReviewAvailable,
     reflectionRequestAvailable,
     juryAvailable,
     reflectionMemoryAvailable,
@@ -1600,6 +1632,7 @@ export function parseReply(
     "personalitySuggestion",
     "reflectionPersonalitySuggestion",
     "jevObservation",
+    "reflectionReview",
     "reflectionRequest",
     "jury",
     "reflectionMemory",
@@ -1661,6 +1694,7 @@ export function parseReply(
     (reply.reflectionPersonalitySuggestion !== undefined &&
       !reflectionPersonalitySuggestionAvailable) ||
     (reply.jevObservation !== undefined && !jevObservationAvailable) ||
+    (reply.reflectionReview !== undefined && !reflectionReviewAvailable) ||
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
     (reply.jury !== undefined && !juryAvailable) ||
     (reply.reflectionMemory !== undefined && !reflectionMemoryAvailable) ||
@@ -1704,6 +1738,7 @@ export function parseReply(
     Number(reply.personalitySuggestion !== undefined) +
     Number(reply.reflectionPersonalitySuggestion !== undefined) +
     Number(reply.jevObservation === true) +
+    Number(reply.reflectionReview !== undefined) +
     Number(reply.reflectionRequest !== undefined) +
     Number(reply.jury !== undefined) +
     Number(reply.reflectionMemory !== undefined) +
@@ -1741,6 +1776,7 @@ export function parseReply(
       reply.personalitySuggestion !== undefined ||
       reply.reflectionPersonalitySuggestion !== undefined ||
       reply.jevObservation === true ||
+      reply.reflectionReview !== undefined ||
       reply.reflectionRequest !== undefined ||
       reply.jury !== undefined ||
       reply.reflectionMemory !== undefined ||

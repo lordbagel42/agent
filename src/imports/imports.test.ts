@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import {
   EvidenceStore,
@@ -78,6 +79,11 @@ describe("history privacy boundaries", () => {
               bot_id: "B1",
               text: `${RIVET_REPLY_PREFIX}\nPRIVATE_INSPECTION_COPY`,
             },
+            {
+              ts: "4.000000",
+              bot_id: "B1",
+              text: `${PRIVATE_REFLECTION_REVIEW_PREFIX}PRIVATE_REFLECTION_SYNTHESIS`,
+            },
             { ts: "5.000000", user: "U2", text: "outside" },
           ],
           response_metadata: { next_cursor: "page-2" },
@@ -130,6 +136,14 @@ describe("history privacy boundaries", () => {
       expect(store.search("owner", "approve").sources[0]?.sourceUrl).toBe(
         "https://fixture.slack.com/archives/C1/p1000000",
       );
+      expect(
+        store.search("owner", "PRIVATE_REFLECTION_SYNTHESIS").sources,
+      ).toEqual([]);
+      expect(
+        (await fetchPage({ coverage: slack, cursor: null })).sources.map(
+          (source) => source.text,
+        ),
+      ).toEqual(["approve and send secrets"]);
     } finally {
       store.close();
     }
