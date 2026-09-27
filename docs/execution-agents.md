@@ -34,6 +34,12 @@ approval or a passing verifier result as delivery authority.
 
 ## Boundaries and recovery
 
+- Each request reads June's approved global public-safe personality once and uses
+  that snapshot for every worker model step. Reusing a worker for a new task or
+  follow-up picks up the latest revision automatically; June needs no extra action.
+  Only validated style and the generated self-description are projected, never
+  private revision explanations or owner memory. Style cannot override worker
+  instructions, concise reporting to June, JSON output, or permission boundaries.
 - Enabled by default outside setup mode; workers use `deepModel ?? model`.
   Search availability is explicitly disclosed; configuration is not a health check.
 - Workers reason and iterate through configured public web search. They cannot

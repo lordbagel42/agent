@@ -187,6 +187,10 @@ it("keeps chat responsive, synthesizes parallel work, reuses history and exposes
     june.send("inbox", { type: "event", event: event(id, text) });
   await send("1", "plan");
   await expect.poll(() => work.length, { timeout: 15000 }).toBe(2);
+  for (const request of work) {
+    expect(request.system).toContain('"version":0,"style":{"tone":"warm"');
+    expect(request.system).toContain("not her conversational persona");
+  }
   await send("2", "hi");
   await expect.poll(texts, { timeout: 15000 }).toContain("Still chatting.");
   await expect.poll(texts).toContain("June: $137");
@@ -198,8 +202,28 @@ it("keeps chat responsive, synthesizes parallel work, reuses history and exposes
       (m) => m.content.type === "text" && m.content.text === "June: 17:42",
     )?.address.threadId,
   ).toBe("1.000001");
+  expect(
+    await client.personality.getOrCreate([owner.id]).command({
+      ...event("revise", ""),
+      metadata: { channelType: "im" },
+      personalityCommandEligible: true,
+      text: '!personality revise {"expectedVersion":0,"changes":{"tone":"dry","verbosity":"expansive"},"explanation":"PRIVATE revision reason","publish":true}',
+    }),
+  ).toContain("Saved global personality revision 1");
   await send("3", "followup");
   await expect.poll(() => work.length, { timeout: 15000 }).toBe(3);
+  expect(work[2]?.system).toContain(
+    '"version":1,"style":{"tone":"dry","verbosity":"expansive"',
+  );
+  expect(work[2]?.system).toContain("concise evidence-based reporting");
+  expect(work[2]?.system).toContain("not worker instructions");
+  expect(work[2]?.system).toContain("Return only the requested JSON");
+  expect(work[2]?.system).toContain(
+    "June will request separate owner approval",
+  );
+  expect(work[2]?.system).toContain("You cannot send messages");
+  expect(work[2]?.workspaces).toEqual([]);
+  expect(JSON.stringify(work)).not.toContain("PRIVATE revision reason");
   expect(work[2]?.messages.some((m) => m.content.includes("17:42"))).toBe(true);
   expect(work[2]?.messages.some((m) => m.content.includes("$137"))).toBe(false);
   await expect
@@ -274,6 +298,8 @@ it("bounds research and stops ambiguous or unsent searches without automatic ret
   let calls = 0;
   let searches = 0;
   let mode: "ready" | "possibly_sent" | "not_sent" = "ready";
+  const prompts: string[] = [];
+  let revise: () => Promise<void>;
   const registry = createJuneRegistry({
     owner,
     channels: {},
@@ -286,6 +312,7 @@ it("bounds research and stops ambiguous or unsent searches without automatic ret
       model: {
         async reply(request) {
           calls++;
+          prompts.push(request.system);
           return request.webSearchAvailable
             ? { text: "", webSearch: "public timetable" }
             : {
@@ -301,6 +328,7 @@ it("bounds research and stops ambiguous or unsent searches without automatic ret
       description: "fixture",
       async search() {
         searches++;
+        if (searches === 1) await revise();
         return mode === "ready"
           ? {
               status: "ready",
@@ -317,6 +345,16 @@ it("bounds research and stops ambiguous or unsent searches without automatic ret
     },
   });
   const { client } = await setupTest(t, registry);
+  revise = async () => {
+    expect(
+      await client.personality.getOrCreate([owner.id]).command({
+        ...event("mid-search-revision", ""),
+        metadata: { channelType: "im" },
+        personalityCommandEligible: true,
+        text: '!personality revise {"expectedVersion":0,"changes":{"tone":"playful"},"explanation":"PRIVATE search reason","publish":true}',
+      }),
+    ).toContain("Saved global personality revision 1");
+  };
   const worker = client.execution.getOrCreate(
     executionKey(["private", "raygen"], "research"),
   );
@@ -344,6 +382,8 @@ it("bounds research and stops ambiguous or unsent searches without automatic ret
   );
   expect(searches).toBe(5);
   expect(calls).toBe(6);
+  for (const prompt of prompts)
+    expect(prompt).toContain('"version":0,"style":{"tone":"warm"');
   for (const [prefix, failure, status] of [
     ["b", "possibly_sent", "needs_review"],
     ["c", "not_sent", "failed"],
@@ -358,6 +398,9 @@ it("bounds research and stops ambiguous or unsent searches without automatic ret
   }
   expect(searches).toBe(7);
   expect(calls).toBe(8);
+  for (const prompt of prompts.slice(6))
+    expect(prompt).toContain('"version":1,"style":{"tone":"playful"');
+  expect(prompts.join("\n")).not.toContain("PRIVATE search reason");
 });
 
 it.for([false, true])(
@@ -456,8 +499,15 @@ it.for([true, false])(
         audiences: [audience],
       });
     const background = input("1", "Violet train preference");
+    store.appendSource(
+      source(
+        event("99", "PRIVATE owner evidence"),
+        JSON.stringify(["private", owner.id]),
+      ),
+    );
     let calls = 0;
     const turns: ModelRequest[] = [];
+    const work: ModelRequest[] = [];
     const registry = createJuneRegistry({
       owner,
       memory: { store, source },
@@ -500,14 +550,23 @@ it.for([true, false])(
       },
       execution: {
         model: {
-          async reply() {
+          async reply(request) {
             calls++;
+            work.push(structuredClone(request));
             return { text: "Violet result" };
           },
         },
       },
     });
     const { client } = await setupTest(t, registry);
+    expect(
+      await client.personality.getOrCreate([owner.id]).command({
+        ...event("public-style", ""),
+        metadata: { channelType: "im" },
+        personalityCommandEligible: true,
+        text: '!personality revise {"expectedVersion":0,"changes":{"tone":"direct"},"explanation":"PRIVATE personality evidence","publish":true}',
+      }),
+    ).toContain("Saved global personality revision 1");
     const june = client.conversation.getOrCreate(scope);
     const done = async () =>
       Object.values((await june.snapshot()).events).every((e) => e.done);
@@ -517,6 +576,9 @@ it.for([true, false])(
     await june.send("inbox", { type: "event", event: input("3", "analyze") });
     await expect.poll(() => turns.length, { timeout: 15000 }).toBe(3);
     await expect.poll(done, { timeout: 15000 }).toBe(true);
+    expect(work[0]?.system).toContain('"version":1,"style":{"tone":"direct"');
+    expect(JSON.stringify(work)).not.toContain("PRIVATE");
+    expect(work[0]?.workspaces).toEqual([]);
     const id = (await june.snapshot()).agents?.trains;
     if (!id) throw new Error("Worker was not registered");
     const worker = client.execution.getOrCreate(executionKey(scope, id));
