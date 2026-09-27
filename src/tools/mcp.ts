@@ -204,8 +204,14 @@ export class McpToolAdapter implements ToolAdapter {
   async execute(
     action: ToolAction,
     credential: unknown,
-    authorized?: () => boolean,
+    authorization?: (() => boolean) | AbortSignal,
   ): Promise<void> {
+    // Preserve the host permission predicate; broker cancellation can also
+    // prevent dispatch after discovery, without claiming remote stoppage.
+    const authorized =
+      typeof authorization === "function"
+        ? authorization
+        : authorization && (() => !authorization.aborted);
     await this.#invoke(action, credential, undefined, authorized);
   }
 

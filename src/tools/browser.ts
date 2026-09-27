@@ -98,6 +98,7 @@ export class BrowserAdapter implements ToolAdapter {
   readonly #executablePath: string | undefined;
   readonly #active = new Map<() => Promise<void>, Promise<void>>();
   #closed = false;
+  #cleanupFailed = false;
 
   constructor(options: BrowserOptions) {
     this.#timeout = options.timeoutMs ?? 15_000;
@@ -194,6 +195,7 @@ export class BrowserAdapter implements ToolAdapter {
         await done;
       }),
     );
+    if (this.#cleanupFailed) throw new Error("browser_cleanup_failed");
   }
 
   async execute(
@@ -204,15 +206,54 @@ export class BrowserAdapter implements ToolAdapter {
     let browser: Browser | undefined;
     let context: BrowserContext | undefined;
     let stopped = false;
+    let cancelled = false;
+    let cleanupFailed = false;
+    let contextClose: Promise<void> | undefined;
+    let browserClose: Promise<void> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let complete: (() => void) | undefined;
+    let result: BrowserResult | undefined;
+    const pending = new Set<Promise<unknown>>();
+    const track = <T>(work: Promise<T>): Promise<T> => {
+      pending.add(work);
+      void work.then(
+        () => pending.delete(work),
+        () => pending.delete(work),
+      );
+      return work;
+    };
+    const failedCleanup = () => {
+      cleanupFailed = true;
+      this.#cleanupFailed = true;
+      // A failed close is not proof of stoppage. Do not admit another browser
+      // operation on this adapter or certify a later shutdown as clean.
+      this.#closed = true;
+    };
     const stop = async () => {
       stopped = true;
-      await context?.close().catch(() => {});
-      await browser?.close().catch(() => {});
+      // Coalesce per resource, not per stop request: launch/newContext may still
+      // deliver an owned resource after cancellation first requests cleanup.
+      if (context) {
+        const owned = context;
+        contextClose ??= Promise.resolve()
+          .then(() => owned.close())
+          .catch(failedCleanup);
+        await contextClose;
+      }
+      if (browser) {
+        const owned = browser;
+        browserClose ??= Promise.resolve()
+          .then(() => owned.close())
+          .catch(failedCleanup);
+        await browserClose;
+      }
+    };
+    const cancel = async () => {
+      cancelled = true;
+      await stop();
     };
     const abort = () => {
-      void stop();
+      void cancel();
     };
     try {
       if (this.#closed || signal?.aborted) denied();
@@ -248,7 +289,7 @@ export class BrowserAdapter implements ToolAdapter {
       if (!bearer && !login && credential !== null && credential !== undefined)
         denied();
       this.#active.set(
-        stop,
+        cancel,
         new Promise<void>((resolve) => {
           complete = resolve;
         }),
@@ -273,7 +314,7 @@ export class BrowserAdapter implements ToolAdapter {
       context.setDefaultNavigationTimeout(this.#timeout);
       // Never connect a routed WebSocket to its server.
       await context.routeWebSocket(/.*/, (socket) => {
-        socket.close();
+        void track(Promise.resolve(socket.close()).catch(failedCleanup));
         abort();
       });
       const page = await context.newPage();
@@ -282,7 +323,7 @@ export class BrowserAdapter implements ToolAdapter {
       });
       page.on("download", abort);
       page.on("dialog", (dialog) => {
-        void dialog.dismiss().catch(() => {});
+        void track(dialog.dismiss().catch(() => {}));
       });
       let navigations = 0;
       page.on("framenavigated", (frame) => {
@@ -294,50 +335,55 @@ export class BrowserAdapter implements ToolAdapter {
           abort();
       });
       const used = new Map<number, number>();
-      await context.route(/.*/, async (route) => {
-        try {
-          const request = route.request();
-          const index = recipe.requests.findIndex(
-            (entry) =>
-              entry.url === request.url() && entry.method === request.method(),
-          );
-          const rule = recipe.requests[index];
-          if (
-            stopped ||
-            !rule ||
-            request.frame() !== page.mainFrame() ||
-            request.redirectedFrom()
-          )
-            throw new Error();
-          const count = (used.get(index) ?? 0) + 1;
-          if (count > rule.maxUses) throw new Error();
-          used.set(index, count);
-          const headers = await request.allHeaders();
-          // Cancellation may arrive while request metadata is being retrieved.
-          if (stopped) throw new Error();
-          delete headers.authorization;
-          delete headers["proxy-authorization"];
-          if (rule.credential) headers.authorization = `Bearer ${secret}`;
-          // route.continue follows redirects without re-routing: never use it here.
-          const response = await route.fetch({
-            headers,
-            maxRedirects: 0,
-            maxRetries: 0,
-            timeout: this.#timeout,
-          });
-          try {
-            if (response.status() >= 300 && response.status() < 400)
-              throw new Error();
-            if (stopped) throw new Error();
-            await route.fulfill({ response });
-          } finally {
-            await response.dispose();
-          }
-        } catch {
-          await route.abort().catch(() => {});
-          abort();
-        }
-      });
+      await context.route(/.*/, (route) =>
+        track(
+          (async () => {
+            try {
+              const request = route.request();
+              const index = recipe.requests.findIndex(
+                (entry) =>
+                  entry.url === request.url() &&
+                  entry.method === request.method(),
+              );
+              const rule = recipe.requests[index];
+              if (
+                stopped ||
+                !rule ||
+                request.frame() !== page.mainFrame() ||
+                request.redirectedFrom()
+              )
+                throw new Error();
+              const count = (used.get(index) ?? 0) + 1;
+              if (count > rule.maxUses) throw new Error();
+              used.set(index, count);
+              const headers = await request.allHeaders();
+              // Cancellation may arrive while request metadata is being retrieved.
+              if (stopped) throw new Error();
+              delete headers.authorization;
+              delete headers["proxy-authorization"];
+              if (rule.credential) headers.authorization = `Bearer ${secret}`;
+              // route.continue follows redirects without re-routing: never use it here.
+              const response = await route.fetch({
+                headers,
+                maxRedirects: 0,
+                maxRetries: 0,
+                timeout: this.#timeout,
+              });
+              try {
+                if (response.status() >= 300 && response.status() < 400)
+                  throw new Error();
+                if (stopped) throw new Error();
+                await route.fulfill({ response });
+              } finally {
+                await response.dispose();
+              }
+            } catch {
+              await route.abort().catch(() => {});
+              abort();
+            }
+          })(),
+        ),
+      );
       await page.goto(recipe.url, { waitUntil: "domcontentloaded" });
       for (const step of recipe.steps) {
         if (stopped) denied();
@@ -384,20 +430,26 @@ export class BrowserAdapter implements ToolAdapter {
           .evaluate((element) => (element.textContent ?? "").slice(0, 4096));
       }
       if (stopped || signal?.aborted) denied();
-      return {
+      result = {
         operation: recipe.name,
         status: "confirmed",
         ...(untrustedText === undefined ? {} : { untrustedText }),
       };
     } catch {
       // Playwright errors can include DOM, headers, URLs, and secrets. Never forward them.
-      throw new Error("browser_action_failed");
     } finally {
+      await stop();
+      // Closing a page is only an abort request for asynchronous route work.
+      // Never race these promises against cancellation or release admission early.
+      while (pending.size) await Promise.allSettled(pending);
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
-      await stop();
-      this.#active.delete(stop);
+      this.#active.delete(cancel);
       complete?.();
     }
+    if (cleanupFailed) throw new Error("browser_cleanup_failed");
+    if (!result || cancelled || signal?.aborted)
+      throw new Error("browser_action_failed");
+    return result;
   }
 }

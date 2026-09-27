@@ -114,8 +114,21 @@ launch has the same timeout. The worker rechecks cancellation after asynchronous
 request-header lookup, before dispatch. Cancellation cannot undo a request already sent;
 keep the broker receipt unknown and reconcile rather than re-execute. The broker
 owns durable one-use receipts and crash recovery, not this in-memory adapter.
-Broker revocation prevents admission; it does not interrupt an already admitted
-adapter. The worker deadline/host signal or shutdown handles those operations.
+Broker revocation prevents admission. Authenticated broker cancellation also
+signals the admitted operation; it does not certify that it stopped. The receipt
+stays `unknown`, and local reconciliation remains blocked until execution settles.
+The worker deadline/host signal or shutdown requests the same owned-resource cleanup.
+
+Cancellation and shutdown wait for the page operation, context/browser close
+promises, and outstanding route callbacks to settle. They never race settlement
+against the abort signal. Only the operation's fresh context and Chromium process
+are closed; unrelated browser sessions remain untouched. Close calls are coalesced,
+including resources returned by a late launch after cancellation. A failed close
+produces only `browser_cleanup_failed`, leaves the broker outcome `unknown`, and
+fences the adapter against new work. Shutdown continues reporting that failure;
+it is not proof the browser stopped. June must not describe an unknown receipt as
+cancelled, successful, or safely retryable. The owner must independently confirm
+stoppage and reconcile the consumed grant; there is no automatic retry.
 
 The result is `{ operation, status: "confirmed" }`. Anonymous recipes can opt
 into `outputSelector`, yielding at most 4096 UTF-16 code units as `untrustedText`.

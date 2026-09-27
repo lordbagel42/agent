@@ -32,16 +32,22 @@ export interface CapabilityAuditEvent {
 /** Trusted code, not model-provided code. Enforce destination/redirect policy here.
  * Never return or log credentials, including errors. Results are intentionally discarded.
  * Resolve only on confirmed success; throw on rejection or ambiguous outcomes.
+ * Cancellation requests cleanup; do not settle until owned work and cleanup settle.
  * Do not internally retry side effects. Revocation cannot recall a started operation.
  * This is an authorization boundary, NOT a process/network sandbox. */
 export interface ToolAdapter {
-  execute(action: ToolAction, credential: unknown): Promise<unknown>;
+  execute(
+    action: ToolAction,
+    credential: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown>;
   /** Used instead of execute when present, never as a retry/fallback on error. */
   executeAuthorized?(
     action: ToolAction,
     credential: unknown,
     /** Recheck immediately before dispatch after adapter-internal awaits. */
     authorized: () => boolean,
+    signal?: AbortSignal,
   ): Promise<unknown>;
 }
 export interface BrokerOptions {
@@ -144,7 +150,7 @@ interface LinkRow {
 export class CapabilityBroker {
   readonly #db: DatabaseSync;
   readonly #options: Readonly<BrokerOptions>;
-  readonly #active = new Set<string>();
+  readonly #active = new Map<string, AbortController>();
   constructor(path: string, options: BrokerOptions) {
     text(options.owner);
     // Capture method identity without cloning class instances or freezing their
@@ -258,9 +264,11 @@ export class CapabilityBroker {
       if (changed.changes) this.#event(grantId, "revoked");
     });
   }
-  /** Stops future admission, including pending credential lookup. Cannot undo an effect. */
+  /** Revokes future admission and requests local cleanup. Not proof of stoppage;
+   * execution stays active until the adapter actually settles. Cannot undo an effect. */
   cancel(principal: string, grantId: string): Receipt | undefined {
     this.revoke(principal, grantId);
+    this.#active.get(grantId)?.abort();
     return this.audit(principal, grantId);
   }
   /** Owner must independently verify the previous worker stopped and the external outcome.
@@ -373,7 +381,8 @@ export class CapabilityBroker {
       this.#db.exec("ROLLBACK");
       throw error;
     }
-    this.#active.add(grantId);
+    const controller = new AbortController();
+    this.#active.set(grantId, controller);
     try {
       const credential = await this.#options.resolveCredential(
         Object.freeze({
@@ -401,8 +410,15 @@ export class CapabilityBroker {
         }
       };
       if (adapter.executeAuthorized)
-        await adapter.executeAuthorized(action, credential, authorized);
-      else await adapter.execute(action, credential);
+        await adapter.executeAuthorized(
+          action,
+          credential,
+          authorized,
+          controller.signal,
+        );
+      else await adapter.execute(action, credential, controller.signal);
+      // Await without a race. The adapter owns confirmation: a cancellation
+      // request cannot erase an independently confirmed external outcome.
       this.#transaction(() => {
         this.#db
           .prepare(

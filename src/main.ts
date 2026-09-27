@@ -743,6 +743,7 @@ async function main() {
               : "not_configured",
             liveVerified: "unknown",
           })}. Browser reads require explicit browser.enabled, capabilities.directory, isolated execution configuration and JUNE_ALLOW_ISOLATED_BROWSER=1. Only anonymous named GET recipes are mounted, with no interaction steps or vault access. Every execution requires its own exact recipe-digest/account/item/origin grant. Results are receipts only, not webpage content. Inspection does not launch Chromium or authorize reads; host isolation acknowledgements are not sandbox verification.`,
+          "Browser cancellation requests cleanup, not confirmed stoppage. Pending work retains admission until it settles. Cleanup failure leaves the receipt unknown and blocks new work on that adapter. Never describe unknown as success or safely retryable; owner reconciliation requires independently confirmed stoppage and outcome.",
         ].join("\n"),
       nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
       reflection: reflection
