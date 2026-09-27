@@ -831,6 +831,22 @@ async function main() {
           deletionRevision: () => memory?.store.deletionRevision() ?? 0,
         })
       : undefined;
+  const forgetSource = async (scope: string, sourceId: string) => {
+    audience(scope);
+    if (!memory?.store.isDeleted(sourceId))
+      throw new Error("Source must be tombstoned first");
+    social?.forget();
+    await client.conversation.getOrCreate(JSON.parse(scope)).forget(sourceId);
+    if (reflection) {
+      const actor = client.reflection.getOrCreate([config.owner.id]);
+      const status = await actor.status();
+      for (const request of status.reflection.requests) {
+        if (request.evidenceIds.includes(sourceId))
+          await actor.cancel(request.id);
+      }
+    }
+  };
+  if (memory) memory.forget = forgetSource;
   process.env.RIVET_INSPECTOR_DISABLE ??= "1";
   const webhookSecrets = Object.fromEntries(
     Object.entries(config.eventWebhooks).map(([name, value]) => [
@@ -1277,20 +1293,7 @@ async function main() {
       createMemoryRoutes({
         ...memory,
         audience,
-        async forget(scope, sourceId) {
-          social?.forget();
-          await client.conversation
-            .getOrCreate(JSON.parse(scope))
-            .forget(sourceId);
-          if (reflection) {
-            const actor = client.reflection.getOrCreate([config.owner.id]);
-            const status = await actor.status();
-            for (const request of status.reflection.requests) {
-              if (request.evidenceIds.includes(sourceId))
-                await actor.cancel(request.id);
-            }
-          }
-        },
+        forget: forgetSource,
       }),
     );
   }

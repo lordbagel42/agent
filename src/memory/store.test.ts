@@ -2297,6 +2297,15 @@ it.each(
     const reopened = open(path).store;
     if (!alreadyDeleted) {
       expect(reopened.proposals("private")).toHaveLength(2);
+      // Legacy cleanup can remove unrelated proposals/descendants, so the
+      // exact scoped preview must not authorize this larger deletion.
+      expect(reopened.previewForget("private", "old-context")).toMatchObject({
+        sources: 1,
+        claims: 0,
+        proposals: { pending: 0, accepted: 0, rejected: 0 },
+        confirmable: false,
+        physicalPurge: false,
+      });
       if (receipts !== "present")
         expect(reopened.stageProposals("private", ["s1"], [input])).toEqual([]);
       reopened.deleteSource("old-context");

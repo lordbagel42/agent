@@ -322,6 +322,11 @@ async function normalizeEvent(
         /^[!/]deploy-app(?:\s|$)/.test(event.text.trim())
           ? { appDeploymentEligible: isPlainSlackCommand(event) }
           : {}),
+        ...(owner &&
+        channelType === "im" &&
+        /^!forget-confirm(?:\s|$)/.test(event.text.trim())
+          ? { forgetCommandEligible: isPlainSlackCommand(event) }
+          : {}),
         metadata: {
           ...slackMetadata(event, channelType),
           ...(channelName ? { channelName } : {}),

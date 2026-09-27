@@ -112,6 +112,11 @@ describe("createSlackAdapter", () => {
       text: `!deploy-app ${"a".repeat(64)}`,
       field: "appDeploymentEligible" as const,
     },
+    {
+      kind: "forget confirmation",
+      text: `!forget-confirm ${"a".repeat(32)}`,
+      field: "forgetCommandEligible" as const,
+    },
   ])(
     "marks only fresh plain owner-DM $kind commands as eligible",
     async ({ text, field }) => {

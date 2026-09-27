@@ -789,6 +789,19 @@ it("does not orphan work admitted while forgetting older workers", async (t) => 
   };
   const forgetting = june.forget("old-evidence");
   await paused.promise;
+  // The frozen identity cannot accept fresh tasks that a cleanup retry would
+  // subsequently revoke. Other worker names remain usable during cleanup.
+  await june.send("inbox", { type: "event", event: event("reuse-old", "old") });
+  await expect
+    .poll(
+      async () =>
+        (await june.snapshot()).history.some((entry) =>
+          entry.content.includes("cleanup pending"),
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(true);
+  expect(calls).toBe(1);
   await june.send("inbox", { type: "event", event: event("31", "fresh") });
   await expect.poll(() => calls, { timeout: 15000 }).toBe(2);
   resume.resolve();
@@ -799,6 +812,9 @@ it("does not orphan work admitted while forgetting older workers", async (t) => 
   const worker = client.execution.getOrCreate(
     executionKey(["private", "raygen"], id),
   );
+  expect((await worker.summary()).pending).toBe(1);
+  await june.forget("old-evidence");
+  expect((await june.snapshot()).agents?.fresh).toBe(id);
   expect((await worker.summary()).pending).toBe(1);
   work.resolve({ text: "fresh result" });
   await expect

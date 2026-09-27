@@ -520,6 +520,29 @@ forgetting remains the separate operation that removes dependent proposals and
 records deletion tombstones. Rejection starts at memory-claim-review version 3;
 older journaled rejection text retains its previous conversational path.
 
+## Owner confirmation through June
+
+Ask June in the authenticated owner's Slack DM to preview forgetting an
+exact source ID (`forgetPreview: {sourceId}`). When host cleanup is available and
+the entire deletion target can be previewed, the host appends a single-use
+`!forget-confirm TOKEN` command. Send that exact command as a new ordinary owner
+message (not a Slack slash command) within ten minutes. A new confirmable preview
+replaces any older unused confirmation. Quoted commands, public/guest turns,
+model suggestions and model-supplied confirmation flags cannot authorize deletion.
+A preview whose delivery was rejected or uncertain cannot be confirmed.
+
+The host rechecks the exact preview fingerprint and authorization immediately
+before tombstoning. Changed dependencies require a fresh preview. Consumption is
+persisted first, then the existing host cleanup revokes social grants, clears
+working context and cancels associated work. Durable `forgetConfirmations`
+receipts retain only binding metadata and pending/started/completed status.
+After interruption, send the same command as a new owner message to resume the
+same cleanup. Frozen context/job IDs prevent retries from erasing newer work;
+completed confirmations and duplicate events do not rerun cleanup. A started
+receipt without a ledger tombstone requires a fresh preview, not a cleanup retry.
+All results disclose `physicalPurge:false`: journals, encrypted history, backups
+and already-sent platform content are not physically erased.
+
 ## Reflection and personality
 
 `reflectionEvidence(audience, sourceIds, maxAgeMs): Evidence[]` returns original

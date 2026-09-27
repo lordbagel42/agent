@@ -144,6 +144,8 @@ export interface Dependencies {
     store: EvidenceStore;
     personality?: CuratedPersonalityStore;
     source(event: MessageEvent, audience: string): Source | undefined;
+    /** Trusted host cleanup, invoked only after ledger tombstoning. */
+    forget?(audience: string, sourceId: string): Promise<void>;
     extract?(
       audience: string,
       sourceIds: string[],
@@ -162,6 +164,18 @@ interface MemoryReference {
    * never additional independent corroboration. */
   contextSourceIds?: string[];
 }
+
+type ForgetCleanup =
+  | { completed: true }
+  | {
+      completed?: false;
+      beforeDeletionRevision: number;
+      historyIds: string[];
+      eventIds: string[];
+      deliveryIds: string[];
+      agents: Record<string, string>;
+      jobIds: string[];
+    };
 
 interface ConversationState {
   history: (ConversationMessage & {
@@ -201,6 +215,33 @@ interface ConversationState {
   agents?: Record<string, string>;
   jobAgents?: Record<string, { agentId: string; requestId: string }>;
   deletionRevision?: number;
+  /** JSON-encoded source IDs avoid special object-property names. */
+  forgetCleanups?: Record<string, ForgetCleanup>;
+  forgetConfirmations?: Record<
+    string,
+    {
+      sourceId: string;
+      fingerprint: string;
+      previewEventId: string;
+      expiresAt: number;
+      commandEventId?: string;
+      status: "pending" | "started" | "completed";
+    }
+  >;
+}
+
+function captureForgetTargets(
+  state: ConversationState,
+  beforeDeletionRevision: number,
+): ForgetCleanup {
+  return {
+    beforeDeletionRevision,
+    historyIds: state.history.map((entry) => entry.id),
+    eventIds: Object.keys(state.events),
+    deliveryIds: Object.keys(state.deliveries),
+    agents: { ...state.agents },
+    jobIds: Object.keys(state.jobs),
+  };
 }
 
 type Inbox =
@@ -319,23 +360,37 @@ export function createJuneRegistry(deps: Dependencies) {
         if (!deps.memory?.store.isDeleted(sourceId))
           throw new Error("Source must be tombstoned first");
         deps.memory.personality?.forgetGlobalProposals();
-        const forgottenAgents = { ...c.state.agents };
-        const forgottenJobs = Object.keys(c.state.jobs);
-        c.state.history = [];
+        c.state.forgetCleanups ??= {};
+        const key = JSON.stringify(sourceId);
+        c.state.forgetCleanups[key] ??= captureForgetTargets(
+          c.state,
+          deps.memory.store.deletionRevision(),
+        );
+        const cleanup = c.state.forgetCleanups[key];
+        if (cleanup.completed) return;
+        prune(c.state, JSON.stringify(c.key));
+        // Resume only the frozen target: a retry must not erase fresh work.
+        for (const [index, entry] of [...c.state.history.entries()].reverse())
+          if (cleanup.historyIds.includes(entry.id))
+            c.state.history.splice(index, 1);
         c.state.forgottenEvents = [
-          ...new Set([
-            ...(c.state.forgottenEvents ?? []),
-            ...Object.keys(c.state.events),
-          ]),
+          ...new Set([...(c.state.forgottenEvents ?? []), ...cleanup.eventIds]),
         ];
-        for (const record of Object.values(c.state.events))
-          if (record.event.type === "message") record.event.text = "";
-        for (const delivery of Object.values(c.state.deliveries))
-          if (delivery.message.content.type === "text")
+        for (const id of cleanup.eventIds) {
+          const record = c.state.events[id];
+          if (record?.event.type === "message") record.event.text = "";
+        }
+        for (const id of cleanup.deliveryIds) {
+          const delivery = c.state.deliveries[id];
+          if (delivery?.message.content.type === "text")
             delivery.message.content.text = "";
-        for (const job of Object.values(c.state.jobs)) {
-          job.goal = "";
-          delete job.preview;
+        }
+        for (const id of cleanup.jobIds) {
+          const job = c.state.jobs[id];
+          if (job) {
+            job.goal = "";
+            delete job.preview;
+          }
         }
         await c.vars.persist();
         if (
@@ -345,18 +400,18 @@ export function createJuneRegistry(deps: Dependencies) {
           await c
             .client<JuneClientRegistry>()
             .wakeups.getOrCreate([deps.owner.id])
-            .forget(c.state.forgottenEvents);
-        for (const id of Object.values(forgottenAgents))
+            .forget(cleanup.eventIds);
+        for (const id of Object.values(cleanup.agents))
           await c
             .client<JuneClientRegistry>()
             .execution.getOrCreate(executionKey(c.key, id))
             .cancel(`forget:${sourceId}`, true);
-        for (const [name, id] of Object.entries(forgottenAgents))
+        for (const [name, id] of Object.entries(cleanup.agents))
           if (c.state.agents?.[name] === id) delete c.state.agents[name];
         await c.vars.persist();
         // Already-dispatched external work cannot be erased. Revoke future
         // approvals/results and request cancellation without releasing admission.
-        for (const id of forgottenJobs)
+        for (const id of cleanup.jobIds)
           await c
             .client<JuneRegistry>()
             .job.getOrCreate([deps.owner.id, id])
@@ -365,15 +420,16 @@ export function createJuneRegistry(deps: Dependencies) {
           await c
             .client<JuneClientRegistry>()
             .workflowLibrary.getOrCreate([deps.owner.id])
-            .invalidate();
+            .invalidate(cleanup.beforeDeletionRevision);
+        c.state.forgetCleanups[key] = { completed: true };
+        await c.vars.persist();
       },
     },
     run: workflow(
       async (ctx) => {
         await ctx.loop("conversation-v1", async (loop) => {
-          // Preserve v1–v11 journals; only fresh v12 turns gain app actions
-          // and the separate owner deployment command.
-          const journalVersion = await loop.getVersion("memory-dispatch", 12);
+          // Preserve older journals; only fresh v13 turns gain forget confirmation.
+          const journalVersion = await loop.getVersion("memory-dispatch", 13);
           // Preserve already-processing journals. Legacy queued events also
           // lack the ingress eligibility marker and cannot gain authority.
           const correctionVersion = await loop.getVersion(
@@ -492,12 +548,26 @@ export function createJuneRegistry(deps: Dependencies) {
                 ),
               )
               .digest("hex");
+            const forgetCommand =
+              version >= 13 &&
+              scope.private &&
+              ownerTurn &&
+              body.type === "event" &&
+              event.type === "message" &&
+              event.address.channel === "slack" &&
+              event.forgetCommandEligible === true
+                ? event.text.trim().match(/^!forget-confirm ([a-f0-9]{32})$/)
+                : null;
+            // Only the host-generated confirmation receipt may cross its own
+            // deletion boundary. No model output or recalled text uses this path.
+            let forgetReceipt = false;
             const valid = (state: ConversationState) => {
               if (
                 deletionRevision !==
                 (deps.memory?.store.deletionRevision() ?? 0)
               )
                 return false;
+              if (forgetReceipt) return true;
               // Legacy journals keep their recorded step order, but unfinished
               // callbacks must not dispatch effects for opted-out Slack input.
               if (
@@ -787,6 +857,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 if (
                   !plan.memory ||
                   reflectionReview ||
+                  forgetCommand ||
                   event.type !== "message" ||
                   body.type !== "event" ||
                   !valid(step.state)
@@ -918,7 +989,140 @@ export function createJuneRegistry(deps: Dependencies) {
                 event.metadata?.channelType === "im" &&
                 event.memoryBackupEligible === true &&
                 event.text === "!memory-backup";
-              if (body.type === "job_result" && version < 7) {
+              if (forgetCommand) {
+                const receipt = await loop.step({
+                  name: "forget-confirm",
+                  // Child failures produce a resumable receipt; a supervisory
+                  // timeout must not abandon a still-running cleanup callback.
+                  timeout: 0,
+                  run: async (step) => {
+                    const memory = deps.memory;
+                    const token = forgetCommand[1] ?? "";
+                    const entry = step.state.forgetConfirmations?.[token];
+                    const result = (text: string) => ({
+                      text: `${text}\nphysicalPurge:false. Logical forgetting does not erase workflow journals, backups, or already-sent platform content. Encrypted history remains subject to retention policy; cancellation requests do not prove external work stopped.`,
+                      revision: memory?.store.deletionRevision() ?? 0,
+                    });
+                    if (!entry || !memory?.forget)
+                      return result(
+                        "That forgetting confirmation is unavailable. Request a fresh preview.",
+                      );
+                    if (entry.status === "completed")
+                      return result(
+                        "That forgetting request already completed. No cleanup was repeated.",
+                      );
+                    const cleanupKey = JSON.stringify(entry.sourceId);
+                    if (entry.status === "pending") {
+                      const delivered =
+                        step.state.deliveries[`${entry.previewEventId}:text`];
+                      if (
+                        step.abortSignal.aborted ||
+                        !valid(step.state) ||
+                        entry.expiresAt <= Date.now() ||
+                        delivered?.result?.status !== "sent" ||
+                        delivered.message.content.type !== "text" ||
+                        !delivered.message.content.text.includes(
+                          `!forget-confirm ${token}`,
+                        )
+                      )
+                        return result(
+                          "That forgetting confirmation is unavailable. Request a fresh preview.",
+                        );
+                      const initial = memory.store.previewForget(
+                        audience,
+                        entry.sourceId,
+                      );
+                      if (
+                        !initial?.confirmable ||
+                        initial.fingerprint !== entry.fingerprint
+                      )
+                        return result(
+                          "That forgetting preview is no longer current. Nothing was deleted; request a fresh preview.",
+                        );
+                      // Freeze both decision and cleanup scope before tombstoning.
+                      // Repeated recovery must not clear post-deletion work.
+                      entry.status = "started";
+                      entry.commandEventId = eventId;
+                      step.state.forgetCleanups ??= {};
+                      step.state.forgetCleanups[cleanupKey] =
+                        // Persist the boundary before deletion: its atomic
+                        // tombstone batch advances revision by at least one.
+                        captureForgetTargets(step.state, deletionRevision + 1);
+                      await step.vars.persist();
+                      const preview = memory.store.previewForget(
+                        audience,
+                        entry.sourceId,
+                      );
+                      if (
+                        step.abortSignal.aborted ||
+                        !valid(step.state) ||
+                        entry.expiresAt <= Date.now() ||
+                        !preview?.confirmable ||
+                        preview.fingerprint !== entry.fingerprint
+                      ) {
+                        delete step.state.forgetConfirmations?.[token];
+                        if (!memory.store.isDeleted(entry.sourceId))
+                          delete step.state.forgetCleanups[cleanupKey];
+                        await step.vars.persist();
+                        return result(
+                          "That forgetting preview is no longer current. Nothing was deleted; request a fresh preview.",
+                        );
+                      }
+                      // No await between graph revalidation and ledger tombstone.
+                      try {
+                        memory.store.deleteSource(entry.sourceId);
+                      } catch {
+                        return result(
+                          memory.store.isDeleted(entry.sourceId)
+                            ? `The source is logically forgotten, but host cleanup completion is unconfirmed. Send !forget-confirm ${token} again to resume the same cleanup.`
+                            : "Logical deletion is unconfirmed. Request a fresh exact preview before forgetting; cleanup was not started.",
+                        );
+                      }
+                    } else {
+                      if (entry.commandEventId === eventId)
+                        return result(
+                          `Cleanup completion is unconfirmed. Send !forget-confirm ${token} again as a new message to resume the same cleanup.`,
+                        );
+                      if (!memory.store.isDeleted(entry.sourceId))
+                        return result(
+                          "Logical deletion is unconfirmed. Request a fresh exact preview before forgetting; cleanup was not retried.",
+                        );
+                      if (
+                        step.abortSignal.aborted ||
+                        !valid(step.state) ||
+                        !step.state.forgetCleanups?.[cleanupKey]
+                      )
+                        return result(
+                          "Cleanup cannot safely resume; request operator review. No new data was deleted.",
+                        );
+                      // A fresh authenticated repeat authorizes resuming only the
+                      // frozen cleanup. Replayed copies of this event do not.
+                      entry.commandEventId = eventId;
+                      await step.vars.persist();
+                    }
+                    if (step.abortSignal.aborted)
+                      return result(
+                        `Cleanup completion is unconfirmed. Send !forget-confirm ${token} again to resume.`,
+                      );
+                    try {
+                      await memory.forget(audience, entry.sourceId);
+                      step.abortSignal.throwIfAborted();
+                      entry.status = "completed";
+                      await step.vars.persist();
+                      return result(
+                        "The previewed source was logically forgotten and host cleanup completed.",
+                      );
+                    } catch {
+                      return result(
+                        `The source is logically forgotten, but host cleanup completion is unconfirmed. Send !forget-confirm ${token} again to resume the same cleanup.`,
+                      );
+                    }
+                  },
+                });
+                reply = { text: receipt.text };
+                deletionRevision = receipt.revision;
+                forgetReceipt = true;
+              } else if (body.type === "job_result" && version < 7) {
                 reply = { text: body.text };
               } else if (appCommand) {
                 reply = await loop.step("dynamic-app-command", async (step) => {
@@ -2954,8 +3158,41 @@ export function createJuneRegistry(deps: Dependencies) {
                                       physicalPurge,
                                     });
                                     // Never truncate an escaped ID into a different target.
-                                    if (report.length <= 2200)
+                                    if (report.length <= 2200) {
                                       text = `Forgetting impact preview (read-only snapshot): ${report}\nCounts cover only authorized ledger records. Accepted proposals also appear in the claim count; do not add them twice. No evidence bodies or derivative IDs are shown. Nothing was deleted or confirmed.\nA separately authorized forget logically tombstones this source and dependent claims/proposals, invalidates copied working context and grounded personality, and requests associated job/reflection cleanup. Existing social grants/outreach are revoked and copied prose redacted. These counts are not a count of all cleanup effects. Already-sent content, running external work, encrypted history, Rivet journals, and backups cannot be recalled or physically erased by this operation.`;
+                                      if (
+                                        version >= 13 &&
+                                        ownerTurn &&
+                                        event.address.channel === "slack" &&
+                                        deps.memory.forget &&
+                                        preview.confirmable
+                                      ) {
+                                        const token = randomUUID().replaceAll(
+                                          "-",
+                                          "",
+                                        );
+                                        step.state.forgetConfirmations ??= {};
+                                        for (const [
+                                          oldToken,
+                                          entry,
+                                        ] of Object.entries(
+                                          step.state.forgetConfirmations,
+                                        ))
+                                          if (entry.status === "pending")
+                                            delete step.state
+                                              .forgetConfirmations[oldToken];
+                                        step.state.forgetConfirmations[token] =
+                                          {
+                                            sourceId: preview.sourceId,
+                                            fingerprint: preview.fingerprint,
+                                            previewEventId: eventId,
+                                            expiresAt: Date.now() + 600_000,
+                                            status: "pending",
+                                          };
+                                        await step.vars.persist();
+                                        text += `\nTo confirm this exact preview, send this as a new plain message in your Slack DM within 10 minutes:\n!forget-confirm ${token}\nThis replaces older unused confirmations. Nothing has been deleted yet.`;
+                                      }
+                                    }
                                   }
                                 } catch {
                                   // Do not expose input, storage errors, or whether
@@ -3507,6 +3744,21 @@ export function createJuneRegistry(deps: Dependencies) {
                             .cancel(eventId);
                         outcomes.push(
                           `${command.agent}: ${id ? "cancellation requested" : "not found"}`,
+                        );
+                        continue;
+                      }
+                      if (
+                        id &&
+                        Object.values(step.state.forgetCleanups ?? {}).some(
+                          (cleanup) =>
+                            !cleanup.completed &&
+                            Object.values(cleanup.agents).some(
+                              (agent) => agent === id,
+                            ),
+                        )
+                      ) {
+                        outcomes.push(
+                          `${command.agent}: forgetting cleanup pending; retry after cleanup or use another worker name`,
                         );
                         continue;
                       }

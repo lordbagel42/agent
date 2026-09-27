@@ -57,6 +57,8 @@ export interface MessageEvent extends EventBase {
   memoryBackupEligible?: boolean;
   /** Fresh, plain owner-DM deployment approval; never set by history/model text. */
   appDeploymentEligible?: boolean;
+  /** Fresh, plain owner-private Slack command; absent on quotes and old inboxes. */
+  forgetCommandEligible?: boolean;
   metadata?: MessageMetadata;
 }
 

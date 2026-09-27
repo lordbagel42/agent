@@ -1081,6 +1081,11 @@ export class EvidenceStore {
     // Test that boundary without exposing hidden IDs/counts in the fingerprint.
     const proposalIds = new Set(proposals.map((proposal) => proposal.id));
     const confirmable =
+      // removeEvidence also invalidates every untracked legacy proposal. Do
+      // not authorize that wider cleanup from an exact dependency preview.
+      !state.proposals.some(
+        (proposal) => proposal.claim.extractionContext === undefined,
+      ) &&
       !state.claims.some(
         (claim) =>
           !affected.has(claim.id) &&
