@@ -115,6 +115,27 @@ and valid identity markers are required. Atomic rename to `.prune-<SHA>` makes
 interrupted removal resumable. Unknown directories, legacy releases, backups,
 the package cache and all conversation data are untouched.
 
+Staging recovery runs on startup and each poll under the same deployment lock,
+even when no new main is available or activation is blocked. Before extracting
+source, the controller writes a root-only `/opt/june/build/.stage-<id>.json`
+record outside the builder-writable directory, binding its device/inode. A gated
+launcher cannot start `systemd-run` until its PID and boot identity are durable.
+Never-launched stages are reclaimable immediately. Once launch is possible,
+recovery requires launcher exit plus durable evidence of a successful
+`systemd-run --wait`, or a changed host boot identity. PID absence and an absent
+unit alone cannot settle a possibly queued start request. Interrupted launches,
+nonzero returns and lost acknowledgements therefore retain their stages on the
+same boot for operator inspection; restarting the controller does not clear this
+ambiguity. In either recovery case the associated unit must also be inactive/failed
+with no job, PIDs or control group. Manager errors or incomplete evidence preserve
+the stage; recovery never stops a build. Interrupted removal retains the external
+record.
+Unregistered/pre-upgrade stages, replaced directories, symlinks and stages with
+a release marker remain untouched and require operator inspection. A crash
+before registration can leave an empty unregistered directory. This recovery
+needs a separately authorized controller installation; pushing main does not
+upgrade the installed script.
+
 A new build requires at least 4 GiB available; a prepared candidate requires
 1 GiB. The 1 GiB reserve is checked again after building, before promotion.
 Insufficient capacity records `deferred/insufficient_disk`, leaves June serving,
@@ -349,14 +370,19 @@ pnpm format && pnpm lint && pnpm typecheck
 pnpm exec vitest run src/deployment src/core/routing.test.ts src/runtime/delivery.test.ts
 uv tool run ruff format --check scripts/deploy
 uv tool run ruff check scripts/deploy
-PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_deploy.py
+(umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_deploy.py)
 ```
 
 The core fixtures use real disposable Git commits, SQLite, HTTP subprocesses,
 release directories and persistent messages. They cover duplicate activation,
 crash/reopen, exclusive lock, latest-head coalescing, force-push rejection,
 permission/privacy boundaries, busy drain, failed preflight and compatible vs
-unsafe rollback. They measure successful/failed warm fixture elapsed time. They
+unsafe rollback. Staging fixtures abruptly exit/kill a disposable controller,
+preserve its surviving build process and unknown same-boot launch, then check
+recovery with a simulated earlier boot identity. They also check durable successful
+completion, ambiguous systemd responses, interrupted removal and untouched unknown,
+sealed and conversation data. The fixture umask matches the controller service.
+They measure successful/failed warm fixture elapsed time. They
 do **not** prove production cgroup isolation, full June restart time, GitHub fetch
 latency, real coding-worker drain or Rivet compatibility. Validate those on the
 combined candidate and disposable state before the initial live activation.

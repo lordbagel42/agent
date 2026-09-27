@@ -4,9 +4,11 @@ import importlib.util
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -109,15 +111,18 @@ class FixtureHost(deploy.Host):
     def build(self, stage):
         if (stage / "src/broken").exists():
             raise RuntimeError("SECRET_FROM_BUILD")
-        subprocess.run(
+        self.run_build(
+            stage,
             [
                 sys.executable,
                 "-c",
-                "import ast,pathlib; ast.parse(pathlib.Path('src/service.py').read_text())",
+                "import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())",
+                str(stage / "src/service.py"),
             ],
-            cwd=stage,
-            check=True,
         )
+
+    def build_unit_stopped(self, stage):
+        return True  # Fixtures run gated local children, not production systemd.
 
     def binding(self):
         return "a" * 64
@@ -224,6 +229,237 @@ class DeploymentSafety(unittest.TestCase):
         self.host.service("stop")
         self.store.close()
         self.tmp.cleanup()
+
+    def test_crashed_preparation_reclaims_only_recorded_unsealed_stages(self):
+        target = self.host.commit("src/console/view.ts", "two")
+        unknown = self.host.stage_root / "stage-unknown1"
+        unknown.mkdir()
+        (unknown / "keep").write_text("unknown data")
+        release = self.host.releases / self.first
+        marker = (release / ".june-release.json").read_bytes()
+        build = self.host.build
+        rename = os.rename
+        write_record = deploy.atomic_json
+        for phase in ("extracted", "gate", "built", "sealed"):
+            with self.subTest(phase=phase):
+                pid = os.fork()
+                if pid == 0:
+
+                    def crash_record(path, value, *args, phase=phase):
+                        if phase == "gate" and value.get("launcherPid"):
+                            os._exit(91)  # Spawned but not durably authorized.
+                        write_record(path, value, *args)
+
+                    def crash_build(stage, phase=phase):
+                        if phase == "extracted":
+                            os._exit(91)
+                        build(stage)
+                        if phase == "built":
+                            os._exit(91)
+
+                    def crash_promotion(source, destination):
+                        if destination == self.host.releases / target:
+                            os._exit(91)
+                        rename(source, destination)
+
+                    try:
+                        with (
+                            deploy.deployment_lock(self.host.root / "lock"),
+                            patch.object(self.host, "build", crash_build),
+                            patch.object(deploy.os, "rename", crash_promotion),
+                            patch.object(deploy, "atomic_json", crash_record),
+                        ):
+                            self.host.prepare(target)
+                    finally:
+                        os._exit(92)
+                _, status = os.waitpid(pid, 0)
+                self.assertEqual(os.waitstatus_to_exitcode(status), 91)
+                records = list(self.host.stage_root.glob(".stage-*.json"))
+                self.assertEqual(len(records), 1)
+                stage = self.host.stage_root / records[0].name[1:-5]
+                self.assertTrue((stage / "src/service.py").is_file())
+                self.assertFalse(self.store.get("intent"))
+                # Startup recovery runs even with no new main and no activation.
+                with deploy.deployment_lock(self.host.root / "lock"):
+                    self.host.recover_stages()
+                    self.host.recover_stages()
+                self.assertEqual(stage.exists(), phase == "sealed")
+                self.assertEqual(records[0].exists(), phase == "sealed")
+        self.assertEqual((unknown / "keep").read_text(), "unknown data")
+        self.assertEqual((release / ".june-release.json").read_bytes(), marker)
+        self.assertTrue(self.host.running(self.first))
+        self.assertEqual(
+            (self.host.data / "messages").read_text(), "new messages must survive\n"
+        )
+
+    def test_restart_preserves_live_launcher_then_waits_for_unit_settlement(self):
+        target = self.host.commit("src/console/view.ts", "two")
+        pid = os.fork()
+        if pid == 0:
+
+            def busy_build(stage):
+                self.host.run_build(
+                    stage,
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); "
+                            "(p/'ready').touch(); end=time.monotonic()+10\n"
+                            "while not (p/'done').exists() and time.monotonic()<end: time.sleep(.01)"
+                        ),
+                        str(stage),
+                    ],
+                )
+
+            try:
+                with (
+                    deploy.deployment_lock(self.host.root / "lock"),
+                    patch.object(self.host, "build", busy_build),
+                ):
+                    self.host.prepare(target)
+            finally:
+                os._exit(92)
+        try:
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                ready = list(self.host.stage_root.glob("stage-*/ready"))
+                if ready:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(len(ready), 1)
+        finally:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        stage = ready[0].parent
+        with deploy.deployment_lock(self.host.root / "lock"):
+            with patch.object(self.host, "build_unit_stopped") as unit:
+                self.host.recover_stages()
+                unit.assert_not_called()  # Live launcher vetoes even an absent unit.
+            self.assertTrue((stage / "src/service.py").exists())
+            (stage / "done").touch()
+            launcher = self.host.read_stage_record(stage)["launcherPid"]
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                try:
+                    os.kill(launcher, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("fixture launcher did not exit")
+
+            # Even a vanished unit cannot settle a possibly queued submission.
+            with patch.object(self.host, "build_unit_stopped", return_value=True):
+                self.host.recover_stages()
+            self.assertTrue(stage.exists())
+            record = self.host.read_stage_record(stage)
+            self.assertFalse(record["launchSettled"])
+            # Simulate recovery after a host reboot: the old request cannot run,
+            # but the independent manager checks must still veto active builds.
+            record["bootId"] = "00000000-0000-0000-0000-000000000000"
+            deploy.atomic_json(self.host.stage_record(stage), record)
+            with patch.object(self.host, "build_unit_stopped", return_value=False):
+                self.host.recover_stages()
+            self.assertTrue(stage.exists())
+            with patch.object(
+                self.host, "build_unit_stopped", side_effect=OSError("unavailable")
+            ):
+                self.host.recover_stages()
+            self.assertTrue(stage.exists())
+
+            # A crash midway through rmtree keeps the external identity record.
+            def partial_remove(path):
+                (path / "ready").unlink()
+                raise OSError("interrupted removal")
+
+            with patch.object(deploy.shutil, "rmtree", side_effect=partial_remove):
+                self.host.recover_stages()
+            self.assertTrue(self.host.stage_record(stage).exists())
+            self.host.recover_stages()
+            self.assertFalse(stage.exists())
+            self.assertFalse(self.host.stage_record(stage).exists())
+        self.assertTrue(self.host.running(self.first))
+        self.assertEqual(
+            (self.host.data / "messages").read_text(), "new messages must survive\n"
+        )
+
+    def test_stage_identity_and_manager_evidence_fail_closed(self):
+        stage = self.host.stage_root / "stage-fixture1"
+        stage.mkdir()
+        meta = stage.stat()
+        record = {
+            "version": 1,
+            "device": meta.st_dev,
+            "inode": meta.st_ino,
+            "launcherPid": 0,
+            "launchSettled": False,
+            "bootId": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+        }
+        with deploy.deployment_lock(self.host.root / "lock"):
+            for change in ({"inode": meta.st_ino + 1}, {"version": 2}):
+                deploy.atomic_json(self.host.stage_record(stage), {**record, **change})
+                self.host.recover_stages()
+                self.assertTrue(stage.exists())
+            deploy.atomic_json(self.host.stage_record(stage), record)
+            stage.rmdir()
+            stage.symlink_to(self.host.data, target_is_directory=True)
+            self.host.recover_stages()
+            self.assertTrue(stage.is_symlink())
+            self.assertEqual(
+                (self.host.data / "messages").read_text(), "new messages must survive\n"
+            )
+        # Failure to persist the launcher identity must close its gate, not run
+        # an untracked process. This exercises the actual spawned gate child.
+        witness = self.host.root / "unexpected-build"
+        with (
+            patch.object(deploy, "atomic_json", side_effect=OSError("disk full")),
+            self.assertRaises(OSError),
+        ):
+            self.host.run_build(
+                stage,
+                [
+                    sys.executable,
+                    "-c",
+                    "import pathlib,sys; pathlib.Path(sys.argv[1]).touch()",
+                    str(witness),
+                ],
+            )
+        self.assertFalse(witness.exists())
+        stopped = {
+            "LoadState": "not-found",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "MainPID": "0",
+            "ControlPID": "0",
+            "Job": "",
+            "ControlGroup": "",
+        }
+        for change in (
+            {},
+            {"LoadState": "loaded", "ActiveState": "failed", "SubState": "failed"},
+            {"ActiveState": "active"},
+            {"SubState": "start"},
+            {"MainPID": "123"},
+            {"ControlPID": "456"},
+            {"Job": "12"},
+            {"ControlGroup": "/system.slice/june-build-stage-fixture1.service"},
+            {"LoadState": "error"},
+            {"ControlGroup": None},
+        ):
+            with self.subTest(change=change):
+                output = "\n".join(
+                    f"{key}={value}"
+                    for key, value in {**stopped, **change}.items()
+                    if value is not None
+                ).encode()
+                with patch.object(
+                    deploy.subprocess, "check_output", return_value=output
+                ):
+                    self.assertEqual(
+                        deploy.Host.build_unit_stopped(self.host, stage),
+                        not change or change.get("ActiveState") == "failed",
+                    )
 
     def test_github_details_update_one_run_and_link_existing_commit_statuses(self):
         api = GitHubFixture()

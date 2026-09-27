@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -42,6 +43,7 @@ SOURCE = (
 )
 SHA = re.compile(r"^[0-9a-f]{40}$")
 HASH = re.compile(r"^[0-9a-f]{64}$")
+STAGE = re.compile(r"^stage-[a-z0-9_]{8}$")
 
 
 class InsufficientDisk(Exception):
@@ -248,6 +250,7 @@ class Deployer:
 
     def tick(self):
         try:
+            self.host.recover_stages()
             self.deploy()
         finally:
             if self.statuses:
@@ -636,6 +639,117 @@ class Host:
     def committed_at(self, commit):
         return int(self.git("show", "-s", "--format=%ct", revision(commit))) * 1000
 
+    def stage_record(self, stage):
+        return self.stage_root / f".{stage.name}.json"
+
+    def read_stage_record(self, stage):
+        fd = os.open(
+            self.stage_record(stage), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        )
+        with os.fdopen(fd) as file:
+            meta = os.fstat(file.fileno())
+            if (
+                not stat.S_ISREG(meta.st_mode)
+                or meta.st_uid != os.geteuid()
+                or meta.st_mode & 0o077
+                or meta.st_nlink != 1
+                or meta.st_size > 4096
+            ):
+                raise ValueError("unsafe_stage_record")
+            record = json.load(file)
+        if (
+            record.get("version") != 1
+            or any(
+                type(record.get(key)) is not int or record[key] < 0
+                for key in ("device", "inode", "launcherPid")
+            )
+            or record["launcherPid"] > 2**31 - 1
+            or type(record.get("launchSettled")) is not bool
+            or not isinstance(record.get("bootId"), str)
+            or not re.fullmatch(r"[0-9a-f-]{36}", record["bootId"])
+        ):
+            raise ValueError("invalid_stage_record")
+        return record
+
+    def build_unit_stopped(self, stage):
+        result = subprocess.check_output(
+            [
+                "systemctl",
+                "show",
+                "--all",
+                "--property=LoadState,ActiveState,SubState,MainPID,ControlPID,Job,ControlGroup",
+                f"june-build-{stage.name}.service",
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).decode()
+        properties = dict(line.split("=", 1) for line in result.splitlines())
+        # Empty ControlGroup is required as well as zero main/control PIDs:
+        # neither an exited main process nor a failed unit proves child exit.
+        return (
+            properties.get("LoadState") in ("loaded", "not-found")
+            and (properties.get("ActiveState"), properties.get("SubState"))
+            in (("inactive", "dead"), ("failed", "failed"))
+            and all(properties.get(key) == "0" for key in ("MainPID", "ControlPID"))
+            and all(properties.get(key) == "" for key in ("Job", "ControlGroup"))
+        )
+
+    def recover_stages(self):
+        # Call only under deployment_lock, including the normal polling loop.
+        # Names alone never authorize deletion; old/unregistered stages stay put.
+        for path in sorted(self.stage_root.glob(".stage-*.json")):
+            name = path.name[1:-5]
+            if STAGE.fullmatch(name):
+                self.remove_stage(self.stage_root / name)
+
+    def remove_stage(self, stage):
+        try:
+            record = self.read_stage_record(stage)
+            if record["launcherPid"]:
+                if (
+                    record["bootId"]
+                    == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+                ):
+                    try:
+                        os.kill(record["launcherPid"], 0)
+                    except ProcessLookupError:
+                        pass
+                    else:
+                        return  # Also conservative when a PID has been reused.
+                    if not record["launchSettled"]:
+                        # A dead client and absent unit do not acknowledge a
+                        # possibly queued manager request. Retain the ambiguity.
+                        return
+                if not self.build_unit_stopped(stage):
+                    return
+            try:
+                meta = stage.lstat()
+            except FileNotFoundError:
+                pass  # Promotion or a previously interrupted removal completed.
+            else:
+                if (
+                    not stat.S_ISDIR(meta.st_mode)
+                    or stage.resolve() != stage
+                    or (meta.st_dev, meta.st_ino) != (record["device"], record["inode"])
+                    or stage == self.current.resolve()
+                    or os.path.lexists(stage / ".june-release.json")
+                ):
+                    return
+                shutil.rmtree(stage)
+                sync_directory(self.stage_root)
+            self.stage_record(stage).unlink()
+            sync_directory(self.stage_root)
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            AttributeError,
+            subprocess.SubprocessError,
+        ):
+            # Unknown identity, manager failure or partial removal: keep evidence
+            # and retry on a later tick, never guess or stop an active build.
+            return
+
     def prune(self, commits):
         # Only SQLite-recorded obsolete controller releases reach this method.
         # Legacy/unregistered paths, cache, backups and all June data are untouched.
@@ -715,7 +829,28 @@ class Host:
         if len(archive) > 64 * 1024 * 1024:
             raise ValueError("source_too_large")
         stage = Path(tempfile.mkdtemp(prefix="stage-", dir=self.stage_root))
+        if os.path.lexists(self.stage_record(stage)):
+            # Never reuse a name with outstanding evidence, even if its previous
+            # directory disappeared. Only this newly created empty dir is ours.
+            stage.rmdir()
+            raise ValueError("stage_record_exists")
         try:
+            meta = stage.stat()
+            # Outside the builder-writable tree; durable before extraction or
+            # launch. A crash before this write leaves only an unknown empty dir.
+            atomic_json(
+                self.stage_record(stage),
+                {
+                    "version": 1,
+                    "device": meta.st_dev,
+                    "inode": meta.st_ino,
+                    "launcherPid": 0,
+                    "launchSettled": False,
+                    "bootId": Path("/proc/sys/kernel/random/boot_id")
+                    .read_text()
+                    .strip(),
+                },
+            )
             with tarfile.open(fileobj=io.BytesIO(archive)) as source:
                 members = source.getmembers()
                 if len(members) > 10_000:
@@ -757,8 +892,43 @@ class Host:
             sync_directory(self.releases)
             return marker
         finally:
-            if stage.exists():
-                shutil.rmtree(stage)
+            self.remove_stage(stage)
+
+    def run_build(self, stage, command):
+        # The child cannot contact systemd before its PID is durable. If the
+        # controller dies before releasing the gate, EOF prevents any launch.
+        # exec keeps that PID until systemd-run exits, including delayed starts.
+        with subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                (
+                    "import os, sys; "
+                    "sys.exit(1) if os.read(0, 1) != b'1' else None; "
+                    "os.dup2(os.open(os.devnull, os.O_RDONLY), 0); "
+                    "os.execvp(sys.argv[1], sys.argv[1:])"
+                ),
+                *command,
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ) as launcher:
+            try:
+                record = self.read_stage_record(stage)
+                record["launcherPid"] = launcher.pid
+                atomic_json(self.stage_record(stage), record)
+                launcher.stdin.write(b"1")
+                launcher.stdin.flush()
+            finally:
+                launcher.stdin.close()
+            if launcher.wait() != 0:
+                raise ValueError("build_failed")
+            # Only a successful --wait is manager settlement evidence. A signal,
+            # failure or lost response may leave an unacknowledged start request.
+            record["launchSettled"] = True
+            atomic_json(self.stage_record(stage), record)
 
     def build(self, stage):
         builder = pwd.getpwnam("june-build")
@@ -769,7 +939,8 @@ class Host:
         unit = "june-build-" + stage.name
         # An independent cgroup reaps ALL build children before we seal files.
         # Candidate code sees neither fetch/operator credentials nor June data.
-        subprocess.run(
+        self.run_build(
+            stage,
             [
                 "systemd-run",
                 "--quiet",
@@ -810,10 +981,6 @@ class Host:
                 "/bin/sh",
                 "/usr/local/lib/june-deploy/preflight.sh",
             ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
         )
 
     def seal(self, stage):
@@ -1059,6 +1226,7 @@ def main():
             raise ValueError("unsafe_installation")
     with deployment_lock("/var/lib/june-deploy/deploy.lock"):
         host = Host(config)
+        host.recover_stages()
         if args.prepare:
             if revision(args.prepare) != revision(host.fetch()):
                 raise ValueError("not_current_main")
