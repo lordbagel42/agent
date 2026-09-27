@@ -112,6 +112,7 @@ const companionReplySchema = z.strictObject({
   inspection: z
     .enum(["memory", "imports", "reflection", "native-coding"])
     .optional(),
+  recall: searchQuerySchema.optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -139,6 +140,7 @@ export type ReplyCapabilities = Pick<
   | "latencyAvailable"
   | "analyticsAvailable"
   | "inspectionAvailable"
+  | "recallAvailable"
   | "dashboardLoginAvailable"
   | "replyPlacementAvailable"
   | "socialAvailable"
@@ -168,6 +170,7 @@ export function replyJsonSchema(
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
+    recallAvailable,
     dashboardLoginAvailable,
     replyPlacementAvailable,
     socialAvailable,
@@ -299,6 +302,15 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(recallAvailable
+        ? {
+            recall: {
+              type: ["string", "null"],
+              description:
+                "One owner-private retained-memory query, 1–500 Unicode characters. The host returns bounded evidence with provenance directly. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
+            },
+          }
+        : {}),
       ...(analyticsAvailable
         ? {
             analytics: {
@@ -424,6 +436,7 @@ export function replyJsonSchema(
       ...(latencyAvailable ? ["latency"] : []),
       ...(analyticsAvailable ? ["analytics"] : []),
       ...(inspectionAvailable ? ["inspection"] : []),
+      ...(recallAvailable ? ["recall"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
       ...(socialAvailable ? ["social"] : []),
@@ -600,6 +613,7 @@ export function parseReply(
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
+    recallAvailable,
     dashboardLoginAvailable,
     replyPlacementAvailable,
     socialAvailable,
@@ -631,6 +645,7 @@ export function parseReply(
     "latency",
     "analytics",
     "inspection",
+    "recall",
     "dashboardLogin",
     "replyInThread",
     "social",
@@ -662,6 +677,7 @@ export function parseReply(
     (reply.latency !== undefined && !latencyAvailable) ||
     (reply.analytics !== undefined && !analyticsAvailable) ||
     (reply.inspection !== undefined && !inspectionAvailable) ||
+    (reply.recall !== undefined && !recallAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
@@ -681,6 +697,7 @@ export function parseReply(
     Number(reply.latency !== undefined) +
     Number(reply.analytics !== undefined) +
     Number(reply.inspection !== undefined) +
+    Number(reply.recall !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.escalate === true);
   if (
@@ -697,6 +714,7 @@ export function parseReply(
       reply.mcpCatalog !== undefined ||
       reply.analytics !== undefined ||
       reply.inspection !== undefined ||
+      reply.recall !== undefined ||
       reply.dashboardLogin === true ||
       reply.latency !== undefined) &&
       reply.text.trim().length > 0)

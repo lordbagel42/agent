@@ -173,6 +173,43 @@ test("dashboard credentials from MCP results never reach the synthesis provider"
   expect(links.has(id)).toBe(true);
 });
 
+test("mixed recall directives cannot dispatch MCP calls, proposals or extra catalog rounds", async () => {
+  const f = await fixture();
+  f.request.recallAvailable = true;
+  for (const permission of ["read", "approval"] as const) {
+    f.store.permit(f.id, f.connection().revision, "lookup", permission);
+    for (const directive of [
+      {
+        mcp: {
+          connection: f.id,
+          tool: "lookup",
+          argumentsJson: '{"id":"record-9"}',
+        },
+      },
+      { mcpCatalog: { connection: null, tool: null, offset: 0 } },
+    ]) {
+      for (const afterCatalog of [false, true]) {
+        let calls = 0;
+        const model = f.store.wrap({
+          async reply() {
+            calls++;
+            if (afterCatalog && calls === 1)
+              return {
+                text: "",
+                mcpCatalog: { connection: null, tool: null, offset: 0 },
+              };
+            return { text: "", recall: "heron", ...directive };
+          },
+        });
+        await expect(model.reply(f.request)).rejects.toThrow();
+        expect(calls).toBe(afterCatalog ? 2 : 1);
+      }
+    }
+  }
+  expect(f.calls).toEqual([]);
+  expect(f.store.proposals()).toEqual([]);
+});
+
 test("Add commands stay consumed across permission changes, disconnection and restart", async () => {
   const f = await fixture();
   const base = "/console/connections";
@@ -288,6 +325,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.analyticsAvailable = true;
   f.request.inspectionAvailable = true;
   f.request.codingJobsAvailable = true;
+  f.request.recallAvailable = true;
   let evidence = "";
   let synthesis: ModelRequest | undefined;
   let modelStatusAvailable: boolean | undefined;
@@ -345,6 +383,13 @@ test("discovery grants nothing, read results are transient and credentials stay 
     ),
   ).toThrow();
   expect(f.request.codingJobsAvailable).toBe(true);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "recall",
+  );
+  expect(() =>
+    parseReply('{"text":"","recall":"private"}', [], synthesis),
+  ).toThrow();
+  expect(f.request.recallAvailable).toBe(true);
   expect(evidence).toContain("private result [credential redacted]");
   expect(modelStatusAvailable).toBe(false);
   expect(evidence).not.toContain("private-token");

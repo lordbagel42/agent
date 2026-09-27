@@ -176,6 +176,8 @@ export interface CompanionReply {
   analytics?: { days: 1 | 7 | 30 };
   /** Owner-private bounded metadata inspection; never recall or mutation. */
   inspection?: "memory" | "imports" | "reflection" | "native-coding";
+  /** One owner-private query of retained evidence, never a permission grant. */
+  recall?: string;
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */
@@ -208,6 +210,7 @@ export interface ModelRequest {
   latencyAvailable?: boolean;
   analyticsAvailable?: boolean;
   inspectionAvailable?: boolean;
+  recallAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   socialAvailable?: boolean;

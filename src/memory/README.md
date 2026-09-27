@@ -91,6 +91,40 @@ trusted host APIs, not autonomous model tools.
   and source IDs join the existing history/in-flight forgetting checks. There
   is no new store or public personality write.
 
+## June-facing recall
+
+When retained memory is enabled, ask June in an authenticated owner DM to
+recall a topic (for example, "Find what you remember about the heron"). The
+model can choose `recall: "heron"` with empty text and no other action. The
+host validates the exclusive 1–500-character query and returns at most six
+source/claim records within a 3,000-character JSON budget directly through the
+normal reply outbox, without another model call. Source IDs/URLs and claim
+dependency/contradiction/supersession edges remain in the result. This first
+increment returns evidence, not a generated synthesis or exhaustive history;
+oversized records are omitted, not truncated. The JSON preserves `truncated`
+and `omitted`, including any whole records omitted to fit display escaping.
+Mentions, markup and URL slashes use JSON Unicode escapes; dashboard sign-in
+credentials are redacted before escaping without changing stored evidence.
+Slack opt-out records remain excluded under the existing retrieval policy.
+
+The host derives the audience from routing; the model cannot choose an audience,
+limit, provider, account, or permission. Recall is absent from guest/public,
+web-synthesis, worker-result, and memory-disabled turns. Its availability is
+saved in the turn plan, so old plans cannot acquire the action during replay.
+Original source references are persisted before the result enters the journal
+or outbox and inherited by later answers through history. Existing source and
+deletion-revision checks suppress invalidated deliveries/retries and prune
+derived history, including when operator cleanup has not yet run. Duplicated
+events do not repeat the lookup; interrupted model invocations do not relaunch.
+Forgetting is still an authenticated operator action, not a model action.
+
+Live memory remains a separate activation task: provision the canonical private
+directory and key through the existing secret mechanism, configure `memory`
+and the Slack workspace URL, and authorize `JUNE_ALLOW_MEMORY=1` after
+privacy/retention review. Recall needs no extractor, reflection model, or account
+import. Nothing here enables those features or physically erases old journals,
+backups, or messages already accepted by a platform.
+
 ## Import coverage and edits
 
 `persistPage(expectedProgress, page, now)` checks coverage and persists sources

@@ -27,6 +27,8 @@ export function createConsoleLoginLinks(origin: string) {
   const redact = (text: string) =>
     text.replace(credentialUrl, "[dashboard sign-in credential omitted]");
   return {
+    // Use before encoding host-generated evidence receipts for later history.
+    redact,
     // Install inside any tool wrapper so later MCP synthesis is protected too.
     wrapModel(model: ModelProvider): ModelProvider {
       return {
