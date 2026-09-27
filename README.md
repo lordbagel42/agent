@@ -414,6 +414,24 @@ changing those still requires operator review, not automatic resumption.
 
 Ask June privately for a coding task. She returns the scope and an
 `/approve <job-prefix>` command; approval is for local work, not push/deployment.
+June can also discover availability and recent jobs with
+`codingJob: {"action":"list","id":null}`, inspect one with
+`{"action":"inspect","id":"<job-id-or-prefix>"}`, or request cancellation with
+`{"action":"cancel","id":"<job-id-or-prefix>"}`. These are private model
+directives with empty text and no other actions, so asking June “show my coding
+jobs” or “cancel coding job ID” uses the existing supervisor directly. IDs must
+belong to the owner-private conversation; prefixes must be unique and at least
+12 hexadecimal characters. Forgotten/revoked jobs are not exposed.
+
+The host returns timestamped, bounded metadata: durable status, attempt count,
+cancellation flag, saved native thread ID, worktree presence, and separate
+verification status. It does not return task/source text, host paths or raw worker
+reports. Disabled execution is discoverable without enabling it; configuration
+is not proof of provider login or health. Cancellation means **requested, not
+confirmed stopped**; uncertain capacity stays held. Neither directive approves,
+resumes, launches, pushes or deploys work. Public turns, guests, worker results
+and synthesis cannot invoke them. Old workflow iterations keep their old path.
+
 After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
 `/resume-stopped <job-prefix>`. Do not resume a job with an unknown live worker.

@@ -50,6 +50,31 @@ type Command =
   | { type: "approve"; commandId: string }
   | { type: "resume"; commandId: string; confirmedStopped: boolean };
 
+/** Explicit projection: never return goals, source messages, paths or raw reports. */
+export function codingJobMetadata(id: string, state: CodingState) {
+  return {
+    id,
+    workspace: state.proposal?.workspace.slice(0, 80) ?? null,
+    status: state.status === "empty" ? "proposal_pending" : state.status,
+    attempts: state.attempts,
+    cancelRequested: state.cancelRequested === true,
+    threadId: state.threadId?.slice(0, 256) ?? null,
+    worktreePrepared: !!state.worktree,
+    workerResultRecorded: state.workerClaim !== undefined,
+    verification: state.verification
+      ? {
+          status: state.verification.status,
+          exitCode: state.verification.exitCode,
+          finishedAt: state.verification.finishedAt,
+          historical: state.verification.replayed,
+        }
+      : null,
+    // A missing saved ID is not proof that a worker never started.
+    manualReconciliationRequired:
+      state.status === "needs_review" && !!state.worktree && !state.threadId,
+  };
+}
+
 export function createCodingActor(coding: CodingDependencies | undefined) {
   return actor({
     state: {

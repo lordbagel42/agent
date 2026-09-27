@@ -25,7 +25,11 @@ import type {
   WebSearchProvider,
   WebSearchResult,
 } from "../tools/web-search.js";
-import { type CodingDependencies, createCodingActor } from "./coding.js";
+import {
+  type CodingDependencies,
+  codingJobMetadata,
+  createCodingActor,
+} from "./coding.js";
 import { type Delivery, deliver } from "./delivery.js";
 import {
   createExecutionActor,
@@ -257,9 +261,9 @@ export function createJuneRegistry(deps: Dependencies) {
     run: workflow(
       async (ctx) => {
         await ctx.loop("conversation-v1", async (loop) => {
-          // Preserve v1–v6 journals (including model-selected placement in v6);
-          // only fresh v7 turns gain execution workers.
-          const version = await loop.getVersion("memory-dispatch", 7);
+          // Preserve old journals; only fresh v8 turns gain coding lifecycle
+          // directives. Approval and execution retain their existing steps.
+          const version = await loop.getVersion("memory-dispatch", 8);
           const [message] = await loop.queue.nextBatch("inbox", {
             names: ["inbox"],
             count: 1,
@@ -1091,6 +1095,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase === "synthesis" || body.type !== "event"
                                     ? []
                                     : workspaces,
+                                codingJobsAvailable:
+                                  version >= 8 &&
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private,
                                 searchAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -1290,7 +1299,97 @@ export function createJuneRegistry(deps: Dependencies) {
                             } finally {
                               deps.latency?.mark(event, `${stage}_finished`);
                             }
-                            if (generated.inspection !== undefined) {
+                            if (generated.codingJob !== undefined) {
+                              let text =
+                                "Coding job access requires a fresh owner-private turn.";
+                              if (
+                                modelRequest.codingJobsAvailable &&
+                                scope.private &&
+                                !signal.aborted &&
+                                valid(step.state)
+                              ) {
+                                // Inside the existing no-relaunch model receipt:
+                                // replay cannot repeat a cancellation after resume.
+                                const request = parseReply(
+                                  JSON.stringify(generated),
+                                  workspaces,
+                                  modelRequest,
+                                ).codingJob;
+                                if (!request)
+                                  throw new Error("Missing coding directive");
+                                const visible = (id: string) => {
+                                  const reference =
+                                    step.state.memoryContexts?.[id];
+                                  return (
+                                    Object.hasOwn(step.state.jobs, id) &&
+                                    !step.state.forgottenEvents?.includes(id) &&
+                                    (!reference || current(audience, reference))
+                                  );
+                                };
+                                const ids = Object.keys(step.state.jobs).filter(
+                                  visible,
+                                );
+                                const heading = `Coding snapshot at ${new Date().toISOString()}.`;
+                                const caution =
+                                  "Cancellation requested is not proof of stoppage. Running/needs_review may still have live work; uncertain admission remains held. Worker claims are not verification. No push or deployment is authorized.";
+                                if (request.action === "list") {
+                                  const rows = [];
+                                  for (const id of ids.slice(-5).reverse()) {
+                                    const state = await step
+                                      .client<JuneRegistry>()
+                                      .job.getOrCreate([deps.owner.id, id])
+                                      .snapshot();
+                                    if (!state.revoked && visible(id))
+                                      rows.push({
+                                        id,
+                                        status:
+                                          state.status === "empty"
+                                            ? "proposal_pending"
+                                            : state.status,
+                                        attempts: state.attempts,
+                                        cancelRequested:
+                                          state.cancelRequested === true,
+                                      });
+                                  }
+                                  text = `${heading}\nNative coding: ${deps.coding ? "configured; login and provider health are not verified" : "disabled or unavailable; no native execution can be requested"}. Permitted workspace names: ${JSON.stringify(workspaces.slice(0, 20))}.\nRecent jobs (up to 5): ${JSON.stringify(rows)}\nUse inspect with a job ID for durable details. New work requires a proposal and /approve ID. ${caution}`;
+                                } else {
+                                  const matches = ids.filter((id) =>
+                                    id.startsWith(request.id ?? ""),
+                                  );
+                                  const id =
+                                    matches.length === 1
+                                      ? matches[0]
+                                      : undefined;
+                                  text =
+                                    "That coding job is missing or ambiguous in this private conversation.";
+                                  if (id) {
+                                    const job = step
+                                      .client<JuneRegistry>()
+                                      .job.getOrCreate([deps.owner.id, id]);
+                                    let state = await job.snapshot();
+                                    if (
+                                      !state.revoked &&
+                                      visible(id) &&
+                                      valid(step.state) &&
+                                      !signal.aborted
+                                    ) {
+                                      if (request.action === "cancel") {
+                                        await job.cancel();
+                                        state = await job.snapshot();
+                                      }
+                                      if (!state.revoked && visible(id))
+                                        text = `${heading}\n${request.action === "cancel" ? "Cancellation requested durably; not confirmed stopped.\n" : ""}${JSON.stringify(codingJobMetadata(id, state))}\n${caution} Inspect the saved thread and isolated workspace before owner-only /resume-stopped ID; prepared work without a saved thread requires manual reconciliation, never a replacement launch.`;
+                                    }
+                                  }
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (generated.inspection !== undefined) {
                               // Metadata-only read in the existing model receipt.
                               // Revalidate even custom providers before dispatch.
                               let text =

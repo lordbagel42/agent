@@ -149,6 +149,8 @@ export interface CompanionReply {
   execution?: ExecutionCommand[];
   social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
+  /** Owner-private lifecycle metadata or cancellation request; never approval. */
+  codingJob?: { action: "list" | "inspect" | "cancel"; id: string | null };
   reaction?: string;
   /** Request one current-channel lookup instead of a conversational reply. */
   search?: string;
@@ -196,6 +198,7 @@ export interface ModelRequest {
   onProviderTiming?: (stage: ProviderTimingStage) => void;
   /** Only these configured workspace names may be delegated. */
   workspaces: string[];
+  codingJobsAvailable?: boolean;
   searchAvailable?: boolean;
   escalationAvailable?: boolean;
   webSearchAvailable?: boolean;

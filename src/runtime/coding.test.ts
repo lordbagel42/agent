@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,11 +8,14 @@ import { setupTest } from "../../tests/rivet.js";
 import { createWorktreeManager } from "../coding/worktree.js";
 import type {
   CodingRuntime,
+  CompanionReply,
   MessageEvent,
   ModelRequest,
   OutboundMessage,
 } from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
 import { EvidenceStore } from "../memory/store.js";
+import { parseReply, replyJsonSchema } from "../models/provider.js";
 import type { CodingDependencies } from "./coding.js";
 import { executionKey } from "./execution.js";
 import { createJuneRegistry, type Dependencies } from "./registry.js";
@@ -35,6 +38,7 @@ async function fixture(
   t: TestContext,
   runtime: CodingRuntime,
   memory?: Dependencies["memory"],
+  options?: { reply?: () => CompanionReply; disabled?: boolean },
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "june-supervisor-"));
   t.onTestFinished(() => rm(root, { recursive: true, force: true }));
@@ -107,6 +111,7 @@ async function fixture(
           };
         if (request.system.includes("Execution completion"))
           return { text: "Scope ready for approval." };
+        if (options?.reply) return options.reply();
         return {
           text: "I'll prepare the change.",
           execution: [
@@ -132,7 +137,7 @@ async function fixture(
         },
       },
     },
-    coding,
+    coding: options?.disabled ? undefined : coding,
   });
   return {
     registry,
@@ -146,6 +151,190 @@ async function fixture(
 }
 
 describe("separate coding supervisor", () => {
+  it("exposes private lifecycle commands without granting launch or stop authority", async (t) => {
+    let action: CompanionReply = {
+      text: "",
+      codingJob: { action: "list", id: null },
+    };
+    let launches = 0;
+    const pending = Promise.withResolvers<{
+      threadId: string;
+      report: string;
+    }>();
+    t.onTestFinished(() =>
+      pending.resolve({ threadId: "T-late", report: "SECRET LATE REPORT" }),
+    );
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    t.onTestFinished(() => store.close());
+    const { registry, manager, coding, modelRequests } = await fixture(
+      t,
+      {
+        async run() {
+          launches++;
+          // Model the uncertain pre-ID startup gap, including an uncooperative
+          // process. Cancelling it cannot permit a replacement launch.
+          return pending.promise;
+        },
+      },
+      {
+        store,
+        source(event, audience) {
+          return {
+            id: event.id,
+            platform: "slack",
+            account: "T1",
+            conversation: "D1",
+            author: "U1",
+            audiences: [audience],
+            observedAt: event.occurredAt,
+            sourceUrl: "https://example.invalid/source",
+            text: event.text,
+          };
+        },
+      },
+      { reply: () => action },
+    );
+    coding.timeoutMs = 60000;
+    const { client } = await setupTest(t, registry);
+    let sequence = 0;
+    const deliver = async (extra: Partial<MessageEvent> = {}) => {
+      const event = { ...source, id: `lifecycle-${sequence++}`, ...extra };
+      event.messageId = event.id;
+      const scope = routeEvent(event, owner, true);
+      if (!scope) throw new Error("Missing fixture scope");
+      const actor = client.conversation.getOrCreate(scope.key);
+      const key = createHash("sha256")
+        .update(JSON.stringify(["slack", "T1", event.id]))
+        .digest("hex");
+      await actor.send("inbox", { type: "event", event });
+      await expect
+        .poll(async () => (await actor.snapshot()).events[key]?.done, {
+          timeout: 15000,
+        })
+        .toBe(true);
+      const state = await actor.snapshot();
+      const content = state.deliveries[`${key}:text`]?.message.content;
+      return { key, text: content?.type === "text" ? content.text : "" };
+    };
+    expect((await deliver()).text).toContain(
+      "login and provider health are not verified",
+    );
+    const request = modelRequests.at(-1);
+    expect(request?.system).toContain("Use codingJob");
+    expect(replyJsonSchema([], request).properties).toHaveProperty("codingJob");
+    expect(parseReply(JSON.stringify(action), [], request)).toEqual(action);
+    expect(() => parseReply(JSON.stringify(action), [])).toThrow();
+    for (const codingJob of [
+      { action: "approve", id: "a".repeat(64) },
+      { action: "cancel", id: null },
+      { action: "list", id: "a".repeat(64) },
+      { action: "inspect", id: "a".repeat(11) },
+    ])
+      expect(() =>
+        parseReply(JSON.stringify({ text: "", codingJob }), [], request),
+      ).toThrow();
+
+    action = { text: "", coding: { workspace: "june", goal: "SECRET GOAL" } };
+    const proposal = await deliver();
+    expect(proposal.text).toContain(`/approve ${proposal.key.slice(0, 12)}`);
+    expect(launches).toBe(0);
+    const job = client.job.getOrCreate([owner.id, proposal.key]);
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("awaiting_approval");
+    action = {
+      text: "",
+      codingJob: { action: "inspect", id: proposal.key.slice(0, 12) },
+    };
+    const inspection = (await deliver()).text;
+    expect(inspection).toContain('"attempts":0');
+    expect(inspection).not.toContain("SECRET");
+    action = { text: "", codingJob: { action: "cancel", id: proposal.key } };
+    for (const extra of [
+      {
+        direct: false,
+        botMentioned: true,
+        address: { ...source.address, conversationId: "C1" },
+      },
+      { senderId: "U2", metadata: { channelType: "im" as const } },
+    ]) {
+      expect((await deliver(extra)).text).toContain("owner-private turn");
+      expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(false);
+      expect((await job.snapshot()).cancelRequested).toBeUndefined();
+    }
+    action = {
+      ...action,
+      coding: { workspace: "june", goal: "FORBIDDEN MIX" },
+    };
+    await deliver();
+    expect((await job.snapshot()).cancelRequested).toBeUndefined();
+    action = { text: "", codingJob: { action: "cancel", id: "f".repeat(64) } };
+    expect((await deliver()).text).toContain("missing or ambiguous");
+    expect((await job.snapshot()).cancelRequested).toBeUndefined();
+    await deliver({ text: `/approve ${proposal.key}` });
+    await expect.poll(() => launches).toBe(1);
+    action = { text: "", codingJob: { action: "cancel", id: proposal.key } };
+    const cancellation = await deliver({ id: "cancel-native" });
+    expect(cancellation.text).toContain(
+      "Cancellation requested durably; not confirmed stopped",
+    );
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("needs_review");
+    await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+    action = { text: "", codingJob: { action: "inspect", id: proposal.key } };
+    const unknown = (await deliver()).text;
+    expect(unknown).toContain('"cancelRequested":true');
+    expect(unknown).toContain('"threadId":null');
+    expect(unknown).toContain('"manualReconciliationRequired":true');
+    expect(unknown).not.toContain("SECRET");
+    const resume = await deliver({ text: `/resume-stopped ${proposal.key}` });
+    await expect
+      .poll(async () => (await job.snapshot()).commandApprovals[resume.key])
+      .toBeNull();
+    expect(launches).toBe(1);
+    pending.resolve({ threadId: "T-late", report: "SECRET LATE REPORT" });
+    await deliver({ id: "cancel-native" }); // duplicate event, never a new operation
+    expect((await job.snapshot()).threadId).toBeUndefined();
+    expect((await job.snapshot()).verification).toBeUndefined();
+    await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+    store.deleteSource("lifecycle-1");
+    await client.conversation
+      .getOrCreate(["private", owner.id])
+      .forget("lifecycle-1");
+    expect((await deliver()).text).toContain("missing or ambiguous");
+    action = { text: "", codingJob: { action: "list", id: null } };
+    expect((await deliver()).text).not.toContain(proposal.key);
+    expect((await job.snapshot()).revoked).toBe(true);
+  });
+
+  it("lets June discover disabled native coding without enabling it", async (t) => {
+    const { registry, modelRequests, sent } = await fixture(
+      t,
+      {
+        async run() {
+          throw new Error("must not launch");
+        },
+      },
+      undefined,
+      {
+        disabled: true,
+        reply: () => ({ text: "", codingJob: { action: "list", id: null } }),
+      },
+    );
+    const { client } = await setupTest(t, registry);
+    await client.conversation
+      .getOrCreate(["private", owner.id])
+      .send("inbox", { type: "event", event: source });
+    await expect.poll(() => sent.length).toBe(1);
+    expect(modelRequests[0]?.workspaces).toEqual([]);
+    expect(modelRequests[0]?.codingJobsAvailable).toBe(true);
+    const content = sent[0]?.content;
+    expect(content?.type === "text" && content.text).toContain(
+      "disabled or unavailable; no native execution can be requested",
+    );
+  });
+
   it.for([false, true])(
     "invalidates execution-derived coding before approval or completion (approved=%s)",
     async (approved, t) => {

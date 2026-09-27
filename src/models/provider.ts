@@ -63,6 +63,16 @@ const companionReplySchema = z.strictObject({
       goal: z.string().refine((goal) => goal.trim().length > 0),
     })
     .optional(),
+  codingJob: z
+    .strictObject({
+      action: z.enum(["list", "inspect", "cancel"]),
+      id: z
+        .string()
+        .regex(/^[a-f0-9]{12,64}$/)
+        .nullable(),
+    })
+    .refine((value) => (value.action === "list") === (value.id === null))
+    .optional(),
   reaction: z.string().optional(),
   search: searchQuerySchema.optional(),
   escalate: z.boolean().optional(),
@@ -116,6 +126,7 @@ function isJsonObject(value: unknown): value is JsonObject {
 
 export type ReplyCapabilities = Pick<
   ModelRequest,
+  | "codingJobsAvailable"
   | "searchAvailable"
   | "escalationAvailable"
   | "webSearchAvailable"
@@ -144,6 +155,7 @@ export function replyJsonSchema(
   capabilities: ReplyCapabilities | boolean = false,
 ) {
   const {
+    codingJobsAvailable,
     searchAvailable,
     escalationAvailable,
     webSearchAvailable,
@@ -204,6 +216,25 @@ export function replyJsonSchema(
       },
       coding,
       reaction: { type: ["string", "null"] },
+      ...(codingJobsAvailable
+        ? {
+            codingJob: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                action: { type: "string", enum: ["list", "inspect", "cancel"] },
+                id: {
+                  type: ["string", "null"],
+                  description:
+                    "Null for list; otherwise an existing job ID or unique lowercase hexadecimal prefix, 12–64 characters.",
+                },
+              },
+              required: ["action", "id"],
+              description:
+                "Owner-private coding availability, durable job metadata, or cancellation request. Cancel is not proof of stoppage. Never approves, resumes, or launches work. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(executionAvailable
         ? {
             execution: {
@@ -379,6 +410,7 @@ export function replyJsonSchema(
       "text",
       "coding",
       "reaction",
+      ...(codingJobsAvailable ? ["codingJob"] : []),
       ...(executionAvailable ? ["execution"] : []),
       ...(releaseAvailable ? ["release"] : []),
       ...(modelStatusAvailable ? ["modelStatus"] : []),
@@ -555,6 +587,7 @@ export function parseReply(
   capabilities: ReplyCapabilities | boolean = false,
 ): CompanionReply {
   const {
+    codingJobsAvailable,
     searchAvailable,
     escalationAvailable,
     webSearchAvailable,
@@ -583,6 +616,7 @@ export function parseReply(
   for (const key of [
     "execution",
     "coding",
+    "codingJob",
     "reaction",
     "search",
     "escalate",
@@ -613,6 +647,7 @@ export function parseReply(
     throw new ModelError("invalid_response", false);
   }
   if (
+    (reply.codingJob !== undefined && !codingJobsAvailable) ||
     (reply.search !== undefined && !searchAvailable) ||
     (reply.escalate !== undefined && !escalationAvailable) ||
     (reply.webSearch !== undefined && !webSearchAvailable) ||
@@ -631,6 +666,7 @@ export function parseReply(
     throw new ModelError("invalid_response", false);
   }
   const directiveCount =
+    Number(reply.codingJob !== undefined) +
     Number(reply.modelStatus === true) +
     Number(reply.mcp !== undefined) +
     Number(reply.mcpCatalog !== undefined) +
@@ -648,7 +684,8 @@ export function parseReply(
     directiveCount > 1 ||
     (directiveCount > 0 &&
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
-    ((reply.search !== undefined ||
+    ((reply.codingJob !== undefined ||
+      reply.search !== undefined ||
       reply.modelStatus === true ||
       reply.webSearch !== undefined ||
       reply.release !== undefined ||
