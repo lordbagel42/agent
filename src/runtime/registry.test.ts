@@ -547,7 +547,12 @@ describe("Rivet conversation workflow", () => {
       role: "user",
       content: "new request after stop",
     });
-    expect(JSON.stringify(requests)).not.toContain("ignored");
+    for (const excluded of [
+      "ignored prefill",
+      "ignored legacy",
+      "ignored old assistant",
+    ])
+      expect(JSON.stringify(requests)).not.toContain(excluded);
     expect(requests[0]?.system).toContain('"botMentioned":true');
     expect(requests[1]?.system).toContain('"botMentioned":false');
     for (const request of requests) {

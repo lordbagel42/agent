@@ -190,7 +190,7 @@ it("hides tombstoned interruption receipts before conversation cleanup, includin
   for (const id of ["direct", "supporting", "context-source"])
     store.appendSource(source(event(id, 1)));
   const events = Object.fromEntries(
-    ["direct", "dependency", "context", "kept"].map((id, i) => [
+    ["direct", "dependency", "context", "kept", "legacy"].map((id, i) => [
       id,
       {
         event: event(id, (i + 1) * 11),
@@ -240,17 +240,24 @@ it("hides tombstoned interruption receipts before conversation cleanup, includin
   Object.assign(initial, {
     events,
     memoryContexts: {
-      dependency: { sourceIds: ["supporting"], personality },
+      dependency: {
+        sourceIds: ["supporting"],
+        personality,
+        deletionTracked: true,
+      },
       context: {
         sourceIds: [],
         contextSourceIds: ["context-source"],
         personality,
+        deletionTracked: true,
       },
+      // Source-only legacy provenance remains hidden even before deletion.
+      legacy: { sourceIds: ["supporting"], personality },
     },
   });
   const { client } = await setupTest(t, registry);
   const june = client.conversation.getOrCreate(["private", owner.id]);
-  let completed = 4;
+  let completed = 5;
   const inspect = async (id: string) => {
     completed++;
     await june.send("inbox", { type: "event", event: event(id, 100) });
@@ -266,9 +273,11 @@ it("hides tombstoned interruption receipts before conversation cleanup, includin
     const content = sent.at(-1)?.content;
     return content?.type === "text" ? content.text : "";
   };
-  expect(await inspect("before")).toContain(
-    "Recorded recovery receipts: 4; showing latest 4",
-  );
+  const before = await inspect("before");
+  expect(before).toContain("Recorded recovery receipts: 4; showing latest 4");
+  for (const timestamp of [11, 22, 33, 44])
+    expect(before).toContain(`"inboundOccurredAt":${timestamp}`);
+  expect(before).not.toContain('"inboundOccurredAt":55');
   // The ledger commits first; deliberately omit june.forget to model a crash
   // before actor cleanup and its forgottenEvents cache can catch up.
   for (const id of ["direct", "supporting", "context-source"])
@@ -276,7 +285,7 @@ it("hides tombstoned interruption receipts before conversation cleanup, includin
   const report = await inspect("after");
   expect(report).toContain("Recorded recovery receipts: 1; showing latest 1");
   expect(report).toContain('"inboundOccurredAt":44');
-  for (const timestamp of [11, 22, 33])
+  for (const timestamp of [11, 22, 33, 55])
     expect(report).not.toContain(`"inboundOccurredAt":${timestamp}`);
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   const state = await june.snapshot();
