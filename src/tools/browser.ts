@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type Browser, type BrowserContext, chromium } from "playwright";
 import { z } from "zod";
 import type { ToolAction, ToolAdapter } from "./broker.js";
@@ -16,7 +17,7 @@ const step = z.discriminatedUnion("kind", [
     passwordSelector: selector,
   }),
 ]);
-const operation = z.strictObject({
+export const browserOperationSchema = z.strictObject({
   name: z.string().min(1).max(128),
   account: z.string().min(1),
   item: z.string().min(1),
@@ -39,10 +40,20 @@ const operation = z.strictObject({
   outputSelector: selector.optional(),
 });
 
-export type BrowserOperation = z.input<typeof operation>;
+export type BrowserOperation = z.input<typeof browserOperationSchema>;
+export function browserOperationDigest(recipe: BrowserOperation): string {
+  return createHash("sha256")
+    .update(JSON.stringify(browserOperationSchema.parse(recipe)))
+    .digest("hex");
+}
+
 export interface BrowserOptions {
   operations: BrowserOperation[];
   timeoutMs?: number;
+  /** Host integrations must bind grants to the complete immutable recipe. */
+  requireRecipeDigest?: boolean;
+  /** Explicit dedicated child paths; never inherit the host credential environment. */
+  environment?: { HOME: string; TMPDIR: string };
   /** Trusted host-only override; use the pinned Playwright Chromium build. */
   executablePath?: string;
   /** Disposable local fixtures only. Production destinations must use HTTPS. */
@@ -80,14 +91,20 @@ function denied(): never {
  * See docs/browser.md for the required external process/network isolation.
  */
 export class BrowserAdapter implements ToolAdapter {
-  readonly #operations: z.output<typeof operation>[];
+  readonly #operations: z.output<typeof browserOperationSchema>[];
   readonly #timeout: number;
+  readonly #requireRecipeDigest: boolean;
+  readonly #environment: Record<string, string>;
   readonly #executablePath: string | undefined;
   readonly #active = new Map<() => Promise<void>, Promise<void>>();
   #closed = false;
 
   constructor(options: BrowserOptions) {
     this.#timeout = options.timeoutMs ?? 15_000;
+    this.#requireRecipeDigest = options.requireRecipeDigest === true;
+    this.#environment = options.environment
+      ? { HOME: options.environment.HOME, TMPDIR: options.environment.TMPDIR }
+      : {};
     this.#executablePath = options.executablePath;
     if (
       !Number.isInteger(this.#timeout) ||
@@ -96,7 +113,7 @@ export class BrowserAdapter implements ToolAdapter {
     )
       denied();
     this.#operations = z
-      .array(operation)
+      .array(browserOperationSchema)
       .min(1)
       .max(64)
       .parse(options.operations);
@@ -152,6 +169,22 @@ export class BrowserAdapter implements ToolAdapter {
     }
   }
 
+  /** A proposal only; authorization still belongs to the broker. */
+  action(name: string): ToolAction {
+    const recipe = this.#operations.find((entry) => entry.name === name);
+    if (!recipe || this.#closed) denied();
+    return {
+      tool: "browser",
+      account: recipe.account,
+      item: recipe.item,
+      origin: recipe.origin,
+      arguments: {
+        operation: recipe.name,
+        recipeDigest: browserOperationDigest(recipe),
+      },
+    };
+  }
+
   /** Host shutdown/cancellation only, never a tool exposed to page/model content. */
   async close(): Promise<void> {
     this.#closed = true;
@@ -184,7 +217,13 @@ export class BrowserAdapter implements ToolAdapter {
     try {
       if (this.#closed || signal?.aborted) denied();
       const args = z
-        .strictObject({ operation: z.string() })
+        .strictObject({
+          operation: z.string(),
+          recipeDigest: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/)
+            .optional(),
+        })
         .parse(action.arguments);
       const recipe = this.#operations.find(
         (entry) => entry.name === args.operation,
@@ -194,7 +233,10 @@ export class BrowserAdapter implements ToolAdapter {
         action.tool !== "browser" ||
         action.account !== recipe.account ||
         action.item !== recipe.item ||
-        action.origin !== recipe.origin
+        action.origin !== recipe.origin ||
+        (this.#requireRecipeDigest && !args.recipeDigest) ||
+        (args.recipeDigest !== undefined &&
+          args.recipeDigest !== browserOperationDigest(recipe))
       )
         denied();
       const bearer = recipe.requests.some((request) => request.credential);
@@ -218,6 +260,7 @@ export class BrowserAdapter implements ToolAdapter {
         chromiumSandbox: true,
         timeout: this.#timeout,
         executablePath: this.#executablePath,
+        env: this.#environment,
       });
       if (stopped) denied();
       context = await browser.newContext({

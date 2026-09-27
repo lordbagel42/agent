@@ -1,18 +1,68 @@
 # Capability-bound browser worker
 
 `BrowserAdapter` implements `ToolAdapter.execute(action, credential)`. Register it
-under the tool name `browser`. The only accepted arguments are
-`{ "operation": "operator-configured-name" }`. Each named operation binds an
+under the tool name `browser`. June's host requires arguments
+`{ "operation": "operator-configured-name", "recipeDigest": "sha256" }`.
+Use `adapter.action(name)` or `browserOperationDigest(recipe)` to construct them;
+the digest binds the complete parsed recipe, including default values. A grant
+for an older recipe cannot authorize a changed recipe under the same name.
+Standalone legacy adapter callers may omit the digest only when the host has
+not set `requireRecipeDigest: true`. Each named operation binds an
 exact account, vault item, canonical HTTPS origin, starting URL, request list,
 steps, and confirmation. Configuration is trusted operator input, not model or
 page input. Freeze configuration for the lifetime of outstanding grants; revoke
 old grants before changing a recipe under the same name.
 
+## Opt-in June host reads
+
+Browsing is disabled by default. Configuring MCP, generic capabilities, Chromium,
+or read recipes does not enable it. The host mounts anonymous reads in the same
+generic `CapabilityBroker` only with all of:
+
+- `capabilities.directory`, the existing private broker ledger directory;
+- top-level `browser.enabled: true` and nonempty `browser.readOperations`;
+- `browser.execution.kind: "isolated-host"`, dedicated absolute `home` and
+  `tempDirectory`, and explicit `true` for `processIsolationAcknowledged`,
+  `networkIsolationAcknowledged`, `ephemeralStorageAcknowledged`, and
+  `resourceLimitsAcknowledged`;
+- the separate host gate `JUNE_ALLOW_ISOLATED_BROWSER=1`;
+- an unprivileged host, private canonical execution directories outside Git,
+  `TMPDIR` equal to the configured temporary directory, and no `DEBUG`, `PWDEBUG`
+  or `NODE_DEBUG` diagnostics, npm `pwdebug` aliases, or `SELENIUM_REMOTE_URL`,
+  `SELENIUM_REMOTE_HEADERS`, `SELENIUM_REMOTE_CAPABILITIES` overrides. Playwright
+  reads those controls in the parent process before applying the child environment.
+
+The acknowledgements and gate attest operator-provided isolation; they do not
+create or prove an OS/network sandbox. Meet the deployment boundary below before
+setting them. Chromium receives only the explicitly configured `HOME` and
+`TMPDIR`, never June's environment credentials. No desktop profile, cookies,
+remote browser endpoint, `--no-sandbox`, or production loopback exception is
+configurable. The pinned Playwright browser must already be installed.
+
+Read recipes use the `BrowserOperation` shape below but must have only anonymous
+`GET` requests and no click, fill, or login steps. Account and item are explicit
+nonsecret aliases even for anonymous reads; scope widening is rejected. GET is
+an operator's classification, not proof an endpoint cannot change remote state.
+`browser.timeoutMs` defaults to 15000 (100–60000 allowed). Do not put credentials
+in URLs, selectors, or success text.
+
+June can answer owner-private capability questions using
+`inspection: "capabilities"`, including requested activation, host gate,
+registration and bounded operation-name metadata. This lookup launches no
+browser and grants nothing. Without the host gate a configured browser remains
+blocked. Configuration is not live verification. The authenticated operator uses
+the existing `/operator/capabilities` proposal/grant/execute routes with the exact
+action from `adapter.action(name)`; every read still needs its own owner grant.
+This slice deliberately returns **receipts only**, not webpage text to June.
+Anonymous adapter output is capped at 4096 UTF-16 units but the broker discards
+it. Authenticated vault operations and mutations are separate capabilities, not
+implicitly authorized by read configuration.
+
 ## Integration
 
-The integration owner must add exact dependency `playwright: "1.63.0"` and update
-the lockfile, then install its Chromium build with `pnpm exec playwright install
-chromium` on the worker host/image. Install the system libraries required by
+The repository pins `playwright: "1.63.0"`. Install its Chromium build with
+`pnpm exec playwright install chromium` on the worker host/image.
+Install the system libraries required by
 Playwright for that OS. Chromium's sandbox is explicitly **enabled**; do not work
 around a launch failure by adding `--no-sandbox`. No desktop browser, imported
 profile/cookies, CDP port, or remote browser endpoint is used.

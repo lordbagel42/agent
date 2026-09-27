@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { RAYGEN_SLACK_ID } from "./core/social.js";
+import { browserOperationSchema } from "./tools/browser.js";
 
 const nonempty = z.string().trim().min(1);
 const envName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/);
@@ -101,6 +102,42 @@ const schema = z
           .optional(),
       })
       .optional(),
+    browser: z
+      .strictObject({
+        enabled: z.boolean().default(false),
+        readOperations: z
+          .array(
+            browserOperationSchema.refine(
+              (recipe) =>
+                recipe.steps.length === 0 &&
+                recipe.requests.every(
+                  (request) => request.method === "GET" && !request.credential,
+                ),
+              "Browser reads must be anonymous GET recipes without interaction steps",
+            ),
+          )
+          .max(64)
+          .default([]),
+        timeoutMs: z.number().int().min(100).max(60000).default(15000),
+        execution: z
+          .strictObject({
+            kind: z.literal("isolated-host"),
+            home: absolutePath,
+            tempDirectory: absolutePath,
+            processIsolationAcknowledged: z.literal(true),
+            networkIsolationAcknowledged: z.literal(true),
+            ephemeralStorageAcknowledged: z.literal(true),
+            resourceLimitsAcknowledged: z.literal(true),
+          })
+          .optional(),
+      })
+      .refine(
+        (browser) =>
+          !browser.enabled ||
+          (!!browser.execution && browser.readOperations.length > 0),
+        "Enabled browsing requires explicit isolated execution and named read recipes",
+      )
+      .prefault({}),
     setupMode: z.boolean().default(false),
     owner: z.strictObject({
       id: z.string().regex(/^[a-zA-Z0-9_-]+$/),
@@ -325,6 +362,10 @@ const schema = z
         !config.memory?.extraction &&
         !Object.keys(config.imports).length),
     "Setup mode cannot run reflection or historical imports",
+  )
+  .refine(
+    (config) => !config.browser.enabled || !!config.capabilities,
+    "Enabled browsing requires the generic capability broker",
   )
   .refine(
     (config) =>

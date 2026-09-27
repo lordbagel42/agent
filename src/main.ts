@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -57,6 +58,7 @@ import {
 } from "./runtime/registry.js";
 import { SocialPermissions } from "./runtime/social.js";
 import { CapabilityBroker } from "./tools/broker.js";
+import { BrowserAdapter } from "./tools/browser.js";
 import { McpConnections } from "./tools/connections.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
 import { createTavilyWebSearchProvider } from "./tools/web-search.js";
@@ -270,6 +272,39 @@ async function main() {
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);
   if (operatorToken.length < 32) throw new Error("Short operator token");
+  startupStage = "isolated browser execution prerequisites";
+  const browserHostGate = process.env.JUNE_ALLOW_ISOLATED_BROWSER === "1";
+  let browser: BrowserAdapter | undefined;
+  if (config.browser.enabled && browserHostGate) {
+    const execution = config.browser.execution;
+    if (
+      !execution ||
+      !process.getuid?.() ||
+      execution.home === process.env.HOME ||
+      process.env.TMPDIR !== execution.tempDirectory ||
+      tmpdir() !== execution.tempDirectory ||
+      // Playwright reads these in the parent before applying launch.env.
+      [
+        "DEBUG",
+        "PWDEBUG",
+        "NODE_DEBUG",
+        "npm_config_pwdebug",
+        "npm_package_config_pwdebug",
+        "SELENIUM_REMOTE_URL",
+        "SELENIUM_REMOTE_HEADERS",
+        "SELENIUM_REMOTE_CAPABILITIES",
+      ].some((name) => process.env[name])
+    )
+      throw new Error("Browser isolation prerequisites not met");
+    await privateDirectory(execution.home);
+    await privateDirectory(execution.tempDirectory);
+    browser = new BrowserAdapter({
+      operations: config.browser.readOperations,
+      timeoutMs: config.browser.timeoutMs,
+      requireRecipeDigest: true,
+      environment: { HOME: execution.home, TMPDIR: execution.tempDirectory },
+    });
+  }
   const loginLinks = config.console
     ? createConsoleLoginLinks(config.console.origin)
     : undefined;
@@ -281,9 +316,19 @@ async function main() {
       join(config.capabilities.directory, "capabilities.sqlite"),
       {
         owner: config.owner.id,
-        // Mounting the broker does not install adapters or grant credential access.
-        tools: {},
-        resolveCredential: async () => {
+        tools: browser ? { browser } : {},
+        resolveCredential: async (scope) => {
+          // Anonymous reads never consult a vault or ambient environment secret.
+          if (
+            browser &&
+            config.browser.readOperations.some(
+              (recipe) =>
+                recipe.account === scope.account &&
+                recipe.item === scope.item &&
+                recipe.origin === scope.origin,
+            )
+          )
+            return null;
           throw new Error("capability_credentials_unavailable");
         },
       },
@@ -676,10 +721,29 @@ async function main() {
       memory,
       imports,
       selections,
-      capabilities: capabilities
-        ? () =>
-            `Generic capability routes are mounted at /operator/capabilities. Registered tools: ${capabilities.registeredToolCount}. GET /status and /audit inspect metadata; POST /proposals validates only; POST /grants requires owner bearer authority and an exact action. Execution requires an unexpired, unrevoked, single-use grant. Registration and mounting are not grants or live verification. June cannot mint grants or access credentials through inspection.`
-        : undefined,
+      capabilities: () =>
+        [
+          capabilities
+            ? `Generic capability routes are mounted at /operator/capabilities. Registered tools: ${capabilities.registeredToolCount}. GET /status and /audit inspect metadata; POST /proposals validates only; POST /grants requires owner bearer authority and an exact action. Execution requires an unexpired, unrevoked, single-use grant. Registration and mounting are not grants or live verification. June cannot mint grants or access credentials through inspection.`
+            : "Generic capabilities are disabled; no generic capability routes or tools are mounted. Inspection grants nothing and does not enable them.",
+          `Browser reads: ${JSON.stringify({
+            state: !config.browser.enabled
+              ? "disabled"
+              : browser
+                ? "registered"
+                : "blocked_host_gate",
+            enabledRequested: config.browser.enabled,
+            hostGate: browserHostGate,
+            configuredOperations: config.browser.readOperations.length,
+            operationNames: config.browser.readOperations
+              .slice(0, 10)
+              .map((recipe) => recipe.name),
+            isolation: config.browser.execution
+              ? "operator_acknowledged_not_verified"
+              : "not_configured",
+            liveVerified: "unknown",
+          })}. Browser reads require explicit browser.enabled, capabilities.directory, isolated execution configuration and JUNE_ALLOW_ISOLATED_BROWSER=1. Only anonymous named GET recipes are mounted, with no interaction steps or vault access. Every execution requires its own exact recipe-digest/account/item/origin grant. Results are receipts only, not webpage content. Inspection does not launch Chromium or authorize reads; host isolation acknowledgements are not sandbox verification.`,
+        ].join("\n"),
       nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
       reflection: reflection
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
@@ -743,7 +807,7 @@ async function main() {
           // Coding now fences launches and checks current-root leases, but
           // legacy sessions/removed roots still need independent reconciliation.
           // Other optional paths can also outlive a cancelled actor callback.
-          supported: !coding && !reflection && !channels.whatsapp,
+          supported: !coding && !reflection && !channels.whatsapp && !browser,
         }
       : undefined,
     slackIngressDiagnostics,
@@ -1016,6 +1080,7 @@ async function main() {
       } finally {
         await Promise.all(hotProviders.map((provider) => provider.close()));
       }
+      await browser?.close();
       await connections?.close();
       capabilities?.close();
       memory?.personality?.close();

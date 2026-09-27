@@ -39,9 +39,79 @@ describe("configuration boundary", () => {
       { directory: "/private/capabilities", tools: { all: true } },
     ])
       expect(() => parseConfig({ ...input, capabilities })).toThrow();
+    expect(config.browser).toEqual({
+      enabled: false,
+      readOperations: [],
+      timeoutMs: 15000,
+    });
     expect(config.owner.identities).toEqual([
       { channel: "slack", accountId: "T1", senderId: "U08R4KDL6UF" },
     ]);
+  });
+  it("requires explicit isolation for browser reads and rejects credential or mutation recipes", () => {
+    const recipe = {
+      name: "public-status",
+      account: "anonymous",
+      item: "public-page",
+      origin: "https://status.example",
+      url: "https://status.example/",
+      requests: [{ url: "https://status.example/", method: "GET" }],
+      success: { selector: "#ok", text: "done" },
+    };
+    const execution = {
+      kind: "isolated-host",
+      home: "/run/june-browser/home",
+      tempDirectory: "/run/june-browser/tmp",
+      processIsolationAcknowledged: true,
+      networkIsolationAcknowledged: true,
+      ephemeralStorageAcknowledged: true,
+      resourceLimitsAcknowledged: true,
+    };
+    const browser = { enabled: true, readOperations: [recipe], execution };
+    const configured = {
+      ...input,
+      capabilities: { directory: "/private/broker" },
+    };
+    expect(parseConfig({ ...configured, browser }).browser.enabled).toBe(true);
+    expect(
+      parseConfig({
+        ...configured,
+        browser: { readOperations: [recipe], execution },
+      }).browser.enabled,
+    ).toBe(false);
+    for (const invalid of [
+      { ...browser, execution: undefined },
+      {
+        ...browser,
+        execution: { ...execution, networkIsolationAcknowledged: false },
+      },
+      { ...browser, execution: { ...execution, home: "relative" } },
+      { ...browser, readOperations: [] },
+      { ...browser, allowLoopbackHttp: true },
+      {
+        ...browser,
+        readOperations: [
+          { ...recipe, steps: [{ kind: "click", selector: "button" }] },
+        ],
+      },
+      {
+        ...browser,
+        readOperations: [
+          { ...recipe, requests: [{ url: recipe.url, method: "POST" }] },
+        ],
+      },
+      {
+        ...browser,
+        readOperations: [
+          {
+            ...recipe,
+            requests: [{ url: recipe.url, method: "GET", credential: true }],
+          },
+        ],
+      },
+    ])
+      expect(() => parseConfig({ ...configured, browser: invalid })).toThrow();
+    expect(() => parseConfig({ ...input, browser })).toThrow();
   });
   it("requires a fixed HTTPS or loopback console origin without URL credentials", () => {
     for (const origin of ["http://127.0.0.1:3080", "https://june.example"])

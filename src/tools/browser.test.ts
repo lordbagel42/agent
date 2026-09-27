@@ -336,3 +336,57 @@ test("cancellation closes the action and bounded anonymous output remains data",
     "browser_action_failed",
   );
 });
+
+test("host read grants bind the recipe revision and do not inherit credentials", async () => {
+  let reads = 0;
+  const origin = await server((_request, response) => {
+    reads++;
+    response.end(`<div id="ok">done</div><p id="text">${"y".repeat(5000)}</p>`);
+  });
+  const recipe: BrowserOperation = {
+    name: "public-status",
+    account: "anonymous-status",
+    item: "public-page",
+    origin,
+    url: `${origin}/`,
+    requests: [{ url: `${origin}/`, method: "GET" }],
+    success: { selector: "#ok", text: "done" },
+    outputSelector: "#text",
+  };
+  const adapter = new BrowserAdapter({
+    operations: [recipe],
+    requireRecipeDigest: true,
+    allowLoopbackHttp: true,
+  });
+  cleanup.push(() => adapter.close());
+  const changed = new BrowserAdapter({
+    operations: [{ ...recipe, outputSelector: "#ok" }],
+    requireRecipeDigest: true,
+    allowLoopbackHttp: true,
+  });
+  cleanup.push(() => changed.close());
+  const launch = vi.spyOn(chromium, "launch");
+  const action = adapter.action(recipe.name);
+  await expect(
+    adapter.execute({ ...action, arguments: { operation: recipe.name } }, null),
+  ).rejects.toThrow("browser_action_failed");
+  await expect(changed.execute(action, null)).rejects.toThrow(
+    "browser_action_failed",
+  );
+  await expect(
+    adapter.execute(action, { bearerToken: "unrelated-secret" }),
+  ).rejects.toThrow("browser_action_failed");
+  expect(launch).not.toHaveBeenCalled();
+  expect(reads).toBe(0);
+  expect(await adapter.execute(action, null)).toEqual({
+    operation: recipe.name,
+    status: "confirmed",
+    untrustedText: "y".repeat(4096),
+  });
+  expect(reads).toBe(1);
+  expect(launch.mock.calls[0]?.[0]).toMatchObject({
+    chromiumSandbox: true,
+    env: {},
+  });
+  expect(Object.keys(launch.mock.calls[0]?.[0]?.env ?? {})).toEqual([]);
+});
