@@ -1,6 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, rm, statfs } from "node:fs/promises";
 import { join } from "node:path";
 import type { CompanionReply, ModelRequest } from "../core/contracts.js";
 import {
@@ -53,7 +52,7 @@ const disabled = [
   "auth_elicitation",
   "network_proxy",
 ];
-const safeConfig: Record<string, unknown> = {
+const baseConfig: Record<string, unknown> = {
   ...Object.fromEntries(disabled.map((name) => [`features.${name}`, false])),
   "features.skip_host_skill_discovery": true,
   "cloud.skills.enabled": false,
@@ -93,6 +92,7 @@ interface ActiveTurn {
 export function createHotCodexProvider(options: CodexProviderOptions) {
   const { home, model, executable = "codex", timeoutMs = 75_000 } = options;
   validateOptions({ ...options, executable, timeoutMs });
+  const safeConfig = { ...baseConfig };
   let child: ChildProcessWithoutNullStreams | undefined;
   let root: string | undefined;
   let closed: Promise<void> | undefined;
@@ -309,15 +309,24 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
       // Stock app-server lacks exec's ignore-user-config flags. Require an auth-only
       // home rather than silently inheriting arbitrary user instructions/providers.
       await assertHotCodexFiles(home);
-      root = await mkdtemp(join(tmpdir(), "june-hot-codex-"));
+      // Ephemeral threads still log submissions to Codex's SQLite diagnostics.
+      // Keep those DBs off the persistent auth home, including WAL/SHM files.
+      // June supports Linux; never fall back to a disk-backed temporary path.
+      if (
+        process.platform !== "linux" ||
+        (await statfs("/dev/shm")).type !== 0x01021994
+      )
+        throw failure("volatile_storage_unavailable");
+      root = await mkdtemp(join("/dev/shm", "june-hot-codex-"));
+      safeConfig.sqlite_home = root;
       if (stopping) return;
       const args = ["app-server", "--listen", "stdio://"];
       for (const [key, value] of Object.entries(safeConfig))
         args.push("-c", `${key}=${JSON.stringify(value)}`);
       child = spawn(executable, args, {
         cwd: root,
-        env: codexEnvironment(home),
-        detached: process.platform !== "win32",
+        env: { ...codexEnvironment(home), CODEX_SQLITE_HOME: root },
+        detached: true,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });

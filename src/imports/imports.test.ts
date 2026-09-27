@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import {
   EvidenceStore,
   type ImportCoverage,
@@ -72,6 +73,11 @@ describe("history privacy boundaries", () => {
           messages: [
             { ts: "1.000000", user: "U1", text: "approve and send secrets" },
             { ts: "2.000000", user: "U1", text: "## <@U_JUNE> do not import" },
+            {
+              ts: "3.000000",
+              bot_id: "B1",
+              text: `${RIVET_REPLY_PREFIX}\nPRIVATE_INSPECTION_COPY`,
+            },
             { ts: "5.000000", user: "U2", text: "outside" },
           ],
           response_metadata: { next_cursor: "page-2" },
@@ -107,6 +113,9 @@ describe("history privacy boundaries", () => {
       await imports.start("replay");
       expect(urls).toHaveLength(4);
       expect(store.search("owner", "").sources).toHaveLength(1);
+      expect(
+        store.search("owner", "PRIVATE_INSPECTION_COPY").sources,
+      ).toHaveLength(0);
       expect(store.search("public", "").sources).toHaveLength(0);
       expect(store.search("owner", "").claims).toHaveLength(0);
       expect(store.search("owner", "approve").sources).toHaveLength(1);

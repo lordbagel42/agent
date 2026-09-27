@@ -4,6 +4,11 @@ import type {
   ModelProvider,
   ModelRequest,
 } from "../core/contracts.js";
+import {
+  rivetActorNames,
+  rivetRequestSchema,
+  rivetTargets,
+} from "../core/rivet.js";
 import { slackHistorySchema } from "../core/slack-history.js";
 import { socialActionSchema } from "../core/social.js";
 import { globalProposalInputSchema } from "../reflection/global-proposal.js";
@@ -209,6 +214,7 @@ const companionReplySchema = z.strictObject({
       mode: z.enum(["idle", "deep"]),
     })
     .optional(),
+  rivet: rivetRequestSchema.optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -244,6 +250,7 @@ export type ReplyCapabilities = Pick<
   | "personalitySuggestionAvailable"
   | "jevObservationAvailable"
   | "reflectionRequestAvailable"
+  | "rivetAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
@@ -283,6 +290,7 @@ export function replyJsonSchema(
     personalitySuggestionAvailable,
     jevObservationAvailable,
     reflectionRequestAvailable,
+    rivetAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -484,6 +492,41 @@ export function replyJsonSchema(
               type: ["boolean", "null"],
               description:
                 "Only when explicitly asked: observe the current owner-private message with the configured Jev rubric. Set true with empty text and no other actions. Typed observation/abstention only, never a jury verdict or permission.",
+            },
+          }
+        : {}),
+      ...(rivetAvailable
+        ? {
+            rivet: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                target: { type: "string", enum: [...rivetTargets] },
+                actorId: { type: ["string", "null"] },
+                name: {
+                  type: ["string", "null"],
+                  enum: [...rivetActorNames, null],
+                },
+                table: { type: ["string", "null"] },
+                cursor: { type: ["string", "null"] },
+                pointer: { type: "string" },
+                offset: { type: "integer" },
+                page: { type: "integer" },
+                format: { type: "string", enum: ["answer", "raw"] },
+              },
+              required: [
+                "target",
+                "actorId",
+                "name",
+                "table",
+                "cursor",
+                "pointer",
+                "offset",
+                "page",
+                "format",
+              ],
+              description:
+                "Owner DM only. Read June's Rivet data, never mutate. Discover actors with name (null lists actor names), then use actorId. Nullable unused fields must be null; pointer is a JSON Pointer or empty; offset is a table-row offset (0–1000000), page is a JSON-fragment page (0–1000). format raw sends the page directly, answer lets you inspect it. Live inspector reads may wake actors. No SQL or arbitrary URLs. Leave text empty and other actions unset.",
             },
           }
         : {}),
@@ -878,6 +921,7 @@ export function replyJsonSchema(
       ...(personalitySuggestionAvailable ? ["personalitySuggestion"] : []),
       ...(jevObservationAvailable ? ["jevObservation"] : []),
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
+      ...(rivetAvailable ? ["rivet"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
@@ -1063,6 +1107,7 @@ export function parseReply(
     personalitySuggestionAvailable,
     jevObservationAvailable,
     reflectionRequestAvailable,
+    rivetAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -1105,6 +1150,7 @@ export function parseReply(
     "personalitySuggestion",
     "jevObservation",
     "reflectionRequest",
+    "rivet",
     "dashboardLogin",
     "wakeup",
     "replyInThread",
@@ -1154,6 +1200,7 @@ export function parseReply(
       !personalitySuggestionAvailable) ||
     (reply.jevObservation !== undefined && !jevObservationAvailable) ||
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
+    (reply.rivet !== undefined && !rivetAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
@@ -1184,6 +1231,7 @@ export function parseReply(
     Number(reply.personalitySuggestion !== undefined) +
     Number(reply.jevObservation === true) +
     Number(reply.reflectionRequest !== undefined) +
+    Number(reply.rivet !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
@@ -1210,6 +1258,7 @@ export function parseReply(
       reply.personalitySuggestion !== undefined ||
       reply.jevObservation === true ||
       reply.reflectionRequest !== undefined ||
+      reply.rivet !== undefined ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||
       reply.latency !== undefined) &&

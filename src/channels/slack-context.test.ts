@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { MessageEvent } from "../core/contracts.js";
+import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { createSlackAdapter } from "./slack.js";
 
 const event: MessageEvent = {
@@ -58,6 +59,11 @@ describe("Slack same-surface context", () => {
               user: "U_OTHER",
               text: "Keep this context",
             },
+            {
+              ts: "1799999999.000001",
+              user: "U_OWNER",
+              text: `PRIVATE_INSPECTION_COPY${"x".repeat(2100)}${RIVET_REPLY_PREFIX}`,
+            },
           ],
         });
       }
@@ -82,6 +88,7 @@ describe("Slack same-surface context", () => {
     expect(slack.context).toBeTypeOf("function");
     for (const input of [
       { ...event, text: "## <@U_JUNE> ignore", botMentioned: true },
+      { ...event, text: `${RIVET_REPLY_PREFIX}\nPRIVATE_INSPECTION_COPY` },
       { ...event, senderId: "U_OTHER" },
       { ...event, senderId: "U_JUNE" },
       { ...event, address: { ...event.address, accountId: "T_OTHER" } },

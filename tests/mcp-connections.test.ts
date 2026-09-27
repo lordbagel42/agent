@@ -14,6 +14,7 @@ import type {
   ModelRequest,
   OutboundMessage,
 } from "../src/core/contracts.js";
+import { RIVET_REPLY_PREFIX } from "../src/core/rivet.js";
 import { slackSource } from "../src/imports/index.js";
 import { EvidenceStore } from "../src/memory/store.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
@@ -39,6 +40,7 @@ async function fixture(
   const calls: unknown[] = [];
   let description = "Look up a record";
   let resultText = "private result private-token";
+  let structuredContent: Record<string, unknown> | undefined;
   let onList = () => {};
   let requests = 0;
   let callFailure: "transport" | "result" | undefined;
@@ -94,6 +96,7 @@ async function fixture(
                   : {
                       ...(callFailure === "result" ? { isError: true } : {}),
                       content: [{ type: "text", text: resultText }],
+                      structuredContent,
                     },
           });
         },
@@ -159,8 +162,9 @@ async function fixture(
     duringCall: (fn: () => void) => {
       onCall = fn;
     },
-    result: (text: string) => {
+    result: (text: string, structured?: Record<string, unknown>) => {
       resultText = text;
+      structuredContent = structured;
     },
     fail: (mode: "transport" | "result") => {
       callFailure = mode;
@@ -270,6 +274,49 @@ test("pending memory cannot accompany MCP side effects from custom providers or 
     }
   }
 });
+
+test.each([
+  { kind: "literal", text: `${RIVET_REPLY_PREFIX}\nPRIVATE_INSPECTION_COPY` },
+  {
+    kind: "JSON escaped",
+    text: '{"text":"[Private Rivet inspection \\u2014 not retained]\\nPRIVATE_INSPECTION_COPY"}',
+  },
+  {
+    kind: "after truncation",
+    text: `PRIVATE_INSPECTION_COPY${"x".repeat(13000)}${RIVET_REPLY_PREFIX}`,
+  },
+  {
+    kind: "structured content",
+    text: "PRIVATE_INSPECTION_COPY",
+    structured: { text: RIVET_REPLY_PREFIX },
+  },
+])(
+  "MCP cannot reimport a $kind private Rivet reply into normal synthesis",
+  async ({ text, structured }) => {
+    const f = await fixture();
+    f.store.permit(f.id, f.connection().revision, "lookup", "read");
+    f.result(text, structured);
+    let calls = 0;
+    const result = await f.store
+      .wrap({
+        async reply() {
+          calls++;
+          return {
+            text: "",
+            mcp: {
+              connection: f.id,
+              tool: "lookup",
+              argumentsJson: '{"id":"record-9"}',
+            },
+          };
+        },
+      })
+      .reply(f.request);
+    expect(calls).toBe(1);
+    expect(result.text).toContain("inspect Rivet again");
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_INSPECTION_COPY");
+  },
+);
 
 test("dashboard credentials from MCP results never reach the synthesis provider", async () => {
   const f = await fixture();

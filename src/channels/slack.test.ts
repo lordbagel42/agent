@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { MessageEvent, OutboundMessage } from "../core/contracts.js";
+import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { createSlackAdapter } from "./slack.js";
 import {
   createSlackIngressDiagnostics,
@@ -380,36 +381,40 @@ describe("createSlackAdapter", () => {
     ["<@u_bot> !stop", true],
     ["<@U_OTHER> !stop", true],
     ["ordinary message", true],
-  ])("only hard-blocks raw ## prefixes: %j", async (text, accepted) => {
-    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
-      Response.json({
-        ok: true,
-        channel: { id: "C1", name: "raygen-project", is_channel: true },
-      }),
-    );
-    const adapter = makeAdapter(fetchMock, {
-      participateInOwnerChannels: true,
-    });
-    for (const type of ["message", "app_mention"]) {
-      const result = await adapter.receive(
-        signedRequest(
-          eventBody({
-            type,
-            text,
-            user: "U_HUMAN",
-            channel: type === "message" ? "D1" : "C1",
-            channel_type: type === "message" ? "im" : "channel",
-            ts: "123.456",
-            thread_ts: "123.000",
-          }),
-        ),
+    [`Can you remember this?\n${RIVET_REPLY_PREFIX}\nPRIVATE_COPY`, false],
+  ])(
+    "blocks raw ## prefixes and private inspection copies: %j",
+    async (text, accepted) => {
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+        Response.json({
+          ok: true,
+          channel: { id: "C1", name: "raygen-project", is_channel: true },
+        }),
       );
-      expect(result.response.status).toBe(200);
-      expect(result.events).toHaveLength(accepted ? 1 : 0);
-      if (accepted) expect(result.events[0]).toMatchObject({ text });
-    }
-    if (!accepted) expect(fetchMock).not.toHaveBeenCalled();
-  });
+      const adapter = makeAdapter(fetchMock, {
+        participateInOwnerChannels: true,
+      });
+      for (const type of ["message", "app_mention"]) {
+        const result = await adapter.receive(
+          signedRequest(
+            eventBody({
+              type,
+              text,
+              user: "U_HUMAN",
+              channel: type === "message" ? "D1" : "C1",
+              channel_type: type === "message" ? "im" : "channel",
+              ts: "123.456",
+              thread_ts: "123.000",
+            }),
+          ),
+        );
+        expect(result.response.status).toBe(200);
+        expect(result.events).toHaveLength(accepted ? 1 : 0);
+        if (accepted) expect(result.events[0]).toMatchObject({ text });
+      }
+      if (!accepted) expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("admits signed guest mentions and reuses native thread typing without capturing search authority", async () => {
     const fetchMock = vi
@@ -1167,50 +1172,70 @@ describe("createSlackAdapter", () => {
     ]);
   });
 
-  it("sends threaded text with bearer auth and a stable client message ID", async () => {
-    let requestFromAdapter: Request | undefined;
-    let signalFromAdapter: AbortSignal | null | undefined;
-    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input, init) => {
-      requestFromAdapter = new Request(input, init);
-      signalFromAdapter = init?.signal;
-      return jsonResponse({
-        ok: true,
-        channel: "D_CONVERSATION",
-        ts: "1712345678.000600",
+  it.each([false, true])(
+    "sends threaded text with bearer auth, stable ID and plainText=%s",
+    async (plainText) => {
+      let requestFromAdapter: Request | undefined;
+      let signalFromAdapter: AbortSignal | null | undefined;
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+        requestFromAdapter = new Request(input, init);
+        signalFromAdapter = init?.signal;
+        return jsonResponse({
+          ok: true,
+          channel: "D_CONVERSATION",
+          ts: "1712345678.000600",
+        });
       });
-    });
-    const message = textMessage({
-      channel: "slack",
-      accountId: teamId,
-      conversationId: "D_CONVERSATION",
-      threadId: "1712345000.000100",
-    });
+      const message = textMessage({
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "D_CONVERSATION",
+        threadId: "1712345000.000100",
+      });
+      if (plainText)
+        message.content = {
+          type: "text",
+          text: "hello from June",
+          plainText: true,
+        };
 
-    const result = await makeAdapter(fetchMock).send(message);
+      const result = await makeAdapter(fetchMock).send(message);
 
-    expect(result).toEqual({ status: "sent", messageId: "1712345678.000600" });
-    expect(requestFromAdapter).toBeDefined();
-    if (requestFromAdapter === undefined) {
-      throw new Error("Slack request was not captured");
-    }
-    expect(requestFromAdapter.url).toBe(
-      "https://slack.com/api/chat.postMessage",
-    );
-    expect(requestFromAdapter.method).toBe("POST");
-    expect(requestFromAdapter.headers.get("authorization")).toBe(
-      "Bearer test-bot-token",
-    );
-    expect(requestFromAdapter.headers.get("content-type")).toBe(
-      "application/json",
-    );
-    await expect(requestFromAdapter.json()).resolves.toEqual({
-      channel: "D_CONVERSATION",
-      text: "hello from June",
-      client_msg_id: "operation-123",
-      thread_ts: "1712345000.000100",
-    });
-    expect(signalFromAdapter).toBeInstanceOf(AbortSignal);
-  });
+      expect(result).toEqual({
+        status: "sent",
+        messageId: "1712345678.000600",
+      });
+      expect(requestFromAdapter).toBeDefined();
+      if (requestFromAdapter === undefined) {
+        throw new Error("Slack request was not captured");
+      }
+      expect(requestFromAdapter.url).toBe(
+        "https://slack.com/api/chat.postMessage",
+      );
+      expect(requestFromAdapter.method).toBe("POST");
+      expect(requestFromAdapter.headers.get("authorization")).toBe(
+        "Bearer test-bot-token",
+      );
+      expect(requestFromAdapter.headers.get("content-type")).toBe(
+        "application/json",
+      );
+      await expect(requestFromAdapter.json()).resolves.toEqual({
+        channel: "D_CONVERSATION",
+        text: "hello from June",
+        client_msg_id: "operation-123",
+        thread_ts: "1712345000.000100",
+        ...(plainText
+          ? {
+              mrkdwn: false,
+              parse: "none",
+              unfurl_links: false,
+              unfurl_media: false,
+            }
+          : {}),
+      });
+      expect(signalFromAdapter).toBeInstanceOf(AbortSignal);
+    },
+  );
 
   it("rejects wrong channel and account destinations without network access", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>();

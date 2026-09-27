@@ -15,6 +15,7 @@ import type {
   Owner,
   SendResult,
 } from "../core/contracts.js";
+import { isOwnerRivetDm, RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import {
@@ -71,6 +72,7 @@ import {
   parseReflectionReviewCommand,
   type ReflectionDependencies,
 } from "./reflection.js";
+import { answerRivetInspection, type RivetReader } from "./rivet-inspection.js";
 import type { SocialPermissions } from "./social.js";
 import { startTyping, withTyping } from "./typing.js";
 
@@ -101,6 +103,7 @@ export interface Dependencies {
     target: Exclude<NonNullable<CompanionReply["inspection"]>, "inference">,
     event: MessageEvent,
   ) => Promise<string>;
+  rivet?: RivetReader;
   dashboardLogin?: {
     issue(): { url: string; expiresAt: string } | undefined;
     redact(text: string): string;
@@ -1291,6 +1294,8 @@ export function createJuneRegistry(deps: Dependencies) {
                               ...new Map(
                                 context
                                   .filter(({ source, content }) => {
+                                    if (content.includes(RIVET_REPLY_PREFIX))
+                                      return false;
                                     // Copies in Slack (approval previews or past
                                     // replies) lack original evidence provenance.
                                     // After forgetting, only enrich this input;
@@ -1555,6 +1560,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   !!deps.memory &&
                                   plan.reflection &&
                                   !!deps.reflection,
+                                rivetAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  isOwnerRivetDm(event, deps.owner) &&
+                                  !!deps.rivet,
                                 dashboardLoginAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2277,6 +2287,93 @@ export function createJuneRegistry(deps: Dependencies) {
                                   ? { replyInThread: generated.replyInThread }
                                   : {}),
                               };
+                            } else if (generated.rivet !== undefined) {
+                              // Keep raw reads, follow-up prompts and derived text
+                              // inside this volatile callback. Only intent/receipt
+                              // enters actor state or the existing workflow step.
+                              const allowed = () =>
+                                body.type === "event" &&
+                                phase !== "synthesis" &&
+                                modelRequest.rivetAvailable === true &&
+                                isOwnerRivetDm(event, deps.owner) &&
+                                !signal.aborted &&
+                                valid(step.state);
+                              const checked = parseReply(
+                                JSON.stringify(generated),
+                                modelRequest.workspaces,
+                                modelRequest,
+                              );
+                              const read = deps.rivet;
+                              if (!allowed() || !read || !checked.rivet) {
+                                generated = {
+                                  text: "Rivet inspection is only available in Raygen's one-to-one DM.",
+                                };
+                              } else {
+                                const first = checked.rivet;
+                                const id = `${eventId}:rivet`;
+                                step.state.deliveries[id] ??= {
+                                  ephemeral: true,
+                                  phase: "ready",
+                                  attempts: 0,
+                                  message: {
+                                    id: randomUUID(),
+                                    address: event.address,
+                                    lastInboundAt: event.occurredAt,
+                                    content: { type: "text", text: "" },
+                                  },
+                                };
+                                await deliver(
+                                  step.state.deliveries[id],
+                                  step.vars.persist,
+                                  async (outbound) => {
+                                    if (!allowed())
+                                      return {
+                                        status: "rejected",
+                                        code: "inspection_denied",
+                                        retryable: false,
+                                      };
+                                    let text: string;
+                                    try {
+                                      text = await answerRivetInspection({
+                                        read,
+                                        event,
+                                        first,
+                                        model,
+                                        signal,
+                                        valid: allowed,
+                                      });
+                                    } catch {
+                                      text =
+                                        "I couldn't complete that private inspection. No results were retained; please ask again.";
+                                    }
+                                    await typingCleanup;
+                                    if (!allowed())
+                                      return {
+                                        status: "rejected",
+                                        code: "inspection_invalidated",
+                                        retryable: false,
+                                      };
+                                    // Escape Slack control markup, including mentions
+                                    // and links embedded in raw user-controlled state.
+                                    const escaped = text
+                                      .replaceAll("&", "&amp;")
+                                      .replaceAll("<", "&lt;")
+                                      .replaceAll(">", "&gt;");
+                                    return send(
+                                      {
+                                        ...outbound,
+                                        content: {
+                                          type: "text",
+                                          plainText: true,
+                                          text: `${RIVET_REPLY_PREFIX}\n${escaped}`,
+                                        },
+                                      },
+                                      "text",
+                                    );
+                                  },
+                                );
+                                generated = { text: "" };
+                              }
                             } else if (generated.inspection !== undefined) {
                               // Metadata-only read in the existing model receipt.
                               // Revalidate even custom providers before dispatch.
@@ -3109,6 +3206,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   const search = step.state.deliveries[`${eventId}:search`];
                   const slackHistory =
                     step.state.deliveries[`${eventId}:slack-history`];
+                  const rivet = step.state.deliveries[`${eventId}:rivet`];
                   const ack =
                     version >= 3
                       ? step.state.deliveries[`${eventId}:ack`]
@@ -3117,6 +3215,10 @@ export function createJuneRegistry(deps: Dependencies) {
                   if (step.state.events[eventId]?.inference)
                     content.push(
                       "[Inference outcome unknown after interruption; the result was not durably recorded. Not intentional silence. No automatic retry was made; actions may have occurred, so rely only on recorded receipts.]",
+                    );
+                  if (rivet)
+                    content.push(
+                      `[Private Rivet reply delivery ${rivet.result?.status ?? "pending"}; inspection data and answer were not retained. Do not infer findings or copy them elsewhere.]`,
                     );
                   if (ack?.message.content.type === "text")
                     content.push(

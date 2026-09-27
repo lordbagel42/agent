@@ -57,6 +57,7 @@ import {
   type Dependencies,
   type JuneClientRegistry,
 } from "./runtime/registry.js";
+import { createRivetReader } from "./runtime/rivet-inspection.js";
 import { SocialPermissions } from "./runtime/social.js";
 import { CapabilityBroker } from "./tools/broker.js";
 import { BrowserAdapter } from "./tools/browser.js";
@@ -748,6 +749,26 @@ async function main() {
     lifecycle,
     latency,
     analytics: (days) => usage.report(days),
+    rivet: createRivetReader({
+      owner: config.owner,
+      connection: (): {
+        endpoint: string;
+        namespace: string;
+        token?: string;
+        pool: string;
+      } => {
+        if (!runtime.endpoint) throw new Error("Rivet endpoint unavailable");
+        return {
+          endpoint: runtime.endpoint,
+          namespace: runtime.namespace,
+          token: runtime.token,
+          pool: runtime.envoy.poolName,
+        };
+      },
+      secrets: Object.entries(process.env)
+        .filter(([name]) => /token|secret|password|credential|key/i.test(name))
+        .flatMap(([, value]) => (value ? [value] : [])),
+    }),
     inspection: createInspectionReader({
       audience: ownerAudience,
       memory,

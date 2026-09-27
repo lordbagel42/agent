@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { createSlackAdapter } from "../src/channels/slack.js";
 import type { MessageEvent, ModelRequest } from "../src/core/contracts.js";
+import { RIVET_REPLY_PREFIX } from "../src/core/rivet.js";
 import { routeEvent } from "../src/core/routing.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../src/core/slack-history.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
@@ -98,6 +99,11 @@ function fixture(
                   user: "UBOT",
                   ts: "1799999999.000003",
                   text: "June's actual reply",
+                },
+                {
+                  user: "U1",
+                  ts: "1799999999.000004",
+                  text: `PRIVATE_RIVET_COPY${"x".repeat(2100)}${RIVET_REPLY_PREFIX}`,
                 },
               ],
       });
@@ -334,6 +340,7 @@ it("returns only a receipt, privately delivers both sides, and excludes transcri
   expect(text).toContain("PRIVATE_FIXTURE");
   expect(text).toContain("June's actual reply");
   expect(text).toContain("&lt;@U3&gt; &amp; &lt;!channel&gt;");
+  expect(text).not.toContain("PRIVATE_RIVET_COPY");
   expect(text).toContain("HISTORY_PAGE_2");
   expect(
     f.calls.find((call) => call.method === "conversations.history")?.body,

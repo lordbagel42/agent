@@ -7,6 +7,7 @@ import type {
   OutboundMessage,
   SendResult,
 } from "../core/contracts.js";
+import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
 import {
@@ -184,8 +185,12 @@ async function normalizeEvent(
   const owner = ownerUserIds.has(event.user);
   const mentioned =
     typeof event.text === "string" && event.text.includes(`<@${botUserId}>`);
-  // Only ## is an ingress opt-out; the other conventions are model guidance.
-  if (typeof event.text === "string" && event.text.startsWith("##")) return [];
+  // Ignore opt-outs and intact inspection copies before memory or actor ingress.
+  if (
+    typeof event.text === "string" &&
+    (event.text.startsWith("##") || event.text.includes(RIVET_REPLY_PREFIX))
+  )
+    return [];
   // Guests must explicitly address June. Direct DMs also count as contact.
   if (
     !owner &&
@@ -619,6 +624,14 @@ export function createSlackAdapter({
           channel: message.address.conversationId,
           text: message.content.text,
           client_msg_id: message.id,
+          ...(message.content.plainText
+            ? {
+                mrkdwn: false,
+                parse: "none",
+                unfurl_links: false,
+                unfurl_media: false,
+              }
+            : {}),
           ...(threadId === undefined ? {} : { thread_ts: threadId }),
           ...(message.content.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)
             ? { unfurl_links: false, unfurl_media: false }

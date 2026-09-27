@@ -7,6 +7,7 @@ import {
 import { DatabaseSync } from "node:sqlite";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CompanionReply, ModelProvider } from "../core/contracts.js";
+import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { parseReply } from "../models/provider.js";
 import { CapabilityBroker, type Json, type ToolAction } from "./broker.js";
 import {
@@ -762,6 +763,12 @@ export class McpConnections {
             );
             resultReceived = true;
             if (!authorized()) return mcpFailure("denied");
+            // A Slack/MCP lookup must not turn a transient inspection post into
+            // ordinary persisted synthesis or memory. Read it through rivet again.
+            if (JSON.stringify(result).includes(RIVET_REPLY_PREFIX))
+              return {
+                text: "That lookup includes a private Rivet inspection reply. Ask me to inspect Rivet again in your DM; I won't retain or forward that copy.",
+              };
             const answer = await model.reply(
               {
                 ...request,
@@ -784,6 +791,7 @@ export class McpConnections {
                 pendingMemoryAvailable: false,
                 jevObservationAvailable: false,
                 reflectionRequestAvailable: false,
+                rivetAvailable: false,
                 dashboardLoginAvailable: false,
                 modelStatusAvailable: false,
                 wakeupAvailable: false,

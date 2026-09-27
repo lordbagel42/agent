@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 import type { PageFetcher, Source } from "../memory/store.js";
 import {
@@ -124,7 +125,8 @@ export function createSlackHistoryFetcher(
       for (const message of data.messages) {
         if (
           message.text?.startsWith("##") ||
-          message.text?.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)
+          message.text?.startsWith(PRIVATE_SLACK_HISTORY_PREFIX) ||
+          message.text?.includes(RIVET_REPLY_PREFIX)
         )
           continue;
         const source = slackSource({

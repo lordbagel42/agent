@@ -3,6 +3,7 @@ import type {
   MessageEvent,
   MessageMetadata,
 } from "../core/contracts.js";
+import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 
 const CONTEXT_TIMEOUT_MS = 1_000;
@@ -178,6 +179,7 @@ export function createSlackContext({
     const type = event.metadata?.channelType;
     if (
       event.text.startsWith("##") ||
+      event.text.includes(RIVET_REPLY_PREFIX) ||
       event.address.channel !== "slack" ||
       event.address.accountId !== teamId ||
       (!ownerUserIds.has(event.senderId) &&
@@ -244,7 +246,9 @@ export function createSlackContext({
           (message.user === botUserId &&
             typeof message.text === "string" &&
             message.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)) ||
-          (typeof message.text === "string" && message.text.startsWith("##")) ||
+          (typeof message.text === "string" &&
+            (message.text.startsWith("##") ||
+              message.text.includes(RIVET_REPLY_PREFIX))) ||
           message.subtype === "message_deleted" ||
           message.subtype === "message_changed" ||
           (thread

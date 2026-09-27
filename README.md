@@ -813,6 +813,48 @@ does not erase its own candidates. Ordinary conversation still invalidates them.
 The list is constructed only at delivery, not retained in history or journaled
 reply content. It is not approval, a memory write, or permission to send.
 
+### Rivet inspection in the owner's DM
+
+June also has a `rivet` read tool, available **only to the configured owner in a
+verified one-to-one Slack DM**. Ask “show your raw conversation state JSON”,
+“what did you retain from your DM with U…?”, or “inspect your workflow and recent
+logs”. She can discover June's actors and runners, read actor metadata, state,
+connections, action names, queue metadata, workflow history, and application
+database schemas/rows. This is retained Rivet data, not unrestricted Slack search
+or a guarantee of complete DM history. Inspection GETs can wake sleeping actors.
+
+The structured action uses `target`, nullable `actorId`, `name`, `table`, and
+`cursor`, a JSON `pointer` (empty for the whole response), `offset` (table rows),
+`page` (JSON fragments), and `format: "answer" | "raw"`. Start offsets/pages at
+zero. `actors` with name null lists June actor types; specify a name to discover
+IDs/keys. `answer` permits at most six private reads with all other tools disabled;
+`raw` sends the selected page directly. Pages contain a timestamp, `jsonFragment`,
+and `nextPage`; concatenate fragments in order to reconstruct the selected JSON.
+Each page is a fresh live read, not a consistent export of a changing actor.
+
+The host fixes the engine, namespace, runner pool, HTTP GET endpoints, and DM
+destination. No SQL execution, action invocation, state changes, workflow replay,
+or restarts are exposed. Credential fields, known live secrets and internal
+database tables are withheld. `logs` reads at most 100 `june.service` journal
+entries from the last hour using the service account's existing permissions;
+missing access is unavailable, not proof that nothing happened. No journal
+permission or infrastructure changes are made by this feature.
+
+Raw results and derived answers are transient: only blank delivery intents and
+receipts are persisted, and marked inspection replies are excluded from later
+Slack context, history imports, MCP synthesis, and live ingress (including intact
+copies pasted by the owner). Unmarked paraphrases cannot be detected. Inspection
+output uses plain Slack text without link unfurls. The hot Codex provider requires writable Linux
+`/dev/shm` backed by tmpfs: its diagnostic SQLite files (including WAL/SHM) live in
+a private per-process directory there, not the persistent auth home, and are
+removed after shutdown. Startup fails rather than falling back to disk. Operators
+must budget tmpfs capacity; tmpfs is not protection against host access or swap.
+June is instructed not to share any findings outside the owner's DM, even with
+trusted friends. The DM itself and the configured model provider still receive
+the requested data; this is not deletion from Slack or the provider. Historical
+Rivet journals may contain older/forgotten content: this privileged inspection is
+not the evidence store's deletion-aware recall API.
+
 The existing `conversation-v1` workflow remains. Journaled old iterations stay
 on their old path; new iterations persist optional feature choices before use.
 New live/extraction attempts persist intent before provider work and never

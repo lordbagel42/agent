@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
+import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import type { ToolAction, ToolAdapter } from "./broker.js";
 
 /** Operator-owned configuration. Never construct this from model output. */
@@ -46,6 +47,31 @@ export function mcpToolContractDigest(tool: Tool): string {
   return createHash("sha256")
     .update(JSON.stringify(sorted(tool)))
     .digest("hex");
+}
+
+// Inspect the complete result before choosing content or truncating it. Text
+// blocks often contain JSON with escaped Unicode; scan decoded values as well.
+function containsPrivateInspection(value: unknown, depth = 0): boolean {
+  if (depth > 32) return true; // Uninspectably deep results fail closed.
+  if (typeof value === "string") {
+    if (value.includes(RIVET_REPLY_PREFIX)) return true;
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(value);
+    } catch {
+      return false;
+    }
+    return containsPrivateInspection(decoded, depth + 1);
+  }
+  return (
+    !!value &&
+    typeof value === "object" &&
+    Object.entries(value).some(
+      ([key, child]) =>
+        key.includes(RIVET_REPLY_PREFIX) ||
+        containsPrivateInspection(child, depth + 1),
+    )
+  );
 }
 
 function readText(text: string, token: string): McpReadResult {
@@ -494,6 +520,10 @@ export class McpToolAdapter implements ToolAdapter {
         )
           throw new Error();
         if (read) {
+          // Return only the marker so the caller can explain why this copy was
+          // withheld without ever passing its body to ordinary synthesis.
+          if (containsPrivateInspection(result))
+            return { text: RIVET_REPLY_PREFIX, truncated: false };
           // No resource fetching, media, _meta, annotations, or server prompts.
           // Structured-only results remain data, serialized rather than executed.
           const content = result.content as { type: string; text?: string }[];

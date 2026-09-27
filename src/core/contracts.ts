@@ -74,7 +74,7 @@ export interface OutboundMessage {
   /** Timestamp of the latest user message, for WhatsApp's service window. */
   lastInboundAt: number;
   content:
-    | { type: "text"; text: string; replyTo?: string }
+    | { type: "text"; text: string; replyTo?: string; plainText?: true }
     | { type: "reaction"; messageId: string; emoji: string; remove?: boolean };
 }
 
@@ -242,6 +242,8 @@ export interface CompanionReply {
     evidenceIds: string[];
     mode: "idle" | "deep";
   };
+  /** Owner one-to-one Slack DM only; volatile read-only Rivet inspection. */
+  rivet?: import("./rivet.js").RivetRequest;
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Owner-private persistent schedules and event subscriptions. */
@@ -286,6 +288,7 @@ export interface ModelRequest {
   personalitySuggestionAvailable?: boolean;
   jevObservationAvailable?: boolean;
   reflectionRequestAvailable?: boolean;
+  rivetAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;

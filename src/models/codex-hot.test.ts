@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  statfs,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -44,6 +52,7 @@ for(let i=2;i<process.argv.length;i++) if(process.argv[i]==='-c') {
  for(const part of parts.slice(0,-1)) target=target[part]??={};
  target[parts.at(-1)]=JSON.parse(values.join('='));
 }
+appendFileSync(${JSON.stringify(log)}, JSON.stringify({method:'fixture/storage',params:{cli:cli.sqlite_home,env:process.env.CODEX_SQLITE_HOME}})+'\\n');
 const terminal = new Set();
 const finish = (threadId,status='completed') => {
   terminal.add(threadId);
@@ -63,6 +72,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     if(${JSON.stringify(mode)}==='feature') result.config.features.shell_tool=true;
     if(${JSON.stringify(mode)}==='endpoint') result.config.chatgpt_base_url='https://untrusted.invalid';
     if(${JSON.stringify(mode)}==='provider-definition') result.config.model_providers.openai={base_url:'https://untrusted.invalid'};
+    if(${JSON.stringify(mode)}==='persistent-logs') result.config.sqlite_home=${JSON.stringify(home)};
   }
   if (r.method === 'thread/start') result = {thread:{id:'thread-'+ ++n}, modelProvider:'openai',instructionSources:[],approvalPolicy:'never',sandbox:{type:'readOnly'}};
   if(r.method==='thread/start' && n>3 && ${JSON.stringify(mode)}==='slow-replenish') {setTimeout(()=>emit({id:r.id,result}),300);continue;}
@@ -149,16 +159,25 @@ const request = {
 it("consumes pristine bounded threads once with no MCP tools", async (t) => {
   const { provider, calls } = await fixture(t);
   await provider.ready();
+  const storage = (await calls()).find(
+    (x) => x.method === "fixture/storage",
+  ).params;
+  expect(storage.cli).toMatch(/^\/dev\/shm\/june-hot-codex-/);
+  expect(storage.env).toBe(storage.cli);
+  expect((await statfs(storage.cli)).type).toBe(0x01021994);
+  expect((await stat(storage.cli)).mode & 0o777).toBe(0o700);
   expect(provider.inspect()).toMatchObject({ idle: 3, active: 0, capacity: 3 });
   expect(await provider.reply(request)).toEqual({ text: "hello" });
   expect(await provider.reply(request)).toEqual({ text: "hello" });
   await provider.close();
+  await expect(stat(storage.cli)).rejects.toMatchObject({ code: "ENOENT" });
   const log = await calls();
   const turns = log.filter((x) => x.method === "turn/start");
   expect(new Set(turns.map((x) => x.params.threadId)).size).toBe(2);
   for (const start of log.filter((x) => x.method === "thread/start")) {
     expect(start.params.ephemeral).toBe(true);
     expect(start.params.config.mcp_servers).toEqual({});
+    expect(start.params.config.sqlite_home).toBe(storage.cli);
     expect(JSON.stringify(start)).not.toContain("private sentinel");
   }
   await expect(provider.reply(request)).rejects.toMatchObject({
@@ -279,6 +298,7 @@ for (const mode of [
   "feature",
   "endpoint",
   "provider-definition",
+  "persistent-logs",
 ]) {
   it(`rejects ${mode} before thread creation or prewarm`, async (t) => {
     const { provider, calls } = await fixture(t, mode);

@@ -1,4 +1,5 @@
 import type { ChannelAdapter, SendResult } from "../core/contracts.js";
+import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import {
   PRIVATE_SLACK_HISTORY_PREFIX,
   slackHistorySchema,
@@ -299,11 +300,13 @@ export function createSlackHistory({
             message.thread_ts !== message.ts)
         )
           continue;
-        // Do not recursively quote previously delivered private transcripts.
+        // Do not wrap a volatile inspection in another transcript: excerpting
+        // could remove its marker and let a later read retain the copied body.
         if (
-          message.user === botUserId &&
           typeof message.text === "string" &&
-          message.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)
+          (message.text.includes(RIVET_REPLY_PREFIX) ||
+            (message.user === botUserId &&
+              message.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)))
         )
           continue;
         const author =
