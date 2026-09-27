@@ -52,7 +52,16 @@ approval or a passing verifier result as delivery authority.
 - Different workers run independently; one worker processes tasks serially and
   retains history (last 40 entries in its prompt). Limits are four pending requests
   and 32 worker names per conversation, six model steps/five searches per request,
-  and a five-minute abort signal. These are not global capacity limits.
+  and a five-minute abort signal (including capacity wait time).
+- Workers share the process-local conversation priority queue: two active slots,
+  at most one guest or background worker combined, and owner turn waiters first.
+  At most 32 background workers wait for admission; overflow becomes `failed`
+  with a no-launch report rather than starting another provider call. The roster
+  stays `queued` while waiting and becomes `running` only after admission.
+  Running work is never aborted to reclaim capacity. Cancellation does not free
+  its slot until the raw provider callback and final state save settle. Unknown
+  or abort-ignoring callbacks retain capacity; these counters reset on restart
+  and do not certify remote-provider quiescence.
 - Stable IDs deduplicate requests and completions. Interrupted calls and ambiguous
   search failures become `needs_review`, not automatic retries. Known-unsent search
   failures become `failed`. A fresh `run` is an explicit new attempt.
@@ -65,8 +74,8 @@ approval or a passing verifier result as delivery authority.
 
 ## Verification
 
-Real Rivet integration tests exercise the model-facing interface, concurrent work
-and chat, follow-ups, synthesis, guest isolation, bounded searches, cancellation,
+Real Rivet integration tests exercise the model-facing interface, bounded work
+alongside chat, follow-ups, synthesis, guest isolation, bounded searches, cancellation,
 deletion, and coding approval. A separate-host hard-kill test checks uncertainty
 without replaying a model call. Controlled provider/transport boundaries verify
 the host contract, not live model quality or deployment. For a live check, ask June

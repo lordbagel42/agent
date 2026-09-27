@@ -1,19 +1,21 @@
-/** Two turn slots, at most one guest. Owner waiters always get first admission.
+/** Two slots, at most one guest or background execution. Owners enter first.
  * Running effects are never cancelled to make room for a higher-priority turn. */
 export function createPriorityAdmission() {
   let active = 0;
   let guests = 0;
-  const waiting: { owner: boolean; wake: () => void }[] = [];
+  let background = 0;
+  const waiting: { owner: boolean | "background"; wake: () => void }[] = [];
   const recent = new Map<string, number[]>();
   const pump = () => {
     while (active < 2) {
-      let index = waiting.findIndex((item) => item.owner);
-      if (index < 0 && guests === 0) index = 0;
+      let index = waiting.findIndex((item) => item.owner === true);
+      if (index < 0 && guests + background === 0) index = 0;
       const item = waiting[index];
       if (!item) break;
       waiting.splice(index, 1);
       active++;
-      if (!item.owner) guests++;
+      if (item.owner === false) guests++;
+      if (item.owner === "background") background++;
       item.wake();
     }
   };
@@ -32,8 +34,16 @@ export function createPriorityAdmission() {
       recent.set(sender, [...times, now]);
       return true;
     },
-    async enter(owner: boolean, signal: AbortSignal): Promise<() => void> {
+    async enter(
+      owner: boolean | "background",
+      signal: AbortSignal,
+    ): Promise<(() => void) | undefined> {
       signal.throwIfAborted();
+      if (
+        owner === "background" &&
+        waiting.filter((item) => item.owner === "background").length >= 32
+      )
+        return undefined;
       await new Promise<void>((resolve, reject) => {
         const item = {
           owner,
@@ -56,7 +66,8 @@ export function createPriorityAdmission() {
         if (released) return;
         released = true;
         active--;
-        if (!owner) guests--;
+        if (owner === false) guests--;
+        if (owner === "background") background--;
         pump();
       };
     },

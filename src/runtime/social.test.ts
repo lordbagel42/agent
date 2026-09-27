@@ -427,6 +427,51 @@ it("reserves owner capacity and prioritizes the owner over queued guests without
   expect(order).toEqual(["owner", "guest"]);
 });
 
+it("bounds background waiters without spending the owner reserve or releasing aborted active work", async () => {
+  const admission = createPriorityAdmission();
+  const active = new AbortController();
+  const release = await admission.enter("background", active.signal);
+  const queued = new AbortController();
+  const order: string[] = [];
+  const waiters = Array.from({ length: 32 }, () =>
+    admission.enter("background", queued.signal).then(
+      (done) => {
+        order.push("background");
+        return done;
+      },
+      () => undefined,
+    ),
+  );
+  expect(await admission.enter("background", queued.signal)).toBeUndefined();
+  const owner = await admission.enter(true, new AbortController().signal);
+  const nextOwner = admission
+    .enter(true, new AbortController().signal)
+    .then((done) => {
+      order.push("owner");
+      return done;
+    });
+  active.abort();
+  await Promise.resolve();
+  expect(order).toEqual([]);
+  release?.();
+  release?.();
+  const owner2 = await nextOwner;
+  expect(order).toEqual(["owner"]);
+  owner2?.();
+  const first = await waiters[0];
+  expect(order).toEqual(["owner", "background"]);
+  queued.abort();
+  await Promise.all(waiters);
+  first?.();
+  owner?.();
+  const next = await admission.enter(
+    "background",
+    new AbortController().signal,
+  );
+  expect(next).toBeTypeOf("function");
+  next?.();
+});
+
 it("resumes a journaled guest delivery backoff after that person's admission quota is exhausted", async (t) => {
   const { slack, sent } = fixture(t);
   const lifecycle = createLifecycle();

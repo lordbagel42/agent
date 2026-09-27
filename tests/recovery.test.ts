@@ -94,27 +94,7 @@ it.for(["before-session", "after-session"])(
       },
     });
     await job.send("commands", { type: "approve", commandId: "approve-crash" });
-    const worker = client.execution.getOrCreate(
-      executionKey(["private", "fixture"], "crash-worker"),
-    );
-    const requestId = `${"a".repeat(64)}:crash`;
-    await worker.submit({
-      id: requestId,
-      source,
-      task: "Interrupted research",
-      workspaces: [],
-      web: false,
-      evidenceIds: [],
-    });
-    await expect
-      .poll(
-        () =>
-          messages.filter((message) =>
-            ["send", "coding", "execution"].includes(message.kind),
-          ).length,
-        { timeout: 5000 },
-      )
-      .toBe(3);
+    // Stage durable backoff before both shared slots hold unresolved effects.
     const delayed = client.conversation.getOrCreate([
       "slack",
       "T1",
@@ -147,6 +127,27 @@ it.for(["before-session", "after-session"])(
         retryable: true,
         retryAfterMs: 2000,
       });
+    const worker = client.execution.getOrCreate(
+      executionKey(["private", "fixture"], "crash-worker"),
+    );
+    const requestId = `${"a".repeat(64)}:crash`;
+    await worker.submit({
+      id: requestId,
+      source,
+      task: "Interrupted research",
+      workspaces: [],
+      web: false,
+      evidenceIds: [],
+    });
+    await expect
+      .poll(
+        () =>
+          messages.filter((message) =>
+            ["send", "coding", "execution"].includes(message.kind),
+          ).length,
+        { timeout: 5000 },
+      )
+      .toBe(3);
     const uncertainSend = messages.find(
       (message) => message.kind === "send",
     )?.id;

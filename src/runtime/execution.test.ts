@@ -99,7 +99,7 @@ it("accepts bounded execution only when granted and excludes every other directi
   ).toThrow();
 });
 
-it("keeps chat responsive, synthesizes parallel work, reuses history and exposes status/cancellation to June", async (t) => {
+it("keeps chat responsive, bounds background work, reuses history and exposes status/cancellation to June", async (t) => {
   const sent: OutboundMessage[] = [];
   const work: ModelRequest[] = [];
   const turns: ModelRequest[] = [];
@@ -126,8 +126,9 @@ it("keeps chat responsive, synthesizes parallel work, reuses history and exposes
         async reply(request) {
           work.push(structuredClone(request));
           const text = request.messages.at(-1)?.content;
-          if (text === "trains-first") {
+          if (text === "trains-first" || text === "hotels-first")
             await gate.promise;
+          if (text === "trains-first") {
             return { text: "Train evidence: 17:42" };
           }
           if (text === "hotels-first") return { text: "Hotel evidence: $137" };
@@ -144,9 +145,9 @@ it("keeps chat responsive, synthesizes parallel work, reuses history and exposes
         turns.push(structuredClone(request));
         if (request.system.includes("Execution completion"))
           return {
-            text: request.system.includes("17:42")
-              ? "June: 17:42"
-              : "June: $137",
+            text: request.system.includes('"task":"hotels-first"')
+              ? "June: $137"
+              : "June: 17:42",
           };
         const text = JSON.parse(request.messages.at(-1)?.content ?? "{}").text;
         if (text === "plan")
@@ -186,17 +187,23 @@ it("keeps chat responsive, synthesizes parallel work, reuses history and exposes
   const send = (id: string, text: string) =>
     june.send("inbox", { type: "event", event: event(id, text) });
   await send("1", "plan");
-  await expect.poll(() => work.length, { timeout: 15000 }).toBe(2);
+  await expect.poll(() => work.length, { timeout: 15000 }).toBe(1);
+  await send("2", "hi");
+  await expect.poll(texts, { timeout: 15000 }).toContain("Still chatting.");
+  expect(work).toHaveLength(1);
+  const statusTurn = turns.find((r) =>
+    r.messages.at(-1)?.content.includes('"text":"hi"'),
+  );
+  expect(statusTurn?.system).toContain('"status":"running"');
+  expect(statusTurn?.system).toContain('"status":"queued"');
+  expect(texts()).not.toContain("Hotel evidence: $137");
+  gate.resolve();
+  await expect.poll(texts, { timeout: 15000 }).toContain("June: $137");
+  await expect.poll(texts, { timeout: 15000 }).toContain("June: 17:42");
   for (const request of work) {
     expect(request.system).toContain('"version":0,"style":{"tone":"warm"');
     expect(request.system).toContain("not her conversational persona");
   }
-  await send("2", "hi");
-  await expect.poll(texts, { timeout: 15000 }).toContain("Still chatting.");
-  await expect.poll(texts).toContain("June: $137");
-  expect(texts()).not.toContain("Hotel evidence: $137");
-  gate.resolve();
-  await expect.poll(texts, { timeout: 15000 }).toContain("June: 17:42");
   expect(
     sent.find(
       (m) => m.content.type === "text" && m.content.text === "June: 17:42",
@@ -471,6 +478,102 @@ it.for([false, true])(
       expect((await worker.result(id))?.report).not.toContain("late confirmed");
     }
     await expect.poll(() => active, { timeout: 15000 }).toBe(0);
+  },
+);
+
+it.for([false, true])(
+  "retains background admission until provider and save settle (save fails=%s)",
+  async (failSave, t) => {
+    const settle = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<AbortSignal>();
+    const saving = Promise.withResolvers<void>();
+    const saveSettled = Promise.withResolvers<void>();
+    let calls = 0;
+    t.onTestFinished(() => {
+      persistence.afterSave = undefined;
+      settle.resolve();
+      saveSettled.resolve();
+    });
+    const registry = createJuneRegistry({
+      owner,
+      channels: {},
+      model: {
+        async reply() {
+          return { text: "" };
+        },
+      },
+      execution: {
+        model: {
+          async reply(_request, signal) {
+            if (!signal) throw new Error("Execution signal missing");
+            calls++;
+            if (calls === 1) {
+              started.resolve(signal);
+              await settle.promise;
+            }
+            return { text: "settled" };
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const first = client.execution.getOrCreate(
+      executionKey(["private", "raygen"], "first"),
+    );
+    const second = client.execution.getOrCreate(
+      executionKey(["private", "raygen"], "second"),
+    );
+    const input = {
+      id: `${"a".repeat(64)}:first`,
+      source: event("held", "work"),
+      task: "work",
+      workspaces: [],
+      web: false,
+      evidenceIds: [],
+    };
+    await first.submit(input);
+    const signal = await started.promise;
+    await first.cancel("cancel-held");
+    expect(signal.aborted).toBe(true);
+    expect((await first.summary()).pending).toBe(1);
+    await second.submit({
+      ...input,
+      id: `${"b".repeat(64)}:second`,
+      source: event("next", "work"),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect((await second.summary()).status).toBe("queued");
+    expect(calls).toBe(1);
+    persistence.afterSave = async () => {
+      persistence.afterSave = undefined;
+      saving.resolve();
+      await saveSettled.promise;
+      if (failSave) throw new Error("fixture final save failure");
+    };
+    settle.resolve();
+    await saving.promise;
+    expect((await second.summary()).status).toBe("queued");
+    expect(calls).toBe(1);
+    saveSettled.resolve();
+    await expect.poll(() => calls, { timeout: 15000 }).toBe(2);
+    expect((await first.result(input.id))?.status).toBe("cancelled");
+    await expect
+      .poll(async () => (await second.summary()).status)
+      .toBe("completed");
+    await expect
+      .poll(
+        async () => {
+          const state = await client.conversation
+            .getOrCreate(["private", "raygen"])
+            .snapshot();
+          return Object.values(state.events).filter(
+            (entry) => entry.done && entry.event.id === "next",
+          ).length;
+        },
+        { timeout: 15000 },
+      )
+      .toBe(1);
+    expect(calls).toBe(2);
   },
 );
 

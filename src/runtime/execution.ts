@@ -11,6 +11,7 @@ import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import { parseReply } from "../models/provider.js";
 import { publicPersonality } from "./personality.js";
+import type { createPriorityAdmission } from "./priority.js";
 import type { Dependencies, JuneClientRegistry } from "./registry.js";
 
 export interface ExecutionDependencies {
@@ -52,7 +53,10 @@ interface ExecutionState {
 }
 
 /** A durable task owner, not a channel/filesystem/coding executor. */
-export function createExecutionActor(deps: Dependencies) {
+export function createExecutionActor(
+  deps: Dependencies,
+  priority: ReturnType<typeof createPriorityAdmission>,
+) {
   const current = (state: ExecutionState) =>
     !state.revoked &&
     state.evidenceIds.every(
@@ -225,14 +229,30 @@ export function createExecutionActor(deps: Dependencies) {
                     (!source || !deps.memory?.store.isDeleted(source.id))
                   );
                 };
-                request.status = "running";
-                step.state.activeRequest = id;
-                step.state.history.push({
-                  role: "user",
-                  content: request.task,
-                });
-                await step.vars.persist();
+                let releasePriority: (() => void) | undefined;
                 try {
+                  releasePriority = await priority.enter("background", signal);
+                  // The cancellation action updates status before awaiting save
+                  // and requesting abort. Recheck both sides of that boundary.
+                  if (
+                    step.state.requests[id]?.status !== "queued" ||
+                    !current(step.state)
+                  )
+                    return;
+                  signal.throwIfAborted();
+                  if (!releasePriority) {
+                    request.status = "failed";
+                    request.report =
+                      "Execution capacity is full. No model or search was started; ask for a new attempt later.";
+                    return;
+                  }
+                  request.status = "running";
+                  step.state.activeRequest = id;
+                  step.state.history.push({
+                    role: "user",
+                    content: request.task,
+                  });
+                  await step.vars.persist();
                   if (!deps.execution) throw new Error("Execution disabled");
                   const workspaces = scope.private
                     ? request.workspaces.filter(
@@ -317,14 +337,23 @@ export function createExecutionActor(deps: Dependencies) {
                     !step.state.revoked &&
                     step.state.requests[id]?.status !== "cancelled"
                   ) {
-                    request.status = signal.aborted ? "needs_review" : "failed";
+                    request.status =
+                      signal.aborted && request.status === "running"
+                        ? "needs_review"
+                        : "failed";
                     request.report =
                       "Execution did not produce a confirmed result. No automatic retry was made; ask for another attempt if needed.";
                   }
                 } finally {
-                  delete step.vars.controller;
-                  delete step.state.activeRequest;
-                  await step.vars.persist();
+                  try {
+                    delete step.vars.controller;
+                    delete step.state.activeRequest;
+                    await step.vars.persist();
+                  } finally {
+                    // Own the slot in the raw callback, not the abortable workflow.
+                    // Rejected saves still settle; propagate failure after release.
+                    releasePriority?.();
+                  }
                 }
               },
             });
