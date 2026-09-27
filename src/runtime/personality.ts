@@ -47,7 +47,7 @@ export const defaultGlobalPersonality: GlobalPersonality = {
   },
 };
 
-export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Reset just one named trait with !personality reset {"expectedVersion":VERSION,"trait":"humor","explanation":"Restore default humor","publish":true}. Defaults are tone=warm, verbosity=balanced, humor=subtle, curiosity=occasional. Reset preserves other traits and appends a revision without clearing history; propose this command, not a whole-profile rollback, when the owner asks to reset one trait. Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
+export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Reset just one named trait with !personality reset {"expectedVersion":VERSION,"trait":"humor","explanation":"Restore default humor","publish":true}. Defaults are tone=warm, verbosity=balanced, humor=subtle, curiosity=occasional. Reset preserves other traits and appends a revision without clearing history; propose this command, not a whole-profile rollback, when the owner asks to reset one trait. Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Reject a staged suggestion with !personality reject {"proposalId":"ID"}; rejection is permanent for that ID and does not change my global voice. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
 
 export function isPersonalityCommand(text: string): boolean {
   return /^!personality(?:\s|$)/.test(text.trim());
@@ -76,6 +76,10 @@ interface Revision extends GlobalPersonality {
 }
 interface State {
   revisions: Revision[];
+  proposalDecisions?: Record<
+    string,
+    { status: "accepted"; revision: number } | { status: "rejected" }
+  >;
 }
 
 /** Derive only the four effective traits' lineage, including pre-upgrade state.
@@ -145,6 +149,9 @@ const rollbackSchema = z.strictObject({
 const resetSchema = z.strictObject({
   ...commandFields,
   trait: globalStyleSchema.keyof(),
+});
+const rejectSchema = z.strictObject({
+  proposalId: z.string().regex(/^personality:[a-f0-9]{64}$/),
 });
 
 /** One actor per owner, shared by ALL surfaces. Its actions are host-only APIs;
@@ -242,13 +249,45 @@ export function createPersonalityActor(
           await c.saveState({ immediate: true });
           return `Personality revisions, newest first (up to 5; explanations are owner-private; version 0 is the initial style):\n${history.join("\n\n") || "No earlier revisions."}\nCurrent version: ${head.version}. Rollback appends a revision, never erases history.\n${next}`;
         }
-        const match = input.match(/^(revise|rollback|reset)\s+([\s\S]+)$/);
+        const match = input.match(
+          /^(revise|rollback|reset|reject)\s+([\s\S]+)$/,
+        );
         if (!match) return personalityHelp;
         let value: unknown;
         try {
           value = JSON.parse(match[2] ?? "");
         } catch {
           return `Invalid personality JSON.\n${personalityHelp}`;
+        }
+        if (match[1] === "reject") {
+          const parsed = rejectSchema.safeParse(value);
+          if (!parsed.success) return "Invalid personality rejection.";
+          const { proposalId } = parsed.data;
+          const decision = c.state.proposalDecisions?.[proposalId];
+          if (decision?.status === "accepted")
+            return "That personality suggestion was already accepted. Nothing changed.";
+          if (!decision) {
+            try {
+              if (
+                !curated?.pendingGlobalProposal(
+                  JSON.stringify(scope.key),
+                  proposalId,
+                )
+              )
+                return "No current pending personality suggestion has that ID. Nothing changed.";
+            } catch {
+              return "Personality suggestions are unavailable. Nothing changed.";
+            }
+          }
+          // Lookup and decision are synchronous, sharing approval's terminal
+          // ledger. Reassign and flush even on retry, including after a failed
+          // save or forgotten evidence. Never append a personality revision.
+          c.state.proposalDecisions = {
+            ...c.state.proposalDecisions,
+            [proposalId]: { status: "rejected" },
+          };
+          await c.saveState({ immediate: true });
+          return `Rejected personality suggestion ${proposalId}. Global personality is unchanged.`;
         }
         const commandId = createHash("sha256")
           .update(
