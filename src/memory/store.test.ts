@@ -1488,6 +1488,7 @@ it("bounds the whole projected import atomically at one-under, exact and one-ove
       rejectedReflections: [],
       corrections: [],
       importExtractions: [],
+      sessionArchives: [],
     }),
     "utf8",
   );

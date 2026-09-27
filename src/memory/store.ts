@@ -26,6 +26,15 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { Evidence } from "../reflection/domain.js";
 import {
+  archiveDependencies,
+  type SessionArchiveInput,
+  type SessionArchivePage,
+  type SessionArchiveSearch,
+  sessionArchiveInputSchema,
+  sessionArchiveSchema,
+  sessionTurnId,
+} from "../sessions/archive.js";
+import {
   type EvidenceBackupManifest,
   latestEvidenceBackup,
   readEvidenceBackup,
@@ -178,6 +187,7 @@ const stateSchema = z.strictObject({
     .array(z.strictObject({ sourceId: id, correction: correctionSchema }))
     .default([]),
   importExtractions: z.array(importExtractionSchema).default([]),
+  sessionArchives: z.array(sessionArchiveSchema).default([]),
 });
 const pageSchema = z.strictObject({
   sources: z.array(sourceSchema).max(1000),
@@ -201,6 +211,8 @@ export interface ForgetPreview {
   sources: 1;
   claims: number;
   proposals: { pending: number; accepted: number; rejected: number };
+  /** Present when retained transcript payloads would also be removed. */
+  archivedTurns?: number;
   physicalPurge: false;
   /** Host-only binding, never a deletion grant or a model-visible receipt. */
   fingerprint: string;
@@ -415,6 +427,24 @@ function removeEvidence(state: State, sourceIds: string[]): Set<string> {
     removed.add(p.id);
     return false;
   });
+  // A later transcript can contain recalled earlier text. Propagate through
+  // archive IDs too, without turning those records into grounding originals.
+  changed = true;
+  while (changed) {
+    changed = false;
+    for (const archive of state.sessionArchives)
+      for (const turn of archive.turns)
+        if (
+          !removed.has(turn.id) &&
+          archiveDependencies(turn).some((ref) => removed.has(ref))
+        ) {
+          removed.add(turn.id);
+          changed = true;
+        }
+  }
+  for (const archive of state.sessionArchives)
+    for (const turn of archive.turns)
+      if (removed.has(turn.id)) delete turn.data;
   // Admission receipts survive forgetting, even when all results are removed.
   for (const entry of state.extractions)
     entry.proposalIds = entry.proposalIds.filter((id) => !removed.has(id));
@@ -431,6 +461,56 @@ function removeEvidence(state: State, sourceIds: string[]): Set<string> {
   }
   state.tombstones = [...new Set([...state.tombstones, ...removed])];
   return removed;
+}
+
+/** Compute privacy exclusions on one authenticated snapshot, before archive
+ * matching/counting. Unknown context IDs can name unretained platform input;
+ * primary sources and earlier archive references must actually exist. */
+function archiveExclusions(state: State, audience: string): Set<string> {
+  const sources = new Map(state.sources.map((source) => [source.id, source]));
+  const hidden = new Set(state.tombstones);
+  for (const source of state.sources)
+    if (
+      !source.audiences.includes(audience) ||
+      (source.platform === "slack" && source.text.startsWith("##"))
+    )
+      hidden.add(source.id);
+  for (const claim of state.claims)
+    if (!claim.audiences.includes(audience)) hidden.add(claim.id);
+  for (const proposal of state.proposals)
+    if (
+      proposal.audience !== audience ||
+      !proposal.claim.audiences.includes(audience)
+    )
+      hidden.add(proposal.id);
+  for (const archive of state.sessionArchives)
+    for (const turn of archive.turns)
+      if (
+        archive.audience !== audience ||
+        !turn.data ||
+        turn.data.sourceIds.some((ref) => !sources.has(ref))
+      )
+        hidden.add(turn.id);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [ref, parents] of [
+      ...state.claims.map((claim) => [claim.id, dependencies(claim)] as const),
+      ...state.proposals.map(
+        (proposal) => [proposal.id, dependencies(proposal.claim)] as const,
+      ),
+      ...state.sessionArchives.flatMap((archive) =>
+        archive.turns.map(
+          (turn) => [turn.id, archiveDependencies(turn)] as const,
+        ),
+      ),
+    ])
+      if (!hidden.has(ref) && parents.some((parent) => hidden.has(parent))) {
+        hidden.add(ref);
+        changed = true;
+      }
+  }
+  return hidden;
 }
 
 // Count records and measure the exact supplied object, including its metadata.
@@ -509,6 +589,8 @@ function upgradeGmailConversation(source: Source): void {
 }
 
 function insertSource(state: State, source: Source) {
+  if (source.id.startsWith("session-turn:"))
+    throw new Error("Archive IDs are not evidence sources");
   if (state.tombstones.includes(source.id))
     throw new Error("Tombstoned evidence cannot reappear");
   const previous = state.sources.find((s) => s.id === source.id);
@@ -524,6 +606,7 @@ function insertSource(state: State, source: Source) {
 
 function insertClaim(state: State, claim: Claim): void {
   if (
+    claim.id.startsWith("session-turn:") ||
     state.tombstones.includes(claim.id) ||
     state.sources.some((s) => s.id === claim.id)
   )
@@ -651,6 +734,7 @@ export class EvidenceStore {
             rejectedReflections: [],
             corrections: [],
             importExtractions: [],
+            sessionArchives: [],
           });
           this.db.exec("COMMIT");
           this.transactionStatus = {
@@ -888,6 +972,227 @@ export class EvidenceStore {
   appendSource(input: Source): void {
     const source = parse(sourceSchema, input);
     this.transaction((state) => insertSource(state, source));
+  }
+
+  /** Trusted host only. The producer removes volatile content before calling;
+   * the transaction fences new retention against concurrent logical deletion.
+   * The returned sequence proves archival coverage, not turn settlement. */
+  archiveSessionTurn(
+    input: SessionArchiveInput,
+    expectedDeletionRevision: number,
+  ): number {
+    const value = parse(sessionArchiveInputSchema, input);
+    parse(timestamp, expectedDeletionRevision);
+    let through = 0;
+    this.transaction((state) => {
+      let archive = state.sessionArchives.find(
+        (item) => item.id === value.sessionId,
+      );
+      if (
+        archive &&
+        (archive.audience !== value.audience ||
+          archive.openedAt !== value.openedAt)
+      )
+        throw new Error("Session archive identity conflict");
+      const turn = {
+        id: sessionTurnId(value.sessionId, value.turn.eventId),
+        ...value.turn,
+      };
+      const previous = archive?.turns.find((item) => item.id === turn.id);
+      if (previous) {
+        const { data: oldData, ...oldReceipt } = previous;
+        const { data: newData, ...newReceipt } = turn;
+        if (
+          !isDeepStrictEqual(oldReceipt, newReceipt) ||
+          (oldData && !isDeepStrictEqual(oldData, newData))
+        )
+          throw new Error("Session archive turns are immutable");
+        // A deleted payload remains deleted even when its old writer replays.
+        through = archive?.turns.length ?? 0;
+        return;
+      }
+      if (
+        state.tombstones.length !== expectedDeletionRevision ||
+        state.tombstones.includes(turn.id) ||
+        turn.sequence !== (archive?.turns.length ?? 0) + 1 ||
+        turn.receivedAt <
+          (archive?.turns.at(-1)?.receivedAt ?? value.openedAt) ||
+        (!archive && turn.receivedAt !== value.openedAt) ||
+        state.sessionArchives.some(
+          (item) =>
+            item.audience === value.audience &&
+            item.turns.some((old) => old.eventId === turn.eventId),
+        )
+      )
+        throw new Error("Stale or conflicting session archive turn");
+      const hidden = archiveExclusions(state, value.audience);
+      const knownTurns = new Set(
+        state.sessionArchives.flatMap((item) =>
+          item.turns.map((old) => old.id),
+        ),
+      );
+      if (
+        archiveDependencies(turn).some(
+          (ref) =>
+            hidden.has(ref) ||
+            (ref.startsWith("session-turn:") && !knownTurns.has(ref)),
+        ) ||
+        turn.data.sourceIds.some(
+          (ref) => !state.sources.some((source) => source.id === ref),
+        )
+      )
+        throw new Error("Missing or unauthorized archive evidence");
+      for (const entry of turn.data.entries) {
+        if (entry.role === "user" && entry.content.retention === "retained") {
+          const source = state.sources.find(
+            (item) => item.id === entry.sourceId,
+          );
+          if (
+            !source ||
+            !turn.data.sourceIds.includes(source.id) ||
+            source.text !== entry.content.text ||
+            source.author !== entry.author ||
+            source.observedAt !== entry.observedAt ||
+            source.platform !== entry.address.channel ||
+            source.account !== entry.address.accountId
+          )
+            throw new Error("Archive user text requires its original source");
+        }
+        if (
+          entry.role === "assistant" &&
+          entry.delivery === "sent" &&
+          !entry.messageId
+        )
+          throw new Error("Sent archive entry requires a delivery receipt");
+      }
+      if (!archive) {
+        archive = {
+          id: value.sessionId,
+          audience: value.audience,
+          openedAt: value.openedAt,
+          turns: [],
+        };
+        state.sessionArchives.push(archive);
+      }
+      archive.turns.push(turn);
+      through = turn.sequence;
+    });
+    return through;
+  }
+
+  /** Owner-scoped transcript data, not independent evidence or instructions.
+   * Omit whole turns that exceed the budget; a continuation advances through
+   * examined sequences, including oversized turns, and never clips quotations. */
+  retrieveSession(
+    audience: string,
+    sessionId: string,
+    options: {
+      afterSequence?: number;
+      limit?: number;
+      maxCharacters?: number;
+    } = {},
+  ): SessionArchivePage {
+    parse(id, audience);
+    parse(reflectionId, sessionId);
+    const after = parse(timestamp, options.afterSequence ?? 0);
+    const limit = parse(z.number().int().min(1).max(100), options.limit ?? 12);
+    const budget = parse(
+      z.number().int().min(300).max(100000),
+      options.maxCharacters ?? 16000,
+    );
+    const state = this.read();
+    const archive = state.sessionArchives.find(
+      (item) => item.id === sessionId && item.audience === audience,
+    );
+    const result: SessionArchivePage = { session: null, turns: [], omitted: 0 };
+    if (!archive) return result;
+    result.session = {
+      id: archive.id,
+      openedAt: archive.openedAt,
+      archivedThrough: archive.turns.length,
+    };
+    const hidden = archiveExclusions(state, audience);
+    const candidates = archive.turns.filter(
+      (turn) => turn.sequence > after && turn.data && !hidden.has(turn.id),
+    );
+    let consumed = 0;
+    const page = (): SessionArchivePage => ({
+      ...result,
+      omitted: candidates.length - result.turns.length,
+      ...(consumed > 0 && consumed < candidates.length
+        ? { nextAfter: candidates[consumed - 1]?.sequence }
+        : {}),
+    });
+    for (const turn of candidates.slice(0, limit)) {
+      result.turns.push(turn);
+      consumed++;
+      if (JSON.stringify(page()).length <= budget) continue;
+      result.turns.pop();
+      if (consumed > 1) {
+        // Retry on an empty page before classifying the turn as oversized.
+        consumed--;
+        break;
+      }
+      // A turn too large even on an empty page is omitted with forward progress.
+    }
+    return page();
+  }
+
+  /** Authorization and dependency exclusions precede all matching and counts. */
+  searchSessions(
+    audience: string,
+    query: string,
+    options: {
+      observedFrom?: number;
+      observedTo?: number;
+      limit?: number;
+    } = {},
+  ): SessionArchiveSearch {
+    parse(id, audience);
+    parse(z.string().max(10000), query);
+    const from = parse(timestamp.optional(), options.observedFrom);
+    const to = parse(timestamp.optional(), options.observedTo);
+    const limit = parse(z.number().int().min(1).max(100), options.limit ?? 20);
+    if (from !== undefined && to !== undefined && from >= to)
+      throw new Error("Invalid session observation window");
+    const state = this.read();
+    const hidden = archiveExclusions(state, audience);
+    const needle = query.toLocaleLowerCase();
+    const matches = state.sessionArchives
+      .filter((archive) => archive.audience === audience)
+      .flatMap((archive) => {
+        const turns = archive.turns.filter(
+          (turn) =>
+            turn.data &&
+            !hidden.has(turn.id) &&
+            turn.data.entries.some(
+              (entry) =>
+                (from === undefined || entry.observedAt >= from) &&
+                (to === undefined || entry.observedAt < to) &&
+                (needle === "" ||
+                  (entry.content.retention === "retained" &&
+                    entry.content.text.toLocaleLowerCase().includes(needle))),
+            ),
+        );
+        return turns.length
+          ? [
+              {
+                id: archive.id,
+                openedAt: archive.openedAt,
+                lastReceivedAt: turns.at(-1)?.receivedAt ?? archive.openedAt,
+                matchingTurns: turns.length,
+              },
+            ]
+          : [];
+      })
+      .sort(
+        (a, b) =>
+          b.lastReceivedAt - a.lastReceivedAt || a.id.localeCompare(b.id),
+      );
+    return {
+      sessions: matches.slice(0, limit),
+      omitted: Math.max(0, matches.length - limit),
+    };
   }
 
   /** Trusted live owner command only, never imports, context, or model output.
@@ -1148,8 +1453,13 @@ export class EvidenceStore {
 
   /** Read-only exact-target preview. Counts and fingerprint include authorized
    * records only; accepted proposals also appear among claims. Never serialize
-   * the whole result into model context/history: binding fields are host-only. */
-  previewForget(audience: string, sourceId: string): ForgetPreview | undefined {
+   * the whole result into model context/history: binding fields are host-only.
+   * includeArchives attests that the caller displays/binds archivedTurns too. */
+  previewForget(
+    audience: string,
+    sourceId: string,
+    options: { includeArchives?: boolean } = {},
+  ): ForgetPreview | undefined {
     const claims = this.sourceDependents(audience, sourceId);
     if (!claims) return undefined;
     const affected = new Set([sourceId, ...claims.map((claim) => claim.id)]);
@@ -1166,7 +1476,35 @@ export class EvidenceStore {
     // Every path to a hidden target first crosses this authorized closure.
     // Test that boundary without exposing hidden IDs/counts in the fingerprint.
     const proposalIds = new Set(proposals.map((proposal) => proposal.id));
+    const archiveAffected = new Set([...affected, ...proposalIds]);
+    const archiveTurns = state.sessionArchives
+      .filter((archive) => archive.audience === audience)
+      .flatMap((archive) => archive.turns)
+      .filter((turn) => turn.data);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const turn of archiveTurns)
+        if (
+          !archiveAffected.has(turn.id) &&
+          archiveDependencies(turn).some((ref) => archiveAffected.has(ref))
+        ) {
+          archiveAffected.add(turn.id);
+          changed = true;
+        }
+    }
+    const archived = archiveTurns.filter((turn) =>
+      archiveAffected.has(turn.id),
+    );
     const confirmable =
+      (archived.length === 0 || options.includeArchives === true) &&
+      !state.sessionArchives.some(
+        (archive) =>
+          archive.audience !== audience &&
+          archive.turns.some((turn) =>
+            archiveDependencies(turn).some((ref) => archiveAffected.has(ref)),
+          ),
+      ) &&
       // removeEvidence also invalidates every untracked legacy proposal. Do
       // not authorize that wider cleanup from an exact dependency preview.
       !state.proposals.some(
@@ -1196,6 +1534,16 @@ export class EvidenceStore {
           proposals
             .sort((a, b) => a.id.localeCompare(b.id))
             .map((p) => [p.status, identity(p.claim)]),
+          ...(archived.length
+            ? [
+                archived
+                  .sort((a, b) => a.id.localeCompare(b.id))
+                  .map((turn) => [
+                    turn.id,
+                    [...new Set(archiveDependencies(turn))].sort(),
+                  ]),
+              ]
+            : []),
         ]),
       )
       .digest("hex");
@@ -1204,6 +1552,7 @@ export class EvidenceStore {
       sources: 1,
       claims: claims.length,
       proposals: counts,
+      ...(archived.length ? { archivedTurns: archived.length } : {}),
       fingerprint,
       confirmable,
       physicalPurge: false,

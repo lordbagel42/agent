@@ -1,8 +1,9 @@
 # Activity-period conversation actors
 
-Status: approved architectural direction. The session-directory prerequisite is
-implemented separately; live session routing, archive/recall integration and
-migration are not implemented or activated by that prerequisite.
+Status: approved architectural direction. Session-directory control state and
+encrypted archive storage/lookup are implemented as inactive prerequisites.
+The archive producer, June-facing recall, live session routing and migration
+are not implemented or activated by those prerequisites.
 
 ## Outcome and scope
 
