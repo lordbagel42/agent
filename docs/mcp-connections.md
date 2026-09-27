@@ -32,6 +32,13 @@ The owner's read classification is trust, not independent proof of harmlessness
 or a sandbox preventing the remote server from mutating data. Server annotations
 are claims, not authority. Saved status does not establish current live health.
 
+Failure replies distinguish unavailable connections/tools, denied authority,
+host-rejected arguments, failed processing and unknown tool outcomes. The current
+MCP adapter proves only `not_started` or `unknown`: preparation failures become
+failed processing, while remote errors (including `isError`) stay unknown, not
+proven rejections. Answer synthesis can fail after a tool returns. Replies use
+fixed host text, never raw errors; no failure label establishes retry safety.
+
 Contract changes disable the affected tool until reviewed again. Permission
 changes, reconnects and disconnects invalidate pending approvals. Disconnect
 removes June's saved authorization; revoke the grant at its provider separately

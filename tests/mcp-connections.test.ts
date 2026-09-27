@@ -31,6 +31,7 @@ async function fixture(
   let resultText = "private result private-token";
   let onList = () => {};
   let requests = 0;
+  let callFailure: "transport" | "result" | undefined;
   const open = () =>
     new McpConnections(
       {
@@ -48,7 +49,11 @@ async function fixture(
           if (message.id === undefined)
             return new Response(null, { status: 202 });
           if (message.method === "tools/list") onList();
-          if (message.method === "tools/call") calls.push(message.params);
+          if (message.method === "tools/call") {
+            calls.push(message.params);
+            if (callFailure === "transport")
+              throw new Error("provider-secret private-token");
+          }
           return Response.json({
             jsonrpc: "2.0",
             id: message.id,
@@ -75,6 +80,7 @@ async function fixture(
                       ],
                     }
                   : {
+                      ...(callFailure === "result" ? { isError: true } : {}),
                       content: [{ type: "text", text: resultText }],
                     },
           });
@@ -141,8 +147,80 @@ async function fixture(
     result: (text: string) => {
       resultText = text;
     },
+    fail: (mode: "transport" | "result") => {
+      callFailure = mode;
+    },
   };
 }
+
+test.each([
+  ["missing", "unavailable", 0],
+  ["disabled", "denied", 0],
+  ["revoked", "denied", 0],
+  ["malformed", "rejected", 0],
+  ["schema", "failed", 0],
+  ["preparation", "failed", 0],
+  ["transport", "unknown", 1],
+  ["result", "unknown", 1],
+  ["synthesis", "failed", 1],
+  ["revoked-result", "denied", 1],
+] as const)(
+  "MCP %s failure preserves uncertainty without leaking errors or repeating calls",
+  async (scenario, outcome, calls) => {
+    const f = await fixture();
+    if (scenario !== "disabled")
+      f.store.permit(f.id, f.connection().revision, "lookup", "read");
+    if (scenario === "preparation")
+      f.duringList(() => {
+        throw new Error("provider-secret private-token");
+      });
+    if (scenario === "transport" || scenario === "result") {
+      f.fail(scenario);
+      f.result("provider-secret private-token");
+    }
+    const requests: ModelRequest[] = [];
+    const answer = await f.store
+      .wrap({
+        async reply(request) {
+          requests.push(request);
+          if (requests.length === 1) {
+            if (scenario === "revoked")
+              f.store.disconnect(f.id, f.connection().revision);
+            return {
+              text: "",
+              mcp: {
+                connection: scenario === "missing" ? "missing" : f.id,
+                tool: "lookup",
+                argumentsJson:
+                  scenario === "malformed"
+                    ? "provider-secret private-token"
+                    : scenario === "schema"
+                      ? '{"id":42}'
+                      : '{"id":"record-9"}',
+              },
+            };
+          }
+          if (scenario === "revoked-result") {
+            f.store.disconnect(f.id, f.connection().revision);
+            return { text: "withheld result" };
+          }
+          throw new Error("provider-secret private-token");
+        },
+      })
+      .reply(f.request);
+    expect(answer.text).toContain(`MCP request ${outcome}:`);
+    expect(answer.text).toContain("won't repeat it automatically");
+    expect(answer.text).toContain("does not establish that retrying is safe");
+    expect(JSON.stringify({ answer, requests })).not.toMatch(
+      /provider-secret|private-token|withheld result/,
+    );
+    expect(requests).toHaveLength(
+      scenario === "synthesis" || scenario === "revoked-result" ? 2 : 1,
+    );
+    expect(f.calls).toHaveLength(calls);
+    expect(f.store.proposals()).toEqual([]);
+  },
+);
 
 test("dashboard credentials from MCP results never reach the synthesis provider", async () => {
   const f = await fixture();
@@ -916,7 +994,7 @@ test("revocation invalidates June's pending request without affecting another co
   });
   expect(await f.store.confirm(current.id)).toBe("succeeded");
   await expect(f.store.confirm(revoked.id)).rejects.toThrow("proposal_expired");
-  expect((await f.invoke()).text).toContain("isn't enabled");
+  expect((await f.invoke()).text).toContain("MCP request denied:");
   expect(f.calls).toHaveLength(1);
 
   // Re-enabling and reopening cannot revive an old confirmation.

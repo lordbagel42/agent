@@ -9,10 +9,32 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CompanionReply, ModelProvider } from "../core/contracts.js";
 import { parseReply } from "../models/provider.js";
 import { CapabilityBroker, type Json, type ToolAction } from "./broker.js";
-import { McpToolAdapter, mcpToolContractDigest } from "./mcp.js";
+import {
+  McpAdapterError,
+  McpToolAdapter,
+  mcpToolContractDigest,
+} from "./mcp.js";
 import { SLACK_MCP_URL } from "./slack-mcp-oauth.js";
 
 export type ToolPermission = "disabled" | "read" | "approval";
+
+/** Fixed host text only: neither exception messages nor provider bodies belong here. */
+function mcpFailure(
+  outcome: "unavailable" | "denied" | "rejected" | "failed" | "unknown",
+): CompanionReply {
+  const reasons = {
+    unavailable: "The connection or tool is not currently available.",
+    denied:
+      "Current permission or connection authority does not allow this request or sharing its result.",
+    rejected: "The host rejected the tool arguments before invoking the tool.",
+    failed: "I couldn't finish processing the request into an answer.",
+    unknown:
+      "I can't determine the tool's outcome; it may have run. Reconcile it externally before considering another request.",
+  };
+  return {
+    text: `MCP request ${outcome}: ${reasons[outcome]} I won't repeat it automatically. This status does not establish that retrying is safe.`,
+  };
+}
 
 /** Safe, actionable input errors; never include submitted values. */
 export class ConnectionInputError extends Error {
@@ -470,7 +492,8 @@ export class McpConnections {
             { ...request, mcpPermissionAvailable: false },
             signal,
           );
-        const catalog = this.list()
+        const connections = this.list();
+        const catalog = connections
           .filter(
             (connection) =>
               connection.status === "connected" &&
@@ -595,20 +618,37 @@ export class McpConnections {
           (tool) =>
             tool.connection === call.connection && tool.name === call.tool,
         );
-        if (!allowed)
-          return {
-            text: "That MCP tool isn't enabled for this private conversation.",
-          };
-        try {
-          const connection = this.#get(call.connection);
-          if (connection.revision !== allowed.revision)
-            throw new Error("connection_changed");
-          const args = JSON.parse(call.argumentsJson) as Record<string, Json>;
-          if (!args || typeof args !== "object" || Array.isArray(args))
-            throw new Error("invalid_arguments");
-          const action = this.#broker.propose(
-            this.#action(connection, call.tool, args),
+        if (!allowed) {
+          const connection = connections.find(
+            (entry) => entry.id === call.connection,
           );
+          return mcpFailure(
+            connection?.status === "connected" &&
+              (!connection.expiresAt || connection.expiresAt > Date.now()) &&
+              connection.tools.some((tool) => tool.contract.name === call.tool)
+              ? "denied"
+              : "unavailable",
+          );
+        }
+        let resultReceived = false;
+        try {
+          if (this.generation(call.connection) !== allowed.revision)
+            return mcpFailure("denied");
+          const connection = this.#get(call.connection);
+          if (connection.expiresAt && connection.expiresAt <= Date.now())
+            return mcpFailure("unavailable");
+          let args: Record<string, Json>;
+          let action: ToolAction;
+          try {
+            args = JSON.parse(call.argumentsJson);
+            if (!args || typeof args !== "object" || Array.isArray(args))
+              return mcpFailure("rejected");
+            action = this.#broker.propose(
+              this.#action(connection, call.tool, args),
+            );
+          } catch {
+            return mcpFailure("rejected");
+          }
           if (allowed.permission === "approval") {
             const proposal: McpProposal = {
               id: randomUUID(),
@@ -628,7 +668,7 @@ export class McpConnections {
           const contract = connection.tools.find(
             (tool) => tool.contract.name === call.tool,
           )?.contract;
-          if (!contract) throw new Error("tool_unavailable");
+          if (!contract) return mcpFailure("unavailable");
           const adapter = this.#adapter(connection, contract);
           const authorized = () => {
             try {
@@ -647,7 +687,8 @@ export class McpConnections {
               this.#credential(connection),
               authorized,
             );
-            if (!authorized()) throw new Error("connection_changed");
+            resultReceived = true;
+            if (!authorized()) return mcpFailure("denied");
             const answer = await model.reply(
               {
                 ...request,
@@ -682,17 +723,21 @@ export class McpConnections {
                     ? { replyInThread: answer.replyInThread }
                     : {}),
                 }
-              : {
-                  text: "The connection changed before I could finish. No result was shared.",
-                };
+              : mcpFailure("denied");
           } finally {
             await adapter.close();
             this.#active.delete(adapter);
           }
-        } catch {
-          return {
-            text: "I couldn't complete that MCP request. I won't repeat it automatically. Check the connection and tool permissions in the dashboard.",
-          };
+        } catch (error) {
+          // The adapter only proves not_started or unknown. In particular,
+          // server isError and transport failures must not become "rejected".
+          return mcpFailure(
+            resultReceived ||
+              (error instanceof McpAdapterError &&
+                error.outcome === "not_started")
+              ? "failed"
+              : "unknown",
+          );
         }
       },
     };
