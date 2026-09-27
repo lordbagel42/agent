@@ -69,3 +69,22 @@ Restarting June during consent requires beginning again. Keep callback query
 strings out of access logs. The hostname must expose only the private dashboard,
 not operator, health, Rivet or webhook routes; Slack's webhook keeps its separate
 signed ingress. Cloudflare Access supplements, not replaces, June's owner login.
+
+## Coordinated configuration cutover
+
+The deployment controller binds each immutable release to runtime configuration.
+Do not edit config under its poll loop or rewrite a retained release marker.
+For a new origin/MCP configuration, an authorized operator stops the idle
+controller, holds its deployment lock and records durable transition intent.
+Naturally drain and stop June before replacing live configuration, so automatic
+restart cannot load old code with the new binding. Preserve the original config
+and credentials in a root-only recovery directory, not conversation snapshots.
+
+Prepare a fresh reviewed main revision under the final configuration, verify the
+candidate binding equals the current host binding, activate it, and check both
+health revision and MainPID working directory. Reconcile that exact revision only
+after readiness and binding checks, then release the lock and resume the poller.
+No prior release is relabeled. If activation is ambiguous, leave durable intent
+and the controller stopped for forward recovery; never restore conversation data
+or blindly repeat an external operation. Preserve any newly created MCP key and
+store together. A busy drain must be explicitly resumed if abandoning cutover.
