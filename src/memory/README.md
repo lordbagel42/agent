@@ -543,6 +543,18 @@ receipt without a ledger tombstone requires a fresh preview, not a cleanup retry
 All results disclose `physicalPurge:false`: journals, encrypted history, backups
 and already-sent platform content are not physically erased.
 
+Ask June privately whether forgetting cleanup finished; she can request
+`{"text":"","inspection":"forgetting"}`. This read-only report counts recorded
+pending/started/completed confirmations and shows at most ten started attempts
+with opaque tokens, current tombstone status and recovery guidance. It never
+recalls source bodies or returns source IDs, fingerprints or event IDs. For
+`repeat-confirmation`, the owner can resend the listed token with the existing
+`!forget-confirm TOKEN` command; `fresh-preview` requires a new exact preview,
+and `operator-review` means safe recovery could not be established. Inspection
+does not authorize or run cleanup. Completed means the host callback returned,
+not external stoppage or physical erasure; every report retains `physicalPurge:false`.
+Missing receipts do not establish absence of older or operator-initiated cleanup.
+
 ## Reflection and personality
 
 `reflectionEvidence(audience, sourceIds, maxAgeMs): Evidence[]` returns original

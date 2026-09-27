@@ -66,6 +66,7 @@ import {
 } from "./execution.js";
 import {
   type CapacityContext,
+  inspectForgetCleanup,
   inspectInterruptedInference,
   outstandingOperationMetadata,
 } from "./inspection.js";
@@ -122,7 +123,7 @@ export interface Dependencies {
   inspection?: (
     target: Exclude<
       NonNullable<CompanionReply["inspection"]>,
-      "inference" | "personality"
+      "inference" | "personality" | "forgetting"
     >,
     event: MessageEvent,
     capacity?: CapacityContext,
@@ -181,7 +182,7 @@ type ForgetCleanup =
       jobIds: string[];
     };
 
-interface ConversationState {
+export interface ConversationState {
   history: (ConversationMessage & {
     id: string;
     sourceId?: string;
@@ -3430,6 +3431,13 @@ export function createJuneRegistry(deps: Dependencies) {
                                     text = inspectInterruptedInference(
                                       events,
                                       step.state.forgottenEvents,
+                                    );
+                                  } else if (
+                                    checked.inspection === "forgetting"
+                                  ) {
+                                    text = inspectForgetCleanup(
+                                      step.state,
+                                      deps.memory,
                                     );
                                   } else if (
                                     checked.inspection === "personality"

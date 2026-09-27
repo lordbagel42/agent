@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Client } from "rivetkit/client";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import { nativeCodingPreflight } from "../coding/preflight.js";
 import { parseConfig } from "../config.js";
@@ -23,10 +23,15 @@ import { parseReply, replyJsonSchema } from "../models/provider.js";
 import {
   capabilitySnapshot,
   createInspectionReader,
+  inspectForgetCleanup,
   inspectInterruptedInference,
   outstandingOperationMetadata,
 } from "./inspection.js";
-import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
+import {
+  type ConversationState,
+  createJuneRegistry,
+  type JuneClientRegistry,
+} from "./registry.js";
 
 it("advertises import cancellation only when mounted outside setup mode", () => {
   const config = parseConfig({
@@ -98,6 +103,112 @@ it("reports retained-copy boundaries without accessing retained data", async () 
     expect(report).not.toContain("SECRET");
     expect(report.length).toBeLessThan(4000);
   }
+});
+
+it("reads bounded cleanup metadata after ledger reopen without restoring bodies or mutating receipts", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "june-cleanup-inspection-"));
+  const key = randomBytes(32);
+  const path = join(directory, "evidence.db");
+  let store = new EvidenceStore(path, key);
+  t.onTestFinished(() => {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const state = {
+    forgetConfirmations: {} as NonNullable<
+      ConversationState["forgetConfirmations"]
+    >,
+    forgetCleanups: {} as NonNullable<ConversationState["forgetCleanups"]>,
+  };
+  for (let i = 0; i < 14; i++) {
+    const sourceId = `SECRET-source-${i}`;
+    store.appendSource({
+      id: sourceId,
+      audiences: ["private"],
+      platform: "slack",
+      account: "T1",
+      conversation: "D1",
+      author: "U1",
+      observedAt: 1,
+      sourceUrl: "https://example.invalid/private",
+      text: "SECRET SOURCE BODY",
+    });
+    if (i !== 1) store.deleteSource(sourceId);
+    const token = i.toString(16).padStart(32, "0");
+    state.forgetConfirmations[token] = {
+      sourceId,
+      fingerprint: "SECRET fingerprint",
+      previewEventId: "SECRET preview",
+      commandEventId: "SECRET command",
+      expiresAt: 1,
+      status: i === 12 ? "pending" : i === 13 ? "completed" : "started",
+    };
+    if (i !== 2)
+      state.forgetCleanups[JSON.stringify(sourceId)] = { completed: true };
+  }
+  store.close();
+  store = new EvidenceStore(path, key);
+  const sourceRead = vi.spyOn(store, "source");
+  const before = JSON.stringify(state);
+  const memory = {
+    store,
+    source: () => undefined,
+    forget: vi.fn(async () => {}),
+  };
+  const restored = JSON.parse(before);
+  const report = inspectForgetCleanup(restored, memory);
+  expect(report).toContain('"pending":1,"started":12,"completed":1');
+  expect(report).toContain("showing 10; omitted 2");
+  const rows = JSON.parse(
+    report.slice(report.indexOf("[{"), report.indexOf("\n")),
+  );
+  expect(rows).toHaveLength(10);
+  expect(rows[9].token).toBe(`${"0".repeat(31)}9`);
+  expect(rows.slice(0, 3)).toEqual([
+    {
+      token: "0".repeat(32),
+      logicalDeletion: "confirmed",
+      recovery: "repeat-confirmation",
+    },
+    {
+      token: `${"0".repeat(31)}1`,
+      logicalDeletion: "unconfirmed",
+      recovery: "fresh-preview",
+    },
+    {
+      token: `${"0".repeat(31)}2`,
+      logicalDeletion: "confirmed",
+      recovery: "operator-review",
+    },
+  ]);
+  expect(report).not.toContain("SECRET");
+  expect(report.length).toBeLessThan(4000);
+  expect(report).toContain("physicalPurge:false");
+  expect(sourceRead).not.toHaveBeenCalled();
+  expect(memory.forget).not.toHaveBeenCalled();
+  expect(JSON.stringify(restored)).toBe(before);
+  expect(store.source("private", "SECRET-source-0")).toBeUndefined();
+  expect(store.source("private", "SECRET-source-1")?.text).toBe(
+    "SECRET SOURCE BODY",
+  );
+  expect(inspectForgetCleanup(state, undefined)).toContain(
+    '"logicalDeletion":"unknown","recovery":"operator-review"',
+  );
+  const failedRead = vi.spyOn(store, "isDeleted").mockImplementation(() => {
+    throw new Error("SECRET storage failure");
+  });
+  const unavailable = inspectForgetCleanup(state, memory);
+  expect(unavailable).toContain(
+    '"logicalDeletion":"unknown","recovery":"operator-review"',
+  );
+  expect(unavailable).not.toContain("SECRET");
+  failedRead.mockRestore();
+  expect(inspectForgetCleanup({}, undefined)).toContain(
+    '"pending":0,"started":0,"completed":0',
+  );
+  expect(() =>
+    parseReply('{"text":"","inspection":"forgetting"}', []),
+  ).toThrow();
 });
 
 it("bounds interruption metadata without exposing or mutating private and forgotten records", () => {
@@ -965,6 +1076,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "retention",
     "capabilities",
     "inference",
+    "forgetting",
     "credentials",
     "slack-search",
     "snapshot-retention",

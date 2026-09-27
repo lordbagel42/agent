@@ -228,6 +228,7 @@ export interface CompanionReply {
     | "reflection"
     | "native-coding"
     | "inference"
+    | "forgetting"
     | "operations"
     | "capacity"
     | "retention"

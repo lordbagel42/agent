@@ -30,7 +30,7 @@ import type {
   CuriosityProgress,
   ReflectionRuntimeState,
 } from "./reflection.js";
-import type { Dependencies } from "./registry.js";
+import type { ConversationState, Dependencies } from "./registry.js";
 
 /** Fixed allowlist: never serialize config, dependency objects or remote data.
  * Callability is a route, not provider health, approval or admission capacity.
@@ -186,6 +186,50 @@ export function inspectInterruptedInference(
     code: inference.code,
   }));
   return `Interrupted inference snapshot at ${new Date().toISOString()}. Read-only; this owner-private conversation only. Recorded recovery receipts: ${receipts.length}; showing latest ${rows.length} by inbound event time. ${JSON.stringify(rows)}\nIDs are opaque receipt fingerprints, not provider request IDs. inboundOccurredAt is the inbound event time (epoch milliseconds), not an inference or interruption timestamp; those times were not recorded. Legacy or uninterrupted events may have no receipt; absence does not prove success or intentional silence. Outcomes remain unknown, not intentional silence; actions may have occurred. Inspect recorded delivery/tool receipts before any new action. No retry, reconciliation, reclassification or release of held work was performed. No message bodies or raw invocation keys returned.`;
+}
+
+/** Read existing confirmation receipts, never source bodies or cleanup actions. */
+export function inspectForgetCleanup(
+  state: Pick<ConversationState, "forgetConfirmations" | "forgetCleanups">,
+  memory: Dependencies["memory"],
+): string {
+  const counts = { pending: 0, started: 0, completed: 0 };
+  const rows: {
+    token: string;
+    logicalDeletion: "confirmed" | "unconfirmed" | "unknown";
+    recovery: "repeat-confirmation" | "fresh-preview" | "operator-review";
+  }[] = [];
+  for (const [token, entry] of Object.entries(
+    state.forgetConfirmations ?? {},
+  )) {
+    counts[entry.status]++;
+    if (entry.status !== "started" || rows.length >= 10) continue;
+    let logicalDeletion: (typeof rows)[number]["logicalDeletion"] = "unknown";
+    try {
+      if (memory)
+        logicalDeletion = memory.store.isDeleted(entry.sourceId)
+          ? "confirmed"
+          : "unconfirmed";
+    } catch {
+      // A failed/disabled ledger read is not evidence of deletion or absence.
+    }
+    rows.push({
+      token,
+      logicalDeletion,
+      recovery:
+        logicalDeletion === "unconfirmed"
+          ? "fresh-preview"
+          : logicalDeletion === "confirmed" &&
+              memory?.forget &&
+              state.forgetCleanups?.[JSON.stringify(entry.sourceId)]
+            ? "repeat-confirmation"
+            : "operator-review",
+    });
+  }
+  return `Forgetting cleanup snapshot at ${new Date().toISOString()}. Read-only; this owner-private conversation's confirmation receipts only. Recorded counts: ${JSON.stringify(counts)}. Started attempts: showing ${rows.length}; omitted ${counts.started - rows.length}. ${JSON.stringify(rows)}
+Started means host cleanup completion is unconfirmed, not proof of failure or stoppage. Pending means not confirmed, not deleted by that confirmation. Completed means the host cleanup callback returned for that request, not physical erasure or external stoppage. Missing/zero receipts do not prove absence of prior or operator cleanup.
+For repeat-confirmation only, send !forget-confirm TOKEN using the exact listed token as a new plain message in your owner Slack DM to resume the same frozen cleanup. This inspection did not retry anything. Fresh-preview means no tombstone was confirmed: request a fresh exact preview; do not retry that token. Operator-review means the ledger or safe recovery path is unavailable; ask the operator to inspect it. More started attempts become visible as earlier ones complete; ask the operator about omitted attempts if earlier entries cannot complete.
+physicalPurge:false. Logical forgetting does not erase Rivet/workflow journals, backups, already-sent platform content or historical encrypted snapshots. Already-submitted provider requests and external work cannot be recalled; cancellation does not prove stoppage. Retention and physical erasure remain unverified. No source IDs, fingerprints, event IDs, bodies or error details returned. This is a snapshot, not current truth on later turns.`;
 }
 
 // Legacy persisted gaps are free text, sometimes containing private identifiers.
@@ -374,7 +418,7 @@ export function createInspectionReader(deps: {
 }): (
   target: Exclude<
     NonNullable<CompanionReply["inspection"]>,
-    "inference" | "personality"
+    "inference" | "personality" | "forgetting"
   >,
   event?: MessageEvent,
   capacity?: CapacityContext,

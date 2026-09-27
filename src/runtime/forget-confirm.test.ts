@@ -9,6 +9,8 @@ import type {
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { EvidenceStore } from "../memory/store.js";
+import { parseReply, replyJsonSchema } from "../models/provider.js";
+import { createInspectionReader } from "./inspection.js";
 import { createJuneRegistry } from "./registry.js";
 
 it("requires exact owner confirmation and resumes frozen cleanup without erasing fresh work", async (t) => {
@@ -51,6 +53,11 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
   const registry = createJuneRegistry({
     owner,
     workflows: { tools: {} },
+    inspection: createInspectionReader({
+      audience,
+      memory: { store },
+      selections: {},
+    }),
     memory: {
       store,
       source: () => undefined,
@@ -84,8 +91,15 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
       },
     },
     model: {
-      async reply() {
+      async reply(request) {
         modelCalls++;
+        if (action.inspection === "forgetting") {
+          expect(request.system).toContain('inspection to "forgetting"');
+          expect(JSON.stringify(replyJsonSchema([], request))).toContain(
+            '"forgetting"',
+          );
+          return parseReply(JSON.stringify(action), [], request);
+        }
         return action;
       },
     },
@@ -251,6 +265,24 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
   if (!lastEvent) throw new Error("Missing confirmation event");
   await june.send("inbox", { type: "event", event: lastEvent });
   failCleanup = false;
+  action = { text: "", inspection: "forgetting" };
+  const interruptedState = await june.snapshot();
+  const inspection = await turn("Did forgetting cleanup finish?");
+  expect(inspection).toContain('"started":1,"completed":1');
+  expect(inspection).toContain(`"token":"${interrupted}"`);
+  expect(inspection).toContain('"logicalDeletion":"confirmed"');
+  expect(inspection).toContain('"recovery":"repeat-confirmation"');
+  expect(inspection).toContain("!forget-confirm TOKEN");
+  expect(inspection).toContain("physicalPurge:false");
+  expect(inspection).toContain("completion is unconfirmed");
+  expect(inspection).not.toContain('"sourceId"');
+  expect(inspection).not.toContain("SYNTHETIC PRIVATE");
+  expect(inspection.length).toBeLessThan(4000);
+  expect((await june.snapshot()).forgetConfirmations).toEqual(
+    interruptedState.forgetConfirmations,
+  );
+  expect(cleanupCalls).toBe(2);
+  expect(store.source(audience, "interrupted")).toBeUndefined();
   action = { text: "Fresh post-deletion reply" };
   await turn("Fresh post-deletion request");
   if (!lastEvent) throw new Error("Missing fresh event");
@@ -300,6 +332,12 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
     "already completed",
   );
   expect(cleanupCalls).toBe(3);
+  action = { text: "", inspection: "forgetting" };
+  const completedInspection = await turn("Check forgetting status again");
+  expect(completedInspection).toContain('"started":0,"completed":2');
+  expect(completedInspection).toContain("physicalPurge:false");
+  expect(completedInspection).not.toContain(interrupted);
+  expect(cleanupCalls).toBe(3);
   expect(JSON.stringify(sent)).not.toContain("SYNTHETIC PRIVATE");
 
   const beforeDelete = await preview("before-delete");
@@ -318,6 +356,12 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
   );
   expect(cleanupCalls).toBe(3);
   expect(store.isDeleted("before-delete")).toBe(false);
+  action = { text: "", inspection: "forgetting" };
+  const preDeleteInspection = await turn("Inspect the interrupted deletion");
+  expect(preDeleteInspection).toContain(`"token":"${beforeDelete}"`);
+  expect(preDeleteInspection).toContain('"logicalDeletion":"unconfirmed"');
+  expect(preDeleteInspection).toContain('"recovery":"fresh-preview"');
+  expect(cleanupCalls).toBe(3);
   const refreshed = await preview("before-delete");
   expect(await turn(`!forget-confirm ${refreshed}`)).toContain(
     "host cleanup completed",
