@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { CompanionReply } from "../core/contracts.js";
+import type { BitwardenCredentialResolver } from "../credentials/bitwarden.js";
 import type { HistoryImports } from "../imports/index.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
@@ -50,6 +51,7 @@ export function createInspectionReader(deps: {
   selections: Record<string, ImportCoverage>;
   nativeCoding?: () => Promise<string>;
   capabilities?: () => string;
+  credentials?: Pick<BitwardenCredentialResolver, "inspect">;
   reflection?: () => Promise<
     Pick<
       ReflectionRuntimeState,
@@ -67,6 +69,14 @@ export function createInspectionReader(deps: {
     switch (target) {
       case "capabilities":
         return `${heading}\n${deps.capabilities?.() ?? "Generic capabilities are disabled; no generic capability routes or tools are mounted. Opaque action links are also disabled. Inspection grants nothing and does not enable them."}`;
+      case "credentials": {
+        const caution =
+          "Vault authentication and item availability: unverified. No session or vault read was attempted. Configuration is not authorization or proof of usable credentials. No account aliases, origins, vault IDs, paths, credential values, tokens or item bodies returned.";
+        if (!deps.credentials)
+          return `${heading}\nCredential resolver: absent. No bindings are available to inspect. ${caution}`;
+        const metadata = deps.credentials.inspect();
+        return `${heading}\nCredential resolver: configured. Configured bindings: ${metadata.configuredBindings}; showing ${metadata.bindings.length}. Bindings are numbered in configuration order: ${JSON.stringify(metadata.bindings)}\n${caution}`;
+      }
       case "native-coding":
         return deps.nativeCoding
           ? deps.nativeCoding()

@@ -34,6 +34,31 @@ available in shared/guest turns or synthesis. This slice exposes no model grant
 or execution directive. Owner API entry points are listed below; mounting and
 registration are not live health or evidence that an action ran.
 
+## June's metadata-only inspection
+
+In an owner-private conversation, ask June to inspect credential bindings. The
+discoverable directive is `{"text":"","inspection":"credentials"}`, with no
+other actions. It uses the existing private inspection boundary; guests, public
+turns, execution workers and synthesis cannot invoke it. The host sends a
+timestamped receipt directly, without another model pass.
+
+`createBitwardenCredentialResolver` remains callable by the broker and also
+exposes `inspect()`. This returns the validated snapshot's binding count and at
+most ten entries containing only configuration-order numbers and field types
+(`login` or `bearer`). It never calls the session provider or CLI, even if a
+session is available, and never includes operator strings, vault IDs, paths,
+credential values, auth tokens or vault item bodies. Reading or modifying a
+returned snapshot cannot change resolver bindings.
+
+Trusted host wiring passes `{inspect: resolver.inspect}` as `credentials` to
+`createInspectionReader`, using the same resolver as the broker. Without that
+dependency June reports the resolver **absent**; a configured resolver reports
+its binding count, including zero. Vault authentication and item availability
+remain **unverified**, not inferred from configuration or earlier resolution.
+Inspection never unlocks, resolves, authorizes, enables, or tests credentials.
+The default startup has no Bitwarden resolver and therefore reports absent;
+this slice does not provision a profile/session or activate vault access.
+
 ## Trusted host setup
 
 1. Run Node 24+ and install an owner-reviewed `bw` executable outside the model's

@@ -10,6 +10,7 @@ import type {
   OutboundMessage,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
+import { createBitwardenCredentialResolver } from "../credentials/bitwarden.js";
 import { HistoryImports } from "../imports/index.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
@@ -372,6 +373,31 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   let fail = false;
   let disabled = false;
   let reads = 0;
+  let sessions = 0;
+  let vaultReads = 0;
+  const credentials = createBitwardenCredentialResolver(
+    {
+      executable: "/SECRET/bw",
+      appDataDir: "/SECRET/profile",
+      bindings: [
+        {
+          account: "SECRET-account",
+          item: "SECRET-item",
+          origin: "https://secret.example",
+          vaultItemId: "12345678-1234-1234-1234-123456789abc",
+          field: "login",
+        },
+      ],
+      session: async () => {
+        sessions++;
+        throw new Error("SECRET-session");
+      },
+    },
+    async () => {
+      vaultReads++;
+      throw new Error("SECRET-vault-item");
+    },
+  );
   const registry = createJuneRegistry({
     owner,
     channels: {
@@ -399,6 +425,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
           );
         if (request.inspectionAvailable)
           expect(request.system).toContain('set inspection to "inference"');
+        if (request.inspectionAvailable)
+          expect(request.system).toContain('set inspection to "credentials"');
         if (request.inspectionAvailable)
           expect(request.system).toContain('Set inspection to "retention"');
         if (request.inspectionAvailable)
@@ -479,6 +507,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     selections,
     capabilities: () =>
       "Generic capability routes are mounted. Registered tools: 0.",
+    credentials,
     nativeCoding: () =>
       nativeCodingPreflight(
         { enabled: false, workspaces: {}, isolation: {}, timeoutMs: 1000 },
@@ -591,12 +620,24 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   );
   expect(requests).toHaveLength(7);
   expect(reads).toBe(6);
+  action = { text: "", inspection: "credentials" };
+  const credentialReport = await deliver();
+  expect(credentialReport).toContain("Credential resolver: configured");
+  expect(credentialReport).toContain("Configured bindings: 1; showing 1");
+  expect(credentialReport).toContain('[{"binding":1,"field":"login"}]');
+  expect(credentialReport).toContain(
+    "Vault authentication and item availability: unverified",
+  );
+  expect(credentialReport.length).toBeLessThan(1500);
+  expect(reads).toBe(7);
+  expect(requests).toHaveLength(8);
   for (const inspection of [
     "native-coding",
     "memory",
     "retention",
     "capabilities",
     "inference",
+    "credentials",
   ] as const) {
     action = { text: "", inspection };
     for (const extra of [
@@ -619,13 +660,13 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       expect(await deliver(extra)).toContain("owner-private turn");
       expect(requests).toHaveLength(before + 1);
       expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-      expect(reads).toBe(6);
+      expect(reads).toBe(7);
     }
     search = true;
     await deliver();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(6);
+    expect(reads).toBe(7);
     search = false;
     action = {
       text: "",
@@ -633,9 +674,9 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       release: { action: "inspect", revision: null },
     };
     expect(await deliver()).toContain("inspection is unavailable");
-    expect(reads).toBe(6);
+    expect(reads).toBe(7);
   }
-  action = { text: "", inspection: "memory" };
+  action = { text: "", inspection: "credentials" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
   fail = false;
@@ -662,11 +703,19 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain("Ledger: not configured in this runtime");
   action = { text: "", inspection: "capabilities" };
   expect(await deliver()).toContain("Generic capabilities are disabled");
+  action = { text: "", inspection: "credentials" };
+  expect(await deliver()).toContain("Credential resolver: absent");
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   expect(JSON.stringify(sent)).not.toContain("secret-source");
   expect(JSON.stringify(sent)).not.toContain("private-account");
   expect(fetches).toBe(1); // Inspection never retried the rejected page.
   expect(store.source(audience, retainedSource.id)).toEqual(retainedSource);
+  expect(JSON.stringify(sent)).not.toContain("https://secret.example");
+  expect(JSON.stringify(sent)).not.toContain(
+    "12345678-1234-1234-1234-123456789abc",
+  );
+  expect(sessions).toBe(0);
+  expect(vaultReads).toBe(0);
   expect(store.importProgress("selection-0")).toEqual(progress);
   expect(store.proposals(audience)[0]?.status).toBe("pending");
   disabled = false;

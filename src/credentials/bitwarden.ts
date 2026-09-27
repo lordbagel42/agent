@@ -35,6 +35,14 @@ export type BitwardenCommand = (
   options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number },
 ) => Promise<string>;
 
+export type BitwardenCredentialResolver = BrokerOptions["resolveCredential"] & {
+  /** Configuration only. Never obtains a session or reads the vault. */
+  inspect(): {
+    configuredBindings: number;
+    bindings: { binding: number; field: BitwardenBinding["field"] }[];
+  };
+};
+
 const runCommand: BitwardenCommand = (executable, args, options) =>
   new Promise((resolve, reject) => {
     execFile(
@@ -56,7 +64,7 @@ const runCommand: BitwardenCommand = (executable, args, options) =>
 export function createBitwardenCredentialResolver(
   options: BitwardenOptions,
   command: BitwardenCommand = runCommand,
-): BrokerOptions["resolveCredential"] {
+): BitwardenCredentialResolver {
   const { executable, appDataDir, session, now = Date.now } = options;
   if (!isAbsolute(executable) || !isAbsolute(appDataDir))
     throw new Error("invalid_credential_configuration");
@@ -80,7 +88,7 @@ export function createBitwardenCredentialResolver(
       throw new Error("invalid_credential_configuration");
     seen.add(scopeKey(binding));
   }
-  return async (scope) => {
+  const resolve: BrokerOptions["resolveCredential"] = async (scope) => {
     try {
       const binding = bindings.find(
         (candidate) => scopeKey(candidate) === scopeKey(scope),
@@ -137,4 +145,15 @@ export function createBitwardenCredentialResolver(
       throw new Error("credential_unavailable");
     }
   };
+  return Object.assign(resolve, {
+    inspect: () => ({
+      configuredBindings: bindings.length,
+      // Ordinals identify configuration order without leaking operator strings,
+      // vault UUIDs or paths. Keep this separate from credential resolution.
+      bindings: bindings.slice(0, 10).map((binding, index) => ({
+        binding: index + 1,
+        field: binding.field,
+      })),
+    }),
+  });
 }

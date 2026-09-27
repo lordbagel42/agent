@@ -22,6 +22,60 @@ const item = {
   notes: "private-note",
 };
 
+test("inspection projects only bounded configuration metadata without obtaining secrets or mutating bindings", async () => {
+  const bindings = Array.from({ length: 11 }, (_, index) => ({
+    ...binding,
+    account: `private-account-${index}`,
+  }));
+  let sessions = 0;
+  let reads = 0;
+  const resolver = createBitwardenCredentialResolver(
+    {
+      executable: "/private/bw-executable",
+      appDataDir: "/private/bw-profile",
+      bindings,
+      now: () => 100,
+      session: async () => {
+        sessions++;
+        return { key: "private-session", expiresAt: 200 };
+      },
+    },
+    async () => {
+      reads++;
+      return JSON.stringify(item);
+    },
+  );
+  // Both caller-owned input and returned metadata are detached from the resolver.
+  bindings[0] = { ...binding, account: "replacement", field: "bearer" };
+  bindings.push({ ...binding, account: "added-later" });
+  const metadata = resolver.inspect();
+  expect(metadata).toEqual({
+    configuredBindings: 11,
+    bindings: Array.from({ length: 10 }, (_, index) => ({
+      binding: index + 1,
+      field: "login",
+    })),
+  });
+  metadata.bindings[0] = { binding: 1, field: "bearer" };
+  expect(resolver.inspect().bindings[0]).toEqual({
+    binding: 1,
+    field: "login",
+  });
+  expect(sessions).toBe(0);
+  expect(reads).toBe(0);
+  expect(await resolver({ ...binding, account: "private-account-0" })).toEqual({
+    kind: "login",
+    username: "private-user",
+    password: "private-password",
+  });
+  expect(resolver.inspect().bindings[0]).toEqual({
+    binding: 1,
+    field: "login",
+  });
+  expect(sessions).toBe(1);
+  expect(reads).toBe(1);
+});
+
 test("only exact owner-bound scopes release requested fields without session arguments or inherited env", async () => {
   let calls = 0;
   let sessions = 0;
