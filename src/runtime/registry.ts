@@ -101,7 +101,20 @@ interface ConversationState {
     sourceId?: string;
     context?: MemoryReference;
   })[];
-  events: Record<string, { event: ChannelEvent; done: boolean }>;
+  events: Record<
+    string,
+    {
+      event: ChannelEvent;
+      /** Workflow completion, not proof that inference or delivery succeeded. */
+      done: boolean;
+      /** Recovery receipt; absent on legacy and uninterrupted events. */
+      inference?: {
+        status: "unknown";
+        code: "interrupted_inference";
+        invocation: string;
+      };
+    }
+  >;
   deliveries: Record<string, Delivery>;
   jobs: Record<string, CodingRequest>;
   lastInbound: Record<string, number>;
@@ -778,12 +791,7 @@ export function createJuneRegistry(deps: Dependencies) {
                         let settled = false;
                         let stopTyping: (() => Promise<void>) | undefined;
                         try {
-                          if (
-                            !valid(step.state) ||
-                            signal.aborted ||
-                            (plan.memory && !deps.memory) ||
-                            (plan.reflection && !reflection)
-                          )
+                          if (!valid(step.state) || signal.aborted)
                             return { reply: { text: "" }, retryable: false };
                           if (version >= 2) {
                             step.state.modelInvocations ??= {};
@@ -793,12 +801,28 @@ export function createJuneRegistry(deps: Dependencies) {
                               if (previous === "started")
                                 step.state.modelInvocations[invocation] =
                                   "uncertain";
+                              const record = step.state.events[eventId];
+                              if (record)
+                                record.inference = {
+                                  status: "unknown",
+                                  code: "interrupted_inference",
+                                  invocation,
+                                };
                               await step.vars.persist();
                               // No paid/native re-invocation after an interrupted step,
                               // even when the completed result missed its journal flush.
+                              // Persist the outcome before returning: an empty recovery
+                              // result is not the model choosing intentional silence.
                               return { reply: { text: "" }, retryable: false };
                             }
                           }
+                          // Missing prerequisites block new inference, not accounting
+                          // for an invocation already admitted before the restart.
+                          if (
+                            (plan.memory && !deps.memory) ||
+                            (plan.reflection && !reflection)
+                          )
+                            return { reply: { text: "" }, retryable: false };
                           if (phase === "deep" && !deps.deepModel)
                             return {
                               reply: {
@@ -1881,6 +1905,10 @@ export function createJuneRegistry(deps: Dependencies) {
                       ? step.state.deliveries[`${eventId}:ack`]
                       : undefined;
                   const content: string[] = [];
+                  if (step.state.events[eventId]?.inference)
+                    content.push(
+                      "[Inference outcome unknown after interruption; the result was not durably recorded. Not intentional silence. No automatic retry was made; actions may have occurred, so rely only on recorded receipts.]",
+                    );
                   if (ack?.message.content.type === "text")
                     content.push(
                       `[Acknowledgment delivery ${ack.result?.status ?? "pending"}; platform acceptance is not a read receipt] ${ack.message.content.text}`,
