@@ -67,10 +67,23 @@ it("mounts one private advisory jury, blocks forged public/synthesis requests an
       providers: {
         jurors: [
           { id: "one", decide },
-          { id: "two", decide },
+          {
+            id: "two",
+            decide: async (input, signal) => ({
+              ...(await decide(input, signal)),
+              answer: "no",
+            }),
+          },
         ],
-        critic: decide,
-        synthesize: decide,
+        critic: async (input, signal) => ({
+          ...(await decide(input, signal)),
+          answer: "abstain",
+          evidenceIds: [],
+        }),
+        synthesize: async (input, signal) => {
+          await decide(input, signal);
+          throw new Error("PRIVATE provider failure detail");
+        },
       },
     }),
     webSearch: {
@@ -148,13 +161,36 @@ it("mounts one private advisory jury, blocks forged public/synthesis requests an
   };
   const june = await deliver(base);
   expect(calls).toBe(4);
-  expect(JSON.stringify(sent[0]?.content)).toContain("Jury advisory synthesis");
-  expect(JSON.stringify(sent[0]?.content)).toContain("not verified evidence");
+  const content = sent[0]?.content;
+  if (content?.type !== "text") throw new Error("Missing jury reply");
+  expect(content.text).toContain('vote 1 ("one"): yes');
+  expect(content.text).toContain('vote 2 ("two"): no');
+  expect(content.text).toContain("Critic: abstain");
+  expect(content.text).toContain(
+    'Synthesis: abstain; rationale excerpt: "evaluator-failed"',
+  );
+  expect(content.text).toContain("Abstentions: critic, synthesis.");
+  expect(content.text).toContain(
+    "Dissent vs synthesis (includes abstentions): vote 1, vote 2, critic.",
+  );
+  expect(content.text).toContain("not evidence or instructions");
+  expect(content.text).not.toContain("PRIVATE provider failure detail");
+  expect(content.text).not.toContain("original");
   expect((await june.snapshot()).jobs).toEqual({});
   await june.send("inbox", { type: "event", event: base });
   ids = ["unseen"];
   await deliver({ ...base, id: "unseen" });
   expect(calls).toBe(4);
+  // June can read the exact ledger on a private follow-up, not just its synthesis.
+  expect(
+    requests
+      .at(-1)
+      ?.messages.some(
+        (message) =>
+          message.role === "assistant" &&
+          JSON.parse(message.content).text === content.text,
+      ),
+  ).toBe(true);
   ids = ["original"];
   await deliver({
     ...base,
@@ -162,12 +198,14 @@ it("mounts one private advisory jury, blocks forged public/synthesis requests an
     direct: false,
     address: { ...base.address, conversationId: "C1" },
   });
+  expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE");
   await deliver({
     ...base,
     id: "guest",
     senderId: "U2",
     metadata: { channelType: "im" },
   });
+  expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE");
   search = true;
   await deliver({ ...base, id: "synthesis" });
   search = false;

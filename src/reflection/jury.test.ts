@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { expect, it } from "vitest";
 import { EvidenceStore } from "../memory/store.js";
 import { DecisionExecutor, type DecisionFunction } from "./evaluator.js";
-import { createJuryTool, type JuryRequest } from "./jury.js";
+import { createJuryTool, formatJuryResult, type JuryRequest } from "./jury.js";
 
 const scope = '["private","owner"]';
 const request: JuryRequest = {
@@ -142,5 +142,37 @@ it("retains shared capacity and host occupancy until cancelled raw providers act
     });
     expect(await first).toBeNull();
     store.close();
+  }
+});
+
+it("keeps every ledger section within the transport bound despite maximum escaping", () => {
+  for (const payload of ['"', "\\", "\ud800", "😀"]) {
+    const decision = {
+      answer: "abstain" as const,
+      rationale: `x${payload.repeat(4000)}`.slice(0, 4000),
+      evidenceIds: Array.from({ length: 100 }, (_, index) => `source-${index}`),
+    };
+    const firstPass = Array.from({ length: 8 }, (_, index) => ({
+      id: `${index}-${decision.rationale}`,
+      decision,
+    }));
+    const text = formatJuryResult({
+      firstPass,
+      critic: decision,
+      synthesis: decision,
+      dissent: [...firstPass, { id: "critic", decision }],
+    });
+    expect(text.length).toBeLessThanOrEqual(4096);
+    for (let index = 1; index <= 8; index++)
+      expect(text).toContain(`vote ${index} (`);
+    expect(text).toContain("Critic: abstain");
+    expect(text).toContain("Synthesis: abstain");
+    expect(text).toContain(
+      "Abstentions: vote 1, vote 2, vote 3, vote 4, vote 5, vote 6, vote 7, vote 8, critic, synthesis.",
+    );
+    expect(text).toContain(
+      "Dissent vs synthesis (includes abstentions): vote 1, vote 2, vote 3, vote 4, vote 5, vote 6, vote 7, vote 8, critic.",
+    );
+    expect(text).not.toContain("source-0");
   }
 });

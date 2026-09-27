@@ -290,6 +290,16 @@ June command, no-retention boundary, read races and invalidated send retries.
   dissent, even if synthesis disagrees or fails. Journal individual evaluations
   separately if per-juror crash recovery is required; `runJury` is one bounded
   convenience pass, not a workflow engine.
+- June's owner-private `jury` directive returns a bounded advisory report:
+  every first-pass answer, critic and synthesis are separate, followed by
+  explicit abstention and mechanical dissent references. Failed synthesis does
+  not erase votes. Labels and rationale excerpts are individually bounded and
+  quoted so all sections fit within 4,096 characters, even for eight jurors;
+  citation counts are shown without a source-ID list or evidence records.
+  The report enters existing deletion-protected private history, so June can
+  read it on a follow-up without another provider call or a new result store.
+  Reports are historical proposals, never fresh evidence or permission; missing
+  votes in older synthesis-only reports remain unknown, not unanimous.
 - Personality is a narrow curated style surface (verbosity, tone, humor,
   interests). Its charter has no patch path. Owner corrections require matching
   trusted correction provenance and outrank inference. Revisions are append-only
