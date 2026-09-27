@@ -9,6 +9,7 @@ import type { ModelRequest } from "../src/core/contracts.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
 import { buildModelRequest } from "../src/runtime/prompt.js";
 import { McpConnections } from "../src/tools/connections.js";
+import { createSlackMcpOAuth } from "../src/tools/slack-mcp-oauth.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -310,4 +311,151 @@ test("private routes reject unauthenticated and cross-site writes", async () => 
       { mcpAvailable: false },
     ),
   ).toThrow();
+});
+
+test("Slack OAuth resumes pending setup and reports saved authorization without enabling tools", async () => {
+  const f = await fixture();
+  f.store.disconnect(f.id, f.connection().revision);
+  const base = "/console/connections";
+  const origin = "https://june.example";
+  let rejectExchange = false;
+  const slack = createSlackMcpOAuth(
+    {
+      clientId: "fixture",
+      clientSecret: "fixture-secret",
+      redirectUrl: `${origin}${base}/slack/callback`,
+      teamId: "T1",
+      userId: "U1",
+      scopes: ["search:read"],
+      generation: () => f.store.generation("slack"),
+      saveAuthorization: async (value) => {
+        f.store.connectSlack(value);
+      },
+    },
+    {
+      fetch: async (url) =>
+        Response.json(
+          rejectExchange
+            ? { ok: false, error: "invalid_code" }
+            : String(url).endsWith("auth.test")
+              ? { ok: true, user_id: "U1", team_id: "T1" }
+              : {
+                  ok: true,
+                  token_type: "user",
+                  access_token: "fixture-slack-token",
+                  authed_user: { id: "U1", scope: "search:read" },
+                  team: { id: "T1" },
+                },
+        ),
+    },
+  );
+  const app = new Hono().route(
+    base,
+    createConnectionRoutes(
+      {
+        origin,
+        csrfSecret: "x".repeat(32),
+        authenticate: async (request) =>
+          request.headers.get("authorization") === "Bearer owner"
+            ? "owner"
+            : undefined,
+      },
+      { store: f.store, slack },
+    ),
+  );
+  let cookie = "";
+  const get = (path: string) =>
+    app.request(`${base}${path}`, {
+      headers: { authorization: "Bearer owner", cookie },
+    });
+  const proof = (body: string) =>
+    body.match(/name="proof" value="([^"]+)"/)?.[1] ?? "";
+  const post = (
+    path: string,
+    body: Record<string, string>,
+    requestOrigin = origin,
+  ) =>
+    app.request(`${base}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer owner",
+        cookie,
+        origin: requestOrigin,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(body),
+    });
+  const start = async () => {
+    const page = await get("");
+    const begin = await post("/slack/connect", {
+      proof: proof(await page.text()),
+    });
+    const target = new URL(
+      (await begin.text())
+        .match(/href="(https:\/\/slack.com[^"]+)"/)?.[1]
+        ?.replaceAll("&amp;", "&") ?? "",
+    );
+    const callback = await app.request(
+      `${base}/slack/callback?state=${target.searchParams.get("state")}&code=fixture-code`,
+    );
+    cookie = callback.headers.get("set-cookie")?.split(";")[0] ?? "";
+    expect(callback.status).toBe(200);
+    expect(cookie).toContain("__Host-june-slack-return=");
+  };
+  await start();
+  expect(f.store.list()).toHaveLength(0);
+  const pending = await (await get("")).text();
+  expect(pending).toContain(`href="${base}/slack/finish"`);
+  expect(pending).not.toContain(`action="${base}/slack/connect"`);
+  const confirmation = {
+    proof: proof(await (await get("/slack/finish")).text()),
+    confirmed: "yes",
+  };
+  expect(
+    (await post("/slack/finish", confirmation, "https://elsewhere.example"))
+      .status,
+  ).toBe(403);
+  expect(
+    (await post("/slack/finish", { proof: confirmation.proof })).status,
+  ).toBe(403);
+  expect(f.store.list()).toHaveLength(0);
+  expect((await post("/slack/finish", confirmation)).status).toBe(303);
+  expect(f.store.list()).toMatchObject([
+    { id: "slack", authenticated: true, status: "not_tested", tools: [] },
+  ]);
+  expect((await post("/slack/finish", confirmation)).status).toBe(403);
+  const saved = await (await get("")).text();
+  expect(saved).toContain("Authorization saved");
+  expect(saved).toContain(`href="${base}/slack"`);
+  expect(saved).not.toContain("Connect Slack →");
+  expect(saved).not.toContain("fixture-slack-token");
+  expect(await (await get("/slack")).text()).toContain("Authorization saved");
+
+  // Reconnecting must not claim success or erase an existing credential on failure.
+  await start();
+  rejectExchange = true;
+  const failed = await post("/slack/finish", {
+    proof: proof(await (await get("/slack/finish")).text()),
+    confirmed: "yes",
+  });
+  expect(failed.status).toBe(400);
+  const failurePage = await failed.text();
+  expect(failurePage).toContain("Slack connection not confirmed");
+  expect(failurePage).not.toContain("invalid_code");
+  expect(f.store.list()).toMatchObject([{ id: "slack", authenticated: true }]);
+  f.store.connectSlack({
+    accessToken: "fixture-expired",
+    expiresAt: Date.now() - 1,
+  });
+  for (const path of ["", "/slack"]) {
+    const expired = await (await get(path)).text();
+    expect(expired).toContain("Authorization expired");
+    expect(expired).not.toContain("Authorization saved");
+  }
+  const denied = await app.request(
+    `${base}/slack/callback?state=fixture&error=access_denied`,
+  );
+  expect(denied.status).toBe(400);
+  expect(denied.headers.get("set-cookie")).toBeNull();
+  expect(await denied.text()).not.toContain(`${base}/slack/finish`);
 });

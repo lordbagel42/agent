@@ -62,10 +62,16 @@ tokens do not qualify. Only configured user scopes are requested. Other Slack
 tools require their corresponding user scopes and a new consent. Expiring grants
 currently require reconnecting; automatic refresh is not implemented.
 
-Cross-site callbacks land on a non-sensitive continuation page; click through
-with the existing owner session, then confirm saving. State is volatile, bound
-to the owner and connection generation, single-use and ten-minute limited.
-Restarting June during consent requires beginning again. Keep callback query
+After Slack returns, choose **Continue to save Slack connection**, then confirm
+**Save Slack connection** with your owner session. Returning from Slack alone
+does not save the authorization. Connections offers **Resume Slack setup** while
+confirmation is pending and **Authorization saved** after verification and storage.
+Then discover tools and review permissions; saving alone does not enable them.
+
+State is volatile, bound to the owner and connection generation, single-use and
+ten-minute limited. Restarting June during consent requires beginning again.
+An explicit new sign-in replaces abandoned consent and invalidates its old
+callback; it cannot replace an exchange already running. Keep callback query
 strings out of access logs. The hostname must expose only the private dashboard,
 not operator, health, Rivet or webhook routes; Slack's webhook keeps its separate
 signed ingress. Cloudflare Access supplements, not replaces, June's owner login.

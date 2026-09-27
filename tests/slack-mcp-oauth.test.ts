@@ -128,15 +128,40 @@ describe("Slack MCP OAuth security boundary", () => {
     },
   );
 
-  it("expires and bounds pending attempts without network calls", async () => {
+  it("restarts an abandoned owner attempt without accepting its old callback or bypassing capacity", async () => {
     const s = setup();
-    expect(() => s.oauth.begin("owner")).toThrow();
     for (let i = 1; i < 32; i++) s.oauth.begin(`owner-${i}`);
+    const restarted = new URL(s.oauth.begin("owner"));
+    expect(restarted.searchParams.get("state")).not.toBe(
+      s.authorize.searchParams.get("state"),
+    );
+    await expect(s.oauth.complete("owner", s.callback)).rejects.toThrow();
     expect(() => s.oauth.begin("overflow")).toThrow();
     s.expire();
-    await expect(s.oauth.complete("owner", s.callback)).rejects.toThrow();
+    await expect(
+      s.oauth.complete(
+        "owner",
+        `https://june.example/oauth/slack?state=${restarted.searchParams.get("state")}&code=fixture`,
+      ),
+    ).rejects.toThrow();
     expect(() => s.oauth.begin("owner")).not.toThrow();
     expect(s.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not replace an authorization while its exchange is running", async () => {
+    const s = setup();
+    const restarted = new URL(s.oauth.begin("owner"));
+    const original = s.fetchMock.getMockImplementation();
+    s.fetchMock.mockImplementation(async (url, init) => {
+      expect(() => s.oauth.begin("owner")).toThrow("slack_mcp_oauth_failed");
+      if (!original) throw new Error("missing fixture");
+      return original(url, init);
+    });
+    await s.oauth.complete(
+      "owner",
+      `https://june.example/oauth/slack?state=${restarted.searchParams.get("state")}&code=fixture`,
+    );
+    expect(s.saveAuthorization).toHaveBeenCalledOnce();
   });
 
   it("sanitizes network failures and consumes state before exchange", async () => {

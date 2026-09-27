@@ -149,13 +149,15 @@ export function createSlackMcpOAuth(
   return {
     begin(principal: string): string {
       prune();
-      if (
-        !principal ||
-        principal.length > 1024 ||
-        attempts.size >= MAX_ATTEMPTS ||
-        [...attempts.values()].some((a) => a.principal === principal)
-      )
-        failed();
+      if (!principal || principal.length > 1024) failed();
+      // An owner-authorized restart replaces abandoned consent, not an exchange
+      // already in flight. Old callback states can never authorize the new attempt.
+      for (const [state, attempt] of attempts) {
+        if (attempt.principal !== principal) continue;
+        if (attempt.exchanging) failed();
+        attempts.delete(state);
+      }
+      if (attempts.size >= MAX_ATTEMPTS) failed();
       const state = randomBytes(32).toString("base64url");
       attempts.set(state, {
         principal,
