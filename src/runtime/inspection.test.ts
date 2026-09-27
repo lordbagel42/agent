@@ -22,6 +22,7 @@ import { parseReply, replyJsonSchema } from "../models/provider.js";
 import {
   createInspectionReader,
   inspectInterruptedInference,
+  outstandingOperationMetadata,
 } from "./inspection.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
@@ -601,6 +602,10 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         return true;
       },
     },
+    operations: () =>
+      client.conversation
+        .getOrCreate(["private", owner.id])
+        .outstandingOperations(),
     reflection: () => reflection.status(),
   });
   const extractionRead = createInspectionReader({
@@ -759,6 +764,25 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(credentialReport.length).toBeLessThan(1500);
   expect(reads).toBe(7);
   expect(requests).toHaveLength(8);
+  action = { text: "", inspection: "operations" };
+  const operations = await deliver();
+  expect(operations).toContain('"model":{"started":1,"uncertain":0}');
+  expect(operations).toContain('"status":"unresolved"');
+  expect(operations).toContain(
+    "Process health, idle state and restart do not prove settlement",
+  );
+  expect(requests.at(-1)?.system).toContain('set inspection to "operations"');
+  expect(requests).toHaveLength(9);
+  expect(reads).toBe(8);
+  const privateActor = client.conversation.getOrCreate(["private", owner.id]);
+  const beforeInspection = await privateActor.snapshot();
+  await privateActor.outstandingOperations();
+  expect(await privateActor.snapshot()).toEqual(beforeInspection);
+  await expect(
+    client.conversation
+      .getOrCreate(["private", "other-owner"])
+      .outstandingOperations(),
+  ).rejects.toThrow();
   for (const inspection of [
     "native-coding",
     "memory",
@@ -768,6 +792,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "credentials",
     "slack-search",
     "snapshot-retention",
+    "operations",
   ] as const) {
     action = { text: "", inspection };
     for (const extra of [
@@ -790,13 +815,13 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       expect(await deliver(extra)).toContain("owner-private turn");
       expect(requests).toHaveLength(before + 1);
       expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-      expect(reads).toBe(7);
+      expect(reads).toBe(8);
     }
     search = true;
     await deliver();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(7);
+    expect(reads).toBe(8);
     search = false;
     action = {
       text: "",
@@ -804,7 +829,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       release: { action: "inspect", revision: null },
     };
     expect(await deliver()).toContain("inspection is unavailable");
-    expect(reads).toBe(7);
+    expect(reads).toBe(8);
   }
   action = { text: "", inspection: "slack-search" };
   const readiness = await deliver();
@@ -813,7 +838,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(readiness).toContain("actual installed bot grant is unverified");
   expect(readiness).toContain("Live search access is unverified");
   expect(readiness).toContain("No Slack request was made");
-  expect(reads).toBe(8);
+  expect(reads).toBe(9);
   action = { text: "", inspection: "credentials" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
@@ -830,9 +855,10 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "imports",
     "reflection",
     "snapshot-retention",
+    "operations",
   ] as const) {
     action = { text: "", inspection: target };
-    expect(await deliver()).toContain("unavailable.");
+    expect(await deliver()).toContain("unavailable");
   }
   action = { text: "", inspection: "native-coding" };
   expect(await deliver()).toContain(
@@ -987,4 +1013,55 @@ it("keeps interrupted reflection inspection bounded, private and read-only witho
   );
   expect(report).toContain("Require reconciled:true and read status again");
   expect(report.length).toBeLessThan(4000);
+});
+
+it("projects bounded unresolved metadata without reading payloads or mutating replay markers", () => {
+  const modelInvocations = Object.freeze({
+    "SECRET START": "started" as const,
+    "SECRET UNCERTAIN": "uncertain" as const,
+    "SECRET SETTLED": "settled" as const,
+  });
+  const webInvocations = Object.freeze({ "SECRET QUERY": "started" as const });
+  const deliveries = Object.freeze(
+    Object.fromEntries(
+      Array.from({ length: 12 }, (_, i) => [
+        `SECRET DESTINATION ${i}`,
+        Object.freeze({
+          get message(): OutboundMessage {
+            throw new Error("must not read payload");
+          },
+          phase: i === 0 ? ("sending" as const) : ("settled" as const),
+          attempts: 1,
+          result:
+            i === 0
+              ? {
+                  status: "rejected" as const,
+                  code: "SECRET ERROR",
+                  retryable: true,
+                }
+              : { status: "unknown" as const, code: "SECRET ERROR" },
+        }),
+      ]),
+    ),
+  );
+  const state = Object.freeze({ modelInvocations, webInvocations, deliveries });
+  const snapshot = outstandingOperationMetadata(state);
+  expect(snapshot.counts).toEqual({
+    model: { started: 1, uncertain: 1 },
+    web: { started: 1, uncertain: 0 },
+    delivery: { sending: 1, unknown: 11 },
+  });
+  expect(snapshot.operations).toHaveLength(10);
+  expect(snapshot.omitted).toBe(5);
+  expect(
+    snapshot.operations.every(
+      (row) => row.status === "unresolved" && /^[a-f0-9]{64}$/.test(row.id),
+    ),
+  ).toBe(true);
+  expect(JSON.stringify(snapshot)).not.toContain("SECRET");
+  expect(outstandingOperationMetadata(state)).toEqual(snapshot);
+  expect(outstandingOperationMetadata({ deliveries: {} }).recorded).toEqual({
+    model: false,
+    web: false,
+  });
 });

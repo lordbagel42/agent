@@ -7,6 +7,7 @@ import type { HistoryImports } from "../imports/index.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import type { EvidenceStore, ImportCoverage } from "../memory/store.js";
+import type { Delivery } from "./delivery.js";
 import type { ReflectionRuntimeState } from "./reflection.js";
 
 /** Project existing recovery receipts only; absence is not an outcome. */
@@ -80,6 +81,78 @@ function summarizeImportGaps(gaps: string[]): Record<string, number> {
   return counts;
 }
 
+type InvocationMarkers = Record<string, "started" | "settled" | "uncertain">;
+
+/** Project durable markers only; never prune, settle, release or replay work. */
+export function outstandingOperationMetadata(state: {
+  modelInvocations?: InvocationMarkers;
+  webInvocations?: InvocationMarkers;
+  deliveries: Record<string, Delivery>;
+}) {
+  const counts = {
+    model: { started: 0, uncertain: 0 },
+    web: { started: 0, uncertain: 0 },
+    delivery: { sending: 0, unknown: 0 },
+  };
+  const operations: {
+    id: string;
+    kind: "model" | "web" | "delivery";
+    marker: "started" | "uncertain" | "sending" | "unknown";
+    status: "unresolved";
+  }[] = [];
+  let total = 0;
+  const include = (
+    key: string,
+    kind: (typeof operations)[number]["kind"],
+    marker: (typeof operations)[number]["marker"],
+  ) => {
+    total++;
+    if (operations.length < 10)
+      operations.push({
+        id: createHash("sha256")
+          .update(JSON.stringify([kind, key]))
+          .digest("hex"),
+        kind,
+        marker,
+        status: "unresolved",
+      });
+  };
+  for (const [kind, markers] of [
+    ["model", state.modelInvocations],
+    ["web", state.webInvocations],
+  ] as const)
+    for (const [key, marker] of Object.entries(markers ?? {})) {
+      if (marker === "settled") continue;
+      counts[kind][marker]++;
+      include(key, kind, marker);
+    }
+  for (const [key, delivery] of Object.entries(state.deliveries)) {
+    // A previous known rejection may remain while a new send is in progress.
+    const marker =
+      delivery.phase === "sending"
+        ? "sending"
+        : delivery.result?.status === "unknown"
+          ? "unknown"
+          : undefined;
+    if (!marker) continue;
+    counts.delivery[marker]++;
+    include(key, "delivery", marker);
+  }
+  return {
+    counts,
+    operations,
+    omitted: total - operations.length,
+    recorded: {
+      model: state.modelInvocations !== undefined,
+      web: state.webInvocations !== undefined,
+    },
+  };
+}
+
+export type OutstandingOperationSnapshot = ReturnType<
+  typeof outstandingOperationMetadata
+>;
+
 /** Host-bound audience and selections, never model-supplied scope or query.
  * Reports contain metadata only, so retained receipts cannot resurrect evidence.
  * No mutating service methods or remote history fetches are called here.
@@ -97,6 +170,7 @@ export function createInspectionReader(deps: {
     enabled: boolean;
     hasActionToken?: (event: MessageEvent) => boolean;
   };
+  operations?: () => Promise<OutstandingOperationSnapshot>;
   reflection?: () => Promise<
     Pick<
       ReflectionRuntimeState,
@@ -142,6 +216,12 @@ export function createInspectionReader(deps: {
         if (!personality)
           return `${heading}\nCurated snapshot retention dry run is unavailable.`;
         return `${heading}\nCurated snapshot retention dry run: ${JSON.stringify(personality.retentionReport())}\nPreserve all snapshots referenced by curated history for historical reads and rollback, even after logical source deletion. Counts/bytes cover observed files only; incomplete scans are lower bounds and null means unknown, not zero. File presence is not authentication or proof of restore readiness. Unreferenced files are operator-review candidates only: they may belong to an in-flight write, another ref or backup. No deletion is authorized or performed; no age policy or backup dependency check was applied. Preserve Git metadata, encrypted snapshots, separately managed keys and independent tombstones throughout backup retention; replay later tombstones before serving restored data. Other retained copies remain unknown. No private contents, paths or identifiers returned.`;
+      }
+      case "operations": {
+        if (!deps.operations)
+          return `${heading}\nDurable operation diagnostics are unavailable; settlement cannot be inferred.`;
+        const snapshot = await deps.operations();
+        return `${heading}\nOwner-private conversation markers only, not all actors or external operations. ${JSON.stringify(snapshot)}\nListed operations are unresolved, not failed or successful. Started/sending may still be active, including this inspection's model turn. Uncertain/unknown has no confirmed outcome. Settled invocations are omitted, not proof of success. Missing marker maps and zero counts do not establish complete coverage; older operations may be unrecorded. Process health, idle state and restart do not prove settlement or stoppage. IDs are hashed; no message bodies, queries, destinations, errors or credentials are returned. No retry, cancellation, reconciliation or admission release was performed.`;
       }
       case "native-coding":
         return deps.nativeCoding

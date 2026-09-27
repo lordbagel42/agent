@@ -839,6 +839,10 @@ async function main() {
             hasActionToken: channels.slack?.hasSearchToken,
           }
         : undefined,
+      operations: () =>
+        client.conversation
+          .getOrCreate(["private", config.owner.id])
+          .outstandingOperations(),
       reflection: reflection
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
         : undefined,

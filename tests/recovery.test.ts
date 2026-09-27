@@ -150,6 +150,16 @@ it.for(["before-session", "after-session"])(
     const uncertainSend = messages.find(
       (message) => message.kind === "send",
     )?.id;
+    const beforeDiagnostic = await june.outstandingOperations();
+    expect(beforeDiagnostic.counts.delivery).toEqual({
+      sending: 1,
+      unknown: 0,
+    });
+    expect(beforeDiagnostic.operations[0]).toMatchObject({
+      kind: "delivery",
+      marker: "sending",
+      status: "unresolved",
+    });
     const beforeCrash = await job.snapshot();
     expect(beforeCrash.status).toBe("running");
     expect(beforeCrash.attempts).toBe(1);
@@ -181,6 +191,17 @@ it.for(["before-session", "after-session"])(
         { timeout: 15_000 },
       )
       .toEqual({ status: "unknown", code: "interrupted_send" });
+    const afterDiagnostic = await june.outstandingOperations();
+    expect(afterDiagnostic.counts.delivery.unknown).toBe(1);
+    expect(afterDiagnostic.operations).toContainEqual({
+      ...beforeDiagnostic.operations[0],
+      marker: "unknown",
+    });
+    // A separate coding-result delivery may be sending during inspection.
+    expect((await june.outstandingOperations()).operations).toContainEqual({
+      ...beforeDiagnostic.operations[0],
+      marker: "unknown",
+    });
     await expect
       .poll(
         async () => Object.values((await delayed.snapshot()).deliveries)[0],

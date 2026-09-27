@@ -160,6 +160,7 @@ const companionReplySchema = z.strictObject({
       "credentials",
       "slack-search",
       "snapshot-retention",
+      "operations",
     ])
     .optional(),
   recall: z
@@ -554,10 +555,11 @@ export function replyJsonSchema(
                 "credentials",
                 "slack-search",
                 "snapshot-retention",
+                "operations",
                 null,
               ],
               description:
-                "Read owner-private bounded subsystem metadata, interrupted inference receipts, capability-route status, native-coding preflight, credential-binding configuration, or public Slack search readiness, not recalled content or secrets. retention explains retained-copy categories and logical deletion versus unverified physical erasure without scanning copies. snapshot-retention separately inspects bounded curated snapshot metadata for an operator-review dry run, never deletion permission. Leave text empty and all other actions unset. No deletions, approvals, retries, searches, credential resolution, native execution, imports, reflection triggers or mutations are performed.",
+                "Read owner-private bounded subsystem metadata, interrupted inference receipts, capability-route status, native-coding preflight, credential-binding configuration, public Slack search readiness or unresolved durable operation markers, not recalled content or secrets. retention explains retained-copy categories and logical deletion versus unverified physical erasure without scanning copies. snapshot-retention separately inspects bounded curated snapshot metadata for an operator-review dry run, never deletion permission. Leave text empty and all other actions unset. No deletions, approvals, retries, admission release, searches, credential resolution, native execution, imports, reflection triggers or mutations are performed.",
             },
           }
         : {}),

@@ -60,7 +60,10 @@ import {
   type ExecutionDependencies,
   executionKey,
 } from "./execution.js";
-import { inspectInterruptedInference } from "./inspection.js";
+import {
+  inspectInterruptedInference,
+  outstandingOperationMetadata,
+} from "./inspection.js";
 import {
   type LatencyDiagnostics,
   latencyProbe,
@@ -261,6 +264,15 @@ export function createJuneRegistry(deps: Dependencies) {
       snapshot: (c): ConversationState => {
         prune(c.state, JSON.stringify(c.key));
         return c.state;
+      },
+      outstandingOperations: (c) => {
+        if (
+          JSON.stringify(c.key) !== JSON.stringify(["private", deps.owner.id])
+        )
+          throw new Error(
+            "Durable diagnostics require the owner-private conversation",
+          );
+        return outstandingOperationMetadata(c.state);
       },
       canResumeJob: (c, id: string) => {
         const reference = c.state.memoryContexts?.[id];

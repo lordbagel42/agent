@@ -874,6 +874,19 @@ error, or per-call rows, and use fixed scalar counters capped at
 `Number.MAX_SAFE_INTEGER`. Timing includes synchronous retrieval work, not model
 inference or end-to-end replies, and is not proof of memory completeness/health.
 
+Ask June privately for unresolved operations after a restart using
+`{"text":"","inspection":"operations"}`. The timestamped read-only report
+counts existing model/search invocation markers and ambiguous delivery records
+in the owner-private conversation, with at most ten hashed identifiers and an
+omitted count. Started-without-settlement and uncertain/unknown records remain
+**unresolved**, not failed or successful. Active work, including the inspection's
+own model turn, can appear. No message bodies, queries, destinations, raw errors
+or credentials are exposed. Inspection cannot retry, cancel, reconcile or release
+admission. It is not an inventory of other actors or external work: missing
+legacy markers, zero counts, process health, idle state and restart never prove
+completion or stoppage. Use the existing subsystem-specific recovery procedures
+after independently confirming external outcomes.
+
 ### Rivet inspection in the owner's DM
 
 June also has a `rivet` read tool, available **only to the configured owner in a

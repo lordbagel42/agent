@@ -216,6 +216,7 @@ export interface CompanionReply {
     | "reflection"
     | "native-coding"
     | "inference"
+    | "operations"
     | "retention"
     | "capabilities"
     | "credentials"
