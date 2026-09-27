@@ -7,6 +7,112 @@ import { createConsoleRoutes } from "../console/routes.js";
 import { createModelProvider } from "./provider.js";
 import { tokenUsage, UsageLedger } from "./usage.js";
 
+test("HTTP outcomes include reply validation without losing consumed tokens", async () => {
+  const root = mkdtempSync(join(tmpdir(), "june-usage-outcomes-"));
+  const ledger = new UsageLedger(join(root, "usage.sqlite"));
+  try {
+    for (const protocol of ["openai", "anthropic"] as const) {
+      for (const scenario of [
+        "success",
+        "schema",
+        "text",
+        "body",
+        "network",
+      ] as const) {
+        const measured = !["body", "network"].includes(scenario);
+        const model = `${protocol}-${scenario}`;
+        const provider = createModelProvider({
+          protocol,
+          model,
+          apiKey: "fixture",
+          usage: ledger,
+          fetch: async () => {
+            if (scenario === "network") throw new TypeError("offline");
+            if (scenario === "body") return new Response("not JSON");
+            const text =
+              scenario === "text"
+                ? "not JSON"
+                : JSON.stringify({
+                    text: scenario === "schema" ? 42 : "hello",
+                  });
+            const usage = {
+              input_tokens: 101,
+              output_tokens: 23,
+              input_tokens_details: { cached_tokens: 17 },
+              cache_read_input_tokens: 17,
+              cache_creation_input_tokens: 5,
+            };
+            return Response.json(
+              protocol === "openai"
+                ? {
+                    status: "completed",
+                    usage,
+                    output: [
+                      {
+                        type: "message",
+                        role: "assistant",
+                        status: "completed",
+                        content: [{ type: "output_text", text }],
+                      },
+                    ],
+                  }
+                : {
+                    type: "message",
+                    role: "assistant",
+                    stop_reason: "end_turn",
+                    usage,
+                    content: [{ type: "text", text }],
+                  },
+            );
+          },
+        });
+        const reply = provider.reply({
+          system: "fixture",
+          messages: [],
+          workspaces: [],
+          usageStage: "synthesis",
+        });
+        if (scenario === "success")
+          await expect(reply).resolves.toEqual({ text: "hello" });
+        else
+          await expect(reply).rejects.toMatchObject({
+            code:
+              scenario === "schema"
+                ? "invalid_response"
+                : scenario === "network"
+                  ? "network_error"
+                  : "malformed_response",
+          });
+        const snapshot = ledger.snapshot(7, model);
+        expect(snapshot.total).toMatchObject({
+          calls: 1,
+          failed: scenario === "success" ? 0 : 1,
+          pending: 0,
+          measured: measured ? 1 : 0,
+          input: measured ? (protocol === "openai" ? 101 : 123) : null,
+          output: measured ? 23 : null,
+          cached: measured ? 17 : null,
+        });
+        expect(snapshot.recent[0]).toMatchObject({
+          status: scenario === "success" ? "completed" : "failed",
+          stage: "synthesis",
+        });
+      }
+    }
+    expect(ledger.snapshot().total).toMatchObject({
+      calls: 10,
+      failed: 8,
+      measured: 6,
+      pending: 0,
+      input: 672,
+      output: 138,
+    });
+  } finally {
+    ledger.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("usage persists only allowlisted counters and remains owner-only in HTML and exports", async () => {
   const root = mkdtempSync(join(tmpdir(), "june-usage-privacy-"));
   const path = join(root, "usage.sqlite");

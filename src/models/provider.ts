@@ -615,7 +615,8 @@ export interface JsonProviderOptions {
   fetch?: typeof globalThis.fetch;
 }
 
-/** Tool-free transport shared by conversation and source-grounded extraction. */
+/** Tool-free operation shared by conversation and source-grounded extraction.
+ * Parse inside tracking so completion means a usable result, not just HTTP success. */
 export function createJsonProvider({
   usage,
   protocol,
@@ -639,16 +640,17 @@ export function createJsonProvider({
   ) {
     throw new ModelError("invalid_configuration", false);
   }
-  return async (
+  return async <T>(
     request: {
       system: string;
       messages: ModelRequest["messages"];
       schema: object;
       name: string;
       usageStage?: UsageStage;
+      parse: (text: string) => T;
     },
     signal?: AbortSignal,
-  ): Promise<string> => {
+  ): Promise<T> => {
     signal?.throwIfAborted();
     return observeUsage(
       usage,
@@ -725,7 +727,9 @@ export function createJsonProvider({
             ),
           );
           init.signal?.throwIfAborted();
-          return isOpenAI ? openAIText(payload) : anthropicText(payload);
+          return request.parse(
+            isOpenAI ? openAIText(payload) : anthropicText(payload),
+          );
         } finally {
           clearTimeout(timeout);
         }
@@ -740,17 +744,14 @@ export function createModelProvider(
   const generate = createJsonProvider(options);
   return {
     async reply(request, signal) {
-      return parseReply(
-        await generate(
-          {
-            ...request,
-            schema: replyJsonSchema(request.workspaces, request),
-            name: "companion_reply",
-          },
-          signal,
-        ),
-        request.workspaces,
-        request,
+      return generate(
+        {
+          ...request,
+          schema: replyJsonSchema(request.workspaces, request),
+          name: "companion_reply",
+          parse: (text) => parseReply(text, request.workspaces, request),
+        },
+        signal,
       );
     },
   };
