@@ -77,14 +77,16 @@ it("bounds unaccepted claims without leaking other scopes, raw quotes, or active
   const before = store.proposals(audience);
   const view = pendingMemoryView(store, audience);
   const rows = view.text.split("\n").filter((line) => line.startsWith("{"));
-  expect(rows).toHaveLength(6);
-  expect(view.text).toContain("Showing 6 of 9 pending claims; 3 omitted");
+  // Complete accept/reject command IDs leave room for five of these rows.
+  expect(rows).toHaveLength(5);
+  expect(view.text).toContain("Showing 5 of 9 pending claims; 4 omitted");
   expect(rows.join("\n").length).toBeLessThanOrEqual(3000);
   expect(view.text.length).toBeLessThan(4000);
   expect(rows.map((row) => JSON.parse(row))).toEqual(
-    Array.from({ length: 6 }, (_, i) =>
+    Array.from({ length: 5 }, (_, i) =>
       expect.objectContaining({
         status: "pending",
+        rejectCommand: `!memory-reject ${proposals[i + 3]?.id}`,
         text: `claim ${i} <@U1> <!here> https://example.com/ @everyone`,
         confidence: 0.37,
         validFrom: 11,

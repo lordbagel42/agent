@@ -440,6 +440,18 @@ pending-only. Acceptance changes neither personality nor permissions and does no
 create an owner correction. The command is version-gated to fresh workflow turns;
 already-journaled turns retain their prior path.
 
+To reject a pending claim, the owner instead sends exactly
+`!memory-reject proposal:<full 64-character lowercase hex ID>` through the same
+verified plain-text Slack DM boundary. The pending view supplies both complete
+commands within its existing display budget. Rejection persists the irreversible
+decision and bounded original proposal provenance in the encrypted ledger; it
+survives reopening, repeated commands and extraction replay. That candidate cannot
+later be accepted. Already accepted claims cannot be rejected through this command.
+This is not deletion: original sources remain available, and explicit source
+forgetting remains the separate operation that removes dependent proposals and
+records deletion tombstones. Rejection starts at memory-claim-review version 3;
+older journaled rejection text retains its previous conversational path.
+
 ## Reflection and personality
 
 `reflectionEvidence(audience, sourceIds, maxAgeMs): Evidence[]` returns original

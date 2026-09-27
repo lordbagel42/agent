@@ -355,7 +355,7 @@ export function createJuneRegistry(deps: Dependencies) {
           );
           const memoryReviewVersion = await loop.getVersion(
             "memory-claim-review",
-            2,
+            3,
           );
           // Old iterations must not turn previously ordinary ! text into approval.
           const codingCommandVersion = await loop.getVersion(
@@ -835,7 +835,9 @@ export function createJuneRegistry(deps: Dependencies) {
               // Model output, imports, history and worker results never enter here.
               const memoryCommand =
                 memoryReviewVersion >= 2 && body.type === "event"
-                  ? event.text.match(/^!memory-accept (proposal:[a-f0-9]{64})$/)
+                  ? event.text.match(
+                      /^!memory-(accept|reject) (proposal:[a-f0-9]{64})$/,
+                    )
                   : null;
               if (body.type === "job_result" && version < 7) {
                 reply = { text: body.text };
@@ -852,44 +854,54 @@ export function createJuneRegistry(deps: Dependencies) {
                       : "",
                   }),
                 );
-              } else if (memoryCommand && memoryCommand[0] === event.text) {
+              } else if (
+                memoryCommand &&
+                memoryCommand[0] === event.text &&
+                (memoryCommand[1] === "accept" || memoryReviewVersion >= 3)
+              ) {
                 // Full-match equality also rejects the final newline allowed by $.
+                // Older review journals keep their model path for reject commands.
+                const rejecting = memoryCommand[1] === "reject";
                 reply = await loop.step(
                   "memory-review-command",
                   async (step): Promise<CompanionReply> => {
                     if (!ownerTurn || !scope.private)
                       return {
-                        text: "Memory confirmation requires the owner's private conversation. No proposal was accepted.",
+                        text: "Memory confirmation requires the owner's private conversation. No proposal was changed.",
                       };
                     if (
                       event.address.channel !== "slack" ||
                       event.memoryReviewEligible !== true
                     )
                       return {
-                        text: "Send the memory confirmation as a new plain-text Slack DM, not a quote, code block, attachment or forwarded message. No proposal was accepted.",
+                        text: "Send the memory confirmation as a new plain-text Slack DM, not a quote, code block, attachment or forwarded message. No proposal was changed.",
                       };
                     if (!plan.memory || !deps.memory)
                       return {
-                        text: "Retained memory is unavailable. No proposal was accepted.",
+                        text: "Retained memory is unavailable. No proposal was changed.",
                       };
                     if (!valid(step.state) || step.abortSignal.aborted)
                       return { text: "" };
-                    const id = memoryCommand[1] as string;
+                    const id = memoryCommand[2] as string;
                     try {
                       // The store revalidates audience and source dependencies;
-                      // repeated acceptance is safe after an interrupted receipt.
+                      // repeated decisions are safe after an interrupted receipt.
                       deps.memory.store.reviewProposal(
                         audience,
                         id,
-                        "accepted",
+                        rejecting ? "rejected" : "accepted",
                       );
                     } catch {
                       return {
-                        text: "That memory proposal is unavailable for acceptance. Ask to review current pending claims; rejected or forgotten claims cannot be promoted.",
+                        text: rejecting
+                          ? "That memory proposal is unavailable for rejection. Ask to review current pending claims; accepted or forgotten claims cannot be rejected."
+                          : "That memory proposal is unavailable for acceptance. Ask to review current pending claims; rejected or forgotten claims cannot be promoted.",
                       };
                     }
                     return {
-                      text: `Memory proposal ${id} is accepted for owner-private recall. This does not change personality or grant permissions.`,
+                      text: rejecting
+                        ? `Memory proposal ${id} is rejected. Its bounded provenance is retained and this candidate cannot be promoted on replay. This is not deletion; source evidence remains.`
+                        : `Memory proposal ${id} is accepted for owner-private recall. This does not change personality or grant permissions.`,
                     };
                   },
                 );
