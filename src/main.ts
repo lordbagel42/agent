@@ -769,6 +769,7 @@ async function main() {
             controllerRevision: feed.controllerRevision ?? null,
             lastHealthyRevision: feed.lastHealthyRevision,
             blocked: feed.blocked,
+            lastStageRecovery: feed.lastStageRecovery ?? null,
             recentEvents: feed.events.slice(-5),
           });
         }

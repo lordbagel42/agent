@@ -13,6 +13,9 @@ const feedSchema = z.strictObject({
   lastHealthyRevision: revision,
   controllerRevision: revision.nullable().optional(),
   blocked: z.boolean(),
+  lastStageRecovery: z
+    .strictObject({ at: timestamp, removed: timestamp.positive() })
+    .optional(),
   events: z
     .array(
       z.strictObject({
@@ -175,7 +178,7 @@ export function createReleaseTool(options: {
     if (!feed)
       return [
         ...lines,
-        "Controller feed unavailable. Progress, phase latency, checks, blockers, and historical healthy observations are unknown; no deployment action was taken.",
+        "Controller feed unavailable. Progress, phase latency, checks, blockers, staging recovery, and historical healthy observations are unknown; no deployment action was taken.",
       ].join("\n\n");
     const bounded = feed.events.slice(-100);
     const events = request.revision
@@ -198,10 +201,14 @@ export function createReleaseTool(options: {
     lines.push(
       `Controller blocked: ${feed.blocked ? "yes" : "no (as last published; not a liveness guarantee)"}.${feed.blocked ? ` ${blocker?.reason ? `${blocker.reason}: ${reasons[blocker.reason]}` : "Reason is outside the bounded feed; operator inspection required."}` : ""}`,
       `Historical last healthy revision: ${feed.lastHealthyRevision} (not proof of the current deployment).`,
+      feed.lastStageRecovery
+        ? `Staging recovery: controller recorded removal of ${feed.lastStageRecovery.removed} abandoned stage(s) at ${new Date(feed.lastStageRecovery.at).toISOString()}. Global historical receipt, not associated with any revision or activation. Remaining stages and later cleanup are unknown; this is not proof all stages are clean.`
+        : "Staging recovery: unknown (no confirmed-removal receipt in this feed). Superseded status does not prove cleanup; missing evidence is not failure or proof that stages remain.",
       latest
         ? `Last recorded candidate status: ${latest.status} at ${new Date(latest.at).toISOString()}.`
         : "Candidate lifecycle status unknown in the last 100 controller events. Not known queued, checked, or authorized; owner must verify the exact revision was published to trusted main. Old evidence may have aged out; fetch failures are controller observations only.",
       phaseLatency(events, request.revision ?? latest?.revision),
+      "Superseded means skipped before activation in that attempt, not a deployment failure or proof of the active release or stage cleanup.",
       "Checks: controller runs frozen install, formatting, types, routing/delivery tests, immutable artifact verification, drain, and readiness/process identity gates. This feed exposes stage outcomes only, not individual check logs; missing results are unknown, never passed.",
       ...events
         .slice(-3)

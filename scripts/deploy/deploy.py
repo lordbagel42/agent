@@ -91,8 +91,18 @@ def atomic_json(path, value, mode=0o600, gid=None):
 
 
 class Store:
-    def __init__(self, root, feed, initial, feed_gid=None, controller_revision=None):
+    def __init__(
+        self,
+        root,
+        feed,
+        initial,
+        feed_gid=None,
+        controller_revision=None,
+        *,
+        staging_recovery_feed=False,
+    ):
         self.feed, self.feed_gid = feed, feed_gid
+        self.staging_recovery_feed = staging_recovery_feed
         self.initial = revision(initial)
         self.controller_revision = (
             revision(controller_revision) if controller_revision is not None else None
@@ -187,6 +197,17 @@ class Store:
         self.set("blocked", reason)
         self.event(commit, "blocked", reason)
 
+    def stage_recovery(self, removed):
+        if type(removed) is not int or not 0 < removed <= 2**53 - 1:
+            return
+        # Global maintenance evidence, never attributed to observed/active SHA.
+        # A crash after removal but before this receipt leaves recovery unknown.
+        self.set(
+            "lastStageRecovery",
+            json.dumps({"at": time.time_ns() // 1_000_000, "removed": removed}),
+        )
+        self.publish()
+
     def publish(self):
         events = [
             dict(row)
@@ -194,6 +215,7 @@ class Store:
                 "SELECT * FROM events ORDER BY sequence DESC LIMIT 100"
             )
         ][::-1]
+        recovery = self.get("lastStageRecovery") if self.staging_recovery_feed else ""
         atomic_json(
             self.feed,
             {
@@ -210,6 +232,7 @@ class Store:
                 ),
                 "blocked": bool(self.get("blocked")),
                 "events": events,
+                **({"lastStageRecovery": json.loads(recovery)} if recovery else {}),
             },
             0o640,
             self.feed_gid,
@@ -260,7 +283,7 @@ class Deployer:
 
     def tick(self):
         try:
-            self.host.recover_stages()
+            self.store.stage_recovery(self.host.recover_stages())
             self.deploy()
         finally:
             if self.statuses:
@@ -707,10 +730,12 @@ class Host:
     def recover_stages(self):
         # Call only under deployment_lock, including the normal polling loop.
         # Names alone never authorize deletion; old/unregistered stages stay put.
+        removed = 0
         for path in sorted(self.stage_root.glob(".stage-*.json")):
             name = path.name[1:-5]
-            if STAGE.fullmatch(name):
-                self.remove_stage(self.stage_root / name)
+            if STAGE.fullmatch(name) and self.remove_stage(self.stage_root / name):
+                removed += 1
+        return removed
 
     def remove_stage(self, stage):
         try:
@@ -732,6 +757,7 @@ class Host:
                         return
                 if not self.build_unit_stopped(stage):
                     return
+            removed = False
             try:
                 meta = stage.lstat()
             except FileNotFoundError:
@@ -747,8 +773,10 @@ class Host:
                     return
                 shutil.rmtree(stage)
                 sync_directory(self.stage_root)
+                removed = True
             self.stage_record(stage).unlink()
             sync_directory(self.stage_root)
+            return removed
         except (
             OSError,
             ValueError,
@@ -1257,7 +1285,7 @@ def main():
             raise ValueError("unsafe_installation")
     with deployment_lock("/var/lib/june-deploy/deploy.lock"):
         host = Host(config)
-        host.recover_stages()
+        recovered = host.recover_stages()
         if args.prepare:
             if revision(args.prepare) != revision(host.fetch()):
                 raise ValueError("not_current_main")
@@ -1278,10 +1306,12 @@ def main():
             initial,
             pwd.getpwnam("june").pw_gid,
             controller_revision=installed_controller_revision(config.get("controller")),
+            staging_recovery_feed=config.get("stagingRecoveryFeed") is True,
         )
         statuses = GitHubStatuses(store)
         loop = Deployer(host, store, statuses)
         try:
+            store.stage_recovery(recovered)
             if args.bootstrap:
                 store.event(initial, "healthy")
                 return

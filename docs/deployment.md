@@ -364,6 +364,32 @@ may be stale if the controller stopped. Replacing controller files/configuration
 or restarting it still requires separate operator authorization; neither an app
 push nor June's read-only inspection grants it.
 
+### Superseded candidates and staging recovery are separate
+
+`superseded` means the controller skipped that candidate before activation in
+that attempt, not that deployment failed, that it is running, or that its stage
+was removed. Staging recovery is separate global maintenance: the optional
+`lastStageRecovery: {at, removed}` receipt records only a positive count of
+abandoned stage directories actually removed by a recovery pass, after directory
+sync and sidecar cleanup complete. It carries no revision, path, stage name,
+process identity or raw output. It never changes candidate lifecycle status,
+`lastHealthyRevision`, or the serving app's identity. June reports it even when
+inspecting a particular revision, explicitly without attributing it to that SHA.
+
+Absent receipts mean **unknown**, not zero, failed cleanup, or no abandoned
+stages. Retained/ambiguous stages, partial failures and sidecar-only cleanup
+(which may follow promotion) do not count. A crash after removal but before
+recording can leave no receipt; this is not an exactly-once cleanup history.
+The last receipt survives restart and empty recovery passes, so it is historical,
+not proof all stages are now clean or that the controller is alive. Inline build
+cleanup and standalone `--prepare` do not produce this recovery receipt.
+
+Deploy compatible app readers before separately upgrading the installed
+controller and setting `stagingRecoveryFeed: true` in its private configuration.
+The field is omitted by default because older v1 readers reject unknown fields;
+recording and cleanup do not depend on publication being enabled. Neither June's
+inspection nor an ordinary app release installs/configures the controller.
+
 ## One-time bootstrap and access checklist
 
 The existing homelab provisioner remains the source for June's Node installation,

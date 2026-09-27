@@ -408,6 +408,7 @@ export function buildModelRequest({
     ...(privateTurn
       ? [
           "controllerRevision is the installed controller's last published startup provenance, separate from the running app revision. Missing/null means unknown, never the app SHA or main head. A different controller SHA does not by itself establish ancestry or age. Pushing app main does not install controller changes; installation requires a separate authorized operator action. Inspection cannot install or restart the controller, and a published identity is not a fresh liveness check.",
+          "A superseded candidate was skipped before activation in that attempt, not a deployment failure or proof of the active release. Superseded does not prove staging cleanup. lastStageRecovery is a global historical confirmed-removal count/time, never associated with a revision or proof all stages are clean. Absent recovery evidence means unknown, not failed cleanup or no abandoned stages.",
         ]
       : []),
     privateTurn && capabilities.modelStatusAvailable

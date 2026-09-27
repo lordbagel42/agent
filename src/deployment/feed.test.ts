@@ -145,6 +145,29 @@ test("deployment evidence is owner-only, read-only, bounded and never raw proces
     };
     await writeFile(file, JSON.stringify(deferred));
     expect(await read("owner")).toEqual(deferred);
+    const recovery = { at: 3000, removed: 2 };
+    await writeFile(
+      file,
+      JSON.stringify({ ...feed, lastStageRecovery: recovery }),
+    );
+    expect((await read("owner", 8)).lastStageRecovery).toEqual(recovery);
+    for (const invalid of [
+      { ...recovery, path: "/private/stage" },
+      { ...recovery, revision: "b".repeat(40) },
+      { ...recovery, stderr: "private credential" },
+      { ...recovery, removed: 0 },
+      { ...recovery, removed: 1.5 },
+    ]) {
+      await writeFile(
+        file,
+        JSON.stringify({ ...feed, lastStageRecovery: invalid }),
+      );
+      const rejected = await app.request("/events", authorized);
+      expect(rejected.status).toBe(503);
+      expect(await rejected.json()).toEqual({
+        error: "deployment_feed_unavailable",
+      });
+    }
     await writeFile(
       file,
       JSON.stringify({
