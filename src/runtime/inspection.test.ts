@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Client } from "rivetkit/client";
 import { expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
@@ -14,7 +14,10 @@ import { HistoryImports } from "../imports/index.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
-import { createInspectionReader } from "./inspection.js";
+import {
+  createInspectionReader,
+  inspectInterruptedInference,
+} from "./inspection.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
 it("reports retained-copy boundaries without accessing retained data", async () => {
@@ -56,6 +59,192 @@ it("reports retained-copy boundaries without accessing retained data", async () 
     expect(report).not.toContain("SECRET");
     expect(report.length).toBeLessThan(4000);
   }
+});
+
+it("bounds interruption metadata without exposing or mutating private and forgotten records", () => {
+  const events = Object.fromEntries(
+    [4, 11, 1, 7, 0, 12, 6, 3, 10, 5, 9, 2, 8].map((i) => [
+      `SECRET-event-${i}`,
+      {
+        event: { occurredAt: i, text: "SECRET BODY" },
+        done: i % 2 === 0,
+        inference: {
+          status: "unknown" as const,
+          code: "interrupted_inference" as const,
+          invocation: JSON.stringify([
+            "SECRET-audience",
+            `SECRET-event-${i}`,
+            "reply",
+            0,
+          ]),
+        },
+      },
+    ]),
+  );
+  const input = {
+    ...events,
+    legacy: { event: { occurredAt: 999 }, done: true },
+  };
+  const before = structuredClone(input);
+  const report = inspectInterruptedInference(input, ["SECRET-event-12"]);
+  const rows = JSON.parse(
+    report.slice(report.indexOf("[{"), report.indexOf("\n")),
+  ) as {
+    id: string;
+    inboundOccurredAt: number;
+    status: string;
+    code: string;
+  }[];
+  expect(report).toContain("Recorded recovery receipts: 12; showing latest 10");
+  expect(rows.map((row) => row.inboundOccurredAt)).toEqual([
+    11, 10, 9, 8, 7, 6, 5, 4, 3, 2,
+  ]);
+  expect(new Set(rows.map((row) => row.id)).size).toBe(10);
+  for (const row of rows) {
+    expect(row.id).toMatch(/^[a-f0-9]{64}$/);
+    expect(row.status).toBe("unknown");
+    expect(row.code).toBe("interrupted_inference");
+  }
+  expect(report).not.toContain("SECRET");
+  expect(report.length).toBeLessThan(4000);
+  expect(report).toContain("not an inference or interruption timestamp");
+  expect(report).toContain(
+    "absence does not prove success or intentional silence",
+  );
+  expect(input).toEqual(before);
+  expect(inspectInterruptedInference({ legacy: input.legacy })).toContain(
+    "Recorded recovery receipts: 0; showing latest 0",
+  );
+});
+
+it("hides tombstoned interruption receipts before conversation cleanup, including context dependencies", async (t) => {
+  const owner = {
+    id: "owner",
+    identities: [
+      { channel: "slack" as const, accountId: "T1", senderId: "U1" },
+    ],
+  };
+  const audience = JSON.stringify(["private", owner.id]);
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const event = (id: string, occurredAt: number): MessageEvent => ({
+    id,
+    occurredAt,
+    type: "message",
+    messageId: id,
+    direct: true,
+    address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+    senderId: "U1",
+    text: "SECRET BODY",
+  });
+  const source = (message: MessageEvent) => ({
+    id: message.id,
+    audiences: [audience],
+    platform: "slack",
+    account: "T1",
+    conversation: "D1",
+    author: "U1",
+    observedAt: message.occurredAt,
+    sourceUrl: "https://example.invalid/private",
+    text: message.text,
+  });
+  for (const id of ["direct", "supporting", "context-source"])
+    store.appendSource(source(event(id, 1)));
+  const events = Object.fromEntries(
+    ["direct", "dependency", "context", "kept"].map((id, i) => [
+      id,
+      {
+        event: event(id, (i + 1) * 11),
+        done: true,
+        inference: {
+          status: "unknown" as const,
+          code: "interrupted_inference" as const,
+          invocation: `SECRET-${id}`,
+        },
+      },
+    ]),
+  );
+  const sent: OutboundMessage[] = [];
+  let calls = 0;
+  const registry = createJuneRegistry({
+    owner,
+    memory: { store, source },
+    model: {
+      async reply() {
+        calls++;
+        return { text: "", inspection: "inference" };
+      },
+    },
+    inspection: async () => {
+      throw new Error("Must inspect conversation state locally");
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        async receive() {
+          return { response: new Response(), events: [] };
+        },
+        async send(message) {
+          sent.push(JSON.parse(JSON.stringify(message)));
+          return { status: "sent", messageId: `out-${sent.length}` };
+        },
+      },
+    },
+  });
+  // Seed previously recovered records, without changing production accounting.
+  const config = registry.config.use.conversation.config;
+  const initial = "state" in config ? config.state : undefined;
+  if (!initial || typeof initial !== "object")
+    throw new Error("Missing fixture state");
+  const personality = createHash("sha256").update("{}").digest("hex");
+  Object.assign(initial, {
+    events,
+    memoryContexts: {
+      dependency: { sourceIds: ["supporting"], personality },
+      context: {
+        sourceIds: [],
+        contextSourceIds: ["context-source"],
+        personality,
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", owner.id]);
+  let completed = 4;
+  const inspect = async (id: string) => {
+    completed++;
+    await june.send("inbox", { type: "event", event: event(id, 100) });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).filter(
+            (record) => record.done,
+          ).length,
+        { timeout: 5000 },
+      )
+      .toBe(completed);
+    const content = sent.at(-1)?.content;
+    return content?.type === "text" ? content.text : "";
+  };
+  expect(await inspect("before")).toContain(
+    "Recorded recovery receipts: 4; showing latest 4",
+  );
+  // The ledger commits first; deliberately omit june.forget to model a crash
+  // before actor cleanup and its forgottenEvents cache can catch up.
+  for (const id of ["direct", "supporting", "context-source"])
+    store.deleteSource(id);
+  const report = await inspect("after");
+  expect(report).toContain("Recorded recovery receipts: 1; showing latest 1");
+  expect(report).toContain('"inboundOccurredAt":44');
+  for (const timestamp of [11, 22, 33])
+    expect(report).not.toContain(`"inboundOccurredAt":${timestamp}`);
+  expect(JSON.stringify(sent)).not.toContain("SECRET");
+  const state = await june.snapshot();
+  expect(state.forgottenEvents).toBeUndefined();
+  for (const [id, record] of Object.entries(events))
+    expect(state.events[id]).toEqual(record);
+  expect(calls).toBe(2);
 });
 
 it("inspects bounded metadata through June while enforcing owner, guest, synthesis and read-only boundaries", async (t) => {
@@ -208,6 +397,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
           expect(request.system).toContain(
             'Set inspection to "memory", "imports", "reflection", or "native-coding"',
           );
+        if (request.inspectionAvailable)
+          expect(request.system).toContain('set inspection to "inference"');
         if (request.inspectionAvailable)
           expect(request.system).toContain('Set inspection to "retention"');
         if (request.inspectionAvailable)
@@ -394,11 +585,18 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(requests.at(-1)?.system).toContain('set inspection to "capabilities"');
   expect(reads).toBe(6);
   expect(requests).toHaveLength(6);
+  action = { text: "", inspection: "inference" };
+  expect(await deliver()).toContain(
+    "Recorded recovery receipts: 0; showing latest 0",
+  );
+  expect(requests).toHaveLength(7);
+  expect(reads).toBe(6);
   for (const inspection of [
     "native-coding",
     "memory",
     "retention",
     "capabilities",
+    "inference",
   ] as const) {
     action = { text: "", inspection };
     for (const extra of [
@@ -410,7 +608,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
           conversationId: "C1",
         },
       },
-      { senderId: "U2", metadata: { channelType: "im" as const } },
+      // Each permission case gets its own guest so the four-turn rate limit
+      // does not suppress the request before the inspection guard runs.
+      {
+        senderId: `guest-${inspection}`,
+        metadata: { channelType: "im" as const },
+      },
     ]) {
       const before = requests.length;
       expect(await deliver(extra)).toContain("owner-private turn");

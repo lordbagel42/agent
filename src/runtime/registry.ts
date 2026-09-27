@@ -51,6 +51,7 @@ import {
   type ExecutionDependencies,
   executionKey,
 } from "./execution.js";
+import { inspectInterruptedInference } from "./inspection.js";
 import {
   type LatencyDiagnostics,
   latencyProbe,
@@ -88,7 +89,7 @@ export interface Dependencies {
   latency?: LatencyDiagnostics;
   analytics?: (days: 1 | 7 | 30) => string;
   inspection?: (
-    target: NonNullable<CompanionReply["inspection"]>,
+    target: Exclude<NonNullable<CompanionReply["inspection"]>, "inference">,
   ) => Promise<string>;
   dashboardLogin?: {
     issue(): { url: string; expiresAt: string } | undefined;
@@ -1869,10 +1870,45 @@ export function createJuneRegistry(deps: Dependencies) {
                                     modelRequest.workspaces,
                                     modelRequest,
                                   );
-                                  if (checked.inspection)
+                                  if (checked.inspection === "inference") {
+                                    const events = Object.fromEntries(
+                                      Object.entries(step.state.events).filter(
+                                        ([id, record]) => {
+                                          if (!record.inference) return false;
+                                          const reference =
+                                            step.state.memoryContexts?.[id];
+                                          if (
+                                            reference &&
+                                            !current(audience, reference)
+                                          )
+                                            return false;
+                                          const source =
+                                            record.event.type === "message"
+                                              ? deps.memory?.source(
+                                                  record.event,
+                                                  audience,
+                                                )
+                                              : undefined;
+                                          // Tombstoning precedes actor cleanup; do not
+                                          // rely only on the forgottenEvents cache.
+                                          return (
+                                            !source ||
+                                            !deps.memory?.store.isDeleted(
+                                              source.id,
+                                            )
+                                          );
+                                        },
+                                      ),
+                                    );
+                                    text = inspectInterruptedInference(
+                                      events,
+                                      step.state.forgottenEvents,
+                                    );
+                                  } else if (checked.inspection) {
                                     text = await deps.inspection(
                                       checked.inspection,
                                     );
+                                  }
                                 } catch {
                                   text =
                                     "Subsystem inspection is unavailable; no status can be inferred and no action was taken.";

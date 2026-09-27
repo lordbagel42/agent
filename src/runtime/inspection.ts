@@ -7,6 +7,38 @@ import type { CuratedPersonalityStore } from "../memory/curated.js";
 import type { EvidenceStore, ImportCoverage } from "../memory/store.js";
 import type { ReflectionRuntimeState } from "./reflection.js";
 
+/** Project existing recovery receipts only; absence is not an outcome. */
+export function inspectInterruptedInference(
+  events: Record<
+    string,
+    {
+      event: { occurredAt: number };
+      inference?: {
+        status: "unknown";
+        code: "interrupted_inference";
+        invocation: string;
+      };
+    }
+  >,
+  forgottenEvents: readonly string[] = [],
+): string {
+  const forgotten = new Set(forgottenEvents);
+  const receipts = Object.entries(events)
+    .flatMap(([id, { event, inference }]) =>
+      inference && !forgotten.has(id)
+        ? [{ inference, occurredAt: event.occurredAt }]
+        : [],
+    )
+    .sort((a, b) => b.occurredAt - a.occurredAt);
+  const rows = receipts.slice(0, 10).map(({ inference, occurredAt }) => ({
+    id: createHash("sha256").update(inference.invocation).digest("hex"),
+    inboundOccurredAt: occurredAt,
+    status: inference.status,
+    code: inference.code,
+  }));
+  return `Interrupted inference snapshot at ${new Date().toISOString()}. Read-only; this owner-private conversation only. Recorded recovery receipts: ${receipts.length}; showing latest ${rows.length} by inbound event time. ${JSON.stringify(rows)}\nIDs are opaque receipt fingerprints, not provider request IDs. inboundOccurredAt is the inbound event time (epoch milliseconds), not an inference or interruption timestamp; those times were not recorded. Legacy or uninterrupted events may have no receipt; absence does not prove success or intentional silence. Outcomes remain unknown, not intentional silence; actions may have occurred. Inspect recorded delivery/tool receipts before any new action. No retry, reconciliation, reclassification or release of held work was performed. No message bodies or raw invocation keys returned.`;
+}
+
 /** Host-bound audience and selections, never model-supplied scope or query.
  * Reports contain metadata only, so retained receipts cannot resurrect evidence.
  * No mutating service methods or remote history fetches are called here.
@@ -27,7 +59,9 @@ export function createInspectionReader(deps: {
       activeTurnIds: string[];
     }
   >;
-}): (target: NonNullable<CompanionReply["inspection"]>) => Promise<string> {
+}): (
+  target: Exclude<NonNullable<CompanionReply["inspection"]>, "inference">,
+) => Promise<string> {
   return async (target) => {
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {

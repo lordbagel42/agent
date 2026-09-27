@@ -688,6 +688,17 @@ automatically relaunch an interrupted attempt. Unknown live turn occupancy stays
 held until authenticated confirmation of stoppage releases that exact ID.
 Cancellation is not proof of remote cancellation or descendant quiescence.
 
+Ask June privately about interrupted inference with
+`{"text":"","inspection":"inference"}`, with no other actions. The host sends
+up to ten recorded recovery receipts from that private conversation, newest by
+inbound event time, with opaque receipt IDs and the original unknown status.
+Forgotten events, message bodies and raw invocation keys are omitted. Timestamps
+describe inbound events, not inference start or interruption; those times were
+not recorded. Missing receipts, including on legacy events, prove neither success
+nor intentional silence. This read-only view does not retry, reconcile, reclassify
+or release uncertain work; actions may already have occurred. Guests, public
+turns, worker results and synthesis cannot invoke it.
+
 These routes require the existing owner bearer token, not a console cookie:
 
 - `GET /operator/memory`: bounded evidence, pending claims and curated metadata.

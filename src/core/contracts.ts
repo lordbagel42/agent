@@ -200,6 +200,7 @@ export interface CompanionReply {
     | "imports"
     | "reflection"
     | "native-coding"
+    | "inference"
     | "retention"
     | "capabilities";
   /** One owner-private query of retained evidence, never a permission grant. */
