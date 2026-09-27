@@ -6,6 +6,7 @@ import { afterEach, expect, it } from "vitest";
 import { createHttpApp } from "../http/app.js";
 import { createImportRoutes } from "../http/imports.js";
 import { EvidenceStore, type Source } from "../memory/store.js";
+import { createInspectionReader } from "../runtime/inspection.js";
 import { ImportedMemoryExtraction } from "./extraction.js";
 import { HistoryImports } from "./index.js";
 
@@ -198,6 +199,13 @@ it("requires exact operator consent, extracts only imported audience-scoped batc
   expect(review.eligible).toBe(22);
   expect(review.oversized).toBe(1);
   expect(review.untrackedPages).toBe(0);
+  expect(review.overflow).toBe(1);
+  expect(review.admission).toEqual({
+    state: "paused",
+    reason: "approval-required",
+    active: 0,
+    unknown: 0,
+  });
   const start = (input: unknown, auth = true) =>
     app.request(`${url}/start`, {
       method: "POST",
@@ -224,9 +232,15 @@ it("requires exact operator consent, extracts only imported audience-scoped batc
   expect(calls).toHaveLength(1);
   const next = extraction.review("mail");
   expect(next.sourceIds).toEqual([sources[20]?.id]);
+  expect(next.overflow).toBe(0);
+  expect(next.admission.state).toBe("paused");
   await extraction.start("mail", next.digest ?? "missing");
   expect(calls).toHaveLength(2);
-  expect(extraction.review("mail").digest).toBeNull();
+  expect(extraction.review("mail")).toMatchObject({
+    digest: null,
+    overflow: 0,
+    admission: { state: "paused", reason: "oversized-sources" },
+  });
   // A renamed selection and a changed model must not bypass attempted inputs.
   persist(store, sources, "overlap");
   const overlap = new ImportedMemoryExtraction(
@@ -258,6 +272,7 @@ it("requires exact operator consent, extracts only imported audience-scoped batc
     sourceIds: ["large-a"],
     eligible: 2,
     oversized: 0,
+    overflow: 1,
   });
 });
 
@@ -267,10 +282,12 @@ it("persists call intent across restart and blocks uncertain replay without stag
   const path = join(dir, "evidence.db");
   let store = open(path);
   persist(store, [source("original")]);
+  persist(store, [source("waiting-source")], "waiting");
+  const selections = { mail: coverage, waiting: coverage };
   let calls = 0;
   let extraction = new ImportedMemoryExtraction(
     store,
-    { mail: coverage },
+    selections,
     audience,
     {},
     async () => {
@@ -280,6 +297,7 @@ it("persists call intent across restart and blocks uncertain replay without stag
   );
   const review = extraction.review("mail");
   const digest = review.digest ?? "missing";
+  const waitingDigest = extraction.review("waiting").digest ?? "missing";
   store.beginImportExtraction({
     id: digest,
     importId: "mail",
@@ -294,7 +312,7 @@ it("persists call intent across restart and blocks uncertain replay without stag
   store = open(path);
   extraction = new ImportedMemoryExtraction(
     store,
-    { mail: coverage },
+    selections,
     audience,
     {},
     async () => {
@@ -305,8 +323,40 @@ it("persists call intent across restart and blocks uncertain replay without stag
   expect(extraction.review("mail")).toMatchObject({
     blocked: true,
     digest: null,
+    admission: {
+      state: "unknown",
+      reason: "unsettled-attempt",
+      active: 0,
+      unknown: 1,
+    },
     attempts: [{ status: "uncertain", running: false }],
   });
+  // The hold is visible even when this selection has no attempt of its own.
+  expect(extraction.review("waiting")).toMatchObject({
+    sourceIds: ["waiting-source"],
+    digest: null,
+    admission: { state: "unknown", reason: "unsettled-attempt" },
+    attempts: [],
+  });
+  const imports = new HistoryImports(store, {
+    waiting: {
+      coverage,
+      async fetchPage() {
+        throw new Error("must not fetch");
+      },
+    },
+  });
+  const report = await createInspectionReader({
+    audience,
+    imports,
+    selections: { waiting: coverage },
+    importExtraction: extraction,
+  })("imports");
+  expect(report).toContain('"state":"unknown","reason":"unsettled-attempt"');
+  expect(report).toContain('"request":null');
+  expect(report).not.toContain("waiting-source");
+  expect(report).not.toContain("original");
+  await expect(extraction.start("waiting", waitingDigest)).rejects.toThrow();
   await expect(extraction.start("mail", digest)).rejects.toThrow();
   expect(calls).toBe(0);
   expect(store.proposals(audience)).toEqual([]);
@@ -314,6 +364,11 @@ it("persists call intent across restart and blocks uncertain replay without stag
   extraction.cancel("mail", digest);
   await expect(extraction.start("mail", digest)).rejects.toThrow();
   expect(calls).toBe(0);
+  expect(extraction.review("waiting").admission).toMatchObject({
+    state: "paused",
+    reason: "approval-required",
+    unknown: 0,
+  });
 
   persist(store, [source("bad-output")], "second");
   const invalid = new ImportedMemoryExtraction(
@@ -370,12 +425,13 @@ it("rechecks cancellation and deletion after an abort-ignoring call, including u
         supersedes: [],
       });
     }
+    persist(store, [source("waiting-source")], "waiting");
     const pending = Promise.withResolvers<unknown>();
     let calls = 0;
     let providerSignal: AbortSignal | undefined;
     const extraction = new ImportedMemoryExtraction(
       store,
-      { mail: coverage },
+      { mail: coverage, waiting: coverage },
       audience,
       {},
       async (_sources, claims, signal) => {
@@ -388,11 +444,13 @@ it("rechecks cancellation and deletion after an abort-ignoring call, including u
       },
     );
     const digest = extraction.review("mail").digest ?? "missing";
+    const waitingDigest = extraction.review("waiting").digest ?? "missing";
     let settled = false;
     const running = extraction.start("mail", digest).finally(() => {
       settled = true;
     });
     expect(calls).toBe(1);
+    expect(extraction.review("mail").admission.state).toBe("running");
     expect(providerSignal?.aborted).toBe(false);
     await expect(extraction.start("mail", digest)).rejects.toThrow();
     if (operation === "cancel") extraction.cancel("mail", digest);
@@ -410,6 +468,11 @@ it("rechecks cancellation and deletion after an abort-ignoring call, including u
         { id: digest, status: "cancelled", running: true, proposalIds: [] },
       ],
     });
+    expect(extraction.review("waiting")).toMatchObject({
+      digest: null,
+      admission: { state: "paused", reason: "capacity", active: 1, unknown: 0 },
+    });
+    await expect(extraction.start("waiting", waitingDigest)).rejects.toThrow();
     pending.resolve([proposal("cited")]);
     expect((await running).attempts[0]).toMatchObject({
       status: "cancelled",
@@ -419,6 +482,11 @@ it("rechecks cancellation and deletion after an abort-ignoring call, including u
     expect(store.proposals(audience)).toEqual([]);
     await expect(extraction.start("mail", digest)).rejects.toThrow();
     expect(calls).toBe(1);
+    expect(extraction.review("waiting").admission).toMatchObject({
+      state: "paused",
+      reason: "approval-required",
+      active: 0,
+    });
   }
   const store = open();
   persist(store, [source("deleted-before-call")]);

@@ -902,7 +902,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   extractionEnabled = true;
   action = { text: "", inspection: "imports" };
   const extractionReport = await deliver();
+  expect(extractionReport.length).toBeLessThanOrEqual(4000);
   expect(extractionReport).toContain('"batch":1,"eligible":1');
+  expect(extractionReport).toContain('"overflow":0');
+  expect(extractionReport).toContain(
+    '"state":"paused","reason":"approval-required"',
+  );
   expect(extractionReport).toContain(
     '"review":"/operator/imports/selection-0/extraction"',
   );

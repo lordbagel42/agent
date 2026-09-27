@@ -279,6 +279,19 @@ an exact review path and digest. The request grants no authority. The operator:
    `POST /operator/imports/:id/extraction/cancel` with `{digest}` durably prevents
    staging and requests abort. Cancellation is not proof the provider stopped.
 
+Review and June's private imports inspection report `overflow`: eligible,
+non-oversized sources outside the current bounded batch. These remain evidence,
+not queued jobs. Admission uses the existing single active slot across selections:
+`running` means a local extraction is active; `paused` explains capacity,
+approval-required, oversized-source or untracked-page blockers; `unknown` means
+a saved started intent has no local handle, including one in another selection.
+`active` and `unknown` count holds across the host-bound audience, not just the
+displayed selection. Cancellation retains the local slot until the provider
+settles. `idle` means no eligible tracked inputs, not proof of extraction success;
+settled uncertain outcomes remain in the attempt counts. Clearing a blocker,
+settlement and restart never schedule a next batch. Each batch requires explicit
+approval; there is no waiting queue, automatic backfill or retry.
+
 The encrypted ledger records attempted exact inputs before inference. Completion
 and proposals commit together, including empty results. Restart never runs work;
 an uncompleted intent reports uncertain and blocks new admission until operator

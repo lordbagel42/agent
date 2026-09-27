@@ -70,6 +70,15 @@ export class ImportedMemoryExtraction {
       .claims.map((c) => c.id);
     const blocked =
       this.active.size > 0 || attempts.some((e) => e.status === "started");
+    const unknown = attempts.filter(
+      (e) => e.status === "started" && !this.active.has(e.id),
+    ).length;
+    const running = attempts.some(
+      (e) =>
+        e.importId === id && e.status === "started" && this.active.has(e.id),
+    );
+    const untrackedPages =
+      (progress?.pages ?? 0) - (progress?.trackedPages ?? 0);
     return {
       coverage: structuredClone(coverage),
       model: JSON.parse(this.binding) as object,
@@ -92,8 +101,34 @@ export class ImportedMemoryExtraction {
           : null,
       eligible: eligible.length,
       oversized,
-      untrackedPages: (progress?.pages ?? 0) - (progress?.trackedPages ?? 0),
+      // Deferred evidence is not another queue or permission for a later call.
+      overflow: eligible.length - oversized - batch.length,
+      untrackedPages,
       blocked,
+      admission: {
+        state: unknown
+          ? "unknown"
+          : running
+            ? "running"
+            : blocked || eligible.length || untrackedPages
+              ? "paused"
+              : "idle",
+        reason: unknown
+          ? "unsettled-attempt"
+          : running
+            ? "extracting"
+            : blocked
+              ? "capacity"
+              : sourceIds.length
+                ? "approval-required"
+                : oversized
+                  ? "oversized-sources"
+                  : untrackedPages
+                    ? "untracked-pages"
+                    : "no-eligible-sources",
+        active: this.active.size,
+        unknown,
+      },
       attempts: attempts
         .filter((e) => e.importId === id)
         .map((e) => ({
