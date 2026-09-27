@@ -17,6 +17,10 @@ const ids = z
   .max(1000)
   .refine((v) => new Set(v).size === v.length);
 const timestamp = z.number().int().nonnegative().safe();
+const correctionSchema = z.strictObject({
+  trait: z.enum(["verbosity", "tone", "humor", "interests"]),
+  value: z.string().min(1).max(2000),
+});
 const sourceSchema = z.strictObject({
   id,
   audiences: ids,
@@ -28,12 +32,7 @@ const sourceSchema = z.strictObject({
   sourceUrl: z.url(),
   text: z.string().max(1_000_000),
   // Trusted, explicit owner correction only; never inferred from message text.
-  correction: z
-    .strictObject({
-      trait: z.enum(["verbosity", "tone", "humor", "interests"]),
-      value: z.string().min(1).max(2000),
-    })
-    .optional(),
+  correction: correctionSchema.optional(),
 });
 const citationSchema = z.strictObject({
   sourceId: id,
@@ -115,6 +114,10 @@ const stateSchema = z.strictObject({
       }),
     )
     .default([]),
+  // Live authentication is an attestation, not a change to canonical history.
+  corrections: z
+    .array(z.strictObject({ sourceId: id, correction: correctionSchema }))
+    .default([]),
 });
 const pageSchema = z.strictObject({
   sources: z.array(sourceSchema).max(1000),
@@ -188,6 +191,7 @@ function removeEvidence(state: State, sourceIds: string[]): void {
   }
   state.sources = state.sources.filter((s) => !removed.has(s.id));
   state.claims = state.claims.filter((c) => !removed.has(c.id));
+  state.corrections = state.corrections.filter((c) => !removed.has(c.sourceId));
   state.proposals = state.proposals.filter((p) => {
     if (
       !removed.has(p.id) &&
@@ -324,6 +328,7 @@ export class EvidenceStore {
             imports: [],
             proposals: [],
             extractions: [],
+            corrections: [],
           });
           this.db.exec("COMMIT");
         } catch (error) {
@@ -405,6 +410,35 @@ export class EvidenceStore {
   appendSource(input: Source): void {
     const source = parse(sourceSchema, input);
     this.transaction((state) => insertSource(state, source));
+  }
+
+  /** Trusted live owner command only, never imports, context, or model output.
+   * Bind to one private source without altering its canonical representation.
+   * Retrying the same source is safe; changing its attestation is forbidden. */
+  recordOwnerCorrection(
+    audience: string,
+    sourceId: string,
+    input: NonNullable<Source["correction"]>,
+  ): void {
+    const correction = parse(correctionSchema, input);
+    this.transaction((state) => {
+      const source = state.sources.find((s) => s.id === sourceId);
+      if (
+        !source ||
+        state.tombstones.includes(sourceId) ||
+        !isDeepStrictEqual(source.audiences, [audience])
+      )
+        throw new Error("Missing or unauthorized correction source");
+      const previous =
+        source.correction ??
+        state.corrections.find((c) => c.sourceId === sourceId)?.correction;
+      if (previous) {
+        if (!isDeepStrictEqual(previous, correction))
+          throw new Error("Owner corrections are immutable");
+        return;
+      }
+      state.corrections.push({ sourceId, correction });
+    });
   }
 
   /** Trusted ingestion/deletion path only; not a model-visible existence oracle. */
@@ -635,15 +669,21 @@ export class EvidenceStore {
     maxAgeMs: number,
   ): Evidence[] {
     parse(timestamp, maxAgeMs);
-    return this.extractionContext(audience, sourceIds).map((s) => ({
-      id: s.id,
-      scope: audience,
-      text: s.text,
-      source: s.correction ? "owner-correction" : "episode",
-      observedAt: s.observedAt,
-      expiresAt: parse(timestamp, s.observedAt + maxAgeMs),
-      ...(s.correction ? { correction: s.correction } : {}),
-    }));
+    const corrections = this.read().corrections;
+    return this.extractionContext(audience, sourceIds).map((s) => {
+      const correction =
+        s.correction ??
+        corrections.find((c) => c.sourceId === s.id)?.correction;
+      return {
+        id: s.id,
+        scope: audience,
+        text: s.text,
+        source: correction ? "owner-correction" : "episode",
+        observedAt: s.observedAt,
+        expiresAt: parse(timestamp, s.observedAt + maxAgeMs),
+        ...(correction ? { correction } : {}),
+      };
+    });
   }
 
   /** Scope filtering precedes lexical ranking. Bounded JSON data, not executable

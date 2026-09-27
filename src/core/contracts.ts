@@ -37,6 +37,9 @@ export interface MessageEvent extends EventBase {
   text: string;
   /** Set only by verified Slack ingress, never by model/context enrichment. */
   botMentioned?: boolean;
+  /** Verified live Slack text, not a quote/code block, attachment or subtype.
+   * Absent on historical/context events and old inbox records. */
+  ownerCorrectionEligible?: boolean;
   metadata?: MessageMetadata;
 }
 

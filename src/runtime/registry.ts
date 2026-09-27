@@ -17,6 +17,10 @@ import type {
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
+import {
+  handleMemoryCorrection,
+  isMemoryCorrectionCommand,
+} from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import type { EvidenceStore, Source } from "../memory/store.js";
 import { ModelError, parseReply } from "../models/provider.js";
@@ -272,6 +276,12 @@ export function createJuneRegistry(deps: Dependencies) {
           // Preserve old journals; only fresh v8 turns gain coding lifecycle
           // directives. Approval and execution retain their existing steps.
           const version = await loop.getVersion("memory-dispatch", 8);
+          // Preserve already-processing journals. Legacy queued events also
+          // lack the ingress eligibility marker and cannot gain authority.
+          const correctionVersion = await loop.getVersion(
+            "owner-correction-command",
+            2,
+          );
           const [message] = await loop.queue.nextBatch("inbox", {
             names: ["inbox"],
             count: 1,
@@ -581,8 +591,25 @@ export function createJuneRegistry(deps: Dependencies) {
                       .trim()
                       .match(/^\/(approve|resume-stopped) ([a-f0-9]{12,64})$/)
                   : null;
+              const correctionCommand =
+                correctionVersion >= 2 &&
+                body.type === "event" &&
+                isMemoryCorrectionCommand(event.text);
               if (body.type === "job_result" && version < 7) {
                 reply = { text: body.text };
+              } else if (correctionCommand) {
+                reply = await loop.step(
+                  "record-owner-correction",
+                  async (step) => ({
+                    text: valid(step.state)
+                      ? handleMemoryCorrection(
+                          event,
+                          deps.owner,
+                          plan.memory ? deps.memory?.store : undefined,
+                        )
+                      : "",
+                  }),
+                );
               } else if (
                 version >= 5 &&
                 body.type === "event" &&
@@ -2217,6 +2244,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     )?.sourceId;
                     if (
                       !plan.extraction ||
+                      correctionCommand ||
                       !sourceId ||
                       body.type !== "event" ||
                       !deps.memory?.extract ||

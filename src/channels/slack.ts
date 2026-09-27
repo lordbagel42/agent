@@ -37,6 +37,51 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+/** Slack's fallback text alone does not prove the composer wasn't a quote.
+ * Commands allow only ordinary rich-text sections, never quotes/code/lists or
+ * attachment fallbacks. Historical/context readers never set this marker. */
+export function isPlainSlackCommand(event: JsonObject): boolean {
+  if (
+    event.type !== "message" ||
+    typeof event.text !== "string" ||
+    event.text.includes("`") ||
+    event.subtype !== undefined ||
+    event.attachments !== undefined ||
+    event.files !== undefined
+  )
+    return false;
+  if (event.blocks === undefined) return true;
+  if (!Array.isArray(event.blocks) || event.blocks.length !== 1) return false;
+  const block = event.blocks[0];
+  if (
+    !isJsonObject(block) ||
+    block.type !== "rich_text" ||
+    !Array.isArray(block.elements) ||
+    block.elements.length !== 1
+  )
+    return false;
+  const section = block.elements[0];
+  if (
+    !isJsonObject(section) ||
+    section.type !== "rich_text_section" ||
+    !Array.isArray(section.elements) ||
+    !section.elements.length ||
+    !section.elements.every(
+      (element) =>
+        isJsonObject(element) &&
+        element.type === "text" &&
+        typeof element.text === "string" &&
+        (!isJsonObject(element.style) || element.style.code !== true),
+    )
+  )
+    return false;
+  // Decode only Slack's three display escapes, never strip quote/markdown syntax.
+  const fallback = event.text.replace(/&(?:amp|lt|gt);/g, (entity) =>
+    entity === "&amp;" ? "&" : entity === "&lt;" ? "<" : ">",
+  );
+  return section.elements.map((element) => element.text).join("") === fallback;
+}
+
 function verifySignature(input: {
   rawBody: Uint8Array;
   timestampHeader: string | null;
@@ -232,6 +277,9 @@ async function normalizeEvent(
         direct: channelType === "im",
         text: event.text,
         botMentioned: mentioned,
+        ...(event.text.startsWith("!memory-correct")
+          ? { ownerCorrectionEligible: isPlainSlackCommand(event) }
+          : {}),
         metadata: {
           ...slackMetadata(event, channelType),
           ...(channelName ? { channelName } : {}),

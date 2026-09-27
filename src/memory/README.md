@@ -240,9 +240,36 @@ check current owner/scope authorization and `freshEvidence` for every returned
 item with the current clock. Re-read on admission, before/after inference and
 when reading candidates. Keep the raw result out of Rivet journals.
 
-An optional `Source.correction` is explicit trusted owner input, not model
-inference. Historical import pages cannot set it. Curated `ownerRevise(proposal,
-supporting, now, maxAgeMs)` requires `supporting` from `reflectionEvidence` and
+An optional legacy `Source.correction` is explicit trusted owner input, not model
+inference. Historical import pages cannot set it. Live `!memory-correct <trait>
+<value>` commands use `recordOwnerCorrection(audience, sourceId, correction)`
+instead: an immutable encrypted attestation bound to the canonical original
+source, without changing that source. Identical imports before or after the live
+command still deduplicate; imported command text alone remains ordinary evidence.
+Only the signed live inbox branch calls the command handler. It rechecks the
+configured channel/account/sender identity, owner-private routing, Slack `im`
+metadata and DM ID; it never processes quotes, model outputs, worker results or
+retrieved context as commands. Verified ingress marks eligible original text;
+rich-text quotes, code, lists, attachment/file fallbacks, subtypes and old events
+without that marker cannot qualify. Send a plain text command without attachments
+or rich embeds. No source-builder inference is involved.
+
+The deterministic receipt contains the original evidence ID, not the private
+value. `!memory-correct help` and June's owner-private memory inspection explain
+the workflow. Recording does not apply a revision, replace claims, or promote
+private content into a global personality profile. Separate owner review remains
+mandatory. Values for `verbosity`, `tone`, `humor`, and `interests` are preserved
+exactly (single-line, nonblank, 1–2000 UTF-16 code units). Freshness uses the original
+source time, never replay time. Repeated identical attestations are idempotent;
+changed trait/value for that source fails closed. A new correction needs a new
+owner message. Forgetting removes the attestation with its source and tombstones
+the source against replay. Already-processing old journal iterations resolve the
+new command version marker to 1. Old queued events lack the eligibility marker;
+neither can acquire correction authority while replaying.
+
+`reflectionEvidence` projects attestations into the existing `owner-correction`
+evidence contract. Curated `ownerRevise(proposal, supporting, now, maxAgeMs)`
+requires `supporting` from `reflectionEvidence` and
 rechecks it against the ledger, rejecting forged corrections or refreshed dates.
 The immutable charter is always taken from code, never disk or a proposal.
 
@@ -262,6 +289,10 @@ encrypted full-state SQLite record, not a scalable per-event SQL graph. Every
 write rewrites the snapshot; retrieval rebuilds an in-memory scoped index. This
 is usable for bounded initial deployments, not a large-mailbox performance claim.
 There are no embeddings or persistent model-context caches in this module.
+This release reads older snapshots with no attestations. After a write, the new
+`corrections` field requires a compatible reader; older strict-schema releases
+fail closed. Do not roll back memory-enabled code to an incompatible reader or
+restore old evidence snapshots to bypass that check.
 
 Curated Git contains only opaque hashes and fixed metadata; values, explanations,
 and source IDs live in authenticated encrypted sibling snapshots. Logical deletion

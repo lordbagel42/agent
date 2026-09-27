@@ -531,6 +531,18 @@ reflection trigger, or approval authority; guests, public turns and synthesis
 cannot call them. Changed import coverage fails closed rather than attributing
 old progress to a new window.
 
+With memory enabled, send `!memory-correct tone warm and concise` (or
+`!memory-correct help`) as a standalone message in the configured owner's Slack
+DM. Supported traits are `verbosity`, `tone`, `humor`, and `interests`; values
+are single-line, 1–2000 UTF-16 code units, preserved exactly. June can explain the
+workflow, and her memory inspection includes its instructions, but cannot issue
+the command on the owner's behalf. The host records immutable, private correction
+provenance and returns its evidence ID without a model call. Quotes, imported
+instructions, public messages, guests, and model output cannot create it.
+This only records evidence: a separate owner-reviewed curated revision must cite
+that ID with the matching trait/value within the existing freshness window.
+It does not alter arbitrary memories, June's global style profile, or permissions.
+
 The existing `conversation-v1` workflow remains. Journaled old iterations stay
 on their old path; new iterations persist optional feature choices before use.
 New live/extraction attempts persist intent before provider work and never

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { CompanionReply } from "../core/contracts.js";
 import type { HistoryImports } from "../imports/index.js";
+import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import type { EvidenceStore, ImportCoverage } from "../memory/store.js";
 import type { ReflectionRuntimeState } from "./reflection.js";
@@ -37,7 +38,7 @@ export function createInspectionReader(deps: {
         const proposals = deps.memory.store.proposals(deps.audience);
         const counts = { pending: 0, accepted: 0, rejected: 0 };
         for (const proposal of proposals) counts[proposal.status]++;
-        return `${heading}\nAuthorized memory capacity: ${JSON.stringify(capacity)}. Counts include only retained sources and stored claims visible to this host-bound audience, not pending/rejected proposals. serializedBytes measures UTF-8 JSON of {sources,claims}, including record metadata and the empty container; it excludes other audiences' records, proposals, imports, tombstones, curated history, encryption and database overhead. This is not total ledger/disk size or model context usage. Null limits mean total budgets are not configured/enforced, not unlimited capacity; remaining capacity is unknown.\nProposal counts: ${JSON.stringify(counts)}. Curated revision count: ${deps.memory.personality?.ownerHistory().revisions.length ?? "unavailable"}. No evidence, proposal text, or personality values returned.`;
+        return `${heading}\nAuthorized memory capacity: ${JSON.stringify(capacity)}. Counts include only retained sources and stored claims visible to this host-bound audience, not pending/rejected proposals. serializedBytes measures UTF-8 JSON of {sources,claims}, including record metadata and the empty container; it excludes other audiences' records, proposals, imports, tombstones, curated history, encryption and database overhead. This is not total ledger/disk size or model context usage. Null limits mean total budgets are not configured/enforced, not unlimited capacity; remaining capacity is unknown.\nProposal counts: ${JSON.stringify(counts)}. Curated revision count: ${deps.memory.personality?.ownerHistory().revisions.length ?? "unavailable"}. No evidence, proposal text, or personality values returned.\n${MEMORY_CORRECTION_HELP}`;
       }
       case "imports": {
         const imports = deps.imports;
