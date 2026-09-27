@@ -9,6 +9,7 @@ import type {
   ReactionEvent,
   SendResult,
 } from "../core/contracts.js";
+import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry } from "./registry.js";
 
 const owner = {
@@ -849,6 +850,60 @@ describe("Rivet conversation workflow", () => {
       expect(requests).toHaveLength(ambiguous ? 2 : 3);
     },
   );
+
+  it("delivers before a late status settles but holds deployment admission until it is cleared", async (t) => {
+    const lifecycle = createLifecycle();
+    const started = Promise.withResolvers<void>();
+    const cleared = Promise.withResolvers<void>();
+    const typing: boolean[] = [];
+    const sent: OutboundMessage[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      lifecycle,
+      model: {
+        async reply() {
+          return { text: "The answer is ready." };
+        },
+      },
+      channels: {
+        slack: {
+          ...transport("slack", sent),
+          async setTyping(_event, active) {
+            typing.push(active);
+            await (active ? started.promise : cleared.promise);
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    try {
+      await june.send("inbox", { type: "event", event: message });
+      await expect.poll(() => sent.length, { timeout: 2500 }).toBe(1);
+      expect(sent[0]?.content).toEqual({
+        type: "text",
+        text: "The answer is ready.",
+      });
+      expect(typing).toEqual([true]);
+      let drained = false;
+      const drain = lifecycle.drain().then((value) => {
+        drained = value;
+        return value;
+      });
+      expect(lifecycle.active).toBe(1);
+      started.resolve();
+      await expect.poll(() => typing).toEqual([true, false]);
+      expect(drained).toBe(false);
+      cleared.resolve();
+      expect(await drain).toBe(true);
+      expect(lifecycle.active).toBe(0);
+      expect(sent).toHaveLength(1);
+    } finally {
+      started.resolve();
+      cleared.resolve();
+      lifecycle.resume();
+    }
+  });
 
   it("latches admission failure without starting a turn or a send", async (t) => {
     let failed = false;

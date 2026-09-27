@@ -32,6 +32,7 @@ const stages = [
   "send_rejected",
   "send_unknown",
   "finished",
+  "released",
 ] as const;
 export type LatencyStage = (typeof stages)[number];
 export type ReplyKind = "ack" | "text" | "reaction" | "search";

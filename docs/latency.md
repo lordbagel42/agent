@@ -83,6 +83,10 @@ over SSH is not a live June turn, even with the actual model and login.
   not human read latency. Reactions have no new message timestamp.
 - `finished`: durable turn completion, distinct from platform acceptance. Silence,
   failures, holds and eviction can lack a final answer; retain them in reports.
+- `released`: the turn's admission lease is released after status cleanup. Ready
+  replies do not wait for that cleanup, but the next status pulse/turn and a
+  successful deployment drain do. Serial probes wait for release to avoid
+  charging the previous turn's cleanup to the next sample's queue time.
 
 The simple `report` table uses first fast/text spans; inspect the full observations
 for multi-pass/search/retry turns rather than summing overlapping work. Compare

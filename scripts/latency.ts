@@ -59,7 +59,8 @@ function summarize(trace: LatencyTrace) {
     typingAckMs: time("typing_accepted") ?? null,
     textualAckMs: time("ack_sent") ?? null,
     finalMs: time("text_sent") ?? null,
-    turnMs: time("finished") ?? null,
+    durableMs: time("finished") ?? null,
+    turnMs: time("released") ?? time("finished") ?? null,
     deliveries: trace.deliveries,
   };
 }
@@ -113,7 +114,10 @@ if (mode === "report") {
       );
     startedAt = data.startedAt;
     const trace = data.traces.find((t) => t.probe === probe);
-    if (trace?.observations.some((o) => o.stage === "finished")) {
+    if (
+      trace?.observations.some((o) => o.stage === "finished") &&
+      trace.observations.some((o) => o.stage === "released")
+    ) {
       await capture({
         mode: "human-slack-probe",
         revision: data.revision,
@@ -301,7 +305,7 @@ if (mode === "report") {
         !latency
           .snapshot()
           .traces.find((t) => t.probe === expected)
-          ?.observations.some((o) => o.stage === "finished")
+          ?.observations.some((o) => o.stage === "released")
       ) {
         assert(Date.now() < deadline, "Local pipeline timed out");
         await sleep(10);

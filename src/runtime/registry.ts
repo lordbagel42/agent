@@ -185,6 +185,10 @@ export function createJuneRegistry(deps: Dependencies) {
           // Host admission is deliberately outside the journal. A deployment
           // drain waits for whole turns, including receipts and final persistence.
           const release = await deps.lifecycle?.enter(ctx.abortSignal);
+          let typingCleanup = Promise.resolve();
+          const deferTypingCleanup = (cleanup: Promise<void>) => {
+            typingCleanup = cleanup;
+          };
           try {
             if (body.type === "event" && event.type === "message")
               deps.latency?.mark(event, "admitted");
@@ -517,11 +521,15 @@ export function createJuneRegistry(deps: Dependencies) {
                           // The provider sees only the explicit public query, never
                           // a model request, private history, memory or source IDs.
                           const search = deps.webSearch;
+                          await typingCleanup;
+                          if (!valid(step.state) || step.abortSignal.aborted)
+                            return null;
                           const result = await withTyping(
                             deps.channels[replyAddress.channel],
                             { ...event, address: replyAddress },
                             step.abortSignal,
                             () => search.search(query, step.abortSignal),
+                            deferTypingCleanup,
                           );
                           settled =
                             !step.abortSignal.aborted &&
@@ -863,6 +871,12 @@ export function createJuneRegistry(deps: Dependencies) {
                               phase === "deep" ? deps.deepModel : deps.model;
                             if (!model)
                               return { reply: { text: "" }, retryable: false };
+                            // A previous clear must settle before a new pulse can
+                            // start, but must not hold an already-ready reply.
+                            await typingCleanup;
+                            signal.throwIfAborted();
+                            if (!valid(step.state))
+                              return { reply: { text: "" }, retryable: false };
                             // Only an actual new invocation shows activity. Replay
                             // holds and legacy turns never issue status updates.
                             generated = await withTyping(
@@ -894,6 +908,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                   );
                                 }
                               },
+                              deferTypingCleanup,
                             );
                           } finally {
                             // Await the raw provider, never race its settlement with
@@ -1322,7 +1337,15 @@ export function createJuneRegistry(deps: Dependencies) {
             if (body.type === "event" && event.type === "message")
               deps.latency?.mark(event, "finished");
           } finally {
-            release?.();
+            try {
+              // Status cleanup may overlap delivery, never a following turn or
+              // successful deployment drain. No journal position is added.
+              await typingCleanup;
+            } finally {
+              release?.();
+              if (body.type === "event" && event.type === "message")
+                deps.latency?.mark(event, "released");
+            }
           }
         });
       },

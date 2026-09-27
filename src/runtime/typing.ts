@@ -8,6 +8,9 @@ export async function withTyping<T>(
   event: MessageEvent,
   signal: AbortSignal,
   work: () => Promise<T>,
+  // A turn may deliver first, but must await this before its next status call
+  // and before releasing lifecycle admission. Omission keeps the legacy order.
+  deferCleanup?: (cleanup: Promise<void>) => void,
 ): Promise<T> {
   if (!adapter?.setTyping || signal.aborted) return work();
   let pending: Promise<void> | undefined;
@@ -31,9 +34,13 @@ export async function withTyping<T>(
     return await work();
   } finally {
     clearInterval(timer);
-    // Wait before clearing: a late start must not resurrect a finished status.
-    await pending;
-    // Clear uses its own bounded attempt even when the work signal is aborted.
-    await adapter.setTyping(event, false).catch(() => {});
+    const cleanup = (async () => {
+      // Wait before clearing: a late start must not resurrect a finished status.
+      await pending;
+      // Clear uses its own bounded attempt even when the work signal is aborted.
+      await adapter.setTyping?.(event, false).catch(() => {});
+    })();
+    if (deferCleanup) deferCleanup(cleanup);
+    else await cleanup;
   }
 }
