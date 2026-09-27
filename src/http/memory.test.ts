@@ -31,11 +31,13 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
     audiences: [audience],
   };
   let reads = 0;
+  const cursors: (string | null)[] = [];
   const imports = new HistoryImports(store, {
     mail: {
       coverage,
-      async fetchPage() {
+      async fetchPage({ cursor }) {
         reads++;
+        cursors.push(cursor);
         return {
           sources: [
             {
@@ -50,7 +52,7 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
               sourceUrl: "https://example.invalid/message",
             },
           ],
-          nextCursor: "page-two",
+          nextCursor: cursor === null ? "page-two" : null,
         };
       },
     },
@@ -244,9 +246,38 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
   expect((await start(confirmation)).status).toBe(200);
   expect(reads).toBe(1);
   expect(store.importProgress("mail")?.coverage).toEqual(coverage);
-  expect(await inspect(action)).toContain("approval is unavailable");
-  expect((await start(confirmation)).status).toBe(409);
+  const nextProposal = await deliver({ text: "Propose the next mail page" });
+  const nextReview = JSON.parse(nextProposal.split("\n")[1] ?? "");
+  expect(nextReview).toEqual({
+    ...displayed,
+    expectedPages: 1,
+    confirmation: {
+      ...displayed.confirmation,
+      body: { confirmed: true, digest: mail.digest, expectedPages: 1 },
+    },
+  });
+  expect(await deliver({ text: "yes" })).toContain("No import was started");
   expect(reads).toBe(1);
+  expect((await start(confirmation)).status).toBe(409);
+  const nextConfirmation = nextReview.confirmation.body;
+  expect((await start(nextConfirmation, false)).status).toBe(401);
+  expect(
+    (await start({ ...nextConfirmation, digest: "0".repeat(64) })).status,
+  ).toBe(409);
+  expect(reads).toBe(1);
+  expect((await start(nextConfirmation)).status).toBe(200);
+  expect(cursors).toEqual([null, "page-two"]);
+  expect(store.importProgress("mail")).toMatchObject({
+    coverage,
+    pages: 2,
+    complete: true,
+    cursor: null,
+  });
+  expect(await deliver({ text: "Propose another mail page" })).toContain(
+    "approval is unavailable",
+  );
+  expect((await start(nextConfirmation)).status).toBe(409);
+  expect(reads).toBe(2);
   expect(
     (await app.request("/operator/memory?audience=public", { headers })).status,
   ).toBe(400);

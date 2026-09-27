@@ -27,9 +27,20 @@ it("never proposes an approval for a partial review, widened audience or stale c
   for (const status of [
     { running: true, progress },
     { running: false, progress: { ...progress, complete: true } },
-    { running: false, progress: { ...progress, pages: 1 } },
   ])
     expect(review(coverage, status)).not.toContain('"confirmation"');
+  const continued = review(coverage, {
+    running: false,
+    progress: { ...progress, pages: 7 },
+  });
+  expect(JSON.parse(continued.split("\n")[1] ?? "")).toMatchObject({
+    digest: "a".repeat(64),
+    expectedPages: 7,
+    maxPages: 1,
+    confirmation: {
+      body: { confirmed: true, digest: "a".repeat(64), expectedPages: 7 },
+    },
+  });
   expect(() => review({ ...coverage, to: 5001 })).toThrow(
     "Import coverage changed",
   );

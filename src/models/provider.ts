@@ -708,7 +708,7 @@ export function replyJsonSchema(
                   },
                   required: ["target", "selection"],
                   description:
-                    "Propose a first-page import review only. No fetch or approval occurs. The human must explicitly confirm the displayed digest and page count through the authenticated operator API.",
+                    "Propose a review for exactly the next import page, including the first. No fetch or approval occurs. The human must explicitly confirm the displayed digest and current page count through the authenticated operator API.",
                 },
               ],
               description:
