@@ -58,7 +58,10 @@ import {
 } from "./reflection/evaluator.js";
 import { createJuryTool } from "./reflection/jury.js";
 import { DiagnosticLog } from "./runtime/diagnostics.js";
-import { createInspectionReader } from "./runtime/inspection.js";
+import {
+  capabilitySnapshot,
+  createInspectionReader,
+} from "./runtime/inspection.js";
 import { createLatencyDiagnostics } from "./runtime/latency.js";
 import { createLifecycle } from "./runtime/lifecycle.js";
 import { createPersonalityPreview } from "./runtime/personality-evaluation-preview.js";
@@ -850,7 +853,7 @@ async function main() {
             : undefined,
         }
       : undefined;
-  const registry = createJuneRegistry({
+  const dependencies: Dependencies = {
     owner: config.owner,
     social,
     channels,
@@ -963,6 +966,8 @@ async function main() {
       mcp: connections,
       processHealth: async (): Promise<boolean> =>
         lifecycle.ready && (await registry.routes.health()).ok,
+      capabilityMatrix: () =>
+        capabilitySnapshot(config, dependencies, !!imports),
       nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
       slackSearch: config.slack
         ? {
@@ -1044,7 +1049,8 @@ async function main() {
     reflection,
     jury,
     coding,
-  });
+  };
+  const registry = createJuneRegistry(dependencies);
   Object.assign(registry.config, {
     startEngine: !process.env.RIVET_ENDPOINT && !process.env.RIVET_ENGINE,
     engineHost: "127.0.0.1",

@@ -159,6 +159,7 @@ const companionReplySchema = z.strictObject({
     .union([
       z.enum([
         "tombstones",
+        "capability-matrix",
         "memory",
         "imports",
         "reflection",
@@ -653,6 +654,7 @@ export function replyJsonSchema(
                   type: ["string", "null"],
                   enum: [
                     "tombstones",
+                    "capability-matrix",
                     "memory",
                     "imports",
                     "reflection",

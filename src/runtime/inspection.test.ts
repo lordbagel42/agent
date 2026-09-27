@@ -6,6 +6,7 @@ import type { Client } from "rivetkit/client";
 import { expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import { nativeCodingPreflight } from "../coding/preflight.js";
+import { parseConfig } from "../config.js";
 import type {
   CompanionReply,
   MessageEvent,
@@ -20,6 +21,7 @@ import { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import {
+  capabilitySnapshot,
   createInspectionReader,
   inspectInterruptedInference,
   outstandingOperationMetadata,
@@ -606,6 +608,22 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     capabilities: () =>
       "Generic capability routes are mounted. Registered tools: 0.",
     credentials,
+    capabilityMatrix: () =>
+      capabilitySnapshot(
+        parseConfig({
+          setupMode: true,
+          owner: { id: "owner", identities: [] },
+          model: {
+            protocol: "openai",
+            model: "SECRET MODEL",
+            apiKeyEnv: "SECRET_ENV",
+          },
+          memory: { directory: "/SECRET-PATH", keyEnv: "SECRET_ENV" },
+        }),
+        { memory: { store, source: () => undefined }, inspection: read },
+        true,
+        { JUNE_ALLOW_MEMORY: "1", SECRET_ENV: "SECRET CREDENTIAL" },
+      ),
     nativeCoding: () =>
       nativeCodingPreflight(
         { enabled: false, workspaces: {}, isolation: {}, timeoutMs: 1000 },
@@ -857,8 +875,21 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   }
   expect(reads).toBe(12);
   expect(requests).toHaveLength(13);
+  action = { text: "", inspection: "capability-matrix" };
+  const matrix = await deliver();
+  expect(matrix).toContain('"liveVerified":"unknown"');
+  expect(matrix).toContain(
+    '"capability":"retained-memory","implemented":"yes","hostIntegrated":"yes","juneCallable":"no","enabled":"yes"',
+  );
+  expect(matrix.length).toBeLessThan(6000);
+  expect(reads).toBe(13);
+  expect(requests).toHaveLength(14);
+  expect(requests.at(-1)?.system).toContain(
+    'inspection to "capability-matrix"',
+  );
   const deniedInspections = [
     "tombstones",
+    "capability-matrix",
     "native-coding",
     "memory",
     "retention",
@@ -898,13 +929,13 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       expect(denied).not.toContain("owner@example.test");
       expect(requests).toHaveLength(before + 1);
       expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-      expect(reads).toBe(12);
+      expect(reads).toBe(13);
     }
     search = true;
     await deliver();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(12);
+    expect(reads).toBe(13);
     search = false;
     action = {
       text: "",
@@ -912,7 +943,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       release: { action: "inspect", revision: null },
     };
     expect(await deliver()).toContain("inspection is unavailable");
-    expect(reads).toBe(12);
+    expect(reads).toBe(13);
   }
   action = { text: "", inspection: "slack-search" };
   const readiness = await deliver();
@@ -921,7 +952,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(readiness).toContain("actual installed bot grant is unverified");
   expect(readiness).toContain("Live search access is unverified");
   expect(readiness).toContain("No Slack request was made");
-  expect(reads).toBe(13);
+  expect(reads).toBe(14);
   action = { text: "", inspection: "credentials" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
@@ -966,6 +997,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain("Credential resolver: absent");
   action = { text: "", inspection: "slack-search" };
   expect(await deliver()).toContain("Slack is not configured");
+  action = { text: "", inspection: "capability-matrix" };
+  expect(await deliver()).toContain("live verification are unknown");
   disabled = false;
   action = { text: "", inspection: "snapshot-retention" };
   const before = personality.retentionReport();

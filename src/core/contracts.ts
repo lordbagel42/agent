@@ -220,6 +220,7 @@ export interface CompanionReply {
   /** Owner-private bounded metadata inspection; never recall or mutation. */
   inspection?:
     | "tombstones"
+    | "capability-matrix"
     | "memory"
     | "imports"
     | "reflection"

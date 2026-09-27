@@ -63,6 +63,22 @@ reflection and tool modules are local integration work, not evidence of live
 provider access or permission to activate them. All optional integrations remain
 off unless explicitly configured and separately authorized.
 
+For capability questions, June can request
+`{"text":"","inspection":"capability-matrix"}` in an owner-private,
+non-synthesis turn. The fixed nine-row metadata view reports `implemented`,
+`hostIntegrated`, `juneCallable`, `enabled`, and `liveVerified` separately as
+`yes`, `no`, or `unknown`. Source support is not a mounted dependency; a mounted
+dependency is not necessarily a direct model action; activation gates are not
+approval or provider health. Retained memory exposes private `recall`;
+`reflectionRequest` queues reflection without confirming evaluation or delivery.
+Operator-only imports do not count as direct June actions. MCP tool permissions
+remain unknown here because the view does not inspect the catalog. Every
+live-verification field is unknown until independent capability attestation is
+integrated. The matrix is not an exhaustive inventory, does not probe providers,
+and omits credentials, paths, account IDs, configuration values and evidence
+bodies. Setup mode has no callable model actions. No console UI or production
+activation is changed.
+
 ## Local startup
 
 Use Linux with Node 24 and pnpm 10.33.0. `.npmrc` selects the pinned Node runtime

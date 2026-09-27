@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import type { Config } from "../config.js";
 import type { CompanionReply, MessageEvent } from "../core/contracts.js";
 import type { BitwardenCredentialResolver } from "../credentials/bitwarden.js";
 import type { ImportedMemoryExtraction } from "../imports/extraction.js";
@@ -21,6 +22,130 @@ import type {
   CuriosityProgress,
   ReflectionRuntimeState,
 } from "./reflection.js";
+import type { Dependencies } from "./registry.js";
+
+/** Fixed allowlist: never serialize config, dependency objects or remote data.
+ * Callability is a route, not provider health, approval or admission capacity.
+ */
+export function capabilitySnapshot(
+  config: Config,
+  runtime: Pick<
+    Dependencies,
+    | "coding"
+    | "memory"
+    | "reflection"
+    | "mcpAvailable"
+    | "webSearch"
+    | "execution"
+    | "release"
+    | "inspection"
+  >,
+  importsMounted: boolean,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  const turn = !config.setupMode;
+  const memoryEnabled = !!config.memory && env.JUNE_ALLOW_MEMORY === "1";
+  const state = (value: boolean | null) =>
+    value === null ? "unknown" : value ? "yes" : "no";
+  const row = (
+    capability: string,
+    integrated: boolean,
+    callable: boolean | null,
+    enabled: boolean | null,
+    detail: string,
+  ) => ({
+    capability,
+    implemented: "yes",
+    hostIntegrated: state(integrated),
+    juneCallable: state(callable),
+    enabled: state(enabled),
+    liveVerified: "unknown",
+    detail,
+  });
+  return {
+    scope:
+      "Selected capabilities of this process; not an exhaustive tool inventory. Fresh owner-private non-synthesis turns only. Setup mode disables model invocation.",
+    definitions: {
+      implemented: "Source implementation exists in this build.",
+      hostIntegrated: "Dependency is mounted in this process.",
+      juneCallable:
+        "A direct model action route is available; automatic work and operator-only APIs do not count. Per-turn guards still apply.",
+      enabled:
+        "Configuration and required host activation gates permit the feature; not action approval, provider authorization or health.",
+      liveVerified:
+        "Independent live capability attestation. No such attestation is wired into this view; absence is unknown, not failure or success.",
+    },
+    capabilities: [
+      row(
+        "native-coding",
+        !!runtime.coding,
+        turn && !!Object.keys(runtime.coding?.workspaces ?? {}).length,
+        config.coding.enabled && env.JUNE_ALLOW_NATIVE_CODING === "1",
+        "coding proposes a job; owner approval and isolation remain required. inspection: native-coding checks prerequisites without launching work.",
+      ),
+      row(
+        "retained-memory",
+        !!runtime.memory,
+        turn && !!runtime.memory,
+        memoryEnabled,
+        "recall queries retained owner-private evidence with deletion rechecks; it is not a live account search or complete history. inspection: memory returns metadata only.",
+      ),
+      row(
+        "history-imports",
+        importsMounted,
+        false,
+        memoryEnabled &&
+          Object.keys(config.imports).length > 0 &&
+          env.JUNE_ALLOW_HISTORY_IMPORTS === "1",
+        "Operator-controlled import execution. inspection: imports only reads progress; selections do not prove imported history or authorization.",
+      ),
+      row(
+        "reflection",
+        !!runtime.reflection,
+        turn && !!runtime.memory && !!runtime.reflection,
+        memoryEnabled &&
+          !!config.reflection &&
+          env.JUNE_ALLOW_MEMORY_MODELS === "1",
+        "reflectionRequest queues bounded retained evidence through the scheduler; it does not confirm evaluation, delivery or approval. inspection: reflection returns metadata only.",
+      ),
+      row(
+        "mcp-tools",
+        runtime.mcpAvailable === true,
+        turn && runtime.mcpAvailable ? null : false,
+        config.mcp ? null : false,
+        "Broker mounting does not establish enabled tools. Per-tool permissions, catalog and credential expiry are not inspected here; use MCP discovery. Mutations still need approval.",
+      ),
+      row(
+        "public-web-search",
+        !!runtime.webSearch,
+        turn && !runtime.execution && runtime.webSearch?.available === true,
+        !!config.webSearch && runtime.webSearch?.available === true,
+        "webSearch accepts an explicit public query when configured with a credential. Execution-enabled turns delegate search through workers, not a direct conversational webSearch action. Credential validity and quota are not probed.",
+      ),
+      row(
+        "execution-agents",
+        !!runtime.execution,
+        turn && !!runtime.execution,
+        config.executionEnabled && turn,
+        "execution dispatches bounded reasoning workers; it does not authorize native execution or external effects.",
+      ),
+      row(
+        "release-inspection",
+        !!runtime.release,
+        turn && !!runtime.release,
+        !!config.deployment,
+        "release reads deployment evidence. No feed read, deployment, running-revision attestation or health probe is performed by this matrix.",
+      ),
+      row(
+        "subsystem-inspection",
+        !!runtime.inspection,
+        turn && !!runtime.inspection,
+        true,
+        "inspection: capability-matrix reads this fixed metadata view, including disabled subsystems. No secrets, evidence bodies, configuration values or mutations.",
+      ),
+    ],
+  };
+}
 
 /** Project existing recovery receipts only; absence is not an outcome. */
 export function inspectInterruptedInference(
@@ -192,6 +317,7 @@ export function createInspectionReader(deps: {
   mcp?: Pick<McpConnections, "inventory">;
   /** The host's HTTP readiness predicate, not a workflow progress check. */
   processHealth?: () => Promise<boolean>;
+  capabilityMatrix?: () => ReturnType<typeof capabilitySnapshot>;
   nativeCoding?: () => Promise<string>;
   capabilities?: () => string;
   credentials?: Pick<BitwardenCredentialResolver, "inspect">;
@@ -221,6 +347,10 @@ export function createInspectionReader(deps: {
     const target = typeof query === "string" ? query : query.target;
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {
+      case "capability-matrix":
+        return deps.capabilityMatrix
+          ? `${heading}\n${JSON.stringify(deps.capabilityMatrix())}`
+          : `${heading}\nCapability matrix is unavailable; implementation, integration, callability, activation and live verification are unknown.`;
       case "capabilities":
         return `${heading}\n${deps.capabilities?.() ?? "Generic capabilities are disabled; no generic capability routes or tools are mounted. Opaque action links are also disabled. Inspection grants nothing and does not enable them."}`;
       case "credentials": {
