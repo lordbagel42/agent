@@ -1485,6 +1485,7 @@ it("bounds the whole projected import atomically at one-under, exact and one-ove
       imports: [progress],
       proposals: [],
       extractions: [],
+      rejectedReflections: [],
       corrections: [],
       importExtractions: [],
     }),
@@ -1552,6 +1553,7 @@ it("bounds the whole projected import atomically at one-under, exact and one-ove
       imports: [{ ...before, notBefore: 150, cooldownReason: "rate_limit" }],
       proposals: [],
       extractions: [],
+      rejectedReflections: [],
       corrections: [],
     }),
     "utf8",
@@ -1852,6 +1854,132 @@ it("inspects only exact retained claims with scoped originals and rechecks delet
   expect(reopened.inspectClaim("private", "dream")).toEqual(absent);
   expect(reopened.inspectClaim("private", "grounding-only")).toEqual(absent);
   expect(reopened.source("private", "s2")?.text).toBe("original plum");
+});
+
+it("deduplicates reflection staging across reopen and forgets uncited reflection context", () => {
+  const { store, path } = open();
+  store.appendSource(source());
+  store.appendSource(source("uncited"));
+  const input: MemoryProposalInput = {
+    subjectSourceId: "s1",
+    text: "Reflection hypothesis: a possible preference",
+    category: "pattern",
+    citations: [{ sourceId: "s1", quote: "sensitive kumquat" }],
+    confidence: 0.6,
+    validFrom: null,
+    validTo: null,
+    contradicts: [],
+    supersedes: [],
+  };
+  const sources = ["s1", "uncited"];
+  // Ordinary extraction must not consume the separate reflection admission.
+  store.stageProposals("private", sources, []);
+  const [proposal] = store.stageProposals(
+    "private",
+    sources,
+    [input],
+    undefined,
+    [],
+    "a".repeat(64),
+  );
+  if (!proposal) throw new Error("Missing reflection proposal");
+  expect(proposal.status).toBe("pending");
+  expect(proposal.claim.dependsOn).toEqual(["s1"]);
+  expect(proposal.claim.extractionContext).toEqual({
+    sourceIds: sources,
+    claimIds: [],
+  });
+  expect(proposal.claim.grounding?.citations).toEqual(input.citations);
+  expect(store.retrieve("private", "").claims).toEqual([]);
+  expect(store.proposals("public")).toEqual([]);
+  store.reviewProposal("private", proposal.id, "rejected");
+  store.rejectReflectionProposals("private", "c".repeat(64));
+  const [revoked] = store.stageProposals(
+    "private",
+    sources,
+    [input],
+    undefined,
+    [],
+    "d".repeat(64),
+  );
+  if (!revoked) throw new Error("Missing proposal to revoke");
+  store.rejectReflectionProposals("public", "d".repeat(64));
+  expect(store.proposal("private", revoked.id)?.status).toBe("pending");
+  store.rejectReflectionProposals("private", "d".repeat(64));
+  store.rejectReflectionProposals("private", "d".repeat(64));
+  store.close();
+  const reopened = open(path).store;
+  for (const alias of ["c", "d"])
+    expect(() =>
+      reopened.stageProposals(
+        "private",
+        sources,
+        [input],
+        undefined,
+        [],
+        alias.repeat(64),
+      ),
+    ).toThrow("already rejected");
+  expect(reopened.proposal("private", revoked.id)?.status).toBe("rejected");
+  expect(() =>
+    reopened.reviewProposal("private", revoked.id, "accepted"),
+  ).toThrow("already reviewed");
+  expect(
+    reopened.stageProposals(
+      "private",
+      sources.toReversed(),
+      [{ ...input, text: "rephrased" }],
+      undefined,
+      [],
+      "a".repeat(64),
+    ),
+  ).toEqual([{ ...proposal, status: "rejected" }]);
+  expect(reopened.stageProposals("private", sources, [input])).toEqual([]);
+  expect(() =>
+    reopened.reviewProposal("private", proposal.id, "accepted"),
+  ).toThrow();
+  const [accepted] = reopened.stageProposals(
+    "private",
+    sources,
+    [input],
+    undefined,
+    [],
+    "b".repeat(64),
+  );
+  if (!accepted) throw new Error("Missing second candidate proposal");
+  reopened.reviewProposal("private", accepted.id, "accepted");
+  reopened.rejectReflectionProposals("private", "b".repeat(64));
+  expect(reopened.proposal("private", accepted.id)?.status).toBe("accepted");
+  expect(reopened.retrieve("private", "").claims).toEqual([accepted.claim]);
+  reopened.deleteSource("uncited");
+  expect(reopened.source("private", "s1")).toBeDefined();
+  expect(reopened.proposals("private")).toEqual([]);
+  expect(reopened.isDeleted(proposal.id)).toBe(true);
+  expect(() =>
+    reopened.stageProposals(
+      "private",
+      sources,
+      [input],
+      undefined,
+      [],
+      "a".repeat(64),
+    ),
+  ).toThrow();
+  expect(
+    reopened.stageProposals(
+      "private",
+      ["s1"],
+      [input],
+      undefined,
+      [],
+      "a".repeat(64),
+    ),
+  ).toEqual([]);
+  reopened.close();
+  const restored = open(path).store;
+  expect(restored.proposals("private")).toEqual([]);
+  expect(restored.retrieve("private", "").claims).toEqual([]);
+  expect(restored.isDeleted(accepted.id)).toBe(true);
 });
 
 it("aborts a forgotten extraction batch without settling an uncooperative provider or cancelling unrelated extraction", async () => {

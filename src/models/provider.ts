@@ -256,6 +256,12 @@ const companionReplySchema = z.strictObject({
     })
     .optional(),
   jury: juryRequestSchema.optional(),
+  reflectionMemory: z
+    .strictObject({
+      id: z.string().regex(/^[a-f0-9]{64}$/),
+      subjectSourceId: z.string().regex(/^\S{1,2048}$/),
+    })
+    .optional(),
   rivet: rivetRequestSchema.optional(),
   browserProposal: z
     .strictObject({ operation: z.string().min(1).max(128).nullable() })
@@ -303,6 +309,7 @@ export type ReplyCapabilities = Pick<
   | "jevObservationAvailable"
   | "reflectionRequestAvailable"
   | "juryAvailable"
+  | "reflectionMemoryAvailable"
   | "rivetAvailable"
   | "browserProposalAvailable"
   | "personalityPreviewAvailable"
@@ -350,6 +357,7 @@ export function replyJsonSchema(
     jevObservationAvailable,
     reflectionRequestAvailable,
     juryAvailable,
+    reflectionMemoryAvailable,
     rivetAvailable,
     browserProposalAvailable,
     personalityPreviewAvailable,
@@ -1005,6 +1013,29 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(reflectionMemoryAvailable
+        ? {
+            reflectionMemory: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                id: {
+                  type: "string",
+                  description:
+                    "Exact 64-character lowercase hex candidate alias from private reflection review.",
+                },
+                subjectSourceId: {
+                  type: "string",
+                  description:
+                    "Exact cited original source ID, 1–2048 non-whitespace characters; never a guessed person or model-generated evidence.",
+                },
+              },
+              required: ["id", "subjectSourceId"],
+              description:
+                "Stage one pending reflection hypothesis after inference settles. The host resolves and validates original payload and evidence. Never accepts a claim. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(analyticsAvailable
         ? {
             analytics: {
@@ -1236,6 +1267,7 @@ export function replyJsonSchema(
       ...(jevObservationAvailable ? ["jevObservation"] : []),
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
       ...(juryAvailable ? ["jury"] : []),
+      ...(reflectionMemoryAvailable ? ["reflectionMemory"] : []),
       ...(rivetAvailable ? ["rivet"] : []),
       ...(browserProposalAvailable ? ["browserProposal"] : []),
       ...(personalityPreviewAvailable ? ["personalityPreview"] : []),
@@ -1429,6 +1461,7 @@ export function parseReply(
     jevObservationAvailable,
     reflectionRequestAvailable,
     juryAvailable,
+    reflectionMemoryAvailable,
     rivetAvailable,
     browserProposalAvailable,
     personalityPreviewAvailable,
@@ -1479,6 +1512,7 @@ export function parseReply(
     "jevObservation",
     "reflectionRequest",
     "jury",
+    "reflectionMemory",
     "rivet",
     "browserProposal",
     "personalityPreview",
@@ -1536,6 +1570,7 @@ export function parseReply(
     (reply.jevObservation !== undefined && !jevObservationAvailable) ||
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
     (reply.jury !== undefined && !juryAvailable) ||
+    (reply.reflectionMemory !== undefined && !reflectionMemoryAvailable) ||
     (reply.rivet !== undefined && !rivetAvailable) ||
     (reply.browserProposal !== undefined && !browserProposalAvailable) ||
     (reply.personalityPreview !== undefined && !personalityPreviewAvailable) ||
@@ -1575,6 +1610,7 @@ export function parseReply(
     Number(reply.jevObservation === true) +
     Number(reply.reflectionRequest !== undefined) +
     Number(reply.jury !== undefined) +
+    Number(reply.reflectionMemory !== undefined) +
     Number(reply.rivet !== undefined) +
     Number(reply.browserProposal !== undefined) +
     Number(reply.personalityPreview !== undefined) +
@@ -1609,6 +1645,7 @@ export function parseReply(
       reply.jevObservation === true ||
       reply.reflectionRequest !== undefined ||
       reply.jury !== undefined ||
+      reply.reflectionMemory !== undefined ||
       reply.rivet !== undefined ||
       reply.browserProposal !== undefined ||
       reply.personalityPreview !== undefined ||

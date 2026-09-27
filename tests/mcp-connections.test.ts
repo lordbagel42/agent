@@ -664,6 +664,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.codingJobsAvailable = true;
   f.request.recallAvailable = true;
   f.request.reflectionRequestAvailable = true;
+  f.request.reflectionMemoryAvailable = true;
   f.request.personalityPreviewAvailable = true;
   f.request.forgetPreviewAvailable = true;
   let evidence = "";
@@ -750,6 +751,21 @@ test("discovery grants nothing, read results are transient and credentials stay 
     ),
   ).toThrow();
   expect(f.request.reflectionRequestAvailable).toBe(true);
+  expect(synthesis.reflectionMemoryAvailable).toBe(false);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "reflectionMemory",
+  );
+  expect(() =>
+    parseReply(
+      JSON.stringify({
+        text: "",
+        reflectionMemory: { id: "a".repeat(64), subjectSourceId: "original" },
+      }),
+      [],
+      synthesis,
+    ),
+  ).toThrow();
+  expect(f.request.reflectionMemoryAvailable).toBe(true);
   expect(synthesis.personalityPreviewAvailable).toBe(false);
   expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
     "personalityPreview",

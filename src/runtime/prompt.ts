@@ -44,6 +44,7 @@ export interface PromptCapabilities {
   jevQuestion?: JevQuestion;
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;
+  reflectionMemoryAvailable?: boolean;
   rivetAvailable?: boolean;
   browserProposalAvailable?: boolean;
   personalityPreviewAvailable?: boolean;
@@ -214,6 +215,11 @@ export function buildModelRequest({
     memoryAvailable &&
     capabilities.reflectionRequestAvailable === true;
   const juryAvailable = privateTurn && capabilities.juryAvailable === true;
+  const reflectionMemoryAvailable =
+    privateTurn &&
+    !guest &&
+    memoryAvailable &&
+    capabilities.reflectionMemoryAvailable === true;
   const rivetAvailable =
     isOwnerRivetDm(event, owner) && capabilities.rivetAvailable === true;
   const browserProposalAvailable =
@@ -492,6 +498,9 @@ export function buildModelRequest({
     privateTurn && capabilities.reflectionAvailable
       ? "The owner can send the exact ordinary private messages !reflection list and !reflection inspect <exact 64-character candidate ID> (not Slack slash commands) to list current authorized IDs or privately inspect one existing hypothesis without starting inference or automatic extraction. Inspection returns the original rationale and provenance metadata, not source bodies; a result over the 24,000-byte budget is unavailable rather than clipped. Generic inspection counts are staged metadata, not validated candidate eligibility. Ordinary conversation invalidates candidates; do not claim an old ID is still current or emit a command as though you executed it. The host rechecks all input evidence, quiet hours and live work. Both commands are read-only, not approval, recall, or permission to act. The inspected body is not retained in conversation history or supplied to you. To reject one candidate, the owner sends !reflection reject <64hex> with its exact opaque ID. Rejection is durable and safe to repeat after restart or an unconfirmed receipt; it revokes that candidate and its pending derivatives, not unrelated candidates or already accepted changes. Never invent an ID or claim your output executed the command."
       : "Private reflection candidate review is unavailable for this invocation.",
+    reflectionMemoryAvailable
+      ? 'After private reflection review, you may request a pending memory hypothesis with reflectionMemory: {"id":"full 64-hex candidate alias","subjectSourceId":"exact cited source ID"}. Leave text empty and all other actions unset. Supply only these references, never replacement rationale, quotations, confidence or evidence. The host resolves the immutable publication, original quotations and subject identity after inference settles and rechecks all source/deletion/rejection/live/quiet gates. This stages an unaccepted hypothesis, not a new observation, corroboration, or approval. Mixed dream inputs are ineligible; retries cannot add hypotheses or reset review. Wait for the host receipt and use separate pending-memory review before explicit owner acceptance. Read-only review continuations cannot stage; use a separate effect-eligible turn. The owner can also send exactly !reflection memory <candidate alias> <cited source ID> as a plain private message.'
+      : "Reflection memory staging is unavailable in this invocation; do not claim to have staged or accepted a candidate.",
     inspectionAvailable
       ? 'For public Slack RTS readiness, set inspection to "slack-search" with empty text and no other actions, even when search is disabled. The read-only host report separates the required bot scope search:read.public, runtime flag, and local token for this exact initiating message. It does not verify live Slack access; saved permissions or MCP/user OAuth scopes are not proof. Tokens can expire, be consumed, or disappear on restart; a past readiness snapshot cannot authorize a new message. Do not run a search just to check readiness.'
       : "Public Slack search readiness inspection is unavailable in this invocation.",
@@ -625,6 +634,7 @@ export function buildModelRequest({
     jevObservationAvailable,
     reflectionRequestAvailable,
     juryAvailable,
+    reflectionMemoryAvailable,
     rivetAvailable,
     browserProposalAvailable,
     personalityPreviewAvailable,

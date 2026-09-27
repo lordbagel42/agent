@@ -1,6 +1,52 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelRequest } from "../core/contracts.js";
-import { createModelProvider, ModelError } from "./provider.js";
+import {
+  createModelProvider,
+  ModelError,
+  parseReply,
+  replyJsonSchema,
+} from "./provider.js";
+
+it("accepts only enabled exclusive reflection memory references, never model-authored evidence", () => {
+  const capabilities = { reflectionMemoryAvailable: true };
+  const reflectionMemory = {
+    id: "a".repeat(64),
+    subjectSourceId: "original-subject",
+  };
+  const command = { text: "", reflectionMemory };
+  expect(parseReply(JSON.stringify(command), [], capabilities)).toEqual(
+    command,
+  );
+  expect(replyJsonSchema([], capabilities).properties).toHaveProperty(
+    "reflectionMemory",
+  );
+  expect(replyJsonSchema([]).properties).not.toHaveProperty("reflectionMemory");
+  expect(() => parseReply(JSON.stringify(command), [])).toThrow();
+  for (const value of [
+    { ...command, text: "already accepted" },
+    { ...command, pendingMemory: true },
+    { ...command, reaction: "thumbsup" },
+    { ...command, reflectionMemory: { ...reflectionMemory, confidence: 1 } },
+    {
+      ...command,
+      reflectionMemory: { ...reflectionMemory, evidence: "invented" },
+    },
+    {
+      ...command,
+      reflectionMemory: { ...reflectionMemory, id: "a".repeat(63) },
+    },
+    {
+      ...command,
+      reflectionMemory: { ...reflectionMemory, subjectSourceId: "" },
+    },
+  ])
+    expect(() =>
+      parseReply(JSON.stringify(value), [], {
+        ...capabilities,
+        pendingMemoryAvailable: true,
+      }),
+    ).toThrow();
+});
 
 type FetchArguments = Parameters<typeof globalThis.fetch>;
 

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type { CompanionReply, MessageEvent } from "../core/contracts.js";
+import type { EvidenceStore } from "../memory/store.js";
 import {
   cancel,
   claim,
@@ -35,13 +36,19 @@ export function parseReflectionReviewCommand(
   | { action: "list" }
   | { action: "inspect" | "reject"; id: string }
   | { action: "propose"; candidateId: string; userId: string; text: string }
+  | { action: "memory"; id: string; subjectSourceId: string }
   | undefined {
   const command = text.trim();
   if (command === "!reflection list") return { action: "list" };
-  const inspect = /^!reflection inspect ([a-f0-9]{64})$/.exec(command)?.[1];
-  if (inspect) return { action: "inspect", id: inspect };
+  const match = /^!reflection inspect ([a-f0-9]{64})$/.exec(command);
+  if (match?.[1]) return { action: "inspect", id: match[1] };
   const id = /^!reflection reject ([a-f0-9]{64})$/.exec(command)?.[1];
   if (id) return { action: "reject", id };
+  const memory = /^!reflection memory ([a-f0-9]{64}) (\S{1,2048})$/.exec(
+    command,
+  );
+  if (memory?.[1] && memory[2])
+    return { action: "memory", id: memory[1], subjectSourceId: memory[2] };
   const proposal = command.match(
     /^!reflection propose ([a-f0-9]{64}) ([UW][A-Z0-9]+) ([\s\S]{1,3000})$/,
   );
@@ -78,6 +85,8 @@ export interface ReflectionDependencies {
   /** Trusted synchronous store callback; only the actor's staging action may use it. */
   stageInterruption?: SocialPermissions["stageInterruption"];
   deletionRevision?: () => number;
+  /** Host-injected staging only; this actor has no memory acceptance API. */
+  memory?: Pick<EvidenceStore, "stageProposals">;
   /** Trusted memory boundary: current audience authorization AND deletion lookup.
    * IDs must identify immutable versions. Return exactly the requested evidence.
    */
@@ -1014,6 +1023,67 @@ export function createReflectionActor(
           return null;
         const read = await reviewCandidate(c, id, scope);
         return read ? reviewDto(read) : null;
+      },
+      /** Host-admitted pending staging after inference settles; never acceptance. */
+      stageMemory: async (
+        c,
+        scope: string,
+        id: string,
+        subjectSourceId: string,
+      ) => {
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId || !deps.memory)
+          return null;
+        const epoch = c.state.epoch;
+        await c.vars.prepareCandidates();
+        const current = await reviewCandidate(c, id, scope);
+        if (!current) return null;
+        const { evidence, decision } = current;
+        const cited = evidence.filter((item) =>
+          decision.evidenceIds.includes(item.id),
+        );
+        const text = `Reflection hypothesis: ${decision.rationale}`;
+        if (
+          epoch !== c.state.epoch ||
+          c.state.liveActive > 0 ||
+          isQuiet(Date.now(), deps.policy.quiet) ||
+          evidence.some((item) => item.source === "dream") ||
+          !cited.some((item) => item.id === subjectSourceId) ||
+          cited.some((item) => !item.text.trim() || item.text.length > 4000) ||
+          text.length > 4000 ||
+          !current.isCurrent()
+        )
+          return null;
+        // No await between the current actor gates and the transactional ledger
+        // write. The store rechecks the exact original sources, never rationale
+        // or a simulation as an observation, and deduplicates by candidate ID.
+        try {
+          const [proposal] = deps.memory.stageProposals(
+            scope,
+            evidence.map((item) => item.id),
+            [
+              {
+                subjectSourceId,
+                text,
+                category: "pattern",
+                citations: cited.map((item) => ({
+                  sourceId: item.id,
+                  quote: item.text,
+                })),
+                confidence: decision.confidence ?? null,
+                validFrom: null,
+                validTo: null,
+                contradicts: [],
+                supersedes: [],
+              },
+            ],
+            undefined,
+            [],
+            id,
+          );
+          return proposal ? { id: proposal.id, status: proposal.status } : null;
+        } catch {
+          return null;
+        }
       },
       /** Operator-only recovery after confirming the old worker/provider has stopped.
        * Never retries this request or clears its dedupe tombstone.

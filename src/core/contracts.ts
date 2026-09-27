@@ -277,6 +277,8 @@ export interface CompanionReply {
   };
   /** Explicit owner-private advisory evaluation of existing scoped evidence. */
   jury?: import("../reflection/jury.js").JuryRequest;
+  /** Stage an existing reflection as a pending hypothesis, never accept it. */
+  reflectionMemory?: { id: string; subjectSourceId: string };
   /** Owner one-to-one Slack DM only; volatile read-only Rivet inspection. */
   rivet?: import("./rivet.js").RivetRequest;
   /** List named mutations (null), or propose one for separate exact human approval. */
@@ -336,6 +338,7 @@ export interface ModelRequest {
   jevObservationAvailable?: boolean;
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;
+  reflectionMemoryAvailable?: boolean;
   rivetAvailable?: boolean;
   browserProposalAvailable?: boolean;
   personalityPreviewAvailable?: boolean;

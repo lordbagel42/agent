@@ -465,7 +465,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // first new message, while already-journaled turns keep the old path.
           const reflectionReviewVersion = await loop.getVersion(
             "reflection-review",
-            5,
+            6,
           );
           // A parked inbox can use the jury on its first new turn; journals
           // already processing a turn retain the original capability plan.
@@ -508,7 +508,7 @@ export function createJuneRegistry(deps: Dependencies) {
               );
               if (!claimed) return;
             }
-            const parsedReflectionReview =
+            let reflectionReview =
               reflectionReviewVersion >= 2 &&
               ownerTurn &&
               scope.private &&
@@ -518,15 +518,17 @@ export function createJuneRegistry(deps: Dependencies) {
                 event.reflectionReviewEligible === true)
                 ? parseReflectionReviewCommand(event.text)
                 : undefined;
-            const reflectionReview =
-              (parsedReflectionReview?.action === "inspect" &&
+            if (
+              (reflectionReview?.action === "inspect" &&
                 reflectionReviewVersion < 3) ||
-              (parsedReflectionReview?.action === "reject" &&
+              (reflectionReview?.action === "reject" &&
                 reflectionReviewVersion < 4) ||
-              (parsedReflectionReview?.action === "propose" &&
-                reflectionReviewVersion < 5)
-                ? undefined
-                : parsedReflectionReview;
+              (reflectionReview?.action === "propose" &&
+                reflectionReviewVersion < 5) ||
+              (reflectionReview?.action === "memory" &&
+                reflectionReviewVersion < 6)
+            )
+              reflectionReview = undefined;
             if (version >= 5 && !ownerTurn) {
               const admitted = await loop.step("guest-admission", async () =>
                 priority.acceptGuest(
@@ -763,6 +765,7 @@ export function createJuneRegistry(deps: Dependencies) {
               pendingMemory?: boolean;
               extraction: boolean;
               reflection: boolean;
+              reflectionMemory?: boolean;
               workspaces: string[];
               search: boolean;
               slackHistory?: boolean;
@@ -788,6 +791,13 @@ export function createJuneRegistry(deps: Dependencies) {
                     pendingMemory: !!deps.memory && scope.private,
                     extraction: !!deps.memory?.extract && scope.private,
                     reflection: ownerTurn && !!deps.reflection,
+                    reflectionMemory:
+                      reflectionReviewVersion >= 6 &&
+                      body.type === "event" &&
+                      ownerTurn &&
+                      scope.private &&
+                      !!deps.memory &&
+                      !!deps.reflection,
                     jev: ownerTurn && scope.private && !!deps.jev,
                     ...(juryVersion >= 2
                       ? {
@@ -2022,6 +2032,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                   scope.private &&
                                   !!plan.jury &&
                                   !!deps.jury,
+                                reflectionMemoryAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  !!plan.reflectionMemory &&
+                                  !!deps.memory &&
+                                  !!deps.reflection,
                                 rivetAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -3826,6 +3842,36 @@ export function createJuneRegistry(deps: Dependencies) {
                           "I couldn't retrieve and privately deliver that Slack history. No contents were shared by this lookup."),
                 };
               }
+              if (reply.reflectionMemory) {
+                // The think step returns only after its own occupancy settles.
+                // Reuse the idempotent, send-time command dispatch below so a
+                // recovery/retry revalidates the publication at the effect.
+                try {
+                  const command = parseReply(
+                    JSON.stringify({ ...reply, replyInThread: undefined }),
+                    [],
+                    {
+                      reflectionMemoryAvailable:
+                        body.type === "event" &&
+                        ownerTurn &&
+                        scope.private &&
+                        !!plan.reflectionMemory &&
+                        !!deps.memory &&
+                        !!deps.reflection,
+                    },
+                  ).reflectionMemory;
+                  if (command) {
+                    reflectionReview = { action: "memory", ...command };
+                    reply = {
+                      text: "[Private reflection memory staging; content not retained]",
+                    };
+                  }
+                } catch {
+                  reply = {
+                    text: "Reflection memory staging requires one valid candidate reference in an enabled owner-private turn. No proposal was staged.",
+                  };
+                }
+              }
               if (version >= 7 && reply.execution) {
                 const commands =
                   parseReply(
@@ -4246,6 +4292,42 @@ export function createJuneRegistry(deps: Dependencies) {
                               "text",
                             );
                           }
+                          if (reflectionReview?.action === "memory") {
+                            let text = `${PRIVATE_REFLECTION_REVIEW_PREFIX}Reflection memory staging is unavailable; no proposal was confirmed.`;
+                            if (
+                              plan.reflection &&
+                              plan.memory &&
+                              deps.reflection &&
+                              deps.memory &&
+                              !step.abortSignal.aborted
+                            ) {
+                              try {
+                                const result = await step
+                                  .client<JuneClientRegistry>()
+                                  .reflection.getOrCreate([deps.owner.id])
+                                  .stageMemory(
+                                    audience,
+                                    reflectionReview.id,
+                                    reflectionReview.subjectSourceId,
+                                  );
+                                if (result)
+                                  text = `${PRIVATE_REFLECTION_REVIEW_PREFIX}Reflection memory proposal ${result.id}: ${result.status} at this staging check. This is a hypothesis grounded in original source quotations, not a new observation. No claim acceptance occurred here; use separate memory review.`;
+                              } catch {
+                                // A committed write may outlive its RPC response. Never
+                                // infer absence; a retry resolves the same admission.
+                              }
+                            }
+                            if (!valid(step.state) || step.abortSignal.aborted)
+                              return {
+                                status: "rejected",
+                                code: "memory_invalidated",
+                                retryable: false,
+                              };
+                            return send(
+                              { ...outbound, content: { type: "text", text } },
+                              "text",
+                            );
+                          }
                           if (reflectionReview?.action === "list") {
                             let text =
                               "Reflection is unavailable; no candidate status can be inferred.";
@@ -4628,9 +4710,18 @@ export function createJuneRegistry(deps: Dependencies) {
                 stageInterruption: deps.social?.stageInterruption.bind(
                   deps.social,
                 ),
-                rejectProposals: (scope, id): undefined => {
-                  deps.reflection?.rejectProposals?.(scope, id);
-                  deps.social?.rejectInterruption(scope, id);
+                memory: deps.memory?.store,
+                rejectProposals(scope, candidateId) {
+                  deps.memory?.store.rejectReflectionProposals(
+                    scope,
+                    candidateId,
+                  );
+                  deps.memory?.personality?.rejectReflectionProposals(
+                    scope,
+                    candidateId,
+                  );
+                  deps.reflection?.rejectProposals?.(scope, candidateId);
+                  deps.social?.rejectInterruption(scope, candidateId);
                   return undefined;
                 },
               },

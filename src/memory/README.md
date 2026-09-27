@@ -360,7 +360,7 @@ of at most 20 objects with **exactly** this shape:
   text: string;
   category: "claim" | "preference" | "commitment" | "pattern";
   citations: { sourceId: string; quote: string }[];
-  confidence: number; // [0,1], an estimate, not calibrated truth or authority
+  confidence: number | null; // [0,1] estimate, or unknown; not calibrated truth
   validFrom: number | null; // epoch milliseconds; null means unknown
   validTo: number | null; // exclusive
   contradicts: string[]; // at most 20 supplied existingClaims IDs, or []
@@ -563,6 +563,56 @@ The host's reflection `retrieve({ownerId,scope,evidenceIds},signal)` adapter mus
 check current owner/scope authorization and `freshEvidence` for every returned
 item with the current clock. Re-read on admission, before/after inference and
 when reading candidates. Keep the raw result out of Rivet journals.
+
+In an enabled owner-private turn, June can request
+`reflectionMemory: {id: "<candidate-alias>", subjectSourceId: "<cited-source-id>"}`
+with empty text and no other action. These are references only: rationale,
+confidence, quotations and the full source context come from the host-validated
+immutable publication, not model replacements. The host dispatches only after
+the inference occupancy has actually settled. It captures the current operation
+epoch before validation and rechecks it, live occupancy and quiet hours before
+the synchronous ledger write. The candidate's generation epoch is never restamped.
+The capability is frozen in the turn plan and absent from guest/public turns,
+worker results and read-only reflection/search synthesis. Reading a candidate
+does not grant staging permission to a continuation; staging needs its own
+effect-eligible turn. The private receipt contains only proposal identity/status,
+not copied rationale or quotations.
+
+After privately inspecting a current reflection candidate, the owner can send
+`!reflection memory <64-hex-candidate-id> <cited-source-id>` to June as a literal
+private message (not a Slack slash command). Slack requires verified plain text,
+not quoted/code blocks or attachment fallback. The source selects the subject
+by its original platform/account/author, never a guessed
+display name. This stages the rationale as a **Reflection hypothesis**, not an
+observation or accepted memory. Original cited episodes supply exact quotes;
+dream-only or mixed dream input cannot be staged. Unknown confidence stays null,
+and observation times remain on the original sources. Oversized rationale or
+quotes are rejected, not silently clipped. The normal pending-proposal review
+surface owns subsequent acceptance or rejection; this command never accepts.
+Publication expiry limits admission, not the lifetime of an already-staged
+pending memory proposal. Subsequent owner review retains the ordinary memory
+validity and deletion rules, plus the durable candidate rejection below.
+
+The trusted reflection actor passes its validated opaque ID as the sixth
+`stageProposals` argument. This is a separate durable admission from ordinary
+extraction: one candidate cannot generate more proposals or reset review decisions
+on retry/reopen, even if the subject selection changes. All original request
+sources become deletion-only `extractionContext`, including uncited context;
+only cited sources become `dependsOn` evidence. Deleting any input removes the
+proposal (or accepted claim) and prevents restaging from stale candidate state.
+The generated rationale is never inserted as a new source.
+
+Candidate rejection calls `rejectReflectionProposals(audience, candidateId)`
+before persisting the actor's rejection. The ledger remembers the rejected alias
+even if nothing was staged, rejects future stale staging, and atomically marks
+that candidate's pending proposals rejected. Ordinary memory review then refuses
+their acceptance. Retries and reopening cannot restore pending status. A claim
+the owner accepted **before** candidate rejection is an already completed review;
+candidate rejection does not retract it or delete the original evidence.
+
+The new extraction-receipt alias and rejection tombstones require a compatible
+ledger reader after writing. A rollback must not restore old snapshots or drop
+rejection receipts to re-enable stale staging.
 
 An optional legacy `Source.correction` is explicit trusted owner input, not model
 inference. Historical import pages cannot set it. Live `!memory-correct <trait>

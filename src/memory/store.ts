@@ -40,6 +40,7 @@ export {
 } from "./backup.js";
 
 const id = z.string().min(1).max(2048);
+const reflectionId = z.string().regex(/^[a-f0-9]{64}$/);
 const ids = z
   .array(id)
   .min(1)
@@ -73,7 +74,7 @@ const proposalInputSchema = z
     text: z.string().min(1).max(4000),
     category: z.enum(["claim", "preference", "commitment", "pattern"]),
     citations: z.array(citationSchema).min(1).max(20),
-    confidence: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1).nullable(),
     validFrom: timestamp.nullable(),
     validTo: timestamp.nullable(),
     contradicts: z.array(id).max(20),
@@ -165,8 +166,12 @@ const stateSchema = z.strictObject({
         audience: id,
         sourceIds: ids,
         proposalIds: z.array(id).max(20),
+        reflectionCandidateId: reflectionId.optional(),
       }),
     )
+    .default([]),
+  rejectedReflections: z
+    .array(z.strictObject({ audience: id, candidateId: reflectionId }))
     .default([]),
   // Live authentication is an attestation, not a change to canonical history.
   corrections: z
@@ -643,6 +648,7 @@ export class EvidenceStore {
             imports: [],
             proposals: [],
             extractions: [],
+            rejectedReflections: [],
             corrections: [],
             importExtractions: [],
           });
@@ -1309,14 +1315,19 @@ export class EvidenceStore {
   /** Untrusted extractor output is an array of MemoryProposalInput. Quotes prove
    * provenance, NOT truth/entailment; only authenticated review accepts a claim.
    * subjectSourceId names a cited Source; its platform/account/author identifies
-   * the subject, never a display name supplied by the extractor. */
+   * the subject, never a display name supplied by the extractor. Reflection
+   * admission uses its host-validated candidate ID and retains ALL input sources
+   * as deletion dependencies, even when the decision did not cite each one. */
   stageProposals(
     audience: string,
     sourceIds: string[],
     output: unknown,
     importExtractionId?: string,
     contextClaimIds: string[] = [],
+    reflectionCandidateId?: string,
   ): MemoryProposal[] {
+    if (reflectionCandidateId !== undefined)
+      parse(reflectionId, reflectionCandidateId);
     const inputs = parse(z.array(proposalInputSchema).max(20), output);
     const sources = this.extractionContext(audience, sourceIds);
     const selected = sources.map((source) => source.id).sort();
@@ -1350,7 +1361,13 @@ export class EvidenceStore {
         supersedes: [...new Set(input.supersedes)].sort(),
       };
       const proposalId = `proposal:${createHash("sha256")
-        .update(JSON.stringify([audience, grounding, context]))
+        .update(
+          JSON.stringify(
+            reflectionCandidateId === undefined
+              ? [audience, grounding, context]
+              : [audience, grounding, context, reflectionCandidateId],
+          ),
+        )
         .digest("hex")}`;
       return parse(proposalSchema, {
         id: proposalId,
@@ -1397,6 +1414,14 @@ export class EvidenceStore {
           ))
       )
         throw new Error("Import extraction no longer authorized");
+      if (
+        state.rejectedReflections.some(
+          (entry) =>
+            entry.audience === audience &&
+            entry.candidateId === reflectionCandidateId,
+        )
+      )
+        throw new Error("Reflection candidate already rejected");
       // Source IDs are immutable revision identities. Admission belongs to the
       // exact scoped input set, not model wording, confidence or input order.
       // Recheck even empty outputs so deletion in flight cannot leave a receipt.
@@ -1420,7 +1445,9 @@ export class EvidenceStore {
       const previous = state.extractions.find(
         (entry) =>
           entry.audience === audience &&
-          isDeepStrictEqual(entry.sourceIds, selected),
+          entry.reflectionCandidateId === reflectionCandidateId &&
+          (reflectionCandidateId !== undefined ||
+            isDeepStrictEqual(entry.sourceIds, selected)),
       );
       if (previous) {
         admitted = previous.proposalIds;
@@ -1451,6 +1478,9 @@ export class EvidenceStore {
           audience,
           sourceIds: selected,
           proposalIds: admitted,
+          ...(reflectionCandidateId === undefined
+            ? {}
+            : { reflectionCandidateId }),
         });
       }
       // Completion and proposals commit together, including an empty result.
@@ -1461,6 +1491,35 @@ export class EvidenceStore {
     });
     const saved = this.proposals(audience);
     return admitted.flatMap((id) => saved.find((s) => s.id === id) ?? []);
+  }
+
+  /** Revoke pending incorporation before the reflection actor persists rejection.
+   * Retain the alias even if no proposal exists, so stale actor replay is inert.
+   * Earlier owner-accepted claims remain a separate, already completed decision. */
+  rejectReflectionProposals(audience: string, candidateId: string): void {
+    parse(id, audience);
+    parse(reflectionId, candidateId);
+    this.transaction((state) => {
+      if (
+        !state.rejectedReflections.some(
+          (entry) =>
+            entry.audience === audience && entry.candidateId === candidateId,
+        )
+      )
+        state.rejectedReflections.push({ audience, candidateId });
+      const admission = state.extractions.find(
+        (entry) =>
+          entry.audience === audience &&
+          entry.reflectionCandidateId === candidateId,
+      );
+      for (const proposal of state.proposals)
+        if (
+          proposal.audience === audience &&
+          proposal.status === "pending" &&
+          admission?.proposalIds.includes(proposal.id)
+        )
+          proposal.status = "rejected";
+    });
   }
 
   proposals(audience: string): MemoryProposal[] {
