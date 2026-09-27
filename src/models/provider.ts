@@ -226,6 +226,9 @@ const companionReplySchema = z.strictObject({
     })
     .optional(),
   rivet: rivetRequestSchema.optional(),
+  browserProposal: z
+    .strictObject({ operation: z.string().min(1).max(128).nullable() })
+    .optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -262,6 +265,7 @@ export type ReplyCapabilities = Pick<
   | "jevObservationAvailable"
   | "reflectionRequestAvailable"
   | "rivetAvailable"
+  | "browserProposalAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
@@ -302,6 +306,7 @@ export function replyJsonSchema(
     jevObservationAvailable,
     reflectionRequestAvailable,
     rivetAvailable,
+    browserProposalAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -541,6 +546,18 @@ export function replyJsonSchema(
               ],
               description:
                 "Owner DM only. Read June's Rivet data, never mutate. Discover actors with name (null lists actor names), then use actorId. Nullable unused fields must be null; pointer is a JSON Pointer or empty; offset is a table-row offset (0–1000000), page is a JSON-fragment page (0–1000). format raw sends the page directly, answer lets you inspect it. Live inspector reads may wake actors. No SQL or arbitrary URLs. Leave text empty and other actions unset.",
+            },
+          }
+        : {}),
+      ...(browserProposalAvailable
+        ? {
+            browserProposal: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: { operation: { type: ["string", "null"] } },
+              required: ["operation"],
+              description:
+                "List configured browser mutations with operation:null, or propose one exact operation name (1–128 characters). Proposal only; cannot grant, fill, click, submit or execute. Leave text empty and other actions unset.",
             },
           }
         : {}),
@@ -964,6 +981,7 @@ export function replyJsonSchema(
       ...(jevObservationAvailable ? ["jevObservation"] : []),
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
       ...(rivetAvailable ? ["rivet"] : []),
+      ...(browserProposalAvailable ? ["browserProposal"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
@@ -1150,6 +1168,7 @@ export function parseReply(
     jevObservationAvailable,
     reflectionRequestAvailable,
     rivetAvailable,
+    browserProposalAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -1193,6 +1212,7 @@ export function parseReply(
     "jevObservation",
     "reflectionRequest",
     "rivet",
+    "browserProposal",
     "dashboardLogin",
     "wakeup",
     "replyInThread",
@@ -1243,6 +1263,7 @@ export function parseReply(
     (reply.jevObservation !== undefined && !jevObservationAvailable) ||
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
     (reply.rivet !== undefined && !rivetAvailable) ||
+    (reply.browserProposal !== undefined && !browserProposalAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
@@ -1274,6 +1295,7 @@ export function parseReply(
     Number(reply.jevObservation === true) +
     Number(reply.reflectionRequest !== undefined) +
     Number(reply.rivet !== undefined) +
+    Number(reply.browserProposal !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
@@ -1301,6 +1323,7 @@ export function parseReply(
       reply.jevObservation === true ||
       reply.reflectionRequest !== undefined ||
       reply.rivet !== undefined ||
+      reply.browserProposal !== undefined ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||
       reply.latency !== undefined) &&

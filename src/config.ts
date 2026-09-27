@@ -3,6 +3,7 @@ import { z } from "zod";
 import { RAYGEN_SLACK_ID } from "./core/social.js";
 import { jevQuestionSchema } from "./models/jev.js";
 import { browserOperationSchema } from "./tools/browser.js";
+import { browserMutationSchema } from "./tools/browser-proposals.js";
 
 const nonempty = z.string().trim().min(1);
 const envName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/);
@@ -145,6 +146,7 @@ const schema = z
           )
           .max(64)
           .default([]),
+        mutationOperations: z.array(browserMutationSchema).max(16).default([]),
         timeoutMs: z.number().int().min(100).max(60000).default(15000),
         execution: z
           .strictObject({
@@ -161,8 +163,10 @@ const schema = z
       .refine(
         (browser) =>
           !browser.enabled ||
-          (!!browser.execution && browser.readOperations.length > 0),
-        "Enabled browsing requires explicit isolated execution and named read recipes",
+          (!!browser.execution &&
+            browser.readOperations.length + browser.mutationOperations.length >
+              0),
+        "Enabled browsing requires explicit isolated execution and named recipes",
       )
       .prefault({}),
     setupMode: z.boolean().default(false),

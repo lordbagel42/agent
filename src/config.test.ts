@@ -42,6 +42,7 @@ describe("configuration boundary", () => {
     expect(config.browser).toEqual({
       enabled: false,
       readOperations: [],
+      mutationOperations: [],
       timeoutMs: 15000,
     });
     expect(config.credentials).toBeUndefined();
@@ -74,6 +75,43 @@ describe("configuration boundary", () => {
       capabilities: { directory: "/private/broker" },
     };
     expect(parseConfig({ ...configured, browser }).browser.enabled).toBe(true);
+    const mutation = {
+      ...recipe,
+      name: "fill-note",
+      steps: [{ kind: "fill", selector: "input", value: "nonsecret note" }],
+    };
+    const mutationsOnly = {
+      enabled: true,
+      execution,
+      mutationOperations: [mutation],
+    };
+    expect(
+      parseConfig({ ...configured, browser: mutationsOnly }).browser
+        .mutationOperations[0]?.steps,
+    ).toEqual(mutation.steps);
+    for (const invalid of [
+      { ...mutationsOnly, execution: undefined },
+      { ...mutationsOnly, mutationOperations: [recipe] },
+      {
+        ...mutationsOnly,
+        mutationOperations: [
+          {
+            ...mutation,
+            steps: [...mutation.steps, { kind: "click", selector: "button" }],
+          },
+        ],
+      },
+      {
+        ...mutationsOnly,
+        mutationOperations: [
+          {
+            ...mutation,
+            requests: [...recipe.requests, { url: recipe.url, method: "POST" }],
+          },
+        ],
+      },
+    ])
+      expect(() => parseConfig({ ...configured, browser: invalid })).toThrow();
     expect(
       parseConfig({
         ...configured,

@@ -20,7 +20,8 @@ or read recipes does not enable it. The host mounts anonymous reads in the same
 generic `CapabilityBroker` only with all of:
 
 - `capabilities.directory`, the existing private broker ledger directory;
-- top-level `browser.enabled: true` and nonempty `browser.readOperations`;
+- top-level `browser.enabled: true` and at least one named recipe in
+  `browser.readOperations` or the separate `browser.mutationOperations` opt-in below;
 - `browser.execution.kind: "isolated-host"`, dedicated absolute `home` and
   `tempDirectory`, and explicit `true` for `processIsolationAcknowledged`,
   `networkIsolationAcknowledged`, `ephemeralStorageAcknowledged`, and
@@ -209,3 +210,52 @@ Authoritative APIs consulted:
 - https://playwright.dev/docs/api/class-route#route-fetch
 - https://playwright.dev/docs/api/class-browsercontext#browser-context-route-web-socket
 - https://playwright.dev/docs/api/class-browsertype#browser-type-launch
+
+## One exact mutation proposal
+
+`browser.mutationOperations` is a separate, empty-by-default opt-in under the same
+browser execution/isolation gates. It never changes `readOperations` permissions.
+Each mutation recipe has exactly one nonsecret literal `fill` or one `click`.
+A fill cannot allow non-GET requests or append a submit; a click may allow at most
+one exact non-GET URL/method, with a one-use request budget. Login, credentials,
+page-text output and multi-step sequences are not supported on this surface.
+Recipes are limited to 1400 serialized JSON characters; startup also rejects a
+complete escaped review that exceeds 3500 characters instead of truncating it.
+Up to 16 named mutations are supported;
+names use a lowercase letter followed by up to 63 lowercase letters, digits,
+underscores or hyphens. Values are nonsecret configuration and appear in the
+owner-private proposal/history, not a channel or guest reply.
+
+June discovers names with `browserProposal: { "operation": null }` and proposes
+one with `browserProposal: { "operation": "exact-name" }`, leaving text empty
+and other actions unset. This path only calls the broker's `propose`; it does not
+grant, resolve credentials, open a browser or execute. The host returns the
+entire configured recipe and exact `ToolAction` directly for human review. JSON
+Unicode escapes keep URLs and markup inert; JSON decoding restores exact values.
+The preview must match the adapter's full recipe digest and account/origin scope.
+June cannot invent selectors, URLs, form values or recipe steps at runtime.
+
+The human must separately authenticate to `POST /operator/capabilities/grants`
+with `{ "audience": "<owner id>", "action": <reviewed action>, "expiresAt":
+<Unix milliseconds within five minutes> }`, then POST the identical action to
+`/operator/capabilities/grants/<grantId>/execute`. Never give June the operator
+token. The broker binds tool/account/item/origin and arguments including the full
+recipe digest, not a broad browsing scope. An approved read cannot authorize a
+mutation; a changed recipe invalidates the old action even under the same name.
+Receipts are durable and one-use: retrying the same grant does not repeat the
+effect, including after restart. An unknown receipt requires inspection and
+reconciliation, not a new automatic grant or retry.
+
+Every action uses a fresh browser context: filling in one action does not retain
+the field for a later click. A click acts on the configured page as loaded, not
+on a previous fill. The approved origin remains trusted; URL/method checks do
+not prove server-side semantics or make an arbitrary website safe. Configure
+only known endpoints and an exact post-action confirmation. Do not label an
+endpoint with side effects as a read.
+
+`src/tools/browser-proposals.test.ts` uses only a disposable local HTTPS form,
+self-signed fixture certificate and local broker database. It checks that a
+proposal does nothing, unauthenticated approval is denied, read/wrong-scope
+grants cannot mutate, a fill cannot submit POSTs even from an input handler, and
+an approved click sends exactly once across broker restart. `src/runtime/registry.test.ts` checks June's private
+proposal path and denial in guest, public, mixed-directive and synthesis turns.

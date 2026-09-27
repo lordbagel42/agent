@@ -110,6 +110,8 @@ export interface Dependencies {
     event: MessageEvent,
   ) => Promise<string>;
   rivet?: RivetReader;
+  /** Pure exact-action proposal only; never grant or execute from model output. */
+  browserProposal?: (operation: string | null) => string;
   dashboardLogin?: {
     issue(): { url: string; expiresAt: string } | undefined;
     redact(text: string): string;
@@ -1647,6 +1649,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   isOwnerRivetDm(event, deps.owner) &&
                                   !!deps.rivet,
+                                browserProposalAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.browserProposal,
                                 dashboardLoginAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2571,6 +2578,39 @@ export function createJuneRegistry(deps: Dependencies) {
                                 );
                                 generated = { text: "" };
                               }
+                            } else if (
+                              generated.browserProposal !== undefined
+                            ) {
+                              let text =
+                                "Browser proposals require an owner-private turn and an explicitly enabled integration. Nothing ran.";
+                              if (
+                                scope.private &&
+                                modelRequest.browserProposalAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                deps.browserProposal
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  if (checked.browserProposal)
+                                    text = deps.browserProposal(
+                                      checked.browserProposal.operation,
+                                    );
+                                } catch {
+                                  text =
+                                    "That exact browser proposal is unavailable. Nothing ran and no permission was granted.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
                             } else if (generated.inspection !== undefined) {
                               // Metadata-only read in the existing model receipt.
                               // Revalidate even custom providers before dispatch.

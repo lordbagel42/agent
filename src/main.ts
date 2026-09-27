@@ -64,6 +64,7 @@ import { createRivetReader } from "./runtime/rivet-inspection.js";
 import { SocialPermissions } from "./runtime/social.js";
 import { CapabilityBroker } from "./tools/broker.js";
 import { BrowserAdapter } from "./tools/browser.js";
+import { createBrowserProposal } from "./tools/browser-proposals.js";
 import { McpConnections } from "./tools/connections.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
 import { createTavilyWebSearchProvider } from "./tools/web-search.js";
@@ -298,6 +299,10 @@ async function main() {
   if (operatorToken.length < 32) throw new Error("Short operator token");
   startupStage = "isolated browser execution prerequisites";
   const browserHostGate = process.env.JUNE_ALLOW_ISOLATED_BROWSER === "1";
+  const anonymousBrowserOperations = [
+    ...config.browser.readOperations,
+    ...config.browser.mutationOperations,
+  ];
   let browser: BrowserAdapter | undefined;
   if (config.browser.enabled && browserHostGate) {
     const execution = config.browser.execution;
@@ -323,7 +328,7 @@ async function main() {
     await privateDirectory(execution.home);
     await privateDirectory(execution.tempDirectory);
     browser = new BrowserAdapter({
-      operations: config.browser.readOperations,
+      operations: anonymousBrowserOperations,
       timeoutMs: config.browser.timeoutMs,
       requireRecipeDigest: true,
       environment: { HOME: execution.home, TMPDIR: execution.tempDirectory },
@@ -342,10 +347,10 @@ async function main() {
         owner: config.owner.id,
         tools: browser ? { browser } : {},
         resolveCredential: async (scope) => {
-          // Anonymous reads never consult a vault or ambient environment secret.
+          // Anonymous operations never consult a vault or ambient environment secret.
           if (
             browser &&
-            config.browser.readOperations.some(
+            anonymousBrowserOperations.some(
               (recipe) =>
                 recipe.account === scope.account &&
                 recipe.item === scope.item &&
@@ -800,6 +805,14 @@ async function main() {
         .filter(([name]) => /token|secret|password|credential|key/i.test(name))
         .flatMap(([, value]) => (value ? [value] : [])),
     }),
+    browserProposal:
+      browser && capabilities && config.browser.mutationOperations.length
+        ? createBrowserProposal({
+            operations: config.browser.mutationOperations,
+            browser,
+            broker: capabilities,
+          })
+        : undefined,
     inspection: createInspectionReader({
       audience: ownerAudience,
       memory,
@@ -825,11 +838,16 @@ async function main() {
             operationNames: config.browser.readOperations
               .slice(0, 10)
               .map((recipe) => recipe.name),
+            configuredMutations: config.browser.mutationOperations.length,
+            mutationProposalsAvailable:
+              !!browser &&
+              !!capabilities &&
+              config.browser.mutationOperations.length > 0,
             isolation: config.browser.execution
               ? "operator_acknowledged_not_verified"
               : "not_configured",
             liveVerified: "unknown",
-          })}. Browser reads require explicit browser.enabled, capabilities.directory, isolated execution configuration and JUNE_ALLOW_ISOLATED_BROWSER=1. Only anonymous named GET recipes are mounted, with no interaction steps or vault access. Every execution requires its own exact recipe-digest/account/item/origin grant. Results are receipts only, not webpage content. Inspection does not launch Chromium or authorize reads; host isolation acknowledgements are not sandbox verification.`,
+          })}. Browsing requires explicit browser.enabled, capabilities.directory, isolated execution configuration and JUNE_ALLOW_ISOLATED_BROWSER=1. Read recipes remain anonymous GET-only without interaction steps. Separately configured mutations permit one anonymous fill or click; browserProposal with operation:null lists names for exact proposals only. No vault access or model grant/execute path exists. Every execution requires its own exact recipe-digest/account/item/origin grant. Results are receipts only, not webpage content. Inspection does not launch Chromium or authorize actions; host isolation acknowledgements are not sandbox verification.`,
           "Browser cancellation requests cleanup, not confirmed stoppage. Pending work retains admission until it settles. Cleanup failure leaves the receipt unknown and blocks new work on that adapter. Never describe unknown as success or safely retryable; owner reconciliation requires independently confirmed stoppage and outcome.",
         ].join("\n"),
       nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),

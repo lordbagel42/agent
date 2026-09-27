@@ -256,6 +256,8 @@ export interface CompanionReply {
   };
   /** Owner one-to-one Slack DM only; volatile read-only Rivet inspection. */
   rivet?: import("./rivet.js").RivetRequest;
+  /** List named mutations (null), or propose one for separate exact human approval. */
+  browserProposal?: { operation: string | null };
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Owner-private persistent schedules and event subscriptions. */
@@ -301,6 +303,7 @@ export interface ModelRequest {
   jevObservationAvailable?: boolean;
   reflectionRequestAvailable?: boolean;
   rivetAvailable?: boolean;
+  browserProposalAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;

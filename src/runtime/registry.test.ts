@@ -74,6 +74,107 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("only proposes browser mutations in owner-private turns and rejects mixed or forged authority", async (t) => {
+    const sent: OutboundMessage[] = [];
+    const requests: ModelRequest[] = [];
+    const proposed: (string | null)[] = [];
+    let directive: CompanionReply = {
+      text: "",
+      browserProposal: { operation: null },
+    };
+    let search = false;
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack: transport("slack", sent) },
+      browserProposal(operation) {
+        proposed.push(operation);
+        return "PRIVATE exact proposal; nothing ran";
+      },
+      webSearch: {
+        available: true,
+        description: "fixture",
+        async search() {
+          return { status: "ready", results: [] };
+        },
+      },
+      model: {
+        async reply(request) {
+          requests.push(request);
+          expect(
+            Object.hasOwn(
+              replyJsonSchema([], request).properties,
+              "browserProposal",
+            ),
+          ).toBe(request.browserProposalAvailable === true);
+          if (search && request.webSearchAvailable)
+            return { text: "", webSearch: "public query" };
+          // Return forged directives too: host must revalidate custom providers.
+          return directive;
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const deliver = async (
+      id: string,
+      extra: Partial<MessageEvent> = {},
+      key = ["private", "raygen"],
+    ) => {
+      const actor = client.conversation.getOrCreate(key);
+      const done = Object.values((await actor.snapshot()).events).filter(
+        (event) => event.done,
+      ).length;
+      await actor.send("inbox", {
+        type: "event",
+        event: { ...message, id, messageId: id, ...extra },
+      });
+      await expect
+        .poll(
+          async () =>
+            Object.values((await actor.snapshot()).events).filter(
+              (event) => event.done,
+            ).length,
+          { timeout: 5000 },
+        )
+        .toBe(done + 1);
+    };
+    await deliver("browser-list");
+    expect(proposed).toEqual([null]);
+    expect(requests[0]?.system).toContain(
+      "Separate authenticated human approval",
+    );
+    directive = { text: "", browserProposal: { operation: "fill-note" } };
+    expect(parseReply(JSON.stringify(directive), [], requests[0])).toEqual(
+      directive,
+    );
+    await deliver("browser-propose");
+    expect(proposed).toEqual([null, "fill-note"]);
+    directive = { ...directive, reaction: "thumbsup" };
+    await deliver("browser-mixed");
+    directive = {
+      text: "",
+      browserProposal: { operation: "fill-note", ...{ grant: true } },
+    };
+    await deliver("browser-forged");
+    directive = { text: "", browserProposal: { operation: "fill-note" } };
+    for (const [id, extra, key] of [
+      ["browser-public", { direct: false }, ["slack", "T1", "D1", ""]],
+      [
+        "browser-guest",
+        { senderId: "U2", metadata: { channelType: "im" } },
+        ["guest", "slack", "T1", "D1", "", "U2"],
+      ],
+    ] as const) {
+      await deliver(id, extra, [...key]);
+      expect(requests.at(-1)?.browserProposalAvailable).not.toBe(true);
+      expect(JSON.stringify(sent.at(-1)?.content)).not.toContain("PRIVATE");
+    }
+    search = true;
+    await deliver("browser-synthesis");
+    expect(requests.at(-1)?.browserProposalAvailable).toBe(false);
+    expect(proposed).toEqual([null, "fill-note"]);
+    expect(() => parseReply(JSON.stringify(directive), [])).toThrow();
+  });
+
   it("lets June issue login links only in owner-private turns, never public or synthesis turns", async (t) => {
     const links = createConsoleLoginLinks("https://june.example");
     const sent: OutboundMessage[] = [];

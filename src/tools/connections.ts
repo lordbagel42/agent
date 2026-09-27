@@ -649,9 +649,13 @@ export class McpConnections {
         };
         let reply = await model.reply(discoveryRequest, signal, isCurrent);
         if (!current()) return { text: "" };
-        // Memory reads belong to the host, never an MCP operation. Validate before
+        // These directives belong to the host, never an MCP operation. Validate before
         // any catalog round or tool dispatch, including for custom providers.
-        if (reply.recall !== undefined || reply.pendingMemory !== undefined)
+        if (
+          reply.recall !== undefined ||
+          reply.pendingMemory !== undefined ||
+          reply.browserProposal !== undefined
+        )
           return parseReply(
             JSON.stringify(reply),
             request.workspaces,
@@ -681,7 +685,11 @@ export class McpConnections {
             isCurrent,
           );
           if (!current()) return { text: "" };
-          if (reply.recall !== undefined || reply.pendingMemory !== undefined)
+          if (
+            reply.recall !== undefined ||
+            reply.pendingMemory !== undefined ||
+            reply.browserProposal !== undefined
+          )
             return parseReply(
               JSON.stringify(reply),
               request.workspaces,
@@ -815,6 +823,7 @@ export class McpConnections {
                 jevObservationAvailable: false,
                 reflectionRequestAvailable: false,
                 rivetAvailable: false,
+                browserProposalAvailable: false,
                 dashboardLoginAvailable: false,
                 modelStatusAvailable: false,
                 wakeupAvailable: false,

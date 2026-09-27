@@ -357,9 +357,10 @@ test("dashboard credentials from MCP results never reach the synthesis provider"
   expect(links.has(id)).toBe(true);
 });
 
-test("mixed recall directives cannot dispatch MCP calls, proposals or extra catalog rounds", async () => {
+test("mixed host recall/browser directives cannot dispatch MCP calls, proposals or extra catalog rounds", async () => {
   const f = await fixture();
   f.request.recallAvailable = true;
+  f.request.browserProposalAvailable = true;
   for (const permission of ["read", "approval"] as const) {
     f.store.permit(f.id, f.connection().revision, "lookup", permission);
     for (const directive of [
@@ -372,22 +373,26 @@ test("mixed recall directives cannot dispatch MCP calls, proposals or extra cata
       },
       { mcpCatalog: { connection: null, tool: null, offset: 0 } },
     ]) {
-      for (const afterCatalog of [false, true]) {
-        let calls = 0;
-        const model = f.store.wrap({
-          async reply() {
-            calls++;
-            if (afterCatalog && calls === 1)
-              return {
-                text: "",
-                mcpCatalog: { connection: null, tool: null, offset: 0 },
-              };
-            return { text: "", recall: "heron", ...directive };
-          },
-        });
-        await expect(model.reply(f.request)).rejects.toThrow();
-        expect(calls).toBe(afterCatalog ? 2 : 1);
-      }
+      for (const hostDirective of [
+        { recall: "heron" },
+        { browserProposal: { operation: "fill-note" } },
+      ])
+        for (const afterCatalog of [false, true]) {
+          let calls = 0;
+          const model = f.store.wrap({
+            async reply() {
+              calls++;
+              if (afterCatalog && calls === 1)
+                return {
+                  text: "",
+                  mcpCatalog: { connection: null, tool: null, offset: 0 },
+                };
+              return { text: "", ...hostDirective, ...directive };
+            },
+          });
+          await expect(model.reply(f.request)).rejects.toThrow();
+          expect(calls).toBe(afterCatalog ? 2 : 1);
+        }
     }
   }
   expect(f.calls).toEqual([]);
