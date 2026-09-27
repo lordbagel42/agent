@@ -450,7 +450,7 @@ forgetting, not erasure of older encrypted snapshots or journals.
 
 Owner-private `inspection: "memory"` reports scoped capacity and separate
 ledger-wide `operationStatus()` metadata. This read-only API performs no I/O
-and returns only `connection`, `sinceOpenedAt`, and `read`/`transaction` records
+and returns `connection`, `sinceOpenedAt`, `persistence` counters, and `read`/`transaction` records
 containing `status` (`unknown`, `succeeded`, or `failed`), `attemptedAt`, and
 `lastSucceededAt` (epoch milliseconds or null). No paths, IDs, input, keys, or
 exception messages are retained in these records.
@@ -475,6 +475,19 @@ checks and ingestion run before June can request inspection. A persistent read
 or ingestion failure can block the turn before this receipt is reachable; those
 privacy checks remain fail-closed. Reader failure reports do not prove a broken
 production ledger can still answer a conversational inspection request.
+
+`operationStatus().persistence` exposes fixed-size numeric counters through June's
+owner-private `inspection: "memory"`: `calls`, `completed`, `failed`,
+`totalDurationMs`, and `maxDurationMs` (null until a sample). These volatile
+counters start at zero on each store open. They count settled `transaction()`
+attempts, including no-op commits and failed BEGIN/read/change/write/COMMIT or
+rollback, not records written. Completion requires a successful COMMIT. Durations
+use a monotonic clock and include the entire transaction attempt and rollback,
+not just disk I/O. Initial empty-ledger creation, pre-transaction validation,
+curated Git saves, and historical writes are excluded. Counts stop at the safe
+integer limit; total duration saturates there. No event list, IDs, paths, evidence
+bodies, or exception text is retained. Inspection does not write memory; counters
+are observations, not proof of complete history or current storage health.
 
 ## Retention and limits
 

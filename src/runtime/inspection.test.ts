@@ -564,8 +564,11 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(memoryReport).toContain("remaining capacity is unknown");
   expect(memoryReport).toContain('"read":{"status":"succeeded"');
   expect(memoryReport).toContain('"transaction":{"status":"succeeded"');
+  expect(memoryReport).toMatch(
+    /"persistence":\{"calls":\d+,"completed":\d+,"failed":\d+,"totalDurationMs":[\d.]+,"maxDurationMs":[\d.]+\}/,
+  );
   expect(memoryReport).toContain("Open is not a health check");
-  expect(memoryReport.length).toBeLessThan(2000);
+  expect(memoryReport.length).toBeLessThan(4000);
   action = { text: "", inspection: "imports" };
   const importReport = await deliver();
   expect(importReport).toContain("Configured selections: 12; showing 10");

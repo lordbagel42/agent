@@ -369,6 +369,13 @@ export class EvidenceStore {
     attemptedAt: null,
     lastSucceededAt: null,
   };
+  private readonly persistence = {
+    calls: 0,
+    completed: 0,
+    failed: 0,
+    totalDurationMs: 0,
+    maxDurationMs: null as number | null,
+  };
   private readonly index = new Map<
     string,
     { sources: Source[]; claims: Claim[] }
@@ -441,6 +448,7 @@ export class EvidenceStore {
       sinceOpenedAt: this.sinceOpenedAt,
       read: { ...this.readStatus },
       transaction: { ...this.transactionStatus },
+      persistence: { ...this.persistence },
     };
   }
 
@@ -505,8 +513,10 @@ export class EvidenceStore {
   }
 
   private transaction(change: (state: State) => void) {
+    const started = performance.now();
     const attemptedAt = Date.now();
     let began = false;
+    let completed = false;
     try {
       this.db.exec("BEGIN IMMEDIATE");
       began = true;
@@ -514,6 +524,7 @@ export class EvidenceStore {
       change(state);
       this.write(state);
       this.db.exec("COMMIT");
+      completed = true;
       this.transactionStatus = {
         status: "succeeded",
         attemptedAt,
@@ -528,6 +539,20 @@ export class EvidenceStore {
       };
       if (began) this.db.exec("ROLLBACK");
       throw error;
+    } finally {
+      // Count settled attempts, not records. BEGIN/COMMIT/rollback failures are
+      // included; pre-transaction validation and initial empty-store setup are not.
+      const timing = this.persistence;
+      if (timing.calls < Number.MAX_SAFE_INTEGER) {
+        const duration = Math.max(0, performance.now() - started);
+        timing.calls++;
+        timing[completed ? "completed" : "failed"]++;
+        timing.totalDurationMs = Math.min(
+          Number.MAX_SAFE_INTEGER,
+          timing.totalDurationMs + duration,
+        );
+        timing.maxDurationMs = Math.max(timing.maxDurationMs ?? 0, duration);
+      }
     }
   }
 
