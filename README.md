@@ -608,6 +608,15 @@ by `memory.keyEnv`, and `JUNE_ALLOW_MEMORY=1` after privacy/retention review.
 Optional `memory.curated` uses a dedicated directory and separately provisioned
 key. Store actual keys only in the operator's secret mechanism.
 
+Curated traits are owner-private contextual preferences, not June's global
+personality. When memory is enabled, June receives their provenance-validated
+values as `ownerPrivatePreferences` in owner-private turns only, and may use
+them when relevant and compatible with the global profile. The global profile
+wins conflicts. Private evidence, inferred preferences, and owner corrections
+do not publish identity changes; use the separate `!personality` publication
+path for those. Public and guest prompts never receive the private preferences.
+Forgetting supporting evidence removes the preference from future prompts.
+
 Live retention is limited to authenticated owner Slack DMs; imports use the same
 owner-private audience and canonical Slack IDs. Public-thread prompts neither
 read nor ingest retained memory. Historical channel reads do not grant that

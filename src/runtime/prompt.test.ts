@@ -187,6 +187,15 @@ it("requires exact owner identity, private audience and enabled memory rather th
     ...input,
     event: privateEvent,
     history: [{ role: "user", content: event.text, source: privateEvent }],
+    globalPersonality: {
+      version: 9,
+      style: {
+        tone: "dry",
+        verbosity: "concise",
+        humor: "none",
+        curiosity: "reserved",
+      },
+    },
     capabilities: {
       memoryAvailable: true,
       latencyAvailable: true,
@@ -194,11 +203,15 @@ it("requires exact owner identity, private audience and enabled memory rather th
     },
     memory: {
       audience: '["private","PRIVATE-owner-id"]',
-      text: "PRIVATE-scoped-evidence",
+      text: JSON.stringify({
+        ownerPrivatePreferences: { tone: "PRIVATE-scoped-evidence" },
+      }),
     },
   };
   const allowed = buildModelRequest(privateInput);
   expect(allowed.system).toContain("PRIVATE-scoped-evidence");
+  expect(allowed.system).toContain("if they conflict, the global profile wins");
+  expect(allowed.system).toContain('"version":9,"style":{"tone":"dry"');
   expect(allowed.workspaces).toEqual(["permitted"]);
   expect(allowed.latencyAvailable).toBe(true);
   for (const override of [
@@ -211,15 +224,25 @@ it("requires exact owner identity, private audience and enabled memory rather th
     },
     { event: { ...privateEvent, senderId: "U2" } },
     { event: { ...privateEvent, metadata: { channelType: "group" as const } } },
+    {
+      event,
+      memory: {
+        audience: '["slack","T1","C1",""]',
+        text: "PRIVATE-scoped-evidence",
+      },
+    },
   ]) {
     // An invalid memory audience removes that evidence, not an independent
     // private diagnostics grant. A disabled capability or group turn removes it.
     expect(
       buildModelRequest({ ...privateInput, ...override }).latencyAvailable,
-    ).toBe("memory" in override);
+    ).toBe("memory" in override && !("event" in override));
     expect(
       buildModelRequest({ ...privateInput, ...override }).system,
     ).not.toContain("PRIVATE-scoped-evidence");
+    expect(
+      buildModelRequest({ ...privateInput, ...override }).system,
+    ).toContain('"version":9,"style":{"tone":"dry"');
   }
   for (const address of [
     { ...privateEvent.address, accountId: "T2" },

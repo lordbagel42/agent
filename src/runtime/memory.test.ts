@@ -1,4 +1,7 @@
 import { randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Client } from "rivetkit/client";
 import { expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
@@ -11,6 +14,7 @@ import type {
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { slackSource } from "../imports/index.js";
+import { CuratedPersonalityStore } from "../memory/curated.js";
 import { type Claim, EvidenceStore, extractMemory } from "../memory/store.js";
 import { createMemoryExtractor } from "../models/extraction.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
@@ -459,7 +463,14 @@ it("recalls only for the owner privately and invalidates recalled and derived re
 it.for(["reply", "deep"] as const)(
   "keeps private memory scoped and suppresses deleted in-flight $0 work",
   async (phase, t) => {
+    const directory = await mkdtemp(join(tmpdir(), "june-private-style-"));
     const store = new EvidenceStore(":memory:", randomBytes(32));
+    const personality = new CuratedPersonalityStore(
+      join(directory, "curated"),
+      randomBytes(32),
+      store,
+      { initialize: true },
+    );
     const scope = JSON.stringify(["private", "owner"]);
     const source = (event: MessageEvent, audience: string) =>
       slackSource({
@@ -550,6 +561,21 @@ it.for(["reply", "deep"] as const)(
     expect(store.retrieve(scope, event.text).claims).not.toContainEqual(
       pattern.claim,
     );
+    personality.ownerRevise(
+      {
+        id: "private-context",
+        scope,
+        trait: "tone",
+        value: "PRIVATE contextual tone",
+        basis: "inferred",
+        evidenceIds: [original.id],
+        explanation: "PRIVATE preference rationale",
+        confidence: 0.8,
+      },
+      store.reflectionEvidence(scope, [original.id], 60_000),
+      Date.now(),
+      60_000,
+    );
     const requests: ModelRequest[] = [];
     const sent: OutboundMessage[] = [];
     const extracted: string[][] = [];
@@ -571,9 +597,11 @@ it.for(["reply", "deep"] as const)(
       },
     });
     const pending = Promise.withResolvers<CompanionReply>();
-    t.onTestFinished(() => {
+    t.onTestFinished(async () => {
       pending.resolve({ text: "" });
+      personality.close();
       store.close();
+      await rm(directory, { recursive: true, force: true });
     });
     const registry = createJuneRegistry({
       owner: {
@@ -582,6 +610,7 @@ it.for(["reply", "deep"] as const)(
       },
       memory: {
         store,
+        personality,
         source,
         async extract(audience, ids, signal) {
           await extractMemory(store, audience, ids, extractor, signal);
@@ -681,6 +710,8 @@ it.for(["reply", "deep"] as const)(
         supersedes: [],
       },
     });
+    expect(requests[0]?.system).toContain("PRIVATE contextual tone");
+    expect(requests[0]?.system).not.toContain("PRIVATE preference rationale");
     await june.send("inbox", { type: "event", event });
     const publicJune = client.conversation.getOrCreate([
       "slack",
@@ -745,6 +776,9 @@ it.for(["reply", "deep"] as const)(
         },
       ]);
       expect(memory.style).toBeUndefined();
+      expect(memory.ownerPrivatePreferences).toEqual({
+        tone: "PRIVATE contextual tone",
+      });
       expect(memory.evidence.claims).toHaveLength(7);
       expect(
         memory.evidence.sources.length + memory.evidence.claims.length,
@@ -779,6 +813,14 @@ it.for(["reply", "deep"] as const)(
     expect(JSON.stringify(requests.at(-1))).not.toContain("alex-a");
     expect(JSON.stringify(requests.at(-1))).not.toContain(learnedPattern);
     expect(requests.at(-1)?.system).toContain("unrelated fresh heron evidence");
+    for (const request of requests)
+      expect(request.system).toContain('"version":0,"style":{"tone":"warm"');
+    expect(
+      await client.personality.getOrCreate(["owner"]).read(),
+    ).toMatchObject({
+      version: 0,
+      style: { tone: "warm" },
+    });
   },
 );
 
