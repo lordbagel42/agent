@@ -430,10 +430,12 @@ change configuration or launch a worker.
 
 Each proposal durably binds the parsed runtime/execution configuration before
 approval. Changing that configuration cannot resume a saved thread under a new
-adapter, state directory or verifier. Jobs from an older unbound schema require
-manual reconciliation; the host will not invent a binding. The digest does not
-authenticate external credentials, executable contents or native configuration;
-changing those still requires operator review, not automatic resumption.
+adapter, state directory or verifier. Queued or saved proposals without a
+preview-time binding cannot be approved or resumed: request a fresh proposal
+after reconciling any uncertain execution. A consumer-time binding from the older
+schema is not sufficient; the host will not invent preview-time evidence. The
+digest does not authenticate external credentials, executable contents or native
+configuration; changing those still requires operator review, not automatic resumption.
 
 Ask June privately for a coding task. She returns the scope and an
 `/approve <job-prefix>` command; approval is for local work, not push/deployment.

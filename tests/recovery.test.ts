@@ -87,6 +87,7 @@ it.for(["before-session", "after-session"])(
       type: "propose",
       proposal: {
         id: "crash-job",
+        runtimeId: "fixture-runtime-v1",
         source,
         workspace: "june",
         goal: "Change a fixture",
@@ -258,6 +259,7 @@ it.for(["before-session", "after-session"])(
         type: "propose",
         proposal: {
           id: "replacement-job",
+          runtimeId: "fixture-runtime-v1",
           source,
           workspace: "june",
           goal: "Must not replace uncertain work",

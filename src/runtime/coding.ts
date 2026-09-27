@@ -155,8 +155,9 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
             )
               return;
             step.state.proposal = command.proposal;
-            step.state.runtimeId =
-              command.proposal.runtimeId ?? coding.runtimeId;
+            // Only the producer knows which configuration the owner reviewed.
+            // Legacy queued proposals cannot adopt the consumer's configuration.
+            step.state.runtimeId = command.proposal.runtimeId;
             step.state.status = "awaiting_approval";
             await step.vars.persist();
           });
@@ -171,6 +172,7 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
           const allowed =
             step.state.proposal &&
             !step.state.revoked &&
+            step.state.proposal.runtimeId === coding.runtimeId &&
             step.state.runtimeId === coding.runtimeId &&
             (command.type === "approve"
               ? step.state.status === "awaiting_approval"
@@ -230,6 +232,7 @@ export function createCodingActor(coding: CodingDependencies | undefined) {
                 throw new Error("Legacy approval needs reconciliation");
               if (
                 step.state.revoked ||
+                proposal.runtimeId !== coding.runtimeId ||
                 step.state.runtimeId !== coding.runtimeId
               )
                 throw new Error("Execution binding needs reconciliation");

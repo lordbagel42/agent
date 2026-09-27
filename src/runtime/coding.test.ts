@@ -160,6 +160,163 @@ async function fixture(
 }
 
 describe("separate coding supervisor", () => {
+  it.for(["runtime", "workspace"] as const)(
+    "keeps June's approval bound when the %s changes before the queued proposal is consumed",
+    async (change, t) => {
+      const launches: string[] = [];
+      const { registry, coding, sent, repositoryRoot, worktreeRoot } =
+        await fixture(
+          t,
+          {
+            async run(input) {
+              launches.push(input.cwd);
+              return { threadId: "T-fresh", report: "Fresh approved task." };
+            },
+          },
+          undefined,
+          {
+            reply: () => ({
+              text: "",
+              coding: { workspace: "june", goal: "Approved scope" },
+            }),
+          },
+        );
+      // Hold only the consumer: June can persist, enqueue and deliver the actual
+      // preview before a replacement process/configuration consumes the queue.
+      const consume = Promise.withResolvers<void>();
+      const jobConfig = registry.config.use.job.config;
+      const run = jobConfig.run;
+      if (typeof run !== "function") throw new Error("Expected workflow run");
+      jobConfig.run = async (c) => {
+        await consume.promise;
+        await run(c);
+      };
+      const { client } = await setupTest(t, registry);
+      t.onTestFinished(() => consume.resolve());
+      const june = client.conversation.getOrCreate(["private", "raygen"]);
+      const preview = () =>
+        sent.flatMap((m) =>
+          m.content.type === "text"
+            ? [...m.content.text.matchAll(/\/approve ([a-f0-9]+)/g)].map(
+                (match) => match[0],
+              )
+            : [],
+        );
+      await june.send("inbox", { type: "event", event: source });
+      await expect.poll(() => preview().length, { timeout: 15000 }).toBe(1);
+      const id = Object.keys((await june.snapshot()).jobs)[0];
+      if (!id) throw new Error("No proposal");
+      const job = client.job.getOrCreate(["raygen", id]);
+      expect((await job.snapshot()).proposal).toBeNull();
+      coding.runtimeId = "fixture-runtime-v2";
+      let expectedRoot = worktreeRoot;
+      if (change === "workspace") {
+        const replacement = path.join(repositoryRoot, "..", "replacement");
+        expectedRoot = path.join(worktreeRoot, "..", "replacement-worktrees");
+        execFileSync("git", ["clone", "--quiet", repositoryRoot, replacement]);
+        await mkdir(expectedRoot);
+        coding.workspaces.june = replacement;
+        coding.isolation = {
+          june: createWorktreeManager({
+            repositoryRoot: replacement,
+            worktreeRoot: expectedRoot,
+          }),
+        };
+      }
+      consume.resolve();
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "stale-approval",
+          messageId: "123.568",
+          text: preview()[0] ?? "",
+        },
+      });
+      await expect
+        .poll(async () =>
+          Object.values((await job.snapshot()).commandApprovals),
+        )
+        .toEqual([null]);
+      expect(launches).toEqual([]);
+      expect((await job.snapshot()).worktree).toBeUndefined();
+
+      // A fresh proposal under the new binding still traverses the same June
+      // confirmation path and starts exactly once in the current workspace.
+      await june.send("inbox", {
+        type: "event",
+        event: { ...source, id: "fresh-proposal", messageId: "123.569" },
+      });
+      await expect.poll(() => preview().length, { timeout: 15000 }).toBe(2);
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "fresh-approval",
+          messageId: "123.570",
+          text: preview()[1] ?? "",
+        },
+      });
+      await expect.poll(() => launches.length).toBe(1);
+      expect(launches[0]?.startsWith(`${expectedRoot}/job-`)).toBe(true);
+    },
+  );
+
+  it.for(["queued", "persisted", "recorded-approval"] as const)(
+    "rejects a legacy %s proposal without a producer binding through June's confirmation path",
+    async (legacy, t) => {
+      let launches = 0;
+      const { registry } = await fixture(t, {
+        async run() {
+          launches++;
+          return { threadId: "T-forbidden", report: "Must not run" };
+        },
+      });
+      const id = "a".repeat(64);
+      const proposal = { id, source, workspace: "june", goal: "Legacy scope" };
+      const conversationConfig = registry.config.use.conversation.config;
+      const jobConfig = registry.config.use.job.config;
+      if (!("state" in conversationConfig) || !("state" in jobConfig))
+        throw new Error("Expected initial state");
+      Object.assign(conversationConfig.state, { jobs: { [id]: proposal } });
+      const approval = {
+        ...source,
+        id: "legacy-approval",
+        text: `/approve ${id.slice(0, 12)}`,
+      };
+      const commandId = createHash("sha256")
+        .update(JSON.stringify(["slack", "T1", approval.id]))
+        .digest("hex");
+      if (legacy !== "queued") {
+        Object.assign(jobConfig.state, {
+          proposal,
+          runtimeId: "fixture-runtime-v1",
+          status: "awaiting_approval",
+          // A recorded check-approval step must not bypass run-worker's check.
+          commandApprovals:
+            legacy === "recorded-approval" ? { [commandId]: 1 } : {},
+        });
+      }
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", "raygen"]);
+      const job = client.job.getOrCreate(["raygen", id]);
+      if (legacy === "queued")
+        await job.send("commands", { type: "propose", proposal });
+      await june.send("inbox", { type: "event", event: approval });
+      if (legacy === "recorded-approval") {
+        await expect
+          .poll(async () => (await job.snapshot()).status)
+          .toBe("needs_review");
+      } else {
+        await expect
+          .poll(async () => (await job.snapshot()).commandApprovals[commandId])
+          .toBeNull();
+      }
+      expect(launches).toBe(0);
+      expect((await job.snapshot()).worktree).toBeUndefined();
+    },
+  );
+
   it("exposes private lifecycle commands without granting launch or stop authority", async (t) => {
     let action: CompanionReply = {
       text: "",
@@ -881,6 +1038,7 @@ describe("separate coding supervisor", () => {
       type: "propose",
       proposal: {
         id: "job-1",
+        runtimeId: "fixture-runtime-v1",
         source,
         workspace: "june",
         goal: "Fix reactions",
@@ -985,6 +1143,7 @@ describe("separate coding supervisor", () => {
       type: "propose",
       proposal: {
         id: "forgotten-proposal",
+        runtimeId: "fixture-runtime-v1",
         source,
         workspace: "june",
         goal: "Deleted task",
@@ -1015,6 +1174,7 @@ describe("separate coding supervisor", () => {
       type: "propose",
       proposal: {
         id: "resume-dedup",
+        runtimeId: "fixture-runtime-v1",
         source,
         workspace: "june",
         goal: "Fix reactions",
@@ -1071,6 +1231,7 @@ describe("separate coding supervisor", () => {
         type: "propose",
         proposal: {
           id: "cancelled",
+          runtimeId: "fixture-runtime-v1",
           source,
           workspace: "june",
           goal: "Approved task",
@@ -1151,6 +1312,7 @@ describe("separate coding supervisor", () => {
         type: "propose",
         proposal: {
           id: "verifier-cancelled",
+          runtimeId: "fixture-runtime-v1",
           source,
           workspace: "june",
           goal: "Approved task",
@@ -1201,6 +1363,7 @@ describe("separate coding supervisor", () => {
       type: "propose",
       proposal: {
         id: "historical",
+        runtimeId: "fixture-runtime-v1",
         source,
         workspace: "june",
         goal: "Approved change",
