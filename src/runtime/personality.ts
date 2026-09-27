@@ -47,7 +47,7 @@ export const defaultGlobalPersonality: GlobalPersonality = {
   },
 };
 
-export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Reset just one named trait with !personality reset {"expectedVersion":VERSION,"trait":"humor","explanation":"Restore default humor","publish":true}. Defaults are tone=warm, verbosity=balanced, humor=subtle, curiosity=occasional. Reset preserves other traits and appends a revision without clearing history; propose this command, not a whole-profile rollback, when the owner asks to reset one trait. Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Reject a staged suggestion with !personality reject {"proposalId":"ID"}; rejection is permanent for that ID and does not change my global voice. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
+export const personalityHelp = `My personality is one global voice, not a separate persona per channel. Read it with !personality. In an owner-private DM, use !personality history for up to five newest revisions, then its next command (!personality history BEFORE_VERSION) for older revisions, excluding that saved version. New edits do not shift older pages. Publish a change with !personality revise {"expectedVersion":VERSION,"changes":{"tone":"dry"},"explanation":"Why this fits","publish":true}. Changes may include tone (warm/dry/playful/direct), verbosity (concise/balanced/expansive), humor (subtle/playful/none), curiosity (occasional/eager/reserved). Reset just one named trait with !personality reset {"expectedVersion":VERSION,"trait":"humor","explanation":"Restore default humor","publish":true}. Defaults are tone=warm, verbosity=balanced, humor=subtle, curiosity=occasional. Reset preserves other traits and appends a revision without clearing history; propose this command, not a whole-profile rollback, when the owner asks to reset one trait. Approve an exact staged suggestion for all conversations with !personality approve {"proposalId":"ID","expectedVersion":VERSION,"publish":true}; its staged version and evidence must still be current. Approval publishes only style, never its private evidence or rationale. Grounded fields return to defaults if their evidence expires or is forgotten, including on rollback. Restore a saved version with !personality rollback {"expectedVersion":VERSION,"targetVersion":0,"explanation":"Why restore it","publish":true}. Reject a staged suggestion with !personality reject {"proposalId":"ID"}; rejection is permanent for that ID and does not change my global voice. Revisions affect every conversation; explanations stay private. These commands cannot change honesty, privacy, permissions or tools.`;
 
 export function isPersonalityCommand(text: string): boolean {
   return /^!personality(?:\s|$)/.test(text.trim());
@@ -68,7 +68,11 @@ export function publicPersonality(profile: GlobalPersonality) {
   };
 }
 
-interface Revision extends GlobalPersonality {
+interface StoredPersonality extends GlobalPersonality {
+  /** Private, per-field provenance; never part of publicPersonality. */
+  proposalIds?: Partial<Record<keyof Style, string>>;
+}
+interface Revision extends StoredPersonality {
   commandId: string;
   explanation: string;
   createdAt: number;
@@ -84,7 +88,10 @@ interface State {
 
 /** Derive only the four effective traits' lineage, including pre-upgrade state.
  * Private reasons, command IDs and evidence never participate in this read. */
-function currentPersonality(revisions: readonly Revision[]) {
+function currentPersonality(
+  revisions: readonly Revision[],
+  project: (profile: StoredPersonality) => GlobalPersonality,
+) {
   const initial: TraitProvenance = {
     kind: "default",
     originVersion: 0,
@@ -97,7 +104,7 @@ function currentPersonality(revisions: readonly Revision[]) {
     curiosity: initial,
   };
   const byVersion = new Map([[0, provenance]]);
-  let head = defaultGlobalPersonality;
+  let head: StoredPersonality = defaultGlobalPersonality;
   for (const revision of revisions) {
     const restored =
       revision.restoredFrom === undefined
@@ -114,7 +121,10 @@ function currentPersonality(revisions: readonly Revision[]) {
           appliedVersion: revision.version,
           restoredFromVersion: revision.restoredFrom,
         };
-      } else if (revision.style[trait] !== head.style[trait]) {
+      } else if (
+        revision.style[trait] !== head.style[trait] ||
+        revision.proposalIds?.[trait] !== head.proposalIds?.[trait]
+      ) {
         next[trait] = {
           kind: "owner-publication",
           originVersion: revision.version,
@@ -126,11 +136,7 @@ function currentPersonality(revisions: readonly Revision[]) {
     byVersion.set(revision.version, provenance);
     head = revision;
   }
-  return publicPersonality({
-    version: head.version,
-    style: head.style,
-    provenance,
-  });
+  return publicPersonality(project({ ...head, provenance }));
 }
 
 const commandFields = {
@@ -153,6 +159,11 @@ const resetSchema = z.strictObject({
 const rejectSchema = z.strictObject({
   proposalId: z.string().regex(/^personality:[a-f0-9]{64}$/),
 });
+const approveSchema = z.strictObject({
+  proposalId: z.string().regex(/^personality:[a-f0-9]{64}$/),
+  expectedVersion: z.number().int().nonnegative().safe(),
+  publish: z.literal(true),
+});
 
 /** One actor per owner, shared by ALL surfaces. Its actions are host-only APIs;
  * only authenticated ingress may supply events. Never expose the engine. */
@@ -160,15 +171,55 @@ export function createPersonalityActor(
   owner: Owner,
   curated?: CuratedPersonalityStore,
 ) {
+  const privateScope = JSON.stringify(["private", owner.id]);
+  const effective = (profile: StoredPersonality): GlobalPersonality => {
+    const style = globalStyleSchema.parse(profile.style);
+    const provenance =
+      profile.provenance && provenanceSchema.parse(profile.provenance);
+    const expirations = new Map<string, number>();
+    for (const id of new Set(Object.values(profile.proposalIds ?? {}))) {
+      let expiresAt = 0;
+      try {
+        expiresAt =
+          curated?.pendingGlobalProposal(privateScope, id)?.expiresAt ?? 0;
+      } catch {
+        // Unavailable evidence cannot sustain a published grounded trait.
+      }
+      expirations.set(id, expiresAt);
+    }
+    // One expiry boundary after all synchronous ledger reads, including fields
+    // supported by the same proposal. Never resurrect an older grounded value.
+    const now = Date.now();
+    for (const trait of Object.keys(
+      profile.proposalIds ?? {},
+    ) as (keyof Style)[]) {
+      const id = profile.proposalIds?.[trait];
+      if ((expirations.get(id ?? "") ?? 0) <= now) {
+        Object.assign(style, {
+          [trait]: defaultGlobalPersonality.style[trait],
+        });
+        if (provenance)
+          provenance[trait] = {
+            kind: "default",
+            originVersion: 0,
+            appliedVersion: 0,
+          };
+      }
+    }
+    return {
+      version: profile.version,
+      style,
+      ...(provenance ? { provenance } : {}),
+    };
+  };
   return actor({
     state: { revisions: [] } as State,
     actions: {
       read: async (c) => {
         if (c.key.length !== 1 || c.key[0] !== owner.id)
           throw new Error("Wrong personality owner");
-        const result = currentPersonality(c.state.revisions);
         await c.saveState({ immediate: true });
-        return result;
+        return currentPersonality(c.state.revisions, effective);
       },
       /** Model-callable through the host, but never owner publication authority. */
       stage: async (
@@ -196,6 +247,11 @@ export function createPersonalityActor(
           JSON.stringify(scope.key),
           input,
         );
+        const decision = c.state.proposalDecisions?.[proposal.id];
+        if (decision) {
+          await c.saveState({ immediate: true });
+          return `That personality suggestion was already ${decision.status}; it was not staged again and nothing was applied.`;
+        }
         return `Staged private personality suggestion ${proposal.id} for global version ${proposal.expectedVersion}. Nothing was applied; separate owner review is required.`;
       },
       command: async (c, event: MessageEvent): Promise<string> => {
@@ -210,17 +266,22 @@ export function createPersonalityActor(
           (event.address.channel !== "slack" ||
             (event.metadata?.channelType === "im" &&
               event.personalityCommandEligible === true));
-        const head = c.state.revisions.at(-1) ?? defaultGlobalPersonality;
+        const head: StoredPersonality =
+          c.state.revisions.at(-1) ?? defaultGlobalPersonality;
         const input = event.text.trim().slice("!personality".length).trim();
         if (!input || input === "show") {
-          const result = JSON.stringify(currentPersonality(c.state.revisions));
           await c.saveState({ immediate: true });
+          const result = JSON.stringify(
+            currentPersonality(c.state.revisions, effective),
+          );
           return `${result}\n\n${ownerPrivate ? personalityHelp : "This is my shared public style. Only my owner can revise it in a private DM."}`;
         }
         if (!ownerPrivate)
           return "Only my owner can inspect personality history or publish revisions with a fresh, plain-text command in an owner-private DM (not a quote or code block).";
         if (input.length > 2000) return "Personality command is too long.";
         if (/^history(?:\s|$)/.test(input)) {
+          await c.saveState({ immediate: true });
+          const currentVersion = c.state.revisions.at(-1)?.version ?? 0;
           const match = input.match(/^history(?:\s+([1-9]\d*))?$/);
           const before = match?.[1] ? Number(match[1]) : undefined;
           const end =
@@ -239,18 +300,17 @@ export function createPersonalityActor(
             .reverse();
           const history = page.map(
             (r) =>
-              `v${r.version} (${new Date(r.createdAt).toISOString()})${r.restoredFrom !== undefined ? ` restored from v${r.restoredFrom}` : ""}: ${JSON.stringify(globalStyleSchema.parse(r.style))}\nWhy: ${r.explanation}`,
+              `v${r.version} (${new Date(r.createdAt).toISOString()})${r.restoredFrom !== undefined ? ` restored from v${r.restoredFrom}` : ""}: ${JSON.stringify(effective(r).style)}\nWhy: ${r.explanation}`,
           );
           const oldest = page.at(-1);
           const next =
             end > 5 && oldest
               ? `Next: !personality history ${oldest.version}`
               : "End of personality history.";
-          await c.saveState({ immediate: true });
-          return `Personality revisions, newest first (up to 5; explanations are owner-private; version 0 is the initial style):\n${history.join("\n\n") || "No earlier revisions."}\nCurrent version: ${head.version}. Rollback appends a revision, never erases history.\n${next}`;
+          return `Personality revisions, newest first (up to 5; explanations are owner-private; version 0 is the initial style):\n${history.join("\n\n") || "No earlier revisions."}\nCurrent version: ${currentVersion}. Rollback appends a revision, never erases history.\n${next}`;
         }
         const match = input.match(
-          /^(revise|rollback|reset|reject)\s+([\s\S]+)$/,
+          /^(revise|rollback|reset|reject|approve)\s+([\s\S]+)$/,
         );
         if (!match) return personalityHelp;
         let value: unknown;
@@ -305,6 +365,58 @@ export function createPersonalityActor(
           await c.saveState({ immediate: true });
           return `Personality revision ${previous.version} was already saved; no duplicate change was made.`;
         }
+        if (match[1] === "approve") {
+          const approval = approveSchema.safeParse(value);
+          if (!approval.success)
+            return "Invalid personality approval. Nothing changed.";
+          const { proposalId, expectedVersion } = approval.data;
+          const decision = c.state.proposalDecisions?.[proposalId];
+          if (decision?.status === "accepted") {
+            await c.saveState({ immediate: true });
+            return `Personality revision ${decision.revision} was already saved; no duplicate change was made.`;
+          }
+          if (decision?.status === "rejected")
+            return "That personality suggestion was rejected. Nothing changed.";
+          const proposal = curated?.pendingGlobalProposal(
+            privateScope,
+            proposalId,
+          );
+          if (!proposal || proposal.expiresAt <= Date.now())
+            return "That personality suggestion is unavailable or its evidence is no longer valid. Nothing changed.";
+          if (
+            expectedVersion !== head.version ||
+            proposal.expectedVersion !== head.version
+          )
+            return `Personality changed: current version is ${head.version}. Request a new suggestion; nothing was overwritten.`;
+          const style = globalStyleSchema.parse({
+            ...effective(head).style,
+            ...proposal.changes,
+          });
+          const proposalIds = { ...head.proposalIds };
+          for (const trait of Object.keys(proposal.changes) as (keyof Style)[])
+            proposalIds[trait] = proposalId;
+          // Live evidence, head guard, revision and terminal decision share one
+          // synchronous turn. No private rationale is copied into actor state.
+          if (proposal.expiresAt <= Date.now())
+            return "That personality suggestion is unavailable or its evidence is no longer valid. Nothing changed.";
+          const version = head.version + 1;
+          c.state.revisions.push({
+            version,
+            style,
+            proposalIds,
+            commandId,
+            explanation: "Approved staged personality suggestion.",
+            createdAt: Date.now(),
+          });
+          c.state.proposalDecisions ??= {};
+          c.state.proposalDecisions[proposalId] = {
+            status: "accepted",
+            revision: version,
+          };
+          const result = currentPersonality(c.state.revisions, effective);
+          await c.saveState({ immediate: true });
+          return `Saved global personality revision ${version} for all conversations. ${JSON.stringify(publicPersonality(effective({ ...result, proposalIds })))} Private evidence and rationale were not published; permissions and tools are unchanged.`;
+        }
         const revise =
           match[1] === "revise" ? reviseSchema.safeParse(value) : undefined;
         const rollback =
@@ -322,7 +434,7 @@ export function createPersonalityActor(
           return `Invalid personality revision.\n${personalityHelp}`;
         if (command.expectedVersion !== head.version)
           return `Personality changed: current version is ${head.version}. Read !personality and review your change again; nothing was overwritten.`;
-        const restored = rollback?.success
+        const restored: StoredPersonality | undefined = rollback?.success
           ? rollback.data.targetVersion === 0
             ? defaultGlobalPersonality
             : c.state.revisions.find(
@@ -333,29 +445,37 @@ export function createPersonalityActor(
           return "That personality version does not exist. Nothing changed.";
         const style = globalStyleSchema.parse(
           revise?.success
-            ? { ...head.style, ...revise.data.changes }
+            ? { ...effective(head).style, ...revise.data.changes }
             : reset?.success
               ? {
-                  ...head.style,
+                  ...effective(head).style,
                   [reset.data.trait]:
                     defaultGlobalPersonality.style[reset.data.trait],
                 }
-              : restored?.style,
+              : restored && effective(restored).style,
         );
+        const proposalIds = { ...(restored ?? head).proposalIds };
+        if (revise?.success)
+          for (const trait of Object.keys(
+            revise.data.changes,
+          ) as (keyof Style)[])
+            delete proposalIds[trait];
+        if (reset?.success) delete proposalIds[reset.data.trait];
         // Guard + append are synchronous: concurrent actions cannot both pass
         // the same version. Flush before acknowledging, including duplicate calls.
         const version = head.version + 1;
         c.state.revisions.push({
           version,
           style,
+          proposalIds,
           commandId,
           explanation: command.explanation,
           createdAt: Date.now(),
           ...(restored ? { restoredFrom: restored.version } : {}),
         });
-        const result = currentPersonality(c.state.revisions);
+        const result = currentPersonality(c.state.revisions, effective);
         await c.saveState({ immediate: true });
-        return `Saved global personality revision ${version}. New turns in every conversation use this style; already-started turns keep their snapshot. ${JSON.stringify(result)} Explanations remain owner-private; permissions and tools are unchanged.`;
+        return `Saved global personality revision ${version}. New turns in every conversation use this style; already-started turns keep their snapshot. ${JSON.stringify(publicPersonality(effective({ ...result, proposalIds })))} Explanations remain owner-private; permissions and tools are unchanged.`;
       },
     },
   });
