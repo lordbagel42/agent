@@ -8,7 +8,15 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, realpathSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+} from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
@@ -144,6 +152,7 @@ const stateSchema = z.strictObject({
   sources: z.array(sourceSchema),
   claims: z.array(claimSchema),
   tombstones: z.array(id),
+  restoreWatermark: timestamp.optional(),
   imports: z.array(progressSchema),
   proposals: z.array(proposalSchema).default([]),
   extractions: z
@@ -411,6 +420,43 @@ function measureCapacity(snapshot: { sources: Source[]; claims: Claim[] }) {
   };
 }
 
+const tombstoneReplayPageSchema = z.strictObject({
+  version: z.literal(1),
+  ledgerId: z.uuid(),
+  after: timestamp,
+  watermark: timestamp,
+  tombstones: z.array(id).max(tombstoneExportLimits.maxEntries),
+  nextAfter: timestamp.nullable(),
+  mac: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+// SQLite can mutate its file during journal recovery or journal-mode changes,
+// before the encrypted payload is authenticated. Restore accepts only an
+// existing offline rollback-journal snapshot, never a file requiring recovery.
+function restoreSnapshotPath(path: string): string {
+  try {
+    // Check sidecars beside the same real file SQLite will open, not an alias.
+    path = realpathSync(path);
+    const descriptor = openSync(path, "r");
+    try {
+      const header = Buffer.alloc(20);
+      if (
+        readSync(descriptor, header, 0, header.length, 0) !== header.length ||
+        !header.subarray(0, 16).equals(Buffer.from("SQLite format 3\0")) ||
+        header[18] !== 1 ||
+        header[19] !== 1 ||
+        ["-journal", "-wal", "-shm"].some((suffix) => existsSync(path + suffix))
+      )
+        throw new Error();
+    } finally {
+      closeSync(descriptor);
+    }
+    return path;
+  } catch {
+    throw new Error("Memory store could not be authenticated or opened");
+  }
+}
+
 /** Upgrade the old Gmail connector's label-valued conversation without changing
  * evidence IDs, audiences, claims, tombstones or authorized import selections.
  * Applied on every snapshot read; the next transaction persists the upgrade.
@@ -533,27 +579,33 @@ export class EvidenceStore {
   constructor(
     private readonly path: string,
     key: Uint8Array,
-    importBudget: Partial<ImportBudget> = {},
+    options: Partial<ImportBudget> & {
+      restore?: { watermark: number; pages: Iterable<unknown> };
+    } = {},
   ) {
     parse(id, path);
     if (!(key instanceof Uint8Array) || key.byteLength !== 32)
       throw new Error("Memory key must be 32 bytes");
+    const { restore, ...importBudget } = options;
     this.importBudget = Object.freeze(
       parse(importBudgetSchema, { ...DEFAULT_IMPORT_BUDGET, ...importBudget }),
     );
+    if (restore !== undefined) path = restoreSnapshotPath(path);
     this.key = Buffer.from(key);
     this.db = new DatabaseSync(path);
     try {
       if (path !== ":memory:") chmodSync(path, 0o600);
-      this.db.exec(
-        "PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;",
-      );
+      this.db.exec("PRAGMA busy_timeout=5000");
+      if (restore === undefined) this.db.exec("PRAGMA journal_mode=DELETE");
+      this.db.exec("PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;");
       const exists = this.db
         .prepare(
           "SELECT name FROM sqlite_master WHERE type='table' AND name='records'",
         )
         .get();
       if (!exists) {
+        if (restore !== undefined)
+          throw new Error("Restore requires a snapshot");
         const attemptedAt = Date.now();
         this.db.exec("BEGIN IMMEDIATE");
         try {
@@ -583,7 +635,10 @@ export class EvidenceStore {
           throw error;
         }
       }
-      if (!this.read().ledgerId)
+      // No index, personality projection or public store handle exists until
+      // every retained page has been validated and replay committed atomically.
+      if (restore !== undefined) this.replayTombstones(restore);
+      else if (!this.read().ledgerId)
         this.transaction((state) => {
           state.ledgerId ??= randomUUID();
         });
@@ -664,11 +719,19 @@ export class EvidenceStore {
       cipher.update(JSON.stringify(state), "utf8"),
       cipher.final(),
     ]);
+    const payload = Buffer.concat([nonce, cipher.getAuthTag(), encrypted]);
     this.db
       .prepare(
         "INSERT INTO records(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
       )
-      .run(Buffer.concat([nonce, cipher.getAuthTag(), encrypted]));
+      .run(payload);
+    // The SQLite schema is not authenticated by AES-GCM. A trigger can ignore
+    // or undo an UPDATE without making COMMIT fail; prove the exact write stuck.
+    const persisted = this.db
+      .prepare("SELECT payload FROM records WHERE id=1")
+      .get()?.payload;
+    if (!(persisted instanceof Uint8Array) || !payload.equals(persisted))
+      throw new Error("Memory store persistence failed");
   }
 
   private transaction(change: (state: State) => void) {
@@ -713,6 +776,77 @@ export class EvidenceStore {
         timing.maxDurationMs = Math.max(timing.maxDurationMs ?? 0, duration);
       }
     }
+  }
+
+  private replayTombstones(restore: {
+    watermark: number;
+    pages: Iterable<unknown>;
+  }): void {
+    const watermark = parse(timestamp, restore.watermark);
+    this.transaction((state) => {
+      if (!state.ledgerId) throw new Error("Snapshot has no ledger identity");
+      const retained: string[] = [];
+      const seen = new Set<string>();
+      let complete = false;
+      for (const input of restore.pages) {
+        const page = parse(tombstoneReplayPageSchema, input);
+        if (
+          page.ledgerId !== state.ledgerId ||
+          !timingSafeEqual(
+            tombstoneExportMac(this.key, page),
+            Buffer.from(page.mac, "hex"),
+          )
+        )
+          throw new Error("Tombstone replay authentication failed");
+        const end = retained.length + page.tombstones.length;
+        if (
+          complete ||
+          page.watermark !== watermark ||
+          page.after !== retained.length ||
+          end > watermark ||
+          (end < watermark && page.tombstones.length === 0) ||
+          page.nextAfter !== (end < watermark ? end : null) ||
+          Buffer.byteLength(JSON.stringify(page), "utf8") >
+            tombstoneExportLimits.maxBytes
+        )
+          throw new Error("Invalid tombstone replay sequence");
+        for (const tombstone of page.tombstones) {
+          if (seen.has(tombstone))
+            throw new Error("Duplicate replay tombstone");
+          seen.add(tombstone);
+          retained.push(tombstone);
+        }
+        complete = page.nextAfter === null;
+      }
+      if (!complete) throw new Error("Incomplete tombstone replay");
+      const shared = Math.min(state.tombstones.length, retained.length);
+      for (let index = 0; index < shared; index++)
+        if (state.tombstones[index] !== retained[index])
+          throw new Error("Tombstone history mismatch");
+      // Preserve a newer local prefix on a repeated startup. Never roll back
+      // tombstones or append IDs in a different order from the retained log.
+      if (retained.length > state.tombstones.length)
+        state.tombstones = retained;
+      const expectedLength = state.tombstones.length;
+      removeEvidence(state, state.tombstones);
+      if (state.tombstones.length !== expectedLength)
+        throw new Error("Retained tombstones omit snapshot dependants");
+      state.restoreWatermark = Math.max(state.restoreWatermark ?? 0, watermark);
+    });
+  }
+
+  /** Content-free receipt, not proof that independent retention is up to date. */
+  restoreStatus(): {
+    ready: true;
+    replayedThrough: number | null;
+    deletionWatermark: number;
+  } {
+    const state = this.read();
+    return {
+      ready: true,
+      replayedThrough: state.restoreWatermark ?? null,
+      deletionWatermark: state.tombstones.length,
+    };
   }
 
   appendSource(input: Source): void {

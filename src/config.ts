@@ -285,6 +285,12 @@ const schema = z
             serializedBytes: z.number().int().positive().safe().optional(),
           })
           .optional(),
+        restore: z
+          .strictObject({
+            watermark: z.number().int().nonnegative().safe(),
+            tombstonePages: absolutePath,
+          })
+          .optional(),
         extraction: decisionModel
           .pick({ protocol: true, model: true, apiKeyEnv: true, baseUrl: true })
           .optional(),

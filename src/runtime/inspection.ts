@@ -299,7 +299,9 @@ export function createInspectionReader(deps: {
           const proposals = store.proposals(deps.audience);
           const counts = { pending: 0, accepted: 0, rejected: 0 };
           for (const proposal of proposals) counts[proposal.status]++;
+          const restore = store.restoreStatus();
           snapshot = `Scoped source/claim projection: ${capacity.sources === 0 && capacity.claims === 0 ? "empty" : "nonempty"}. Authorized memory capacity: ${JSON.stringify(capacity)}. Counts cover this audience's retained sources/stored claims, not pending/rejected proposals. serializedBytes is UTF-8 JSON of {sources,claims}, with record metadata and the empty container; excludes other audiences, proposals, imports, tombstones, curated history, encryption and database overhead. This is not total ledger/disk size or model context usage. Null limits mean no audience-specific quota, not unlimited capacity; remaining capacity is unknown. Imports separately enforce ledger-wide source/claim/full-snapshot byte ceilings.\nProposal counts: ${JSON.stringify(counts)}.`;
+          snapshot += `\nMemory readiness: ready. Tombstone replay: ${restore.replayedThrough === null ? "no restore receipt" : `complete through watermark ${restore.replayedThrough}`}; current deletion watermark: ${restore.deletionWatermark}. This is not proof of current independent retention. No tombstone IDs returned.`;
         } catch {
           snapshot =
             "Ledger snapshot failed; current counts and size are unknown. No cached or zero values substituted.";

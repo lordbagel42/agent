@@ -626,6 +626,55 @@ are observations, not proof of complete history or current storage health.
 
 ## Retention and limits
 
+### Offline restore must replay before opening memory
+
+Never serve a copied snapshot using the ordinary two-argument constructor.
+For an offline, disposable copy use
+`new EvidenceStore(path, key, {restore: {watermark, pages}})`. The path must
+already contain a snapshot. `pages` is a synchronous iterable of complete
+`exportTombstones` pages, starting at `after: 0` and ending at `nextAfter: null`,
+all pinned to the independently retained `watermark`. Supply that expected
+watermark from trusted retention metadata, not from the stale snapshot or an
+unverified page. Keep the snapshot offline with no other readers or writers.
+Restore accepts only an existing, clean rollback-journal SQLite snapshot, with
+no `-journal`, `-wal` or `-shm` sidecars. It rejects WAL/recovery inputs before
+SQLite opens them rather than converting or repairing the candidate.
+
+Opening authenticates the encrypted snapshot and every page's MAC, requires the
+same persisted ledger ID, then validates page bounds, offsets, completion,
+duplicate IDs and the shared tombstone prefix. It then removes forgotten sources
+and all dependent claims, relations, proposals and extraction references in one
+encrypted transaction, verifies that the exact ciphertext was written, and
+rejects an export missing any snapshot dependants. Only after commit does
+the first index build run and a readable store return; any replay failure closes
+the store and rolls back without exposing a partially restored handle. Repeating
+the same replay is safe and preserves newer local tombstones. Ordinary reopen
+preserves the replay receipt and the deletions. Restored snapshots now include
+`restoreWatermark`; code rollback requires a compatible reader. Never bypass a
+schema rejection by replacing the ledger with an older copy.
+
+Host configuration accepts `memory.restore: {watermark, tombstonePages}`, where
+`tombstonePages` is an absolute path to a JSON array of those ordered pages.
+Protect this ID-bearing file with the same owner-only retention controls as
+the independent export. Startup finishes replay before opening curated
+personality, creating runtime consumers, or serving HTTP. Missing, malformed or
+incomplete replay input aborts startup at the content-free memory-restore stage;
+it does not fall back to ordinary opening. This configuration does not copy or
+replace a database, fetch exports, grant restore authority, or activate memory.
+
+June's existing owner-private `inspection: "memory"` reports readiness, the
+persisted replay watermark (or no restore receipt), and current deletion
+watermark, without evidence or tombstone IDs. The trusted host equivalent is
+`restoreStatus()`. A receipt proves only which supplied watermark was replayed,
+not that retention is current. Unsigned exports, changed pages, other ledgers
+(even with the same key), and snapshots predating persisted ledger identity are
+rejected. Restore never assigns a new identity to a legacy snapshot; those need
+separate trusted reconciliation. The operator must retain **all** later deletions
+independently and pin the required watermark from that trusted retention record.
+An unmarked file replacement cannot reveal later deletions by itself. Production
+restore, backup replacement and other stores' restore procedures remain separate
+work.
+
 Source IDs are append-only/immutable until deletion; persistence is still one
 encrypted full-state SQLite record, not a scalable per-event SQL graph. Every
 write rewrites the snapshot; retrieval rebuilds an in-memory scoped index. This

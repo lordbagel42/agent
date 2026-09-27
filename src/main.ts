@@ -534,13 +534,28 @@ async function main() {
     }
     startupStage = "private memory storage";
     await privateDirectory(config.memory.directory);
+    let restore: { watermark: number; pages: unknown[] } | undefined;
+    if (config.memory.restore) {
+      startupStage =
+        "memory restore: complete retained tombstone replay required";
+      const pages: unknown = JSON.parse(
+        await readFile(config.memory.restore.tombstonePages, "utf8"),
+      );
+      if (!Array.isArray(pages)) throw new Error("Invalid tombstone pages");
+      restore = { watermark: config.memory.restore.watermark, pages };
+    }
     const key = memoryKey(config.memory.keyEnv);
-    const store = new EvidenceStore(
-      join(config.memory.directory, "evidence.sqlite"),
-      key,
-      config.memory.importBudget,
-    );
-    key.fill(0);
+    let store: EvidenceStore;
+    try {
+      store = new EvidenceStore(
+        join(config.memory.directory, "evidence.sqlite"),
+        key,
+        { ...config.memory.importBudget, restore },
+      );
+    } finally {
+      key.fill(0);
+    }
+    startupStage = "private memory storage";
     let personality: CuratedPersonalityStore | undefined;
     if (config.memory.curated) {
       await privateDirectory(dirname(config.memory.curated.directory));
