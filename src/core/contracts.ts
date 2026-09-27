@@ -163,6 +163,7 @@ export interface ExecutionCommand {
 export interface CompanionReply {
   text: string;
   execution?: ExecutionCommand[];
+  workflow?: import("../workflows/contracts.js").WorkflowCommand;
   social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
   /** Owner-private lifecycle metadata or cancellation request; never approval. */
@@ -283,6 +284,7 @@ export interface ModelRequest {
   replyPlacementAvailable?: boolean;
   socialAvailable?: boolean;
   executionAvailable?: boolean;
+  workflowAvailable?: boolean;
 }
 
 export interface ModelProvider {

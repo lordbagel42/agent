@@ -41,6 +41,11 @@ import {
 } from "../wakeups/runtime.js";
 import type { WakeupContext, WakeupEvent } from "../wakeups/state.js";
 import {
+  createWorkflowLibraryActor,
+  createWorkflowRunActor,
+} from "../workflows/actors.js";
+import type { WorkflowDependencies } from "../workflows/contracts.js";
+import {
   type CodingDependencies,
   codingJobMetadata,
   createCodingActor,
@@ -79,6 +84,7 @@ export interface Dependencies {
   deepModel?: ModelProvider;
   execution?: ExecutionDependencies;
   wakeups?: WakeupDependencies;
+  workflows?: WorkflowDependencies;
   models?: PromptInput["models"];
   webSearch?: WebSearchProvider;
   jev?: { observe: JevObserver; question: JevQuestion };
@@ -304,14 +310,19 @@ export function createJuneRegistry(deps: Dependencies) {
             .client<JuneRegistry>()
             .job.getOrCreate([deps.owner.id, id])
             .cancel(true);
+        if (deps.workflows)
+          await c
+            .client<JuneClientRegistry>()
+            .workflowLibrary.getOrCreate([deps.owner.id])
+            .invalidate();
       },
     },
     run: workflow(
       async (ctx) => {
         await ctx.loop("conversation-v1", async (loop) => {
-          // Preserve v1–v8 journals, including v8 coding lifecycle directives;
-          // only fresh v9 turns gain wakeup management and native publication.
-          const journalVersion = await loop.getVersion("memory-dispatch", 9);
+          // Old turns retain their journal layout and capability decisions.
+          // Only fresh v10 turns can manage authored workflows.
+          const journalVersion = await loop.getVersion("memory-dispatch", 10);
           // Preserve already-processing journals. Legacy queued events also
           // lack the ingress eligibility marker and cannot gain authority.
           const correctionVersion = await loop.getVersion(
@@ -590,6 +601,7 @@ export function createJuneRegistry(deps: Dependencies) {
               deletionRevision?: number;
               wakeups?: boolean;
               jev?: boolean;
+              workflow?: boolean;
             } =
               version >= 2
                 ? await loop.step("turn-plan", async () => ({
@@ -614,6 +626,9 @@ export function createJuneRegistry(deps: Dependencies) {
                       !!deps.channels.slack?.shareHistory,
                     ...(version >= 7
                       ? { execution: ownerTurn && !!deps.execution }
+                      : {}),
+                    ...(version >= 10
+                      ? { workflow: scope.private && !!deps.workflows }
                       : {}),
                     ...(version >= 9
                       ? {
@@ -1376,6 +1391,20 @@ export function createJuneRegistry(deps: Dependencies) {
                                   : {}),
                               },
                               capabilities: {
+                                workflowAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!plan.workflow &&
+                                  !!deps.workflows,
+                                workflowTools: deps.workflows
+                                  ? Object.entries(deps.workflows.tools).map(
+                                      ([name, tool]) => ({
+                                        name,
+                                        description: tool.description,
+                                      }),
+                                    )
+                                  : [],
                                 modelStatusAvailable:
                                   body.type !== "wakeup" &&
                                   phase !== "synthesis" &&
@@ -1749,6 +1778,44 @@ export function createJuneRegistry(deps: Dependencies) {
                                 } catch {
                                   text =
                                     "Reflection request could not be confirmed. Do not infer completion or assume an interrupted request was not queued.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (generated.workflow !== undefined) {
+                              let text =
+                                "Workflows require an owner-private turn and the workflow integration.";
+                              if (
+                                scope.private &&
+                                modelRequest.workflowAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                deps.workflows
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  text = await step
+                                    .client<JuneClientRegistry>()
+                                    .workflowLibrary.getOrCreate([
+                                      deps.owner.id,
+                                    ])
+                                    .manage(
+                                      event,
+                                      eventId,
+                                      checked.workflow,
+                                      plan.deletionRevision ?? 0,
+                                    );
+                                } catch {
+                                  text =
+                                    "Workflow command failed or its result is uncertain. Inspect the workflow library before repeating a start or signal; no completion is claimed.";
                                 }
                               }
                               generated = {
@@ -3165,6 +3232,8 @@ export function createJuneRegistry(deps: Dependencies) {
       personality: createPersonalityActor(deps.owner, deps.memory?.personality),
       job: createCodingActor(deps.coding, deps.lifecycle),
       execution: createExecutionActor(deps),
+      workflowRun: createWorkflowRunActor(deps),
+      workflowLibrary: createWorkflowLibraryActor(deps),
       ...(deps.wakeups
         ? {
             wakeups: createWakeupActor({

@@ -8,6 +8,7 @@ import { routeEvent } from "../core/routing.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { JevQuestion } from "../models/jev.js";
 import type { WakeupContext } from "../wakeups/state.js";
+import { WORKFLOW_HELP } from "../workflows/contracts.js";
 import {
   type GlobalPersonality,
   personalityHelp,
@@ -51,6 +52,8 @@ export interface PromptCapabilities {
   executionWebSearchAvailable?: boolean;
   wakeupAvailable?: boolean;
   wakeupSources?: string[];
+  workflowAvailable?: boolean;
+  workflowTools?: { name: string; description: string }[];
 }
 
 export interface PromptInput {
@@ -210,6 +213,8 @@ export function buildModelRequest({
     !wakeup &&
     event.address.channel === "slack" &&
     capabilities.wakeupAvailable === true;
+  const workflowAvailable =
+    privateTurn && !wakeup && capabilities.workflowAvailable === true;
 
   const messages = history
     .filter(({ role, source, content }) => {
@@ -460,6 +465,9 @@ export function buildModelRequest({
     jevObservationAvailable
       ? `Only when the owner explicitly asks for a Jev observation, set jevObservation true with empty text and no other actions. The host sends only this current message (up to 4096 UTF-8 bytes), not history or memory, to Jev under this fixed operator rubric: ${JSON.stringify(capabilities.jevQuestion)}. You cannot supply state, questions, sources or provider configuration. The host returns typed observations or explicit abstention/unknown directly, without synthesis. Jev is an observer, never a juror or synthesizer; confidence is uncalibrated, provenance is not answer citations, and no rationale, approval, memory promotion or permission is implied. Interrupted/possibly-sent attempts are not automatically retried.`
       : "Jev observations are unavailable in this invocation.",
+    workflowAvailable
+      ? `You can author and manage durable Rivet workflows using the workflow output field. Use these for programmatic multi-step work, delays and event waits; ordinary execution workers remain available for natural-language tasks. Leave text empty and other directives unset. ${WORKFLOW_HELP}\nAvailable workflow tools: ${JSON.stringify(capabilities.workflowTools ?? [])}`
+      : "Authored workflow management is unavailable in this invocation.",
     "Return only the requested JSON, using only fields and actions permitted by the output schema. Unavailable optional fields must be omitted (or null/false only where the schema allows).",
   ].join("\n\n");
 
@@ -489,5 +497,6 @@ export function buildModelRequest({
     replyPlacementAvailable,
     socialAvailable: capabilities.socialAvailable === true,
     executionAvailable,
+    workflowAvailable,
   };
 }

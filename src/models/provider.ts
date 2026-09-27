@@ -9,6 +9,7 @@ import { socialActionSchema } from "../core/social.js";
 import { globalProposalInputSchema } from "../reflection/global-proposal.js";
 import { globalStyleSchema } from "../runtime/personality.js";
 import { wakeupActionSchema } from "../wakeups/state.js";
+import { workflowCommandSchema } from "../workflows/contracts.js";
 import {
   observeUsage,
   tokenUsage,
@@ -55,6 +56,7 @@ const recallTimestampSchema = z
 
 const companionReplySchema = z.strictObject({
   text: z.string().refine((text) => Array.from(text).length <= 3_500),
+  workflow: workflowCommandSchema.optional(),
   execution: z
     .array(
       z
@@ -246,6 +248,7 @@ export type ReplyCapabilities = Pick<
   | "replyPlacementAvailable"
   | "socialAvailable"
   | "executionAvailable"
+  | "workflowAvailable"
 >;
 
 function replyCapabilities(
@@ -284,6 +287,7 @@ export function replyJsonSchema(
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
+    workflowAvailable,
   } = replyCapabilities(capabilities);
   const { $schema: _schema, ...socialSchema } = z.toJSONSchema(
     socialActionSchema.nullable(),
@@ -369,6 +373,55 @@ export function replyJsonSchema(
               required: ["action", "id"],
               description:
                 "Owner-private coding availability, durable job metadata, or cancellation request. Cancel is not proof of stoppage. Never approves, resumes, or launches work. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
+      ...(workflowAvailable
+        ? {
+            workflow: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                action: {
+                  type: "string",
+                  enum: [
+                    "help",
+                    "define",
+                    "start",
+                    "list",
+                    "inspect",
+                    "signal",
+                    "cancel",
+                  ],
+                },
+                name: { type: ["string", "null"] },
+                source: {
+                  type: ["string", "null"],
+                  description:
+                    "JavaScript function body, at most 24000 bytes, for define or start-and-define.",
+                },
+                dataJson: {
+                  type: ["string", "null"],
+                  description:
+                    "JSON input for start or signal, at most 16384 bytes.",
+                },
+                runId: { type: ["string", "null"] },
+                offset: {
+                  type: "integer",
+                  description:
+                    "Start at 0; continue at nextOffset for paged reports.",
+                },
+              },
+              required: [
+                "action",
+                "name",
+                "source",
+                "dataJson",
+                "runId",
+                "offset",
+              ],
+              description:
+                "Manage owner-private authored Rivet workflows. Unused fields null, offset 0. Leave text empty and all other actions unset. help describes the API and available tools.",
             },
           }
         : {}),
@@ -804,6 +857,7 @@ export function replyJsonSchema(
       "coding",
       "reaction",
       ...(codingJobsAvailable ? ["codingJob"] : []),
+      ...(workflowAvailable ? ["workflow"] : []),
       ...(executionAvailable ? ["execution"] : []),
       ...(releaseAvailable ? ["release"] : []),
       ...(modelStatusAvailable ? ["modelStatus"] : []),
@@ -1012,6 +1066,7 @@ export function parseReply(
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
+    workflowAvailable,
   } = replyCapabilities(capabilities);
   let value: unknown;
   try {
@@ -1025,6 +1080,7 @@ export function parseReply(
 
   const normalized = { ...value };
   for (const key of [
+    "workflow",
     "execution",
     "coding",
     "codingJob",
@@ -1099,12 +1155,14 @@ export function parseReply(
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
+    (reply.workflow !== undefined && !workflowAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);
   }
   const directiveCount =
     Number(reply.codingJob !== undefined) +
+    Number(reply.workflow !== undefined) +
     Number(reply.modelStatus === true) +
     Number(reply.mcp !== undefined) +
     Number(reply.mcpPermission !== undefined) +
@@ -1132,6 +1190,7 @@ export function parseReply(
     (directiveCount > 0 &&
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
     ((reply.codingJob !== undefined ||
+      reply.workflow !== undefined ||
       reply.search !== undefined ||
       reply.slackHistory !== undefined ||
       reply.modelStatus === true ||

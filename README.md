@@ -33,6 +33,9 @@ into June or tested with a real account.
 - [Persistent execution agents](docs/execution-agents.md): June delegates substantive
   owner work, keeps chatting while workers run, reuses them for follow-ups, and
   synthesizes results. `executionEnabled: false` restores the direct fast/deep path.
+- [Authored Rivet workflows](docs/workflows.md): June writes isolated JavaScript
+  with durable tool steps, parallel calls, delays and signals, and manages runs
+  directly from owner-private chat.
 - OpenAI **Responses API** and Anthropic **Messages API**, including explicit
   custom base URLs. The provider must support the adapter's structured JSON
   output format. Arbitrary chat-completions endpoints are not interchangeable.

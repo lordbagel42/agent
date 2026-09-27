@@ -769,6 +769,7 @@ export class McpConnections {
                 mcpPermissionAvailable: false,
                 mcpProposalAvailable: false,
                 executionAvailable: false,
+                workflowAvailable: false,
                 workspaces: [],
                 codingJobsAvailable: false,
                 searchAvailable: false,

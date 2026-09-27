@@ -63,6 +63,7 @@ import { BrowserAdapter } from "./tools/browser.js";
 import { McpConnections } from "./tools/connections.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
 import { createTavilyWebSearchProvider } from "./tools/web-search.js";
+import { createWorkflowTools } from "./workflows/tools.js";
 
 let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
 const hotProviders: ReturnType<typeof createHotCodexProvider>[] = [];
@@ -726,6 +727,17 @@ async function main() {
       config.executionEnabled && !config.setupMode
         ? { model: deepModel ?? model }
         : undefined,
+    workflows: config.setupMode
+      ? undefined
+      : {
+          tools: createWorkflowTools({
+            owner: config.owner,
+            channels,
+            model,
+            webSearch,
+            analytics: (days) => usage.report(days),
+          }),
+        },
     modelStatus: hotProviders.length
       ? () =>
           `Model runtime snapshot at ${new Date().toISOString()}: ${JSON.stringify(hotProviders.map((provider) => provider.inspect()))}. Idle means unused; upstream prewarm completion is not observable. No restart or configuration change was performed.`
@@ -1074,6 +1086,30 @@ async function main() {
     });
   }
   registry.start();
+  if (!config.setupMode) {
+    startupStage = "authored workflow recovery";
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          if ((await registry.routes.health()).ok) {
+            await client.workflowLibrary
+              .getOrCreate([config.owner.id])
+              .recover();
+            break;
+          }
+        } catch {
+          // A restarted engine can report healthy before actor routing settles.
+          // Recovery is idempotent; retrying never resets an effect's receipt.
+        }
+        if (attempt >= 30) throw new Error("workflow_recovery_unavailable");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    } catch (error) {
+      await client.dispose();
+      await registry.shutdown();
+      throw error;
+    }
+  }
   // Instantiate the durable timer even when no human messages arrive after a restart.
   if (wakeups) {
     startupStage = "durable wakeup scheduler";

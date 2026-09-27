@@ -1,0 +1,133 @@
+# June-authored Rivet workflows
+
+June can write JavaScript function bodies, save named definitions, start runs,
+inspect them, send signals, and cancel them from an owner-private conversation.
+This is an agent capability, not a dashboard-only feature. It is mounted in
+normal startup (not setup mode), independently of natural-language execution
+workers. There is no generic host `eval`, shell, filesystem or network bridge.
+
+## Author and launch in one turn
+
+Use the `workflow` output field with empty `text` and other actions unset:
+
+```json
+{
+  "text": "",
+  "workflow": {
+    "action": "start",
+    "name": "remind",
+    "source": "await workflow.sleep('delay', input.delay); return await workflow.step('tell', 'notify', {text:input.text});",
+    "dataJson": "{\"delay\":60000,\"text\":\"Check the oven.\"}",
+    "runId": null,
+    "offset": 0
+  }
+}
+```
+
+`start` with source saves the definition and pins that source in a new run.
+`define` saves without launching; `start` with null source uses the saved version.
+Editing a definition does not edit existing runs. A replay of the same initiating
+command repairs admission rather than creating another run.
+
+`list` returns the library; `inspect` takes either `name` or `runId` and returns
+source, status, receipts and result. `signal` takes `runId` and `dataJson`;
+`cancel` takes `runId`. Unused fields are null; offset starts at zero. Large
+reports return `chunk` and `nextOffset`; concatenate pages. Inspect completed
+runs for a stable report. A running report can change between page requests.
+`help` supplies the exact host tool schemas. June's prompt also includes their
+names and argument descriptions so discovery need not cost another user turn.
+
+## JavaScript plus four durable primitives
+
+The function receives `workflow` and JSON `input`, and returns JSON. Use ordinary
+loops, branches, functions, exceptions and data transformations around:
+
+- `await workflow.step(name, tool, args)` — journal one host call and its result.
+- `await workflow.sleep(name, milliseconds)` — cancellable durable delay.
+- `await workflow.wait(name, timeoutMilliseconds = null)` — receive the next
+  signal payload, or null on timeout. Early signals stay queued. Sender/receiver
+  receipts deduplicate command retries, including a crash during consumption.
+- `await workflow.parallel(name, [{name, tool, args}, ...])` — native Rivet join,
+  returning an object keyed by branch name.
+
+Names must be replay-stable and unique within the run (branch names within their
+join): 1–64 letters, digits, `.`, `_`, or `-`, starting alphanumeric. Give loop
+iterations distinct names. Await every primitive. Use `parallel`, not overlapping
+calls/`Promise.all`, for concurrent host work. Host failures stop the run even if
+guest code tries to catch them; they are not permission to continue effects.
+
+The shipped tool catalog is:
+
+| Tool | Arguments | Behavior |
+| --- | --- | --- |
+| `clock` | `{}` | Journal current Unix milliseconds. |
+| `random` | `{}` | Journal a random UUID. |
+| `model` | `{prompt}` | One text-only inference, no tools or implicit memory/history. |
+| `notify` | `{text}` | Send only to the initiating owner-private conversation. |
+| `web_search` | `{query}` | Configured public search; only mounted when available. |
+| `analytics` | `{days: 1\|7\|30}` | June's own usage report, when configured. |
+
+Use `notify` explicitly for progress/completion messages. Returning a value alone
+stores it for inspection; it does not trigger another model turn. Notifications
+retain the original destination and WhatsApp service-window checks. Failed or
+rejected delivery is not a successful notification.
+
+Raw private-search and MCP results deliberately remain unavailable here: their
+existing adapters require transient results, while workflow outputs are durable.
+Workflows cannot grant MCP permissions, approve coding, change configuration,
+deploy, select arbitrary message recipients, or grant themselves more tools.
+Additional host tools must honor the same authority, retention and cancellation
+contracts; adding a tool does not add it to already-created runs.
+
+## Rivet owns persistence; the sandbox owns JavaScript
+
+Each run is a real `workflowRun` Rivet actor registered with the native workflow
+handler/inspector. Native steps, joins, queue waits and alarms own replay; no
+second workflow engine or graph DSL is involved. Source, input, tool allowlist,
+owner provenance, deletion revision and runtime ABI are pinned at admission.
+Each replay gets a fresh QuickJS VM and replays the pinned JavaScript. Native
+scheduler exceptions remain original host objects, never serialized guest errors.
+
+Startup re-submits the durable library roster before opening June's HTTP
+listener. This wakes actors left asleep by a lost host and repairs interrupted
+admission without resetting journals or dispatching completed effects again.
+Accepted starts and signals are acknowledged only after their durable receipts.
+
+Effects persist intent **before** dispatch and a receipt after settlement. A
+crash before the receipt is known stops in `needs_review`; it does not retry a
+possibly-sent message, model request or search. A completed receipt survives a
+crash before the native step's journal commit. There is no exactly-once claim for
+external services. `cancel` prevents subsequent calls but cannot undo a call
+already dispatched. The lifecycle fence tracks unsettled tool calls during
+deployment. Forgetting invalidates old definitions/runs and suppresses results;
+it is not physical erasure of Rivet journals or backups. Keep the engine and
+inspector private and follow the repository's storage/retention policy.
+
+Limits: 24,000 source bytes; 16,384 JSON bytes per input, operation and result;
+32 MiB guest heap; 512 KiB guest stack; 2 seconds guest CPU per replay; 256
+operations per run; 8 tool calls per join; 30 days per delay/finite wait; 256
+signals; 8 active and 128 retained runs; 32 definitions; 1,024 mutating command
+receipts. These bounds are explicit, not an unbounded job service. Date defaults
+to run creation time; obtain changing time/random values via journaled tools.
+
+### Why not Rivet's Secure Exec yet?
+
+RivetKit 2.3.21's `dynamicActor` remains a stub, but Rivet's standalone
+`secure-exec` 0.2.21/AgentOS sandbox is real. A bounded local probe reproduced a
+native `RefCell already mutably borrowed` panic when aborting while a host
+function was pending, followed by `ERR_AGENTOS_VM_TEARDOWN_DEADLINE`. The same
+failure occurred with default runtime options, outside June's workflow wrapper.
+That cancellation path is essential for durable suspension, so this increment
+uses pinned `quickjs-emscripten` 0.32.0 instead. Re-evaluate Secure Exec after that
+upstream behavior is fixed. QuickJS is a WASM JavaScript isolation boundary,
+not an OS virtual machine or permission to execute native untrusted code.
+
+## Verification
+
+`pnpm exec vitest run src/workflows/sandbox.test.ts src/workflows/workflows.test.ts`
+checks the capability boundary and real disposable Rivet engines, including
+June's structured reply → start → model step → private notification path.
+The development hard-kill check also killed a host during a wait and a pending
+effect, restarted against the same disposable engine, and verified the wait
+resumed without repeating completed or ambiguous tool calls. No live model,
+search provider, or real outgoing message was used for these checks.
