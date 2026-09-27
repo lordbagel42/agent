@@ -723,13 +723,32 @@ async function main() {
                         ? "configured"
                         : "disabled",
                       detail:
-                        "Requires a current user request and Slack authorization. Private search is not connected.",
+                        "Requires a current user request and Slack authorization. This setting covers public Slack search only, not separately permissioned MCP tools.",
                     },
                     {
-                      title: "Imports, tools and deployment",
-                      status: "not connected",
+                      title: "History imports",
+                      status:
+                        imports && Object.keys(selections).length
+                          ? "configured"
+                          : "not configured",
                       detail:
-                        "No import, tool broker, browser or release authority is mounted in this host.",
+                        imports && Object.keys(selections).length
+                          ? `${Object.keys(selections).length} configured selection(s). Import progress and provider authorization are not inspected by this overview. Configuration does not mean history has been imported.`
+                          : "No import selections are mounted in this host.",
+                    },
+                    {
+                      title: "MCP tools",
+                      status: connections ? "configured" : "not configured",
+                      detail: connections
+                        ? "The connection store and permission broker are mounted. Saved connections, enabled tools and remote availability are not inspected by this overview. Configuration does not grant tool permission."
+                        : "No MCP connection store or permission broker is mounted in this host.",
+                    },
+                    {
+                      title: "Deployment inspection",
+                      status: readDeployment ? "configured" : "not configured",
+                      detail: readDeployment
+                        ? "Read-only deployment and release inspection are mounted. The deployment feed and current health are not inspected by this overview. Inspection does not authorize a deployment."
+                        : "No deployment feed reader is mounted in this host.",
                     },
                   ],
                 },

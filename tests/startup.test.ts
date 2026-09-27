@@ -1,10 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { freeEnginePort, stopTestEngine } from "./rivet.js";
 
 const operatorToken = "fixture-operator-token-32-characters-long";
@@ -207,80 +207,161 @@ describe("runnable June host", () => {
     expect(output).toContain("JUNE_ALLOW_NATIVE_CODING=1");
   });
 
-  it("starts subscription setup mode without model or messaging credentials and exposes no webhook", async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "june-setup-"));
-    const enginePort = await freeEnginePort();
-    const port = await freeEnginePort();
-    const path = join(directory, "config.json");
-    await writeFile(
-      path,
-      JSON.stringify({
-        port,
-        setupMode: true,
-        console: { origin: `http://127.0.0.1:${port}` },
-        owner: { id: "raygen", identities: [] },
-        model: {
-          protocol: "codex",
-          model: "gpt-6-astra",
-          home: join(directory, ".codex"),
-          executable: "/must-not-run-before-sign-in",
+  it.each(["absent", "imports", "mcp"] as const)(
+    "renders %s capabilities without inference or provider probes",
+    async (mode) => {
+      const directory = await mkdtemp(join(tmpdir(), "june-setup-"));
+      const enginePort = await freeEnginePort();
+      const port = await freeEnginePort();
+      const path = join(directory, "config.json");
+      const privateDirectory = join(directory, "private");
+      await mkdir(privateDirectory, { mode: 0o700 });
+      // An immutable release marker belongs to a disposable release, never
+      // the checkout shared by other tests. The feed deliberately does not exist.
+      let entry = "src/main.ts";
+      if (mode === "mcp") {
+        await cp("src", join(directory, "src"), { recursive: true });
+        await symlink(resolve("node_modules"), join(directory, "node_modules"));
+        await writeFile(join(directory, "package.json"), '{"type":"module"}');
+        await writeFile(
+          join(directory, ".june-release.json"),
+          JSON.stringify({
+            revision: "a".repeat(40),
+            compatibility: "b".repeat(64),
+            binding: "c".repeat(64),
+            artifactSha256: "d".repeat(64),
+          }),
+        );
+        entry = join(directory, "src/main.ts");
+      }
+      await writeFile(
+        path,
+        JSON.stringify({
+          port,
+          setupMode: true,
+          console: { origin: `http://127.0.0.1:${port}` },
+          ...(mode !== "absent"
+            ? { memory: { directory: privateDirectory, keyEnv: "FIXTURE_KEY" } }
+            : {}),
+          ...(mode === "mcp"
+            ? {
+                mcp: { directory: privateDirectory, keyEnv: "FIXTURE_KEY" },
+                deployment: {
+                  eventsFile: join(directory, "missing-feed.json"),
+                },
+              }
+            : {}),
+          ...(mode === "imports"
+            ? {
+                imports: {
+                  history: {
+                    platform: "gmail",
+                    account: "private-account-not-for-html@example.com",
+                    conversations: ["private_conversation_not_for_html"],
+                    from: 1000,
+                    to: 2000,
+                    accessTokenEnv: "MISSING_IMPORT_TOKEN",
+                  },
+                },
+              }
+            : {}),
+          owner: { id: "raygen", identities: [] },
+          model: {
+            protocol: "codex",
+            model: "gpt-6-astra",
+            home: join(directory, ".codex"),
+            executable: "/must-not-run-before-sign-in",
+          },
+          ...(mode === "imports" ? { ...config, setupMode: false } : {}),
+        }),
+      );
+      const child = spawn(process.execPath, ["--import", "tsx", entry], {
+        env: {
+          PATH: process.env.PATH,
+          HOME: directory,
+          JUNE_CONFIG: path,
+          JUNE_OPERATOR_TOKEN: operatorToken,
+          JUNE_DEPLOY_TOKEN: "fixture-deployment-token-32-characters-long",
+          JUNE_ALLOW_MEMORY: "1",
+          JUNE_ALLOW_HISTORY_IMPORTS: "1",
+          FIXTURE_KEY: Buffer.alloc(32, 7).toString("base64"),
+          MODEL_KEY: "unused",
+          APP_SECRET: "fixture-secret",
+          VERIFY_TOKEN: "fixture-verify",
+          ACCESS_TOKEN: "unused",
+          RIVETKIT_STORAGE_PATH: directory,
+          RIVET_RUN_ENGINE_PORT: String(enginePort),
         },
-      }),
-    );
-    const child = spawn(process.execPath, ["--import", "tsx", "src/main.ts"], {
-      env: {
-        PATH: process.env.PATH,
-        HOME: directory,
-        JUNE_CONFIG: path,
-        JUNE_OPERATOR_TOKEN: operatorToken,
-        RIVETKIT_STORAGE_PATH: directory,
-        RIVET_RUN_ENGINE_PORT: String(enginePort),
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let output = "";
-    for (const stream of [child.stdout, child.stderr])
-      stream?.on("data", (chunk) => {
-        output += String(chunk);
+        stdio: ["ignore", "pipe", "pipe"],
       });
-    t.onTestFinished(async () => {
-      await stop(child);
-      await stopTestEngine(directory, enginePort);
-      await rm(directory, { recursive: true, force: true });
-    });
-    const url = `http://127.0.0.1:${port}`;
-    await expect
-      .poll(
-        async () => {
-          if (child.exitCode !== null) return output;
-          return fetch(`${url}/health`)
-            .then((response) => response.json())
-            .catch(() => null);
-        },
-        { timeout: 15_000 },
-      )
-      .toEqual({ name: "June", ready: true });
-    for (const channel of ["slack", "whatsapp"])
-      expect(
-        (await fetch(`${url}/webhooks/${channel}`, { method: "POST" })).status,
-      ).toBe(404);
-    expect((await fetch(`${url}/operator/conversation`)).status).toBe(401);
-    expect((await fetch(`${url}/console`)).status).toBe(401);
-    const overview = await fetch(`${url}/console`, {
-      headers: { authorization: `Bearer ${operatorToken}` },
-    });
-    expect(overview.status).toBe(200);
-    const html = await overview.text();
-    expect(html).toContain("0 durable events");
-    expect(html).toContain("0 proposals");
-    for (const privateValue of [
-      operatorToken,
-      directory,
-      "/must-not-run-before-sign-in",
-      "<form",
-    ])
-      expect(html).not.toContain(privateValue);
-    expect(output).toContain("setup mode");
-    expect(output).not.toContain(operatorToken);
-  });
+      let output = "";
+      for (const stream of [child.stdout, child.stderr])
+        stream?.on("data", (chunk) => {
+          output += String(chunk);
+        });
+      onTestFinished(async () => {
+        await stop(child);
+        await stopTestEngine(directory, enginePort);
+        await rm(directory, { recursive: true, force: true });
+      });
+      const url = `http://127.0.0.1:${port}`;
+      await expect
+        .poll(
+          async () => {
+            if (child.exitCode !== null) return output;
+            return fetch(`${url}/health`)
+              .then((response) => response.json())
+              .catch(() => null);
+          },
+          { timeout: 15_000 },
+        )
+        .toMatchObject({ name: "June", ready: true });
+      for (const channel of mode === "imports"
+        ? ["slack"]
+        : ["slack", "whatsapp"])
+        expect(
+          (await fetch(`${url}/webhooks/${channel}`, { method: "POST" }))
+            .status,
+        ).toBe(404);
+      expect((await fetch(`${url}/operator/conversation`)).status).toBe(401);
+      expect((await fetch(`${url}/console`)).status).toBe(401);
+      const overview = await fetch(`${url}/console`, {
+        headers: { authorization: `Bearer ${operatorToken}` },
+      });
+      expect(overview.status).toBe(200);
+      const html = await overview.text();
+      expect(html).toContain("0 durable events");
+      expect(html).toContain("0 proposals");
+      const record = (title: string) =>
+        html.match(
+          new RegExp(`<article[^>]*>[^]*?<h3>${title}</h3>([^]*?)</article>`),
+        )?.[1];
+      expect(record("History imports")).toContain(
+        mode === "imports" ? "1 configured selection" : "No import selections",
+      );
+      expect(record("History imports")).toContain(
+        mode === "imports" ? ">configured<" : ">not configured<",
+      );
+      expect(record("MCP tools")).toContain(
+        mode === "mcp" ? ">configured<" : ">not configured<",
+      );
+      if (mode !== "absent") expect(html).toContain("not inspected");
+      expect(record("Deployment inspection")).toContain(
+        mode === "mcp" ? ">configured<" : ">not configured<",
+      );
+      expect(html).not.toContain("Imports, tools and deployment");
+      for (const privateValue of [
+        operatorToken,
+        directory,
+        "/must-not-run-before-sign-in",
+        "private-account-not-for-html",
+        "private_conversation_not_for_html",
+        "MISSING_IMPORT_TOKEN",
+        "<form",
+      ])
+        expect(html).not.toContain(privateValue);
+      if (mode !== "imports") expect(output).toContain("setup mode");
+      expect(output).not.toContain(operatorToken);
+    },
+  );
 });
