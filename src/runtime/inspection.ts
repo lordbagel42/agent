@@ -6,7 +6,11 @@ import type { ImportedMemoryExtraction } from "../imports/extraction.js";
 import type { HistoryImports } from "../imports/index.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
-import type { EvidenceStore, ImportCoverage } from "../memory/store.js";
+import {
+  type EvidenceStore,
+  type ImportCoverage,
+  tombstoneExportLimits,
+} from "../memory/store.js";
 import {
   reflectionDriveHalfLifeMs,
   reflectionPriority,
@@ -273,6 +277,10 @@ export function createInspectionReader(deps: {
           // A separate curated-store failure must not conceal ledger status.
         }
         return `${heading}\n${snapshot}\nLedger operations: ${JSON.stringify(store.operationStatus())}. Ledger-wide, this opening only; earlier history unknown. Timestamps: epoch ms. Retrieval counters cover retrieve() attempts, including failures; duration totals/max are elapsed ms, null max is unobserved. Read success means authenticated snapshot read; transaction success means COMMIT completed (including initial creation, excluding pre-transaction validation). Persistence counters count settled transaction attempts, not records; completed requires COMMIT. Durations are elapsed ms for the entire attempt, including failures and rollback, not disk I/O alone. No-op commits count; initial creation, pre-transaction validation, curated Git saves and historical writes are excluded. Counters reset on reopening and stop at the safe integer limit; total duration saturates there. Open is not a health check; read success does not prove writability.\nCurated revision count: ${revisions}. No evidence, proposal text, keys, error details or personality values returned.\n${MEMORY_CORRECTION_HELP}`;
+      }
+      case "tombstones": {
+        if (!deps.memory) return `${heading}\nMemory is unavailable.`;
+        return `${heading}\nTombstone export available via the owner-bearer-only GET /operator/memory/tombstones endpoint. ${JSON.stringify({ watermark: deps.memory.store.deletionRevision(), ...tombstoneExportLimits })}\nWatermark counts deleted IDs in this ledger's append history, not deletion operations. Export pages contain IDs only; this inspection returns no IDs, bodies or keys and performs no export or backup mutation. Independent retention and physical purge are not verified.`;
       }
       case "imports": {
         const imports = deps.imports;

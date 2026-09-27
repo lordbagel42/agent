@@ -339,6 +339,9 @@ export function buildModelRequest({
       fast: describeModel(models.fast),
       deep: describeModel(models.deep),
     })}`,
+    inspectionAvailable
+      ? 'For an owner request about independent tombstone retention, set inspection to "tombstones", with empty text and other actions unset/null. The host reports the current deletion watermark, bounded export endpoint and limits, never tombstone IDs, source bodies or keys. Export access is owner-bearer-only; do not request or disclose that credential. This status does not prove that an export was retained independently or that backups were purged, and cannot mutate live backups.'
+      : "Private tombstone export status is unavailable for this invocation.",
     escalationAvailable
       ? "Answer casual conversation immediately on this pass. When deeper reasoning would materially help, set escalate to true instead of inventing a result. text may be a brief, context-dependent acknowledgment, not a generic repeated status message or a claim the work is done. Leave coding, search, webSearch, and reaction unset/null during escalation. The host may hand off once to the configured deep model; do not promise timing or completion."
       : "Further model escalation is unavailable for this invocation. Answer directly with the evidence available, including uncertainty; do not request another pass or imply a deeper model is working.",

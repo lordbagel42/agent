@@ -438,6 +438,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   let disabled = false;
   let extractionEnabled = false;
   let reads = 0;
+  let guestCase = 0;
   let sessions = 0;
   let vaultReads = 0;
   const credentials = createBitwardenCredentialResolver(
@@ -794,6 +795,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(reads).toBe(9);
   expect(requests).toHaveLength(10);
   for (const inspection of [
+    "tombstones",
     "native-coding",
     "memory",
     "retention",
@@ -815,10 +817,10 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
           conversationId: "C1",
         },
       },
-      // Each permission case gets its own guest so the four-turn rate limit
-      // does not suppress the request before the inspection guard runs.
+      // Share each actor for at most four cases: exercise the inspection guard
+      // without hitting the guest quota or starting an actor for every target.
       {
-        senderId: `guest-${inspection}`,
+        senderId: `guest-${Math.floor(guestCase++ / 4)}`,
         metadata: { channelType: "im" as const },
       },
       ...(inspection === "mcp-connections"
@@ -865,6 +867,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(store.importProgress("selection-1")?.coverage.to).toBe(999);
   disabled = true;
   for (const target of [
+    "tombstones",
     "memory",
     "imports",
     "reflection",
@@ -922,6 +925,20 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(store.importProgress("selection-0")).toEqual(progress);
   expect(store.proposals(audience)[0]?.status).toBe("pending");
   disabled = false;
+  store.deleteSource("SECRET TOMBSTONE ID");
+  action = { text: "", inspection: "tombstones" };
+  const readsBeforeTombstone = reads;
+  const tombstoneReport = await deliver();
+  // The import fixture already tombstoned one source above.
+  expect(tombstoneReport).toContain(
+    '"watermark":2,"maxEntries":100,"maxBytes":64000',
+  );
+  expect(tombstoneReport).toContain(
+    "Independent retention and physical purge are not verified",
+  );
+  expect(tombstoneReport.length).toBeLessThan(1000);
+  expect(requests.at(-1)?.system).toContain('set inspection to "tombstones"');
+  expect(reads).toBe(readsBeforeTombstone + 1);
   action = { text: "", inspection: "memory" };
   expect(() =>
     store.appendSource({ ...retainedSource, text: "SECRET WRITE ERROR" }),

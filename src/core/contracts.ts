@@ -211,6 +211,7 @@ export interface CompanionReply {
   analytics?: { days: 1 | 7 | 30 };
   /** Owner-private bounded metadata inspection; never recall or mutation. */
   inspection?:
+    | "tombstones"
     | "memory"
     | "imports"
     | "reflection"

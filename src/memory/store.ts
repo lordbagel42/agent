@@ -3,7 +3,9 @@ import {
   createDecipheriv,
   createHash,
   createHmac,
+  hkdfSync,
   randomBytes,
+  randomUUID,
   timingSafeEqual,
 } from "node:crypto";
 import { chmodSync } from "node:fs";
@@ -123,6 +125,8 @@ const importExtractionSchema = z.strictObject({
 });
 const stateSchema = z.strictObject({
   version: z.literal(1),
+  // Legacy ledgers acquire a durable identity once, before their first index.
+  ledgerId: z.uuid().optional(),
   sources: z.array(sourceSchema),
   claims: z.array(claimSchema),
   tombstones: z.array(id),
@@ -208,6 +212,16 @@ export type LedgerOperationStatus = {
   lastSucceededAt: number | null;
 };
 export type ImportExtraction = z.infer<typeof importExtractionSchema>;
+export const tombstoneExportLimits = { maxEntries: 100, maxBytes: 64_000 };
+export type TombstoneExportPage = {
+  version: 1;
+  ledgerId: string;
+  after: number;
+  watermark: number;
+  tombstones: string[];
+  nextAfter: number | null;
+  mac: string;
+};
 type State = z.infer<typeof stateSchema>;
 
 export const DEFAULT_IMPORT_BUDGET = Object.freeze({
@@ -244,6 +258,41 @@ const activeExtractions = new WeakMap<
   EvidenceStore,
   Map<AbortController, string[]>
 >();
+
+/** Shared signing bytes for export/restore; caller validates the page contract.
+ * Derive a dedicated authentication key; never export it or the evidence key.
+ */
+export function tombstoneExportMac(
+  key: Uint8Array,
+  page: Omit<TombstoneExportPage, "mac">,
+): Buffer {
+  const authenticationKey = Buffer.from(
+    hkdfSync(
+      "sha256",
+      key,
+      Buffer.alloc(0),
+      "june-tombstone-export-auth-v1",
+      32,
+    ),
+  );
+  try {
+    return createHmac("sha256", authenticationKey)
+      .update(
+        JSON.stringify([
+          "june-tombstone-export-v1",
+          page.ledgerId,
+          page.after,
+          page.watermark,
+          page.tombstones,
+          page.nextAfter,
+        ]),
+        "utf8",
+      )
+      .digest();
+  } finally {
+    authenticationKey.fill(0);
+  }
+}
 
 // Never include input data in validation errors (these may reach operator logs).
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -485,6 +534,7 @@ export class EvidenceStore {
           );
           this.write({
             version: 1,
+            ledgerId: randomUUID(),
             sources: [],
             claims: [],
             tombstones: [],
@@ -505,6 +555,10 @@ export class EvidenceStore {
           throw error;
         }
       }
+      if (!this.read().ledgerId)
+        this.transaction((state) => {
+          state.ledgerId ??= randomUUID();
+        });
       this.rebuildIndex();
     } catch {
       this.db.close();
@@ -673,6 +727,65 @@ export class EvidenceStore {
   /** Monotonic privacy revision, including deletions completed before restart. */
   deletionRevision(): number {
     return this.read().tombstones.length;
+  }
+
+  /** Owner-operator export only: IDs are private metadata, not evidence bodies.
+   * Pin watermark across pages. Offsets count IDs, not deletion operations, and
+   * belong to this ledger's append history, not a timestamp or retention receipt.
+   */
+  exportTombstones(
+    input: { after?: number; watermark?: number; limit?: number } = {},
+  ): TombstoneExportPage {
+    const options = parse(
+      z.strictObject({
+        after: timestamp.optional(),
+        watermark: timestamp.optional(),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(tombstoneExportLimits.maxEntries)
+          .optional(),
+      }),
+      input,
+    );
+    // One authenticated snapshot keeps page contents and watermark consistent.
+    const { tombstones, ledgerId } = this.read();
+    if (!ledgerId) throw new Error("Missing memory ledger identity");
+    const after = options.after ?? 0;
+    const watermark = options.watermark ?? tombstones.length;
+    if (after > watermark || watermark > tombstones.length)
+      throw new Error("Invalid tombstone export range");
+    const page: TombstoneExportPage = {
+      version: 1,
+      ledgerId,
+      after,
+      watermark,
+      tombstones: [],
+      nextAfter: after < watermark ? after : null,
+      // Include the fixed-size MAC in the serialized byte budget.
+      mac: "0".repeat(64),
+    };
+    const end = Math.min(
+      watermark,
+      after + (options.limit ?? tombstoneExportLimits.maxEntries),
+    );
+    for (const tombstone of tombstones.slice(after, end)) {
+      const previousNext = page.nextAfter;
+      page.tombstones.push(tombstone);
+      const next = after + page.tombstones.length;
+      page.nextAfter = next < watermark ? next : null;
+      if (
+        Buffer.byteLength(JSON.stringify(page), "utf8") >
+        tombstoneExportLimits.maxBytes
+      ) {
+        page.tombstones.pop();
+        page.nextAfter = previousNext;
+        break;
+      }
+    }
+    page.mac = tombstoneExportMac(this.key, page).toString("hex");
+    return page;
   }
 
   source(audience: string, sourceId: string): Source | undefined {

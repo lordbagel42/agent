@@ -1,4 +1,10 @@
-import { createCipheriv, createHash, randomBytes } from "node:crypto";
+import {
+  createCipheriv,
+  createHash,
+  createHmac,
+  hkdfSync,
+  randomBytes,
+} from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +20,7 @@ import {
   importHistory,
   type MemoryProposalInput,
   type Source,
+  tombstoneExportMac,
 } from "./store.js";
 
 const dirs: string[] = [];
@@ -334,6 +341,186 @@ it("previews exact authorized forgetting impact without mutation or foreign grap
   store.deleteSource("s1");
   expect(store.previewForget("private", "s1")).toBeUndefined();
   expect(store.source("private", "other")).toBeDefined();
+});
+
+it("exports only tombstone IDs in a pinned, read-only range across deletion and reopen", () => {
+  const { store, path } = open();
+  const empty = store.exportTombstones();
+  expect(empty).toEqual({
+    version: 1,
+    ledgerId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+    after: 0,
+    watermark: 0,
+    tombstones: [],
+    nextAfter: null,
+    mac: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  store.appendSource(source("source-z"));
+  store.appendSource(source("source-a"));
+  store.appendClaim({
+    id: "claim-b",
+    entity: "private-entity",
+    text: "private claim body",
+    audiences: ["private"],
+    kind: "evidence",
+    dependsOn: ["source-z"],
+    contradicts: [],
+    supersedes: [],
+  });
+  store.deleteSource("source-z");
+  const before = readFileSync(path);
+  const first = store.exportTombstones({ limit: 1 });
+  expect(first).toEqual({
+    version: 1,
+    ledgerId: empty.ledgerId,
+    after: 0,
+    watermark: 2,
+    tombstones: ["source-z"],
+    nextAfter: 1,
+    mac: createHmac(
+      "sha256",
+      Buffer.from(
+        hkdfSync(
+          "sha256",
+          key,
+          Buffer.alloc(0),
+          "june-tombstone-export-auth-v1",
+          32,
+        ),
+      ),
+    )
+      .update(
+        JSON.stringify([
+          "june-tombstone-export-v1",
+          empty.ledgerId,
+          0,
+          2,
+          ["source-z"],
+          1,
+        ]),
+      )
+      .digest("hex"),
+  });
+  for (const mutation of [
+    { ledgerId: "another-ledger" },
+    { after: 1 },
+    { watermark: 3 },
+    { tombstones: ["another-source"] },
+    { nextAfter: null },
+  ])
+    expect(
+      tombstoneExportMac(key, { ...first, ...mutation }).toString("hex"),
+    ).not.toBe(first.mac);
+  expect(tombstoneExportMac(randomBytes(32), first).toString("hex")).not.toBe(
+    first.mac,
+  );
+  expect(open(":memory:").store.exportTombstones().ledgerId).not.toBe(
+    empty.ledgerId,
+  );
+  expect(readFileSync(path)).toEqual(before);
+  store.deleteSource("source-a");
+  store.deleteSource("source-z");
+  store.close();
+  const reopened = open(path).store;
+  expect(reopened.exportTombstones({ limit: 1, watermark: 2 })).toEqual(first);
+  expect(reopened.exportTombstones({ after: 1, watermark: 2 })).toEqual({
+    version: 1,
+    ledgerId: empty.ledgerId,
+    after: 1,
+    watermark: 2,
+    tombstones: ["claim-b"],
+    nextAfter: null,
+    mac: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  expect(reopened.exportTombstones({ after: 2 })).toEqual({
+    version: 1,
+    ledgerId: empty.ledgerId,
+    after: 2,
+    watermark: 3,
+    tombstones: ["source-a"],
+    nextAfter: null,
+    mac: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  expect(
+    reopened.exportTombstones({ after: 2, watermark: 2 }).tombstones,
+  ).toEqual([]);
+  for (const input of [
+    { after: -1 },
+    { after: 1.5 },
+    { after: 4 },
+    { after: 2, watermark: 1 },
+    { watermark: 4 },
+    { watermark: Number.MAX_SAFE_INTEGER + 1 },
+    { limit: 0 },
+    { limit: 101 },
+    { limit: NaN },
+  ])
+    expect(() => reopened.exportTombstones(input)).toThrow();
+});
+
+it("persists one ledger identity on legacy open without changing retained evidence or tombstones", () => {
+  const { store, path } = open();
+  store.close();
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  cipher.setAAD(Buffer.from("june-evidence-v1"));
+  const encrypted = Buffer.concat([
+    cipher.update(
+      JSON.stringify({
+        version: 1,
+        sources: [source()],
+        claims: [],
+        tombstones: ["legacy-deleted"],
+        imports: [],
+      }),
+    ),
+    cipher.final(),
+  ]);
+  const db = new DatabaseSync(path);
+  db.prepare("UPDATE records SET payload=?").run(
+    Buffer.concat([nonce, cipher.getAuthTag(), encrypted]),
+  );
+  db.close();
+  const upgraded = open(path).store;
+  const page = upgraded.exportTombstones();
+  expect(page.tombstones).toEqual(["legacy-deleted"]);
+  expect(upgraded.source("private", "s1")).toEqual(source());
+  upgraded.close();
+  const before = readFileSync(path);
+  expect(open(path).store.exportTombstones()).toEqual(page);
+  expect(readFileSync(path)).toEqual(before);
+});
+
+it("bounds export counts and serialized UTF-8 bytes without omitting IDs", () => {
+  const { store } = open(":memory:");
+  const short = Array.from({ length: 101 }, (_, i) => `deleted-${i}`);
+  const long = Array.from(
+    { length: 20 },
+    (_, i) => `${i}${"界\u0000".repeat(1000)}`,
+  );
+  for (const id of [...short, ...long]) store.deleteSource(id);
+  const first = store.exportTombstones();
+  expect(first.tombstones).toEqual(short.slice(0, 100));
+  expect(first.nextAfter).toBe(100);
+  const seen = [...first.tombstones];
+  let after: number | null = first.nextAfter;
+  let byteLimited = false;
+  while (after !== null) {
+    const page = store.exportTombstones({ after, watermark: 121 });
+    expect(Buffer.byteLength(JSON.stringify(page), "utf8")).toBeLessThanOrEqual(
+      64_000,
+    );
+    expect(page.tombstones.length).toBeGreaterThan(0);
+    expect(page.tombstones.length).toBeLessThanOrEqual(100);
+    if (page.nextAfter !== null) {
+      expect(page.nextAfter).toBe(after + page.tombstones.length);
+      if (page.tombstones.length < 100) byteLimited = true;
+    }
+    seen.push(...page.tombstones);
+    after = page.nextAfter;
+  }
+  expect(byteLimited).toBe(true);
+  expect(seen).toEqual([...short, ...long]);
 });
 
 it("excludes legacy ## Slack evidence from automatic memory but permits explicit lookup", () => {
@@ -1285,6 +1472,8 @@ it("bounds the whole projected import atomically at one-under, exact and one-ove
   const serializedBytes = Buffer.byteLength(
     JSON.stringify({
       version: 1,
+      // Generated UUID content varies, but its serialized byte length is fixed.
+      ledgerId: "00000000-0000-4000-8000-000000000000",
       sources: [...existing, ...additions],
       claims,
       tombstones: [],
@@ -1351,6 +1540,7 @@ it("bounds the whole projected import atomically at one-under, exact and one-ove
   const cooldownBytes = Buffer.byteLength(
     JSON.stringify({
       version: 1,
+      ledgerId: "00000000-0000-4000-8000-000000000000",
       sources: [],
       claims: [],
       tombstones: [],

@@ -134,6 +134,50 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
     physicalPurge: false,
   });
   expect(cleanups).toBe(2);
+  const endpoint = "/operator/memory/tombstones";
+  expect((await app.request(endpoint)).status).toBe(401);
+  expect(
+    (
+      await app.request(endpoint, {
+        headers: {
+          authorization: "Bearer incorrect",
+          cookie: `june_console=${token}`,
+        },
+      })
+    ).status,
+  ).toBe(401);
+  const exported = await app.request(`${endpoint}?limit=1`, { headers });
+  expect(exported.status).toBe(200);
+  expect(exported.headers.get("cache-control")).toBe("no-store");
+  expect(await exported.json()).toEqual({
+    version: 1,
+    ledgerId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+    after: 0,
+    watermark: 1,
+    tombstones: ["mail-source"],
+    nextAfter: null,
+    mac: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  for (const query of [
+    "audience=public",
+    "after=-1",
+    "after=",
+    "after=0.5",
+    "after=2",
+    "watermark=2",
+    "after=1&watermark=0",
+    "limit=0",
+    "limit=101",
+    "limit=1&limit=2",
+    "watermark=9007199254740992",
+    "body=true",
+  ]) {
+    const rejected = await app.request(`${endpoint}?${query}`, { headers });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({ error: "memory_request_rejected" });
+  }
+  expect(store.deletionRevision()).toBe(1);
+  expect(cleanups).toBe(2);
 });
 
 it("reports rejected budgets without evidence and retries the same uncommitted page explicitly", async (t) => {

@@ -23,6 +23,25 @@ export function createMemoryRoutes(deps: {
       revisions: deps.personality?.ownerHistory() ?? null,
     });
   });
+  app.get("/tombstones", (c) => {
+    if (Object.values(c.req.queries()).some((values) => values.length !== 1))
+      throw new Error("Invalid tombstone export query");
+    const integer = z
+      .string()
+      .regex(/^(0|[1-9]\d{0,15})$/)
+      .transform(Number);
+    const { audience, ...options } = z
+      .strictObject({
+        audience: id.optional(),
+        after: integer.optional(),
+        watermark: integer.optional(),
+        limit: integer.optional(),
+      })
+      .parse(c.req.query());
+    deps.audience(audience);
+    // Ledger-wide owner export. Tombstones intentionally retain no audiences.
+    return c.json(deps.store.exportTombstones(options));
+  });
   app.post("/proposals/:id/review", async (c) => {
     const input = z
       .strictObject({

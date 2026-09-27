@@ -151,6 +151,7 @@ const companionReplySchema = z.strictObject({
   replyInThread: z.boolean().optional(),
   inspection: z
     .enum([
+      "tombstones",
       "memory",
       "imports",
       "reflection",
@@ -576,6 +577,7 @@ export function replyJsonSchema(
             inspection: {
               type: ["string", "null"],
               enum: [
+                "tombstones",
                 "memory",
                 "imports",
                 "reflection",

@@ -644,3 +644,71 @@ is provided. Preserve Git metadata, encrypted snapshots, separately managed keys
 and independent tombstones throughout the backup window; replay later tombstones
 before serving any restored data. The report neither verifies other retained
 copies nor turns logical deletion into physical erasure.
+
+### Independently retained tombstones
+
+`GET /operator/memory/tombstones` requires the existing owner bearer token (not a
+console cookie). It is read-only and `Cache-Control: no-store`. Optional query
+fields are `after` (default 0), `watermark` (default current deletion revision),
+and `limit` (default/max 100, minimum 1). Values must be nonnegative safe decimal
+integers; malformed, duplicated, unknown, or out-of-range parameters are rejected.
+An optional `audience` must equal the configured owner-private audience. The
+export itself is ledger-wide, not audience-filtered: tombstones retain only IDs.
+
+The trusted store method `exportTombstones({after?, watermark?, limit?})` returns:
+
+```ts
+{
+  version: 1,
+  ledgerId: "...",          // UUID persisted inside the encrypted ledger
+  after: 0,                // number of IDs already consumed
+  watermark: 3,            // pinned deletionRevision(), not a wall-clock time
+  tombstones: ["source-1", "claim-1"],
+  nextAfter: 2,             // null when this pinned range is exhausted
+  mac: "..."               // lowercase 64-hex HMAC-SHA256
+}
+```
+
+Each page contains at most 100 IDs and 64,000 UTF-8 JSON bytes, including metadata.
+IDs include transitively removed claims/proposals, not just original sources.
+No bodies, quotations, source metadata, credentials, or encryption keys are
+exported. IDs themselves remain private metadata; protect exported pages with
+independent restricted storage and the operator's retention policy.
+
+Pages are authenticated, not encrypted. `tombstoneExportMac(key, page)` returns
+32 MAC bytes using HMAC-SHA256 over UTF-8
+`JSON.stringify(["june-tombstone-export-v1", ledgerId, after, watermark, tombstones, nextAfter])`.
+Its dedicated key is derived with HKDF-SHA256 from the existing evidence key,
+empty salt, info `june-tombstone-export-auth-v1`, and length 32. No key is exported.
+Restore must strictly validate the version-1 page, compare its MAC in constant
+time, require the encrypted snapshot's ledger ID, and verify complete sequential
+coverage to an independently trusted required watermark before exposing evidence.
+Valid MACs alone do not prove freshness or completeness of a retained set.
+
+New ledgers receive a random UUID on creation. Existing ledgers lacking one are
+upgraded once on open inside an encrypted transaction before index construction;
+subsequent opens and exports do not rewrite it. Backups predating that identity
+cannot be authenticated against newly exported pages by guessing identity from
+the key or count. Restore must reject that mismatch, not silently assign an ID.
+This is a one-way format upgrade for pre-export binaries: their strict snapshot
+schema rejects `ledgerId`, even though the snapshot version remains 1. A code
+rollback needs a reader that understands the field; never restore an older ledger
+to work around that incompatibility and thereby discard later tombstones.
+
+Start at `after=0`, retain the returned `watermark`, and pass that same watermark
+with each `nextAfter` until it is null. The append-only order survives restarts;
+later deletions cannot shift this pinned range. An empty completed page is valid,
+including an empty ledger. Require `0 <= after <= watermark <= current revision`.
+After independently retaining a complete range, start an incremental export with
+`after` equal to its watermark and omit `watermark` to pin the next range. Do not
+treat a partial export as complete. A watermark is a count for this ledger's
+append history, not a timestamp; never combine exports from unrelated or
+rolled-back histories based only on counts. Keep the same ledger identity across
+all pages and independently retain the required watermark.
+
+June can privately answer “Inspect tombstone export status” using
+`inspection: "tombstones"`. The host returns only the current watermark, API path,
+and bounds, never IDs or an unbounded export. Public/guest and synthesis turns
+cannot call it. Neither this status nor an API read records or proves independent
+retention, performs a restore, or changes live backups. Replay before restored
+memory becomes readable remains a separate restore operation.
