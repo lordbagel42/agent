@@ -746,6 +746,17 @@ This is not history or evidence recall: no private reasons, correction bodies,
 source IDs, command IDs or timestamps are included, even in owner-private reads.
 Older in-flight snapshots without provenance remain valid and do not invent it.
 
+For a private diff before applying a change, ask June: "Preview a drier voice
+with less humor, without saving it." Her owner-private `personalityPreview`
+action takes `{expectedVersion, style}` with all four style fields. The host
+reads the current profile and returns changed fields, the proposed public-safe
+self-description, and an exact `!personality revise` confirmation command.
+Nothing is saved until the owner sends that command as plain text. Stale versions
+require a fresh review; unchanged proposals do not offer a write. Preview does
+not append personality revisions, use private evidence, or change permissions.
+Guests, channels, execution results, and web/MCP synthesis cannot call it. Preview
+receipts stay in private conversation history, not the public profile.
+
 No secret or configuration change is needed for this feature. State and private
 explanations live in the existing Rivet data/journal and backup retention domain,
 not the encrypted/forgettable evidence store; keep explanations non-sensitive.

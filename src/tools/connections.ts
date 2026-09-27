@@ -704,6 +704,7 @@ export class McpConnections {
           reply.recall !== undefined ||
           reply.pendingMemory !== undefined ||
           reply.browserProposal !== undefined ||
+          reply.personalityPreview !== undefined ||
           reply.forgetPreview !== undefined
         )
           return parseReply(
@@ -739,6 +740,7 @@ export class McpConnections {
             reply.recall !== undefined ||
             reply.pendingMemory !== undefined ||
             reply.browserProposal !== undefined ||
+            reply.personalityPreview !== undefined ||
             reply.forgetPreview !== undefined
           )
             return parseReply(
@@ -876,6 +878,7 @@ export class McpConnections {
                 juryAvailable: false,
                 rivetAvailable: false,
                 browserProposalAvailable: false,
+                personalityPreviewAvailable: false,
                 forgetPreviewAvailable: false,
                 dashboardLoginAvailable: false,
                 modelStatusAvailable: false,

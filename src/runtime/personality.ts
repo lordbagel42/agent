@@ -16,6 +16,11 @@ export const globalStyleSchema = z.strictObject({
   humor: z.enum(["subtle", "playful", "none"]),
   curiosity: z.enum(["occasional", "eager", "reserved"]),
 });
+export const personalityPreviewSchema = z.strictObject({
+  expectedVersion: z.number().int().nonnegative(),
+  style: globalStyleSchema,
+});
+export type PersonalityPreview = z.infer<typeof personalityPreviewSchema>;
 type Style = z.infer<typeof globalStyleSchema>;
 const traitProvenanceSchema = z.strictObject({
   kind: z.enum(["default", "owner-publication", "rollback"]),
@@ -66,6 +71,34 @@ export function publicPersonality(profile: GlobalPersonality) {
       ? {}
       : { provenance: provenanceSchema.parse(profile.provenance) }),
   };
+}
+
+/** Pure diff of public-safe fields. The host must deliver it only to the owner
+ * privately. Never append a revision or call the publishing path from preview. */
+export function previewPersonality(
+  profile: GlobalPersonality,
+  value: PersonalityPreview,
+): string {
+  const current = publicPersonality(profile);
+  const proposal = personalityPreviewSchema.parse(value);
+  if (proposal.expectedVersion !== current.version)
+    return `Personality changed: current version is ${current.version}. Read !personality and preview your change again. Nothing has been saved.`;
+  const changed = Object.entries(proposal.style).filter(
+    ([key, value]) => current.style[key as keyof Style] !== value,
+  );
+  if (!changed.length)
+    return `No style changes from global personality v${current.version}. Nothing has been saved.`;
+  return [
+    `Owner-private personality preview against v${current.version}. Nothing has been saved.`,
+    ...changed.map(
+      ([key, value]) =>
+        `${key}: ${current.style[key as keyof Style]} → ${value}`,
+    ),
+    `Proposed voice: ${publicPersonality({ version: current.version, style: proposal.style }).selfDescription}`,
+    "To apply this style to new turns in every conversation, send this exact plain-text command in your private DM (not as a quote or code block):",
+    `!personality revise ${JSON.stringify({ expectedVersion: current.version, changes: Object.fromEntries(changed), explanation: "Owner-approved personality preview", publish: true })}`,
+    "Permissions and tools will not change. A newer revision requires a fresh review.",
+  ].join("\n");
 }
 
 interface StoredPersonality extends GlobalPersonality {
@@ -140,7 +173,7 @@ function currentPersonality(
 }
 
 const commandFields = {
-  expectedVersion: z.number().int().nonnegative(),
+  expectedVersion: personalityPreviewSchema.shape.expectedVersion,
   explanation: z.string().trim().min(1).max(240),
   publish: z.literal(true),
 };

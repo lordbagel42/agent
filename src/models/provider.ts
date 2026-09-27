@@ -13,7 +13,10 @@ import { slackHistorySchema } from "../core/slack-history.js";
 import { socialActionSchema } from "../core/social.js";
 import { globalProposalInputSchema } from "../reflection/global-proposal.js";
 import { juryRequestSchema } from "../reflection/jury.js";
-import { globalStyleSchema } from "../runtime/personality.js";
+import {
+  globalStyleSchema,
+  personalityPreviewSchema,
+} from "../runtime/personality.js";
 import { wakeupActionSchema } from "../wakeups/state.js";
 import { workflowCommandSchema } from "../workflows/contracts.js";
 import {
@@ -238,6 +241,7 @@ const companionReplySchema = z.strictObject({
   browserProposal: z
     .strictObject({ operation: z.string().min(1).max(128).nullable() })
     .optional(),
+  personalityPreview: personalityPreviewSchema.optional(),
   forgetPreview: z
     .strictObject({ sourceId: z.string().min(1).max(2048) })
     .optional(),
@@ -279,6 +283,7 @@ export type ReplyCapabilities = Pick<
   | "juryAvailable"
   | "rivetAvailable"
   | "browserProposalAvailable"
+  | "personalityPreviewAvailable"
   | "forgetPreviewAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
@@ -322,6 +327,7 @@ export function replyJsonSchema(
     juryAvailable,
     rivetAvailable,
     browserProposalAvailable,
+    personalityPreviewAvailable,
     forgetPreviewAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
@@ -330,6 +336,20 @@ export function replyJsonSchema(
     executionAvailable,
     workflowAvailable,
   } = replyCapabilities(capabilities);
+  const { $schema: _previewSchema, ...previewSchema } = z.toJSONSchema(
+    personalityPreviewSchema.nullable(),
+    {
+      target: "draft-7",
+      override({ jsonSchema }) {
+        // Raw Anthropic schemas omit numeric constraints; enforce them locally.
+        if (jsonSchema.type === "integer") {
+          delete jsonSchema.minimum;
+          delete jsonSchema.maximum;
+          jsonSchema.description = "Current nonnegative safe-integer version.";
+        }
+      },
+    },
+  );
   const { $schema: _schema, ...socialSchema } = z.toJSONSchema(
     socialActionSchema.nullable(),
     {
@@ -820,6 +840,15 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(personalityPreviewAvailable
+        ? {
+            personalityPreview: {
+              ...previewSchema,
+              description:
+                "Preview a global personality revision privately without saving it. Copy unchanged style fields from the current snapshot; expectedVersion must match it. Leave text empty and other actions unset. The owner must separately confirm publication.",
+            },
+          }
+        : {}),
       ...(forgetPreviewAvailable
         ? {
             forgetPreview: {
@@ -1070,6 +1099,7 @@ export function replyJsonSchema(
       ...(juryAvailable ? ["jury"] : []),
       ...(rivetAvailable ? ["rivet"] : []),
       ...(browserProposalAvailable ? ["browserProposal"] : []),
+      ...(personalityPreviewAvailable ? ["personalityPreview"] : []),
       ...(forgetPreviewAvailable ? ["forgetPreview"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
@@ -1259,6 +1289,7 @@ export function parseReply(
     juryAvailable,
     rivetAvailable,
     browserProposalAvailable,
+    personalityPreviewAvailable,
     forgetPreviewAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
@@ -1305,6 +1336,7 @@ export function parseReply(
     "jury",
     "rivet",
     "browserProposal",
+    "personalityPreview",
     "forgetPreview",
     "dashboardLogin",
     "wakeup",
@@ -1358,6 +1390,7 @@ export function parseReply(
     (reply.jury !== undefined && !juryAvailable) ||
     (reply.rivet !== undefined && !rivetAvailable) ||
     (reply.browserProposal !== undefined && !browserProposalAvailable) ||
+    (reply.personalityPreview !== undefined && !personalityPreviewAvailable) ||
     (reply.forgetPreview !== undefined && !forgetPreviewAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
@@ -1392,6 +1425,7 @@ export function parseReply(
     Number(reply.jury !== undefined) +
     Number(reply.rivet !== undefined) +
     Number(reply.browserProposal !== undefined) +
+    Number(reply.personalityPreview !== undefined) +
     Number(reply.forgetPreview !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
@@ -1422,6 +1456,7 @@ export function parseReply(
       reply.jury !== undefined ||
       reply.rivet !== undefined ||
       reply.browserProposal !== undefined ||
+      reply.personalityPreview !== undefined ||
       reply.forgetPreview !== undefined ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||

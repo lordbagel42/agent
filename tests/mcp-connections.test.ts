@@ -451,10 +451,11 @@ test("dashboard credentials from MCP results never reach the synthesis provider"
   expect(links.has(id)).toBe(true);
 });
 
-test("mixed host recall/browser directives cannot dispatch MCP calls, proposals or extra catalog rounds", async () => {
+test("mixed host recall/browser/preview directives cannot dispatch MCP calls, proposals or extra catalog rounds", async () => {
   const f = await fixture();
   f.request.recallAvailable = true;
   f.request.browserProposalAvailable = true;
+  f.request.personalityPreviewAvailable = true;
   f.request.forgetPreviewAvailable = true;
   for (const permission of ["read", "approval"] as const) {
     f.store.permit(f.id, f.connection().revision, "lookup", permission);
@@ -471,8 +472,19 @@ test("mixed host recall/browser directives cannot dispatch MCP calls, proposals 
       for (const hostDirective of [
         { recall: "heron" },
         { browserProposal: { operation: "fill-note" } },
+        {
+          personalityPreview: {
+            expectedVersion: 0,
+            style: {
+              tone: "dry",
+              verbosity: "concise",
+              humor: "none",
+              curiosity: "eager",
+            },
+          },
+        },
         { forgetPreview: { sourceId: "s1" } },
-      ])
+      ] as const)
         for (const afterCatalog of [false, true]) {
           let calls = 0;
           const model = f.store.wrap({
@@ -613,6 +625,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.codingJobsAvailable = true;
   f.request.recallAvailable = true;
   f.request.reflectionRequestAvailable = true;
+  f.request.personalityPreviewAvailable = true;
   f.request.forgetPreviewAvailable = true;
   let evidence = "";
   let synthesis: ModelRequest | undefined;
@@ -696,6 +709,18 @@ test("discovery grants nothing, read results are transient and credentials stay 
     ),
   ).toThrow();
   expect(f.request.reflectionRequestAvailable).toBe(true);
+  expect(synthesis.personalityPreviewAvailable).toBe(false);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "personalityPreview",
+  );
+  expect(() =>
+    parseReply(
+      '{"text":"","personalityPreview":{"expectedVersion":0,"style":{"tone":"dry","verbosity":"concise","humor":"none","curiosity":"eager"}}}',
+      [],
+      synthesis,
+    ),
+  ).toThrow();
+  expect(f.request.personalityPreviewAvailable).toBe(true);
   expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
     "forgetPreview",
   );

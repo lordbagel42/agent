@@ -71,7 +71,11 @@ import {
   latencyProbe,
   type ReplyKind,
 } from "./latency.js";
-import { createPersonalityActor, isPersonalityCommand } from "./personality.js";
+import {
+  createPersonalityActor,
+  isPersonalityCommand,
+  previewPersonality,
+} from "./personality.js";
 import { createPriorityAdmission } from "./priority.js";
 import { buildModelRequest, type PromptInput } from "./prompt.js";
 import {
@@ -1684,6 +1688,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   scope.private &&
                                   !!deps.browserProposal,
+                                personalityPreviewAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!globalPersonality,
                                 forgetPreviewAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2716,6 +2725,46 @@ export function createJuneRegistry(deps: Dependencies) {
                                 } catch {
                                   text =
                                     "That exact browser proposal is unavailable. Nothing ran and no permission was granted.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (
+                              generated.personalityPreview !== undefined
+                            ) {
+                              let text =
+                                "Personality preview requires an owner-private turn and a current global profile.";
+                              if (
+                                scope.private &&
+                                modelRequest.personalityPreviewAvailable &&
+                                !signal.aborted &&
+                                valid(step.state)
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  if (checked.personalityPreview) {
+                                    // Read the live version, not the turn's earlier
+                                    // snapshot. Preview never invokes command().
+                                    const current = await step
+                                      .client<JuneClientRegistry>()
+                                      .personality.getOrCreate([deps.owner.id])
+                                      .read();
+                                    text = previewPersonality(
+                                      current,
+                                      checked.personalityPreview,
+                                    );
+                                  }
+                                } catch {
+                                  text =
+                                    "Personality preview is unavailable. Nothing has been saved or published.";
                                 }
                               }
                               generated = {

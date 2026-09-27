@@ -1,3 +1,5 @@
+import type { PersonalityPreview } from "../runtime/personality.js";
+
 /** Platform IDs stay opaque; never parse message timestamps as numbers. */
 export type Channel = "slack" | "whatsapp";
 
@@ -264,6 +266,8 @@ export interface CompanionReply {
   rivet?: import("./rivet.js").RivetRequest;
   /** List named mutations (null), or propose one for separate exact human approval. */
   browserProposal?: { operation: string | null };
+  /** Owner-private diff only; publishing still requires an owner command. */
+  personalityPreview?: PersonalityPreview;
   /** Exact owner-private forgetting impact; never deletion or confirmation. */
   forgetPreview?: { sourceId: string };
   /** Issue one short-lived dashboard login link to the owner privately. */
@@ -313,6 +317,7 @@ export interface ModelRequest {
   juryAvailable?: boolean;
   rivetAvailable?: boolean;
   browserProposalAvailable?: boolean;
+  personalityPreviewAvailable?: boolean;
   forgetPreviewAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   wakeupAvailable?: boolean;
