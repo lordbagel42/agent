@@ -2,7 +2,11 @@ import { randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html } from "hono/html";
-import type { McpConnections, ToolPermission } from "../tools/connections.js";
+import {
+  ConnectionInputError,
+  type McpConnections,
+  type ToolPermission,
+} from "../tools/connections.js";
 import type { createSlackMcpOAuth } from "../tools/slack-mcp-oauth.js";
 import { SLACK_APP_ID } from "../tools/slack-mcp-oauth.js";
 import {
@@ -32,6 +36,17 @@ export function createConnectionRoutes(
   const proof = confirmations(security.csrfSecret);
   const base = "/console/connections";
   const navigation = consoleNavigation("/console", "connections", true);
+  const addForm = (
+    principal: string,
+    values = { name: "", url: "" },
+    error?: ConnectionInputError,
+  ) => {
+    const invalid = (field: string) =>
+      error?.field === field
+        ? html` aria-invalid="true" aria-describedby="add-error"`
+        : "";
+    return html`<section class="panel"><div class="panel-heading"><h2>Add an MCP server</h2>${badge("Streamable HTTP")}</div><div class="panel-body"><form method="post" action="${base}/add" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue(principal, `${base}/add`, "add")}">${error ? html`<div id="add-error" class="callout warning" role="alert"><strong>Connection not added</strong><p>${error.message}</p><p>Safe name and URL entries are retained. For your security, sensitive URL entries are cleared and any bearer token must be entered again.</p></div>` : ""}<label class="field" for="name">Name</label><input id="name" name="name" required maxlength="80" placeholder="My research tools" value="${values.name}"${invalid("name")}><label class="field" for="url">HTTPS server URL</label><input id="url" name="url" type="url" required maxlength="2048" placeholder="https://example.com/mcp" value="${values.url}"${invalid("url")}><label class="field" for="token">Bearer token <span class="muted">optional for public servers</span></label><input id="token" name="token" type="password" maxlength="4000" autocomplete="off"${invalid("token")}><p class="small muted">Use HTTPS without a username, password, query or fragment. Use a server you trust. Its operator receives your token and tool arguments. Credentials are encrypted on the host, never shown again. Generic OAuth and local commands are not supported.</p><button type="submit">Add connection</button></form></div></section>`;
+  };
   const callbacks = new Map<string, { url: string; expires: number }>();
   const secure = security.origin.startsWith("https:");
   const cookie = secure ? "__Host-june-slack-return" : "june-slack-return-dev";
@@ -109,7 +124,7 @@ export function createConnectionRoutes(
         html`
     <div class="summary-bar"><div><span class="eyebrow">MCP servers</span><p>${deps.store.list().length} connected configurations</p></div><div><span class="eyebrow">Audience</span><p>Owner-private conversations only</p></div><div><span class="eyebrow">Default permission</span><p>All tools disabled</p></div></div>
     <div class="grid"><section class="panel"><div class="panel-heading"><h2>Slack</h2>${badge(resumable ? "Save confirmation needed" : expired ? "Authorization expired" : slack?.authenticated ? "Authorization saved" : deps.slack ? "Not connected" : "Setup required")}</div><div class="panel-body">${resumable ? html`<p>Your Slack return is waiting for confirmation. Resume to save this authorization; do not start another Slack sign-in.</p><div class="actions"><a class="button" href="${base}/slack/finish">Resume Slack setup →</a></div>` : html`<p>${slack?.authenticated ? (expired ? "Your saved Slack authorization has expired. Reconnect to use Slack tools again." : "June has saved your Slack authorization. Manage the connection to discover tools and review their permissions.") : "Connect Slack's official MCP with your own Slack account. This is separate from June's bot login."}</p>${slack ? html`<div class="actions"><a class="button" href="${base}/slack">Manage Slack tools →</a></div>` : ""}${deps.slack ? html`<form method="post" action="${base}/slack/connect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/slack/connect`, "slack")}"><button type="submit">${slack ? "Reconnect Slack →" : "Connect Slack →"}</button></form>` : html`<div class="callout">The host must configure the Slack app client credentials and register this dashboard's callback before OAuth is available.</div>`}`}<p class="small muted">App ${SLACK_APP_ID} · Saving authorization does not enable tools. Reconnecting resets tool permissions.</p></div></section>
-    <section class="panel"><div class="panel-heading"><h2>Add an MCP server</h2>${badge("Streamable HTTP")}</div><div class="panel-body"><form method="post" action="${base}/add" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/add`, "add")}"><label class="field" for="name">Name</label><input id="name" name="name" required maxlength="80" placeholder="My research tools"><label class="field" for="url">HTTPS server URL</label><input id="url" name="url" type="url" required maxlength="2048" placeholder="https://example.com/mcp"><label class="field" for="token">Bearer token <span class="muted">optional for public servers</span></label><input id="token" name="token" type="password" maxlength="4000" autocomplete="off"><p class="small muted">Use a server you trust. Its operator receives your token and tool arguments. Credentials are encrypted on the host, never shown again. Generic OAuth and local commands are not supported.</p><button type="submit">Add connection</button></form></div></section></div>
+    ${addForm(c.get("principal"))}</div>
     <div class="section-heading"><h2>Your connections</h2><span class="small muted">Test, inspect, then enable tools</span></div><div class="stack">${deps.store.list().map((connection) => html`<section class="panel"><div class="panel-heading"><h2>${connection.name}</h2>${badge(connection.expiresAt && connection.expiresAt <= Date.now() ? "Authorization expired" : connection.status)}</div><div class="panel-body"><p><code>${connection.url}</code></p><p class="small muted">${connection.authenticated ? "Credential saved" : "No credential"} · ${connection.tools.filter((tool) => tool.permission !== "disabled").length} enabled / ${connection.tools.length} discovered</p>${connection.status === "unavailable" ? html`<div class="callout warning">Discovery failed. Check the URL, credential, account permissions and server availability. No tools were called.</div>` : ""}<div class="actions"><a class="button" href="${base}/${connection.id}">Manage connection →</a></div></div></section>`)}${deps.store.list().length ? "" : html`<section class="panel"><div class="empty">No connections yet. Add a server or connect Slack to get started.</div></section>`}</div>
     <div class="section-heading"><h2>Tool approvals</h2><span class="small muted">Recent requests and recorded outcomes</span></div><section class="panel">${deps.store.proposals().map((proposal) => html`<article class="record"><div><h3>${proposal.tool}</h3><p>Expires ${new Date(proposal.expiresAt).toISOString()}</p><a href="${base}/approvals/${proposal.id}">Review exact request →</a></div>${badge(proposal.status)}</article>`)}${deps.store.proposals().length ? "" : html`<div class="empty">No pending requests. June will link you here when a tool needs approval.</div>`}</section>`,
         {
@@ -129,14 +144,48 @@ export function createConnectionRoutes(
     );
     if (!command) return c.text("Invalid or expired form", 403);
     // The store durably consumes this command, even after disconnection.
-    deps.store.add(
-      {
-        name: field(form.name),
-        url: field(form.url),
-        token: field(form.token),
-      },
-      command,
-    );
+    const input = {
+      name: field(form.name),
+      url: field(form.url),
+      token: field(form.token),
+    };
+    try {
+      deps.store.add(input, command);
+    } catch (error) {
+      // Only pre-write validation failures are safe to correct and resubmit.
+      // Unexpected storage failures retain the private route's uncertain 503.
+      if (!(error instanceof ConnectionInputError)) throw error;
+      const safe = (value: string, max: number) =>
+        value.length <= max &&
+        ![input.token, field(form.proof)].some(
+          (secret) => secret && value.includes(secret),
+        )
+          ? value
+          : "";
+      let url = "";
+      try {
+        const parsed = new URL(input.url);
+        if (
+          ["http:", "https:"].includes(parsed.protocol) &&
+          !parsed.username &&
+          !parsed.password &&
+          !parsed.search &&
+          !parsed.hash
+        )
+          url = safe(input.url, 2048);
+      } catch {
+        /* Malformed URLs may contain credentials: do not reflect them. */
+      }
+      return c.html(
+        page(
+          "Check connection details",
+          c.get("nonce"),
+          html`${addForm(c.get("principal"), { name: safe(input.name, 80), url }, error)}<p><a href="${base}">← Back to connections</a></p>`,
+          { navigation },
+        ),
+        400,
+      );
+    }
     return c.redirect(`${base}/${command}`, 303);
   });
   app.post("/slack/connect", async (c) => {

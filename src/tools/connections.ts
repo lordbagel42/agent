@@ -12,6 +12,17 @@ import { McpToolAdapter, mcpToolContractDigest } from "./mcp.js";
 import { SLACK_MCP_URL } from "./slack-mcp-oauth.js";
 
 export type ToolPermission = "disabled" | "read" | "approval";
+
+/** Safe, actionable input errors; never include submitted values. */
+export class ConnectionInputError extends Error {
+  constructor(
+    readonly field: "name" | "url" | "token" | "limit",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 interface StoredConnection {
   id: string;
   name: string;
@@ -183,21 +194,42 @@ export class McpConnections {
     input: { name: string; url: string; token?: string; expiresAt?: number },
     id: string,
   ): string {
-    const url = new URL(input.url);
+    if (!input.name.trim() || input.name.length > 80)
+      throw new ConnectionInputError(
+        "name",
+        "Enter a name of 1–80 characters.",
+      );
+    let url: URL;
+    try {
+      url = new URL(input.url);
+    } catch {
+      throw new ConnectionInputError(
+        "url",
+        "Enter a complete HTTPS server URL.",
+      );
+    }
     if (
       url.protocol !== "https:" ||
       url.username ||
       url.password ||
       url.hash ||
       url.search ||
-      !input.name.trim() ||
-      input.name.length > 80 ||
-      url.href.length > 2048 ||
-      (input.token && !/^[A-Za-z0-9._~+/-]{1,8192}=*$/u.test(input.token))
+      url.href.length > 2048
     )
-      throw new Error("invalid_connection");
+      throw new ConnectionInputError(
+        "url",
+        "Use an HTTPS URL of at most 2048 characters, without a username, password, query or fragment. Put credentials only in Bearer token.",
+      );
+    if (input.token && !/^[A-Za-z0-9._~+/-]{1,8192}=*$/u.test(input.token))
+      throw new ConnectionInputError(
+        "token",
+        "Enter only the bearer token, without the Bearer prefix, spaces or line breaks.",
+      );
     if (this.list().length >= 20 && !this.list().some((item) => item.id === id))
-      throw new Error("connection_limit");
+      throw new ConnectionInputError(
+        "limit",
+        "You have reached the 20-connection limit. Disconnect an unused server before adding another.",
+      );
     this.#save({
       id,
       name: input.name.trim(),
