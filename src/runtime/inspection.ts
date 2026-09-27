@@ -40,6 +40,45 @@ export function inspectInterruptedInference(
   return `Interrupted inference snapshot at ${new Date().toISOString()}. Read-only; this owner-private conversation only. Recorded recovery receipts: ${receipts.length}; showing latest ${rows.length} by inbound event time. ${JSON.stringify(rows)}\nIDs are opaque receipt fingerprints, not provider request IDs. inboundOccurredAt is the inbound event time (epoch milliseconds), not an inference or interruption timestamp; those times were not recorded. Legacy or uninterrupted events may have no receipt; absence does not prove success or intentional silence. Outcomes remain unknown, not intentional silence; actions may have occurred. Inspect recorded delivery/tool receipts before any new action. No retry, reconciliation, reclassification or release of held work was performed. No message bodies or raw invocation keys returned.`;
 }
 
+// Legacy persisted gaps are free text, sometimes containing private identifiers.
+// Recognize only exact connector notes after the identifier; never echo a note.
+// New/changed connector wording remains visible as an unclassified count.
+const importGapKinds = new Map([
+  [
+    "available retained messages only; deleted, expired and inaccessible history cannot be recovered; files are not downloaded.",
+    "retained-history/files limitation",
+  ],
+  [
+    "channel timeline only; replies require separately authorized channel/thread selections, including threads with older roots.",
+    "thread replies not covered by timeline",
+  ],
+  ["Slack reports retention-limited history.", "retention-limited history"],
+  ["no plain text; non-text content omitted.", "plain-text body unavailable"],
+  [
+    "Gmail API search interval; exact lower-bound messages may be excluded by after. Deleted mail and unavailable content are not imported. Attachments, attached messages and non-plain-text MIME content returned by full reads are discarded; separate attachment bodies are never fetched. Labels and search results can change during pagination; this is not a snapshot.",
+    "Gmail date/search/content limitations",
+  ],
+  [
+    "no longer inside selected label/date coverage.",
+    "message left selected label/date window",
+  ],
+  ["no inline plain-text body.", "plain-text body unavailable"],
+  ["message disappeared or is unavailable.", "message unavailable"],
+  ["Previously deleted source omitted.", "previously deleted source omitted"],
+  ["Tombstoned evidence omitted", "previously deleted source omitted"],
+]);
+
+function summarizeImportGaps(gaps: string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const gap of gaps) {
+    const separator = gap.indexOf(": ");
+    const note = separator < 0 ? gap : gap.slice(separator + 2);
+    const kind = importGapKinds.get(note) ?? "unclassified (details withheld)";
+    counts[kind] = (counts[kind] ?? 0) + 1;
+  }
+  return counts;
+}
+
 /** Host-bound audience and selections, never model-supplied scope or query.
  * Reports contain metadata only, so retained receipts cannot resurrect evidence.
  * No mutating service methods or remote history fetches are called here.
@@ -170,6 +209,7 @@ export function createInspectionReader(deps: {
             gapCount: progress?.gaps.length ?? 0,
             budgetRejected: budget.lastRejection,
             lastConflict,
+            gapKinds: summarizeImportGaps(progress?.gaps ?? []),
           };
         });
         const reconciliation = rows.some(
@@ -177,7 +217,7 @@ export function createInspectionReader(deps: {
         )
           ? "\nImmutable-source conflict: a page reused a source ID with changed fields. Rejected page: stored evidence and cursor unchanged. Saved evidence is not proof of current content. Please arrange explicit reconciliation through the authenticated operator before retrying. I cannot overwrite evidence, skip conflicts, invent replacement IDs, or authorize reconciliation. This is operator review, not a queued or completed repair."
           : "";
-        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nnotBefore: persisted account cooldown deadline (epoch ms). cooldownReason: rate_limit, provider_backoff, pacing, unknown (legacy), or null. coolingDown is a time gate, not provider readiness. Wait until notBefore; no polling or automatic retry. Explicit operator confirmation is needed to resume, even after expiry/restart.\nbudgetRejected and lastConflict are last observed this process; page-count advancement or restart clears them, but cooldown-only updates do not. Null proves neither capacity nor absence of conflicts. Budget rejection: whole page exceeds ledger-wide source/claim/full-snapshot UTF-8 byte ceilings; no page evidence or progress committed. Reduce import or request operator capacity review. Complete means selected window exhausted, not complete account history. Gap contents, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.${reconciliation}`;
+        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nnotBefore: persisted account cooldown deadline (epoch ms). cooldownReason: rate_limit, provider_backoff, pacing, unknown (legacy), or null. coolingDown is a time gate, not provider readiness. Wait until notBefore; no polling or automatic retry. Explicit operator confirmation is needed to resume, even after expiry/restart.\nbudgetRejected and lastConflict are last observed this process; page-count advancement or restart clears them, but cooldown-only updates do not. Null proves neither capacity nor absence of conflicts. Budget rejection: whole page exceeds ledger-wide source/claim/full-snapshot UTF-8 byte ceilings; no page evidence or progress committed. Reduce import or request operator capacity review.\nWindows are requested [from,to) epoch milliseconds, not verified coverage. Pages count persisted pages; a finished page does not mean pagination is exhausted. Complete means only that pagination exhausted the selected window, not gap-free coverage or complete account history. Gap counts are persisted limitation/omission notes, may repeat, and are not counts of missing messages. Zero recorded gaps is not proof of completeness; unstarted selections have not been assessed. Gap kinds are content-free summaries of recognized notes; unclassified details are withheld. Only shown selections are summarized. Raw gap contents, account/conversation IDs, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.${reconciliation}`;
       }
       case "reflection": {
         if (!deps.reflection) return `${heading}\nReflection is unavailable.`;

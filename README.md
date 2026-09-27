@@ -938,6 +938,15 @@ Imported text never enters the live command inbox. See the detailed
 [memory](src/memory/README.md), [import](src/imports/README.md) and
 [reflection](src/reflection/README.md) contracts and their remaining limits.
 
+Ask June about import coverage or gaps through the same `inspection: "imports"`
+action. Reports summarize persisted gap notes with fixed, content-free kinds and
+counts; unknown notes are counted with details withheld. Counts include repeated
+connector limitations, not just missing messages. Windows are requested bounds,
+and `complete` means only selected-window pagination exhausted, not gap-free or
+complete account history. A finished page, zero recorded gaps, or an unstarted
+selection proves no completeness; omitted selections are not assessed by the
+bounded report.
+
 ## Private read-only console
 
 The console is absent unless configuration explicitly includes a fixed browser

@@ -346,7 +346,11 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     {
       sources: [forgotten],
       nextCursor: "SECRET CURSOR",
-      gaps: ["SECRET GAP"],
+      gaps: [
+        "SECRET GAP",
+        "SECRET CHANNEL: Slack reports retention-limited history.",
+        "SECRET CHANNEL: Slack reports retention-limited history.",
+      ],
     },
     1,
   );
@@ -367,6 +371,22 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     2,
   );
   const progress = store.importProgress("selection-0");
+  store.beginImport("selection-1", coverage);
+  const oldWindow = store.importProgress("selection-1");
+  if (!oldWindow) throw new Error("Missing fixture import");
+  store.persistPage(
+    oldWindow,
+    {
+      sources: [],
+      nextCursor: null,
+      gaps: [
+        "SECRET MESSAGE: no plain text; non-text content omitted.",
+        "Previously deleted source omitted.",
+        "SECRET BODY: no inline plain-text body. SECRET SUFFIX",
+      ],
+    },
+    1,
+  );
   const sent: OutboundMessage[] = [];
   const requests: ModelRequest[] = [];
   let action: CompanionReply = { text: "", inspection: "memory" };
@@ -591,11 +611,27 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(importReport.match(/"coolingDown":true/g)).toHaveLength(10);
   expect(importReport).toContain("not provider readiness");
   expect(importReport).toContain("no polling or automatic retry");
-  expect(importReport).toContain('"gapCount":2');
   expect(importReport).toContain('"lastConflict":"immutable_source"');
   expect(importReport).toContain("Please arrange explicit reconciliation");
   expect(importReport).toContain("not a queued or completed repair");
-  expect(importReport.length).toBeLessThan(4000);
+  expect(importReport).toContain('"pages":1,"complete":true');
+  expect(importReport).toContain('"started":false,"pages":0');
+  expect(importReport).toContain('"gapCount":4');
+  expect(importReport).toContain('"gapCount":3');
+  expect(importReport).toContain(
+    '"gapKinds":{"previously deleted source omitted":1,"unclassified (details withheld)":1,"retention-limited history":2}',
+  );
+  expect(importReport).toContain(
+    '"gapKinds":{"plain-text body unavailable":1,"previously deleted source omitted":1,"unclassified (details withheld)":1}',
+  );
+  expect(importReport).toContain(
+    "not gap-free coverage or complete account history",
+  );
+  expect(importReport).toContain("not counts of missing messages");
+  expect(importReport).toContain(
+    "Zero recorded gaps is not proof of completeness",
+  );
+  expect(importReport.length).toBeLessThan(6000);
   action = { text: "", inspection: "reflection" };
   const reflectionReport = await deliver();
   expect(reflectionReport).toContain('"pending":1,"running":0');
@@ -706,10 +742,6 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain("inspection is unavailable");
   fail = false;
   // A completed old window must never describe a newly configured window.
-  store.beginImport("selection-1", coverage);
-  const oldWindow = store.importProgress("selection-1");
-  if (!oldWindow) throw new Error("Missing fixture import");
-  store.persistPage(oldWindow, { sources: [], nextCursor: null }, 1);
   expect(store.importProgress("selection-1")?.complete).toBe(true);
   selections["selection-1"] = { ...coverage, to: 1001 };
   action = { text: "", inspection: "imports" };

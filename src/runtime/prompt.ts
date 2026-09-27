@@ -365,6 +365,7 @@ export function buildModelRequest({
     ...(inspectionAvailable
       ? [
           'When the owner asks why an import conflicted, set inspection to "imports", leave text empty and all other actions unset/null. The host explains observed immutable-source conflicts and requests explicit authenticated operator reconciliation; it does not perform or queue a repair. Never overwrite old evidence, skip a conflict, invent a replacement source ID, or treat owner assent alone as completed reconciliation.',
+          'When the owner asks about import coverage gaps or completeness, use inspection: "imports" with empty text and all other actions unset/null. The host reports content-free persisted gap kinds/counts without raw gap notes or private message bodies. Complete means selected-window pagination exhausted, not gap-free or complete account history; a persisted page or zero recorded gaps does not prove completeness. Gap counts include repeatable limitation notes, not just missing messages. Unknown note details are withheld, not evidence of no gaps. Only shown selections are summarized; do not infer coverage for omitted selections or outside the requested windows.',
         ]
       : []),
     inspectionAvailable
