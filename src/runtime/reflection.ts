@@ -14,6 +14,7 @@ import {
   type Policy,
   type ReflectionState,
   type RequestInput,
+  reflectionPriority,
 } from "../reflection/domain.js";
 import {
   type Decision,
@@ -488,7 +489,7 @@ export function createReflectionActor(
                 if (recovered) await step.vars.persist();
                 if (step.state.liveActive > 0) return;
                 const now = Date.now();
-                const request = step.state.reflection.requests.find((r) => {
+                const eligible = step.state.reflection.requests.filter((r) => {
                   const mode = step.state.modes[r.id];
                   const delay =
                     mode === "deep"
@@ -512,6 +513,14 @@ export function createReflectionActor(
                     now >= (progress?.nextEligibleAt ?? 0)
                   );
                 });
+                // Stable ties preserve enqueue order. Drives do not change identity,
+                // idle age, cooldown, evidence authorization or the claim budget.
+                const request = eligible
+                  .map((request) => ({
+                    request,
+                    priority: reflectionPriority(request, now),
+                  }))
+                  .sort((a, b) => b.priority - a.priority)[0]?.request;
                 if (!request || isQuiet(now, deps.policy.quiet)) return;
                 const controller = new AbortController();
                 step.vars.active.set(request.id, controller);

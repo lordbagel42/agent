@@ -360,3 +360,19 @@ export function decayDrive(
     updatedAt,
   };
 }
+
+export const reflectionDriveHalfLifeMs = 3_600_000;
+
+/** Enqueue stimulates once. Retries, duplicate requests and reads never refresh
+ * the drive. This ranks eligible work only; it is not admission or authority.
+ */
+export function reflectionPriority(
+  request: Pick<ReflectionRequest, "createdAt">,
+  now: number,
+): number {
+  return decayDrive(
+    { value: 1, updatedAt: request.createdAt },
+    now,
+    reflectionDriveHalfLifeMs,
+  ).value;
+}

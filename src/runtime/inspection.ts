@@ -7,6 +7,10 @@ import type { HistoryImports } from "../imports/index.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import type { EvidenceStore, ImportCoverage } from "../memory/store.js";
+import {
+  reflectionDriveHalfLifeMs,
+  reflectionPriority,
+} from "../reflection/domain.js";
 import type { Delivery } from "./delivery.js";
 import type { ReflectionRuntimeState } from "./reflection.js";
 
@@ -355,6 +359,12 @@ export function createInspectionReader(deps: {
         const requestIds = new Set(requests.map((request) => request.id));
         for (const [key, state] of Object.entries(status.invocations))
           if (requestIds.has(JSON.parse(key)[0])) invocations[state]++;
+        const now = Date.now();
+        const priorities = requests
+          .filter((r) => r.status === "pending")
+          .map((r) => reflectionPriority(r, now))
+          .sort((a, b) => b - a)
+          .slice(0, 10);
         // Request/turn IDs can embed scope and evidence IDs. Only expose bounded
         // fingerprints; the authenticated operator retrieves the exact IDs.
         const reference = (id: string) =>
@@ -374,6 +384,7 @@ export function createInspectionReader(deps: {
         }));
         const turns = status.activeTurnIds.slice(0, 5).map(reference);
         return `${heading}\nScoped request counts: ${JSON.stringify(counts)}. Scoped invocation counts: ${JSON.stringify(invocations)}. Owner-wide live turns: ${status.liveActive}. Owner-wide candidate count: ${status.candidateIds.length}. Candidates are provisional, not approved messages; a live turn may invalidate them. No evidence IDs, rationale or candidate contents returned.
+Pending effective priorities (highest first, up to 10): ${JSON.stringify(priorities)}. Reason: enqueue-age decay (half-life ${reflectionDriveHalfLifeMs}ms); duplicates/retries do not refresh. Ties keep enqueue order. Scores only rank eligible work: idle/deep, quiet, live reserve, cooldown, evidence and attempt gates remain; no tools or actions granted.
 Held scoped requests: ${held.length}; showing ${rows.length}. ${JSON.stringify(rows)}
 Owner-wide live turn references: ${status.activeTurnIds.length}; showing ${turns.length}. ${JSON.stringify(turns)}
 An uncertain invocation was interrupted; its outcome is unknown, not success or confirmed failure. Running/started may still be active; cancelling is not stopped. Live occupancy may include this inspection turn and does not by itself prove interruption. Unidentified legacy live holds may also remain. Cancellation, timeout, restart, elapsed time or a model assertion cannot prove provider settlement. Do not retry unknown work or release its capacity automatically.

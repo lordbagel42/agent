@@ -14,6 +14,7 @@ cancel(state, id): ReflectionState
 finish(state, id, attempt, now, newEvidence, policy): ReflectionState
 isQuiet(now, quiet): boolean
 decayDrive({ value, updatedAt }, now, halfLifeMs): Drive
+reflectionPriority(request, now): number
 
 new DecisionExecutor(capacity, timeoutMs)
 executor.evaluate(input, decide, signal?): Promise<Decision>
@@ -151,6 +152,17 @@ never an empty success. It leaves occupancy and ordinary preemption unchanged.
   do not invent evidence, recursively enqueue dreams or repeatedly message the
   owner. Domain dedupe covers all modes and kinds. Keep request/finished-turn
   tombstones and trigger dedupe IDs when designing retention/compaction.
+- Eligible requests are ranked by `reflectionPriority`: an enqueue stimulates
+  a drive to 1, decaying with the existing `decayDrive` and a one-hour half-life.
+  Newer requests therefore rank ahead of older ones; equal scores preserve
+  enqueue order. Scores are computed live from persisted `createdAt`, including
+  for legacy requests, with no model-controlled value or timestamp. Duplicate
+  requests, retries and inspection do not refresh stimulation. A backwards
+  clock cannot increase priority above 1 or waive an idle/cooldown deadline.
+  This is recency preference, not starvation-free scheduling or authority.
+  June's owner-private `inspection: "reflection"` reports at most ten pending
+  scores with this fixed reason, without request/evidence IDs or private text.
+  Pending scores are not eligibility claims; all existing admission gates apply.
 - Calls are deliberately serial even if the policy allows more background
   capacity. Live work preempts them and the domain reserves live capacity.
   Inject the raw provider, **not** `DecisionExecutor.evaluate` or another wrapper
