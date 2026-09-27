@@ -847,6 +847,12 @@ export class EvidenceStore {
           !source.audiences.every((a) => c.audiences.includes(a))
         )
           throw new Error("Source outside authorized import coverage");
+        // Check within the page transaction so deletion during fetch cannot
+        // resurrect content. Other records still undergo immutable-ID checks.
+        if (state.tombstones.includes(source.id)) {
+          progress.gaps.push("Tombstoned evidence omitted");
+          continue;
+        }
         insertSource(state, source);
       }
       progress.cursor = page.nextCursor;

@@ -327,7 +327,91 @@ it("atomically persists pages and coverage, resumes interrupted pages, and never
       sources: [source()],
       nextCursor: null,
     })),
-  ).rejects.toThrow();
+  ).resolves.toMatchObject({
+    complete: true,
+    pages: 1,
+    gaps: ["Tombstoned evidence omitted"],
+  });
+  expect(reopened.source("private", "s1")).toBeUndefined();
+  expect(() => reopened.appendSource(source())).toThrow("Tombstoned");
+});
+
+it("omits tombstones atomically without hiding independent conflicts or persisting forgotten content", async () => {
+  const { store, path } = open();
+  const forgotten = source("forgotten-secret");
+  const existing = { ...source("existing"), text: "retained original" };
+  const fresh = { ...source("fresh"), text: "new independent evidence" };
+  store.appendSource(forgotten);
+  store.appendSource(existing);
+  store.deleteSource(forgotten.id);
+  store.beginImport("mixed", coverage);
+  const before = store.importProgress("mixed");
+  const edited = { ...existing, text: "conflicting edit" };
+  for (const sources of [
+    [fresh, forgotten, edited],
+    [edited, forgotten, fresh],
+  ]) {
+    await expect(
+      importHistory(store, "mixed", coverage, async () => ({
+        sources,
+        nextCursor: "next",
+        gaps: ["provider gap"],
+      })),
+    ).rejects.toThrow("Source IDs are immutable");
+    expect(store.importProgress("mixed")).toEqual(before);
+    expect(store.search("private", "").sources).toEqual([existing]);
+  }
+  // A deleted ID cannot bypass the authorized coverage boundary either.
+  await expect(
+    importHistory(store, "mixed", coverage, async () => ({
+      sources: [fresh, { ...forgotten, audiences: ["public"] }],
+      nextCursor: null,
+    })),
+  ).rejects.toThrow("outside authorized import coverage");
+  expect(store.importProgress("mixed")).toEqual(before);
+  expect(store.source("private", fresh.id)).toBeUndefined();
+
+  const duringFetch = source("deleted-during-fetch");
+  store.appendSource(duringFetch);
+  const other = open(path).store;
+  const progress = await importHistory(
+    store,
+    "mixed",
+    coverage,
+    async () => {
+      other.deleteSource(duringFetch.id);
+      return {
+        sources: [fresh, forgotten, existing, duringFetch],
+        nextCursor: "next",
+        gaps: ["provider gap"],
+        retryAfterMs: 500,
+      };
+    },
+    { now: () => 1000 },
+  );
+  expect(progress).toMatchObject({
+    cursor: "next",
+    pages: 1,
+    complete: false,
+    notBefore: 1500,
+    gaps: [
+      "Tombstoned evidence omitted",
+      "Tombstoned evidence omitted",
+      "provider gap",
+    ],
+  });
+  other.close();
+  store.close();
+  const reopened = open(path).store;
+  expect(reopened.importProgress("mixed")).toEqual(progress);
+  expect(reopened.search("private", "").sources).toEqual([existing, fresh]);
+  expect(reopened.search("public", "").sources).toEqual([]);
+  for (const deleted of [forgotten, duringFetch]) {
+    expect(reopened.isDeleted(deleted.id)).toBe(true);
+    expect(() => reopened.appendSource(deleted)).toThrow("Tombstoned");
+    expect(JSON.stringify(progress)).not.toContain(deleted.id);
+    expect(JSON.stringify(progress)).not.toContain(deleted.text);
+  }
 });
 
 it("honors cancellation and rate limit boundaries without advancing a cursor", async () => {
@@ -791,7 +875,11 @@ it("accepts canonical Slack conversations under channel coverage without widenin
       sources: [root],
       nextCursor: null,
     })),
-  ).rejects.toThrow("Tombstoned");
+  ).resolves.toMatchObject({
+    complete: true,
+    pages: 1,
+    gaps: ["Tombstoned evidence omitted"],
+  });
   expect(reopened.isDeleted(root.id)).toBe(true);
   expect(reopened.independentEvidence("overlap", "private")).toEqual([]);
   expect(reopened.search("private", "")).toEqual({

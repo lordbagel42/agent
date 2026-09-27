@@ -110,11 +110,12 @@ Edits and deletion remain different cases. An edited immutable source fails
 insertion without modifying the old source, its derivatives, or page progress;
 the host must report/reconcile it, not silently retain it as current truth.
 `deleteSource(id)` is a trusted logical invalidation with a permanent replay
-tombstone. A tombstoned record also rejects the entire page without advancing
-its cursor. The host may filter known tombstones before persistence and record a
-content-free gap, but must not treat arbitrary insertion failures as deletion or
-silently skip nondeleted conflicts. An in-flight deletion may require refetching
-and refiltering the same page. Imports cannot set `Source.correction`.
+tombstone. After coverage validation, `persistPage` omits tombstoned records and
+records one fixed `Tombstoned evidence omitted` gap per record, without source
+IDs, text or URLs. Checking inside the transaction includes deletions during the
+fetch. Independent conflicts still reject the whole page and roll back sources,
+gaps and cursor changes. Direct `appendSource` still rejects tombstones. Imports
+cannot set `Source.correction`.
 
 ## Source-grounded extraction and review
 

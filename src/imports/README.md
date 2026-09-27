@@ -102,10 +102,13 @@ check atomically without advancing its cursor. Never skip an existing ID to hide
 that conflict. Older noncanonical ledger entries require explicit reconciliation;
 there is no automatic rewriting or JSON-envelope migration.
 
-Tombstones also reject a whole page without cursor advancement. The trusted host
-may filter only `isDeleted` records and record content-free gaps; a concurrent
-deletion requires refiltering/retrying that same page, not skipping conflicts.
-The connector does not inspect the ledger or bypass either check.
+After validating coverage, the store omits tombstoned records inside the page
+transaction and records one content-free `Tombstoned evidence omitted` gap per
+record, with no source ID, text or URL. This also handles deletion during a fetch.
+Other records still undergo immutable-source checks; a conflict rolls back all
+sources, gaps and progress for that page. The connector does not filter ledger
+IDs. June's owner-only `inspection: "imports"` reports the resulting `gapCount`
+without gap contents or source metadata; it cannot start or cancel imports.
 
 `gmailSourceId(account, messageId)` remains `gmail:${account}:${messageId}`.
 Gmail conversations are `thread:${threadId}`, independent of the selected label.

@@ -91,11 +91,29 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   store.beginImport("selection-0", coverage);
   const initial = store.importProgress("selection-0");
   if (!initial) throw new Error("Missing fixture import");
+  const forgotten = {
+    id: "SECRET FORGOTTEN SOURCE",
+    audiences: [audience],
+    platform: coverage.platform,
+    account: coverage.account,
+    conversation: "private-channel",
+    author: "SECRET AUTHOR",
+    observedAt: 1,
+    sourceUrl: "https://example.com/SECRET",
+    text: "SECRET FORGOTTEN CONTENT",
+  };
+  store.appendSource(forgotten);
+  store.deleteSource(forgotten.id);
   store.persistPage(
     initial,
-    { sources: [], nextCursor: "SECRET CURSOR", gaps: ["SECRET GAP"] },
+    {
+      sources: [forgotten],
+      nextCursor: "SECRET CURSOR",
+      gaps: ["SECRET GAP"],
+    },
     1,
   );
+  expect(store.source(audience, forgotten.id)).toBeUndefined();
   const progress = store.importProgress("selection-0");
   const sent: OutboundMessage[] = [];
   const requests: ModelRequest[] = [];
@@ -260,7 +278,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   const importReport = await deliver();
   expect(importReport).toContain("Configured selections: 12; showing 10");
   expect(importReport).toContain('"pages":1,"complete":false');
-  expect(importReport).toContain('"gapCount":1');
+  expect(importReport).toContain('"gapCount":2');
   expect(importReport.length).toBeLessThan(4000);
   action = { text: "", inspection: "reflection" };
   expect(await deliver()).toContain('"pending":1,"running":0');

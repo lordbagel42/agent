@@ -225,11 +225,17 @@ describe("history privacy boundaries", () => {
         root.text = liveRoot.text;
         store.deleteSource("slack:T1:C1:1.234999");
         store.beginImport("deleted", coverage);
-        const beforeDeletionReplay = store.importProgress("deleted");
         await expect(
           importHistory(store, "deleted", coverage, fetchPage),
-        ).rejects.toThrow("Tombstoned");
-        expect(store.importProgress("deleted")).toEqual(beforeDeletionReplay);
+        ).resolves.toMatchObject({
+          pages: 1,
+          complete: false,
+          gaps: [
+            "Tombstoned evidence omitted",
+            "C1: available retained messages only; deleted, expired and inaccessible history cannot be recovered; files are not downloaded.",
+            "C1: channel timeline only; replies require separately authorized channel/thread selections, including threads with older roots.",
+          ],
+        });
         expect(() => store.appendSource(liveRoot)).toThrow("Tombstoned");
         expect(store.search("owner", "").sources).toEqual([expected[1]]);
       } finally {
@@ -404,7 +410,14 @@ describe("history privacy boundaries", () => {
         store = new EvidenceStore(path, key);
         await expect(
           importHistory(store, "deleted", starred, fetcher(starred)),
-        ).rejects.toThrow("Tombstoned");
+        ).resolves.toMatchObject({
+          complete: true,
+          pages: 1,
+          gaps: expect.arrayContaining(["Tombstoned evidence omitted"]),
+        });
+        expect(store.isDeleted(original.id)).toBe(true);
+        expect(store.source("owner", original.id)).toBeUndefined();
+        expect(store.search("owner", "").claims).toEqual([]);
       } finally {
         store.close();
         rmSync(directory, { recursive: true, force: true });
