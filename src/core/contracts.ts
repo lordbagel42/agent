@@ -162,6 +162,8 @@ export interface CompanionReply {
   mcp?: { connection: string; tool: string; argumentsJson: string };
   /** Owner-private read-only timings: "recent" or one ping UUIDv4. */
   latency?: string;
+  /** Owner-private aggregate token usage for the last 1, 7, or 30 days. */
+  analytics?: { days: 1 | 7 | 30 };
   /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */
   replyInThread?: boolean;
 }
@@ -179,6 +181,7 @@ export interface ModelRequest {
   releaseAvailable?: boolean;
   mcpAvailable?: boolean;
   latencyAvailable?: boolean;
+  analyticsAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   socialAvailable?: boolean;
   executionAvailable?: boolean;

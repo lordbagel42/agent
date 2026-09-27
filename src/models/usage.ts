@@ -216,6 +216,26 @@ export class UsageLedger {
     }
   }
 
+  /** Bounded, aggregate-only owner report; authorization belongs to the caller. */
+  report(days: 1 | 7 | 30): string {
+    const snapshot = this.snapshot(days);
+    const total = snapshot.total;
+    const count = (value: number | null) =>
+      value === null ? "unknown" : String(value);
+    return [
+      `June usage: last ${days} days, as of ${new Date(snapshot.now).toISOString()}.`,
+      `Ledger tracking began ${new Date(snapshot.since).toISOString()}; only instrumented calls are covered, not whole-account usage.`,
+      `Calls: ${total.calls}; measured input/output: ${total.measured}; failed: ${total.failed}; pending: ${total.pending}.`,
+      `Reported input tokens: ${count(total.input)} (${total.inputReports}/${total.calls} calls reporting).`,
+      `Reported output tokens: ${count(total.output)} (${total.outputReports}/${total.calls} calls reporting).`,
+      `Cached input: ${count(total.cached)}; cache writes: ${count(total.cacheWrite)}; reasoning: ${count(total.reasoning)}.`,
+      "Missing counters are unknown, not zero; sums cover reported counters only. Cached input and reasoning are subsets, not extra tokens to add to input/output.",
+      `Call duration p50/p95: ${count(snapshot.p50)}/${count(snapshot.p95)} ms (includes provider/process overhead, not end-to-end reply latency).`,
+      `Ledger write failures this process: ${snapshot.writeFailures}.`,
+      "Billing cost, subscription quota, and remaining balance: unavailable. This is token telemetry, not a billing statement.",
+    ].join("\n");
+  }
+
   snapshot(days = 7, model = "", now = Date.now()): UsageSnapshot {
     days = [1, 7, 30].includes(days) ? days : 7;
     const from = now - days * 86_400_000;

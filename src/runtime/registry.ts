@@ -61,6 +61,7 @@ export interface Dependencies {
     request: NonNullable<CompanionReply["release"]>,
   ) => Promise<string>;
   latency?: LatencyDiagnostics;
+  analytics?: (days: 1 | 7 | 30) => string;
   runningRevision?: string;
   lifecycle?: {
     enter(signal: AbortSignal): Promise<() => void>;
@@ -1040,6 +1041,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   scope.private &&
                                   !!deps.latency,
+                                analyticsAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.analytics,
                                 replyPlacementAvailable:
                                   body.type === "event" &&
                                   (version < 4 || version >= 6) &&
@@ -1217,6 +1223,34 @@ export function createJuneRegistry(deps: Dependencies) {
                                             "Release status unavailable; no deployment action was taken.",
                                         )
                                     : "Release tools require an available integration and an owner-private turn.",
+                              };
+                            } else if (generated.analytics !== undefined) {
+                              // Read within the existing model receipt, never a new
+                              // workflow step or an additional synthesis invocation.
+                              let text =
+                                "Usage analytics require an owner-private turn and an available ledger.";
+                              if (
+                                scope.private &&
+                                modelRequest.analyticsAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                deps.analytics
+                              ) {
+                                try {
+                                  const days = generated.analytics.days;
+                                  if (days !== 1 && days !== 7 && days !== 30)
+                                    throw new Error("Invalid window");
+                                  text = deps.analytics(days);
+                                } catch {
+                                  text =
+                                    "Usage analytics are unavailable; no usage totals, billing cost, or quota can be inferred from this failure.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
                               };
                             } else if (generated.latency !== undefined) {
                               // Same guarded model step and normal outbox: no new

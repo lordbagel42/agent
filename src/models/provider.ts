@@ -90,6 +90,11 @@ const companionReplySchema = z.strictObject({
     ])
     .optional(),
   replyInThread: z.boolean().optional(),
+  analytics: z
+    .strictObject({
+      days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
+    })
+    .optional(),
 });
 
 type JsonObject = Record<string, unknown>;
@@ -106,6 +111,7 @@ export type ReplyCapabilities = Pick<
   | "releaseAvailable"
   | "mcpAvailable"
   | "latencyAvailable"
+  | "analyticsAvailable"
   | "replyPlacementAvailable"
   | "socialAvailable"
   | "executionAvailable"
@@ -130,6 +136,7 @@ export function replyJsonSchema(
     releaseAvailable,
     mcpAvailable,
     latencyAvailable,
+    analyticsAvailable,
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
@@ -222,6 +229,18 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(analyticsAvailable
+        ? {
+            analytics: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: { days: { type: "integer", enum: [1, 7, 30] } },
+              required: ["days"],
+              description:
+                "Read owner-private aggregate token usage for the last 1, 7, or 30 days. Leave text empty and other actions unset. No billing or quota data.",
+            },
+          }
+        : {}),
       ...(socialAvailable
         ? {
             social: {
@@ -306,6 +325,7 @@ export function replyJsonSchema(
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
       ...(latencyAvailable ? ["latency"] : []),
+      ...(analyticsAvailable ? ["analytics"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
       ...(socialAvailable ? ["social"] : []),
     ],
@@ -477,6 +497,7 @@ export function parseReply(
     releaseAvailable,
     mcpAvailable,
     latencyAvailable,
+    analyticsAvailable,
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
@@ -502,6 +523,7 @@ export function parseReply(
     "release",
     "mcp",
     "latency",
+    "analytics",
     "replyInThread",
     "social",
   ]) {
@@ -527,6 +549,7 @@ export function parseReply(
     (reply.social !== undefined && !socialAvailable) ||
     (reply.mcp !== undefined && !mcpAvailable) ||
     (reply.latency !== undefined && !latencyAvailable) ||
+    (reply.analytics !== undefined && !analyticsAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
@@ -540,6 +563,7 @@ export function parseReply(
     Number(reply.release !== undefined) +
     Number(reply.social !== undefined) +
     Number(reply.latency !== undefined) +
+    Number(reply.analytics !== undefined) +
     Number(reply.escalate === true);
   if (
     directiveCount > 1 ||
@@ -550,6 +574,7 @@ export function parseReply(
       reply.release !== undefined ||
       reply.social !== undefined ||
       reply.mcp !== undefined ||
+      reply.analytics !== undefined ||
       reply.latency !== undefined) &&
       reply.text.trim().length > 0)
   ) {

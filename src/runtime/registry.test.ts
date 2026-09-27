@@ -18,6 +18,7 @@ import {
   type DeploymentFeed,
 } from "../deployment/feed.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
+import { UsageLedger } from "../models/usage.js";
 import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry } from "./registry.js";
 
@@ -70,6 +71,170 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("reads analytics once through June and denies public, guest, synthesis and failed reads without leaking data", async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "june-analytics-"));
+    const usage = new UsageLedger(join(directory, "usage.sqlite"));
+    t.onTestFinished(async () => {
+      usage.close();
+      await rm(directory, { recursive: true, force: true });
+    });
+    await usage.track(
+      { provider: "codex", model: "private-model-name", stage: "fast" },
+      async (report) => {
+        report({
+          input: 113,
+          output: 29,
+          cached: 17,
+          cacheWrite: null,
+          reasoning: 11,
+        });
+      },
+    );
+    await usage.track(
+      { provider: "codex", model: "private-model-name", stage: "deep" },
+      async () => {},
+    );
+    const sent: OutboundMessage[] = [];
+    const requests: ModelRequest[] = [];
+    let reads = 0;
+    let fail = false;
+    let search = false;
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack: transport("slack", sent) },
+      webSearch: {
+        available: true,
+        description: "fixture",
+        async search() {
+          return {
+            status: "ready",
+            results: [
+              {
+                title: "fixture",
+                url: "https://example.com",
+                snippet: "public evidence",
+              },
+            ],
+          };
+        },
+      },
+      model: {
+        async reply(request) {
+          requests.push(request);
+          if (search && request.webSearchAvailable)
+            return { text: "", webSearch: "public query" };
+          if (request.analyticsAvailable) {
+            expect(request.system).toContain(
+              "inspect your own token analytics",
+            );
+            expect(replyJsonSchema([], request).properties).toHaveProperty(
+              "analytics",
+            );
+            return parseReply(
+              '{"text":"","analytics":{"days":7}}',
+              [],
+              request,
+            );
+          }
+          expect(replyJsonSchema([], request).properties).not.toHaveProperty(
+            "analytics",
+          );
+          // Nonconforming providers must not bypass the host gate.
+          return { text: "", analytics: { days: 7 } };
+        },
+      },
+      analytics: (days) => {
+        reads++;
+        if (fail) throw new Error("private database path and secret");
+        return usage.report(days);
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const deliver = async (
+      id: string,
+      extra: Partial<MessageEvent> = {},
+      key = ["private", "raygen"],
+    ) => {
+      const actor = client.conversation.getOrCreate(key);
+      const done = Object.values((await actor.snapshot()).events).filter(
+        (event) => event.done,
+      ).length;
+      await actor.send("inbox", {
+        type: "event",
+        event: {
+          ...message,
+          id,
+          messageId: id,
+          text: "Show your usage analytics for the last seven days",
+          ...extra,
+        },
+      });
+      await expect
+        .poll(
+          async () =>
+            Object.values((await actor.snapshot()).events).filter(
+              (event) => event.done,
+            ).length,
+        )
+        .toBe(done + 1);
+    };
+    await deliver("usage");
+    const report = JSON.stringify(sent[0]?.content);
+    expect(report).toContain("input tokens: 113 (1/2 calls reporting)");
+    expect(report).toContain("output tokens: 29 (1/2 calls reporting)");
+    expect(report).toContain("cache writes: unknown");
+    expect(report).toContain("remaining balance: unavailable");
+    expect(report).not.toContain("private-model-name");
+    expect(report.length).toBeLessThan(3500);
+    expect(reads).toBe(1);
+    expect(requests).toHaveLength(1);
+    await deliver(
+      "public-usage",
+      { direct: false, address: { ...message.address, conversationId: "C1" } },
+      ["slack", "T1", "C1", ""],
+    );
+    expect(JSON.stringify(sent[1]?.content)).toContain("owner-private turn");
+    expect(reads).toBe(1);
+    await deliver(
+      "guest-usage",
+      { senderId: "U2", metadata: { channelType: "im" } },
+      ["guest", "slack", "T1", "D1", "", "U2"],
+    );
+    expect(reads).toBe(1);
+    fail = true;
+    await deliver("failed-usage");
+    expect(JSON.stringify(sent.at(-1)?.content)).toContain(
+      "Usage analytics are unavailable",
+    );
+    expect(JSON.stringify(sent)).not.toContain("private database path");
+    expect(reads).toBe(2);
+    fail = false;
+    search = true;
+    await deliver("synthesis-usage");
+    expect(requests.at(-1)?.analyticsAvailable).toBe(false);
+    expect(reads).toBe(2);
+    for (const action of [
+      { days: 0 },
+      { days: 365 },
+      { days: 7, model: "private" },
+    ]) {
+      expect(() =>
+        parseReply(JSON.stringify({ text: "", analytics: action }), [], {
+          analyticsAvailable: true,
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      parseReply('{"text":"","analytics":{"days":7}}', []),
+    ).toThrow();
+    expect(() =>
+      parseReply('{"text":"","analytics":{"days":7},"latency":"recent"}', [], {
+        analyticsAvailable: true,
+        latencyAvailable: true,
+      }),
+    ).toThrow();
+  });
+
   it("excludes ## from queued events and legacy/prefill context while delivering advisory rules on later turns", async (t) => {
     const requests: ModelRequest[] = [];
     const sent: OutboundMessage[] = [];

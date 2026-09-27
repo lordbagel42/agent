@@ -583,6 +583,7 @@ async function main() {
     webSearch,
     lifecycle,
     latency,
+    analytics: (days) => usage.report(days),
     release: readDeployment
       ? createReleaseTool({
           read: () => readDeployment(config.owner.id),
