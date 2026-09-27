@@ -121,6 +121,8 @@ export interface ChannelAdapter {
     isCurrent: () => boolean,
     signal?: AbortSignal,
   ): Promise<SendResult>;
+  /** Read-only local public-search token presence, not verified provider access. */
+  hasSearchToken?(event: MessageEvent): boolean;
   /** Bounded same-surface context for an already-authorized owner turn. */
   context?(
     event: MessageEvent,
@@ -210,7 +212,8 @@ export interface CompanionReply {
     | "inference"
     | "retention"
     | "capabilities"
-    | "credentials";
+    | "credentials"
+    | "slack-search";
   /** One owner-private query of retained evidence, never a permission grant. */
   recall?:
     | string

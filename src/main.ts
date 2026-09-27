@@ -779,6 +779,12 @@ async function main() {
           "Browser cancellation requests cleanup, not confirmed stoppage. Pending work retains admission until it settles. Cleanup failure leaves the receipt unknown and blocks new work on that adapter. Never describe unknown as success or safely retryable; owner reconciliation requires independently confirmed stoppage and outcome.",
         ].join("\n"),
       nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
+      slackSearch: config.slack
+        ? {
+            enabled: config.slack.searchEnabled,
+            hasActionToken: channels.slack?.hasSearchToken,
+          }
+        : undefined,
       reflection: reflection
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
         : undefined,

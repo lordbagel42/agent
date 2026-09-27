@@ -133,6 +133,42 @@ async function search(
 }
 
 describe("Slack Real-time Search", () => {
+  it("inspects only a live exact-message public token without consuming or exposing it", async () => {
+    const context = setup();
+    const event = await receiveMessage(context);
+    const inspect = context.adapter.hasSearchToken;
+    expect(inspect?.(event)).toBe(true);
+    expect(inspect?.(event)).toBe(true);
+    for (const changed of [
+      { ...event, senderId: "U_OTHER" },
+      { ...event, messageId: "1800000000.999999" },
+      { ...event, address: { ...event.address, threadId: "123.456" } },
+    ])
+      expect(inspect?.(changed)).toBe(false);
+    expect(context.fetchMock).not.toHaveBeenCalled();
+    await search(context.adapter, event);
+    expect(inspect?.(event)).toBe(false);
+    expect(context.fetchMock).toHaveBeenCalledTimes(1);
+
+    const expiring = setup();
+    const expiringEvent = await receiveMessage(expiring);
+    expiring.advance(5 * 60_000 - 1);
+    expect(expiring.adapter.hasSearchToken?.(expiringEvent)).toBe(true);
+    expiring.advance(1);
+    expect(expiring.adapter.hasSearchToken?.(expiringEvent)).toBe(false);
+    expect(expiring.fetchMock).not.toHaveBeenCalled();
+
+    const missing = setup();
+    const missingEvent = await receiveMessage(
+      missing,
+      payload({ action_token: undefined }),
+    );
+    expect(missing.adapter.hasSearchToken?.(missingEvent)).toBe(false);
+    expect(missing.adapter.hasSearchToken?.(event)).toBe(false);
+    expect(missing.fetchMock).not.toHaveBeenCalled();
+    expect(setup(results(), false).adapter.hasSearchToken).toBeUndefined();
+  });
+
   it("keeps ## content available through an explicit search", async () => {
     const context = setup(
       results([resultMessage({ content: "## explicitly retrieved" })]),

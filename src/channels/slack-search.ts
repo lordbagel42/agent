@@ -268,6 +268,19 @@ export function createSlackSearch({
   }
 
   return {
+    /** Local presence only: do not consume the token or probe Slack permissions. */
+    hasActionToken(event: MessageEvent): boolean {
+      const grant = grants.get(event.id);
+      return (
+        event.address.channel === "slack" &&
+        event.address.accountId === teamId &&
+        !!grant?.token &&
+        !grant.spent &&
+        grant.expiresAt > now() &&
+        grant.binding === binding(event)
+      );
+    },
+
     /** Call only after authenticating the bytes, workspace, and human event. */
     capture(event: MessageEvent, token: unknown): void {
       const time = now();

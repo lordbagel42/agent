@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { CompanionReply } from "../core/contracts.js";
+import type { CompanionReply, MessageEvent } from "../core/contracts.js";
 import type { BitwardenCredentialResolver } from "../credentials/bitwarden.js";
 import type { HistoryImports } from "../imports/index.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
@@ -52,6 +52,10 @@ export function createInspectionReader(deps: {
   nativeCoding?: () => Promise<string>;
   capabilities?: () => string;
   credentials?: Pick<BitwardenCredentialResolver, "inspect">;
+  slackSearch?: {
+    enabled: boolean;
+    hasActionToken?: (event: MessageEvent) => boolean;
+  };
   reflection?: () => Promise<
     Pick<
       ReflectionRuntimeState,
@@ -63,8 +67,9 @@ export function createInspectionReader(deps: {
   >;
 }): (
   target: Exclude<NonNullable<CompanionReply["inspection"]>, "inference">,
+  event?: MessageEvent,
 ) => Promise<string> {
-  return async (target) => {
+  return async (target, event) => {
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {
       case "capabilities":
@@ -76,6 +81,20 @@ export function createInspectionReader(deps: {
           return `${heading}\nCredential resolver: absent. No bindings are available to inspect. ${caution}`;
         const metadata = deps.credentials.inspect();
         return `${heading}\nCredential resolver: configured. Configured bindings: ${metadata.configuredBindings}; showing ${metadata.bindings.length}. Bindings are numbered in configuration order: ${JSON.stringify(metadata.bindings)}\n${caution}`;
+      }
+      case "slack-search": {
+        const search = deps.slackSearch;
+        const token =
+          event?.address.channel !== "slack"
+            ? "not applicable: no current Slack message"
+            : !search?.enabled
+              ? "not checked: public search is disabled"
+              : !search.hasActionToken
+                ? "unknown: token inspection is unavailable"
+                : search.hasActionToken(event)
+                  ? "present and unconsumed in the local cache; Slack validity is unverified"
+                  : "unavailable: missing, expired, consumed, or lost on restart; a fresh owner Slack message is required";
+        return `${heading}\nPublic Slack RTS (assistant.search.context). Runtime slack.searchEnabled: ${search ? String(search.enabled) : "unavailable: Slack is not configured"}. Required bot scope: search:read.public; actual installed bot grant is unverified by this inspection. Saved permissions, requested manifest scopes, and separate MCP/user OAuth grants do not establish this bot grant or live search availability.\nCurrent-message action token: ${token}.\nLive search access is unverified, even with the runtime enabled and a local token present. This snapshot is not reusable authorization for another message. No Slack request was made, no token was consumed or returned, and no search or OAuth scope was enabled. Private/DM search and MCP tool permissions are separate.`;
       }
       case "native-coding":
         return deps.nativeCoding

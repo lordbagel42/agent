@@ -99,6 +99,7 @@ export interface Dependencies {
   analytics?: (days: 1 | 7 | 30) => string;
   inspection?: (
     target: Exclude<NonNullable<CompanionReply["inspection"]>, "inference">,
+    event: MessageEvent,
   ) => Promise<string>;
   dashboardLogin?: {
     issue(): { url: string; expiresAt: string } | undefined;
@@ -2331,6 +2332,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                   } else if (checked.inspection) {
                                     text = await deps.inspection(
                                       checked.inspection,
+                                      event,
                                     );
                                   }
                                 } catch {

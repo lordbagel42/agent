@@ -407,9 +407,16 @@ RTS is `assistant.search.context`, not the legacy RTM transport. The existing
 signed Events API still delivers messages. To enable search, add and approve the
 bot scope `search:read.public`, reinstall the app if Slack requires it, and set
 `slack.searchEnabled: true`. It defaults to false and normal chat does not need it.
-The deployed app's current grant lacks this scope; search is not live yet. The
-adapter/model/runtime integration is tested locally; the live release contains
-the disabled transport but not the model/runtime integration yet.
+
+Ask June privately whether public Slack search is ready. The read-only action
+`{"text":"","inspection":"slack-search"}` reports the runtime flag and local
+action-token presence for that exact initiating message, even with search disabled.
+It identifies the required bot scope but leaves the actual installed grant and
+live Slack access **unverified**. Saved permissions, requested manifest scopes,
+and separate MCP/user OAuth grants do not prove public bot-search availability.
+Inspection makes no Slack call, consumes no token, and changes no configuration or
+scopes. Expired, consumed, missing, or restart-lost tokens require a fresh owner
+Slack message; an earlier readiness receipt is not authorization for a later turn.
 
 The app manifest also requests user scopes `search:read.public`,
 `search:read.private`, and `search:read.im` for planned private-channel and DM

@@ -248,6 +248,7 @@ it("hides tombstoned interruption receipts before conversation cleanup, includin
   expect(calls).toBe(2);
 });
 
+// Dozens of sequential actor turns exceed 30s; each deliver still has a 5s bound.
 it("inspects bounded metadata through June while enforcing owner, guest, synthesis and read-only boundaries", async (t) => {
   const owner = {
     id: "owner",
@@ -460,12 +461,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         };
       },
     },
-    inspection: async (target) => {
+    inspection: async (target, event) => {
       reads++;
       if (fail) throw new Error("SECRET ERROR PATH");
       return (
         disabled ? createInspectionReader({ audience, selections: {} }) : read
-      )(target);
+      )(target, event);
     },
     reflection: {
       ownerId: owner.id,
@@ -514,6 +515,14 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         false,
         {},
       ),
+    slackSearch: {
+      enabled: true,
+      hasActionToken: (event) => {
+        expect(event.id).toBe(`in${requests.length - 1}`);
+        expect(event.senderId).toBe("U1");
+        return true;
+      },
+    },
     reflection: () => reflection.status(),
   });
   const deliver = async (extra: Partial<MessageEvent> = {}) => {
@@ -641,6 +650,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "capabilities",
     "inference",
     "credentials",
+    "slack-search",
   ] as const) {
     action = { text: "", inspection };
     for (const extra of [
@@ -679,6 +689,14 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     expect(await deliver()).toContain("inspection is unavailable");
     expect(reads).toBe(7);
   }
+  action = { text: "", inspection: "slack-search" };
+  const readiness = await deliver();
+  expect(readiness).toContain("Runtime slack.searchEnabled: true");
+  expect(readiness).toContain("present and unconsumed in the local cache");
+  expect(readiness).toContain("actual installed bot grant is unverified");
+  expect(readiness).toContain("Live search access is unverified");
+  expect(readiness).toContain("No Slack request was made");
+  expect(reads).toBe(8);
   action = { text: "", inspection: "credentials" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
@@ -708,6 +726,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain("Generic capabilities are disabled");
   action = { text: "", inspection: "credentials" };
   expect(await deliver()).toContain("Credential resolver: absent");
+  action = { text: "", inspection: "slack-search" };
+  expect(await deliver()).toContain("Slack is not configured");
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   expect(JSON.stringify(sent)).not.toContain("secret-source");
   expect(JSON.stringify(sent)).not.toContain("private-account");
@@ -748,7 +768,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       }),
     ).toThrow();
   expect(() => parseReply('{"text":"","inspection":"memory"}', [])).toThrow();
-});
+}, 60_000);
 
 it("keeps interrupted reflection inspection bounded, private and read-only without claiming settlement", async () => {
   const audience = "owner-private";

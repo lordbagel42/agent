@@ -411,7 +411,9 @@ export function createSlackAdapter({
   const adapter: ChannelAdapter = {
     channel: "slack",
     capabilities: { text: true, reactions: true, threads: true },
-    ...(search === undefined ? {} : { search: search.search }),
+    ...(search === undefined
+      ? {}
+      : { search: search.search, hasSearchToken: search.hasActionToken }),
     ...(contextEnabled ? { context: context.context } : {}),
     async setTyping(event, active, signal) {
       const { address } = event;
