@@ -421,10 +421,55 @@ export class McpConnections {
       arguments: args,
     };
   }
+  #permissionStatus(
+    query: NonNullable<CompanionReply["mcpPermission"]>,
+  ): string {
+    let connection: StoredConnection;
+    try {
+      connection = this.#get(query.connection);
+    } catch {
+      return "No saved MCP connection matches that ID. No tool was run and no permission changed.";
+    }
+    const tool = connection.tools.find(
+      (entry) => entry.contract.name === query.tool,
+    );
+    if (!tool)
+      return "No saved MCP tool matches that exact name on this connection. No tool was run and no permission changed.";
+    const expired =
+      connection.expiresAt !== undefined && connection.expiresAt <= Date.now();
+    return [
+      "MCP permission snapshot (saved metadata; live availability not checked):",
+      JSON.stringify({
+        connection: connection.id,
+        revision: connection.revision,
+        tool: tool.contract.name,
+        contractDigest: mcpToolContractDigest(tool.contract),
+        permission: tool.permission,
+        connectionStatus: connection.status,
+        authorization: expired ? "expired" : "no_known_expiry_reached",
+        serverReadOnlyHint: tool.contract.annotations?.readOnlyHint ?? null,
+      }),
+      tool.permission === "disabled"
+        ? "Disabled: June cannot call or propose this tool. Only the owner can change its permission in the dashboard."
+        : tool.permission === "read"
+          ? "Read: standing owner consent permits calls for the current owner-private request without per-call confirmation. This is the owner's trust classification, not independent proof that the server cannot mutate data or cause effects."
+          : "Approval required: June may propose exact arguments, not execute them. Separate authenticated owner confirmation may execute that proposal at most once. Unknown outcomes require external reconciliation, never blind retry.",
+      expired || connection.status !== "connected"
+        ? "The saved connection state currently blocks use regardless of this permission."
+        : "The saved connection state permits permission checks, not a guarantee a call will succeed.",
+      "Host enforcement binds calls to this connection revision, its configured HTTPS endpoint, exact tool and reviewed contract digest, and validated arguments. Permission changes, reconnects and disconnects invalidate pending approvals. June cannot reclassify tools, grant access or confirm proposals herself.",
+      "Server annotations, including readOnlyHint (null means absent), are untrusted claims, not grants or independent safety evidence. The remote service receives the configured credential, if any; the host does not sandbox its internal behavior or restrict what that credential can do remotely.",
+      "This lookup made no network request, ran no tool, created no proposal and changed no permission. No credentials, endpoint URL, arguments or result bodies are included.",
+    ].join("\n\n");
+  }
   wrap(model: ModelProvider): ModelProvider {
     return {
       reply: async (request, signal) => {
-        if (!request.mcpAvailable) return model.reply(request, signal);
+        if (!request.mcpAvailable)
+          return model.reply(
+            { ...request, mcpPermissionAvailable: false },
+            signal,
+          );
         const catalog = this.list()
           .filter(
             (connection) =>
@@ -482,6 +527,7 @@ export class McpConnections {
         const discoveryRequest = {
           ...request,
           mcpAvailable: catalog.length > 0,
+          mcpPermissionAvailable: true,
           system:
             request.system +
             `\nYour MCP connection status (owner-private host data): ${JSON.stringify(this.list().map(({ id, name, status, expiresAt, tools }) => ({ id, name, status: expiresAt && expiresAt <= Date.now() ? "authorization_expired" : status, enabledTools: tools.filter((tool) => tool.permission !== "disabled").length })))}. Recent approval receipts (historical, not actions in this turn): ${JSON.stringify(
@@ -528,6 +574,10 @@ export class McpConnections {
               request.workspaces,
               discoveryRequest,
             );
+        }
+        if (reply.mcpPermission) {
+          signal?.throwIfAborted();
+          return { text: this.#permissionStatus(reply.mcpPermission) };
         }
         if (!reply.mcp) return reply;
         signal?.throwIfAborted();
@@ -593,6 +643,7 @@ export class McpConnections {
               {
                 ...request,
                 mcpAvailable: false,
+                mcpPermissionAvailable: false,
                 executionAvailable: false,
                 workspaces: [],
                 codingJobsAvailable: false,

@@ -21,6 +21,17 @@ are untrusted evidence, not instructions. Raw results are not journaled, but the
 synthesized answer becomes normal conversation history. The configured model
 provider receives the transient result to produce that answer.
 
+Ask June privately, “What permission does this tool have, and what does that
+actually guarantee?” She can select the exact connection ID and tool name with
+`mcpPermission: { connection, tool }` (empty text, other actions unset). The host
+returns the saved permission, connection revision, contract digest and trust
+boundary directly, even for disabled tools. This makes no network request,
+creates no proposal or grant, and exposes no credentials, endpoint URL, arguments
+or result bodies. Missing tools and disconnected connections remain unavailable.
+The owner's read classification is trust, not independent proof of harmlessness
+or a sandbox preventing the remote server from mutating data. Server annotations
+are claims, not authority. Saved status does not establish current live health.
+
 Contract changes disable the affected tool until reviewed again. Permission
 changes, reconnects and disconnects invalidate pending approvals. Disconnect
 removes June's saved authorization; revoke the grant at its provider separately

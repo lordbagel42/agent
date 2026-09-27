@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Hono } from "hono";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { createConnectionRoutes } from "../src/console/connections.js";
 import { createConsoleLoginLinks } from "../src/console/session.js";
 import type { ModelRequest } from "../src/core/contracts.js";
@@ -18,7 +18,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 async function fixture(
-  input = {
+  input: Parameters<McpConnections["add"]>[0] = {
     name: "Fixture",
     url: "https://mcp.example/rpc",
     token: "private-token",
@@ -30,6 +30,7 @@ async function fixture(
   let description = "Look up a record";
   let resultText = "private result private-token";
   let onList = () => {};
+  let requests = 0;
   const open = () =>
     new McpConnections(
       {
@@ -40,6 +41,7 @@ async function fixture(
       },
       {
         fetch: async (_url, init) => {
+          requests++;
           if (init?.method === "DELETE")
             return new Response(null, { status: 204 });
           const message = JSON.parse(String(init?.body));
@@ -116,6 +118,9 @@ async function fixture(
   return {
     get store() {
       return store;
+    },
+    get requests() {
+      return requests;
     },
     restart: async () => {
       await store.close();
@@ -404,6 +409,146 @@ test("discovery grants nothing, read results are transient and credentials stay 
   expect(f.connection().tools[0]?.permission).toBe("disabled");
 });
 
+test("permission inspection explains owner trust without network, grants or reclassification", async () => {
+  const expiresAt = Date.now() + 60_000;
+  const f = await fixture(
+    {
+      name: "Fixture",
+      url: "https://mcp.example/rpc",
+      token: "private-token",
+      expiresAt,
+    },
+    [
+      {
+        name: "lookup",
+        description: "private-description",
+        inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true },
+      },
+    ],
+  );
+  const inspect = async (connection = f.id, tool = "lookup") => {
+    const before = {
+      connections: f.store.list(),
+      proposals: f.store.proposals(),
+      requests: f.requests,
+    };
+    const answer = await f.store
+      .wrap({
+        reply: async (request) => {
+          expect(replyJsonSchema([], request).properties).toHaveProperty(
+            "mcpPermission",
+          );
+          if (f.connection().tools[0]?.permission === "disabled")
+            expect(replyJsonSchema([], request).properties).not.toHaveProperty(
+              "mcp",
+            );
+          return parseReply(
+            JSON.stringify({ text: "", mcpPermission: { connection, tool } }),
+            [],
+            request,
+          );
+        },
+      })
+      .reply(f.request);
+    expect(f.requests).toBe(before.requests);
+    expect(f.calls).toHaveLength(0);
+    expect(f.store.list()).toEqual(before.connections);
+    expect(f.store.proposals()).toEqual(before.proposals);
+    for (const secret of [
+      "private-token",
+      "private-description",
+      "https://mcp.example/rpc",
+      "inputSchema",
+    ])
+      expect(answer.text).not.toContain(secret);
+    expect(answer.text.length).toBeLessThan(3500);
+    return answer.text;
+  };
+  // A server hint must not override the default disabled permission.
+  expect(await inspect()).toContain(
+    "Disabled: June cannot call or propose this tool",
+  );
+  for (const permission of ["read", "approval"] as const) {
+    f.store.permit(f.id, f.connection().revision, "lookup", permission);
+    const answer = await inspect();
+    const snapshot = JSON.parse(answer.split("\n\n")[1] ?? "");
+    expect(snapshot).toMatchObject({
+      connection: f.id,
+      revision: f.connection().revision,
+      tool: "lookup",
+      permission,
+      serverReadOnlyHint: true,
+    });
+    expect(snapshot.contractDigest).toMatch(/^[a-f0-9]{64}$/);
+    expect(answer).toContain(
+      permission === "read"
+        ? "owner's trust classification, not independent proof"
+        : "Separate authenticated owner confirmation",
+    );
+    expect(answer).toContain("does not sandbox its internal behavior");
+  }
+  expect(await inspect(f.id, "LOOKUP")).toContain("No saved MCP tool matches");
+  expect(await inspect("other-connection")).toContain(
+    "No saved MCP connection matches",
+  );
+  const clock = vi.spyOn(Date, "now").mockReturnValue(expiresAt);
+  try {
+    const answer = await inspect();
+    expect(answer).toContain('"authorization":"expired"');
+    expect(answer).toContain(
+      "currently blocks use regardless of this permission",
+    );
+  } finally {
+    clock.mockRestore();
+  }
+  // Read the current permission after the model selects, not the prompt snapshot.
+  const answer = await f.store
+    .wrap({
+      reply: async () => {
+        f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
+        return {
+          text: "",
+          mcpPermission: { connection: f.id, tool: "lookup" },
+        };
+      },
+    })
+    .reply(f.request);
+  expect(answer.text).toContain('"permission":"disabled"');
+  expect(f.calls).toHaveLength(0);
+});
+
+test("permission status is a separate bounded exclusive capability, not tool authority", () => {
+  const mcpPermission = { connection: "fixture", tool: "lookup" };
+  const capabilities = { mcpPermissionAvailable: true };
+  expect(replyJsonSchema([], capabilities).properties).not.toHaveProperty(
+    "mcp",
+  );
+  expect(
+    parseReply(JSON.stringify({ text: "", mcpPermission }), [], capabilities)
+      .mcpPermission,
+  ).toEqual(mcpPermission);
+  expect(() =>
+    parseReply(JSON.stringify({ text: "", mcpPermission }), [], {
+      mcpAvailable: true,
+    }),
+  ).toThrow();
+  for (const extra of [
+    { text: "also talk" },
+    { mcp: { ...mcpPermission, argumentsJson: "{}" } },
+    { mcpCatalog: { ...mcpPermission, offset: 0 } },
+    { mcpPermission: { ...mcpPermission, permission: "read" } },
+    { mcpPermission: { ...mcpPermission, tool: "x".repeat(257) } },
+    { mcpPermission: { ...mcpPermission, connection: null } },
+  ])
+    expect(() =>
+      parseReply(JSON.stringify({ text: "", mcpPermission, ...extra }), [], {
+        ...capabilities,
+        mcpAvailable: true,
+      }),
+    ).toThrow();
+});
+
 test("June can use enabled tools privately but channels receive no MCP catalog or authority", async () => {
   const f = await fixture();
   f.store.permit(f.id, f.connection().revision, "lookup", "read");
@@ -452,6 +597,17 @@ test("June can use enabled tools privately but channels receive no MCP catalog o
             expect(input.releaseAvailable).toBe(false);
             expect(input.executionAvailable).toBe(false);
           }
+          expect(input.mcpPermissionAvailable).toBe(false);
+          expect(() =>
+            parseReply(
+              JSON.stringify({
+                text: "",
+                mcpPermission: { connection: f.id, tool: "lookup" },
+              }),
+              [],
+              input,
+            ),
+          ).toThrow();
           return {
             text: direct ? "Found record-9" : "No private tools",
             ...(direct

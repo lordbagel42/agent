@@ -93,6 +93,12 @@ const companionReplySchema = z.strictObject({
       argumentsJson: z.string().max(4000),
     })
     .optional(),
+  mcpPermission: z
+    .strictObject({
+      connection: z.string().min(1).max(256),
+      tool: z.string().min(1).max(256),
+    })
+    .optional(),
   mcpCatalog: z
     .strictObject({
       connection: z.string().min(1).max(256).nullable(),
@@ -137,6 +143,7 @@ export type ReplyCapabilities = Pick<
   | "releaseAvailable"
   | "modelStatusAvailable"
   | "mcpAvailable"
+  | "mcpPermissionAvailable"
   | "latencyAvailable"
   | "analyticsAvailable"
   | "inspectionAvailable"
@@ -167,6 +174,7 @@ export function replyJsonSchema(
     releaseAvailable,
     modelStatusAvailable,
     mcpAvailable,
+    mcpPermissionAvailable,
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
@@ -375,6 +383,21 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(mcpPermissionAvailable
+        ? {
+            mcpPermission: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                connection: { type: "string" },
+                tool: { type: "string" },
+              },
+              required: ["connection", "tool"],
+              description:
+                "Inspect one exact connection ID and tool name's saved permission/trust boundary, including disabled tools. No execution, live probe, approval or permission change. Leave text empty and other actions unset.",
+            },
+          }
+        : {}),
       ...(searchAvailable
         ? {
             search: {
@@ -430,6 +453,7 @@ export function replyJsonSchema(
       ...(releaseAvailable ? ["release"] : []),
       ...(modelStatusAvailable ? ["modelStatus"] : []),
       ...(mcpAvailable ? ["mcp", "mcpCatalog"] : []),
+      ...(mcpPermissionAvailable ? ["mcpPermission"] : []),
       ...(searchAvailable ? ["search"] : []),
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
@@ -610,6 +634,7 @@ export function parseReply(
     releaseAvailable,
     modelStatusAvailable,
     mcpAvailable,
+    mcpPermissionAvailable,
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
@@ -641,6 +666,7 @@ export function parseReply(
     "release",
     "modelStatus",
     "mcp",
+    "mcpPermission",
     "mcpCatalog",
     "latency",
     "analytics",
@@ -673,6 +699,7 @@ export function parseReply(
     (reply.modelStatus !== undefined && !modelStatusAvailable) ||
     (reply.social !== undefined && !socialAvailable) ||
     (reply.mcp !== undefined && !mcpAvailable) ||
+    (reply.mcpPermission !== undefined && !mcpPermissionAvailable) ||
     (reply.mcpCatalog !== undefined && !mcpAvailable) ||
     (reply.latency !== undefined && !latencyAvailable) ||
     (reply.analytics !== undefined && !analyticsAvailable) ||
@@ -688,6 +715,7 @@ export function parseReply(
     Number(reply.codingJob !== undefined) +
     Number(reply.modelStatus === true) +
     Number(reply.mcp !== undefined) +
+    Number(reply.mcpPermission !== undefined) +
     Number(reply.mcpCatalog !== undefined) +
     Number(reply.execution !== undefined) +
     Number(reply.search !== undefined) +
@@ -711,6 +739,7 @@ export function parseReply(
       reply.release !== undefined ||
       reply.social !== undefined ||
       reply.mcp !== undefined ||
+      reply.mcpPermission !== undefined ||
       reply.mcpCatalog !== undefined ||
       reply.analytics !== undefined ||
       reply.inspection !== undefined ||

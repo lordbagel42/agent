@@ -167,6 +167,8 @@ export interface CompanionReply {
   modelStatus?: boolean;
   /** One owner-private MCP call; host resolves credentials and permissions. */
   mcp?: { connection: string; tool: string; argumentsJson: string };
+  /** Selected saved permission/trust boundary only; never a tool call or grant. */
+  mcpPermission?: { connection: string; tool: string };
   /** Page approved tool summaries, or retrieve an exact tool's JSON contract. */
   mcpCatalog?: {
     connection: string | null;
@@ -210,6 +212,8 @@ export interface ModelRequest {
   releaseAvailable?: boolean;
   modelStatusAvailable?: boolean;
   mcpAvailable?: boolean;
+  /** Set by the owner-private MCP wrapper, independently of enabled tools. */
+  mcpPermissionAvailable?: boolean;
   latencyAvailable?: boolean;
   analyticsAvailable?: boolean;
   inspectionAvailable?: boolean;
