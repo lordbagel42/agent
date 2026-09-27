@@ -1466,7 +1466,6 @@ export function createReflectionActor(
           reference.scope,
         );
         return deps.sendInterruption(proposalId, reference, commandId, () => {
-          const now = Date.now();
           if (
             !read?.isCurrent() ||
             JSON.stringify(read.candidate.publication) !==
@@ -1490,7 +1489,8 @@ export function createReflectionActor(
               code: "live_activity",
               retryable: true,
             };
-          if (isQuiet(now, deps.policy.quiet))
+          // Synchronous provenance reads can cross a wall-clock boundary too.
+          if (isQuiet(Date.now(), deps.policy.quiet))
             return { status: "rejected", code: "quiet_hours", retryable: true };
           return undefined;
         });

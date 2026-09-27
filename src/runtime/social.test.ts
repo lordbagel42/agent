@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Client } from "rivetkit/client";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type {
   ChannelAdapter,
@@ -853,148 +853,195 @@ it("rechecks interruption approval after the sending-intent flush", async (t) =>
   });
 });
 
-it("revalidates uncited provenance after intent persistence without waiting for actor cancellation", async (t) => {
-  const { social, sent, options } = fixture(t);
-  const store = new EvidenceStore(":memory:", randomBytes(32));
-  const db = new DatabaseSync(options.file);
-  t.onTestFinished(() => {
-    db.close();
-    store.close();
-  });
-  const scope = JSON.stringify(["private", owner.id]);
-  const now = Date.now();
-  for (const id of ["cited", "uncited"])
-    store.appendSource({
-      id,
-      audiences: [scope],
-      platform: "slack",
-      account: "T1",
-      conversation: "DOWNER",
-      author: RAYGEN_SLACK_ID,
-      observedAt: now,
-      sourceUrl: "https://example.com/fixture",
-      text: "Original private evidence",
+it.for(["uncited deletion", "evidence validation", "privacy reconciliation"])(
+  "rechecks interruption eligibility after intent persistence and %s",
+  async (boundary, t) => {
+    let now = Date.parse("2026-11-01T06:59:59Z");
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    t.onTestFinished(() => clock.mockRestore());
+    let afterIntent = () => false;
+    let privacyReads = 0;
+    const { social, sent, options } = fixture(t, () => {
+      // Let the first post-intent read finish before quiet hours, then cross
+      // the boundary in a later privacy read without an intervening await.
+      if (
+        boundary === "privacy reconciliation" &&
+        afterIntent() &&
+        ++privacyReads === 2
+      )
+        now = Date.parse("2026-11-01T07:00:00Z");
+      return 0;
     });
-  const config = createReflectionActor({
-    ownerId: owner.id,
-    idleMs: 100,
-    deepMs: 200,
-    pollMs: 100,
-    timeoutMs: 1000,
-    policy: {
-      totalCapacity: 2,
-      liveReserve: 1,
-      cooldownMs: 1,
-      maxAttempts: 1,
-      maxNoNewEvidence: 1,
-      evidenceMaxAgeMs: 60000,
-      quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
-    },
-    evidenceCurrent(scope, evidence) {
-      return (
-        JSON.stringify(
-          store.reflectionEvidence(
-            scope,
-            evidence.map((e) => e.id),
-            60000,
-          ),
-        ) === JSON.stringify(evidence)
-      );
-    },
-    async retrieve({ scope, evidenceIds }) {
-      return {
-        authorized: true,
-        evidence: store.reflectionEvidence(scope, evidenceIds, 60000),
-      };
-    },
-    async decide() {
-      throw new Error("No model calls during delivery");
-    },
-    async sendInterruption(id, reference, commandId, check) {
-      const sending = social.deliverInterruption(
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    const db = new DatabaseSync(options.file);
+    t.onTestFinished(() => {
+      db.close();
+      store.close();
+    });
+    const id = "c".repeat(24);
+    const delivery = () => {
+      const row = db
+        .prepare("SELECT value FROM social_deliveries WHERE id = ?")
+        .get(`${id}:interruption`);
+      return row ? JSON.parse(String(row.value)) : undefined;
+    };
+    afterIntent = () => delivery()?.phase === "sending";
+    const scope = JSON.stringify(["private", owner.id]);
+    for (const id of ["cited", "uncited"])
+      store.appendSource({
+        id,
+        audiences: [scope],
+        platform: "slack",
+        account: "T1",
+        conversation: "DOWNER",
+        author: RAYGEN_SLACK_ID,
+        observedAt: now,
+        sourceUrl: "https://example.com/fixture",
+        text: "Original private evidence",
+      });
+    const config = createReflectionActor({
+      ownerId: owner.id,
+      idleMs: 100,
+      deepMs: 200,
+      pollMs: 100,
+      timeoutMs: 1000,
+      policy: {
+        totalCapacity: 2,
+        liveReserve: 1,
+        cooldownMs: 1,
+        maxAttempts: 1,
+        maxNoNewEvidence: 1,
+        evidenceMaxAgeMs: 60000,
+        quiet: { timeZone: "America/Boise", startMinute: 60, endMinute: 120 },
+      },
+      evidenceCurrent(scope, evidence) {
+        if (boundary === "evidence validation" && afterIntent())
+          now = Date.parse("2026-11-01T07:00:00Z");
+        return (
+          JSON.stringify(
+            store.reflectionEvidence(
+              scope,
+              evidence.map((e) => e.id),
+              60000,
+            ),
+          ) === JSON.stringify(evidence)
+        );
+      },
+      async retrieve({ scope, evidenceIds }) {
+        return {
+          authorized: true,
+          evidence: store.reflectionEvidence(scope, evidenceIds, 60000),
+        };
+      },
+      async decide() {
+        throw new Error("No model calls during delivery");
+      },
+      async sendInterruption(id, reference, commandId, check) {
+        const sending = social.deliverInterruption(
+          id,
+          reference,
+          commandId,
+          check,
+        );
+        if (boundary === "uncited deletion") store.deleteSource("uncited");
+        return sending;
+      },
+    }).config;
+    if (!("state" in config) || !config.actions)
+      throw new Error("Missing actor configuration");
+    const c = {
+      key: [owner.id],
+      state: structuredClone(config.state),
+      vars: {
+        async prepareCandidates() {},
+        publishingCandidates: new Set<string>(),
+      },
+    } as unknown as Parameters<typeof config.actions.deliverInterruption>[0];
+    const requestId = JSON.stringify([scope, ["cited", "uncited"]]);
+    const rawId = JSON.stringify([requestId, 1]);
+    const reference = {
+      candidateId: reflectionCandidateId(rawId),
+      scope,
+      requestId,
+      epoch: 0,
+      evidenceIds: ["cited", "uncited"],
+      publication: { version: 1 as const, expiresAt: now + 60000 },
+    };
+    c.state.candidates[rawId] = {
+      id: rawId,
+      requestId,
+      scope,
+      epoch: 0,
+      attempt: 1,
+      mode: "idle",
+      kind: "interruption-candidate",
+      hypothesisOnly: false,
+      decision: { answer: "yes", rationale: "Fixture", evidenceIds: ["cited"] },
+      createdAt: now,
+      publication: reference.publication,
+    };
+    c.state.invocations[rawId] = "settled";
+    c.state.reflection.requests.push({
+      id: requestId,
+      scope,
+      evidenceIds: reference.evidenceIds,
+      kind: "curiosity",
+      createdAt: now,
+      attempts: 1,
+      status: "stopped",
+    });
+    db.prepare("INSERT INTO social_proposals VALUES (?, ?)").run(
+      id,
+      JSON.stringify({
+        id,
+        accountId: "T1",
+        requester: RAYGEN_SLACK_ID,
+        action: { kind: "outreach", userId: "UGUEST", text: "Never send this" },
+        status: "approved",
+        created: now,
+        expires: now + 60000,
+        reflection: reference,
+        interruptionCommands: { "fixture-command": { status: "started" } },
+      }),
+    );
+    expect(
+      await config.actions.deliverInterruption(
+        c,
         id,
         reference,
-        commandId,
-        check,
-      );
-      store.deleteSource("uncited");
-      return sending;
-    },
-  }).config;
-  if (!("state" in config) || !config.actions)
-    throw new Error("Missing actor configuration");
-  const c = {
-    key: [owner.id],
-    state: structuredClone(config.state),
-    vars: {
-      async prepareCandidates() {},
-      publishingCandidates: new Set<string>(),
-    },
-  } as unknown as Parameters<typeof config.actions.deliverInterruption>[0];
-  const requestId = JSON.stringify([scope, ["cited", "uncited"]]);
-  const rawId = JSON.stringify([requestId, 1]);
-  const reference = {
-    candidateId: reflectionCandidateId(rawId),
-    scope,
-    requestId,
-    epoch: 0,
-    evidenceIds: ["cited", "uncited"],
-    publication: { version: 1 as const, expiresAt: now + 60000 },
-  };
-  c.state.candidates[rawId] = {
-    id: rawId,
-    requestId,
-    scope,
-    epoch: 0,
-    attempt: 1,
-    mode: "idle",
-    kind: "interruption-candidate",
-    hypothesisOnly: false,
-    decision: { answer: "yes", rationale: "Fixture", evidenceIds: ["cited"] },
-    createdAt: now,
-    publication: reference.publication,
-  };
-  c.state.invocations[rawId] = "settled";
-  c.state.reflection.requests.push({
-    id: requestId,
-    scope,
-    evidenceIds: reference.evidenceIds,
-    kind: "curiosity",
-    createdAt: now,
-    attempts: 1,
-    status: "stopped",
-  });
-  const id = "c".repeat(24);
-  db.prepare("INSERT INTO social_proposals VALUES (?, ?)").run(
-    id,
-    JSON.stringify({
-      id,
-      accountId: "T1",
-      requester: RAYGEN_SLACK_ID,
-      action: { kind: "outreach", userId: "UGUEST", text: "Never send this" },
-      status: "approved",
-      created: now,
-      expires: now + 60000,
-      reflection: reference,
-      interruptionCommands: { "fixture-command": { status: "started" } },
-    }),
-  );
-  expect(
-    await config.actions.deliverInterruption(
-      c,
-      id,
-      reference,
-      "fixture-command",
-    ),
-  ).toEqual({
-    status: "rejected",
-    code: "candidate_invalidated",
-    retryable: false,
-  });
-  expect(sent).toEqual([]);
-  expect(c.state.candidates[rawId]).toBeDefined();
-  expect(JSON.parse(social.view(raygen))[0].status).toBe("revoked");
-});
+        "fixture-command",
+      ),
+    ).toEqual({
+      status: "rejected",
+      code:
+        boundary === "uncited deletion"
+          ? "candidate_invalidated"
+          : "quiet_hours",
+      retryable: boundary !== "uncited deletion",
+    });
+    expect(sent).toEqual([]);
+    expect(c.state.candidates[rawId]).toBeDefined();
+    expect(JSON.parse(social.view(raygen))[0].status).toBe(
+      boundary === "uncited deletion" ? "revoked" : "approved",
+    );
+    expect(delivery()).toMatchObject({
+      attempts: 0,
+      phase: boundary === "uncited deletion" ? "settled" : "ready",
+    });
+    // Re-entry of the same RPC must return the withheld receipt, not use the
+    // newly eligible clock to send without another explicit owner approval.
+    now = Date.parse("2026-11-01T06:59:59Z");
+    expect(
+      await config.actions.deliverInterruption(
+        c,
+        id,
+        reference,
+        "fixture-command",
+      ),
+    ).toMatchObject({ status: "rejected" });
+    expect(sent).toEqual([]);
+  },
+);
 
 it.for(["held", "interrupted"])(
   "does not resume a %s interruption when the same approval command replays",

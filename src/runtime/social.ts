@@ -241,7 +241,10 @@ export class SocialPermissions {
           .prepare("INSERT OR REPLACE INTO social_deliveries VALUES (?, ?)")
           .run(id, JSON.stringify(delivery));
       },
-      async (message) => {
+      (message) => this.options.slack.send(message),
+      () => {
+        // Privacy reads may take time. Run them before the interruption gate's
+        // final clock sample, leaving only adapter dispatch after that gate.
         this.forget();
         if (revision !== (this.options.deletionRevision?.() ?? 0))
           return { status: "rejected", code: "forgotten", retryable: false };
@@ -251,9 +254,8 @@ export class SocialPermissions {
             code: "superseded_input",
             retryable: false,
           };
-        return this.options.slack.send(message);
+        return check?.();
       },
-      check,
     );
   }
   /** Recognized private approval commands must not run inference/extraction,
