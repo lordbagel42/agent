@@ -215,6 +215,8 @@ export interface CompanionReply {
     | { kind: "contradictions"; claimId: string };
   /** Owner-private bounded view of unaccepted memory claims; never review. */
   pendingMemory?: true;
+  /** Privately stage evidence-grounded style only; never approve or publish. */
+  personalitySuggestion?: import("../reflection/global-proposal.js").GlobalProposalInput;
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Owner-private persistent schedules and event subscriptions. */
@@ -256,6 +258,7 @@ export interface ModelRequest {
   inspectionAvailable?: boolean;
   recallAvailable?: boolean;
   pendingMemoryAvailable?: boolean;
+  personalitySuggestionAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;

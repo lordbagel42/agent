@@ -18,7 +18,12 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
-import type { Evidence } from "../reflection/domain.js";
+import { type Evidence, freshEvidence } from "../reflection/domain.js";
+import {
+  GLOBAL_PROPOSAL_MAX_AGE_MS,
+  type GlobalPersonalityProposal,
+  globalProposalInputSchema,
+} from "../reflection/global-proposal.js";
 import {
   CHARTER,
   initialPersonality,
@@ -41,7 +46,11 @@ const recordSchema = z.strictObject({
   evidence: z.array(hex),
 });
 type Provenance = { scope: string; id: string; sources: string[] };
-type Snapshot = { state: PersonalityState; provenance: Provenance[] };
+type Snapshot = {
+  state: PersonalityState;
+  provenance: Provenance[];
+  globalProposals?: GlobalPersonalityProposal[];
+};
 
 /** Reject symlinks in every existing path component, not just the leaf. */
 function safePath(path: string): void {
@@ -366,7 +375,150 @@ export class CuratedPersonalityStore {
         throw new Error("Personality provenance changed");
       if (!previous) provenance.push(current);
     }
-    return this.persist({ state, provenance }, parent);
+    return this.persist({ ...snapshot, state, provenance }, parent);
+  }
+
+  /** Host-only private staging. Scope comes from authenticated owner routing;
+   * input comes from the model. This never touches effective personality.
+   * Source IDs, rationale and changes stay in the encrypted snapshot. */
+  stageGlobalProposal(
+    scope: string,
+    input: unknown,
+    now = Date.now(),
+  ): GlobalPersonalityProposal {
+    this.check();
+    const parsed = globalProposalInputSchema.safeParse(input);
+    if (
+      !parsed.success ||
+      !scope.trim() ||
+      scope.length > 2048 ||
+      !Number.isSafeInteger(now) ||
+      now < 0
+    )
+      throw new Error("Invalid global personality suggestion");
+    const value = {
+      ...parsed.data,
+      evidenceIds: [...parsed.data.evidenceIds].sort(),
+    };
+    const grounded = this.evidence.reflectionEvidence(
+      scope,
+      value.evidenceIds,
+      GLOBAL_PROPOSAL_MAX_AGE_MS,
+    );
+    if (
+      !grounded.every((e) =>
+        freshEvidence(e, scope, now, GLOBAL_PROPOSAL_MAX_AGE_MS),
+      )
+    )
+      throw new Error("Global suggestion requires fresh original evidence");
+    const parent = this.head();
+    const snapshot = this.load(parent);
+    const id = `personality:${this.opaque(["global-proposal", scope, value])}`;
+    const previous = snapshot.globalProposals?.find((p) => p.id === id);
+    if (previous) {
+      if (!this.validGlobalProposal(snapshot, previous, scope, now))
+        throw new Error("Global suggestion is no longer valid");
+      return structuredClone(previous);
+    }
+    const provenance = value.evidenceIds.map((id) =>
+      this.provenance(scope, id),
+    );
+    for (const current of provenance) {
+      const saved = snapshot.provenance.find(
+        (p) => p.scope === scope && p.id === current.id,
+      );
+      if (saved && !isDeepStrictEqual(saved, current))
+        throw new Error("Personality provenance changed");
+      if (!saved) snapshot.provenance.push(current);
+    }
+    const proposal: GlobalPersonalityProposal = {
+      ...value,
+      id,
+      scope,
+      sourceIds: [...new Set(provenance.flatMap((p) => p.sources))].sort(),
+      createdAt: now,
+      expiresAt: Math.min(...grounded.map((e) => e.expiresAt)),
+      status: "pending",
+    };
+    snapshot.globalProposals ??= [];
+    if (
+      snapshot.globalProposals.filter(
+        (p) => p.scope === scope && p.expiresAt > now,
+      ).length >= 20
+    )
+      throw new Error("Global suggestion staging capacity reached");
+    snapshot.globalProposals.push(proposal);
+    this.persist(snapshot, parent);
+    return structuredClone(proposal);
+  }
+
+  private validGlobalProposal(
+    snapshot: Snapshot,
+    proposal: GlobalPersonalityProposal,
+    scope: string,
+    now: number,
+  ): boolean {
+    if (
+      proposal.scope !== scope ||
+      !Number.isSafeInteger(now) ||
+      now < proposal.createdAt ||
+      now >= proposal.expiresAt
+    )
+      return false;
+    try {
+      const grounded = this.evidence.reflectionEvidence(
+        scope,
+        proposal.evidenceIds,
+        GLOBAL_PROPOSAL_MAX_AGE_MS,
+      );
+      return grounded.every(
+        (e) =>
+          freshEvidence(e, scope, now, GLOBAL_PROPOSAL_MAX_AGE_MS) &&
+          isDeepStrictEqual(
+            snapshot.provenance.find((p) => p.scope === scope && p.id === e.id),
+            this.provenance(scope, e.id),
+          ),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** Private payload lookup, not approval status: callers must also consult the
+   * global actor's terminal decision ledger and compare expectedVersion. */
+  pendingGlobalProposal(
+    scope: string,
+    id: string,
+    now = Date.now(),
+  ): GlobalPersonalityProposal | undefined {
+    this.check();
+    const snapshot = this.load(this.head());
+    const proposal = snapshot.globalProposals?.find((p) => p.id === id);
+    return proposal && this.validGlobalProposal(snapshot, proposal, scope, now)
+      ? structuredClone(proposal)
+      : undefined;
+  }
+
+  pendingGlobalProposals(
+    scope: string,
+    limit = 10,
+    now = Date.now(),
+    excludedIds: readonly string[] = [],
+  ): GlobalPersonalityProposal[] {
+    this.check();
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20)
+      throw new Error("Invalid suggestion limit");
+    const snapshot = this.load(this.head());
+    const excluded = new Set(excludedIds);
+    return structuredClone(
+      (snapshot.globalProposals ?? [])
+        .filter(
+          (p) =>
+            !excluded.has(p.id) &&
+            this.validGlobalProposal(snapshot, p, scope, now),
+        )
+        .slice(-limit),
+    );
   }
 
   /** Uses the existing append-only rollback semantics (revert current head).

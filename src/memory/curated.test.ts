@@ -168,3 +168,102 @@ it("isolates personality scopes, rejects forged corrections, and never resurrect
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it("keeps global suggestions private, immutable and bound to original live sources", () => {
+  const root = mkdtempSync(join(tmpdir(), "june-suggestions-"));
+  const evidence = new EvidenceStore(":memory:", randomBytes(32));
+  const key = randomBytes(32);
+  let curated = new CuratedPersonalityStore(
+    join(root, "curated"),
+    key,
+    evidence,
+    {
+      initialize: true,
+    },
+  );
+  try {
+    for (const [id, audiences, observedAt] of [
+      ["original", ["private"], 100],
+      ["unrelated", ["private"], 200],
+      ["other-audience", ["channel"], 100],
+    ] as const)
+      evidence.appendSource({
+        id,
+        audiences: [...audiences],
+        platform: "slack",
+        account: "T1",
+        conversation: "D1",
+        author: "owner",
+        observedAt,
+        sourceUrl: "https://example.com/source",
+        text: "Private preference for drier humor",
+      });
+    const input = {
+      expectedVersion: 3,
+      changes: { tone: "dry" },
+      evidenceIds: ["original"],
+      explanation: "Private rationale",
+      confidence: 0.7,
+    };
+    const proposal = curated.stageGlobalProposal("private", input, 300);
+    expect(proposal).toMatchObject({
+      ...input,
+      sourceIds: ["original"],
+      createdAt: 300,
+      expiresAt: 604800100,
+    });
+    const commit = curated.ownerHistory().commit;
+    expect(curated.stageGlobalProposal("private", input, 400)).toEqual(
+      proposal,
+    );
+    expect(curated.ownerHistory()).toEqual({ commit, revisions: [] });
+    expect(curated.effectiveTraits("private")).toEqual({});
+    expect(curated.effectiveTraits("channel")).toEqual({});
+    expect(
+      curated.pendingGlobalProposal("channel", proposal.id, 400),
+    ).toBeUndefined();
+    proposal.changes.tone = "warm";
+    expect(
+      curated.pendingGlobalProposal("private", proposal.id, 400)?.changes,
+    ).toEqual({ tone: "dry" });
+    for (const invalid of [
+      { ...input, evidenceIds: ["other-audience"] },
+      { ...input, changes: { tone: "Private identifying detail" } },
+      { ...input, changes: {} },
+      { ...input, evidenceIds: ["original", "original"] },
+    ])
+      expect(() =>
+        curated.stageGlobalProposal("private", invalid, 400),
+      ).toThrow();
+    expect(
+      curated.pendingGlobalProposal("private", proposal.id, 604800099),
+    ).toBeDefined();
+    expect(
+      curated.pendingGlobalProposal("private", proposal.id, 604800100),
+    ).toBeUndefined();
+    const next = curated.stageGlobalProposal(
+      "private",
+      { ...input, expectedVersion: 4, evidenceIds: ["unrelated"] },
+      400,
+    );
+    expect(
+      curated
+        .pendingGlobalProposals("private", 1, 400, [next.id])
+        .map((p) => p.id),
+    ).toEqual([proposal.id]);
+    curated.close();
+    curated = new CuratedPersonalityStore(join(root, "curated"), key, evidence);
+    evidence.deleteSource("original");
+    expect(
+      curated.pendingGlobalProposal("private", proposal.id, 400),
+    ).toBeUndefined();
+    expect(
+      curated.pendingGlobalProposals("private", 10, 400).map((p) => p.id),
+    ).toEqual([next.id]);
+    expect(() => curated.stageGlobalProposal("private", input, 400)).toThrow();
+  } finally {
+    curated.close();
+    evidence.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

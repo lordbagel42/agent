@@ -4,6 +4,8 @@ import { z } from "zod";
 import type { MessageEvent, Owner } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
+import type { CuratedPersonalityStore } from "../memory/curated.js";
+import type { GlobalProposalInput } from "../reflection/global-proposal.js";
 import { CHARTER } from "../reflection/personality.js";
 
 // A closed vocabulary is intentional: private evidence, arbitrary instructions,
@@ -72,7 +74,10 @@ const rollbackSchema = z.strictObject({
 
 /** One actor per owner, shared by ALL surfaces. Its actions are host-only APIs;
  * only authenticated ingress may supply events. Never expose the engine. */
-export function createPersonalityActor(owner: Owner) {
+export function createPersonalityActor(
+  owner: Owner,
+  curated?: CuratedPersonalityStore,
+) {
   return actor({
     state: { revisions: [] } as State,
     actions: {
@@ -84,6 +89,34 @@ export function createPersonalityActor(owner: Owner) {
         );
         await c.saveState({ immediate: true });
         return result;
+      },
+      /** Model-callable through the host, but never owner publication authority. */
+      stage: async (
+        c,
+        event: MessageEvent,
+        input: GlobalProposalInput,
+      ): Promise<string> => {
+        if (c.key.length !== 1 || c.key[0] !== owner.id)
+          throw new Error("Wrong personality owner");
+        const scope = routeEvent(event, owner);
+        if (
+          !curated ||
+          !scope?.private ||
+          !isOwner(event, owner) ||
+          (event.address.channel === "slack" &&
+            event.metadata?.channelType !== "im")
+        )
+          return "Personality suggestion not staged. An owner-private turn and curated memory are required; nothing was applied.";
+        const head = c.state.revisions.at(-1) ?? defaultGlobalPersonality;
+        if (input?.expectedVersion !== head.version)
+          return `Personality suggestion not staged: current version is ${head.version}. Review the current profile before suggesting again; nothing was applied.`;
+        // No await between head check, current ledger validation and encrypted
+        // CAS write. No profile fields or revisions are changed here.
+        const proposal = curated.stageGlobalProposal(
+          JSON.stringify(scope.key),
+          input,
+        );
+        return `Staged private personality suggestion ${proposal.id} for global version ${proposal.expectedVersion}. Nothing was applied; separate owner review is required.`;
       },
       command: async (c, event: MessageEvent): Promise<string> => {
         if (c.key.length !== 1 || c.key[0] !== owner.id)

@@ -625,6 +625,25 @@ pending proposals and cannot accept them, including proposals from imports.
 Reflection enqueues one idle proposal per evidence set, uses durable timers and
 owner-wide live turn IDs, and never sends a message or changes permissions.
 
+With curated memory configured, June can use `personalitySuggestion` privately
+with `{expectedVersion, changes, evidenceIds, explanation, confidence}` and empty
+text/no other action. It stages one encrypted global-style suggestion, **never
+applies it**. `changes` uses the global profile's fixed style vocabulary; null
+fields mean unchanged. The host checks the exact current profile version and
+1–20 distinct original sources in the owner's audience, all observed within seven
+days. Confidence is not approval authority. At most 20 unexpired suggestions per
+audience are staged; identical content deduplicates. Receipts contain only the
+opaque suggestion ID and target version, not rationale or source text.
+
+`CuratedPersonalityStore.pendingGlobalProposal(scope,id,now)` synchronously
+revalidates provenance, expiry and deletion; `pendingGlobalProposals(scope,limit,
+now,excludedIds)` excludes decided IDs before applying its 1–20 result bound.
+Both return private copies, not public prompt content. The global personality
+actor owns later accept/reject decisions; the payload's `pending` marker only
+means staged, never approved. A changed global head must be reviewed again;
+suggestions never retarget automatically. Deletion hides affected suggestions,
+but old encrypted snapshots/backups are not physically purged by this check.
+
 June can inspect these subsystems in an owner-private turn using
 `inspection: "memory" | "imports" | "reflection" | "retention"`, with empty text and no other
 actions. The host replies directly with timestamped proposal/revision counts,

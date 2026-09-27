@@ -6,6 +6,8 @@ import type {
 } from "../core/contracts.js";
 import { slackHistorySchema } from "../core/slack-history.js";
 import { socialActionSchema } from "../core/social.js";
+import { globalProposalInputSchema } from "../reflection/global-proposal.js";
+import { globalStyleSchema } from "../runtime/personality.js";
 import { wakeupActionSchema } from "../wakeups/state.js";
 import {
   observeUsage,
@@ -168,6 +170,7 @@ const companionReplySchema = z.strictObject({
     ])
     .optional(),
   pendingMemory: z.literal(true).optional(),
+  personalitySuggestion: globalProposalInputSchema.optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -200,6 +203,7 @@ export type ReplyCapabilities = Pick<
   | "inspectionAvailable"
   | "recallAvailable"
   | "pendingMemoryAvailable"
+  | "personalitySuggestionAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
@@ -235,6 +239,7 @@ export function replyJsonSchema(
     inspectionAvailable,
     recallAvailable,
     pendingMemoryAvailable,
+    personalitySuggestionAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -458,6 +463,63 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(personalitySuggestionAvailable
+        ? {
+            personalitySuggestion: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                expectedVersion: {
+                  type: "integer",
+                  description:
+                    "Exact current global profile version, nonnegative.",
+                },
+                changes: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: Object.fromEntries(
+                    Object.entries(globalStyleSchema.shape).map(
+                      ([name, schema]) => [
+                        name,
+                        {
+                          type: ["string", "null"],
+                          enum: [...schema.options, null],
+                        },
+                      ],
+                    ),
+                  ),
+                  required: Object.keys(globalStyleSchema.shape),
+                  description:
+                    "Set unchanged fields to null; change at least one style field.",
+                },
+                evidenceIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "One to twenty distinct original source IDs supplied by private memory; never invent IDs.",
+                },
+                explanation: {
+                  type: "string",
+                  description: "Private rationale, 1–240 characters.",
+                },
+                confidence: {
+                  type: "number",
+                  description:
+                    "Between zero and one; never approval authority.",
+                },
+              },
+              required: [
+                "expectedVersion",
+                "changes",
+                "evidenceIds",
+                "explanation",
+                "confidence",
+              ],
+              description:
+                "Stage one private suggestion, never apply it. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(analyticsAvailable
         ? {
             analytics: {
@@ -646,6 +708,7 @@ export function replyJsonSchema(
       ...(inspectionAvailable ? ["inspection"] : []),
       ...(recallAvailable ? ["recall"] : []),
       ...(pendingMemoryAvailable ? ["pendingMemory"] : []),
+      ...(personalitySuggestionAvailable ? ["personalitySuggestion"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
@@ -828,6 +891,7 @@ export function parseReply(
     inspectionAvailable,
     recallAvailable,
     pendingMemoryAvailable,
+    personalitySuggestionAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -865,6 +929,7 @@ export function parseReply(
     "inspection",
     "recall",
     "pendingMemory",
+    "personalitySuggestion",
     "dashboardLogin",
     "wakeup",
     "replyInThread",
@@ -910,6 +975,8 @@ export function parseReply(
     (reply.inspection !== undefined && !inspectionAvailable) ||
     (reply.recall !== undefined && !recallAvailable) ||
     (reply.pendingMemory !== undefined && !pendingMemoryAvailable) ||
+    (reply.personalitySuggestion !== undefined &&
+      !personalitySuggestionAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
@@ -935,6 +1002,7 @@ export function parseReply(
     Number(reply.inspection !== undefined) +
     Number(reply.recall !== undefined) +
     Number(reply.pendingMemory === true) +
+    Number(reply.personalitySuggestion !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
@@ -957,6 +1025,7 @@ export function parseReply(
       reply.inspection !== undefined ||
       reply.recall !== undefined ||
       reply.pendingMemory === true ||
+      reply.personalitySuggestion !== undefined ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||
       reply.latency !== undefined) &&

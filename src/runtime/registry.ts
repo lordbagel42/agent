@@ -1385,6 +1385,15 @@ export function createJuneRegistry(deps: Dependencies) {
                                   !!plan.pendingMemory &&
                                   scope.private &&
                                   !!deps.memory,
+                                personalitySuggestionAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  !!globalPersonality &&
+                                  scope.private &&
+                                  isOwner(event, deps.owner) &&
+                                  (event.address.channel !== "slack" ||
+                                    event.metadata?.channelType === "im") &&
+                                  !!deps.memory?.personality,
                                 dashboardLoginAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -1844,6 +1853,46 @@ export function createJuneRegistry(deps: Dependencies) {
                                 } catch {
                                   text =
                                     "Pending memory claims are unavailable; no review or other action was taken.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (
+                              generated.personalitySuggestion !== undefined
+                            ) {
+                              let text =
+                                "Personality suggestion not staged. A current owner-private turn and curated memory are required; nothing was applied.";
+                              if (
+                                modelRequest.personalitySuggestionAvailable &&
+                                !signal.aborted &&
+                                valid(step.state)
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  if (
+                                    checked.personalitySuggestion &&
+                                    checked.personalitySuggestion
+                                      .expectedVersion ===
+                                      globalPersonality?.version
+                                  )
+                                    text = await step
+                                      .client<JuneClientRegistry>()
+                                      .personality.getOrCreate([deps.owner.id])
+                                      .stage(
+                                        event,
+                                        checked.personalitySuggestion,
+                                      );
+                                } catch {
+                                  text =
+                                    "Could not confirm whether the private personality suggestion was staged. Nothing was applied.";
                                 }
                               }
                               generated = {
@@ -2866,7 +2915,7 @@ export function createJuneRegistry(deps: Dependencies) {
   return setup({
     use: {
       conversation,
-      personality: createPersonalityActor(deps.owner),
+      personality: createPersonalityActor(deps.owner, deps.memory?.personality),
       job: createCodingActor(deps.coding, deps.lifecycle),
       execution: createExecutionActor(deps),
       ...(deps.wakeups
