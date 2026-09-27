@@ -180,6 +180,10 @@ const companionReplySchema = z.strictObject({
         selection: z.string().min(1).nullable(),
         offset: z.number().int().nonnegative().safe(),
       }),
+      z.strictObject({
+        target: z.literal("import-approval"),
+        selection: z.string().min(1),
+      }),
     ])
     .optional(),
   recall: z
@@ -689,6 +693,20 @@ export function replyJsonSchema(
                     },
                   },
                   required: ["target", "selection", "offset"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    target: { type: "string", enum: ["import-approval"] },
+                    selection: {
+                      type: "string",
+                      description: "Exact configured selection ID.",
+                    },
+                  },
+                  required: ["target", "selection"],
+                  description:
+                    "Propose a first-page import review only. No fetch or approval occurs. The human must explicitly confirm the displayed digest and page count through the authenticated operator API.",
                 },
               ],
               description:

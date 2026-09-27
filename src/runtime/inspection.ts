@@ -18,6 +18,7 @@ import {
 } from "../reflection/domain.js";
 import type { McpConnections } from "../tools/connections.js";
 import type { Delivery } from "./delivery.js";
+import { proposeImportApproval } from "./import-approval.js";
 import type {
   CuriosityProgress,
   ReflectionRuntimeState,
@@ -344,6 +345,21 @@ export function createInspectionReader(deps: {
   event?: MessageEvent,
 ) => Promise<string> {
   return async (query, event) => {
+    if (typeof query === "object" && query.target === "import-approval") {
+      const selected = Object.entries(deps.selections).find(
+        ([id, coverage]) =>
+          id === query.selection && coverage.audiences.includes(deps.audience),
+      );
+      if (!deps.imports || !selected)
+        return "Import approval is unavailable for this selection. No import was started.";
+      const [id, coverage] = selected;
+      return proposeImportApproval(
+        id,
+        coverage,
+        importCoverageDigest(id, coverage),
+        deps.imports.status(id),
+      );
+    }
     const target = typeof query === "string" ? query : query.target;
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {

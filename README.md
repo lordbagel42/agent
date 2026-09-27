@@ -929,6 +929,17 @@ access; Slack timelines omit unselected thread replies, Gmail labels are not
 whole-mailbox/thread coverage, and Gmail's strict lower search boundary may omit
 messages. Finished traversal is not proof of gap-free history.
 
+June can propose a first-page import review with
+`inspection: {target:"import-approval", selection:"exact configured ID"}`.
+The host displays full coverage, its digest, `expectedPages:0` and the exact
+one-page operator confirmation payload. It never fetches history or authorizes
+an import. The human must review it and explicitly POST the displayed payload
+to `/operator/imports/:id/start` using the owner bearer credential outside chat.
+An ordinary "yes" to June is not confirmation. Changed digests or page counts
+reject; running, completed, already-advanced, multi-audience and oversized
+reviews produce no proposal. Larger reviews remain available through the
+authenticated operator API. This does not grant automatic continuation.
+
 To list current private reflection candidates, the authenticated owner sends
 exactly `!reflection list` as an ordinary message in a private conversation
 (not a Slack slash command). The host returns at most ten

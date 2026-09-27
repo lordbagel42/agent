@@ -1,8 +1,13 @@
 import { randomBytes } from "node:crypto";
 import { expect, it } from "vitest";
+import { setupTest } from "../../tests/rivet.js";
+import type { MessageEvent } from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
 import { HistoryImports } from "../imports/index.js";
 import { EvidenceStore } from "../memory/store.js";
+import { parseReply } from "../models/provider.js";
 import { createInspectionReader } from "../runtime/inspection.js";
+import { createJuneRegistry } from "../runtime/registry.js";
 import { createHttpApp } from "./app.js";
 import { createImportRoutes } from "./imports.js";
 import { createMemoryRoutes } from "./memory.js";
@@ -11,6 +16,12 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
   const store = new EvidenceStore(":memory:", randomBytes(32));
   t.onTestFinished(() => store.close());
   const audience = JSON.stringify(["private", "owner"]);
+  const owner = {
+    id: "owner",
+    identities: [
+      { channel: "slack" as const, accountId: "T1", senderId: "U1" },
+    ],
+  };
   const coverage = {
     platform: "gmail",
     account: "fixture@example.invalid",
@@ -46,7 +57,7 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
   });
   const token = "fixture-only-operator-token-long-enough";
   const app = createHttpApp({
-    owner: { id: "owner", identities: [] },
+    owner,
     channels: {},
     operatorToken: token,
     async submit() {
@@ -96,11 +107,128 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
   const review = await app.request("/operator/imports", { headers });
   expect(review.headers.get("cache-control")).toBe("no-store");
   const { mail } = await review.json();
-  const confirmation = {
+  const inspect = createInspectionReader({
+    audience,
+    imports,
+    selections: { mail: coverage },
+  });
+  const action = { target: "import-approval", selection: "mail" } as const;
+  const denied = await createInspectionReader({
+    audience: JSON.stringify(["private", "different-owner"]),
+    imports,
+    selections: { mail: coverage },
+  })(action);
+  expect(denied).toContain("approval is unavailable");
+  expect(denied).not.toContain(coverage.account);
+  expect(await inspect({ ...action, selection: "missing" })).toBe(denied);
+  expect(
+    parseReply(JSON.stringify({ text: "", inspection: action }), [], {
+      inspectionAvailable: true,
+    }).inspection,
+  ).toEqual(action);
+  expect(() =>
+    parseReply(JSON.stringify({ text: "", inspection: action }), []),
+  ).toThrow();
+  for (const inspection of [
+    { ...action, confirmed: true },
+    { target: "import-start", selection: "mail" },
+  ])
+    expect(() =>
+      parseReply(JSON.stringify({ text: "", inspection }), [], {
+        inspectionAvailable: true,
+      }),
+    ).toThrow();
+  const sent: string[] = [];
+  let inspections = 0;
+  const { client } = await setupTest(
+    t,
+    createJuneRegistry({
+      owner,
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, reactions: true, threads: true },
+          async receive() {
+            return { response: new Response(), events: [] };
+          },
+          async send(message) {
+            if (message.content.type !== "text")
+              throw new Error("Expected text-only import review");
+            sent.push(message.content.text);
+            return { status: "sent", messageId: `out${sent.length}` };
+          },
+        },
+      },
+      model: {
+        async reply(request) {
+          const reply = { text: "", inspection: action };
+          if (request.inspectionAvailable) {
+            expect(request.system).toContain(
+              'inspection {target:"import-approval",selection:ID}',
+            );
+            return parseReply(JSON.stringify(reply), [], request);
+          }
+          // Custom providers cannot bypass the host's owner-private guard.
+          return reply;
+        },
+      },
+      inspection(query) {
+        inspections++;
+        return inspect(query);
+      },
+    }),
+  );
+  const deliver = async (extra: Partial<MessageEvent> = {}) => {
+    const event: MessageEvent = {
+      id: `in${sent.length}`,
+      type: "message",
+      messageId: `ts${sent.length}`,
+      occurredAt: Date.now(),
+      address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+      direct: true,
+      senderId: "U1",
+      text: "Propose the first mail import page for my review",
+      ...extra,
+    };
+    const scope = routeEvent(event, owner);
+    if (!scope) throw new Error("Missing fixture scope");
+    const before = sent.length;
+    await client.conversation
+      .getOrCreate(scope.key)
+      .send("inbox", { type: "event", event });
+    await expect.poll(() => sent.length, { timeout: 5000 }).toBe(before + 1);
+    return sent.at(-1) ?? "";
+  };
+  const proposal = await deliver();
+  for (const extra of [
+    { direct: false },
+    { senderId: "U2", metadata: { channelType: "im" as const } },
+  ])
+    expect(await deliver(extra)).toContain("owner-private turn");
+  expect(inspections).toBe(1);
+  expect(proposal).toContain("No import was started");
+  expect(await deliver({ text: "yes" })).toContain("No import was started");
+  expect(imports.status("mail").progress).toBeUndefined();
+  expect(reads).toBe(0);
+  const displayed = JSON.parse(proposal.split("\n")[1] ?? "");
+  expect(displayed.coverage).toEqual({
+    platform: "gmail",
+    account: "fixture@example.invalid",
+    conversations: ["INBOX"],
+    from: 1000,
+    to: 5000,
+  });
+  expect(displayed.digest).toBe(mail.digest);
+  expect(displayed.maxPages).toBe(1);
+  expect(displayed.confirmation.path).toBe("/operator/imports/mail/start");
+  const confirmation = displayed.confirmation.body;
+  expect(confirmation).toEqual({
     confirmed: true,
     digest: mail.digest,
     expectedPages: 0,
-  };
+  });
+  expect(imports.status("mail").progress).toBeUndefined();
+  expect(reads).toBe(0);
   const start = (input: unknown, auth = true) =>
     app.request("/operator/imports/mail/start", {
       method: "POST",
@@ -116,6 +244,7 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
   expect((await start(confirmation)).status).toBe(200);
   expect(reads).toBe(1);
   expect(store.importProgress("mail")?.coverage).toEqual(coverage);
+  expect(await inspect(action)).toContain("approval is unavailable");
   expect((await start(confirmation)).status).toBe(409);
   expect(reads).toBe(1);
   expect(
