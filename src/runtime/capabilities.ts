@@ -16,6 +16,7 @@ import type { MemoryRetrieval } from "../memory/store.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type { ReflectionProposalBinding } from "../reflection/global-proposal.js";
 import { formatJuryResult } from "../reflection/jury.js";
+import { recallSessions } from "../sessions/recall.js";
 import {
   type CodingState,
   codingJobMetadata,
@@ -148,6 +149,8 @@ export interface CapabilityPorts {
   confirmForget?(preview: {
     sourceId: string;
     fingerprint: string;
+    includeArchives: true;
+    archivedTurns: number;
   }): Promise<string>;
   /** Same ephemeral-only contract as deliverRivet, with a distinct receipt. */
   deliverReflection?(
@@ -733,6 +736,27 @@ export async function runCapability(
                   validAt: undefined,
                 }
               : checked.recall;
+          if (request.kind === "sessions" || request.kind === "session") {
+            if (!ports.evidence.sourceIds())
+              throw new Error("Missing memory context");
+            const view = recallSessions(
+              store,
+              audience,
+              request,
+              deps.dashboardLogin?.redact,
+            );
+            // Archive entries, including June's own words, never become
+            // independent originals just because an execution worker read them.
+            await ports.evidence.bindRecall([], view.contextSourceIds);
+            if (signal.aborted || !valid())
+              throw new Error("Recall invalidated");
+            return {
+              text: view.text,
+              ...(generated.replyInThread !== undefined
+                ? { replyInThread: generated.replyInThread }
+                : {}),
+            };
+          }
           const contradictionsOf =
             request.kind === "contradictions" ? request.claimId : undefined;
           const dependents =
@@ -1177,6 +1201,7 @@ export async function runCapability(
           deps.memory.store.previewForget(
             audience,
             checked.forgetPreview.sourceId,
+            { includeArchives: true },
           );
         if (preview) {
           const { sourceId, sources, claims, proposals, physicalPurge } =
@@ -1186,10 +1211,11 @@ export async function runCapability(
             sources,
             claims,
             proposals,
+            archivedTurns: preview.archivedTurns ?? 0,
             physicalPurge,
           });
           if (report.length <= 2200) {
-            text = `Forgetting impact preview (read-only snapshot): ${report}\nCounts cover only authorized ledger records. Accepted proposals also appear in the claim count; do not add them twice. No evidence bodies or derivative IDs are shown. Nothing was deleted or confirmed.\nA separately authorized forget logically tombstones this source and dependent claims/proposals, invalidates copied working context and grounded personality, and requests associated job/reflection cleanup. Existing social grants/outreach are revoked and copied prose redacted. These counts are not a count of all cleanup effects. Already-sent content, running external work, encrypted history, Rivet journals, and backups cannot be recalled or physically erased by this operation.`;
+            text = `Forgetting impact preview (read-only snapshot): ${report}\nCounts cover only authorized ledger records. Accepted proposals also appear in the claim count; do not add them twice. archivedTurns counts dependent transcript payloads, not sessions; content-free archive receipts remain. No evidence bodies or derivative IDs are shown. Nothing was deleted or confirmed.\nA separately authorized forget logically tombstones this source and dependent claims/proposals/archive payloads, invalidates copied working context and grounded personality, and requests associated job/reflection cleanup. Existing social grants/outreach are revoked and copied prose redacted. These counts are not a count of all cleanup effects. Already-sent content, running external work, encrypted history, Rivet journals, and backups cannot be recalled or physically erased by this operation.`;
             if (
               preview.confirmable &&
               ports.confirmForget &&
@@ -1198,8 +1224,10 @@ export async function runCapability(
               const token = await ports.confirmForget({
                 sourceId: preview.sourceId,
                 fingerprint: preview.fingerprint,
+                includeArchives: true,
+                archivedTurns: preview.archivedTurns ?? 0,
               });
-              text += `\nTo confirm this exact preview, send this as a new plain message in your Slack DM within 10 minutes:\n!forget-confirm ${token}\nThis replaces older unused confirmations. Nothing has been deleted yet.`;
+              text += `\n[Archived turns affected: ${preview.archivedTurns ?? 0}]\nTo confirm this exact preview, send this as a new plain message in your Slack DM within 10 minutes:\n!forget-confirm ${token}\nThis replaces older unused confirmations. Nothing has been deleted yet. Preserve the exact archived-turns marker alongside this command when presenting the preview; omitting it makes confirmation unavailable.`;
             }
           }
         }

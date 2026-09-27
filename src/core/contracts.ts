@@ -256,6 +256,13 @@ export interface CompanionReply {
     | { kind: "dependents"; sourceId: string }
     | { kind: "claim"; claimId: string }
     | {
+        kind: "sessions";
+        query: string;
+        observedFrom?: number;
+        observedTo?: number;
+      }
+    | { kind: "session"; sessionId: string; afterSequence?: number }
+    | {
         kind: "search";
         query: string;
         category?: "claim" | "preference" | "commitment" | "pattern";

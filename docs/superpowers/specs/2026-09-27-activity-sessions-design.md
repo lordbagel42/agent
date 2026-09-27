@@ -1,9 +1,9 @@
 # Activity-period conversation actors
 
-Status: approved architectural direction. Session-directory control state and
-encrypted archive storage/lookup are implemented as inactive prerequisites.
-The archive producer, June-facing recall, live session routing and migration
-are not implemented or activated by those prerequisites.
+Status: approved architectural direction. Session-directory control state,
+encrypted archive storage/lookup, June-facing typed archive recall and
+archive-aware forgetting are implemented. The archive producer, live session
+routing and migration are not implemented or activated by these prerequisites.
 
 ## Outcome and scope
 
@@ -217,6 +217,15 @@ session routing per event. During cutover, stop assigning new events to the lega
 lane, drain its accepted queue and known live turns, and record the last accepted
 event boundary. New input waits durably until this handoff completes. Ambiguous
 live work requires existing reconciliation; it is not declared drained by age.
+
+Scopes with unresolved conversational model/web intents or unknown ordinary
+deliveries remain held pending a separately approved conversation-reconciliation
+feature. This migration does not add an endpoint that clears those records.
+Expose held reasons through existing bounded inspection. `confirmedStopped`
+alone proves neither sent nor rejected delivery and never permits replay.
+`event.done`, `phase=settled`, restart and released reflection occupancy are not
+drain certificates. Preserve exact IDs, uncertainty, deduplication, tombstones
+and provenance while independently progressing provably drained scopes.
 
 Adopt existing event IDs into cross-session deduplication, preserve old proposal
 lookup and worker identities, and archive only provably retainable legacy entries.

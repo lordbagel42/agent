@@ -228,6 +228,9 @@ export interface ConversationState {
     {
       sourceId: string;
       fingerprint: string;
+      /** Absent on old previews: do not retroactively authorize archive loss. */
+      includeArchives?: true;
+      archivedTurns?: number;
       previewEventId: string;
       expiresAt: number;
       commandEventId?: string;
@@ -589,7 +592,12 @@ export function createJuneRegistry(deps: Dependencies) {
       executionForgetConfirmation: async (
         c,
         requestId: string,
-        preview: { sourceId: string; fingerprint: string },
+        preview: {
+          sourceId: string;
+          fingerprint: string;
+          includeArchives?: true;
+          archivedTurns?: number;
+        },
       ) => {
         const context = delegatedScope(c.state, c.key, requestId);
         const event = c.state.events[context.originEventId]?.event;
@@ -604,10 +612,13 @@ export function createJuneRegistry(deps: Dependencies) {
         const current = deps.memory.store.previewForget(
           context.audience,
           preview.sourceId,
+          { includeArchives: preview.includeArchives === true },
         );
         if (
           !current?.confirmable ||
-          current.fingerprint !== preview.fingerprint
+          current.fingerprint !== preview.fingerprint ||
+          (preview.includeArchives === true &&
+            preview.archivedTurns !== (current.archivedTurns ?? 0))
         )
           throw new Error("Forget preview changed");
         const name = requestId.slice(requestId.indexOf(":") + 1);
@@ -623,6 +634,12 @@ export function createJuneRegistry(deps: Dependencies) {
         c.state.forgetConfirmations[token] = {
           sourceId: current.sourceId,
           fingerprint: current.fingerprint,
+          ...(preview.includeArchives
+            ? {
+                includeArchives: true as const,
+                archivedTurns: current.archivedTurns ?? 0,
+              }
+            : {}),
           // Bind the actual completion reply, not the original acknowledgment.
           // The existing confirmation guard still requires a sent delivery
           // containing this exact token; omitted/failed previews cannot confirm.
@@ -1445,7 +1462,12 @@ export function createJuneRegistry(deps: Dependencies) {
                         delivered.message.content.type !== "text" ||
                         !delivered.message.content.text.includes(
                           `!forget-confirm ${token}`,
-                        )
+                        ) ||
+                        (entry.includeArchives === true &&
+                          (entry.archivedTurns === undefined ||
+                            !delivered.message.content.text.includes(
+                              `[Archived turns affected: ${entry.archivedTurns}]`,
+                            )))
                       )
                         return result(
                           "That forgetting confirmation is unavailable. Request a fresh preview.",
@@ -1453,6 +1475,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       const initial = memory.store.previewForget(
                         audience,
                         entry.sourceId,
+                        { includeArchives: entry.includeArchives === true },
                       );
                       if (
                         !initial?.confirmable ||
@@ -1474,6 +1497,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       const preview = memory.store.previewForget(
                         audience,
                         entry.sourceId,
+                        { includeArchives: entry.includeArchives === true },
                       );
                       if (
                         step.abortSignal.aborted ||

@@ -154,11 +154,14 @@ it("gates June's exact-target preview and never leaks or mutates evidence", asyn
   };
   const report = await deliver();
   expect(report).toContain('"sourceId":"target","sources":1,"claims":1');
+  expect(report).toContain('"archivedTurns":0');
   expect(report).toContain('"physicalPurge":false');
   expect(report).toContain("Nothing was deleted or confirmed");
   expect(report).toContain("journals, and backups");
   expect(requests).toHaveLength(1);
-  expect(previewRead).toHaveBeenCalledExactlyOnceWith(audience, "target");
+  expect(previewRead).toHaveBeenCalledExactlyOnceWith(audience, "target", {
+    includeArchives: true,
+  });
   for (const extra of [
     {
       direct: false,

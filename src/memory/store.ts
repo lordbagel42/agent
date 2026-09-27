@@ -1090,6 +1090,8 @@ export class EvidenceStore {
       afterSequence?: number;
       limit?: number;
       maxCharacters?: number;
+      /** Host serialization may expand markup into escaped JSON. */
+      measureCharacters?: (json: string) => number;
     } = {},
   ): SessionArchivePage {
     parse(id, audience);
@@ -1126,7 +1128,9 @@ export class EvidenceStore {
     for (const turn of candidates.slice(0, limit)) {
       result.turns.push(turn);
       consumed++;
-      if (JSON.stringify(page()).length <= budget) continue;
+      const json = JSON.stringify(page());
+      if ((options.measureCharacters?.(json) ?? json.length) <= budget)
+        continue;
       result.turns.pop();
       if (consumed > 1) {
         // Retry on an empty page before classifying the turn as oversized.
@@ -1146,6 +1150,9 @@ export class EvidenceStore {
       observedFrom?: number;
       observedTo?: number;
       limit?: number;
+      /** Trusted host dependency binding, including matches counted as omitted.
+       * Never expose a foreign or excluded turn through this callback. */
+      onMatch?: (turnId: string) => void;
     } = {},
   ): SessionArchiveSearch {
     parse(id, audience);
@@ -1174,6 +1181,7 @@ export class EvidenceStore {
                     entry.content.text.toLocaleLowerCase().includes(needle))),
             ),
         );
+        for (const turn of turns) options.onMatch?.(turn.id);
         return turns.length
           ? [
               {

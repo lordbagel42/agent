@@ -209,6 +209,27 @@ const companionReplySchema = z.strictObject({
     .union([
       searchQuerySchema,
       z.strictObject({
+        kind: z.literal("session"),
+        sessionId: z.string().regex(/^[a-f0-9]{64}$/),
+        afterSequence: recallTimestampSchema,
+      }),
+      z
+        .strictObject({
+          kind: z.literal("sessions"),
+          query: z
+            .string()
+            .trim()
+            .refine((value) => Array.from(value).length <= 500),
+          observedFrom: recallTimestampSchema,
+          observedTo: recallTimestampSchema,
+        })
+        .refine(
+          (value) =>
+            value.observedFrom === undefined ||
+            value.observedTo === undefined ||
+            value.observedFrom < value.observedTo,
+        ),
+      z.strictObject({
         kind: z.literal("dependents"),
         sourceId: z.string().min(1).max(2048),
       }),
@@ -842,6 +863,53 @@ function legacyReplyJsonSchema(
             recall: {
               anyOf: [
                 { type: ["string", "null"] },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", enum: ["sessions"] },
+                    query: {
+                      type: "string",
+                      description:
+                        "At most 500 Unicode characters; empty to list archived sessions. Transcript text, not claim search.",
+                    },
+                    observedFrom: {
+                      type: ["integer", "null"],
+                      minimum: 0,
+                      maximum: Number.MAX_SAFE_INTEGER,
+                      description:
+                        "Inclusive original entry observation time in epoch milliseconds, not receipt/import time. Null omits the bound.",
+                    },
+                    observedTo: {
+                      type: ["integer", "null"],
+                      minimum: 0,
+                      maximum: Number.MAX_SAFE_INTEGER,
+                      description:
+                        "Exclusive original entry observation time; must exceed observedFrom. Null omits the bound.",
+                    },
+                  },
+                  required: ["kind", "query", "observedFrom", "observedTo"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", enum: ["session"] },
+                    sessionId: {
+                      type: "string",
+                      pattern: "^[a-f0-9]{64}$",
+                      description: "Copy an exact ID from session search.",
+                    },
+                    afterSequence: {
+                      type: ["integer", "null"],
+                      minimum: 0,
+                      maximum: Number.MAX_SAFE_INTEGER,
+                      description:
+                        "Copy nextAfter from the last expansion; null/zero starts at the beginning. Complete turns may be omitted for size or deletion.",
+                    },
+                  },
+                  required: ["kind", "sessionId", "afterSequence"],
+                },
                 {
                   type: "object",
                   additionalProperties: false,

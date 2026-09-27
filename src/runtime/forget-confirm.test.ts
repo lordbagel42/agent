@@ -41,6 +41,42 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
       sourceUrl: "https://example.com/fixture",
       text: `SYNTHETIC PRIVATE BODY ${id}`,
     });
+  const sessionId = "a".repeat(64);
+  const archiveTarget = (sequence: number) =>
+    store.archiveSessionTurn(
+      {
+        sessionId,
+        audience,
+        openedAt: 10,
+        turn: {
+          eventId: sequence.toString(16).padStart(64, "0"),
+          sequence,
+          receivedAt: 10 + sequence - 1,
+          data: {
+            sourceIds: ["target"],
+            contextSourceIds: [],
+            entries: [
+              {
+                role: "assistant",
+                address: {
+                  channel: "slack",
+                  accountId: "T1",
+                  conversationId: "D1",
+                },
+                observedAt: 20,
+                delivery: "unknown",
+                content: {
+                  retention: "retained",
+                  text: "SYNTHETIC PRIVATE ARCHIVE",
+                },
+              },
+            ],
+          },
+        },
+      },
+      0,
+    );
+  archiveTarget(1);
   const sent: OutboundMessage[] = [];
   let action: CompanionReply = {
     text: "",
@@ -151,6 +187,16 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
 
   const first = await preview();
   expect(cleanupCalls).toBe(0);
+  expect(sent.at(-1)?.content).toMatchObject({
+    text: expect.stringContaining('"archivedTurns":1'),
+  });
+  expect((await june.snapshot()).forgetConfirmations?.[first]).toMatchObject({
+    includeArchives: true,
+    archivedTurns: 1,
+  });
+  archiveTarget(2);
+  expect(await turn(`!forget-confirm ${first}`)).toContain("no longer current");
+  expect(store.source(audience, "target")).toBeDefined();
   action = { text: "nothing changed" };
   await turn(`> !forget-confirm ${first}`);
   await turn(`quoted: !forget-confirm ${first}`);
@@ -205,6 +251,11 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
   expect(cleanupCalls).toBe(1);
   expect(store.isDeleted("target")).toBe(true);
   expect(store.isDeleted("new-dependent")).toBe(true);
+  expect(store.retrieveSession(audience, sessionId)).toEqual({
+    session: { id: sessionId, openedAt: 10, archivedThrough: 2 },
+    turns: [],
+    omitted: 0,
+  });
   expect(store.source(audience, "unrelated")).toBeDefined();
   expect((await june.snapshot()).forgetConfirmations?.[fresh]?.status).toBe(
     "completed",
