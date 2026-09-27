@@ -288,6 +288,25 @@ Receipts report stage outcomes, fixed failure reasons and next steps; individual
 check logs are not exposed by the controller feed. No evidence means unknown,
 not passed. A blocked controller is reported even when inspecting another SHA.
 The last 100 events may omit older evidence and are not a controller heartbeat.
+
+Phase latency uses only those 100 events for the requested revision (or the latest
+candidate revision when `revision: null`). It reports the latest visible attempt:
+queue (`received` → `preparing`), combined preparation and drain (`preparing` →
+`activating`), activation to verified health (`activating` → `healthy`), and
+rollback (`failed:health_failed` → `rolled_back:health_failed`, including candidate
+drain). A new `preparing` or `received` event starts a new attempt; timings never
+combine visible retries. The feed has no attempt IDs and deduplicates consecutive
+statuses, so an unrecorded preparation restart cannot be distinguished; these are
+observed event intervals, not proof of uninterrupted execution.
+Only adjacent lifecycle endpoints in sequence and nondecreasing
+wall-clock time yield milliseconds. Fetch failures do not end a candidate phase.
+Missing, aged-out, incomplete, interrupted or out-of-order evidence yields
+**unknown**, not zero or success. Reconciliation cannot complete an interrupted
+phase. A genuine same-millisecond pair can report zero. Separate install/build,
+drain and readiness durations are not recorded, and these intervals are neither
+monotonic-clock benchmarks nor current-health attestations. No latency target or
+30-second deployment guarantee is implied.
+
 For an exact revision, inspection searches the full bounded feed for its latest
 `healthy` or `reconciled` observation, even if it is older than the displayed
 three events. That proves the controller verified it live and healthy **at that

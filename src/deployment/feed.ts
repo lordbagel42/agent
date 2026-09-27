@@ -86,6 +86,66 @@ const reasons: Record<
     "Controller could not fetch trusted main. Operator should inspect repository connectivity/access.",
 };
 
+function phaseLatency(events: DeploymentFeed["events"], revision?: string) {
+  const matching = events.filter(
+    (event) => event.revision === revision && event.status !== "fetch_failed",
+  );
+  // A new preparing event starts a retry. Never borrow an endpoint from an
+  // earlier attempt; received only belongs here when immediately preceding it.
+  let start = matching.findLastIndex(
+    (event) => event.status === "received" || event.status === "preparing",
+  );
+  if (
+    matching[start]?.status === "preparing" &&
+    matching[start - 1]?.status === "received"
+  )
+    start--;
+  const attempt = matching.slice(Math.max(0, start));
+  const order = {
+    received: 0,
+    preparing: 1,
+    activating: 2,
+    healthy: 3,
+    failed: 3,
+    rolled_back: 4,
+    deferred: 5,
+    superseded: 5,
+    blocked: 5,
+    reconciled: 6,
+    fetch_failed: 7,
+  };
+  // Do not sort by wall time or clamp clock regressions to zero. Status order
+  // also prevents a late healthy/reconciled event from completing an interruption.
+  const ordered = attempt.every((event, index) => {
+    const previous = attempt[index - 1];
+    return (
+      !previous ||
+      (event.sequence > previous.sequence &&
+        event.at >= previous.at &&
+        order[event.status] > order[previous.status])
+    );
+  });
+  const phases = [
+    ["queue", "received", "preparing"],
+    ["prepare+drain", "preparing", "activating"],
+    ["activation-to-healthy", "activating", "healthy"],
+    ["rollback", "failed", "rolled_back"],
+  ] as const;
+  const timings = phases.map(([label, from, to]) => {
+    const index = attempt.findIndex((event) => event.status === from);
+    const began = attempt[index];
+    const ended = attempt[index + 1];
+    const known =
+      ordered &&
+      began &&
+      ended?.status === to &&
+      (to !== "rolled_back" ||
+        (began.reason === "health_failed" && ended.reason === "health_failed"));
+    return `${label}: ${known ? `${ended.at - began.at} ms` : "unknown"}`;
+  });
+  return `Phase latency for ${revision ?? "unknown revision"} (latest visible attempt, wall-clock intervals): ${timings.join("; ")}. Unknown means missing, incomplete, interrupted or out-of-order evidence, not zero or success. Separate build/drain timings are unavailable; durations do not establish current health.`;
+}
+
 /** No controller mutations: main is already watched under installed policy.
  * The conversation journal records this bounded inspection receipt. */
 export function createReleaseTool(options: {
@@ -115,11 +175,12 @@ export function createReleaseTool(options: {
     if (!feed)
       return [
         ...lines,
-        "Controller feed unavailable. Progress, checks, blockers, and historical healthy observations are unknown; no deployment action was taken.",
+        "Controller feed unavailable. Progress, phase latency, checks, blockers, and historical healthy observations are unknown; no deployment action was taken.",
       ].join("\n\n");
+    const bounded = feed.events.slice(-100);
     const events = request.revision
-      ? feed.events.filter((event) => event.revision === request.revision)
-      : feed.events;
+      ? bounded.filter((event) => event.revision === request.revision)
+      : bounded;
     // Fetch failures describe controller observation, not candidate lifecycle.
     // Match the controller's Store.status lookup.
     const latest = events.findLast((event) => event.status !== "fetch_failed");
@@ -133,13 +194,14 @@ export function createReleaseTool(options: {
           : "No healthy/reconciled observation for this revision in the bounded feed; whether it previously became live is unknown, not disproven.",
       );
     }
-    const blocker = feed.events.findLast((event) => event.status === "blocked");
+    const blocker = bounded.findLast((event) => event.status === "blocked");
     lines.push(
       `Controller blocked: ${feed.blocked ? "yes" : "no (as last published; not a liveness guarantee)"}.${feed.blocked ? ` ${blocker?.reason ? `${blocker.reason}: ${reasons[blocker.reason]}` : "Reason is outside the bounded feed; operator inspection required."}` : ""}`,
       `Historical last healthy revision: ${feed.lastHealthyRevision} (not proof of the current deployment).`,
       latest
         ? `Last recorded candidate status: ${latest.status} at ${new Date(latest.at).toISOString()}.`
         : "Candidate lifecycle status unknown in the last 100 controller events. Not known queued, checked, or authorized; owner must verify the exact revision was published to trusted main. Old evidence may have aged out; fetch failures are controller observations only.",
+      phaseLatency(events, request.revision ?? latest?.revision),
       "Checks: controller runs frozen install, formatting, types, routing/delivery tests, immutable artifact verification, drain, and readiness/process identity gates. This feed exposes stage outcomes only, not individual check logs; missing results are unknown, never passed.",
       ...events
         .slice(-3)
