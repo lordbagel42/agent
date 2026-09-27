@@ -568,7 +568,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // first new message, while already-journaled turns keep the old path.
           const reflectionReviewVersion = await loop.getVersion(
             "reflection-review",
-            7,
+            8,
           );
           // A parked inbox can use the jury on its first new turn; journals
           // already processing a turn retain the original capability plan.
@@ -636,6 +636,13 @@ export function createJuneRegistry(deps: Dependencies) {
                 reflectionReviewVersion < 6)
             )
               reflectionReview = undefined;
+            const interruptionReview =
+              reflectionReviewVersion >= 8 &&
+              ownerTurn &&
+              scope.private &&
+              body.type === "event" &&
+              event.type === "message" &&
+              !!deps.social?.interruptionCommand(event);
             if (version >= 5 && !ownerTurn) {
               const admitted = await loop.step("guest-admission", async () =>
                 priority.acceptGuest(
@@ -833,6 +840,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 if (
                   !deps.wakeups ||
                   !valid(step.state) ||
+                  interruptionReview ||
                   reflectionReview?.action === "propose"
                 )
                   return;
@@ -1045,6 +1053,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   !plan.memory ||
                   reflectionReview ||
                   forgetCommand ||
+                  interruptionReview ||
                   event.type !== "message" ||
                   body.type !== "event" ||
                   !valid(step.state)
@@ -1533,13 +1542,26 @@ export function createJuneRegistry(deps: Dependencies) {
                   },
                 );
               } else if (
-                version >= 5 &&
+                (version >= 5 || interruptionReview) &&
                 body.type === "event" &&
                 deps.social?.command(event)
               ) {
                 const social = deps.social;
-                reply = await loop.step("social-command", async () => ({
-                  text: await social.decide(event),
+                reply = await loop.step("social-command", async (step) => ({
+                  text: await social.decide(
+                    event,
+                    interruptionReview && deps.reflection && valid(step.state)
+                      ? (proposalId, reference, commandId) =>
+                          step
+                            .client<JuneClientRegistry>()
+                            .reflection.getOrCreate([deps.owner.id])
+                            .deliverInterruption(
+                              proposalId,
+                              reference,
+                              commandId,
+                            )
+                      : undefined,
+                  ),
                 }));
               } else if (command) {
                 reply = await loop.step(
@@ -5283,6 +5305,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       correctionCommand ||
                       reflectionReview ||
                       modelReview ||
+                      interruptionReview ||
                       !sourceId ||
                       body.type !== "event" ||
                       !deps.memory?.extract ||
@@ -5334,6 +5357,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     !plan.reflection ||
                     reflectionReview ||
                     modelReview ||
+                    interruptionReview ||
                     !deps.reflection ||
                     !sourceId ||
                     body.type !== "event" ||
@@ -5450,6 +5474,9 @@ export function createJuneRegistry(deps: Dependencies) {
                   deps.social?.rejectInterruption(scope, candidateId);
                   return undefined;
                 },
+                sendInterruption: deps.social?.deliverInterruption.bind(
+                  deps.social,
+                ),
               },
               deps.lifecycle,
             ),

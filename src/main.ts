@@ -1256,7 +1256,8 @@ async function main() {
             (event.address.channel !== "slack" ||
               event.reflectionReviewEligible === true) &&
             parseReflectionReviewCommand(event.text);
-          if (!reflectionReview) memory.store.appendSource(source);
+          if (!reflectionReview && !social?.interruptionCommand(event))
+            memory.store.appendSource(source);
         }
       }
       await client.conversation.getOrCreate(scope.key).receive(event);

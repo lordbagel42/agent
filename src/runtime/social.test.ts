@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,7 +19,11 @@ import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { createLifecycle } from "./lifecycle.js";
 import { createPriorityAdmission } from "./priority.js";
-import type { ReflectionCandidate } from "./reflection.js";
+import {
+  createReflectionActor,
+  type ReflectionCandidate,
+  reflectionCandidateId,
+} from "./reflection.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 import { SocialPermissions } from "./social.js";
 
@@ -46,6 +50,7 @@ const raygen: MessageEvent = {
   id: "owner1",
   senderId: RAYGEN_SLACK_ID,
   direct: true,
+  reflectionReviewEligible: true,
   address: { ...guest.address, conversationId: "DOWNER" },
   metadata: { channelType: "im" },
   text: "Please ask me first.",
@@ -180,7 +185,7 @@ it("stages one private candidate-bound preview without granting or sending, and 
   ]);
   expect(social.view(guest)).toBe("[]");
   expect(await social.decide({ ...raygen, text: `!allow ${id}` })).toContain(
-    "unapproved",
+    "Approval is unchanged",
   );
   expect(social.permits(guest, "deep")).toBe(false);
   const rejected = { ...candidate, id: "rejected-before-staging" };
@@ -379,6 +384,7 @@ it("stages strict commands and inert model drafts without reauthorizing stale ca
     type: "event",
     event: {
       ...raygen,
+      occurredAt: Date.now(),
       reflectionReviewEligible: true,
       text: `!reflection propose ${alias} UGUEST Frozen preview`,
     },
@@ -473,8 +479,13 @@ it("stages strict commands and inert model drafts without reauthorizing stale ca
     await reflection.candidate(modelAlias, JSON.stringify(scope)),
   ).toBeNull();
   expect(
-    await social.decide({ ...raygen, text: `!allow ${rows[1].id}` }),
-  ).toContain("unapproved");
+    await social.decide(
+      { ...raygen, text: `!allow ${rows[1].id}` },
+      (id, reference, commandId) =>
+        reflection.deliverInterruption(id, reference, commandId),
+    ),
+  ).toContain("delivery rejected");
+  expect(JSON.parse(social.view(raygen))[1].status).toBe("revoked");
   await conversation.send("inbox", {
     type: "event",
     event: {
@@ -775,6 +786,292 @@ it("prevents guest sharing/outreach and sends a frozen owner-approved message on
   expect(sent[1]?.content).toEqual({ type: "text", text: "Approved hello." });
 });
 
+it("rechecks interruption approval after the sending-intent flush", async (t) => {
+  const { social, sent, options } = fixture(t);
+  const db = new DatabaseSync(options.file);
+  t.onTestFinished(() => db.close());
+  const id = "a".repeat(24);
+  db.prepare("INSERT INTO social_proposals VALUES (?, ?)").run(
+    id,
+    JSON.stringify({
+      id,
+      accountId: "T1",
+      requester: RAYGEN_SLACK_ID,
+      action: { kind: "outreach", userId: "UGUEST", text: "Never send this" },
+      status: "pending",
+      created: options.now(),
+      expires: options.now() + 60000,
+      reflection: {
+        candidateId: "b".repeat(64),
+        scope: JSON.stringify(["private", owner.id]),
+        requestId: "request",
+        epoch: 0,
+        evidenceIds: ["evidence"],
+        publication: { version: 1, expiresAt: options.now() + 60000 },
+      },
+    }),
+  );
+  expect(
+    await social.decide(
+      { ...raygen, text: `!allow ${id}`, reflectionReviewEligible: false },
+      async () => {
+        throw new Error("Quoted approval must not dispatch");
+      },
+    ),
+  ).toContain("fresh plain command");
+  expect(JSON.parse(social.view(raygen))[0].status).toBe("pending");
+  expect(
+    await social.decide(
+      { ...raygen, text: `!allow ${id}` },
+      async (proposalId, reference, commandId) => {
+        const sending = social.deliverInterruption(
+          proposalId,
+          reference,
+          commandId,
+          () => undefined,
+        );
+        await social.decide({ ...raygen, text: `!revoke ${id}` });
+        return sending;
+      },
+    ),
+  ).toContain("delivery rejected");
+  expect(sent).toHaveLength(0);
+  expect(await social.decide({ ...raygen, text: `!allow ${id}` })).toContain(
+    "already revoked",
+  );
+  const delivery = JSON.parse(
+    String(
+      db
+        .prepare("SELECT value FROM social_deliveries WHERE id = ?")
+        .get(`${id}:interruption`)?.value,
+    ),
+  );
+  expect(delivery).toMatchObject({
+    attempts: 0,
+    phase: "settled",
+    result: { code: "approval_invalidated", retryable: false },
+  });
+});
+
+it("revalidates uncited provenance after intent persistence without waiting for actor cancellation", async (t) => {
+  const { social, sent, options } = fixture(t);
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  const db = new DatabaseSync(options.file);
+  t.onTestFinished(() => {
+    db.close();
+    store.close();
+  });
+  const scope = JSON.stringify(["private", owner.id]);
+  const now = Date.now();
+  for (const id of ["cited", "uncited"])
+    store.appendSource({
+      id,
+      audiences: [scope],
+      platform: "slack",
+      account: "T1",
+      conversation: "DOWNER",
+      author: RAYGEN_SLACK_ID,
+      observedAt: now,
+      sourceUrl: "https://example.com/fixture",
+      text: "Original private evidence",
+    });
+  const config = createReflectionActor({
+    ownerId: owner.id,
+    idleMs: 100,
+    deepMs: 200,
+    pollMs: 100,
+    timeoutMs: 1000,
+    policy: {
+      totalCapacity: 2,
+      liveReserve: 1,
+      cooldownMs: 1,
+      maxAttempts: 1,
+      maxNoNewEvidence: 1,
+      evidenceMaxAgeMs: 60000,
+      quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
+    },
+    evidenceCurrent(scope, evidence) {
+      return (
+        JSON.stringify(
+          store.reflectionEvidence(
+            scope,
+            evidence.map((e) => e.id),
+            60000,
+          ),
+        ) === JSON.stringify(evidence)
+      );
+    },
+    async retrieve({ scope, evidenceIds }) {
+      return {
+        authorized: true,
+        evidence: store.reflectionEvidence(scope, evidenceIds, 60000),
+      };
+    },
+    async decide() {
+      throw new Error("No model calls during delivery");
+    },
+    async sendInterruption(id, reference, commandId, check) {
+      const sending = social.deliverInterruption(
+        id,
+        reference,
+        commandId,
+        check,
+      );
+      store.deleteSource("uncited");
+      return sending;
+    },
+  }).config;
+  if (!("state" in config) || !config.actions)
+    throw new Error("Missing actor configuration");
+  const c = {
+    key: [owner.id],
+    state: structuredClone(config.state),
+    vars: {
+      async prepareCandidates() {},
+      publishingCandidates: new Set<string>(),
+    },
+  } as unknown as Parameters<typeof config.actions.deliverInterruption>[0];
+  const requestId = JSON.stringify([scope, ["cited", "uncited"]]);
+  const rawId = JSON.stringify([requestId, 1]);
+  const reference = {
+    candidateId: reflectionCandidateId(rawId),
+    scope,
+    requestId,
+    epoch: 0,
+    evidenceIds: ["cited", "uncited"],
+    publication: { version: 1 as const, expiresAt: now + 60000 },
+  };
+  c.state.candidates[rawId] = {
+    id: rawId,
+    requestId,
+    scope,
+    epoch: 0,
+    attempt: 1,
+    mode: "idle",
+    kind: "interruption-candidate",
+    hypothesisOnly: false,
+    decision: { answer: "yes", rationale: "Fixture", evidenceIds: ["cited"] },
+    createdAt: now,
+    publication: reference.publication,
+  };
+  c.state.invocations[rawId] = "settled";
+  c.state.reflection.requests.push({
+    id: requestId,
+    scope,
+    evidenceIds: reference.evidenceIds,
+    kind: "curiosity",
+    createdAt: now,
+    attempts: 1,
+    status: "stopped",
+  });
+  const id = "c".repeat(24);
+  db.prepare("INSERT INTO social_proposals VALUES (?, ?)").run(
+    id,
+    JSON.stringify({
+      id,
+      accountId: "T1",
+      requester: RAYGEN_SLACK_ID,
+      action: { kind: "outreach", userId: "UGUEST", text: "Never send this" },
+      status: "approved",
+      created: now,
+      expires: now + 60000,
+      reflection: reference,
+      interruptionCommands: { "fixture-command": { status: "started" } },
+    }),
+  );
+  expect(
+    await config.actions.deliverInterruption(
+      c,
+      id,
+      reference,
+      "fixture-command",
+    ),
+  ).toEqual({
+    status: "rejected",
+    code: "candidate_invalidated",
+    retryable: false,
+  });
+  expect(sent).toEqual([]);
+  expect(c.state.candidates[rawId]).toBeDefined();
+  expect(JSON.parse(social.view(raygen))[0].status).toBe("revoked");
+});
+
+it.for(["held", "interrupted"])(
+  "does not resume a %s interruption when the same approval command replays",
+  async (boundary, t) => {
+    const { social, sent, options } = fixture(t);
+    const pending = await social.propose(raygen, {
+      kind: "outreach",
+      userId: "UGUEST",
+      text: "Frozen interruption",
+    });
+    const id = pending.match(/[a-f0-9]{24}/)?.[0];
+    if (!id) throw new Error("Missing proposal");
+    const db = new DatabaseSync(options.file);
+    t.onTestFinished(() => db.close());
+    db.prepare(
+      "UPDATE social_proposals SET value = json_set(value, '$.reflection', json(?)) WHERE id = ?",
+    ).run(
+      JSON.stringify({
+        candidateId: "b".repeat(64),
+        scope: JSON.stringify(["private", owner.id]),
+        requestId: "request",
+        epoch: 0,
+        evidenceIds: ["evidence"],
+        publication: { version: 1, expiresAt: options.now() + 60000 },
+      }),
+      id,
+    );
+    const approval = { ...raygen, text: `!allow ${id}` };
+    if (boundary === "held") {
+      expect(
+        await social.decide(approval, (proposalId, reference, commandId) =>
+          social.deliverInterruption(proposalId, reference, commandId, () => ({
+            status: "rejected",
+            code: "quiet_hours",
+            retryable: true,
+          })),
+        ),
+      ).toContain("queued");
+    } else {
+      await expect(
+        social.decide(approval, async () => {
+          throw new Error("simulated crash");
+        }),
+      ).rejects.toThrow("simulated crash");
+    }
+    const reopened = new SocialPermissions(options);
+    try {
+      const interrupt: NonNullable<Parameters<typeof reopened.decide>[1]> = (
+        proposalId,
+        reference,
+        commandId,
+      ) =>
+        reopened.deliverInterruption(
+          proposalId,
+          reference,
+          commandId,
+          () => undefined,
+        );
+      await reopened.decide(approval, interrupt);
+      expect(
+        sent.filter((message) => message.address.conversationId === "UGUEST"),
+      ).toHaveLength(0);
+      expect(
+        await reopened.decide(
+          { ...approval, id: "fresh-approval", messageId: "fresh-approval" },
+          interrupt,
+        ),
+      ).toContain("delivery sent");
+      expect(
+        sent.filter((message) => message.address.conversationId === "UGUEST"),
+      ).toHaveLength(1);
+    } finally {
+      reopened.close();
+    }
+  },
+);
+
 it("recovers approved outreach after restart only when delivery is known not to have happened", async (t) => {
   const { social, sent, options } = fixture(t);
   const db = new DatabaseSync(options.file);
@@ -897,6 +1194,299 @@ it("runs June's outreach proposal and repeated owner approval through Rivet", as
     type: "text",
     text: "Frozen hello.",
   });
+});
+
+it("delivers a reviewed interruption once through June, retaining quiet holds and rejecting stale evidence", async (t) => {
+  const { social, slack, sent, options } = fixture(t);
+  const quiet = { timeZone: "UTC", startMinute: 0, endMinute: 0 };
+  let authorized = true;
+  let inferenceCalls = 0;
+  let extractionCalls = 0;
+  let rejectionCalls = 0;
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const registry = createJuneRegistry({
+    owner,
+    social,
+    channels: { slack },
+    wakeups: { sources: ["slack"], pollMs: 20 },
+    model: {
+      async reply() {
+        inferenceCalls++;
+        throw new Error("Review commands must not infer");
+      },
+    },
+    memory: {
+      store,
+      source(event, audience) {
+        return {
+          id: event.id,
+          audiences: [audience],
+          platform: "slack",
+          account: "T1",
+          conversation: "DOWNER",
+          author: event.senderId,
+          observedAt: event.occurredAt,
+          sourceUrl: "https://example.com/fixture",
+          text: event.text,
+        };
+      },
+      async extract() {
+        extractionCalls++;
+      },
+    },
+    reflection: {
+      ownerId: owner.id,
+      rejectProposals() {
+        rejectionCalls++;
+        return undefined;
+      },
+      policy: {
+        totalCapacity: 2,
+        liveReserve: 1,
+        cooldownMs: 1,
+        maxAttempts: 1,
+        maxNoNewEvidence: 1,
+        evidenceMaxAgeMs: 60000,
+        quiet,
+      },
+      idleMs: 1,
+      deepMs: 2,
+      pollMs: 100,
+      timeoutMs: 10000,
+      evidenceCurrent(scope, evidence) {
+        return (
+          authorized &&
+          JSON.stringify(
+            store.reflectionEvidence(
+              scope,
+              evidence.map((item) => item.id),
+              60000,
+            ),
+          ) === JSON.stringify(evidence)
+        );
+      },
+      async retrieve({ scope, evidenceIds }) {
+        return {
+          authorized,
+          evidence: store.reflectionEvidence(scope, evidenceIds, 60000),
+        };
+      },
+      async decide(input) {
+        return {
+          answer: "yes",
+          rationale: "Synthetic candidate",
+          evidenceIds: input.evidence.map((e) => e.id),
+        };
+      },
+    },
+  });
+  const actorConfig = registry.config.use.reflection?.config;
+  if (!actorConfig?.actions) throw new Error("Missing reflection actions");
+  const dispatch = actorConfig.actions.deliverInterruption;
+  let replayHeldAction = true;
+  actorConfig.actions.deliverInterruption = async (c, ...args) => {
+    const result = await dispatch(c, ...args);
+    if (replayHeldAction) {
+      replayHeldAction = false;
+      // Simulate loss of the held result followed by an internal RPC retry,
+      // without re-entering the caller's once-per-owner-message guard.
+      quiet.startMinute = quiet.endMinute = 0;
+      return dispatch(c, ...args);
+    }
+    return result;
+  };
+  const { client } = await setupTest(t, registry);
+  const reflection = (
+    client as Client<JuneClientRegistry>
+  ).reflection.getOrCreate([owner.id]);
+  const conversation = client.conversation.getOrCreate(["private", owner.id]);
+  let turn = 0;
+  const command = async (text: string) => {
+    turn++;
+    await conversation.receive({
+      ...raygen,
+      id: `review-${turn}`,
+      messageId: `review-${turn}`,
+      occurredAt: Date.now(),
+      text,
+    });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await conversation.snapshot()).events).filter(
+            (event) => event.done,
+          ).length,
+      )
+      .toBe(turn);
+  };
+  const stage = async (evidenceId: string) => {
+    const previous = new Set((await reflection.status()).candidateIds);
+    store.appendSource({
+      id: evidenceId,
+      audiences: [JSON.stringify(["private", owner.id])],
+      platform: "slack",
+      account: "T1",
+      conversation: "DOWNER",
+      author: RAYGEN_SLACK_ID,
+      observedAt: Date.now(),
+      sourceUrl: "https://example.com/fixture",
+      text: "Original private evidence",
+    });
+    await reflection.trigger({
+      id: evidenceId,
+      type: "interaction",
+      liveActive: 0,
+    });
+    await reflection.enqueue({
+      scope: JSON.stringify(["private", owner.id]),
+      kind: "curiosity",
+      mode: "idle",
+      evidenceIds: [evidenceId],
+    });
+    await expect
+      .poll(async () =>
+        (await reflection.status()).candidateIds.some(
+          (id) => !previous.has(id),
+        ),
+      )
+      .toBe(true);
+    const raw = (await reflection.status()).candidateIds.find(
+      (id) => !previous.has(id),
+    );
+    if (!raw) throw new Error("Missing candidate");
+    const alias = reflectionCandidateId(raw);
+    await expect
+      .poll(() =>
+        reflection.candidate(alias, JSON.stringify(["private", owner.id])),
+      )
+      .not.toBeNull();
+    await command(`!reflection propose ${alias} UGUEST Frozen interruption.`);
+    const rows = JSON.parse(social.view(raygen)) as {
+      id: string;
+      reflection?: { candidateId: string };
+    }[];
+    const proposal = rows.find((row) => row.reflection?.candidateId === alias);
+    if (!proposal) throw new Error("Missing staged interruption");
+    return proposal.id;
+  };
+  const recipientMessages = () =>
+    sent.filter((message) => message.address.conversationId === "UGUEST");
+  const id = await stage("first");
+  const wakeups = (client as Client<JuneClientRegistry>).wakeups.getOrCreate([
+    owner.id,
+  ]);
+  await wakeups.manage(
+    {
+      action: "create",
+      name: "matching approval",
+      instruction: "Must not infer from private interruption approvals",
+      once: false,
+      trigger: {
+        kind: "event",
+        source: "slack",
+        type: "message",
+        filters: [{ path: "text", value: `!allow ${id}` }],
+      },
+    },
+    raygen,
+    "approval-watch",
+  );
+  expect(recipientMessages()).toHaveLength(0);
+  expect(await social.decide({ ...guest, text: `!allow ${id}` })).toContain(
+    "Only Raygen",
+  );
+  const now = new Date();
+  const minute = now.getUTCHours() * 60 + now.getUTCMinutes();
+  quiet.startMinute = (minute + 1439) % 1440;
+  quiet.endMinute = (minute + 10) % 1440;
+  await command(`!allow ${id}`);
+  expect(Object.keys((await wakeups.snapshot()).runs)).toEqual([]);
+  expect(recipientMessages()).toHaveLength(0);
+  expect(sent.at(-1)?.content).toEqual({
+    type: "text",
+    text: expect.stringContaining("queued"),
+  });
+  const db = new DatabaseSync(options.file);
+  t.onTestFinished(() => db.close());
+  const delivery = JSON.parse(
+    String(
+      db
+        .prepare("SELECT value FROM social_deliveries WHERE id = ?")
+        .get(`${id}:interruption`)?.value,
+    ),
+  );
+  expect(delivery).toMatchObject({
+    phase: "ready",
+    attempts: 0,
+    result: { code: "quiet_hours" },
+  });
+  quiet.startMinute = quiet.endMinute = 0;
+  await command(`!allow ${id}`);
+  await command(`!allow ${id}`);
+  expect(recipientMessages()).toHaveLength(1);
+  expect(recipientMessages()[0]?.content).toEqual({
+    type: "text",
+    text: "Frozen interruption.",
+  });
+  const uncertain = await stage("uncertain");
+  const send = slack.send;
+  slack.send = async (message) => {
+    if (message.address.conversationId !== "UGUEST") return send(message);
+    sent.push(structuredClone(message));
+    return { status: "unknown", code: "timeout" };
+  };
+  await command(`!allow ${uncertain}`);
+  expect(recipientMessages()).toHaveLength(2);
+  const reopened = new SocialPermissions(options);
+  try {
+    for (const [proposal, status] of [
+      [id, "sent"],
+      [uncertain, "unknown"],
+    ]) {
+      expect(
+        await reopened.decide(
+          { ...raygen, text: `!allow ${proposal}` },
+          (proposalId, reference, commandId) =>
+            reflection.deliverInterruption(proposalId, reference, commandId),
+        ),
+      ).toContain(`delivery ${status}`);
+    }
+  } finally {
+    reopened.close();
+  }
+  expect(recipientMessages()).toHaveLength(2);
+  const rejected = await stage("rejected");
+  const candidateId = JSON.parse(social.view(raygen)).find(
+    (row: { id: string }) => row.id === rejected,
+  ).reflection.candidateId;
+  quiet.startMinute = (minute + 1439) % 1440;
+  quiet.endMinute = (minute + 10) % 1440;
+  await command(`!allow ${rejected}`);
+  await reflection.rejectCandidate(
+    JSON.stringify(["private", owner.id]),
+    candidateId,
+  );
+  expect(rejectionCalls).toBe(1);
+  expect(
+    JSON.parse(social.view(raygen)).find(
+      (row: { id: string }) => row.id === rejected,
+    ).status,
+  ).toBe("revoked");
+  quiet.startMinute = quiet.endMinute = 0;
+  await command(`!allow ${rejected}`);
+  expect(recipientMessages()).toHaveLength(2);
+  const deleted = await stage("deleted");
+  authorized = false;
+  await command(`!allow ${deleted}`);
+  expect(recipientMessages()).toHaveLength(2);
+  expect(
+    JSON.parse(social.view(raygen)).find(
+      (row: { id: string }) => row.id === deleted,
+    ).status,
+  ).toBe("revoked");
+  expect(inferenceCalls).toBe(0);
+  expect(extractionCalls).toBe(0);
 });
 
 it("reserves owner capacity and prioritizes the owner over queued guests without cancelling work", async () => {

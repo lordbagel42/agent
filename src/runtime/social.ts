@@ -42,6 +42,11 @@ interface Proposal {
   expires: number;
   /** Private source binding, not permission. Generic outreach must not send it. */
   reflection?: InterruptionReference;
+  /** Caller admission and receiver dispatch are separate durable boundaries. */
+  interruptionCommands?: Record<
+    string,
+    SendResult | { status: "started" } | { status: "dispatching" }
+  >;
 }
 
 /** Permissions are explicit owner decisions, never inferred relationship scores.
@@ -207,6 +212,7 @@ export class SocialPermissions {
     address: Address,
     text: string,
     canStartAction?: () => boolean,
+    check?: () => Extract<SendResult, { status: "rejected" }> | undefined,
   ): Promise<SendResult> {
     this.forget();
     const revision = this.options.deletionRevision?.() ?? 0;
@@ -247,9 +253,88 @@ export class SocialPermissions {
           };
         return this.options.slack.send(message);
       },
+      check,
     );
   }
-  async decide(event: MessageEvent): Promise<string> {
+  /** Recognized private approval commands must not run inference/extraction,
+   * which would invalidate the candidate before its explicit send decision. */
+  interruptionCommand(event: MessageEvent): boolean {
+    const command =
+      event.direct &&
+      event.reflectionReviewEligible === true &&
+      this.command(event);
+    return !!(command && this.get(command[2] ?? "")?.reflection);
+  }
+  async deliverInterruption(
+    proposalId: string,
+    reference: InterruptionReference,
+    commandId: string,
+    check: () => Extract<SendResult, { status: "rejected" }> | undefined,
+  ): Promise<SendResult> {
+    const proposal = this.get(proposalId);
+    const approved = (current: Proposal | undefined) =>
+      current?.status === "approved" &&
+      current.expires > this.now() &&
+      current.accountId === this.options.teamId &&
+      JSON.stringify(current.reflection) === JSON.stringify(reference);
+    const command = proposal?.interruptionCommands?.[commandId];
+    if (!approved(proposal) || proposal?.action.kind !== "outreach" || !command)
+      return {
+        status: "rejected",
+        code: "approval_required",
+        retryable: false,
+      };
+    if (command.status === "dispatching")
+      return { status: "unknown", code: "interrupted_approval" };
+    if (command.status !== "started") return command;
+    // The actor client may retry a dropped response without re-entering decide.
+    // Claim this exact owner command before any await or outbox admission.
+    proposal.interruptionCommands ??= {};
+    proposal.interruptionCommands[commandId] = { status: "dispatching" };
+    this.save(proposal);
+    const result = await this.send(
+      // The proposal ID binds account + candidate, not the approval message.
+      `${proposal.id}:interruption`,
+      {
+        channel: "slack",
+        accountId: proposal.accountId,
+        conversationId: proposal.action.userId,
+      },
+      proposal.action.text,
+      undefined,
+      () => {
+        // get() reconciles deletion tombstones even if host cleanup crashed.
+        if (!approved(this.get(proposalId)))
+          return {
+            status: "rejected",
+            code: "approval_invalidated",
+            retryable: false,
+          };
+        return check();
+      },
+    );
+    const current = this.get(proposalId);
+    if (current) {
+      if (
+        result.status === "rejected" &&
+        !result.retryable &&
+        current.status === "approved"
+      )
+        current.status = "revoked";
+      current.interruptionCommands ??= {};
+      current.interruptionCommands[commandId] = result;
+      this.save(current);
+    }
+    return result;
+  }
+  async decide(
+    event: MessageEvent,
+    interrupt?: (
+      proposalId: string,
+      reference: InterruptionReference,
+      commandId: string,
+    ) => Promise<SendResult>,
+  ): Promise<string> {
     const command = this.command(event);
     if (!command) return "Only Raygen can decide permissions.";
     const proposal = this.get(command[2] ?? "");
@@ -259,6 +344,11 @@ export class SocialPermissions {
       proposal.expires <= this.now()
     )
       return "That request is missing or expired.";
+    if (
+      proposal.reflection &&
+      !(event.direct && event.reflectionReviewEligible === true)
+    )
+      return "Interruption decisions require a fresh plain command in Raygen's private conversation. Approval is unchanged.";
     const decision = command[1];
     if (decision === "revoke") {
       proposal.status = "revoked";
@@ -272,19 +362,53 @@ export class SocialPermissions {
       decision === "allow" &&
       proposal.status === "approved" &&
       proposal.action.kind === "outreach";
-    if (proposal.status !== "pending" && !resumeOutreach)
+    const denyInterruption =
+      decision === "deny" &&
+      proposal.status === "approved" &&
+      !!proposal.reflection;
+    if (proposal.status !== "pending" && !resumeOutreach && !denyInterruption)
       return `That request is already ${proposal.status}; it was not executed again.`;
     if (decision === "deny") {
       proposal.status = "denied";
       this.save(proposal);
       return "Denied. No additional access was granted.";
     }
-    if (proposal.reflection)
-      return "Interruption delivery is unavailable. This remains an unapproved proposal; no message was sent or permission granted.";
+    if (proposal.reflection && (!event.direct || !interrupt))
+      return "Interruption delivery is unavailable without the private reflection delivery path. Approval is unchanged; nothing was sent.";
     if (!resumeOutreach) {
       proposal.status = "approved";
       proposal.expires = this.now() + 30 * DAY;
       this.save(proposal);
+    }
+    if (proposal.reflection && interrupt) {
+      const commandId = JSON.stringify([
+        event.address.accountId,
+        event.address.conversationId,
+        event.messageId,
+      ]);
+      let result = proposal.interruptionCommands?.[commandId];
+      if (!result) {
+        proposal.interruptionCommands ??= {};
+        proposal.interruptionCommands[commandId] = { status: "started" };
+        this.save(proposal);
+        result = await interrupt(proposal.id, proposal.reflection, commandId);
+        // A concurrent rejection/deletion must not be undone by saving the
+        // pre-await approval snapshot with its completed command receipt.
+        const current = this.get(proposal.id);
+        if (current) {
+          current.interruptionCommands ??= {};
+          current.interruptionCommands[commandId] = result;
+          this.save(current);
+        }
+      }
+      if (result.status === "started" || result.status === "dispatching")
+        return `That approval command started previously and its outcome is unresolved. It was not replayed. Send a new !allow ${proposal.id} to recheck the existing outbox, or !revoke ${proposal.id}. Uncertain delivery is never resent.`;
+      if (
+        result.status === "rejected" &&
+        ["quiet_hours", "live_activity"].includes(result.code)
+      )
+        return `Approved interruption queued (${result.code}); no message was sent. Repeat !allow ${proposal.id} when eligible, or !revoke ${proposal.id}. No automatic retry is scheduled.`;
+      return `Approved interruption: delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived; uncertain delivery is never retried."}`;
     }
     if (proposal.action.kind === "outreach") {
       const result = await this.send(
@@ -412,7 +536,7 @@ export class SocialPermissions {
     if (proposal.action.kind !== "outreach")
       return "That interruption proposal is unavailable.";
     const quoted = JSON.stringify(proposal.action.text);
-    return `Interruption proposal ${id}. Exact recipient: ${proposal.action.userId}. Exact message (JSON quoted):\n${quoted}\nCandidate ${input.candidateId} is a generated hypothesis, not permission. ${sendEligible ? "Eligibility must be checked again at delivery." : "The original candidate is not currently send-eligible; approving this draft alone cannot send it."} No outreach or separate notification was sent, and no access was granted. Delivery is unavailable until the guarded approval path is enabled. Deny with !deny ${id} or revoke with !revoke ${id}. Expires at ${new Date(proposal.expires).toISOString()}; repeated staging keeps the original recipient and message.`;
+    return `Interruption proposal ${id}. Exact recipient: ${proposal.action.userId}. Exact message (JSON quoted):\n${quoted}\nCandidate ${input.candidateId} is a generated hypothesis, not permission. ${sendEligible ? `Authorize one guarded delivery with a fresh plain !allow ${id} in this private conversation. Eligibility is checked again immediately before sending.` : "The original candidate is not currently send-eligible; approving this draft alone cannot send it."} No outreach or separate notification was sent, and no access was granted. Deny with !deny ${id} or revoke with !revoke ${id}. Expires at ${new Date(proposal.expires).toISOString()}; repeated staging keeps the original recipient and message.`;
   }
   async propose(
     event: MessageEvent,

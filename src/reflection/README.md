@@ -200,9 +200,21 @@ list still require the original epoch, no live work and non-quiet time.
   grant. Dream-only support is marked `hypothesisOnly` and cannot yield an
   interruption candidate. At most one interruption candidate is staged per
   interaction epoch, across scopes; quiet hours and live occupancy also gate
-  staging/reads. There is **no outbound send**. Any later delivery must use the
-  candidate ID as its own durable dedupe key and recheck audience, attention,
-  quiet hours and approval. Repeated candidate reads are not new send grants.
+  staging/reads. Background reflection never sends automatically. An exact
+  owner-private `!reflection propose <candidate-id> <user-id> <text>` previews
+  one frozen recipient/message using the existing social permission ledger.
+  Only the owner's private `!allow <proposal-id>` authorizes delivery; `!deny`
+  and `!revoke` invalidate approval. The proposal/outbox identity is bound to
+  account + candidate, not the approval turn. Accepted or unknown sends are not
+  repeated after restart or repeated approval. Candidate reads grant nothing.
+  The outbox checks current approval/deletion and the actor's candidate,
+  evidence, epoch, quiet hours and live activity after persistence, immediately
+  before transport dispatch. Temporary quiet/live holds retain approved ready
+  work without consuming transport attempts; another explicit `!allow` can
+  resume it. Approval-message identities are consumed durably: replay of a held
+  or interrupted command cannot resume delivery without a new owner message.
+  No automatic retry timer is installed. New interactions, rejected
+  candidates, stale/deleted evidence and revoked grants fail closed.
 - Owner-private `!reflection reject <64hex>` revokes exactly the candidate
   identified by its opaque list/inspection ID. Rejection persists a content-free
   tombstone before success and repeated rejection remains successful across
@@ -309,10 +321,14 @@ Candidate rejection synchronously revokes pending or approved copies and stores
 a content-free restaging tombstone before acknowledging success. That tombstone
 survives restart, including rejection before any draft exists.
 
-Candidate-linked `!allow` is deliberately unavailable until the guarded delivery
-path is installed; it cannot fall through to ordinary outreach. `!deny` and
-`!revoke` still close the proposal. Pending proposals expire after 24 hours.
-Inspection and staging are never permission to send.
+Candidate-linked `!allow` uses only the guarded candidate outbox; it cannot fall
+through to ordinary outreach. The command must be a fresh plain owner-private
+message. Dispatch requires the original candidate epoch, current publication and
+all evidence, approval, non-quiet time and no live activity. Temporary holds need
+a new `!allow` message to resume; replay never resumes them automatically.
+`!deny` and `!revoke` close the proposal. Pending proposals expire after 24 hours.
+Inspection and staging are never permission to send, and approval cannot revive
+an old-epoch candidate.
 
 Verification: `pnpm exec vitest run src/runtime/reflection.test.ts
 src/reflection/domain.test.ts` exercises the real disposable engine plus domain

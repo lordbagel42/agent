@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
-import type { CompanionReply, MessageEvent } from "../core/contracts.js";
+import type {
+  CompanionReply,
+  MessageEvent,
+  SendResult,
+} from "../core/contracts.js";
 import type { EvidenceStore } from "../memory/store.js";
 import {
   cancel,
@@ -30,7 +34,7 @@ import {
   validateDecision,
 } from "../reflection/evaluator.js";
 import type { Lifecycle } from "./lifecycle.js";
-import type { SocialPermissions } from "./social.js";
+import type { InterruptionReference, SocialPermissions } from "./social.js";
 
 export type ReflectionMode = "interaction" | "idle" | "deep";
 
@@ -112,6 +116,13 @@ export interface ReflectionDependencies {
   deepMs: number;
   pollMs: number;
   timeoutMs: number;
+  /** Host-only outbox; the synchronous gate must run adjacent to dispatch. */
+  sendInterruption?: (
+    proposalId: string,
+    reference: InterruptionReference,
+    commandId: string,
+    check: () => Extract<SendResult, { status: "rejected" }> | undefined,
+  ) => Promise<SendResult>;
 }
 
 export interface ReflectionCandidate {
@@ -1434,6 +1445,55 @@ export function createReflectionActor(
         } catch {
           return null;
         }
+      },
+      /** Approval remains in the social ledger. Evidence retrieval alone never
+       * grants a send: check live actor state again inside the durable outbox. */
+      deliverInterruption: async (
+        c,
+        proposalId: string,
+        reference: InterruptionReference,
+        commandId: string,
+      ): Promise<SendResult> => {
+        if (
+          !deps.sendInterruption ||
+          c.key.length !== 1 ||
+          c.key[0] !== deps.ownerId
+        )
+          return { status: "rejected", code: "unavailable", retryable: false };
+        const read = await reviewCandidate(
+          c,
+          reference.candidateId,
+          reference.scope,
+        );
+        return deps.sendInterruption(proposalId, reference, commandId, () => {
+          const now = Date.now();
+          if (
+            !read?.isCurrent() ||
+            JSON.stringify(read.candidate.publication) !==
+              JSON.stringify(reference.publication) ||
+            read.candidate.kind !== "interruption-candidate" ||
+            read.candidate.hypothesisOnly ||
+            read.candidate.requestId !== reference.requestId ||
+            read.candidate.epoch !== reference.epoch ||
+            read.candidate.epoch !== c.state.epoch ||
+            JSON.stringify(read.evidence.map((item) => item.id).sort()) !==
+              JSON.stringify([...reference.evidenceIds].sort())
+          )
+            return {
+              status: "rejected",
+              code: "candidate_invalidated",
+              retryable: false,
+            };
+          if (c.state.liveActive > 0)
+            return {
+              status: "rejected",
+              code: "live_activity",
+              retryable: true,
+            };
+          if (isQuiet(now, deps.policy.quiet))
+            return { status: "rejected", code: "quiet_hours", retryable: true };
+          return undefined;
+        });
       },
       /** Operator-only recovery after confirming the old worker/provider has stopped.
        * Never retries this request or clears its dedupe tombstone.

@@ -13,6 +13,9 @@ export async function deliver(
   delivery: Delivery,
   persist: () => Promise<void>,
   send: (message: OutboundMessage) => Promise<SendResult>,
+  /** Synchronous dispatch gate, after the intent flush. A withheld send consumes
+   * no transport attempt; retryable withholding stays ready for explicit retry. */
+  check?: () => Extract<SendResult, { status: "rejected" }> | undefined,
 ): Promise<SendResult> {
   if (delivery.phase === "sending") {
     delivery.result = { status: "unknown", code: "interrupted_send" };
@@ -26,6 +29,14 @@ export async function deliver(
     delivery.attempts++;
     await persist();
     try {
+      const rejected = check?.();
+      if (rejected) {
+        delivery.attempts--;
+        delivery.result = rejected;
+        delivery.phase = rejected.retryable ? "ready" : "settled";
+        await persist();
+        return delivery.result;
+      }
       delivery.result = await send(delivery.message);
     } catch {
       delivery.result = { status: "unknown", code: "transport_error" };

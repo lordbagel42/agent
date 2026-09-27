@@ -306,7 +306,7 @@ async function normalizeEvent(
           : {}),
         ...(owner &&
         channelType === "im" &&
-        /^!reflection(?:\s|$)/.test(event.text.trim())
+        /^!(?:reflection|allow|deny|revoke)(?:\s|$)/.test(event.text.trim())
           ? { reflectionReviewEligible: isPlainSlackCommand(event) }
           : {}),
         ...(owner &&

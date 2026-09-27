@@ -69,4 +69,44 @@ describe("outbox crash boundary", () => {
       messageId: "platform-2",
     });
   });
+
+  it("rechecks after each intent flush without spending attempts on withheld sends", async () => {
+    const delivery: Delivery = { message, phase: "ready", attempts: 0 };
+    let blocked = false;
+    let blockDuringFlush = true;
+    let sends = 0;
+    let stored = structuredClone(delivery);
+    const persist = async () => {
+      stored = structuredClone(delivery);
+      if (delivery.phase === "sending" && blockDuringFlush) blocked = true;
+    };
+    const send = async () => {
+      sends++;
+      return { status: "sent" as const, messageId: "platform-3" };
+    };
+    const check = () =>
+      blocked
+        ? { status: "rejected" as const, code: "quiet_hours", retryable: true }
+        : undefined;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      blocked = false;
+      expect(await deliver(delivery, persist, send, check)).toEqual({
+        status: "rejected",
+        code: "quiet_hours",
+        retryable: true,
+      });
+      expect(stored.phase).toBe("ready");
+      expect(stored.attempts).toBe(0);
+    }
+    expect(sends).toBe(0);
+    blockDuringFlush = false;
+    blocked = false;
+    expect(await deliver(delivery, persist, send, check)).toEqual({
+      status: "sent",
+      messageId: "platform-3",
+    });
+    await deliver(delivery, persist, send, check);
+    expect(sends).toBe(1);
+    expect(delivery.attempts).toBe(1);
+  });
 });
