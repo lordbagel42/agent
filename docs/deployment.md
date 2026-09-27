@@ -276,7 +276,10 @@ and receipt here are an inspection lookup, not a second deployment queue.
 
 No release-request step exists or is needed. Trusted main is already the
 controller's release queue; inspect any relevant revision directly. Inspection
-does not authorize or publish code. There is no scheduled follow-up, failed-release retry,
+does not authorize or publish code. Inspection alone schedules no follow-up;
+June can separately register an explicitly requested owner-DM notification through
+[durable wakeups](wakeups.md), such as a one-time `deployment`/`healthy` watch.
+There is no failed-release retry,
 approval token, drain access, policy editing, reconciliation or service control
 in this tool. The legacy supervisor remains inactive. Public/channel turns and
 non-owner senders cannot invoke the tool or receive its private evidence.

@@ -742,6 +742,7 @@ export class McpConnections {
                 pendingMemoryAvailable: false,
                 dashboardLoginAvailable: false,
                 modelStatusAvailable: false,
+                wakeupAvailable: false,
                 socialAvailable: false,
                 usageStage: "synthesis",
                 system:

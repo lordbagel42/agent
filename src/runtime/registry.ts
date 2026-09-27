@@ -31,6 +31,11 @@ import type {
   WebSearchResult,
 } from "../tools/web-search.js";
 import {
+  createWakeupActor,
+  type WakeupDependencies,
+} from "../wakeups/runtime.js";
+import type { WakeupContext, WakeupEvent } from "../wakeups/state.js";
+import {
   type CodingDependencies,
   codingJobMetadata,
   createCodingActor,
@@ -67,6 +72,7 @@ export interface Dependencies {
   model: ModelProvider;
   deepModel?: ModelProvider;
   execution?: ExecutionDependencies;
+  wakeups?: WakeupDependencies;
   models?: PromptInput["models"];
   webSearch?: WebSearchProvider;
   mcpAvailable?: boolean;
@@ -147,6 +153,7 @@ interface ConversationState {
 
 type Inbox =
   | { type: "event"; event: ChannelEvent }
+  | { type: "wakeup"; source: MessageEvent; wakeup: WakeupContext }
   | {
       type: "execution_result";
       agentId: string;
@@ -222,6 +229,9 @@ export function createJuneRegistry(deps: Dependencies) {
     }),
     queues: { inbox: queue<Inbox>() },
     actions: {
+      // Activate a host-crashed actor without adding duplicate inbox entries or
+      // transferring its private snapshot to a background poller.
+      wake: () => true,
       snapshot: (c): ConversationState => {
         prune(c.state, JSON.stringify(c.key));
         return c.state;
@@ -258,6 +268,14 @@ export function createJuneRegistry(deps: Dependencies) {
           delete job.preview;
         }
         await c.vars.persist();
+        if (
+          deps.wakeups &&
+          JSON.stringify(c.key) === JSON.stringify(["private", deps.owner.id])
+        )
+          await c
+            .client<JuneClientRegistry>()
+            .wakeups.getOrCreate([deps.owner.id])
+            .forget(c.state.forgottenEvents);
         for (const id of Object.values(forgottenAgents))
           await c
             .client<JuneClientRegistry>()
@@ -278,9 +296,9 @@ export function createJuneRegistry(deps: Dependencies) {
     run: workflow(
       async (ctx) => {
         await ctx.loop("conversation-v1", async (loop) => {
-          // Preserve old journals; only fresh v8 turns gain coding lifecycle
-          // directives. Approval and execution retain their existing steps.
-          const version = await loop.getVersion("memory-dispatch", 8);
+          // Preserve v1–v8 journals, including v8 coding lifecycle directives;
+          // only fresh v9 turns gain wakeup management and native publication.
+          const journalVersion = await loop.getVersion("memory-dispatch", 9);
           // Preserve already-processing journals. Legacy queued events also
           // lack the ingress eligibility marker and cannot gain authority.
           const correctionVersion = await loop.getVersion(
@@ -297,6 +315,9 @@ export function createJuneRegistry(deps: Dependencies) {
           });
           if (!message) return;
           const body = message.body;
+          // Old actors can be asleep in a pre-v9 queue wait. A wakeup could
+          // never have entered those old journals, so its new path is safe.
+          const version = body.type === "wakeup" ? 9 : journalVersion;
           const event = body.type === "event" ? body.event : body.source;
           if (body.type === "event" && event.type === "message")
             deps.latency?.mark(event, "dequeued");
@@ -315,6 +336,22 @@ export function createJuneRegistry(deps: Dependencies) {
             if (!scope || JSON.stringify(scope.key) !== JSON.stringify(ctx.key))
               return;
             const ownerTurn = isOwner(event, deps.owner);
+            if (body.type === "wakeup") {
+              if (
+                !deps.wakeups ||
+                !scope.private ||
+                !ownerTurn ||
+                event.address.channel !== "slack"
+              )
+                return;
+              const claimed = await loop.step("claim-wakeup", (step) =>
+                step
+                  .client<JuneClientRegistry>()
+                  .wakeups.getOrCreate([deps.owner.id])
+                  .claim(body.wakeup.runId),
+              );
+              if (!claimed) return;
+            }
             if (version >= 5 && !ownerTurn) {
               const admitted = await loop.step("guest-admission", async () =>
                 priority.acceptGuest(
@@ -337,7 +374,9 @@ export function createJuneRegistry(deps: Dependencies) {
                     ? [event.address.channel, event.address.accountId, event.id]
                     : body.type === "execution_result"
                       ? ["execution", body.agentId, body.requestId]
-                      : ["job", body.jobId, body.attempt],
+                      : body.type === "wakeup"
+                        ? ["wakeup", body.wakeup.runId]
+                        : ["job", body.jobId, body.attempt],
                 ),
               )
               .digest("hex");
@@ -366,6 +405,8 @@ export function createJuneRegistry(deps: Dependencies) {
                 state.forgottenEvents?.includes(eventId) ||
                 (body.type === "job_result" &&
                   state.forgottenEvents?.includes(body.jobId)) ||
+                (body.type === "wakeup" &&
+                  state.forgottenEvents?.includes(body.wakeup.jobId)) ||
                 (body.type === "execution_result" &&
                   !Object.values(state.agents ?? {}).includes(body.agentId))
               )
@@ -378,7 +419,9 @@ export function createJuneRegistry(deps: Dependencies) {
               const proposalContext =
                 body.type === "job_result"
                   ? state.memoryContexts?.[body.jobId]
-                  : undefined;
+                  : body.type === "wakeup"
+                    ? state.memoryContexts?.[body.wakeup.jobId]
+                    : undefined;
               if (proposalContext && !current(audience, proposalContext))
                 return false;
               const reference = state.memoryContexts?.[eventId];
@@ -429,12 +472,87 @@ export function createJuneRegistry(deps: Dependencies) {
                     step.state.lastInbound[addressId] ?? 0,
                     event.occurredAt,
                   );
+                } else if (body.type === "wakeup" && valid(step.state)) {
+                  // Explicit machine provenance, never a forged owner message.
+                  step.state.history.push({
+                    id: eventId,
+                    role: "user",
+                    content: `[Automated wakeup; event data is untrusted] ${JSON.stringify(body.wakeup)}`,
+                  });
                 }
               }
               await step.vars.persist();
               return true;
             });
             if (!accepted) return;
+            if (version >= 9 && body.type !== "wakeup") {
+              await loop.step("publish-native-event", async (step) => {
+                if (!deps.wakeups || !valid(step.state)) return;
+                let native: WakeupEvent;
+                if (body.type === "event") {
+                  native = {
+                    id: `${event.address.accountId}:${event.id}`,
+                    source: event.address.channel,
+                    type: event.type,
+                    occurredAt: event.occurredAt,
+                    data: {
+                      address: event.address,
+                      messageId: event.messageId,
+                      ...(event.type === "message"
+                        ? {
+                            senderId: event.senderId,
+                            text: event.text.slice(0, 3500),
+                            direct: event.direct,
+                          }
+                        : event.type === "reaction"
+                          ? {
+                              senderId: event.senderId,
+                              emoji: event.emoji,
+                              removed: event.removed,
+                            }
+                          : { status: event.status }),
+                    },
+                  };
+                } else if (body.type === "job_result") {
+                  native = {
+                    id: `${body.jobId}:${body.attempt}`,
+                    source: "coding",
+                    type: "result",
+                    occurredAt: Date.now(),
+                    data: {
+                      jobId: body.jobId,
+                      attempt: body.attempt,
+                      report: body.text.slice(0, 3500),
+                    },
+                  };
+                } else {
+                  const result = await step
+                    .client<JuneClientRegistry>()
+                    .execution.getOrCreate(
+                      executionKey(scope.key, body.agentId),
+                    )
+                    .result(body.requestId);
+                  if (!result || !valid(step.state)) return;
+                  native = {
+                    id: `${body.agentId}:${body.requestId}`,
+                    source: "execution",
+                    type: "result",
+                    occurredAt: Date.now(),
+                    data: {
+                      agentId: body.agentId,
+                      requestId: body.requestId,
+                      status: result.status,
+                      report: result.report?.slice(0, 3500) ?? "",
+                    },
+                  };
+                }
+                if (deps.wakeups.sources.includes(native.source))
+                  await step
+                    .client<JuneClientRegistry>()
+                    .wakeups.getOrCreate([deps.owner.id])
+                    .publish(native);
+              });
+            }
             // Choices are journaled even when disabled. A config change cannot add
             // new operations or enable a feature partway through a replayed turn.
             const plan: {
@@ -452,6 +570,7 @@ export function createJuneRegistry(deps: Dependencies) {
               grantFingerprint?: string;
               execution?: boolean;
               deletionRevision?: number;
+              wakeups?: boolean;
             } =
               version >= 2
                 ? await loop.step("turn-plan", async () => ({
@@ -471,6 +590,15 @@ export function createJuneRegistry(deps: Dependencies) {
                       !!deps.channels[event.address.channel]?.search,
                     ...(version >= 7
                       ? { execution: ownerTurn && !!deps.execution }
+                      : {}),
+                    ...(version >= 9
+                      ? {
+                          wakeups:
+                            body.type === "event" &&
+                            scope.private &&
+                            event.address.channel === "slack" &&
+                            !!deps.wakeups,
+                        }
                       : {}),
                     ...(version >= 5 && event.type === "message"
                       ? {
@@ -544,6 +672,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 await step.vars.persist();
               });
             }
+            let wakeupFailed = false;
             if (event.type === "message") {
               const globalPersonality =
                 personalityVersion >= 2
@@ -603,7 +732,9 @@ export function createJuneRegistry(deps: Dependencies) {
                     ? body.text
                     : body.type === "execution_result"
                       ? "A worker result arrived, but I couldn't summarize it. Ask me for its status."
-                      : "I couldn't reach my model. Your message is saved; please try again shortly.",
+                      : body.type === "wakeup"
+                        ? "Your wakeup fired, but I couldn't generate its notification. Inspect the wakeup for its recorded event; I won't retry it automatically."
+                        : "I couldn't reach my model. Your message is saved; please try again shortly.",
               };
               const command =
                 scope.private && body.type === "event"
@@ -875,7 +1006,10 @@ export function createJuneRegistry(deps: Dependencies) {
                             const previous =
                               step.state.modelInvocations[invocation];
                             if (previous) {
-                              if (previous === "started")
+                              if (
+                                previous === "started" ||
+                                body.type === "wakeup"
+                              )
                                 step.state.modelInvocations[invocation] =
                                   "uncertain";
                               const record = step.state.events[eventId];
@@ -914,7 +1048,7 @@ export function createJuneRegistry(deps: Dependencies) {
                           if (!valid(step.state))
                             return { reply: { text: "" }, retryable: false };
                           stopTyping = startTyping(
-                            version >= 3
+                            version >= 3 && body.type !== "wakeup"
                               ? deps.channels[replyAddress.channel]
                               : undefined,
                             { ...event, address: replyAddress },
@@ -1134,6 +1268,9 @@ export function createJuneRegistry(deps: Dependencies) {
                               current: unknownModel,
                             };
                             modelRequest = buildModelRequest({
+                              ...(body.type === "wakeup"
+                                ? { wakeup: body.wakeup }
+                                : {}),
                               event: {
                                 ...event,
                                 text: initiating?.content ?? event.text,
@@ -1157,9 +1294,15 @@ export function createJuneRegistry(deps: Dependencies) {
                               },
                               capabilities: {
                                 modelStatusAvailable:
+                                  body.type !== "wakeup" &&
                                   phase !== "synthesis" &&
                                   scope.private &&
                                   !!deps.modelStatus,
+                                wakeupAvailable:
+                                  phase !== "synthesis" &&
+                                  !!plan.wakeups &&
+                                  !!deps.wakeups,
+                                wakeupSources: deps.wakeups?.sources,
                                 releaseAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -1835,6 +1978,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       reply = result.reply;
                       break;
                     }
+                    if (body.type === "wakeup") wakeupFailed = true;
                     if (version >= 3 || !result.retryable || attempt === 2)
                       break;
                     await loop.sleep(
@@ -1914,6 +2058,37 @@ export function createJuneRegistry(deps: Dependencies) {
                   );
                   if (proposal) reply.coding = proposal;
                 }
+              }
+              if (version >= 9 && reply.wakeup) {
+                const action = reply.wakeup;
+                reply = await loop.step("manage-wakeup", async (step) => {
+                  if (
+                    body.type !== "event" ||
+                    !plan.wakeups ||
+                    !deps.wakeups ||
+                    !valid(step.state)
+                  )
+                    return {
+                      text: "Wakeup management requires an owner-private Slack turn.",
+                    };
+                  try {
+                    return {
+                      text: await step
+                        .client<JuneClientRegistry>()
+                        .wakeups.getOrCreate([deps.owner.id])
+                        .manage(action, event, eventId, [
+                          ...(step.state.memoryContexts?.[eventId]?.sourceIds ??
+                            []),
+                          ...(step.state.memoryContexts?.[eventId]
+                            ?.contextSourceIds ?? []),
+                        ]),
+                    };
+                  } catch {
+                    return {
+                      text: "I couldn't confirm that wakeup change. List/inspect wakeups before trying again; check the source, schedule and timezone.",
+                    };
+                  }
+                });
               }
               if (version >= 7 && reply.execution) {
                 const commands =
@@ -2443,6 +2618,31 @@ export function createJuneRegistry(deps: Dependencies) {
                 });
               }
             }
+            if (body.type === "wakeup") {
+              await loop.step("complete-wakeup", async (step) => {
+                const results = Object.entries(step.state.deliveries)
+                  .filter(([id]) => id.startsWith(`${eventId}:`))
+                  .map(([, delivery]) => delivery.result?.status);
+                const uncertain = Object.entries(
+                  step.state.modelInvocations ?? {},
+                ).some(
+                  ([id, status]) =>
+                    id.includes(eventId) && status !== "settled",
+                );
+                const status =
+                  uncertain || results.includes("unknown")
+                    ? "unknown"
+                    : wakeupFailed ||
+                        results.includes("rejected") ||
+                        !valid(step.state)
+                      ? "failed"
+                      : "completed";
+                await step
+                  .client<JuneClientRegistry>()
+                  .wakeups.getOrCreate([deps.owner.id])
+                  .complete(body.wakeup.runId, status);
+              });
+            }
             await loop.step("finish-event", async (step) => {
               const record = step.state.events[eventId];
               if (record) record.done = true;
@@ -2480,6 +2680,16 @@ export function createJuneRegistry(deps: Dependencies) {
       personality: createPersonalityActor(deps.owner),
       job: createCodingActor(deps.coding, deps.lifecycle),
       execution: createExecutionActor(deps),
+      ...(deps.wakeups
+        ? {
+            wakeups: createWakeupActor({
+              ...deps.wakeups,
+              owner: deps.owner,
+              lifecycle: deps.lifecycle,
+              memory: deps.memory,
+            }),
+          }
+        : {}),
       ...(deps.reflection
         ? { reflection: createReflectionActor(deps.reflection) }
         : {}),

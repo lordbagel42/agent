@@ -28,6 +28,8 @@ into June or tested with a real account.
   cannot access private history or approve coding tasks.
 - Durable inbox, serial turns, event deduplication, and a persisted outbox.
   Ambiguous sends are recorded as unknown, not automatically repeated.
+- [Durable wakeups](docs/wakeups.md): June can manage one-time reminders, cron
+  notifications and native/signed-webhook event watches from her owner's Slack DM.
 - [Persistent execution agents](docs/execution-agents.md): June delegates substantive
   owner work, keeps chatting while workers run, reuses them for follow-ups, and
   synthesizes results. `executionEnabled: false` restores the direct fast/deep path.
@@ -46,8 +48,8 @@ June can reply with text, a native reaction, both, or intentional silence. A lig
 acknowledgment no longer forces an extra text message. Delivery history records
 what the platform accepted, including uncertain or rejected reactions.
 
-Incoming reactions and delivery receipts are recorded; they do not trigger an
-LLM turn yet. Reading image/attachment bytes, voice, WhatsApp templates, proactive schedules,
+Incoming reactions and delivery receipts are recorded; they can wake June when
+an explicit event watch matches. Reading image/attachment bytes, voice, WhatsApp templates,
 Claude subscription auth, self-deployment, and configuration changes from the
 console are unavailable. Memory, imports,
 reflection and tool modules are local integration work, not evidence of live

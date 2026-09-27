@@ -5,6 +5,7 @@ import type {
   ModelRequest,
 } from "../core/contracts.js";
 import { socialActionSchema } from "../core/social.js";
+import { wakeupActionSchema } from "../wakeups/state.js";
 import {
   observeUsage,
   tokenUsage,
@@ -64,6 +65,7 @@ const companionReplySchema = z.strictObject({
     )
     .optional(),
   social: socialActionSchema.optional(),
+  wakeup: wakeupActionSchema.optional(),
   coding: z
     .strictObject({
       workspace: z.string(),
@@ -179,6 +181,7 @@ export type ReplyCapabilities = Pick<
   | "recallAvailable"
   | "pendingMemoryAvailable"
   | "dashboardLoginAvailable"
+  | "wakeupAvailable"
   | "replyPlacementAvailable"
   | "socialAvailable"
   | "executionAvailable"
@@ -211,6 +214,7 @@ export function replyJsonSchema(
     recallAvailable,
     pendingMemoryAvailable,
     dashboardLoginAvailable,
+    wakeupAvailable,
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
@@ -223,6 +227,28 @@ export function replyJsonSchema(
         // Raw Anthropic structured outputs reject these constraints. Keep the
         // strict Zod checks locally and describe the bounds on the wire.
         for (const key of ["minLength", "maxLength", "maxItems"] as const) {
+          const limit = jsonSchema[key];
+          if (limit !== undefined) {
+            jsonSchema.description =
+              `${jsonSchema.description ?? ""} ${key}: ${limit}.`.trim();
+            delete jsonSchema[key];
+          }
+        }
+      },
+    },
+  );
+  const { $schema: _wakeupSchema, ...wakeupSchema } = z.toJSONSchema(
+    wakeupActionSchema.nullable(),
+    {
+      target: "draft-7",
+      override({ jsonSchema }) {
+        for (const key of [
+          "minLength",
+          "maxLength",
+          "maxItems",
+          "pattern",
+          "format",
+        ] as const) {
           const limit = jsonSchema[key];
           if (limit !== undefined) {
             jsonSchema.description =
@@ -312,6 +338,7 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(wakeupAvailable ? { wakeup: wakeupSchema } : {}),
       ...(releaseAvailable
         ? {
             release: {
@@ -533,6 +560,7 @@ export function replyJsonSchema(
       ...(recallAvailable ? ["recall"] : []),
       ...(pendingMemoryAvailable ? ["pendingMemory"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
+      ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
       ...(socialAvailable ? ["social"] : []),
     ],
@@ -712,6 +740,7 @@ export function parseReply(
     recallAvailable,
     pendingMemoryAvailable,
     dashboardLoginAvailable,
+    wakeupAvailable,
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
@@ -746,6 +775,7 @@ export function parseReply(
     "recall",
     "pendingMemory",
     "dashboardLogin",
+    "wakeup",
     "replyInThread",
     "social",
   ]) {
@@ -789,6 +819,7 @@ export function parseReply(
     (reply.pendingMemory !== undefined && !pendingMemoryAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
+    (reply.wakeup !== undefined && !wakeupAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);
@@ -810,6 +841,7 @@ export function parseReply(
     Number(reply.recall !== undefined) +
     Number(reply.pendingMemory === true) +
     Number(reply.dashboardLogin === true) +
+    Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
   if (
     directiveCount > 1 ||
@@ -829,6 +861,7 @@ export function parseReply(
       reply.recall !== undefined ||
       reply.pendingMemory === true ||
       reply.dashboardLogin === true ||
+      reply.wakeup !== undefined ||
       reply.latency !== undefined) &&
       reply.text.trim().length > 0)
   ) {

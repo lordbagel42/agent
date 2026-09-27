@@ -201,6 +201,8 @@ export interface CompanionReply {
   pendingMemory?: true;
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
+  /** Owner-private persistent schedules and event subscriptions. */
+  wakeup?: import("../wakeups/state.js").WakeupAction;
   /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */
   replyInThread?: boolean;
 }
@@ -236,6 +238,7 @@ export interface ModelRequest {
   recallAvailable?: boolean;
   pendingMemoryAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
+  wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   socialAvailable?: boolean;
   executionAvailable?: boolean;

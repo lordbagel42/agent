@@ -55,6 +55,12 @@ const schema = z
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    eventWebhooks: z
+      .record(
+        z.string().regex(/^[a-z][a-z0-9-]{0,47}$/),
+        z.strictObject({ secretEnv: envName }),
+      )
+      .default({}),
     deployment: z
       .strictObject({
         tokenEnv: envName.default("JUNE_DEPLOY_TOKEN"),

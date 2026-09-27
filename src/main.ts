@@ -628,6 +628,27 @@ async function main() {
         })
       : undefined;
   process.env.RIVET_INSPECTOR_DISABLE ??= "1";
+  const webhookSecrets = Object.fromEntries(
+    Object.entries(config.eventWebhooks).map(([name, value]) => [
+      name,
+      secret(value.secretEnv),
+    ]),
+  );
+  const wakeupOptions =
+    !config.setupMode && channels.slack
+      ? {
+          sources: [
+            ...Object.keys(channels),
+            ...(coding ? ["coding"] : []),
+            ...(config.executionEnabled ? ["execution"] : []),
+            ...(readDeployment ? ["deployment"] : []),
+            ...Object.keys(webhookSecrets).map((name) => `webhook.${name}`),
+          ],
+          readDeployment: readDeployment
+            ? () => readDeployment(config.owner.id)
+            : undefined,
+        }
+      : undefined;
   const registry = createJuneRegistry({
     owner: config.owner,
     social,
@@ -636,6 +657,7 @@ async function main() {
     deepModel:
       deepModel && (connections ? connections.wrap(deepModel) : deepModel),
     mcpAvailable: !!connections,
+    wakeups: wakeupOptions,
     execution:
       config.executionEnabled && !config.setupMode
         ? { model: deepModel ?? model }
@@ -704,6 +726,9 @@ async function main() {
     poolName: runtime.envoy.poolName,
   });
   const june = client.conversation.getOrCreate(["private", config.owner.id]);
+  const wakeups = wakeupOptions
+    ? client.wakeups.getOrCreate([config.owner.id])
+    : undefined;
   const app = createHttpApp({
     owner: config.owner,
     channels,
@@ -723,6 +748,13 @@ async function main() {
       : undefined,
     slackIngressDiagnostics,
     latency,
+    wakeups: wakeups
+      ? {
+          sources: webhookSecrets,
+          publish: (event) => wakeups.publish(event),
+          inspect: () => wakeups.snapshot(),
+        }
+      : undefined,
     console: config.console
       ? {
           origin: config.console.origin,
@@ -955,6 +987,11 @@ async function main() {
     });
   }
   registry.start();
+  // Instantiate the durable timer even when no human messages arrive after a restart.
+  if (wakeups) {
+    startupStage = "durable wakeup scheduler";
+    await wakeups.snapshot();
+  }
   startupStage = "HTTP listener";
   const server = serve(
     { fetch: app.fetch, hostname: config.host, port: config.port },

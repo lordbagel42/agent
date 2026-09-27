@@ -32,6 +32,10 @@ import type { LatencyDiagnostics } from "../runtime/latency.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
 import type { CapabilityBroker } from "../tools/broker.js";
 import { createCapabilityRoutes } from "../tools/routes.js";
+import {
+  createWakeupWebhooks,
+  type WakeupWebhooks,
+} from "../wakeups/webhooks.js";
 
 export interface HttpDependencies {
   channels: Partial<Record<Channel, ChannelAdapter>>;
@@ -47,6 +51,7 @@ export interface HttpDependencies {
   };
   slackIngressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
+  wakeups?: WakeupWebhooks & { inspect(): Promise<unknown> };
   console?: {
     origin: string;
     loginLinks?: ReturnType<typeof createConsoleLoginLinks>;
@@ -73,6 +78,12 @@ export function createHttpApp(deps: HttpDependencies) {
       deps.deployment.token === deps.operatorToken)
   )
     throw new Error("Deployment requires a distinct credential and release");
+  if (
+    Object.values(deps.wakeups?.sources ?? {}).some(
+      (key) => key === deps.operatorToken || key === deps.deployment?.token,
+    )
+  )
+    throw new Error("Event webhooks require separate signing credentials");
   const app = new Hono<{
     Variables: {
       slackRequest?: Request;
@@ -242,6 +253,8 @@ export function createHttpApp(deps: HttpDependencies) {
       ready ? 200 : 503,
     );
   });
+  if (deps.wakeups)
+    app.route("/webhooks/events", createWakeupWebhooks(deps.wakeups));
   for (const [channel, adapter] of Object.entries(deps.channels)) {
     app.on(
       channel === "whatsapp" ? ["GET", "POST"] : ["POST"],
@@ -321,6 +334,10 @@ export function createHttpApp(deps: HttpDependencies) {
   app.get("/operator/conversation", async () =>
     Response.json(await deps.inspectConversation()),
   );
+  if (deps.wakeups) {
+    const wakeups = deps.wakeups;
+    app.get("/operator/wakeups", async (c) => c.json(await wakeups.inspect()));
+  }
   if (deps.latency) {
     const latency = deps.latency;
     app.get("/operator/latency", (c) =>
