@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
 import type { Client } from "rivetkit/client";
 import { expect, it } from "vitest";
@@ -46,6 +46,11 @@ it("admits explicit private reflection once without bypassing evidence or schedu
   const sent: OutboundMessage[] = [];
   const requests: ModelRequest[] = [];
   const decisions: { at: number; ids: string[]; question: string }[] = [];
+  const skillChange = {
+    proposedBehavior: "Ask one clarifying question before estimating.",
+    rationale: "PRIVATE evidence a omits a required detail.",
+    evidenceIds: ["a"],
+  };
   const action: CompanionReply = {
     text: "",
     reflectionRequest: {
@@ -96,6 +101,7 @@ it("admits explicit private reflection once without bypassing evidence or schedu
             "Curiosity performs no public search",
           );
           expect(request.system).toContain("explicitly hypothetical");
+          expect(request.system).toContain("optional skill-change proposal");
         }
         if (search && request.webSearchAvailable)
           return { text: "", webSearch: "public query" };
@@ -147,9 +153,14 @@ it("admits explicit private reflection once without bypassing evidence or schedu
         return {
           answer: "yes",
           rationale: "PRIVATE interpretation",
-          evidenceIds: input.evidence.map((e) => e.id),
+          evidenceIds: input.simulateResponses
+            ? ["a"]
+            : input.evidence.map((e) => e.id),
           ...(input.simulateResponses
-            ? { alternativeResponses: ["PRIVATE hypothetical alternative"] }
+            ? {
+                alternativeResponses: ["PRIVATE hypothetical alternative"],
+                skillChange,
+              }
             : {}),
         };
       },
@@ -264,15 +275,42 @@ it("admits explicit private reflection once without bypassing evidence or schedu
     .toBe("stopped");
   const candidateId = (await reflection.status()).candidateIds[0];
   expect(candidateId).toBeDefined();
-  expect(await reflection.candidate(candidateId as string)).toMatchObject({
+  const candidate = await reflection.candidate(candidateId as string);
+  expect(candidate).toMatchObject({
     mode: "deep",
     kind: "proposal",
     hypothesisOnly: true,
+    skillChange: {
+      ...skillChange,
+      id: expect.stringMatching(/^[a-f0-9]{64}$/),
+      digest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      hypothesisOnly: true,
+      createdAt: candidate?.createdAt,
+    },
     decision: {
-      evidenceIds: ["a", "b"],
+      evidenceIds: ["a"],
       alternativeResponses: ["PRIVATE hypothetical alternative"],
     },
   });
+  expect(candidate?.skillChange?.digest).toBe(
+    createHash("sha256")
+      .update(
+        JSON.stringify([
+          "skill-change-v1",
+          candidateId,
+          candidate?.epoch,
+          ["a", "b"],
+          {
+            answer: "yes",
+            rationale: "PRIVATE interpretation",
+            evidenceIds: ["a"],
+            skillChange,
+            alternativeResponses: ["PRIVATE hypothetical alternative"],
+          },
+        ]),
+      )
+      .digest("hex"),
+  );
   expect(
     await reflection.inspectCandidate(
       audience,
@@ -281,11 +319,37 @@ it("admits explicit private reflection once without bypassing evidence or schedu
   ).toMatchObject({
     candidate: {
       hypothesisOnly: true,
+      skillChange: candidate?.skillChange,
       decision: {
         alternativeResponses: ["PRIVATE hypothetical alternative"],
       },
     },
   });
+  expect(
+    (await reflection.candidate(candidateId as string))?.skillChange,
+  ).toEqual(candidate?.skillChange);
+  await reflection.occupancy("skill-review-turn", true);
+  expect(await reflection.candidate(candidateId as string)).toBeNull();
+  expect(
+    await reflection.inspectCandidate(
+      audience,
+      reflectionCandidateId(candidateId as string),
+    ),
+  ).toMatchObject({ candidate: { skillChange: candidate?.skillChange } });
+  await reflection.occupancy("skill-review-turn", false);
+  expect(
+    (await client.conversation.getOrCreate(["private", owner.id]).snapshot())
+      .jobs,
+  ).toEqual({});
+  // Even a source cited by neither decision nor skill remains training provenance.
+  store.deleteSource("b");
+  expect(await reflection.candidate(candidateId as string)).toBeNull();
+  expect(
+    await reflection.inspectCandidate(
+      audience,
+      reflectionCandidateId(candidateId as string),
+    ),
+  ).toBeNull();
   expect(await deliver()).toContain("Reflection queued");
   const idleRequest = (await reflection.status()).reflection.requests[1];
   await expect.poll(() => decisions.length, { timeout: 5000 }).toBe(2);

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { createDecisionProvider } from "../models/decision.js";
 import type { Decision, DecisionInput } from "./evaluator.js";
-import { DecisionExecutor, runJury, typedEvaluator } from "./evaluator.js";
+import {
+  DecisionExecutor,
+  runJury,
+  typedEvaluator,
+  validateDecision,
+} from "./evaluator.js";
 
 const input: DecisionInput = {
   scope: "dm",
@@ -55,9 +60,17 @@ describe("decision provider evidence and authority boundaries", () => {
             body.text?.format.schema ?? body.output_config.format.schema;
           if (schema.properties.alternativeResponses) {
             expect(schema.required).toContain("alternativeResponses");
+            expect(schema.required).toContain("skillChange");
+            expect(schema.properties.skillChange).toMatchObject({
+              type: ["object", "null"],
+              additionalProperties: false,
+              required: ["proposedBehavior", "rationale", "evidenceIds"],
+            });
             expect(body.instructions ?? body.system).toContain(
               "explicitly hypothetical",
             );
+          } else {
+            expect(schema.properties.skillChange).toBeUndefined();
           }
           return Response.json(
             protocol === "openai"
@@ -137,6 +150,67 @@ describe("decision provider evidence and authority boundaries", () => {
         expect((await decide(simulation, signal)).answer).toBe("abstain");
       }
       expect(calls).toBe(12);
+
+      const skillChange = {
+        proposedBehavior: "Ask one clarifying question before estimating.",
+        rationale: "The episode omits a required detail.",
+        evidenceIds: ["a"],
+      };
+      const proposal = {
+        ...yes,
+        alternativeResponses: ["Clarify first."],
+        skillChange,
+      };
+      output = proposal;
+      expect(await decide(simulation, signal)).toEqual(proposal);
+      expect(calls).toBe(13);
+      output = { ...proposal, skillChange: null };
+      expect(await decide(simulation, signal)).toEqual({
+        ...yes,
+        alternativeResponses: proposal.alternativeResponses,
+      });
+      for (const invalid of [
+        { ...skillChange, code: "write instructions" },
+        { ...skillChange, permissions: ["execute"] },
+        { ...skillChange, id: "model-owned" },
+        { ...skillChange, evidenceIds: ["synthetic-alternative"] },
+      ]) {
+        output = { ...proposal, skillChange: invalid };
+        expect((await decide(simulation, signal)).answer).toBe("abstain");
+      }
+      output = { ...yes, skillChange };
+      expect((await decide(inherited, signal)).answer).toBe("abstain");
+      for (const patch of [
+        { source: "dream" as const },
+        { invalidated: true },
+        { expiresAt: input.now },
+        { scope: "foreign" },
+      ]) {
+        expect(
+          validateDecision(proposal, {
+            ...simulation,
+            evidence: input.evidence.map((e) => ({ ...e, ...patch })),
+          }).answer,
+        ).toBe("abstain");
+      }
+      expect(
+        validateDecision({ ...proposal, answer: "no" }, simulation).answer,
+      ).toBe("abstain");
+      expect(
+        validateDecision(
+          {
+            ...proposal,
+            skillChange: { ...skillChange, evidenceIds: ["uncited"] },
+          },
+          {
+            ...simulation,
+            evidence: [
+              ...input.evidence,
+              ...input.evidence.map((e) => ({ ...e, id: "uncited" })),
+            ],
+          },
+        ).answer,
+      ).toBe("abstain");
     }
   });
 

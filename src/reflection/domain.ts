@@ -10,6 +10,52 @@ export interface Evidence {
   correction?: { trait: string; value: string };
 }
 
+export interface SkillChangeInput {
+  proposedBehavior: string;
+  rationale: string;
+  evidenceIds: string[];
+}
+
+/** Inert review data, never installed instructions, executable code or authority. */
+export interface SkillChangeProposal extends SkillChangeInput {
+  id: string;
+  digest: string;
+  createdAt: number;
+  hypothesisOnly: true;
+}
+
+/** Only inert text and citation IDs cross this boundary; nothing is evaluated as code. */
+export function parseSkillChangeInput(value: unknown): SkillChangeInput | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  if (
+    Object.keys(input).some(
+      (key) => !["proposedBehavior", "rationale", "evidenceIds"].includes(key),
+    ) ||
+    typeof input.proposedBehavior !== "string" ||
+    !input.proposedBehavior.trim() ||
+    input.proposedBehavior.length > 1200 ||
+    typeof input.rationale !== "string" ||
+    !input.rationale.trim() ||
+    input.rationale.length > 2000 ||
+    !Array.isArray(input.evidenceIds) ||
+    input.evidenceIds.length < 1 ||
+    input.evidenceIds.length > 100 ||
+    !input.evidenceIds.every(
+      (id) => typeof id === "string" && !!id.trim() && id.length <= 2048,
+    )
+  )
+    return null;
+  const parsed = {
+    proposedBehavior: input.proposedBehavior,
+    rationale: input.rationale,
+    evidenceIds: [...new Set(input.evidenceIds as string[])].sort(),
+  };
+  return Buffer.byteLength(JSON.stringify(parsed), "utf8") <= 8000
+    ? parsed
+    : null;
+}
+
 export interface QuietHours {
   timeZone: string;
   startMinute: number;

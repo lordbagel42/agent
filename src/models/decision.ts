@@ -40,8 +40,18 @@ const simulationSchema = {
   properties: {
     ...schema.properties,
     alternativeResponses: { type: "array", items: { type: "string" } },
+    skillChange: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      properties: {
+        proposedBehavior: { type: "string" },
+        rationale: { type: "string" },
+        evidenceIds: { type: "array", items: { type: "string" } },
+      },
+      required: ["proposedBehavior", "rationale", "evidenceIds"],
+    },
   },
-  required: [...schema.required, "alternativeResponses"],
+  required: [...schema.required, "alternativeResponses", "skillChange"],
 };
 
 const instructions = [
@@ -208,6 +218,7 @@ export function createDecisionProvider({
             ? [
                 "Simulate alternative replies to the supplied episodes. If useful, answer yes with 1–3 alternativeResponses, each at most 2000 characters. Otherwise return an empty array and no or abstain.",
                 "All alternatives and their predicted effects are explicitly hypothetical, not events that happened, independent evidence, or messages to send. Cite only original supplied evidence IDs and give a brief grounded rationale. No tools or further simulations.",
+                "Optionally propose a skillChange when these alternatives suggest a useful behavior improvement: proposedBehavior (plain-language description, at most 1200 characters), rationale (at most 2000 characters), and evidenceIds (original non-dream IDs also cited by the decision). Keep the entire proposal under 8000 UTF-8 bytes. Otherwise use null. This is inert hypothesis-only review data, never executable code, installed instructions, approval or changed permissions; do not include implementation, authority or identity fields.",
               ]
             : []),
         ].join("\n");

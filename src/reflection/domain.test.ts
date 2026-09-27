@@ -8,6 +8,7 @@ import {
   finish,
   initialState,
   isQuiet,
+  parseSkillChangeInput,
 } from "./domain.js";
 
 const now = Date.parse("2026-09-26T12:00:00Z");
@@ -35,6 +36,45 @@ const request = {
   evidenceIds: ["a"],
   kind: "curiosity" as const,
 };
+
+it("skill staging accepts bounded inert data, not code or authority fields", () => {
+  const input = {
+    proposedBehavior: "Ask for the missing date before estimating a deadline.",
+    rationale: "The original exchange lacked a date.",
+    evidenceIds: ["b", "a", "b"],
+  };
+  expect(parseSkillChangeInput(input)).toEqual({
+    ...input,
+    evidenceIds: ["a", "b"],
+  });
+  for (const field of ["code", "instructions", "permissions", "approved", "id"])
+    expect(
+      parseSkillChangeInput({ ...input, [field]: "untrusted" }),
+    ).toBeNull();
+  expect(
+    parseSkillChangeInput({
+      ...input,
+      proposedBehavior: "x".repeat(1200),
+      rationale: "r".repeat(2000),
+    }),
+  ).not.toBeNull();
+  for (const patch of [
+    { proposedBehavior: "x".repeat(1201) },
+    { rationale: "r".repeat(2001) },
+    { rationale: " " },
+    { evidenceIds: [] },
+    { evidenceIds: Array(101).fill("a") },
+    { evidenceIds: ["x".repeat(2049)] },
+    { proposedBehavior: "界".repeat(1200), rationale: "界".repeat(2000) },
+    {
+      evidenceIds: Array.from(
+        { length: 5 },
+        (_, index) => `${index}${"x".repeat(1999)}`,
+      ),
+    },
+  ])
+    expect(parseSkillChangeInput({ ...input, ...patch })).toBeNull();
+});
 
 describe("serializable reflection admission", () => {
   it("deduplicates stable scope/evidence sets without mutating input", () => {

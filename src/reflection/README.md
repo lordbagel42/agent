@@ -251,6 +251,32 @@ the no-new-evidence counter. Authorized candidate inspection must retain the
 hypothetical label; metadata polling never includes alternatives. Forgotten
 sources invalidate reads just as for other reflection candidates.
 
+The same deep decision may return `skillChange: { proposedBehavior, rationale,
+evidenceIds }`, or `null` when no useful behavior improvement is supported. June
+generates this optional proposal herself; no owner-authored JSON command or
+second model call is needed. Behavior is limited to 1200 characters, rationale
+to 2000, and normalized proposal JSON to 8000 UTF-8 bytes. Extra fields (including
+code, instructions, permissions, IDs and approvals) are rejected. Citations must
+be current original non-dream evidence also cited by the decision, not simulated
+alternatives. Citation checks establish provenance, not semantic truth.
+
+After the existing post-generation evidence, epoch, live and quiet checks, the
+host attaches `candidate.skillChange` with a stable host-owned `id`, content and
+provenance `digest`, `createdAt`, and `hypothesisOnly: true`. Its digest binds the
+exact decision, source candidate/epoch and **all** original request evidence IDs,
+not just the proposed rationale's citations. `candidate.requestId` resolves that
+full training set in the existing request ledger. One candidate has one immutable
+proposal; request dedupe and settled publication prevent replay from restaging it.
+It shares candidate expiry, deletion checks and count/byte retention bounds.
+Authorized `candidate(id, scope)` retains the original epoch/live/quiet eligibility
+gates. `inspectCandidate(scope, id)` exposes retained historical proposals through
+the shared review DTO and 24KB budget; its reference digest includes the exact
+skill data. Historical review still requires current full-input provenance,
+settled publication, expiry and rejection checks, but grants no effect authority.
+This is inert review data only: no code, instructions, skills, personality or
+permissions are modified, and no coding job, promotion or installation is
+authorized. Evaluation and any separately approved coding are later capabilities.
+
 Verification: `pnpm exec vitest run src/runtime/reflection.test.ts
 src/reflection/domain.test.ts` exercises the real disposable engine plus domain
 rules. The runtime test protects audience/deletion checks, duplicate admission,

@@ -1,4 +1,9 @@
-import { type Evidence, freshEvidence } from "./domain.js";
+import {
+  type Evidence,
+  freshEvidence,
+  parseSkillChangeInput,
+  type SkillChangeInput,
+} from "./domain.js";
 
 export interface Decision {
   answer: "yes" | "no" | "abstain";
@@ -8,6 +13,8 @@ export interface Decision {
   confidence?: number;
   /** Synthetic drafts, never observations, independent evidence or send authority. */
   alternativeResponses?: string[];
+  /** Optional inert suggestion from the same deep call; the host owns its identity. */
+  skillChange?: SkillChangeInput;
 }
 
 export interface Vote {
@@ -53,7 +60,9 @@ export function validateDecision(
           "rationale",
           "evidenceIds",
           "confidence",
-          ...(input.simulateResponses ? ["alternativeResponses"] : []),
+          ...(input.simulateResponses
+            ? ["alternativeResponses", "skillChange"]
+            : []),
         ].includes(key),
     ) ||
     typeof record.answer !== "string" ||
@@ -88,10 +97,36 @@ export function validateDecision(
           ))))
   )
     return abstain("malformed-simulation");
+  const skillChange =
+    record.skillChange === undefined || record.skillChange === null
+      ? undefined
+      : parseSkillChangeInput(record.skillChange);
+  if (
+    skillChange === null ||
+    (skillChange &&
+      (record.answer !== "yes" ||
+        !skillChange.evidenceIds.every(
+          (id) =>
+            (record.evidenceIds as string[]).includes(id) &&
+            input.evidence.some(
+              (e) =>
+                e.id === id &&
+                e.source !== "dream" &&
+                freshEvidence(
+                  e,
+                  input.scope,
+                  input.now,
+                  input.evidenceMaxAgeMs,
+                ),
+            ),
+        )))
+  )
+    return abstain("invalid-skill-proposal");
   return {
     answer: record.answer as Decision["answer"],
     rationale: record.rationale,
     evidenceIds: [...new Set(record.evidenceIds as string[])],
+    ...(skillChange ? { skillChange } : {}),
     ...(record.alternativeResponses === undefined
       ? {}
       : {

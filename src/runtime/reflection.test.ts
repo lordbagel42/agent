@@ -28,6 +28,7 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   let releaseRetrieve = () => {};
   const lifecycle: Lifecycle = createLifecycle(async () => handle.isSettled());
   const enter = vi.spyOn(lifecycle, "enter");
+  const quiet = { timeZone: "UTC", startMinute: 0, endMinute: 0 };
   const registry = setup({
     use: {
       reflection: createReflectionActor(
@@ -40,7 +41,7 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
             maxAttempts: 1,
             maxNoNewEvidence: 1,
             evidenceMaxAgeMs: 60000,
-            quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
+            quiet,
           },
           idleMs: 100,
           deepMs: 200,
@@ -77,6 +78,13 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
                     alternativeResponses: [
                       "Hypothetical: ask one clarifying question.",
                     ],
+                    skillChange: {
+                      proposedBehavior:
+                        "Clarify missing information before estimating.",
+                      rationale:
+                        "The original episode lacks a required detail.",
+                      evidenceIds: input.evidence.map((e) => e.id),
+                    },
                   }
                 : {}),
             };
@@ -173,7 +181,11 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     .toBe("cancelled");
   expect(calls).toBe(0);
   authorized = true;
-  const late = await handle.enqueue({ ...input, evidenceIds: ["late-delete"] });
+  const late = await handle.enqueue({
+    ...input,
+    mode: "deep",
+    evidenceIds: ["late-delete"],
+  });
   await expect.poll(() => calls).toBe(1);
   expect(
     (await handle.enqueue({ ...input, evidenceIds: ["late-delete"] })).accepted,
@@ -282,6 +294,11 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     mode: "deep",
     kind: "proposal",
     hypothesisOnly: true,
+    skillChange: {
+      proposedBehavior: "Clarify missing information before estimating.",
+      evidenceIds: ["read-after-delete"],
+      hypothesisOnly: true,
+    },
     decision: {
       answer: "yes",
       evidenceIds: ["read-after-delete"],
@@ -365,7 +382,7 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   expect((await handle.status()).liveActive).toBe(1);
   const blocked = await handle.enqueue({
     ...input,
-    mode: "interaction",
+    mode: "deep",
     evidenceIds: ["occupancy-blocked"],
   });
   await setTimeout(100);
@@ -435,6 +452,26 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     expect((await handle.enqueue(freshInput)).accepted).toBe(false);
   }
   expect(calls).toBe(8);
+
+  const lateQuiet = await handle.enqueue({
+    ...input,
+    mode: "deep",
+    evidenceIds: ["quiet-after-generation"],
+  });
+  await expect.poll(() => calls).toBe(9);
+  const minute = new Date().getUTCHours() * 60 + new Date().getUTCMinutes();
+  quiet.startMinute = minute;
+  quiet.endMinute = (minute + 2) % 1440;
+  release();
+  const quietInvocation = JSON.stringify([lateQuiet.id, 1]);
+  await expect
+    .poll(async () => (await handle.status()).invocations[quietInvocation], {
+      timeout: 5000,
+    })
+    .toBe("settled");
+  const quietStatus = await handle.status();
+  expect(quietStatus.candidateIds).not.toContain(quietInvocation);
+  expect(quietStatus.decisionOutcomes?.[quietInvocation]).toBeUndefined();
 });
 
 it("bounds private curiosity provenance and withholds revoked inputs and hypotheses", async () => {

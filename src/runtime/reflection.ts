@@ -15,6 +15,7 @@ import {
   type ReflectionState,
   type RequestInput,
   reflectionPriority,
+  type SkillChangeProposal,
 } from "../reflection/domain.js";
 import {
   type Decision,
@@ -92,6 +93,8 @@ export interface ReflectionCandidate {
   kind: "proposal" | "interruption-candidate";
   hypothesisOnly: boolean;
   decision: Decision;
+  /** Immutable, host-bound review data; never installed or granted authority. */
+  skillChange?: SkillChangeProposal;
   createdAt: number;
   /** Generation epoch: later interactions revoke effects, not published review. */
   epoch: number;
@@ -350,6 +353,9 @@ export function createReflectionActor(
         publication: candidate.publication,
         hypothesisOnly: candidate.hypothesisOnly,
         decision,
+        ...(candidate.skillChange
+          ? { skillChange: candidate.skillChange }
+          : {}),
       },
       evidence: evidence
         .map(({ id, source, observedAt, expiresAt }) => ({
@@ -1110,7 +1116,7 @@ export function createReflectionActor(
                     prompt:
                       "Use only the supplied existing evidence. No web search was performed for this request; do not request additional sources, private account access or tool execution. " +
                       (mode === "deep"
-                        ? "Simulate 1–3 alternative responses to these episodes, each at most 2000 characters. Alternatives and predicted effects are hypothetical, never independent evidence. Stage a proposal only; no actions or permission changes."
+                        ? "Simulate 1–3 alternative responses to these episodes, each at most 2000 characters. Alternatives and predicted effects are hypothetical, never independent evidence. Optionally suggest a bounded skillChange describing better behavior, with a rationale grounded in original cited evidence. Stage a proposal only; no code, installed instructions, actions or permission changes."
                         : "Evaluate whether these episodes support a useful reflection proposal or interruption candidate. Silence is normal; do not repeatedly contact an idle owner. No actions or permission changes."),
                     ...(mode === "deep" ? { simulateResponses: true } : {}),
                     now: Date.now(),
@@ -1154,6 +1160,27 @@ export function createReflectionActor(
                         (!hypothesisOnly &&
                           step.state.interruptionEpoch !== epoch))
                     ) {
+                      const createdAt = Date.now();
+                      const skillChange: SkillChangeProposal | undefined =
+                        decision.skillChange
+                          ? {
+                              ...decision.skillChange,
+                              id: reflectionCandidateId(
+                                `skill-change:${invocation}`,
+                              ),
+                              digest: reflectionCandidateId(
+                                JSON.stringify([
+                                  "skill-change-v1",
+                                  invocation,
+                                  epoch,
+                                  request.evidenceIds,
+                                  decision,
+                                ]),
+                              ),
+                              createdAt,
+                              hypothesisOnly: true,
+                            }
+                          : undefined;
                       step.vars.publishingCandidates.add(invocation);
                       step.state.candidates[invocation] = {
                         id: invocation,
@@ -1166,7 +1193,8 @@ export function createReflectionActor(
                           : "proposal",
                         hypothesisOnly,
                         decision,
-                        createdAt: Date.now(),
+                        ...(skillChange ? { skillChange } : {}),
+                        createdAt,
                         epoch,
                         publication: {
                           version: 1,
