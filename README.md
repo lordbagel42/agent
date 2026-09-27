@@ -200,6 +200,56 @@ provider probes, but a real Slack end-to-end speedup has not been established.
 There is no extra classifier invocation. Coordinate live settings changes with
 the [deployment controller](docs/deployment.md); releases bind the exact config.
 
+#### Hack Club AI interaction model
+
+Hack Club AI uses the existing OpenAI Responses provider, not a separate adapter
+or a Codex subscription login. Replace only `model` with this configuration:
+
+```json
+"model": {
+  "protocol": "openai",
+  "baseUrl": "https://ai.hackclub.com/proxy/v1",
+  "model": "openai/gpt-6-luna",
+  "apiKeyEnv": "HACKCLUB_AI_API_KEY",
+  "reasoningEffort": "low",
+  "timeoutMs": 30000
+}
+```
+
+The adapter appends `/responses`; do not include it in `baseUrl`. Supply the
+existing authorized API key through the service's private environment, never
+the JSON configuration or Git. Keep `deepModel` and all other settings unchanged:
+execution workers continue using `deepModel` when configured, while interaction
+and completion synthesis use Luna. Authored-workflow text-only `model` steps also
+use the primary model and therefore switch to Luna. No capabilities are enabled
+by changing the model. The existing scoped prompt, strict schema, local action
+validation, host permission checks, durable outbox and no-automatic-replay guards
+still apply.
+The example leaves `maxOutputTokens` unset rather than imposing a new cap on
+large action outputs; if configured, that budget includes reasoning tokens.
+
+Requests use Bearer authentication and `store: false`. This sends the permitted
+conversation context through Hack Club's proxy; `store: false` is not a guarantee
+about proxy/upstream retention. Review that boundary before switching private
+traffic. Coordinate the credential/configuration update with the deployment
+operator; changing a local example does not reconfigure the running service.
+
+Current-source verification on 2026-09-27 accepted the owner-private prompt
+and schema under a broad synthetic capability configuration (about 45 KB/17 KB)
+and passed eight synthetic reply/action/boundary checks. Owner-private calls took
+2.14–3.61 seconds through complete parsed replies;
+the public-gated call took 1.49 seconds. These are small provider-only samples,
+not first-token times, sustained-load results, or a sub-two-second Slack claim.
+An isolated real Rivet workflow also verified Luna-generated analytics, release
+inspection and latency actions, execution dispatch to a separate fixture worker,
+Luna completion synthesis, and public-scope denial. Its channel and external
+services were fixtures: no real Slack message, deployment, or tool side effect
+was performed. Additional uncapped calls through the real MCP wrapper verified
+read/synthesis, approval proposal creation without execution, permission and
+proposal inspection, and the workflow text-model tool. MCP provider calls took
+1.46–3.41 seconds each; multi-call actions took longer overall. These checks
+establish readiness, not a live model cutover or exact production-context replay.
+
 Enable replaceable public search with
 `"webSearch": {"provider":"tavily","apiKeyEnv":"TAVILY_API_KEY"}` and load the
 credential through the service's private environment. Missing credentials mean
