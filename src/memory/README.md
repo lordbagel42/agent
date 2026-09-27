@@ -129,6 +129,21 @@ trusted host APIs, not autonomous model tools.
   agreement or proof of resolution. A nonempty text query is rejected in this mode.
   Recorded edge IDs remain intact even when their endpoint bodies are omitted;
   those references do not supply the missing content.
+- Retrieval also accepts `observedFrom?`, `observedTo?`, and `validAt?`, all
+  nonnegative safe-integer epoch milliseconds. Observation windows include the
+  start and exclude the end: `observedFrom <= Source.observedAt < observedTo`.
+  An omitted endpoint is unbounded; when both are present, start must precede
+  end. This is original message time, **not import/ingestion time**. A claim
+  matches an observation window if any original supporting source in its
+  dependency ancestry or grounding matches, excluding relation counterparts;
+  its full provenance is retained, not clipped to that window.
+  `validAt` instead selects only claims with known bounds satisfying
+  `validFrom <= validAt < validTo`. Raw sources, ungrounded claims and claims
+  with either validity bound unknown (`null`) are excluded; unknown never means
+  infinite validity. Without `validAt`, unknown-validity claims remain eligible.
+  Combined filters use AND, after audience authorization and before ranking,
+  omission counts and budgets. These filters select evidence, not established
+  truth, and add no timestamps or inferred dates to the ledger.
 
 ## June-facing recall
 
@@ -181,6 +196,13 @@ author/account/platform tuples stay separate. Unknown IDs produce no matches,
 not an unfiltered fallback. `entity` can accompany a category or keyword query;
 omitted/null means no entity filter. Ask for clarification when identity is
 ambiguous rather than inventing an ID or merging people.
+
+For date-specific recall, June can add `observedFrom`, `observedTo`, and/or
+`validAt` to the same `kind: "search"` object, combining them with category or
+keywords. `query: ""` permits time-only recall. Omitted fields (or `null` on the
+provider wire) apply no time filter. Ask for original messages within a date
+window versus claims with known validity at an instant; these are different
+questions, with the half-open and unknown-bound semantics described above.
 
 The host derives the audience from routing; the model cannot choose an audience,
 limit, provider, account, or permission. Recall is absent from guest/public,

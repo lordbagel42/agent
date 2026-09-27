@@ -45,6 +45,13 @@ const recallCategorySchema = z.enum([
   "commitment",
   "pattern",
 ]);
+const recallTimestampSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .safe()
+  .nullish()
+  .transform((value) => value ?? undefined);
 
 const companionReplySchema = z.strictObject({
   text: z.string().refine((text) => Array.from(text).length <= 3_500),
@@ -149,27 +156,37 @@ const companionReplySchema = z.strictObject({
   recall: z
     .union([
       searchQuerySchema,
-      z.strictObject({
-        kind: z.literal("search"),
-        query: z
-          .string()
-          .trim()
-          .refine((value) => Array.from(value).length <= 500),
-        category: recallCategorySchema
-          .nullish()
-          .transform((value) => value ?? undefined),
-        cursor: z
-          .string()
-          .regex(/^[A-Za-z0-9_-]{43}$/)
-          .nullish()
-          .transform((value) => value ?? undefined),
-        entity: z
-          .string()
-          .min(1)
-          .max(2048)
-          .nullish()
-          .transform((value) => value ?? undefined),
-      }),
+      z
+        .strictObject({
+          kind: z.literal("search"),
+          query: z
+            .string()
+            .trim()
+            .refine((value) => Array.from(value).length <= 500),
+          category: recallCategorySchema
+            .nullish()
+            .transform((value) => value ?? undefined),
+          cursor: z
+            .string()
+            .regex(/^[A-Za-z0-9_-]{43}$/)
+            .nullish()
+            .transform((value) => value ?? undefined),
+          entity: z
+            .string()
+            .min(1)
+            .max(2048)
+            .nullish()
+            .transform((value) => value ?? undefined),
+          observedFrom: recallTimestampSchema,
+          observedTo: recallTimestampSchema,
+          validAt: recallTimestampSchema,
+        })
+        .refine(
+          (value) =>
+            value.observedFrom === undefined ||
+            value.observedTo === undefined ||
+            value.observedFrom < value.observedTo,
+        ),
       z.strictObject({
         kind: z.literal("contradictions"),
         claimId: z.string().min(1).max(2048),
@@ -456,8 +473,32 @@ export function replyJsonSchema(
                       description:
                         "Exact existing entity ID (1–2048 characters), not a display name or inferred identity. Extracted IDs are JSON-encoded [platform,account,author] tuples. Null omits this filter.",
                     },
+                    observedFrom: {
+                      type: ["integer", "null"],
+                      description:
+                        "Inclusive original-source observation start in epoch milliseconds (0–9007199254740991), not import time. A claim matches any original supporting source, including grounding. Null means no start bound; must precede observedTo when both are set.",
+                    },
+                    observedTo: {
+                      type: ["integer", "null"],
+                      description:
+                        "Exclusive original-source observation end in epoch milliseconds (0–9007199254740991). Null means no end bound. Observation and validity filters combine with AND.",
+                    },
+                    validAt: {
+                      type: ["integer", "null"],
+                      description:
+                        "Epoch-millisecond instant (0–9007199254740991) where known claim bounds satisfy validFrom <= validAt < validTo. Excludes raw sources and claims with either validity bound unknown. Null means no validity filter; never infer missing dates.",
+                    },
                   },
-                  required: ["kind", "query", "category", "cursor", "entity"],
+                  required: [
+                    "kind",
+                    "query",
+                    "category",
+                    "cursor",
+                    "entity",
+                    "observedFrom",
+                    "observedTo",
+                    "validAt",
+                  ],
                 },
                 {
                   type: "object",
@@ -474,7 +515,7 @@ export function replyJsonSchema(
                 },
               ],
               description:
-                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with optional category and exact entity filters, or explicit contradiction-neighbor inspection by claim ID. Unknown categories are rejected, never broadened. Unknown entity IDs return no matches, never name-based alternatives. The host returns bounded evidence with provenance directly, without deciding truth. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
+                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with optional category, exact entity and time filters, or explicit contradiction-neighbor inspection by claim ID. Unknown categories and invalid time windows are rejected, never broadened. Unknown entity IDs return no matches, never name-based alternatives. The host returns bounded evidence with provenance directly, without deciding truth. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
             },
           }
         : {}),

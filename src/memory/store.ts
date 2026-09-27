@@ -820,6 +820,9 @@ export class EvidenceStore {
       // Trusted host presentation measurement; never supplied by the model.
       measureCharacters?: (json: string) => number;
       entity?: string;
+      observedFrom?: number;
+      observedTo?: number;
+      validAt?: number;
     } = {},
   ): MemoryRetrieval {
     parse(z.string().max(10000), query);
@@ -847,7 +850,30 @@ export class EvidenceStore {
         .max(100000),
       options.maxCharacters ?? 16000,
     );
+    const observedFrom = parse(timestamp.optional(), options.observedFrom);
+    const observedTo = parse(timestamp.optional(), options.observedTo);
+    const validAt = parse(timestamp.optional(), options.validAt);
+    if (
+      observedFrom !== undefined &&
+      observedTo !== undefined &&
+      observedFrom >= observedTo
+    )
+      throw new Error("Invalid memory observation window");
     const visible = this.search(audience, "");
+    // Original observation time, never ingestion time or a claim repetition.
+    const observed =
+      observedFrom !== undefined || observedTo !== undefined
+        ? new Set(
+            visible.sources
+              .filter(
+                (source) =>
+                  (observedFrom === undefined ||
+                    source.observedAt >= observedFrom) &&
+                  (observedTo === undefined || source.observedAt < observedTo),
+              )
+              .map((source) => source.id),
+          )
+        : undefined;
     // Legacy imports may predate Slack's opt-out. Automatic context must not
     // include those originals or claims derived from them; explicit search stays available.
     const ignored = new Set(
@@ -858,6 +884,22 @@ export class EvidenceStore {
         )
         .map((source) => source.id),
     );
+    const parents = new Map(
+      visible.claims.map((claim) => [
+        claim.id,
+        [
+          ...claim.dependsOn,
+          ...(claim.grounding
+            ? [
+                claim.grounding.subjectSourceId,
+                ...claim.grounding.citations.map(
+                  (citation) => citation.sourceId,
+                ),
+              ]
+            : []),
+        ],
+      ]),
+    );
     const words = [
       ...new Set(query.toLocaleLowerCase().split(/\s+/u).filter(Boolean)),
     ];
@@ -867,7 +909,9 @@ export class EvidenceStore {
           (item) =>
             !options.claimsOnly &&
             category.data === undefined &&
+            validAt === undefined &&
             !ignored.has(item.id) &&
+            (!observed || observed.has(item.id)) &&
             (entity === undefined ||
               JSON.stringify([item.platform, item.account, item.author]) ===
                 entity),
@@ -879,14 +923,33 @@ export class EvidenceStore {
             category.data === undefined ||
             item.grounding?.category === category.data,
         )
-        .filter(
-          (item) =>
-            (entity === undefined || item.entity === entity) &&
-            (ignored.size === 0 ||
-              !this.independentEvidence(item.id, audience).some((id) =>
-                ignored.has(id),
-              )),
-        )
+        .filter((item) => {
+          if (entity !== undefined && item.entity !== entity) return false;
+          // Unknown bounds are not infinite bounds; no validity is invented.
+          if (
+            validAt !== undefined &&
+            (item.grounding?.validFrom == null ||
+              item.grounding.validTo == null ||
+              validAt < item.grounding.validFrom ||
+              validAt >= item.grounding.validTo)
+          )
+            return false;
+          if (!observed && ignored.size === 0) return true;
+          // Walk this authorized snapshot once per ancestor, even for a shared
+          // dependency DAG. Check opt-outs outside the observation window too.
+          const pending = [item.id];
+          const visited = new Set<string>();
+          let matchesObservation = !observed;
+          while (pending.length) {
+            const ref = pending.pop();
+            if (ref === undefined || visited.has(ref)) continue;
+            visited.add(ref);
+            if (ignored.has(ref)) return false;
+            if (observed?.has(ref)) matchesObservation = true;
+            pending.push(...(parents.get(ref) ?? []));
+          }
+          return matchesObservation;
+        })
         .map((item) => ({ type: "claim" as const, item })),
     ];
     // Resolve the root only after scope/opt-out filtering. Missing and hidden

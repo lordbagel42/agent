@@ -1778,6 +1778,9 @@ export function createJuneRegistry(deps: Dependencies) {
                                             category: undefined,
                                             cursor: undefined,
                                             entity: undefined,
+                                            observedFrom: undefined,
+                                            observedTo: undefined,
+                                            validAt: undefined,
                                           }
                                         : checked.recall;
                                     const contradictionsOf =
@@ -1835,6 +1838,18 @@ export function createJuneRegistry(deps: Dependencies) {
                                         entity:
                                           request.kind === "search"
                                             ? request.entity
+                                            : undefined,
+                                        observedFrom:
+                                          request.kind === "search"
+                                            ? request.observedFrom
+                                            : undefined,
+                                        observedTo:
+                                          request.kind === "search"
+                                            ? request.observedTo
+                                            : undefined,
+                                        validAt:
+                                          request.kind === "search"
+                                            ? request.validAt
                                             : undefined,
                                         contradictionsOf,
                                         paginate: request.kind === "search",

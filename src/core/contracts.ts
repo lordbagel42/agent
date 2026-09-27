@@ -213,6 +213,11 @@ export interface CompanionReply {
         category?: "claim" | "preference" | "commitment" | "pattern";
         cursor?: string;
         entity?: string;
+        /** Original source observation window [from, to), epoch milliseconds. */
+        observedFrom?: number;
+        observedTo?: number;
+        /** Select only claims with known validity [validFrom, validTo) at this instant. */
+        validAt?: number;
       }
     | { kind: "contradictions"; claimId: string };
   /** Owner-private bounded view of unaccepted memory claims; never review. */
