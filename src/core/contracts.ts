@@ -228,6 +228,11 @@ export interface CompanionReply {
   personalitySuggestion?: import("../reflection/global-proposal.js").GlobalProposalInput;
   /** Observe only the current owner-private message with a fixed Jev rubric. */
   jevObservation?: boolean;
+  /** Request bounded owner-private reflection, not immediate evaluation or delivery. */
+  reflectionRequest?: {
+    evidenceIds: string[];
+    mode: "idle" | "deep";
+  };
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Owner-private persistent schedules and event subscriptions. */
@@ -271,6 +276,7 @@ export interface ModelRequest {
   pendingMemoryAvailable?: boolean;
   personalitySuggestionAvailable?: boolean;
   jevObservationAvailable?: boolean;
+  reflectionRequestAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;

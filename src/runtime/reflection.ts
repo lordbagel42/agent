@@ -1,5 +1,6 @@
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
+import type { CompanionReply } from "../core/contracts.js";
 import {
   cancel,
   claim,
@@ -140,6 +141,47 @@ export function createReflectionActor(
     }),
     queues: { wake: queue<{ wake: true }>() },
     actions: {
+      /** June's explicit owner-private request. No model-controlled scope, kind,
+       * evidence body or immediate mode; the existing scheduler owns admission.
+       */
+      request: async (
+        c,
+        input: NonNullable<CompanionReply["reflectionRequest"]>,
+      ) => {
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
+          throw new Error("Wrong reflection owner");
+        if (
+          !["idle", "deep"].includes(input.mode) ||
+          !Array.isArray(input.evidenceIds) ||
+          !input.evidenceIds.length ||
+          input.evidenceIds.length > 20 ||
+          input.evidenceIds.some(
+            (id) => typeof id !== "string" || !id.trim() || id.length > 2048,
+          )
+        )
+          throw new Error("Invalid reflection request");
+        const request: ReflectionInput = {
+          scope: JSON.stringify(["private", deps.ownerId]),
+          evidenceIds: [...new Set(input.evidenceIds)].sort(),
+          mode: input.mode,
+          kind: "reflection",
+        };
+        const evidence = await retrieve(
+          request,
+          AbortSignal.timeout(deps.timeoutMs),
+        ).catch(() => null);
+        if (!evidence) return { status: "unavailable" as const };
+        const result = enqueue(c.state.reflection, request, Date.now());
+        c.state.reflection = result.state;
+        if (result.accepted) c.state.modes[result.id] = request.mode;
+        await c.vars.persist();
+        if (result.accepted) await c.queue.send("wake", { wake: true });
+        return {
+          status: result.accepted
+            ? ("queued" as const)
+            : ("duplicate" as const),
+        };
+      },
       enqueue: async (c, input: ReflectionInput) => {
         if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
           throw new Error("Wrong reflection owner");

@@ -459,6 +459,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.jevObservationAvailable = true;
   f.request.codingJobsAvailable = true;
   f.request.recallAvailable = true;
+  f.request.reflectionRequestAvailable = true;
   let evidence = "";
   let synthesis: ModelRequest | undefined;
   let modelStatusAvailable: boolean | undefined;
@@ -530,6 +531,17 @@ test("discovery grants nothing, read results are transient and credentials stay 
     parseReply('{"text":"","recall":"private"}', [], synthesis),
   ).toThrow();
   expect(f.request.recallAvailable).toBe(true);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "reflectionRequest",
+  );
+  expect(() =>
+    parseReply(
+      '{"text":"","reflectionRequest":{"evidenceIds":["a"],"mode":"idle"}}',
+      [],
+      synthesis,
+    ),
+  ).toThrow();
+  expect(f.request.reflectionRequestAvailable).toBe(true);
   expect(evidence).toContain("private result [credential redacted]");
   expect(modelStatusAvailable).toBe(false);
   expect(evidence).not.toContain("private-token");

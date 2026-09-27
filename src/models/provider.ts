@@ -196,6 +196,12 @@ const companionReplySchema = z.strictObject({
   pendingMemory: z.literal(true).optional(),
   personalitySuggestion: globalProposalInputSchema.optional(),
   jevObservation: z.boolean().optional(),
+  reflectionRequest: z
+    .strictObject({
+      evidenceIds: z.array(z.string().trim().min(1).max(2048)).min(1).max(20),
+      mode: z.enum(["idle", "deep"]),
+    })
+    .optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -230,6 +236,7 @@ export type ReplyCapabilities = Pick<
   | "pendingMemoryAvailable"
   | "personalitySuggestionAvailable"
   | "jevObservationAvailable"
+  | "reflectionRequestAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
@@ -267,6 +274,7 @@ export function replyJsonSchema(
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
     jevObservationAvailable,
+    reflectionRequestAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -586,6 +594,26 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(reflectionRequestAvailable
+        ? {
+            reflectionRequest: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                evidenceIds: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "1–20 existing retained source IDs, each 1–2048 characters; never invent IDs or provide evidence text. Existing evidence-size limits also apply.",
+                },
+                mode: { type: "string", enum: ["idle", "deep"] },
+              },
+              required: ["evidenceIds", "mode"],
+              description:
+                "Request owner-private reflection through the existing scheduler. Leave text empty and all other actions unset. Queuing does not mean evaluation or delivery; idle, quiet-hour and capacity rules still apply.",
+            },
+          }
+        : {}),
       ...(analyticsAvailable
         ? {
             analytics: {
@@ -776,6 +804,7 @@ export function replyJsonSchema(
       ...(pendingMemoryAvailable ? ["pendingMemory"] : []),
       ...(personalitySuggestionAvailable ? ["personalitySuggestion"] : []),
       ...(jevObservationAvailable ? ["jevObservation"] : []),
+      ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
@@ -960,6 +989,7 @@ export function parseReply(
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
     jevObservationAvailable,
+    reflectionRequestAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -999,6 +1029,7 @@ export function parseReply(
     "pendingMemory",
     "personalitySuggestion",
     "jevObservation",
+    "reflectionRequest",
     "dashboardLogin",
     "wakeup",
     "replyInThread",
@@ -1047,6 +1078,7 @@ export function parseReply(
     (reply.personalitySuggestion !== undefined &&
       !personalitySuggestionAvailable) ||
     (reply.jevObservation !== undefined && !jevObservationAvailable) ||
+    (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
@@ -1074,6 +1106,7 @@ export function parseReply(
     Number(reply.pendingMemory === true) +
     Number(reply.personalitySuggestion !== undefined) +
     Number(reply.jevObservation === true) +
+    Number(reply.reflectionRequest !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
@@ -1098,6 +1131,7 @@ export function parseReply(
       reply.pendingMemory === true ||
       reply.personalitySuggestion !== undefined ||
       reply.jevObservation === true ||
+      reply.reflectionRequest !== undefined ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||
       reply.latency !== undefined) &&

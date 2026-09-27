@@ -1475,6 +1475,14 @@ export function createJuneRegistry(deps: Dependencies) {
                                 jevQuestion: plan.jev
                                   ? deps.jev?.question
                                   : undefined,
+                                reflectionRequestAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  plan.memory &&
+                                  !!deps.memory &&
+                                  plan.reflection &&
+                                  !!deps.reflection,
                                 dashboardLoginAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -1699,6 +1707,48 @@ export function createJuneRegistry(deps: Dependencies) {
                                   data.length <= 3000
                                     ? `Jev typed observation (not a jury verdict or permission). Confidence is uncalibrated; sourceIds identify input, not answer citations. No rationale or automatic retry.\n${data}`
                                     : "Jev returned a result too large to deliver here; no result is claimed and the request was not repeated.";
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (
+                              generated.reflectionRequest !== undefined
+                            ) {
+                              // Keep the action in the existing invocation receipt;
+                              // interrupted inference is never reissued on replay.
+                              let text =
+                                "Reflection requests require an owner-private turn with retained memory and reflection enabled.";
+                              if (
+                                scope.private &&
+                                modelRequest.reflectionRequestAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                reflection
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  if (checked.reflectionRequest) {
+                                    const result = await reflection.request(
+                                      checked.reflectionRequest,
+                                    );
+                                    text =
+                                      result.status === "queued"
+                                        ? "Reflection queued for the selected retained evidence. Idle/deep delays, quiet hours, live priority and capacity still apply; no evaluation, delivery or approval is confirmed."
+                                        : result.status === "duplicate"
+                                          ? "Reflection was already requested for this evidence set. No new request was queued or existing work restarted; this does not confirm completion."
+                                          : "Reflection unavailable for the selected evidence. No request was queued; select up to 20 current, retained, permitted sources within the existing evidence-size limits in this owner-private scope.";
+                                  }
+                                } catch {
+                                  text =
+                                    "Reflection request could not be confirmed. Do not infer completion or assume an interrupted request was not queued.";
+                                }
                               }
                               generated = {
                                 text,
