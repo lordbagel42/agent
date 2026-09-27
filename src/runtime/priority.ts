@@ -20,6 +20,29 @@ export function createPriorityAdmission() {
     }
   };
   return {
+    /** Process-local admission only; neither provider liveness nor durable holds. */
+    snapshot() {
+      return {
+        limits: {
+          total: 2,
+          guests: 1,
+          background: 1,
+          nonOwner: 1,
+          waitingBackground: 32,
+        },
+        current: {
+          active,
+          owners: active - guests - background,
+          guests,
+          background,
+          waitingOwners: waiting.filter((item) => item.owner === true).length,
+          waitingGuests: waiting.filter((item) => item.owner === false).length,
+          waitingBackground: waiting.filter(
+            (item) => item.owner === "background",
+          ).length,
+        },
+      };
+    },
     /** Journal this decision once per turn. Replay must never re-charge or
      * reject a turn whose effects/journal already exist. */
     acceptGuest(sender: string): boolean {

@@ -62,8 +62,10 @@ import {
   createExecutionActor,
   type ExecutionDependencies,
   executionKey,
+  executionLimits,
 } from "./execution.js";
 import {
+  type CapacityContext,
   inspectInterruptedInference,
   outstandingOperationMetadata,
 } from "./inspection.js";
@@ -123,6 +125,7 @@ export interface Dependencies {
       "inference" | "personality"
     >,
     event: MessageEvent,
+    capacity?: CapacityContext,
   ) => Promise<string>;
   jury?: ReturnType<typeof createJuryTool>;
   rivet?: RivetReader;
@@ -1702,6 +1705,14 @@ export function createJuneRegistry(deps: Dependencies) {
                             searchAvailable,
                             // Memory is constructed here, never returned to the journal.
                           };
+                          let executionCapacity: CapacityContext["execution"] =
+                            {
+                              enabled: !!deps.execution,
+                              observedAt: null,
+                              workers: Object.keys(step.state.agents ?? {})
+                                .length,
+                              counts: null,
+                            };
                           if (version >= 3) {
                             const context =
                               plan.context && body.type === "event"
@@ -2099,6 +2110,39 @@ export function createJuneRegistry(deps: Dependencies) {
                                   }),
                                 ),
                               );
+                              executionCapacity = {
+                                enabled: !!deps.execution,
+                                observedAt: new Date().toISOString(),
+                                workers: roster.length,
+                                // Older actor instances can lack this projection.
+                                counts: roster.every(
+                                  (worker) => worker.capacity,
+                                )
+                                  ? roster.reduce(
+                                      (sum, worker) => ({
+                                        pending: sum.pending + worker.pending,
+                                        queued:
+                                          sum.queued + worker.capacity.queued,
+                                        runningRecorded:
+                                          sum.runningRecorded +
+                                          worker.capacity.runningRecorded,
+                                        cancellationHolds:
+                                          sum.cancellationHolds +
+                                          worker.capacity.cancellationHolds,
+                                        unknownOutcomes:
+                                          sum.unknownOutcomes +
+                                          worker.capacity.unknownOutcomes,
+                                      }),
+                                      {
+                                        pending: 0,
+                                        queued: 0,
+                                        runningRecorded: 0,
+                                        cancellationHolds: 0,
+                                        unknownOutcomes: 0,
+                                      },
+                                    )
+                                  : null,
+                              };
                               const evidenceIds = roster.flatMap(
                                 (worker) => worker.evidenceIds,
                               );
@@ -3385,6 +3429,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                     text = await deps.inspection(
                                       checked.inspection,
                                       event,
+                                      checked.inspection === "capacity"
+                                        ? {
+                                            conversation: priority.snapshot(),
+                                            execution: executionCapacity,
+                                          }
+                                        : undefined,
                                     );
                                   }
                                 } catch {
@@ -3801,7 +3851,11 @@ export function createJuneRegistry(deps: Dependencies) {
                         );
                         continue;
                       }
-                      if (!id && Object.keys(step.state.agents).length >= 32) {
+                      if (
+                        !id &&
+                        Object.keys(step.state.agents).length >=
+                          executionLimits.roster
+                      ) {
                         outcomes.push(
                           `${command.agent}: roster full; reuse an existing worker`,
                         );
@@ -3828,7 +3882,7 @@ export function createJuneRegistry(deps: Dependencies) {
                         pending.reduce(
                           (sum, worker) => sum + worker.pending,
                           0,
-                        ) >= 4
+                        ) >= executionLimits.pending
                       ) {
                         outcomes.push(
                           `${command.agent}: busy; four tasks are already pending`,

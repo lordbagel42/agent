@@ -1006,6 +1006,8 @@ async function main() {
         client.conversation
           .getOrCreate(["private", config.owner.id])
           .outstandingOperations(),
+      coding: { ...config.coding, enabled: !!coding },
+      reflectionPolicy: config.reflection?.policy,
       reflection: reflection
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
         : undefined,

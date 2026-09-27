@@ -602,6 +602,22 @@ export function createWorktreeManager(input: WorktreeConfig) {
       };
     },
 
+    /** Passive lease inspection: never creates roots, takes a lock or reads job IDs.
+     * A held lease does not prove that its worker/verifier is still running.
+     */
+    async capacity() {
+      await directory(config.repositoryRoot);
+      await directory(config.worktreeRoot);
+      if (!(await exists(metadataRoot)))
+        return { occupied: false, admissionLocked: false };
+      await directory(metadataRoot);
+      return {
+        occupied: await exists(path.join(metadataRoot, "active")),
+        admissionLocked: await exists(
+          path.join(metadataRoot, "admission-lock"),
+        ),
+      };
+    },
     /** Exclusive per-workspace admission. Unknown execution keeps this lease.
      * Configuration must assign one stable worktree root per repository.
      */

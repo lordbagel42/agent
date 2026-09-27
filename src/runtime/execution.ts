@@ -17,6 +17,7 @@ import type { Dependencies, JuneClientRegistry } from "./registry.js";
 export interface ExecutionDependencies {
   model: ModelProvider;
 }
+export const executionLimits = { pending: 4, perWorker: 4, roster: 32 };
 /** Rivet's native key transport splits commas; never use raw JSON as a segment. */
 export function executionKey(scope: readonly string[], id: string): string[] {
   return [createHash("sha256").update(JSON.stringify(scope)).digest("hex"), id];
@@ -95,6 +96,20 @@ export function createExecutionActor(
         }
         const latest = Object.values(c.state.requests).at(-1);
         return {
+          capacity: {
+            queued: Object.values(c.state.requests).filter(
+              (r) => r.status === "queued",
+            ).length,
+            runningRecorded: Object.values(c.state.requests).filter(
+              (r) => r.status === "running",
+            ).length,
+            cancellationHolds: Object.values(c.state.requests).filter(
+              (r) => r.status === "cancelled" && r.id === c.state.activeRequest,
+            ).length,
+            unknownOutcomes: Object.values(c.state.requests).filter(
+              (r) => r.status === "needs_review",
+            ).length,
+          },
           pending: Object.values(c.state.requests).filter(
             (r) =>
               r.status === "queued" ||
@@ -154,7 +169,7 @@ export function createExecutionActor(
                 r.status === "queued" ||
                 r.status === "running" ||
                 r.id === c.state.activeRequest,
-            ).length >= 4
+            ).length >= executionLimits.perWorker
           )
             return false;
           c.state.requests[input.id] = {

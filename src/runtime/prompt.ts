@@ -415,6 +415,9 @@ export function buildModelRequest({
         ]
       : []),
     inspectionAvailable
+      ? 'Use inspection:"capacity" with empty text and other actions unset/null for content-free conversation/execution/reflection/coding accounting: configured limits, scoped known counts and unknown holds are separate. Null means unknown, never zero or spare capacity. Counts have different scopes/times, may overlap, include this inspecting turn, and do not prove remote worker stoppage. The host sends metadata directly; inspection cannot change admission or retry work.'
+      : "Subsystem capacity inspection is unavailable for this invocation.",
+    inspectionAvailable
       ? 'When the owner asks what copies can remain after forgetting, use the additional retained-copy inspection target, even when memory is disabled. Set inspection to "retention", leave text empty and all other actions unset/null. The host sends a bounded category inventory covering ledger, journals, snapshots, backups and delivered messages using runtime wiring only, without scanning storage or providers. Unknown copies are not absent and logical deletion is not verified physical erasure. This cannot certify a particular source was deleted, perform deletion, or authorize a scan or purge. Reports are timestamped snapshots, not current truth on later turns; do not invent findings.'
       : "Retained-copy inspection is unavailable for this invocation; do not claim to have inspected retained copies.",
     ...(inspectionAvailable

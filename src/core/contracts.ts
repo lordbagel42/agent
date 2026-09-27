@@ -229,6 +229,7 @@ export interface CompanionReply {
     | "native-coding"
     | "inference"
     | "operations"
+    | "capacity"
     | "retention"
     | "capabilities"
     | "credentials"

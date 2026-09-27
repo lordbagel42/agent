@@ -599,7 +599,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         };
       },
     },
-    inspection: async (target, event) => {
+    inspection: async (target, event, capacity) => {
       reads++;
       if (fail) throw new Error("SECRET ERROR PATH");
       return (
@@ -608,7 +608,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
           : extractionEnabled
             ? extractionRead
             : read
-      )(target, event);
+      )(target, event, capacity);
     },
     importCancel: (id) => {
       cancellations++;
@@ -943,6 +943,20 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(requests.at(-1)?.system).toContain(
     'inspection to "capability-matrix"',
   );
+  action = { text: "", inspection: "capacity" };
+  const capacityReport = await deliver();
+  expect(capacityReport).toContain(
+    '"limits":{"total":2,"guests":1,"background":1,"nonOwner":1,"waitingBackground":32}',
+  );
+  expect(capacityReport).toContain(
+    '"active":1,"owners":1,"guests":0,"background":0',
+  );
+  expect(capacityReport).toContain('"pending":0,"queued":0');
+  expect(capacityReport).toContain('"durableUnknownHolds":null');
+  expect(capacityReport).toContain('"externalActive":null');
+  expect(capacityReport.length).toBeLessThan(3500);
+  expect(reads).toBe(14);
+  expect(requests).toHaveLength(15);
   const deniedInspections = [
     "tombstones",
     "capability-matrix",
@@ -958,6 +972,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "mcp-connections",
     "mcp-enrollment",
     { target: "imports", selection: "selection-11", offset: 0 },
+    "capacity",
   ] as const;
   for (const inspection of deniedInspections) {
     action = { text: "", inspection };
@@ -986,13 +1001,13 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       expect(denied).not.toContain("owner@example.test");
       expect(requests).toHaveLength(before + 1);
       expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-      expect(reads).toBe(13);
+      expect(reads).toBe(14);
     }
     search = true;
     await deliver();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(13);
+    expect(reads).toBe(14);
     search = false;
     action = {
       text: "",
@@ -1000,7 +1015,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       release: { action: "inspect", revision: null },
     };
     expect(await deliver()).toContain("inspection is unavailable");
-    expect(reads).toBe(13);
+    expect(reads).toBe(14);
   }
   action = { text: "", inspection: "slack-search" };
   const readiness = await deliver();
@@ -1009,12 +1024,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(readiness).toContain("actual installed bot grant is unverified");
   expect(readiness).toContain("Live search access is unverified");
   expect(readiness).toContain("No Slack request was made");
-  expect(reads).toBe(14);
+  expect(reads).toBe(15);
   action = { text: "", inspection: "mcp-enrollment" };
   expect(await deliver()).toContain("Host configuration required");
   expect(requests.at(-1)?.system).toContain('inspection to "mcp-enrollment"');
   expect(requests.at(-1)?.mcpAvailable).toBe(false);
-  expect(reads).toBe(15);
+  expect(reads).toBe(16);
   action = { text: "", inspection: "credentials" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");

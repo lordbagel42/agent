@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import {
+  createWorktreeManager,
+  type WorktreeConfig,
+} from "../coding/worktree.js";
 import type { Config } from "../config.js";
 import type { CompanionReply, MessageEvent } from "../core/contracts.js";
 import type { BitwardenCredentialResolver } from "../credentials/bitwarden.js";
@@ -13,12 +17,15 @@ import {
   tombstoneExportLimits,
 } from "../memory/store.js";
 import {
+  type Policy,
   reflectionDriveHalfLifeMs,
   reflectionPriority,
 } from "../reflection/domain.js";
 import type { McpConnections } from "../tools/connections.js";
 import type { Delivery } from "./delivery.js";
+import { executionLimits } from "./execution.js";
 import { proposeImportApproval } from "./import-approval.js";
+import type { createPriorityAdmission } from "./priority.js";
 import type {
   CuriosityProgress,
   ReflectionRuntimeState,
@@ -306,6 +313,25 @@ function jsonPage(json: string, offset: number) {
   };
 }
 
+/** Host-only counts from the existing turn; no identifiers or content. */
+export interface CapacityContext {
+  conversation: ReturnType<
+    ReturnType<typeof createPriorityAdmission>["snapshot"]
+  >;
+  execution: {
+    enabled: boolean;
+    observedAt: string | null;
+    workers: number;
+    counts: {
+      pending: number;
+      queued: number;
+      runningRecorded: number;
+      cancellationHolds: number;
+      unknownOutcomes: number;
+    } | null;
+  };
+}
+
 /** Host-bound audience and selections, never model-supplied scope or query.
  * Reports contain metadata only, so retained receipts cannot resurrect evidence.
  * No mutating service methods or remote history fetches are called here.
@@ -330,6 +356,12 @@ export function createInspectionReader(deps: {
   };
   operations?: () => Promise<OutstandingOperationSnapshot>;
   curiosity?: (audience: string) => Promise<CuriosityProgress>;
+  coding?: {
+    enabled: boolean;
+    workspaces: Record<string, string>;
+    isolation: Record<string, Omit<WorktreeConfig, "repositoryRoot">>;
+  };
+  reflectionPolicy?: Pick<Policy, "totalCapacity" | "liveReserve">;
   reflection?: () => Promise<
     Pick<
       ReflectionRuntimeState,
@@ -345,8 +377,9 @@ export function createInspectionReader(deps: {
     "inference" | "personality"
   >,
   event?: MessageEvent,
+  capacity?: CapacityContext,
 ) => Promise<string> {
-  return async (query, event) => {
+  return async (query, event, capacity) => {
     if (typeof query === "object" && query.target === "import-approval") {
       const selected = Object.entries(deps.selections).find(
         ([id, coverage]) =>
@@ -479,6 +512,87 @@ export function createInspectionReader(deps: {
           text = report();
         }
         return text;
+      }
+      case "capacity": {
+        const status = await deps.reflection?.().catch(() => undefined);
+        const leases = await Promise.all(
+          Object.entries(deps.coding?.workspaces ?? {}).map(
+            async ([name, repositoryRoot]) => {
+              const config = deps.coding?.isolation[name];
+              if (!config) return null;
+              return createWorktreeManager({ ...config, repositoryRoot })
+                .capacity()
+                .catch(() => null);
+            },
+          ),
+        );
+        const report = {
+          conversation: {
+            scope: "this process shared live/background admission",
+            limits: capacity?.conversation.limits ?? null,
+            current: capacity?.conversation.current ?? null,
+            durableUnknownHolds: null,
+          },
+          execution: {
+            scope: "this conversation, before inference",
+            enabled: capacity?.execution.enabled ?? null,
+            limits: executionLimits,
+            observedAt: capacity?.execution.observedAt ?? null,
+            workers: capacity?.execution.workers ?? null,
+            counts: capacity?.execution.counts ?? null,
+            externalActive: null,
+          },
+          reflection: {
+            scope: "owner-wide durable accounting",
+            enabled: !!deps.reflection,
+            limits: deps.reflectionPolicy
+              ? {
+                  total: deps.reflectionPolicy.totalCapacity,
+                  liveReserve: deps.reflectionPolicy.liveReserve,
+                }
+              : null,
+            counts: status
+              ? {
+                  liveHolds: status.liveActive,
+                  pending: status.reflection.requests.filter(
+                    (r) => r.status === "pending",
+                  ).length,
+                  runningOrCancellingHolds: status.reflection.requests.filter(
+                    (r) => r.status === "running" || r.status === "cancelling",
+                  ).length,
+                  startedInvocations: Object.values(status.invocations).filter(
+                    (v) => v === "started",
+                  ).length,
+                  uncertainInvocations: Object.values(
+                    status.invocations,
+                  ).filter((v) => v === "uncertain").length,
+                }
+              : null,
+            externalActive: null,
+          },
+          coding: {
+            scope: "configured workspace leases",
+            enabled: deps.coding?.enabled ?? null,
+            limits: { perWorkspace: 1 },
+            configuredWorkspaces: deps.coding ? leases.length : null,
+            counts: deps.coding
+              ? {
+                  knownWorkspaces: leases.filter((lease) => lease !== null)
+                    .length,
+                  unknownWorkspaces: leases.filter((lease) => lease === null)
+                    .length,
+                  occupiedLeases: leases.filter((lease) => lease?.occupied)
+                    .length,
+                  admissionLocks: leases.filter(
+                    (lease) => lease?.admissionLocked,
+                  ).length,
+                }
+              : null,
+            externalActive: null,
+            unknownOutcomeHolds: null,
+          },
+        };
+        return `${heading}\n${JSON.stringify(report)}\nNull means unknown, not zero. Counts have separate scopes/times and may overlap; do not sum them or infer free slots. This turn occupies shared live/background admission. Durable execution pending counts are not priority-waiter counts. Process-local counts reset on restart. Durable running/cancellation/uncertain records and coding leases do not prove provider liveness; unknown outcomes are not necessarily held admission. Disabled integration does not prove old work stopped. No IDs, paths, job text or provider output returned; no admission, cancellation, retry or reconciliation performed.`;
       }
       case "native-coding":
         return deps.nativeCoding
