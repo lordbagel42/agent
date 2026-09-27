@@ -277,6 +277,7 @@ describe("runnable June host", () => {
           ...(mode === "mcp"
             ? {
                 mcp: { directory: privateDirectory, keyEnv: "FIXTURE_KEY" },
+                capabilities: { directory: privateDirectory },
                 deployment: {
                   eventsFile: join(directory, "missing-feed.json"),
                 },
@@ -355,6 +356,41 @@ describe("runnable June host", () => {
             .status,
         ).toBe(404);
       expect((await fetch(`${url}/operator/conversation`)).status).toBe(401);
+      expect((await fetch(`${url}/operator/capabilities/status`)).status).toBe(
+        401,
+      );
+      const capabilityStatus = await fetch(
+        `${url}/operator/capabilities/status`,
+        {
+          headers: { authorization: `Bearer ${operatorToken}` },
+        },
+      );
+      expect(capabilityStatus.status).toBe(mode === "mcp" ? 200 : 404);
+      if (mode === "mcp") {
+        expect(await capabilityStatus.json()).toEqual({
+          mounted: true,
+          registeredTools: 0,
+        });
+        const grant = await fetch(`${url}/operator/capabilities/grants`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${operatorToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            audience: "raygen",
+            action: {
+              tool: "browser",
+              account: "unbound",
+              item: "unbound",
+              origin: "https://fixture.example",
+              arguments: {},
+            },
+            expiresAt: Date.now() + 60000,
+          }),
+        });
+        expect(grant.status).toBe(400);
+      }
       expect((await fetch(`${url}/console`)).status).toBe(401);
       const overview = await fetch(`${url}/console`, {
         headers: { authorization: `Bearer ${operatorToken}` },

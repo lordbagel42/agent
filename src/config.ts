@@ -76,6 +76,7 @@ const schema = z
         }, "Use a canonical private HTTPS origin, or loopback HTTP for an SSH tunnel"),
       })
       .optional(),
+    capabilities: z.strictObject({ directory: absolutePath }).optional(),
     mcp: z
       .strictObject({
         directory: absolutePath,

@@ -169,6 +169,10 @@ export class CapabilityBroker {
   close(): void {
     this.#db.close();
   }
+  /** Registration is not a grant or a live adapter health check. */
+  get registeredToolCount(): number {
+    return Object.keys(this.#options.tools).length;
+  }
   #now() {
     return (this.#options.now ?? Date.now)();
   }

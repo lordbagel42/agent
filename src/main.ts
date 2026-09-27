@@ -56,6 +56,7 @@ import {
   type JuneClientRegistry,
 } from "./runtime/registry.js";
 import { SocialPermissions } from "./runtime/social.js";
+import { CapabilityBroker } from "./tools/broker.js";
 import { McpConnections } from "./tools/connections.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
 import { createTavilyWebSearchProvider } from "./tools/web-search.js";
@@ -272,6 +273,22 @@ async function main() {
   const loginLinks = config.console
     ? createConsoleLoginLinks(config.console.origin)
     : undefined;
+  startupStage = "private capability broker";
+  let capabilities: CapabilityBroker | undefined;
+  if (config.capabilities) {
+    await privateDirectory(config.capabilities.directory);
+    capabilities = new CapabilityBroker(
+      join(config.capabilities.directory, "capabilities.sqlite"),
+      {
+        owner: config.owner.id,
+        // Mounting the broker does not install adapters or grant credential access.
+        tools: {},
+        resolveCredential: async () => {
+          throw new Error("capability_credentials_unavailable");
+        },
+      },
+    );
+  }
   startupStage = "private usage ledger";
   process.env.RIVETKIT_STORAGE_PATH ??= resolve(".data");
   const usage = new UsageLedger(
@@ -637,6 +654,10 @@ async function main() {
       memory,
       imports,
       selections,
+      capabilities: capabilities
+        ? () =>
+            `Generic capability routes are mounted at /operator/capabilities. Registered tools: ${capabilities.registeredToolCount}. GET /status and /audit inspect metadata; POST /proposals validates only; POST /grants requires owner bearer authority and an exact action. Execution requires an unexpired, unrevoked, single-use grant. Registration and mounting are not grants or live verification. June cannot mint grants or access credentials through inspection.`
+        : undefined,
       nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
       reflection: reflection
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
@@ -687,6 +708,7 @@ async function main() {
     owner: config.owner,
     channels,
     operatorToken,
+    capabilities,
     revision: release?.revision,
     lifecycle,
     deployment: config.deployment
@@ -958,6 +980,7 @@ async function main() {
         await Promise.all(hotProviders.map((provider) => provider.close()));
       }
       await connections?.close();
+      capabilities?.close();
       memory?.personality?.close();
       memory?.store.close();
       social?.close();

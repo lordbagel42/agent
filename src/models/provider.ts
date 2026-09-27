@@ -123,7 +123,14 @@ const companionReplySchema = z.strictObject({
     .optional(),
   replyInThread: z.boolean().optional(),
   inspection: z
-    .enum(["memory", "imports", "reflection", "native-coding", "retention"])
+    .enum([
+      "memory",
+      "imports",
+      "reflection",
+      "native-coding",
+      "retention",
+      "capabilities",
+    ])
     .optional(),
   recall: z
     .union([
@@ -334,10 +341,11 @@ export function replyJsonSchema(
                 "reflection",
                 "native-coding",
                 "retention",
+                "capabilities",
                 null,
               ],
               description:
-                "Read owner-private bounded subsystem metadata or native-coding preflight, not recalled content. retention explains retained-copy categories and logical deletion versus unverified physical erasure without scanning copies. Leave text empty and all other actions unset. No approvals, native execution, imports, reflection triggers or mutations are performed.",
+                "Read owner-private bounded subsystem metadata, capability-route status or native-coding preflight, not recalled content. retention explains retained-copy categories and logical deletion versus unverified physical erasure without scanning copies. Leave text empty and all other actions unset. No approvals, native execution, imports, reflection triggers or mutations are performed.",
             },
           }
         : {}),

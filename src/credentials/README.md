@@ -15,6 +15,25 @@ Documentation was checked via Context7's Bitwarden documentation index and the
 official CLI page (including `--nointeraction` and `BITWARDENCLI_APPDATA_DIR`).
 No live vault was accessed.
 
+## Generic capability host
+
+The generic broker is absent by default. An optional
+`"capabilities": { "directory": "/var/lib/june/capabilities" }` in June's config
+mounts `/operator/capabilities` using the existing operator token and optional
+console origin. The directory must already exist, be canonical, owner-only
+(0700), owned by the service user, and outside repositories. This setting creates
+the digest-only `capabilities.sqlite`; it **does not register any tools, resolve
+credentials, or issue grants**. Browser/vault adapters need separate reviewed host
+wiring and activation. MCP connections keep their existing integration.
+
+Ask June privately to inspect generic capabilities. The June-callable directive
+is `{"text":"","inspection":"capabilities"}`; it reports disabled/mounted
+status and registration count without credentials, payloads, or authorization.
+The host gates this through the existing owner-private inspection path; it is not
+available in shared/guest turns or synthesis. This slice exposes no model grant
+or execution directive. Owner API entry points are listed below; mounting and
+registration are not live health or evidence that an action ran.
+
 ## Trusted host setup
 
 1. Run Node 24+ and install an owner-reviewed `bw` executable outside the model's
@@ -70,6 +89,7 @@ All routes require bearer authentication. GET never approves or executes.
 
 | Method/path (relative to mount) | Body / response |
 | --- | --- |
+| GET `/status` | `{mounted:true,registeredTools}`; metadata only, not grants or live health |
 | POST `/proposals` | `ToolAction` → validated snapshot (not an approval) |
 | POST `/grants` | `{audience,action,expiresAt}` → `{grantId}`; audience must equal owner, lifetime ≤5 minutes |
 | POST `/grants/:id/execute` | Exact `ToolAction` → receipt; only owner-audience grants |

@@ -48,6 +48,9 @@ export function createCapabilityRoutes(options: {
       onError: (c) => c.json({ error: "body_too_large" }, 413),
     }),
   );
+  app.get("/status", (c) =>
+    c.json({ mounted: true, registeredTools: broker.registeredToolCount }),
+  );
   app.post("/proposals", async (c) =>
     c.json(broker.propose(await c.req.json())),
   );

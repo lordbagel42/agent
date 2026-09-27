@@ -16,6 +16,7 @@ export function createInspectionReader(deps: {
   imports?: HistoryImports;
   selections: Record<string, ImportCoverage>;
   nativeCoding?: () => Promise<string>;
+  capabilities?: () => string;
   reflection?: () => Promise<
     Pick<
       ReflectionRuntimeState,
@@ -28,6 +29,8 @@ export function createInspectionReader(deps: {
   return async (target) => {
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {
+      case "capabilities":
+        return `${heading}\n${deps.capabilities?.() ?? "Generic capabilities are disabled; no generic capability routes or tools are mounted. Inspection grants nothing and does not enable them."}`;
       case "native-coding":
         return deps.nativeCoding
           ? deps.nativeCoding()

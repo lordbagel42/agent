@@ -30,11 +30,14 @@ import {
 } from "../deployment/feed.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
+import type { CapabilityBroker } from "../tools/broker.js";
+import { createCapabilityRoutes } from "../tools/routes.js";
 
 export interface HttpDependencies {
   channels: Partial<Record<Channel, ChannelAdapter>>;
   owner: Owner;
   operatorToken: string;
+  capabilities?: CapabilityBroker;
   revision?: string;
   lifecycle?: Lifecycle;
   deployment?: {
@@ -290,6 +293,17 @@ export function createHttpApp(deps: HttpDependencies) {
     }
     await next();
   });
+  if (deps.capabilities) {
+    app.route(
+      "/operator/capabilities",
+      createCapabilityRoutes({
+        broker: deps.capabilities,
+        owner: deps.owner.id,
+        operatorToken: deps.operatorToken,
+        consoleOrigin: deps.console?.origin,
+      }),
+    );
+  }
   if (loginLinks) {
     app.post("/operator/console/login-links", (c) => {
       const link = loginLinks.issue();

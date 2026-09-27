@@ -27,6 +27,18 @@ describe("configuration boundary", () => {
     expect(config.coding.runtime).toBeUndefined();
     expect(config.coding.workspaces).toEqual({});
     expect(config.console).toBeUndefined();
+    expect(config.capabilities).toBeUndefined();
+    expect(
+      parseConfig({
+        ...input,
+        capabilities: { directory: "/private/capabilities" },
+      }).capabilities,
+    ).toEqual({ directory: "/private/capabilities" });
+    for (const capabilities of [
+      { directory: "./relative" },
+      { directory: "/private/capabilities", tools: { all: true } },
+    ])
+      expect(() => parseConfig({ ...input, capabilities })).toThrow();
     expect(config.owner.identities).toEqual([
       { channel: "slack", accountId: "T1", senderId: "U08R4KDL6UF" },
     ]);

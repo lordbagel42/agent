@@ -4,6 +4,7 @@ import { createSlackAdapter } from "../channels/slack.js";
 import { createSlackIngressDiagnostics } from "../channels/slack-ingress.js";
 import type { ChannelEvent } from "../core/contracts.js";
 import { createLifecycle } from "../runtime/lifecycle.js";
+import { CapabilityBroker } from "../tools/broker.js";
 import { createHttpApp, type HttpDependencies } from "./app.js";
 
 const token = "operator-test-token-not-a-real-key-12345";
@@ -75,6 +76,170 @@ function dependencies(
 }
 
 describe("webhook and operator HTTP boundary", () => {
+  it("mounts opt-in capabilities without weakening bearer, scope, or single-use enforcement", async (t) => {
+    const headers = { authorization: `Bearer ${token}` };
+    const base = "/operator/capabilities";
+    const disabled = createHttpApp(dependencies());
+    expect((await disabled.request(`${base}/status`, { headers })).status).toBe(
+      404,
+    );
+    expect(
+      (await disabled.request(`${base}/grants`, { method: "POST", headers }))
+        .status,
+    ).toBe(404);
+    let executions = 0;
+    let resolutions = 0;
+    const options = {
+      owner: "raygen",
+      resolveCredential: async () => {
+        resolutions++;
+        return "fixture-credential";
+      },
+    };
+    const empty = new CapabilityBroker(":memory:", { ...options, tools: {} });
+    const broker = new CapabilityBroker(":memory:", {
+      ...options,
+      tools: {
+        fixture: {
+          execute: async (_action, credential) => {
+            expect(credential).toBe("fixture-credential");
+            executions++;
+          },
+        },
+      },
+    });
+    t.onTestFinished(() => {
+      empty.close();
+      broker.close();
+    });
+    const dormant = createHttpApp(dependencies({ capabilities: empty }));
+    expect(
+      await (await dormant.request(`${base}/status`, { headers })).json(),
+    ).toEqual({ mounted: true, registeredTools: 0 });
+    const action = {
+      tool: "fixture",
+      account: "test",
+      item: "test",
+      origin: "https://fixture.example",
+      arguments: { value: 7 },
+    };
+    const grantInput = {
+      audience: "raygen",
+      action,
+      expiresAt: Date.now() + 60000,
+    };
+    expect(
+      (
+        await dormant.request(`${base}/grants`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(grantInput),
+        })
+      ).status,
+    ).toBe(400);
+    const lifecycle = createLifecycle();
+    const app = createHttpApp(
+      dependencies({
+        capabilities: broker,
+        lifecycle,
+        console: {
+          origin: "https://june.example",
+          inspect: async () => ({ observedAt: "now", sections: {} }),
+        },
+      }),
+    );
+    // Obtain a valid private-console session: it must still not authorize grants.
+    const loginPage = await (
+      await app.request("/console/session/login")
+    ).text();
+    const proof = loginPage.match(/name="proof" value="([^"]+)"/)?.[1] ?? "";
+    const login = await app.request("/console/session/login", {
+      method: "POST",
+      headers: {
+        origin: "https://june.example",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ proof, token }),
+    });
+    expect(login.status).toBe(200);
+    const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
+    expect(cookie).not.toBe("");
+    expect(
+      (await app.request("/console", { headers: { cookie } })).status,
+    ).toBe(200);
+    for (const deniedHeaders of [
+      new Headers(),
+      new Headers({ cookie }),
+      new Headers({ authorization: "Bearer wrong" }),
+    ]) {
+      expect(
+        (await app.request(`${base}/status`, { headers: deniedHeaders }))
+          .status,
+      ).toBe(401);
+      expect(
+        (
+          await app.request(`${base}/grants`, {
+            method: "POST",
+            headers: deniedHeaders,
+            body: JSON.stringify(grantInput),
+          })
+        ).status,
+      ).toBe(401);
+    }
+    const post = (path: string, input: unknown, extraHeaders = {}) =>
+      app.request(`${base}${path}`, {
+        method: "POST",
+        headers: { ...headers, ...extraHeaders },
+        body: JSON.stringify(input),
+      });
+    expect(
+      (await post("/grants", grantInput, { origin: "https://foreign.example" }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await post("/grants", grantInput, { "sec-fetch-site": "cross-site" }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await post("/grants", { ...grantInput, audience: "other" })).status,
+    ).toBe(400);
+    expect(
+      (await post("/proposals", { ...action, arguments: "x".repeat(65536) }))
+        .status,
+    ).toBe(413);
+    expect(await (await post("/proposals", action)).json()).toEqual(action);
+    expect((await post("/grants/missing/execute", action)).status).toBe(400);
+    expect(resolutions).toBe(0);
+    expect(executions).toBe(0);
+    const granted = await post("/grants", grantInput, {
+      origin: "https://june.example",
+    });
+    expect(granted.status).toBe(201);
+    const { grantId } = await granted.json();
+    expect(
+      (
+        await post(`/grants/${grantId}/execute`, {
+          ...action,
+          arguments: { value: 8 },
+        })
+      ).status,
+    ).toBe(400);
+    const executed = await post(`/grants/${grantId}/execute`, action);
+    expect(executed.status).toBe(200);
+    const receipt = await executed.json();
+    expect(receipt.status).toBe("succeeded");
+    expect(
+      await (await post(`/grants/${grantId}/execute`, action)).json(),
+    ).toEqual(receipt);
+    expect(executions).toBe(1);
+    expect(resolutions).toBe(1);
+    const audit = await app.request(`${base}/audit`, { headers });
+    expect(audit.headers.get("cache-control")).toBe("no-store");
+    expect(await audit.text()).not.toContain("fixture-credential");
+    await lifecycle.drain();
+    expect((await post("/grants", grantInput)).status).toBe(503);
+  });
+
   it("issues short login links only to operators and redeems exactly once after confirmation", async () => {
     const deps = dependencies({
       console: {

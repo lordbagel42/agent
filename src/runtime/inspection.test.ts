@@ -276,6 +276,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     memory: { store },
     imports,
     selections,
+    capabilities: () =>
+      "Generic capability routes are mounted. Registered tools: 0.",
     nativeCoding: () =>
       nativeCodingPreflight(
         { enabled: false, workspaces: {}, isolation: {}, timeoutMs: 1000 },
@@ -367,7 +369,19 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(retentionReport.length).toBeLessThan(4000);
   expect(reads).toBe(5);
   expect(requests).toHaveLength(5);
-  for (const inspection of ["native-coding", "memory", "retention"] as const) {
+  action = { text: "", inspection: "capabilities" };
+  expect(await deliver()).toContain(
+    "Generic capability routes are mounted. Registered tools: 0.",
+  );
+  expect(requests.at(-1)?.system).toContain('set inspection to "capabilities"');
+  expect(reads).toBe(6);
+  expect(requests).toHaveLength(6);
+  for (const inspection of [
+    "native-coding",
+    "memory",
+    "retention",
+    "capabilities",
+  ] as const) {
     action = { text: "", inspection };
     for (const extra of [
       {
@@ -384,13 +398,13 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       expect(await deliver(extra)).toContain("owner-private turn");
       expect(requests).toHaveLength(before + 1);
       expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-      expect(reads).toBe(5);
+      expect(reads).toBe(6);
     }
     search = true;
     await deliver();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(5);
+    expect(reads).toBe(6);
     search = false;
     action = {
       text: "",
@@ -398,7 +412,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       release: { action: "inspect", revision: null },
     };
     expect(await deliver()).toContain("inspection is unavailable");
-    expect(reads).toBe(5);
+    expect(reads).toBe(6);
   }
   action = { text: "", inspection: "memory" };
   fail = true;
@@ -425,6 +439,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   );
   action = { text: "", inspection: "retention" };
   expect(await deliver()).toContain("Ledger: not configured in this runtime");
+  action = { text: "", inspection: "capabilities" };
+  expect(await deliver()).toContain("Generic capabilities are disabled");
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   expect(JSON.stringify(sent)).not.toContain("private-account");
   expect(fetches).toBe(0);
