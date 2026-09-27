@@ -209,6 +209,7 @@ it("requires exact owner identity, private audience and enabled memory rather th
         text: "PRIVATE-scoped-evidence",
       },
     },
+    { event: { ...privateEvent, senderId: "U2" } },
     { event: { ...privateEvent, metadata: { channelType: "group" as const } } },
   ]) {
     // An invalid memory audience removes that evidence, not an independent

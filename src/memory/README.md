@@ -52,6 +52,19 @@ trusted host APIs, not autonomous model tools.
   resolved facts. Label all returned data as untrusted evidence, never instructions.
   Do not cache across deletion or scope changes. RTS results do not belong in this
   ledger. `search` is an unbounded trusted lookup, not a prompt/recall projection.
+- With memory enabled, June's owner-private model context also includes
+  `relationships: [{entity, claimIds}]`, indexing only the evidence-kind claims
+  in that turn's bounded recall. Ask about a person in an owner DM to use this
+  context; an empty result is incomplete recall, not proof no relationship exists.
+  Each group uses the claim's exact stable entity ID; identical display names,
+  or identical author IDs in different accounts, never merge. Extracted claims
+  still require operator acceptance; dreams and pending proposals do not enter
+  this index. The original claims retain citations, confidence, dates and
+  contradiction/supersession edges, without duplicating their text in the index.
+  There are at most 12 groups/claim references under the live retrieval defaults;
+  no further entity expansion, model call, or persistent relationship cache occurs.
+  The index reuses source invalidation and cannot enter public/guest prompts,
+  change curated personality, or grant social permissions.
 
 ## Import coverage and edits
 

@@ -50,6 +50,26 @@ it.for(["reply", "deep"] as const)(
       supersedes: [],
     };
     store.appendClaim(claim);
+    const relationshipClaims: Claim[] = [];
+    for (const [id, entity, kind, text] of [
+      ["alex-a", '["slack","T1","U2"]', "evidence", "Alex likes herons"],
+      ["alex-b", '["slack","T1","U3"]', "evidence", "Alex avoids herons"],
+      ["alex-c", '["slack","T2","U2"]', "evidence", "Alex studies herons"],
+      ["alex-d", '["slack","T1","U2"]', "evidence", "Alex helps with herons"],
+      ["dream", '["slack","T1","U9"]', "dream", "Alex might like herons"],
+    ] as const) {
+      relationshipClaims.push({
+        id,
+        entity,
+        kind,
+        text: `PRIVATE ${text}`,
+        audiences: [scope],
+        dependsOn: [source(event, scope).id],
+        contradicts: [],
+        supersedes: [],
+      });
+    }
+    for (const related of relationshipClaims) store.appendClaim(related);
     const requests: ModelRequest[] = [];
     const sent: OutboundMessage[] = [];
     const extracted: string[][] = [];
@@ -137,7 +157,7 @@ it.for(["reply", "deep"] as const)(
     expect(contexts).toEqual([
       {
         sources: [source(event, scope)],
-        existingClaims: [claim],
+        existingClaims: [...relationshipClaims, claim],
       },
     ]);
     await june.send("inbox", { type: "event", event });
@@ -166,6 +186,8 @@ it.for(["reply", "deep"] as const)(
       .toBe(true);
     await expect.poll(() => requests.length).toBe(2);
     expect(JSON.stringify(requests[1])).not.toContain("PRIVATE");
+    expect(JSON.stringify(requests[1])).not.toContain("alex-a");
+    expect(JSON.stringify(requests[1])).not.toContain("relationships");
     expect(extracted).toHaveLength(1);
     expect(contexts).toHaveLength(1);
     await june.send("inbox", {
@@ -179,6 +201,28 @@ it.for(["reply", "deep"] as const)(
     });
     await expect.poll(() => requests.length).toBe(phase === "deep" ? 4 : 3);
     expect(requests[2]?.system).toContain("PRIVATE heron observation");
+    for (const request of requests.slice(2)) {
+      const encoded = request.system.match(
+        /Supplied memory text \(JSON string\): (.+)/,
+      )?.[1];
+      const memory = JSON.parse(
+        JSON.parse(encoded ?? '""')
+          .split("\n")
+          .at(-1),
+      );
+      expect(memory.relationships).toEqual([
+        { entity: '["slack","T1","U2"]', claimIds: ["alex-a", "alex-d"] },
+        { entity: '["slack","T1","U3"]', claimIds: ["alex-b"] },
+        { entity: '["slack","T2","U2"]', claimIds: ["alex-c"] },
+        { entity: '["slack","T1","U1"]', claimIds: ["private-claim"] },
+      ]);
+      expect(memory.style).toEqual({});
+      expect(memory.evidence.claims).toHaveLength(6);
+      expect(
+        memory.evidence.sources.length + memory.evidence.claims.length,
+      ).toBeLessThanOrEqual(12);
+      expect(JSON.stringify(memory.evidence).length).toBeLessThanOrEqual(16000);
+    }
     store.deleteSource(source(event, scope).id);
     await june.forget(source(event, scope).id);
     pending.resolve({
@@ -197,12 +241,13 @@ it.for(["reply", "deep"] as const)(
       event: {
         ...event,
         id: "after-forget",
-        text: "a fresh question",
+        text: "a fresh heron question",
         messageId: event.messageId.replace("000001", "000003"),
       },
     });
     await expect.poll(done).toBe(3);
     expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE");
+    expect(JSON.stringify(requests.at(-1))).not.toContain("alex-a");
   },
 );
 
