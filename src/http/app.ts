@@ -28,6 +28,8 @@ import {
   type createDeploymentReader,
   createDeploymentRoutes,
 } from "../deployment/feed.js";
+import { OpaqueActionLinks } from "../links/opaque.js";
+import { createActionLinkRoutes } from "../links/routes.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
 import type { CapabilityBroker } from "../tools/broker.js";
@@ -148,6 +150,10 @@ export function createHttpApp(deps: HttpDependencies) {
   const loginLinks = deps.console
     ? (deps.console.loginLinks ?? createConsoleLoginLinks(deps.console.origin))
     : undefined;
+  const actionLinks =
+    deps.console && deps.capabilities
+      ? new OpaqueActionLinks(deps.capabilities)
+      : undefined;
   if (deps.console) {
     const security = {
       origin: deps.console.origin,
@@ -199,9 +205,19 @@ export function createHttpApp(deps: HttpDependencies) {
       }
       await next();
     });
-    // Session routes must precede console authentication. Cookies authorize only
-    // this read-only surface, never the Bearer-only operator mutation endpoints.
+    // Session routes must precede console authentication. Cookies never authorize
+    // Bearer-only operator endpoints; action forms additionally require a proof.
     app.route("/console/session", sessions.routes);
+    if (actionLinks)
+      app.route(
+        "/console/action-links",
+        createActionLinkRoutes({
+          security: { ...security, authenticate: sessions.authenticate },
+          links: actionLinks,
+          resolveAction: async (principal, grantId, token) =>
+            actionLinks.resolveAction(principal, grantId, token),
+        }),
+      );
     if (deps.console.connections)
       app.route(
         "/console/connections",
@@ -314,6 +330,7 @@ export function createHttpApp(deps: HttpDependencies) {
         owner: deps.owner.id,
         operatorToken: deps.operatorToken,
         consoleOrigin: deps.console?.origin,
+        actionLinks,
       }),
     );
   }

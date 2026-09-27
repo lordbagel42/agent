@@ -726,6 +726,7 @@ async function main() {
           capabilities
             ? `Generic capability routes are mounted at /operator/capabilities. Registered tools: ${capabilities.registeredToolCount}. GET /status and /audit inspect metadata; POST /proposals validates only; POST /grants requires owner bearer authority and an exact action. Execution requires an unexpired, unrevoked, single-use grant. Registration and mounting are not grants or live verification. June cannot mint grants or access credentials through inspection.`
             : "Generic capabilities are disabled; no generic capability routes or tools are mounted. Inspection grants nothing and does not enable them.",
+          `Opaque action links: ${capabilities && config.console ? "mounted at /console/action-links; operator bearer-only /operator/capabilities/links issues exact owner-grant links and /operator/capabilities/links/:token/revoke revokes them. Opening a link only reviews; execution requires authenticated owner confirmation with a signed exact-action proof. Restart loses link payloads and disables outstanding links" : "disabled; both generic capabilities and the private console are required"}. These are not dashboard sign-in links. June cannot issue action links or confirm actions through inspection.`,
           `Browser reads: ${JSON.stringify({
             state: !config.browser.enabled
               ? "disabled"

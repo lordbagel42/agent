@@ -841,7 +841,37 @@ counts, durable event counts, capability gates and saved proposal counts. It
 does not show credentials, conversation text, job goals/reports, provider paths,
 or infer provider health from configuration. Unconnected memory, reflection,
 approval and revocation sections remain unavailable. No action callbacks or
-action-link routes are mounted; viewing the page cannot approve or run work.
+approvals are mounted on the overview; viewing the page cannot approve or run work.
+
+### Opaque action links (separate from sign-in)
+
+With both `capabilities` and `console` configured, the existing generic broker
+also mounts private action links. June can discover whether they are mounted via
+owner-private `inspection: "capabilities"`; this is metadata, not permission to
+issue links, grant capabilities, or confirm actions. An empty broker has no tools
+to grant or execute. Dashboard sign-in links remain separate and grant no tool
+authority.
+
+- `POST /operator/capabilities/links` requires the operator bearer token and
+  `{grantId, action, expiresAt}`. The full action must match an existing owner-bound
+  grant exactly. It returns `{url, expiresAt}` using the configured console origin,
+  never request headers. Expiry cannot exceed the grant or five minutes.
+- `GET`/`HEAD /console/action-links/:token` requires owner authentication and only
+  reviews that exact payload. It never consumes the grant or executes work.
+- `POST` to the same URL requires the owner session (or bearer authentication),
+  same-origin form submission, explicit consent, and the signed identity/path/payload
+  review proof. Replays return the existing receipt; they never execute twice.
+  Unknown outcomes remain consumed and require operator reconciliation.
+- `POST /operator/capabilities/links/:token/revoke` requires the bearer token;
+  console cookies alone cannot issue or revoke links. Revocation cannot recall
+  already-dispatched work.
+
+The host retains at most 32 reviewed payloads in memory, never in the broker's
+SQLite ledger. Do not put credentials in action arguments. Restart loses these
+payloads and disables outstanding links; issuing a fresh link cannot revive an
+old token. Keep these routes on private ingress, disable/redact URL and body logs,
+and never share action links with other audiences. Enabling route configuration
+does not register tools, establish provider health, or expand execution gates.
 
 ### Token intelligence
 

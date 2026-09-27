@@ -19,12 +19,13 @@ import type { OpaqueActionLinks } from "./opaque.js";
 export interface ActionLinkDependencies {
   security: PrivateRouteSecurity;
   links: OpaqueActionLinks;
-  /** Same trusted proposal store as chat. Return no credentials/secrets in arguments.
+  /** Trusted host resolution only. Return no credentials/secrets in arguments.
    * Verify matchesGrant with the configured owner before returning a payload for review.
    * The broker rechecks this exact payload against its granted fingerprint on POST. */
   resolveAction(
     principal: string,
     grantId: string,
+    token: string,
   ): Promise<ToolAction | undefined>;
 }
 
@@ -47,7 +48,11 @@ export function createActionLinkRoutes(deps: ActionLinkDependencies) {
         404,
       );
     }
-    const action = await deps.resolveAction(principal, link.grantId);
+    const action = await deps.resolveAction(
+      principal,
+      link.grantId,
+      c.req.param("token"),
+    );
     return c.html(
       page(
         "Review linked action",
@@ -81,7 +86,11 @@ export function createActionLinkRoutes(deps: ActionLinkDependencies) {
         404,
       );
     }
-    const action = await deps.resolveAction(principal, link.grantId);
+    const action = await deps.resolveAction(
+      principal,
+      link.grantId,
+      c.req.param("token"),
+    );
     if (!action)
       return c.html(
         messagePage(

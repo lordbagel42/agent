@@ -1,6 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { z } from "zod";
+import type { OpaqueActionLinks } from "../links/opaque.js";
 import type { CapabilityBroker } from "./broker.js";
 
 /** Mount at /operator/capabilities. This factory authenticates independently:
@@ -12,8 +14,9 @@ export function createCapabilityRoutes(options: {
   owner: string;
   operatorToken: string;
   consoleOrigin?: string;
+  actionLinks?: OpaqueActionLinks;
 }) {
-  const { broker, owner, operatorToken, consoleOrigin } = options;
+  const { broker, owner, operatorToken, consoleOrigin, actionLinks } = options;
   if (operatorToken.length < 32 || !owner)
     throw new Error("invalid_capability_configuration");
   if (
@@ -51,6 +54,36 @@ export function createCapabilityRoutes(options: {
   app.get("/status", (c) =>
     c.json({ mounted: true, registeredTools: broker.registeredToolCount }),
   );
+  if (actionLinks && consoleOrigin) {
+    app.post("/links", async (c) => {
+      const { grantId, action, expiresAt } = z
+        .strictObject({
+          grantId: z.uuid(),
+          action: z.unknown(),
+          expiresAt: z.number().int().positive(),
+        })
+        .parse(await c.req.json());
+      const token = actionLinks.issueReviewed(
+        owner,
+        grantId,
+        action,
+        expiresAt,
+      );
+      return token
+        ? c.json(
+            {
+              url: `${consoleOrigin}/console/action-links/${token}`,
+              expiresAt,
+            },
+            201,
+          )
+        : c.json({ error: "action_link_capacity" }, 429);
+    });
+    app.post("/links/:token/revoke", (c) => {
+      actionLinks.revoke(owner, c.req.param("token"));
+      return c.json({ revoked: true });
+    });
+  }
   app.post("/proposals", async (c) =>
     c.json(broker.propose(await c.req.json())),
   );
