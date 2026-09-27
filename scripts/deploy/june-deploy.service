@@ -1,0 +1,30 @@
+[Unit]
+Description=June trusted-main deployment poller
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/june/deploy.json
+ConditionPathExists=/var/lib/june-deploy/records/deploy.sqlite
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/local/lib/june-deploy/deploy.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/june /var/lib/june-deploy /var/cache/june-build
+InaccessiblePaths=/var/lib/june
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

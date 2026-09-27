@@ -1,5 +1,11 @@
 # Independent release supervisor
 
+**Legacy, inactive proposal-based policy.** The owner's trusted direct-main
+policy now uses the independent host poller in
+[docs/deployment.md](../../docs/deployment.md). `feed.ts` is its safe read-only
+application interface. The class below is retained for its existing callers and
+tests, but is not a prerequisite or approval gate for rapid deployment.
+
 `ReleaseSupervisor` implements local artifact staging, exact-plan review, owner
 approval, durable deployment/rollback intents, release-aware health receipts, and
 explicit reconciliation. It does not build candidates, install itself, extract
