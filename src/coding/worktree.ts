@@ -257,6 +257,18 @@ export function createWorktreeManager(input: WorktreeConfig) {
   }
 
   return {
+    /** Read only after fencing launches. Absence of a lease covers this root
+     * only, not legacy sessions or workspaces removed from configuration. */
+    async isSettled(): Promise<boolean> {
+      await directory(config.worktreeRoot);
+      if (!(await exists(metadataRoot))) return true;
+      await directory(metadataRoot);
+      return (
+        !(await exists(path.join(metadataRoot, "admission-lock"))) &&
+        !(await exists(path.join(metadataRoot, "active")))
+      );
+    },
+
     /** Exclusive per-workspace admission. Unknown execution keeps this lease.
      * Configuration must assign one stable worktree root per repository.
      */

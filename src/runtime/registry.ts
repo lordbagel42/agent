@@ -2471,7 +2471,7 @@ export function createJuneRegistry(deps: Dependencies) {
     use: {
       conversation,
       personality: createPersonalityActor(deps.owner),
-      job: createCodingActor(deps.coding),
+      job: createCodingActor(deps.coding, deps.lifecycle),
       execution: createExecutionActor(deps),
       ...(deps.reflection
         ? { reflection: createReflectionActor(deps.reflection) }

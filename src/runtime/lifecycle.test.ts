@@ -53,3 +53,60 @@ test("forced aborts cannot certify raw work as drained; waiting aborts admit not
   expect(await lifecycle.drain()).toBe(false);
   expect(lifecycle.tryEnter()).toBeUndefined();
 });
+
+test("drain checks durable settlement only behind an idle fence and fails closed", async () => {
+  let settled = false;
+  let unreadable = false;
+  const checks: { active: number; admitted: boolean }[] = [];
+  const lifecycle = createLifecycle(async () => {
+    const release = lifecycle.tryEnter();
+    checks.push({ active: lifecycle.active, admitted: !!release });
+    release?.();
+    if (unreadable) throw new Error("unreadable lease");
+    return settled;
+  });
+  const release = lifecycle.tryEnter();
+  const draining = lifecycle.drain();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(checks).toEqual([]);
+  release?.();
+  expect(await draining).toBe(false);
+  expect(lifecycle.ready).toBe(true);
+  unreadable = true;
+  expect(await lifecycle.drain()).toBe(false);
+  expect(lifecycle.ready).toBe(true);
+  unreadable = false;
+  settled = true;
+  expect(await lifecycle.drain()).toBe(true);
+  expect(lifecycle.ready).toBe(false);
+  expect(checks).toEqual([
+    { active: 0, admitted: false },
+    { active: 0, admitted: false },
+    { active: 0, admitted: false },
+  ]);
+});
+
+test.for(["resume", "timeout"] as const)(
+  "a durable check cannot certify a newer drain after %s",
+  async (stop) => {
+    const old = Promise.withResolvers<boolean>();
+    const current = Promise.withResolvers<boolean>();
+    let checks = 0;
+    const lifecycle = createLifecycle(() =>
+      ++checks === 1 ? old.promise : current.promise,
+    );
+    const first = lifecycle.drain(stop === "timeout" ? 5 : 4000);
+    await expect.poll(() => checks).toBe(1);
+    if (stop === "resume") lifecycle.resume();
+    expect(await first).toBe(false);
+    const second = lifecycle.drain();
+    await expect.poll(() => checks).toBe(2);
+    old.resolve(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(lifecycle.drain()).toBe(second);
+    expect(lifecycle.ready).toBe(false);
+    current.resolve(false);
+    expect(await second).toBe(false);
+    expect(lifecycle.ready).toBe(true);
+  },
+);

@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, type TestContext } from "vitest";
+import { describe, expect, it, type TestContext, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import { createWorktreeManager } from "../coding/worktree.js";
 import type {
@@ -23,7 +23,44 @@ import {
   codingJobMetadata,
 } from "./coding.js";
 import { executionKey } from "./execution.js";
+import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry, type Dependencies } from "./registry.js";
+
+// Pause a real job save without replacing the workflow or adding a host hook.
+const persistence = vi.hoisted(() => ({
+  beforeSave: undefined as undefined | (() => Promise<void>),
+}));
+vi.mock("rivetkit", async (importOriginal) => {
+  const real = await importOriginal<typeof import("rivetkit")>();
+  return {
+    ...real,
+    actor: (config: Parameters<typeof real.actor>[0]) => {
+      if (
+        !("state" in config) ||
+        !config.state ||
+        typeof config.state !== "object" ||
+        !("commandApprovals" in config.state)
+      )
+        return real.actor(config);
+      const createVars =
+        "createVars" in config && typeof config.createVars === "function"
+          ? (config.createVars as (
+              context: unknown,
+            ) => object | Promise<object>)
+          : undefined;
+      return real.actor({
+        ...config,
+        createVars: async (c) => ({
+          ...(await createVars?.(c)),
+          persist: async () => {
+            await persistence.beforeSave?.();
+            await c.saveState({ immediate: true });
+          },
+        }),
+      });
+    },
+  };
+});
 
 const owner = {
   id: "raygen",
@@ -86,6 +123,7 @@ async function fixture(
       timeoutMs: 5000,
     },
   });
+  const lifecycle = createLifecycle(() => manager.isSettled());
   const coding: CodingDependencies = {
     runtime,
     runtimeKind: "amp",
@@ -103,6 +141,7 @@ async function fixture(
   const registry = createJuneRegistry({
     owner,
     memory,
+    lifecycle,
     channels: {
       slack: {
         channel: "slack",
@@ -160,6 +199,7 @@ async function fixture(
     worktreeRoot,
     coding,
     codingRequest,
+    lifecycle,
   };
 }
 
@@ -429,6 +469,75 @@ describe("separate coding supervisor", () => {
       expect(encoded.length).toBeLessThan(1500);
       expect(input).toEqual(before);
     }
+  });
+
+  it("fences queued approvals and drains only after worker, verifier and receipt persistence settle", async (t) => {
+    const pending = Promise.withResolvers<{
+      threadId: string;
+      report: string;
+    }>();
+    const started = Promise.withResolvers<AbortSignal>();
+    const { registry, lifecycle, manager } = await fixture(t, {
+      async run(input) {
+        started.resolve(input.signal);
+        return pending.promise;
+      },
+    });
+    const saving = Promise.withResolvers<void>();
+    const allowSave = Promise.withResolvers<void>();
+    t.onTestFinished(() => {
+      persistence.beforeSave = undefined;
+      allowSave.resolve();
+      pending.resolve({ threadId: "T-drained", report: "Worker finished" });
+      lifecycle.resume();
+    });
+    const release = manager.release;
+    manager.release = async (...args) => {
+      await release(...args);
+      persistence.beforeSave = async () => {
+        persistence.beforeSave = undefined;
+        saving.resolve();
+        await allowSave.promise;
+      };
+    };
+    const { client } = await setupTest(t, registry);
+    const job = client.job.getOrCreate(["raygen", "drain"]);
+    await job.send("commands", {
+      type: "propose",
+      proposal: {
+        id: "drain",
+        runtimeId: "fixture-runtime-v1",
+        source,
+        workspace: "june",
+        goal: "Task",
+      },
+    });
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("awaiting_approval");
+    expect(await lifecycle.drain()).toBe(true);
+    const admission = vi.spyOn(lifecycle, "enter");
+    await job.send("commands", { type: "approve", commandId: "approval" });
+    await expect.poll(() => admission.mock.calls.length).toBe(1);
+    expect((await job.snapshot()).attempts).toBe(0);
+    expect(lifecycle.active).toBe(0);
+    lifecycle.resume();
+    const signal = await started.promise;
+    expect(lifecycle.active).toBeGreaterThan(0);
+    expect(await lifecycle.drain(5)).toBe(false);
+    expect(signal.aborted).toBe(false);
+    const draining = lifecycle.drain();
+    pending.resolve({ threadId: "T-drained", report: "Worker finished" });
+    await saving.promise;
+    expect(await manager.isSettled()).toBe(true);
+    expect(lifecycle.active).toBe(1);
+    expect(lifecycle.drain()).toBe(draining);
+    allowSave.resolve();
+    expect(await draining).toBe(true);
+    expect((await job.snapshot()).status).toBe("completed");
+    expect(await manager.isSettled()).toBe(true);
+    expect(lifecycle.active).toBe(0);
+    lifecycle.resume();
   });
 
   it("exposes private lifecycle commands without granting launch or stop authority", async (t) => {
@@ -1350,7 +1459,7 @@ describe("separate coding supervisor", () => {
     async (threadId, t) => {
       let launches = 0;
       let lateThread: ((thread: string) => Promise<void>) | undefined;
-      const { registry, manager } = await fixture(t, {
+      const { registry, manager, lifecycle } = await fixture(t, {
         async run(input) {
           launches++;
           lateThread = input.onThread;
@@ -1372,10 +1481,14 @@ describe("separate coding supervisor", () => {
       });
       await job.send("commands", { type: "approve", commandId: "approval" });
       await expect.poll(() => launches).toBe(1);
+      expect(lifecycle.active).toBeGreaterThan(0);
+      const draining = lifecycle.drain(1000);
       await job.cancel();
       await expect
         .poll(async () => (await job.snapshot()).status)
         .toBe("needs_review");
+      expect(await draining).toBe(false);
+      expect(await lifecycle.drain()).toBe(false);
       await lateThread?.("T-late-untrusted");
       expect((await job.snapshot()).threadId).toBe(threadId);
       if (!threadId) {
@@ -1423,7 +1536,7 @@ describe("separate coding supervisor", () => {
   );
 
   it("cancels an unsettled verifier and ignores its late receipt without releasing admission", async (t) => {
-    const { registry, manager } = await fixture(t, {
+    const { registry, manager, lifecycle } = await fixture(t, {
       async run() {
         return { threadId: "T-verified-late", report: "Worker finished." };
       },
@@ -1453,6 +1566,7 @@ describe("separate coding supervisor", () => {
       });
       await job.send("commands", { type: "approve", commandId: "approval" });
       await expect.poll(() => verifying).toBe(true);
+      expect(await lifecycle.drain(5)).toBe(false);
       await job.cancel();
       await expect
         .poll(async () => (await job.snapshot()).status, { timeout: 1000 })
@@ -1476,6 +1590,12 @@ describe("separate coding supervisor", () => {
       expect(state.verification).toBeUndefined();
       expect(state.workerClaim).toBe("Worker finished.");
       await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+      expect(await lifecycle.drain()).toBe(false);
+      // Reconstruct only the process-local lifecycle: the persisted lease still
+      // blocks a freshly started host that has no live callback/controller.
+      expect(await createLifecycle(() => manager.isSettled()).drain()).toBe(
+        false,
+      );
     } finally {
       releaseReceipt.resolve();
     }

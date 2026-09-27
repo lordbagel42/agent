@@ -133,7 +133,6 @@ async function main() {
             artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
           })
           .parse(JSON.parse(marker));
-  const lifecycle = createLifecycle();
   const readDeployment = config.deployment
     ? createDeploymentReader({
         file: config.deployment.eventsFile,
@@ -261,6 +260,12 @@ async function main() {
         .digest("hex"),
     };
   }
+  const lifecycle = createLifecycle(async () => {
+    for (const manager of Object.values(isolation)) {
+      if (!(await manager.isSettled())) return false;
+    }
+    return true;
+  });
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);
   if (operatorToken.length < 32) throw new Error("Short operator token");
@@ -688,8 +693,9 @@ async function main() {
       ? {
           token: secret(config.deployment.tokenEnv),
           read: readDeployment,
-          // These optional paths can outlive a cancelled actor callback. Do not
-          // confuse an idle workflow/status with settled native children/transports.
+          // Coding now fences launches and checks current-root leases, but
+          // legacy sessions/removed roots still need independent reconciliation.
+          // Other optional paths can also outlive a cancelled actor callback.
           supported: !coding && !reflection && !channels.whatsapp,
         }
       : undefined,

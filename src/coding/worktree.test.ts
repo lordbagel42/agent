@@ -26,6 +26,10 @@ test("worktree ownership rejects escapes and preserves the shared dirty checkout
         .trim();
     git("init");
     const manager = createWorktreeManager({ repositoryRoot, worktreeRoot });
+    expect(await manager.isSettled()).toBe(true);
+    await expect(
+      readFile(path.join(worktreeRoot, ".june-jobs")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
     await expect(manager.prepare("unborn")).rejects.toThrow("unborn");
     await writeFile(path.join(repositoryRoot, "tracked"), "base");
     git("add", "tracked");
@@ -60,6 +64,9 @@ test("worktree ownership rejects escapes and preserves the shared dirty checkout
     ).rejects.toThrow("symlinks");
     const created = await manager.prepare("approved-1");
     await manager.admit("approved-1", 1);
+    // A fresh supervisor must see the durable blocker without a local process.
+    const restarted = createWorktreeManager({ repositoryRoot, worktreeRoot });
+    expect(await restarted.isSettled()).toBe(false);
     await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
     await expect(manager.admit("approved-1", 2)).rejects.toThrow("occupied");
     await expect(manager.admit("other-job", 2, true)).rejects.toThrow(
@@ -68,6 +75,16 @@ test("worktree ownership rejects escapes and preserves the shared dirty checkout
     await manager.admit("approved-1", 2, true);
     await expect(manager.release("approved-1", 1)).rejects.toThrow("ownership");
     await manager.release("approved-1", 2);
+    expect(await restarted.isSettled()).toBe(true);
+    const lock = path.join(worktreeRoot, ".june-jobs", "admission-lock");
+    await mkdir(lock);
+    expect(await restarted.isSettled()).toBe(false);
+    await rm(lock, { recursive: true });
+    // Even an incomplete/invalid owner record blocks drain; never repair it.
+    const active = path.join(worktreeRoot, ".june-jobs", "active");
+    await mkdir(active);
+    expect(await restarted.isSettled()).toBe(false);
+    await rm(active, { recursive: true });
     expect(created.manifest.baseCommit).toBe(base);
     expect(
       await readFile(path.join(created.manifest.cwd, "tracked"), "utf8"),

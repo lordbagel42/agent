@@ -1,12 +1,14 @@
 /** Process-local admission only. Durable queues stay intact while fenced; this
- * never cancels an effect, clears an uncertain intent, or stops the registry. */
-export function createLifecycle() {
+ * never cancels an effect, clears an uncertain intent, or stops the registry.
+ * isSettled checks durable/native work after process-local work is idle. */
+export function createLifecycle(isSettled?: () => Promise<boolean>) {
   let fenced = false;
   let failed = false;
   let active = 0;
   const waiting = new Set<() => void>();
   let draining: Promise<boolean> | undefined;
   let finishDrain: ((drained: boolean) => void) | undefined;
+  let checkDrain: (() => void) | undefined;
 
   const resume = () => {
     fenced = false;
@@ -25,7 +27,7 @@ export function createLifecycle() {
       if (released) return;
       released = true;
       active--;
-      if (active === 0) finishDrain?.(!failed);
+      if (active === 0) checkDrain?.();
     };
   };
   return {
@@ -73,19 +75,38 @@ export function createLifecycle() {
       if (failed) return Promise.resolve(false);
       if (draining) return draining;
       fenced = true;
-      if (active === 0) return Promise.resolve(true);
+      if (active === 0 && !isSettled) return Promise.resolve(true);
       draining = new Promise<boolean>((resolve) => {
         const timer = setTimeout(() => {
           // Timeout releases admission, never the outstanding work itself.
           resume();
         }, timeoutMs);
-        finishDrain = (drained) => {
+        const finish = (drained: boolean) => {
+          // A late durable check cannot complete a resumed or newer drain.
+          if (finishDrain !== finish) return;
           clearTimeout(timer);
           finishDrain = undefined;
+          checkDrain = undefined;
           draining = undefined;
           resolve(drained);
         };
+        finishDrain = finish;
+        checkDrain = () => {
+          if (!isSettled) {
+            finish(!failed);
+            return;
+          }
+          void Promise.resolve()
+            .then(isSettled)
+            .catch(() => false)
+            .then((settled) => {
+              if (finishDrain !== finish) return;
+              if (settled && !failed) finish(true);
+              else resume();
+            });
+        };
       });
+      if (active === 0) checkDrain?.();
       return draining;
     },
     resume,

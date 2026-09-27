@@ -154,11 +154,20 @@ completion, or independently move their lifecycle into a persistent worker
 service before claiming uninterrupted in-flight native execution.
 
 **Initial integration refuses automatic drain whenever native coding, reflection
-or WhatsApp is enabled.** These paths can outlive cancellation and do not yet have
-a proven lifecycle fence. They are disabled in the current live configuration.
-Rivet shutdown is not drain evidence: its bounded race can swallow errors. The
-parent fence instead tracks awaited turns and HTTP work, refuses non-abort
-workflow faults, and resumes admission on timeout without cancelling effects.
+or WhatsApp is enabled.** Coding commands now share the lifecycle fence, including
+queued approvals/resumes, and drain checks current workspace leases and admission
+locks after callbacks settle. Cancellation, `needs_review`, and late worker or
+verifier success do not clear those durable blockers, including after restart.
+An unreadable settlement check, timeout, or workflow fault cannot certify drain.
+The coding gate remains because legacy sessions and roots removed from config
+are not covered by current-root accounting. Reflection and WhatsApp also still
+lack a proven lifecycle fence. These paths are disabled in the current live
+configuration. Rivet shutdown is not drain evidence: its bounded race can swallow
+errors. A drain timeout resumes admission without cancelling effects.
+
+June's owner-private release inspection reports controller evidence; it cannot
+drain or activate a release. A coding cancellation acknowledgment or isolation
+preflight is not proof of stopped execution or permission to bypass this gate.
 
 Trusted main authorizes **forward** code updates after preflight and drain;
 it does not establish downgrade compatibility. By default automatic rollback
