@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,10 +9,13 @@ import { createWorktreeManager } from "../coding/worktree.js";
 import type {
   CodingRuntime,
   MessageEvent,
+  ModelRequest,
   OutboundMessage,
 } from "../core/contracts.js";
+import { EvidenceStore } from "../memory/store.js";
 import type { CodingDependencies } from "./coding.js";
-import { createJuneRegistry } from "./registry.js";
+import { executionKey } from "./execution.js";
+import { createJuneRegistry, type Dependencies } from "./registry.js";
 
 const owner = {
   id: "raygen",
@@ -27,7 +31,11 @@ const source: MessageEvent = {
   direct: true,
   text: "Fix the reaction handling in June.",
 };
-async function fixture(t: TestContext, runtime: CodingRuntime) {
+async function fixture(
+  t: TestContext,
+  runtime: CodingRuntime,
+  memory?: Dependencies["memory"],
+) {
   const root = await mkdtemp(path.join(os.tmpdir(), "june-supervisor-"));
   t.onTestFinished(() => rm(root, { recursive: true, force: true }));
   const repositoryRoot = path.join(root, "repo");
@@ -73,8 +81,10 @@ async function fixture(t: TestContext, runtime: CodingRuntime) {
     isolation: { june: manager },
   };
   const sent: OutboundMessage[] = [];
+  const modelRequests: ModelRequest[] = [];
   const registry = createJuneRegistry({
     owner,
+    memory,
     channels: {
       slack: {
         channel: "slack",
@@ -89,34 +99,195 @@ async function fixture(t: TestContext, runtime: CodingRuntime) {
       },
     },
     model: {
-      async reply() {
+      async reply(request) {
+        modelRequests.push(structuredClone(request));
+        if (request.system.includes("Coding completion"))
+          return {
+            text: "The worker reports the change; its claims are not independently verified.",
+          };
+        if (request.system.includes("Execution completion"))
+          return { text: "Scope ready for approval." };
         return {
-          text: "I can propose that change.",
-          coding: {
-            workspace: "june",
-            goal: "Fix reaction handling. Run its tests.",
-          },
+          text: "I'll prepare the change.",
+          execution: [
+            {
+              agent: "coding-plan",
+              action: "run",
+              task: "Fix reaction handling. Run its tests.",
+            },
+          ],
         };
+      },
+    },
+    execution: {
+      model: {
+        async reply() {
+          return {
+            text: "Scope prepared, not executed.",
+            coding: {
+              workspace: "june",
+              goal: "Fix reaction handling. Run its tests.",
+            },
+          };
+        },
       },
     },
     coding,
   });
-  return { registry, sent, manager, repositoryRoot, worktreeRoot, coding };
+  return {
+    registry,
+    sent,
+    modelRequests,
+    manager,
+    repositoryRoot,
+    worktreeRoot,
+    coding,
+  };
 }
 
 describe("separate coding supervisor", () => {
+  it.for([false, true])(
+    "invalidates execution-derived coding before approval or completion (approved=%s)",
+    async (approved, t) => {
+      const store = new EvidenceStore(":memory:", randomBytes(32));
+      const pending = Promise.withResolvers<{
+        threadId: string;
+        report: string;
+      }>();
+      t.onTestFinished(() => {
+        pending.resolve({ threadId: "T-finished", report: "DELETED REPORT" });
+        store.close();
+      });
+      const audience = JSON.stringify(["private", "raygen"]);
+      store.appendSource({
+        id: "ancestor",
+        platform: "slack",
+        account: "T1",
+        conversation: "D1",
+        author: "U1",
+        audiences: [audience],
+        observedAt: Date.now(),
+        sourceUrl: "https://fixture.slack.com/archives/D1/p1000001",
+        text: "Fix the reaction handling in June. ANCESTOR",
+      });
+      let launches = 0;
+      const { registry, sent, modelRequests } = await fixture(
+        t,
+        {
+          async run() {
+            launches++;
+            return pending.promise;
+          },
+        },
+        {
+          store,
+          source(e, scope) {
+            return {
+              id: `live:${e.id}`,
+              platform: "slack",
+              account: "T1",
+              conversation: "D1",
+              author: "U1",
+              audiences: [scope],
+              observedAt: e.occurredAt,
+              sourceUrl: "https://fixture.slack.com/archives/D1/p2000001",
+              text: e.text,
+            };
+          },
+        },
+      );
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", "raygen"]);
+      await june.send("inbox", { type: "event", event: source });
+      await expect
+        .poll(async () => Object.keys((await june.snapshot()).jobs).length, {
+          timeout: 15000,
+        })
+        .toBe(1);
+      // Repeated snapshots must not retain/nest actor read proxies in history.
+      for (let i = 0; i < 10; i++) await june.snapshot();
+      const snapshot = await june.snapshot();
+      const id = Object.keys(snapshot.jobs)[0];
+      if (!id) throw new Error("No proposal");
+      expect(snapshot.memoryContexts?.[id]?.contextSourceIds).toContain(
+        "ancestor",
+      );
+      await expect
+        .poll(
+          async () =>
+            Object.values((await june.snapshot()).events).every((e) => e.done),
+          { timeout: 15000 },
+        )
+        .toBe(true);
+      expect(await june.canResumeJob(id)).toBe(true);
+      if (!approved) {
+        store.deleteSource("ancestor");
+        expect(await june.canResumeJob(id)).toBe(false);
+      }
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "approve-deletion",
+          messageId: "200.000001",
+          text: `/approve ${id}`,
+        },
+      });
+      if (approved) {
+        await expect.poll(() => launches, { timeout: 15000 }).toBe(1);
+        store.deleteSource("ancestor");
+        expect(await june.canResumeJob(id)).toBe(false);
+        pending.resolve({ threadId: "T-finished", report: "DELETED REPORT" });
+        await expect
+          .poll(
+            async () =>
+              Object.values((await june.snapshot()).events).filter(
+                (e) => e.done,
+              ).length,
+            { timeout: 15000 },
+          )
+          .toBe(4);
+        expect(
+          modelRequests.some((r) => r.system.includes("DELETED REPORT")),
+        ).toBe(false);
+        expect(
+          sent.some(
+            (m) =>
+              m.content.type === "text" &&
+              m.content.text.includes("DELETED REPORT"),
+          ),
+        ).toBe(false);
+      } else {
+        await expect
+          .poll(
+            async () =>
+              Object.values((await june.snapshot()).events).filter(
+                (e) => e.done,
+              ).length,
+            { timeout: 15000 },
+          )
+          .toBe(3);
+        expect(launches).toBe(0);
+        expect(
+          (await client.job.getOrCreate(["raygen", id]).snapshot()).status,
+        ).toBe("awaiting_approval");
+      }
+    },
+  );
+
   it("requires a private approval, then reports the worker result without pretending it verified it", async (t) => {
     const launches: { prompt: string; cwd: string }[] = [];
-    const { registry, sent, repositoryRoot, worktreeRoot } = await fixture(t, {
-      async run(input) {
-        launches.push({ prompt: input.prompt, cwd: input.cwd });
-        await input.onThread("T-coding-worker");
-        return {
-          threadId: "T-coding-worker",
-          report: "Changed reactions and ran the checks.",
-        };
-      },
-    });
+    const { registry, sent, modelRequests, repositoryRoot, worktreeRoot } =
+      await fixture(t, {
+        async run(input) {
+          launches.push({ prompt: input.prompt, cwd: input.cwd });
+          await input.onThread("T-coding-worker");
+          return {
+            threadId: "T-coding-worker",
+            report: "Changed reactions and ran the checks.",
+          };
+        },
+      });
     const { client } = await setupTest(t, registry);
     const june = client.conversation.getOrCreate(["private", "raygen"]);
     await june.send("inbox", {
@@ -126,8 +297,19 @@ describe("separate coding supervisor", () => {
         text: `My favorite bird is the heron. ${source.text}`,
       },
     });
-    await expect.poll(() => sent.length, { timeout: 3000 }).toBe(1);
-    const content = sent[0]?.content;
+    await expect
+      .poll(
+        () =>
+          sent.some(
+            (m) =>
+              m.content.type === "text" && m.content.text.includes("/approve"),
+          ),
+        { timeout: 15000 },
+      )
+      .toBe(true);
+    const content = sent.find(
+      (m) => m.content.type === "text" && m.content.text.includes("/approve"),
+    )?.content;
     const approval =
       content?.type === "text"
         ? content.text.match(/\/approve ([a-f0-9]+)/)?.[1]
@@ -155,6 +337,22 @@ describe("separate coding supervisor", () => {
         { timeout: 5000 },
       )
       .toBe(true);
+    expect(modelRequests.at(-1)?.system).toContain(
+      "Changed reactions and ran the checks.",
+    );
+    expect(modelRequests.at(-1)?.system).toContain(
+      "Separate operator verifier: passed",
+    );
+    expect(modelRequests.at(-1)?.workspaces).toEqual([]);
+    expect(modelRequests.at(-1)?.executionAvailable).toBe(false);
+    const plannerId = (await june.snapshot()).agents?.["coding-plan"];
+    if (!plannerId) throw new Error("Planner missing");
+    const planner = client.execution.getOrCreate(
+      executionKey(["private", "raygen"], plannerId),
+    );
+    expect((await planner.summary()).report).toContain(
+      "Changed reactions and ran the checks.",
+    );
     expect(launches).toHaveLength(1);
     const cwd = launches[0]?.cwd ?? "";
     expect(cwd.startsWith(`${worktreeRoot}/job-`)).toBe(true);
@@ -186,7 +384,7 @@ describe("separate coding supervisor", () => {
           ).length,
         { timeout: 3000 },
       )
-      .toBe(4);
+      .toBe(5);
     expect(launches).toHaveLength(1);
   });
 

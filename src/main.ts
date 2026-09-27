@@ -568,6 +568,10 @@ async function main() {
     deepModel:
       deepModel && (connections ? connections.wrap(deepModel) : deepModel),
     mcpAvailable: !!connections,
+    execution:
+      config.executionEnabled && !config.setupMode
+        ? { model: deepModel ?? model }
+        : undefined,
     models,
     webSearch,
     lifecycle,
@@ -745,13 +749,7 @@ async function main() {
       return client.job.getOrCreate([config.owner.id, id]).snapshot();
     },
     async resumeJob(id, commandId) {
-      const conversation = await june.snapshot();
-      if (
-        !coding ||
-        !Object.hasOwn(conversation.jobs, id) ||
-        conversation.forgottenEvents?.includes(id)
-      )
-        return false;
+      if (!coding || !(await june.canResumeJob(id))) return false;
       const job = client.job.getOrCreate([config.owner.id, id]);
       const state = await job.snapshot();
       if (state.revoked || state.runtimeId !== coding.runtimeId) return false;
@@ -762,6 +760,7 @@ async function main() {
         (state.worktree && !state.threadId)
       )
         return false;
+      if (!(await june.canResumeJob(id))) return false;
       await job.send("commands", {
         type: "resume",
         commandId,

@@ -137,8 +137,16 @@ export interface CodingRequest {
   goal: string;
 }
 
+export interface ExecutionCommand {
+  /** Stable within this conversation; reuse for related follow-ups. */
+  agent: string;
+  action: "run" | "cancel";
+  task: string;
+}
+
 export interface CompanionReply {
   text: string;
+  execution?: ExecutionCommand[];
   social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
   reaction?: string;
@@ -162,7 +170,7 @@ export interface ModelRequest {
   system: string;
   messages: ConversationMessage[];
   /** Host-only accounting label, never part of a provider prompt. */
-  usageStage?: "fast" | "deep" | "synthesis";
+  usageStage?: "fast" | "deep" | "synthesis" | "execution";
   /** Only these configured workspace names may be delegated. */
   workspaces: string[];
   searchAvailable?: boolean;
@@ -173,6 +181,7 @@ export interface ModelRequest {
   latencyAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   socialAvailable?: boolean;
+  executionAvailable?: boolean;
 }
 
 export interface ModelProvider {

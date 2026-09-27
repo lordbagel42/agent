@@ -7,6 +7,7 @@ export type UsageStage =
   | "fast"
   | "deep"
   | "synthesis"
+  | "execution"
   | "extraction"
   | "reflection";
 export type UsageProtocol = "codex" | "openai" | "anthropic";

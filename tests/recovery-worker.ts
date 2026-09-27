@@ -57,6 +57,14 @@ const registry = createJuneRegistry({
       return { text: "The heron is remembered." };
     },
   },
+  execution: {
+    model: {
+      async reply() {
+        process.send?.({ kind: "execution" });
+        return new Promise<never>(() => {});
+      },
+    },
+  },
   channels: {
     slack: {
       channel: "slack",

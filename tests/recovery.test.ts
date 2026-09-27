@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createClient } from "rivetkit/client";
 import { expect, it } from "vitest";
 import type { MessageEvent } from "../src/core/contracts.js";
+import { executionKey } from "../src/runtime/execution.js";
 import type { JuneRegistry } from "../src/runtime/registry.js";
 import { freeEnginePort, stopTestEngine } from "./rivet.js";
 
@@ -88,14 +89,27 @@ it("recovers a hard-killed host's durable retry without repeating an ambiguous s
     },
   });
   await job.send("commands", { type: "approve", commandId: "approve-crash" });
+  const worker = client.execution.getOrCreate(
+    executionKey(["private", "fixture"], "crash-worker"),
+  );
+  const requestId = `${"a".repeat(64)}:crash`;
+  await worker.submit({
+    id: requestId,
+    source,
+    task: "Interrupted research",
+    workspaces: [],
+    web: false,
+    evidenceIds: [],
+  });
   await expect
     .poll(
       () =>
-        messages.filter((message) => ["send", "coding"].includes(message.kind))
-          .length,
+        messages.filter((message) =>
+          ["send", "coding", "execution"].includes(message.kind),
+        ).length,
       { timeout: 5000 },
     )
-    .toBe(2);
+    .toBe(3);
   const delayed = client.conversation.getOrCreate([
     "slack",
     "T1",
@@ -136,6 +150,14 @@ it("recovers a hard-killed host's durable retry without repeating an ambiguous s
   await expect
     .poll(async () => (await job.snapshot()).status, { timeout: 30_000 })
     .toBe("needs_review");
+  await expect
+    .poll(async () => (await worker.result(requestId))?.status, {
+      timeout: 15000,
+    })
+    .toBe("needs_review");
+  expect(
+    messages.filter((message) => message.kind === "execution"),
+  ).toHaveLength(1);
   await expect
     .poll(
       async () =>

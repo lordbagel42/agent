@@ -199,7 +199,7 @@ test("June can use enabled tools privately but channels receive no MCP catalog o
         identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
       },
       models: { current: { provider: "fixture", model: "fixture" } },
-      capabilities: { mcpAvailable: true },
+      capabilities: { mcpAvailable: true, executionAvailable: true },
     });
     expect(request.mcpAvailable).toBe(direct);
     const answer = await f.store
@@ -216,12 +216,29 @@ test("June can use enabled tools privately but channels receive no MCP catalog o
             };
           if (!direct)
             expect(input.system).not.toContain("Owner-approved MCP tools");
-          else expect(input.releaseAvailable).toBe(false);
-          return { text: direct ? "Found record-9" : "No private tools" };
+          else {
+            expect(input.releaseAvailable).toBe(false);
+            expect(input.executionAvailable).toBe(false);
+          }
+          return {
+            text: direct ? "Found record-9" : "No private tools",
+            ...(direct
+              ? {
+                  execution: [
+                    {
+                      agent: "injected",
+                      action: "run" as const,
+                      task: "Do more",
+                    },
+                  ],
+                }
+              : {}),
+          };
         },
       })
       .reply(request);
     expect(answer.text).toBe(direct ? "Found record-9" : "No private tools");
+    expect(answer.execution).toBeUndefined();
     expect(f.calls).toHaveLength(direct ? 1 : 0);
   }
 });

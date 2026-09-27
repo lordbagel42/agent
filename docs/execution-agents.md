@@ -1,0 +1,60 @@
+# June's interaction and execution loop
+
+June owns conversation, personality, clarification, delegation, and synthesis.
+Persistent execution agents own substantive research, analysis, planning, and
+coding preparation. This follows OpenPoke's interaction/execution separation,
+not its particular integrations or unrestricted tool access.
+
+## June-facing interface
+
+The model schema and prompt expose this owner-only action:
+
+```json
+{"text":"I'll compare both options.","coding":null,"reaction":null,"execution":[
+  {"agent":"trains","action":"run","task":"Compare the requested public train options; cite sources and uncertainty."},
+  {"agent":"hotels","action":"run","task":"Compare the requested hotels; cite sources and uncertainty."}
+]}
+```
+
+Reuse a name to follow up with the same worker. Read the supplied scope-local
+roster for pending counts, status, and latest reports without launching work.
+Cancel with `{"agent":"trains","action":"cancel","task":""}`. The host reports
+admission failures rather than silently accepting a false success claim.
+Worker completions wake June to synthesize findings or stay silent if redundant.
+Completion turns cannot dispatch new actions. Coding proposals retain the existing
+private `/approve` requirement; coding results return to June and worker history.
+
+## Boundaries and recovery
+
+- Enabled by default outside setup mode; workers use `deepModel ?? model`.
+  Search availability is explicitly disclosed; configuration is not a health check.
+- Workers reason and iterate through configured public web search. They cannot
+  read files/credentials/Slack history, send messages, run code, call MCP, deploy,
+  or spawn workers. Non-retainable Slack search remains a direct host operation.
+- Linked owner DMs share a roster. Channel/thread workers remain in the originating
+  scope even if June's reply starts a new thread; follow up in the original scope
+  to reuse them. Guests keep their existing explicitly granted capabilities and
+  cannot dispatch execution workers.
+- Different workers run independently; one worker processes tasks serially and
+  retains history (last 40 entries in its prompt). Limits are four pending requests
+  and 32 worker names per conversation, six model steps/five searches per request,
+  and a five-minute abort signal. These are not global capacity limits.
+- Stable IDs deduplicate requests and completions. Interrupted calls and ambiguous
+  search failures become `needs_review`, not automatic retries. Known-unsent search
+  failures become `failed`. A fresh `run` is an explicit new attempt.
+- Cancellation suppresses late answers but waits for the underlying provider to
+  settle. Workers participate in deployment draining. Forget revokes workers and
+  clears live history/reports; transitive provenance prevents reuse after deletion.
+  Journals/backups and already-sent model requests retain their existing retention
+  rules; clearing live state is not secure erasure. Worker history is not encrypted
+  by the optional evidence store.
+
+## Verification
+
+Real Rivet integration tests exercise the model-facing interface, concurrent work
+and chat, follow-ups, synthesis, guest isolation, bounded searches, cancellation,
+deletion, and coding approval. A separate-host hard-kill test checks uncertainty
+without replaying a model call. Controlled provider/transport boundaries verify
+the host contract, not live model quality or deployment. For a live check, ask June
+for two independent tasks, keep chatting, ask for status and a related follow-up,
+then cancel one task. Do not expect unavailable search/coding tools to run.

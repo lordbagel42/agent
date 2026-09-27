@@ -470,6 +470,7 @@ export class McpConnections {
               {
                 ...request,
                 mcpAvailable: false,
+                executionAvailable: false,
                 workspaces: [],
                 searchAvailable: false,
                 webSearchAvailable: false,
@@ -485,7 +486,13 @@ export class McpConnections {
               signal,
             );
             return authorized()
-              ? answer
+              ? {
+                  text: answer.text,
+                  ...(answer.reaction ? { reaction: answer.reaction } : {}),
+                  ...(answer.replyInThread !== undefined
+                    ? { replyInThread: answer.replyInThread }
+                    : {}),
+                }
               : {
                   text: "The connection changed before I could finish. No result was shared.",
                 };

@@ -37,6 +37,25 @@ const searchQuerySchema = z
 
 const companionReplySchema = z.strictObject({
   text: z.string().refine((text) => Array.from(text).length <= 3_500),
+  execution: z
+    .array(
+      z
+        .strictObject({
+          agent: z.string().regex(/^[a-z][a-z0-9-]{0,47}$/),
+          action: z.enum(["run", "cancel"]),
+          task: z.string().trim().max(2000),
+        })
+        .refine(
+          (command) => command.action === "cancel" || command.task.length > 0,
+        ),
+    )
+    .min(1)
+    .max(4)
+    .refine(
+      (commands) =>
+        new Set(commands.map((c) => c.agent)).size === commands.length,
+    )
+    .optional(),
   social: socialActionSchema.optional(),
   coding: z
     .strictObject({
@@ -89,6 +108,7 @@ export type ReplyCapabilities = Pick<
   | "latencyAvailable"
   | "replyPlacementAvailable"
   | "socialAvailable"
+  | "executionAvailable"
 >;
 
 function replyCapabilities(
@@ -112,6 +132,7 @@ export function replyJsonSchema(
     latencyAvailable,
     replyPlacementAvailable,
     socialAvailable,
+    executionAvailable,
   } = replyCapabilities(capabilities);
   const { $schema: _schema, ...socialSchema } = z.toJSONSchema(
     socialActionSchema.nullable(),
@@ -159,6 +180,29 @@ export function replyJsonSchema(
       },
       coding,
       reaction: { type: ["string", "null"] },
+      ...(executionAvailable
+        ? {
+            execution: {
+              type: ["array", "null"],
+              description:
+                "One to four distinct persistent workers. Reuse a stable name for follow-ups. run sends a task; cancel stops pending work. Do not combine with other action directives. Text may acknowledge, not claim completion.",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  agent: { type: "string", pattern: "^[a-z][a-z0-9-]{0,47}$" },
+                  action: { type: "string", enum: ["run", "cancel"] },
+                  task: {
+                    type: "string",
+                    description:
+                      "Self-contained instructions, 1–2000 characters for run; empty for cancel. Never include secrets.",
+                  },
+                },
+                required: ["agent", "action", "task"],
+              },
+            },
+          }
+        : {}),
       ...(releaseAvailable
         ? {
             release: {
@@ -255,6 +299,7 @@ export function replyJsonSchema(
       "text",
       "coding",
       "reaction",
+      ...(executionAvailable ? ["execution"] : []),
       ...(releaseAvailable ? ["release"] : []),
       ...(mcpAvailable ? ["mcp"] : []),
       ...(searchAvailable ? ["search"] : []),
@@ -434,6 +479,7 @@ export function parseReply(
     latencyAvailable,
     replyPlacementAvailable,
     socialAvailable,
+    executionAvailable,
   } = replyCapabilities(capabilities);
   let value: unknown;
   try {
@@ -447,6 +493,7 @@ export function parseReply(
 
   const normalized = { ...value };
   for (const key of [
+    "execution",
     "coding",
     "reaction",
     "search",
@@ -480,12 +527,14 @@ export function parseReply(
     (reply.social !== undefined && !socialAvailable) ||
     (reply.mcp !== undefined && !mcpAvailable) ||
     (reply.latency !== undefined && !latencyAvailable) ||
+    (reply.execution !== undefined && !executionAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);
   }
   const directiveCount =
     Number(reply.mcp !== undefined) +
+    Number(reply.execution !== undefined) +
     Number(reply.search !== undefined) +
     Number(reply.webSearch !== undefined) +
     Number(reply.release !== undefined) +

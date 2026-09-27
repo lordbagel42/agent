@@ -28,6 +28,9 @@ into June or tested with a real account.
   cannot access private history or approve coding tasks.
 - Durable inbox, serial turns, event deduplication, and a persisted outbox.
   Ambiguous sends are recorded as unknown, not automatically repeated.
+- [Persistent execution agents](docs/execution-agents.md): June delegates substantive
+  owner work, keeps chatting while workers run, reuses them for follow-ups, and
+  synthesizes results. `executionEnabled: false` restores the direct fast/deep path.
 - OpenAI **Responses API** and Anthropic **Messages API**, including explicit
   custom base URLs. The provider must support the adapter's structured JSON
   output format. Arbitrary chat-completions endpoints are not interchangeable.

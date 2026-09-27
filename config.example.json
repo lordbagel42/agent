@@ -16,6 +16,7 @@
     "model": "YOUR_MODEL_ID",
     "apiKeyEnv": "MODEL_API_KEY"
   },
+  "executionEnabled": true,
   "slack": {
     "teamId": "T_REPLACE_ME",
     "botUserId": "U_BOT_REPLACE_ME",

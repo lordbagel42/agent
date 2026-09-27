@@ -121,6 +121,7 @@ const schema = z
     }),
     model: companionModel,
     deepModel: companionModel.optional(),
+    executionEnabled: z.boolean().default(true),
     webSearch: z
       .strictObject({
         provider: z.literal("tavily"),
