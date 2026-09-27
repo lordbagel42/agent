@@ -38,7 +38,7 @@ import {
   createWakeupActor,
   type WakeupDependencies,
 } from "../wakeups/runtime.js";
-import type { WakeupContext, WakeupEvent } from "../wakeups/state.js";
+import type { WakeupEvent } from "../wakeups/state.js";
 import {
   createWorkflowLibraryActor,
   createWorkflowRunActor,
@@ -62,6 +62,12 @@ import {
   type ExecutionContext,
   executionCapabilities,
 } from "./execution-context.js";
+import {
+  type ConversationIngress,
+  type ConversationInput,
+  conversationInputId,
+  recordConversationIngress,
+} from "./inbox.js";
 import {
   type CapacityContext,
   inspectForgetCleanup,
@@ -206,6 +212,12 @@ export interface ConversationState extends ScopeCatalog {
   lastInbound: Record<string, number>;
   /** Write-ahead admission and deduplication until record-event takes ownership. */
   pendingInputs?: Record<string, MessageEvent>;
+  pendingNotifications?: Record<
+    string,
+    Exclude<ConversationInput, { type: "event" }>
+  >;
+  /** Prospective host receipts, not proof of legacy effect coverage. */
+  ingress?: ConversationIngress;
   latestInputs?: Record<string, { id: string; occurredAt: number }>;
   memoryContexts?: Record<string, MemoryReference>;
   forgottenEvents?: string[];
@@ -227,6 +239,7 @@ function captureForgetTargets(
       ...new Set([
         ...Object.keys(state.events),
         ...Object.keys(state.pendingInputs ?? {}),
+        ...Object.keys(state.pendingNotifications ?? {}),
       ]),
     ],
     deliveryIds: Object.keys(state.deliveries),
@@ -235,23 +248,32 @@ function captureForgetTargets(
   };
 }
 
-type Inbox =
-  | { type: "event"; event: ChannelEvent }
-  | { type: "wakeup"; source: MessageEvent; wakeup: WakeupContext }
-  | {
-      type: "execution_result";
-      agentId: string;
-      requestId: string;
-      source: MessageEvent;
-      replyAddress?: MessageEvent["address"];
-    }
-  | {
-      type: "job_result";
-      jobId: string;
-      attempt: number;
-      source: MessageEvent;
-      text: string;
-    };
+/** Keep deletion ownership when a late callback moves from pending to events.
+ * Only extend an unfinished cleanup's already-frozen origins/jobs/workers. */
+function captureNotificationCleanup(
+  state: ConversationState,
+  input: Exclude<ConversationInput, { type: "event" }>,
+) {
+  const id = conversationInputId(input);
+  const originalId = conversationInputId({
+    type: "event",
+    event: input.source,
+  });
+  for (const cleanup of Object.values(state.forgetCleanups ?? {})) {
+    if (cleanup.completed || cleanup.eventIds.includes(id)) continue;
+    if (
+      cleanup.eventIds.includes(originalId) ||
+      (input.type === "job_result" && cleanup.jobIds.includes(input.jobId)) ||
+      (input.type === "execution_result" &&
+        Object.values(cleanup.agents).includes(input.agentId)) ||
+      (input.type === "wakeup" &&
+        cleanup.eventIds.includes(
+          input.wakeup.originEventId ?? input.wakeup.jobId,
+        ))
+    )
+      cleanup.eventIds.push(id);
+  }
+}
 
 function inputSurface(event: MessageEvent): string {
   const { address, metadata } = event;
@@ -343,33 +365,38 @@ export function createJuneRegistry(deps: Dependencies) {
       persist: () => c.saveState({ immediate: true }),
       receiving: Promise.resolve(),
     }),
-    queues: { inbox: queue<Inbox>() },
+    queues: { inbox: queue<ConversationInput>() },
     onWake: async (c) => {
       // Runs before workflow replay. Enqueue is durable; duplicates are harmless.
       // Do not await an immediate save here: native startup cannot service it.
-      for (const event of Object.values(c.state.pendingInputs ?? {})) {
-        await c.queue.send("inbox", { type: "event", event });
-      }
+      const pending: ConversationInput[] = [
+        ...Object.values(c.state.pendingInputs ?? {}).map((event) => ({
+          type: "event" as const,
+          event,
+        })),
+        ...Object.values(c.state.pendingNotifications ?? {}),
+      ];
+      // Missing legacy receipt times stay missing. Replay never calls admission.
+      pending.sort(
+        (a, b) =>
+          (c.state.ingress?.receipts[conversationInputId(a)]?.sequence ?? 0) -
+          (c.state.ingress?.receipts[conversationInputId(b)]?.sequence ?? 0),
+      );
+      for (const input of pending) await c.queue.send("inbox", input);
     },
     actions: {
       /** Trusted verified ingress. Persist the arrival and its recoverable body
        * together, before queue publication or any stale reply can resume. */
       receive: async (c, event: ChannelEvent) => {
+        const receivedAt = Date.now();
         const scope = routeEvent(event, deps.owner, true);
         if (!scope || JSON.stringify(scope.key) !== JSON.stringify(c.key))
           throw new Error("Conversation scope mismatch");
         // Serialize admission only, never inference or delivery. Concurrent
         // webhook completions cannot reorder the latest-input marker.
         const receiving = c.vars.receiving.then(async () => {
-          const id = createHash("sha256")
-            .update(
-              JSON.stringify([
-                event.address.channel,
-                event.address.accountId,
-                event.id,
-              ]),
-            )
-            .digest("hex");
+          const input = { type: "event" as const, event };
+          const id = conversationInputId(input);
           if (
             event.type !== "message" ||
             !isOwner(event, deps.owner) ||
@@ -380,6 +407,8 @@ export function createJuneRegistry(deps: Dependencies) {
           }
           if (c.state.events[id] || c.state.forgottenEvents?.includes(id))
             return;
+          const source = deps.memory?.source(event, JSON.stringify(c.key));
+          if (source && deps.memory?.store.isDeleted(source.id)) return;
           if (!c.state.pendingInputs?.[id]) {
             // Include legacy callback IDs in Slack's stable-message deduplication.
             if (
@@ -401,6 +430,12 @@ export function createJuneRegistry(deps: Dependencies) {
               return;
             c.state.pendingInputs ??= {};
             c.state.pendingInputs[id] = event;
+            c.state.ingress ??= {
+              sequence: 0,
+              receivedThrough: 0,
+              receipts: {},
+            };
+            recordConversationIngress(c.state.ingress, input, receivedAt);
             c.state.latestInputs ??= {};
             const surface = inputSurface(event);
             if (
@@ -417,6 +452,81 @@ export function createJuneRegistry(deps: Dependencies) {
           const pending = c.state.pendingInputs?.[id];
           if (!pending) return; // Forgetting may revoke admission during the save.
           await c.queue.send("inbox", { type: "event", event: pending });
+        });
+        c.vars.receiving = receiving.catch(() => {});
+        await receiving;
+      },
+      /** Trusted worker/scheduler ingress. Uses the same admission serializer as
+       * human messages; a lost ACK never renews the receipt or replaces its body. */
+      notify: async (
+        c,
+        input: Exclude<ConversationInput, { type: "event" }>,
+      ) => {
+        const receivedAt = Date.now();
+        // Legacy jobs may predate Slack's opt-out. Acknowledge an ignored
+        // callback without failing its producer, but still reject wrong scope.
+        const scope = routeEvent(input.source, deps.owner, false);
+        if (
+          !scope ||
+          !isOwner(input.source, deps.owner) ||
+          JSON.stringify(scope.key) !== JSON.stringify(c.key)
+        )
+          throw new Error("Notification scope mismatch");
+        if (
+          input.source.address.channel === "slack" &&
+          input.source.text.startsWith("##")
+        )
+          return;
+        const receiving = c.vars.receiving.then(async () => {
+          const id = conversationInputId(input);
+          if (c.state.events[id] || c.state.forgottenEvents?.includes(id))
+            return;
+          const source = deps.memory?.source(
+            input.source,
+            JSON.stringify(c.key),
+          );
+          if (source && deps.memory?.store.isDeleted(source.id)) return;
+          const delegation =
+            input.type === "execution_result"
+              ? c.state.delegations?.[input.requestId]
+              : undefined;
+          const originId =
+            input.type === "job_result"
+              ? input.jobId
+              : input.type === "wakeup"
+                ? (input.wakeup.originEventId ?? input.wakeup.jobId)
+                : delegation?.originEventId;
+          if (originId && c.state.forgottenEvents?.includes(originId)) return;
+          const reference = originId
+            ? c.state.memoryContexts?.[originId]
+            : undefined;
+          if (reference && !current(JSON.stringify(c.key), reference)) return;
+          const revision = deps.memory?.store.deletionRevision() ?? 0;
+          // Apply the consumer's provenance boundary before retaining a report.
+          // Untracked legacy work cannot prove independence after deletion.
+          if (input.type === "job_result" && !reference && revision > 0) return;
+          if (
+            input.type === "execution_result" &&
+            (((delegation || revision > 0) &&
+              !Object.values(c.state.agents ?? {}).includes(input.agentId)) ||
+              (!delegation && revision > 0) ||
+              (delegation && delegation.deletionRevision !== revision))
+          )
+            return;
+          c.state.pendingNotifications ??= {};
+          if (!c.state.pendingNotifications[id]) {
+            c.state.pendingNotifications[id] = input;
+            c.state.ingress ??= {
+              sequence: 0,
+              receivedThrough: 0,
+              receipts: {},
+            };
+            recordConversationIngress(c.state.ingress, input, receivedAt);
+          }
+          captureNotificationCleanup(c.state, input);
+          await c.vars.persist();
+          const pending = c.state.pendingNotifications?.[id];
+          if (pending) await c.queue.send("inbox", pending);
         });
         c.vars.receiving = receiving.catch(() => {});
         await receiving;
@@ -610,6 +720,8 @@ export function createJuneRegistry(deps: Dependencies) {
         );
         const cleanup = c.state.forgetCleanups[key];
         if (cleanup.completed) return;
+        for (const input of Object.values(c.state.pendingNotifications ?? {}))
+          captureNotificationCleanup(c.state, input);
         prune(c.state, JSON.stringify(c.key));
         for (const [id, context] of Object.entries(c.state.delegations ?? {}))
           if (context.deletionRevision < cleanup.beforeDeletionRevision)
@@ -619,10 +731,16 @@ export function createJuneRegistry(deps: Dependencies) {
           if (cleanup.historyIds.includes(entry.id))
             c.state.history.splice(index, 1);
         c.state.forgottenEvents = [
-          ...new Set([...(c.state.forgottenEvents ?? []), ...cleanup.eventIds]),
+          ...new Set([
+            ...(c.state.forgottenEvents ?? []),
+            ...cleanup.eventIds,
+            // Skill-derived job IDs are not necessarily origin event IDs.
+            ...cleanup.jobIds,
+          ]),
         ];
         for (const id of cleanup.eventIds) {
           delete c.state.pendingInputs?.[id];
+          delete c.state.pendingNotifications?.[id];
           const record = c.state.events[id];
           if (record?.event.type === "message") record.event.text = "";
         }
@@ -721,6 +839,7 @@ export function createJuneRegistry(deps: Dependencies) {
             "delegated-capabilities",
             2,
           );
+          const ingressVersion = await loop.getVersion("durable-ingress", 2);
           const body = message.body;
           // Old actors can be asleep in a pre-v9 queue wait. A wakeup could
           // never have entered those old journals, so its new path is safe.
@@ -744,20 +863,31 @@ export function createJuneRegistry(deps: Dependencies) {
               return;
             const ownerTurn = isOwner(event, deps.owner);
             if (body.type === "wakeup") {
-              if (
-                !deps.wakeups ||
-                !scope.private ||
-                !ownerTurn ||
-                event.address.channel !== "slack"
-              )
+              const eligible =
+                deps.wakeups &&
+                scope.private &&
+                ownerTurn &&
+                event.address.channel === "slack";
+              const claimed = eligible
+                ? await loop.step("claim-wakeup", (step) =>
+                    step
+                      .client<JuneClientRegistry>()
+                      .wakeups.getOrCreate([deps.owner.id])
+                      .claim(body.wakeup.runId),
+                  )
+                : false;
+              if (!claimed) {
+                // No effect is being settled here. A rejected/duplicate wakeup
+                // must not retain its unpublished body forever on every restart.
+                if (ingressVersion >= 2)
+                  await loop.step("discard-wakeup-input", async (step) => {
+                    delete step.state.pendingNotifications?.[
+                      conversationInputId(body)
+                    ];
+                    await step.vars.persist();
+                  });
                 return;
-              const claimed = await loop.step("claim-wakeup", (step) =>
-                step
-                  .client<JuneClientRegistry>()
-                  .wakeups.getOrCreate([deps.owner.id])
-                  .claim(body.wakeup.runId),
-              );
-              if (!claimed) return;
+              }
             }
             let reflectionReview =
               reflectionReviewVersion >= 2 &&
@@ -802,19 +932,7 @@ export function createJuneRegistry(deps: Dependencies) {
             let grantFingerprint: string | undefined;
             let deletionRevision = deps.memory?.store.deletionRevision() ?? 0;
             const audience = JSON.stringify(scope.key);
-            const eventId = createHash("sha256")
-              .update(
-                JSON.stringify(
-                  body.type === "event"
-                    ? [event.address.channel, event.address.accountId, event.id]
-                    : body.type === "execution_result"
-                      ? ["execution", body.agentId, body.requestId]
-                      : body.type === "wakeup"
-                        ? ["wakeup", body.wakeup.runId]
-                        : ["job", body.jobId, body.attempt],
-                ),
-              )
-              .digest("hex");
+            const eventId = conversationInputId(body);
             const forgetCommand =
               version >= 13 &&
               scope.private &&
@@ -918,11 +1036,15 @@ export function createJuneRegistry(deps: Dependencies) {
               event.address.conversationId,
             ]);
             const accepted = await loop.step("record-event", async (step) => {
+              // Also retain deletion ownership for legacy direct-queue callbacks.
+              if (body.type !== "event")
+                captureNotificationCleanup(step.state, body);
               if (
                 step.state.events[eventId]?.done ||
                 step.state.forgottenEvents?.includes(eventId)
               ) {
                 delete step.state.pendingInputs?.[eventId];
+                delete step.state.pendingNotifications?.[eventId];
                 await step.vars.persist();
                 return false;
               }
@@ -979,6 +1101,7 @@ export function createJuneRegistry(deps: Dependencies) {
               // Keep admission identity until the history/event record exists;
               // otherwise a queued duplicate could move the latest marker back.
               delete step.state.pendingInputs?.[eventId];
+              delete step.state.pendingNotifications?.[eventId];
               await step.vars.persist();
               return true;
             });

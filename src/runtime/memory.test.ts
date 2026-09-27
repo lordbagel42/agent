@@ -1143,8 +1143,27 @@ it.for(["reply", "deep"] as const)(
         (reference) => reference.contextSourceIds ?? [],
       ),
     ).toContain(pattern.claim.id);
+    const notice = {
+      type: "job_result" as const,
+      jobId: "pending-private-notice",
+      attempt: 1,
+      source: event,
+      text: "PRIVATE queued report",
+    };
+    await june.notify(notice);
+    const beforeForget = await june.snapshot();
+    expect(Object.values(beforeForget.pendingNotifications ?? {})).toEqual([
+      notice,
+    ]);
     store.deleteSource(source(event, scope).id);
     await june.forget(source(event, scope).id);
+    // Forget the new recoverable body but retain its content-free dedupe receipt.
+    const afterForget = await june.snapshot();
+    expect(afterForget.pendingNotifications).toEqual({});
+    expect(afterForget.ingress).toEqual(beforeForget.ingress);
+    // A late, previously unseen completion cannot re-admit a deleted original.
+    await june.notify({ ...notice, jobId: "late-private-notice" });
+    expect((await june.snapshot()).pendingNotifications).toEqual({});
     pending.resolve({
       text: "PRIVATE generated leak",
       reaction: "eyes",

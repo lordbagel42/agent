@@ -1258,6 +1258,20 @@ describe("separate coding supervisor", () => {
       // Tombstoning commits first; runtime cleanup may fail or be delayed.
       store.deleteSource("ancestor");
       if (cleanup) await june.forget("ancestor");
+      expect(store.source(audience, `live:${source.id}`)).toBeDefined();
+      const lateId = createHash("sha256")
+        .update(JSON.stringify(["job", id, 2]))
+        .digest("hex");
+      await june.notify({
+        type: "job_result",
+        jobId: id,
+        attempt: 2,
+        source,
+        text: "Late ANCESTOR-derived report with a still-live original",
+      });
+      const rejectedAdmission = await june.snapshot();
+      expect(rejectedAdmission.pendingNotifications?.[lateId]).toBeUndefined();
+      expect(rejectedAdmission.ingress?.receipts[lateId]).toBeUndefined();
       await expect
         .poll(
           async () => (await june.snapshot()).deliveries[deliveryId]?.result,
@@ -1387,12 +1401,22 @@ describe("separate coding supervisor", () => {
         await expect
           .poll(
             async () =>
-              Object.values((await june.snapshot()).events).filter(
-                (e) => e.done,
-              ).length,
+              (await client.job.getOrCreate(["raygen", id]).snapshot()).status,
             { timeout: 15000 },
           )
-          .toBe(4);
+          .toBe("completed");
+        // Deleted-derived completions are now refused before inbox persistence,
+        // rather than recorded as a fourth turn and suppressed at inference.
+        await june.notify({
+          type: "job_result",
+          jobId: id,
+          attempt: 1,
+          source,
+          text: "DELETED REPORT",
+        });
+        expect(
+          Object.values((await june.snapshot()).events).filter((e) => e.done),
+        ).toHaveLength(3);
         expect(
           modelRequests.some((r) => r.system.includes("DELETED REPORT")),
         ).toBe(false);

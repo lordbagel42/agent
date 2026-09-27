@@ -273,7 +273,7 @@ export function createWakeupActor(
                     await step
                       .client<JuneClientRegistry>()
                       .conversation.getOrCreate(["private", deps.owner.id])
-                      .send("inbox", {
+                      .notify({
                         type: "wakeup",
                         source: job.source,
                         wakeup: {

@@ -157,9 +157,12 @@ conversationConfig.createVars = async (c, input) => {
       await vars.persist();
       if (
         process.env.FIXTURE_PHASE === "interrupt" &&
-        Object.values(c.state.pendingInputs ?? {}).some(
+        (Object.values(c.state.pendingInputs ?? {}).some(
           (event) => event.id === "Ev-admission",
-        )
+        ) ||
+          Object.values(c.state.pendingNotifications ?? {}).some(
+            (input) => input.source.id === "Ev-admission",
+          ))
       ) {
         process.send?.({ kind: "admission" });
         await new Promise<never>(() => {});

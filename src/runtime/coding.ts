@@ -649,7 +649,7 @@ export function createCodingActor(
               await step
                 .client<JuneRegistry>()
                 .conversation.getOrCreate(["private", step.key[0] ?? ""])
-                .send("inbox", {
+                .notify({
                   type: "job_result",
                   jobId: proposal.id,
                   attempt: attempts,

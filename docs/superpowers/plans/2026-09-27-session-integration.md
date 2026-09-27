@@ -56,11 +56,21 @@ legacy -> draining(epoch, barrier, frozen legacy admissions, coverage, holds)
        -> sessions(epoch, evidence-backed certificate)
 ```
 
-- [ ] Persist canonical identities, recoverable bodies, first host receipt time and immutable lane before acknowledging every new input, including worker/coding/wakeup notifications. Adopt legacy IDs and Slack aliases; consult tombstones before admitting duplicates.
+- [x] Persist prospective canonical identities, recoverable bodies and immutable first host receipt time for owner messages and worker/coding/wakeup notifications. Preserve existing IDs/Slack aliases and reject tombstoned or stale notification provenance before retention. Recover the save/publication gap without refreshing receipts; forgetting removes pending bodies but keeps content-free deduplication.
+- [ ] Assign an immutable legacy/session lane before acknowledging input. Existing direct-queue callbacks and old pending messages without host receipt times remain explicitly legacy; do not manufacture historical receipt or effect coverage.
 - [ ] Fence new legacy admission under the existing receive serializer, repair saved legacy publication gaps, then enqueue one stable barrier. New input waits durably without blocking ingress on the whole drain.
 - [ ] Add a post-receive workflow version branch for routing control. Old iterations retain their original journal path; no retroactive effect invocation or successful receipt is manufactured.
 - [ ] Require the exact barrier, all frozen admissions, complete historical effect coverage, no live/uncertain effects or pending retries, and acknowledged archival coverage before activation. Missing historical coverage remains held. Re-published legacy admissions behind the token still prevent activation.
 - [ ] Expose bounded hold reasons through owner-private inspection. Keep inspection read-only; it cannot clear, retry or reclassify an effect.
+
+Prospective admission alone is not a migration certificate. It does not change
+session routing or certify existing model/web invocations or delivery outcomes.
+The native-engine crash fixture covers both human and completion admission saved
+before queue publication. Deletion checks cover stale transitive report context
+and a callback admitted between frozen forget targets and ledger tombstoning;
+cleanup matches those callbacks to the frozen jobs/workers/origins, preserving
+unrelated fresh work. Legacy `##` callbacks are acknowledged without retaining or
+publishing the excluded input.
 
 ## Task 4: Distinct activity actors and late results
 

@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -168,23 +169,48 @@ it.for(["before-session", "after-session"])(
     expect(beforeCrash.threadId).toBe(
       boundary === "before-session" ? undefined : "T-fixture-saved",
     );
-    // The receive action is deliberately held just after its durable save.
-    void june
-      .receive({
-        ...source,
-        id: "Ev-admission",
-        messageId: "123.789",
-        text: "One more thing before you reply.",
-      })
-      .catch(() => {});
+    // Both admission paths survive a crash between save and queue publication.
+    const admittedSource = {
+      ...source,
+      id: "Ev-admission",
+      messageId: "123.789",
+      text: "One more thing before you reply.",
+    };
+    const notice = {
+      type: "job_result" as const,
+      jobId: "admission-notice",
+      attempt: 1,
+      source: admittedSource,
+      text: "Write-ahead notification.",
+    };
+    const humanAdmission = boundary === "before-session";
+    const admissionId = createHash("sha256")
+      .update(
+        JSON.stringify(
+          humanAdmission
+            ? ["slack", "T1", "Ev-admission"]
+            : ["job", "admission-notice", 1],
+        ),
+      )
+      .digest("hex");
+    const firstReceiptStart = Date.now();
+    void (
+      humanAdmission ? june.receive(admittedSource) : june.notify(notice)
+    ).catch(() => {});
     await expect
       .poll(() => messages.some((m) => m.kind === "admission"))
       .toBe(true);
-    expect(
-      Object.values((await june.snapshot()).events).some(
-        ({ event }) => event.id === "Ev-admission",
-      ),
-    ).toBe(false);
+    const beforeAdmissionCrash = await june.snapshot();
+    expect(beforeAdmissionCrash.events[admissionId]).toBeUndefined();
+    const admissionReceipt =
+      beforeAdmissionCrash.ingress?.receipts[admissionId];
+    expect(admissionReceipt?.kind).toBe(
+      humanAdmission ? "message" : "notification",
+    );
+    expect(admissionReceipt?.receivedAt).toBeGreaterThanOrEqual(
+      firstReceiptStart,
+    );
+    expect(admissionReceipt?.receivedAt).toBeLessThanOrEqual(Date.now());
     const exited = once(first, "exit");
     first.kill("SIGKILL");
     await exited;
@@ -396,6 +422,9 @@ it.for(["before-session", "after-session"])(
       source,
       text: notification.message.content.text,
     });
+    // Retry a lost admission ACK after restart without moving the first receipt.
+    if (humanAdmission) await june.receive(admittedSource);
+    else await june.notify(notice);
     await june.receive({
       ...source,
       id: "after-duplicate",
@@ -421,8 +450,19 @@ it.for(["before-session", "after-session"])(
         ({ role, content }) =>
           role === "user" && content === "One more thing before you reply.",
       ),
-    ).toHaveLength(1);
+    ).toHaveLength(humanAdmission ? 1 : 0);
+    if (!humanAdmission)
+      expect(
+        Object.values(recovered.deliveries).filter(
+          ({ message, result }) =>
+            message.content.type === "text" &&
+            message.content.text === notice.text &&
+            result?.status === "sent",
+        ),
+      ).toHaveLength(1);
+    expect(recovered.ingress?.receipts[admissionId]).toEqual(admissionReceipt);
     expect(recovered.pendingInputs).toEqual({});
+    expect(recovered.pendingNotifications).toEqual({});
     expect(
       messages.filter((message) => message.kind === "notification"),
     ).toHaveLength(1);

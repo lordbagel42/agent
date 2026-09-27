@@ -85,7 +85,9 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
   let cleanupCalls = 0;
   let modelCalls = 0;
   let failCleanup = false;
+  let failTargetCleanup = true;
   let rejectDelivery = false;
+  let pendingAtTargetCleanup: unknown;
   const registry = createJuneRegistry({
     owner,
     workflows: { tools: {} },
@@ -101,6 +103,10 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
         expect(scope).toBe(audience);
         expect(store.isDeleted(sourceId)).toBe(true);
         cleanupCalls++;
+        if (sourceId === "target" && failTargetCleanup) {
+          failTargetCleanup = false;
+          throw new Error("SYNTHETIC host cleanup unavailable");
+        }
         if (failCleanup) {
           // Longer than Rivet's default step deadline: the supervisor must
           // retain a usable started receipt rather than kill this conversation.
@@ -109,6 +115,8 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
         }
         // Exercise the same self-action used by the host callback, not a no-op.
         await june.forget(sourceId);
+        if (sourceId === "target")
+          pendingAtTargetCleanup = (await june.snapshot()).pendingNotifications;
       },
     },
     channels: {
@@ -140,6 +148,36 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
       },
     },
   });
+  const frozen = Promise.withResolvers<void>();
+  const resumeFreeze = Promise.withResolvers<void>();
+  t.onTestFinished(() => resumeFreeze.resolve());
+  let pauseFreeze = false;
+  const conversationConfig = registry.config.use.conversation.config;
+  if (
+    !("state" in conversationConfig) ||
+    !("createVars" in conversationConfig) ||
+    !conversationConfig.createVars
+  )
+    throw new Error("Missing conversation configuration");
+  conversationConfig.state.jobs["frozen-different-job"] = {
+    workspace: "fixture",
+    goal: "SYNTHETIC PRIVATE BODY target",
+  };
+  const createVars = conversationConfig.createVars;
+  conversationConfig.createVars = async (c, input) => {
+    const vars = await createVars(c, input);
+    return {
+      ...vars,
+      persist: async () => {
+        await vars.persist();
+        if (pauseFreeze && c.state.forgetCleanups?.['"target"']) {
+          pauseFreeze = false;
+          frozen.resolve();
+          await resumeFreeze.promise;
+        }
+      },
+    };
+  };
   const { client } = await setupTest(t, registry);
   const june = client.conversation.getOrCreate(["private", owner.id]);
   let sequence = 0;
@@ -161,18 +199,16 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
     const scope = routeEvent(event, owner);
     if (!scope) throw new Error("Missing fixture scope");
     const actor = client.conversation.getOrCreate(scope.key);
-    const done = Object.values((await actor.snapshot()).events).filter(
-      (e) => e.done,
-    ).length;
     await actor.send("inbox", { type: "event", event });
     await expect
       .poll(
         async () =>
-          Object.values((await actor.snapshot()).events).filter((e) => e.done)
-            .length,
+          Object.values((await actor.snapshot()).events).some(
+            (e) => e.done && e.event.id === event.id,
+          ),
         { timeout: 40000 },
       )
-      .toBe(done + 1);
+      .toBe(true);
     const content = sent.at(-1)?.content;
     return content?.type === "text" ? content.text : "";
   };
@@ -243,12 +279,62 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
 
   const fresh = await preview();
   const calls = modelCalls;
+  pauseFreeze = true;
+  const confirming = turn(`!forget-confirm ${fresh}`);
+  await frozen.promise;
+  expect(store.isDeleted("target")).toBe(false);
+  if (!lastEvent) throw new Error("Missing confirmation event");
+  const lateNotice = {
+    type: "job_result" as const,
+    jobId: "frozen-different-job",
+    attempt: 1,
+    // No matching frozen event: only the non-event job ID owns this cleanup.
+    source: {
+      ...lastEvent,
+      id: "unrecorded-job-original",
+      text: "SYNTHETIC PRIVATE saved worker source",
+    },
+    text: "SYNTHETIC PRIVATE completion between freeze and tombstone",
+  };
+  await june.notify(lateNotice);
+  const admittedDuringFreeze = await june.snapshot();
+  expect(
+    Object.values(admittedDuringFreeze.pendingNotifications ?? {}),
+  ).toEqual([lateNotice]);
+  const noticeId = Object.keys(
+    admittedDuringFreeze.pendingNotifications ?? {},
+  )[0];
+  if (!noticeId) throw new Error("Missing admitted notification");
+  const frozenTarget = admittedDuringFreeze.forgetCleanups?.['"target"'];
+  if (!frozenTarget || frozenTarget.completed)
+    throw new Error("Missing frozen cleanup");
+  expect(frozenTarget.eventIds).toContain(noticeId);
+  resumeFreeze.resolve();
+  expect(await confirming).toContain("cleanup completion is unconfirmed");
+  expect(cleanupCalls).toBe(1);
+  await expect
+    .poll(async () => (await june.snapshot()).events[noticeId]?.done)
+    .toBe(true);
+  const beforeRetry = (await june.snapshot()).events[noticeId]?.event;
+  if (beforeRetry?.type !== "message") throw new Error("Missing source record");
+  expect(beforeRetry.text).toBe(lateNotice.source.text);
   const result = await turn(`!forget-confirm ${fresh}`);
+  const cleaned = await june.snapshot();
+  const cleanedNotice = cleaned.events[noticeId]?.event;
+  if (cleanedNotice?.type !== "message")
+    throw new Error("Missing source record");
+  expect(cleanedNotice.text).toBe("");
+  // Inspect while the confirmation still owns the consumer: a later dequeue
+  // must not make a stale recoverable body look as though cleanup removed it.
+  expect(pendingAtTargetCleanup).toEqual({});
+  expect(cleaned.pendingNotifications).toEqual({});
+  expect(cleaned.ingress).toEqual(admittedDuringFreeze.ingress);
+  expect(cleaned.forgottenEvents).toContain("frozen-different-job");
   expect(result).toContain("host cleanup completed");
   expect(result).toContain("physicalPurge:false");
   expect(result).toContain("journals, backups, or already-sent");
   expect(modelCalls).toBe(calls);
-  expect(cleanupCalls).toBe(1);
+  expect(cleanupCalls).toBe(2);
   expect(store.isDeleted("target")).toBe(true);
   expect(store.isDeleted("new-dependent")).toBe(true);
   expect(store.retrieveSession(audience, sessionId)).toEqual({
@@ -261,7 +347,7 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
     "completed",
   );
   expect(await turn(`!forget-confirm ${fresh}`)).toContain("already completed");
-  expect(cleanupCalls).toBe(1);
+  expect(cleanupCalls).toBe(2);
 
   // Hidden changes deliberately do not alter the scoped fingerprint. Both the
   // issuance and confirmation paths must also check host-only confirmability.
@@ -286,7 +372,7 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
   expect(refused).not.toContain("hidden-dependent");
   expect(refused).not.toContain("confirmable");
   expect(refused).not.toContain("fingerprint");
-  expect(cleanupCalls).toBe(1);
+  expect(cleanupCalls).toBe(2);
 
   const interrupted = await preview("interrupted");
   const library = client.workflowLibrary.getOrCreate([owner.id]);
@@ -332,7 +418,7 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
   expect((await june.snapshot()).forgetConfirmations).toEqual(
     interruptedState.forgetConfirmations,
   );
-  expect(cleanupCalls).toBe(2);
+  expect(cleanupCalls).toBe(3);
   expect(store.source(audience, "interrupted")).toBeUndefined();
   action = { text: "Fresh post-deletion reply" };
   await turn("Fresh post-deletion request");
@@ -343,11 +429,11 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
     workflow("define", "fresh"),
     store.deletionRevision(),
   );
-  expect(cleanupCalls).toBe(2);
+  expect(cleanupCalls).toBe(3);
   expect(await turn(`!forget-confirm ${interrupted}`)).toContain(
     "host cleanup completed",
   );
-  expect(cleanupCalls).toBe(3);
+  expect(cleanupCalls).toBe(4);
   const after = await june.snapshot();
   expect(after.forgetConfirmations?.[interrupted]?.status).toBe("completed");
   if (!lastEvent) throw new Error("Missing resume event");
@@ -382,13 +468,13 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
   expect(await turn(`!forget-confirm ${interrupted}`)).toContain(
     "already completed",
   );
-  expect(cleanupCalls).toBe(3);
+  expect(cleanupCalls).toBe(4);
   action = { text: "", inspection: "forgetting" };
   const completedInspection = await turn("Check forgetting status again");
   expect(completedInspection).toContain('"started":0,"completed":2');
   expect(completedInspection).toContain("physicalPurge:false");
   expect(completedInspection).not.toContain(interrupted);
-  expect(cleanupCalls).toBe(3);
+  expect(cleanupCalls).toBe(4);
   expect(JSON.stringify(sent)).not.toContain("SYNTHETIC PRIVATE");
 
   const beforeDelete = await preview("before-delete");
@@ -405,19 +491,19 @@ it("requires exact owner confirmation and resumes frozen cleanup without erasing
   expect(await turn(`!forget-confirm ${beforeDelete}`)).toContain(
     "fresh exact preview",
   );
-  expect(cleanupCalls).toBe(3);
+  expect(cleanupCalls).toBe(4);
   expect(store.isDeleted("before-delete")).toBe(false);
   action = { text: "", inspection: "forgetting" };
   const preDeleteInspection = await turn("Inspect the interrupted deletion");
   expect(preDeleteInspection).toContain(`"token":"${beforeDelete}"`);
   expect(preDeleteInspection).toContain('"logicalDeletion":"unconfirmed"');
   expect(preDeleteInspection).toContain('"recovery":"fresh-preview"');
-  expect(cleanupCalls).toBe(3);
+  expect(cleanupCalls).toBe(4);
   const refreshed = await preview("before-delete");
   expect(await turn(`!forget-confirm ${refreshed}`)).toContain(
     "host cleanup completed",
   );
-  expect(cleanupCalls).toBe(4);
+  expect(cleanupCalls).toBe(5);
   expect(store.isDeleted("before-delete")).toBe(true);
   expect(JSON.stringify(sent)).not.toContain("SYNTHETIC PRIVATE");
 }, 90000);

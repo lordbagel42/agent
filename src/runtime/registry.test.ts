@@ -705,6 +705,22 @@ describe("Rivet conversation workflow", () => {
     });
     const { client } = await setupTest(t, registry);
     const june = client.conversation.getOrCreate(["private", "raygen"]);
+    const excludedNotice = {
+      type: "job_result" as const,
+      jobId: "legacy-excluded-job",
+      attempt: 1,
+      source: { ...message, text: "## ignored job source" },
+      text: "Excluded completion report",
+    };
+    await june.notify(excludedNotice);
+    await june.notify(excludedNotice);
+    expect((await june.snapshot()).pendingNotifications).toBeUndefined();
+    expect((await june.snapshot()).ingress).toBeUndefined();
+    await expect(
+      client.conversation
+        .getOrCreate(["private", "different-owner"])
+        .notify(excludedNotice),
+    ).rejects.toThrow("An internal error occurred");
     for (const [id, text, botMentioned] of [
       ["ignored", "## <@U_BOT> !stop", true],
       ["stop", "<@U_BOT> !stop", true],

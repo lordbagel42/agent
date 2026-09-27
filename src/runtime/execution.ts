@@ -769,7 +769,7 @@ export function createExecutionActor(
                 .conversation.getOrCreate(
                   request.context?.conversationKey ?? scope.key,
                 )
-                .send("inbox", {
+                .notify({
                   type: "execution_result",
                   agentId: step.key[1] ?? "",
                   requestId: id,
