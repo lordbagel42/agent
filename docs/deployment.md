@@ -282,12 +282,13 @@ claim that it is currently running**. `received`, `activating`, `healthy`,
 `reconciled` have distinct meanings. Check the first returned sequence for a
 cursor gap; older records remain in root-only SQLite, not in this bounded feed.
 
-No raw commit messages, source text, subprocess output, credentials or arbitrary
-error strings enter the feed. June can identify the exact change by its revision;
-reading its private diff requires existing repository-read permission. Events
-are evidence, not instructions, deployment authority or permission to notify new
-channels. Consumer cursors and any notification delivery intent belong in June's
-durable journal, with the existing audience/send restrictions.
+No source text, command diagnostics, credentials or arbitrary error strings enter
+the feed. The optional repository snapshot below adds bounded commit titles and
+descriptions; reading a private diff still requires existing repository-read
+permission. Events and commit text are data, not instructions, deployment
+authority or permission to notify new channels. Consumer cursors and any
+notification delivery intent belong in June's durable journal, with the existing
+audience/send restrictions.
 
 ### June's deployment tracking
 
@@ -304,6 +305,47 @@ Use `action: "inspect"` with an exact revision to inspect that candidate, or
 The host reads the existing protected controller feed and sends the bounded
 receipt directly through June's normal durable delivery workflow. The request
 and receipt here are an inspection lookup, not a second deployment queue.
+
+The same directive answers repository-stat questions: the optional
+`repositorySnapshot` reports the last fetched `main` revision, its fetch time,
+and `totalCommitCount`. This is the complete commit graph reachable from that
+exact head, including merged history and merge commits, **not** all branches or
+the number of deployment events. A shallow checkout reports a null/unknown total
+rather than presenting its partial history as a total.
+
+Commit metadata covers the nine most recent commits reachable from that head
+plus the controller's last healthy revision (up to ten unique commits). Inspection
+with `revision: null` shows the main head's title and description; an exact SHA
+shows that commit's metadata if retained. An empty description is distinguished
+from unavailable metadata. Titles
+are capped at 256 UTF-8 bytes, descriptions at 2,048, with explicit truncation;
+the whole feed is bounded to 256 KiB. Inspection receipts may further shorten
+commit text with a display-truncation notice to fit WhatsApp's 4,096-code-point
+limit, preserving deployment evidence and repository counts. Text is quoted and
+treated as untrusted repository data, never instructions or health evidence.
+It is available for authenticated owner requests and through the existing
+owner-authenticated `/operator/deployment/events` endpoint. As with status
+inspection, the receipt goes directly to the requesting conversation, including
+channels. June is warned that commit descriptions may contain sensitive details
+and must consider the audience before invoking, preferring a DM for unknown or
+sensitive content under the disclosure guidance below. Guests cannot invoke it.
+It is not added to GitHub check reports or deployment wakeup payloads.
+
+Metadata is read locally using the controller's existing read-only Git checkout;
+June receives no GitHub credentials or new network capability. Collection happens
+after deployment processing, outside drain/activation/rollback. Failure retains
+the prior snapshot and its original timestamp; after a controller restart it is
+unknown until a successful collection. Snapshot time is a successful fetch time,
+not a fresh observation when June reads the file.
+
+**Activation order:** deploy this compatible app reader first, then separately
+authorize installation of the updated controller and set
+`"repositoryMetadataFeed": true` in `/etc/june/deploy.json` under the normal
+deployment/operator lock. It defaults off because older readers reject additional
+feed keys. Pushing main does not install the controller or enable this field.
+Before downgrading to an older reader, disable the flag and republish the legacy
+feed. Without the extension, June explicitly reports metadata/count as unknown
+while existing deployment inspection continues to work.
 
 No release-request step exists or is needed. Trusted main is already the
 controller's release queue; inspect any relevant revision directly. Inspection

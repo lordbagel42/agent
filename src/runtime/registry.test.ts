@@ -563,6 +563,19 @@ describe("Rivet conversation workflow", () => {
       repository: "lordbagel42/agent",
       branch: "main",
       lastHealthyRevision: "a".repeat(40),
+      repositorySnapshot: {
+        observedAt: 1500,
+        revision,
+        totalCommitCount: 73,
+        commits: [
+          {
+            revision,
+            title: "fix(private): inspect repository metadata",
+            description: "Owner-only commit description.",
+            truncated: false,
+          },
+        ],
+      },
       blocked: false,
       events: [],
     };
@@ -675,9 +688,15 @@ describe("Rivet conversation workflow", () => {
         `Running revision: ${feed.lastHealthyRevision}`,
       );
       expect(content.text).toContain("not individual check logs");
-      expect(content.text.length).toBeLessThan(3500);
+      expect(content.text).toContain("Total commit count: 73");
+      expect(content.text).toContain("Owner-only commit description.");
+      expect(content.text).toContain(
+        "fix(private): inspect repository metadata",
+      );
+      expect([...content.text].length).toBeLessThanOrEqual(4096);
     }
     expect(requests[0]?.system).toContain("Deployment tracking");
+    expect(requests[0]?.system).toContain("total commit count");
     expect(JSON.stringify(sent[0]?.content)).not.toContain("request recorded");
     expect(JSON.stringify(sent[4]?.content)).toContain(
       "Controller verified this revision healthy at",
@@ -717,6 +736,10 @@ describe("Rivet conversation workflow", () => {
     expect(JSON.stringify(sent[7]?.content)).toContain(
       "Controller verified this revision healthy at",
     );
+    expect(JSON.stringify(sent[7]?.content)).toContain(
+      "Total commit count: 73",
+    );
+    expect(requests[7]?.system).toContain("without a review pass");
     expect(sent[7]?.address.conversationId).toBe("C1");
     await client.conversation
       .getOrCreate(["guest", "slack", "T1", "C1", "", "U2"])
@@ -736,6 +759,11 @@ describe("Rivet conversation workflow", () => {
     expect(requests[8]?.releaseAvailable).toBe(false);
     expect(JSON.stringify(sent[8]?.content)).toContain("verified owner");
     expect(JSON.stringify(sent[8]?.content)).not.toContain(running);
+    expect(JSON.stringify(sent[8]?.content)).not.toContain("Owner-only commit");
+    expect(JSON.stringify(sent[8]?.content)).not.toContain("fix(private)");
+    expect(JSON.stringify(sent[8]?.content)).not.toContain(
+      "Total commit count",
+    );
     expect(sent[0]?.address.threadId).toBe("123.0");
     for (const release of [
       { action: "approve", revision },

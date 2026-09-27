@@ -100,9 +100,12 @@ class Store:
         controller_revision=None,
         *,
         staging_recovery_feed=False,
+        repository_metadata_feed=False,
     ):
         self.feed, self.feed_gid = feed, feed_gid
         self.staging_recovery_feed = staging_recovery_feed
+        self.repository_metadata_feed = repository_metadata_feed
+        self.repository_snapshot = None
         self.initial = revision(initial)
         self.controller_revision = (
             revision(controller_revision) if controller_revision is not None else None
@@ -233,6 +236,11 @@ class Store:
                 "blocked": bool(self.get("blocked")),
                 "events": events,
                 **({"lastStageRecovery": json.loads(recovery)} if recovery else {}),
+                **(
+                    {"repositorySnapshot": self.repository_snapshot}
+                    if self.repository_metadata_feed and self.repository_snapshot
+                    else {}
+                ),
             },
             0o640,
             self.feed_gid,
@@ -243,6 +251,7 @@ class Deployer:
     def __init__(self, host, store, statuses=None):
         self.host, self.store = host, store
         self.statuses = statuses
+        self.repository_observation = None
         if store.get("intent") and not store.get("blocked"):
             store.block(store.get("intent"), "activation_unknown")
 
@@ -257,6 +266,7 @@ class Deployer:
     def observe(self):
         h, s = self.host, self.store
         head = revision(h.fetch())
+        self.repository_observation = (head, time.time_ns() // 1_000_000)
         before = s.get("observed")
         saved = s.get("queue")
         admission = json.loads(saved) if saved else None
@@ -336,10 +346,23 @@ class Deployer:
             self.store.block(target, "resume_failed")
 
     def tick(self):
+        self.repository_observation = None
         try:
             self.store.stage_recovery(self.host.recover_stages())
             self.deploy()
         finally:
+            # Optional read-only metadata must never interrupt drain/activation
+            # or change deployment outcomes. Keep the last snapshot on failure;
+            # its fetch timestamp remains unchanged, never falsely refreshed.
+            if self.store.repository_metadata_feed and self.repository_observation:
+                try:
+                    head, observed_at = self.repository_observation
+                    self.store.repository_snapshot = self.host.repository_snapshot(
+                        head, self.store.get("active"), observed_at
+                    )
+                    self.store.publish()
+                except Exception:  # noqa: BLE001 - no Git output or errors in the feed
+                    print("repository_metadata_failed: will retry", flush=True)
             if self.statuses:
                 self.statuses.flush()
 
@@ -744,6 +767,47 @@ class Host:
 
     def committed_at(self, commit):
         return int(self.git("show", "-s", "--format=%ct", revision(commit))) * 1000
+
+    def repository_snapshot(self, head, active, observed_at):
+        head, active = revision(head), revision(active)
+        # Count the complete graph reachable from the fetched main SHA, including
+        # merged history but not unrelated refs. A shallow count is not a total.
+        count = (
+            int(self.git("rev-list", "--count", head))
+            if self.git("rev-parse", "--is-shallow-repository") == "false"
+            else None
+        )
+        commits = []
+        recent = self.git("rev-list", "--max-count=9", head).splitlines()
+        for commit in dict.fromkeys([head, active, *recent]):
+            message = self.git(
+                "show",
+                "-s",
+                "--encoding=UTF-8",
+                "--format=%s%x00%b",
+                revision(commit),
+                binary=True,
+            ).decode("utf-8", errors="replace")
+            title, description = message.split("\0", 1)
+            title, description = title.strip(), description.strip()
+            bounded = [
+                value.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+                for value, limit in ((title, 256), (description, 2048))
+            ]
+            commits.append(
+                {
+                    "revision": commit,
+                    "title": bounded[0],
+                    "description": bounded[1],
+                    "truncated": bounded != [title, description],
+                }
+            )
+        return {
+            "observedAt": observed_at,
+            "revision": head,
+            "totalCommitCount": count,
+            "commits": commits,
+        }
 
     def stage_record(self, stage):
         return self.stage_root / f".{stage.name}.json"
@@ -1380,6 +1444,7 @@ def main():
             pwd.getpwnam("june").pw_gid,
             controller_revision=installed_controller_revision(config.get("controller")),
             staging_recovery_feed=config.get("stagingRecoveryFeed") is True,
+            repository_metadata_feed=config.get("repositoryMetadataFeed") is True,
         )
         statuses = GitHubStatuses(store)
         loop = Deployer(host, store, statuses)
