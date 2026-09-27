@@ -2689,6 +2689,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                     const result =
                                       await reflection.requestSkillEvaluation(
                                         checked.skillEvaluationRequest,
+                                        deletionRevision,
                                       );
                                     text =
                                       result.status === "queued"

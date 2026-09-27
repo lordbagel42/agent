@@ -902,6 +902,7 @@ export class McpConnections {
                 reflectionRequestAvailable: false,
                 reflectionMemoryAvailable: false,
                 reflectionPersonalitySuggestionAvailable: false,
+                skillEvaluationRequestAvailable: false,
                 juryAvailable: false,
                 rivetAvailable: false,
                 browserProposalAvailable: false,

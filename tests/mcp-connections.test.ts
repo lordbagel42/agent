@@ -687,6 +687,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.reflectionRequestAvailable = true;
   f.request.reflectionMemoryAvailable = true;
   f.request.reflectionPersonalitySuggestionAvailable = true;
+  f.request.skillEvaluationRequestAvailable = true;
   f.request.personalityPreviewAvailable = true;
   f.request.forgetPreviewAvailable = true;
   let evidence = "";
@@ -793,6 +794,24 @@ test("discovery grants nothing, read results are transient and credentials stay 
     "reflectionPersonalitySuggestion",
   );
   expect(f.request.reflectionPersonalitySuggestionAvailable).toBe(true);
+  expect(synthesis.skillEvaluationRequestAvailable).toBe(false);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "skillEvaluationRequest",
+  );
+  expect(() =>
+    parseReply(
+      JSON.stringify({
+        text: "",
+        skillEvaluationRequest: {
+          candidateId: "a".repeat(64),
+          heldOutEvidenceIds: ["held-a", "held-b"],
+        },
+      }),
+      [],
+      synthesis,
+    ),
+  ).toThrow();
+  expect(f.request.skillEvaluationRequestAvailable).toBe(true);
   expect(synthesis.personalityPreviewAvailable).toBe(false);
   expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
     "personalityPreview",

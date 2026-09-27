@@ -788,6 +788,7 @@ export function createReflectionActor(
       requestSkillEvaluation: async (
         c,
         input: NonNullable<CompanionReply["skillEvaluationRequest"]>,
+        expectedDeletionRevision: number,
       ) => {
         if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
           throw new Error("Wrong reflection owner");
@@ -813,6 +814,14 @@ export function createReflectionActor(
           throw new Error("Invalid skill evaluation request");
         // Capture the operation epoch before migration/retrieval can yield.
         const epoch = c.state.epoch;
+        // The caller's frozen turn revision must survive the RPC gap. Capturing
+        // the store revision on entry would reauthorize deleted originating input.
+        const current = () =>
+          expectedDeletionRevision === (deps.deletionRevision?.() ?? 0) &&
+          epoch === c.state.epoch &&
+          !c.state.liveActive &&
+          !isQuiet(Date.now(), deps.policy.quiet);
+        if (!current()) return { status: "unavailable" as const };
         const scope = JSON.stringify(["private", deps.ownerId]);
         const heldOutEvidenceIds = [...input.heldOutEvidenceIds].sort();
         const read = await evaluationInput(
@@ -821,12 +830,7 @@ export function createReflectionActor(
           scope,
           heldOutEvidenceIds,
         );
-        if (
-          !read?.isCurrent() ||
-          epoch !== c.state.epoch ||
-          c.state.liveActive ||
-          isQuiet(Date.now(), deps.policy.quiet)
-        )
+        if (!read?.isCurrent() || !current())
           return { status: "unavailable" as const };
         if (
           c.state.reflection.requests.some(

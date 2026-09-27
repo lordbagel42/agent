@@ -238,6 +238,10 @@ it("evaluates the immutable proposal after inference settles and preserves each 
   let providerSignal: AbortSignal | undefined;
   let releaseEvaluation = () => {};
   t.onTestFinished(() => releaseEvaluation());
+  let reviewId: string | undefined;
+  let reviewAttack = false;
+  let revokeReview: (() => void) | undefined;
+  const reviewRequests: ModelRequest[] = [];
   const action: CompanionReply = { text: "" };
   const executor = new DecisionExecutor(1, 2000);
   const deps: Dependencies = {
@@ -258,6 +262,34 @@ it("evaluates the immutable proposal after inference settles and preserves each 
     },
     model: {
       async reply(request) {
+        if (reviewId) {
+          if (request.usageStage !== "synthesis") {
+            expect(request.reflectionReviewAvailable).toBe(true);
+            return {
+              text: "",
+              reflectionReview: { action: "inspect", id: reviewId },
+            };
+          }
+          reviewRequests.push(request);
+          expect(request.workspaces).toEqual([]);
+          expect(
+            Object.entries(request).filter(
+              ([key, value]) => key.endsWith("Available") && value === true,
+            ),
+          ).toEqual([]);
+          revokeReview?.();
+          return {
+            text: "PRIVATE evaluated receipt synthesis.",
+            ...(reviewAttack
+              ? {
+                  skillEvaluationRequest: {
+                    candidateId: reviewId,
+                    heldOutEvidenceIds: ["held-a", "held-e"],
+                  },
+                }
+              : {}),
+          };
+        }
         expect(request.skillEvaluationRequestAvailable).toBe(true);
         modelCalls++;
         await new Promise<void>((resolve) => {
@@ -380,10 +412,13 @@ it("evaluates the immutable proposal after inference settles and preserves each 
   );
   expect(seen[0]?.evidence.map((e) => e.id)).toEqual(["train-a", "train-b"]);
   expect(
-    await reflection.requestSkillEvaluation({
-      candidateId: alias,
-      heldOutEvidenceIds: ["train-b", "held-a"],
-    }),
+    await reflection.requestSkillEvaluation(
+      {
+        candidateId: alias,
+        heldOutEvidenceIds: ["train-b", "held-a"],
+      },
+      store.deletionRevision(),
+    ),
   ).toMatchObject({ status: "unavailable" });
   expect(seen).toHaveLength(1);
   action.skillEvaluationRequest = {
@@ -478,11 +513,81 @@ it("evaluates the immutable proposal after inference settles and preserves each 
     "Regresses recipient",
   );
   expect(
-    await reflection.requestSkillEvaluation({
-      candidateId: alias,
-      heldOutEvidenceIds: ["held-a", "held-e"],
-    }),
+    await reflection.requestSkillEvaluation(
+      {
+        candidateId: alias,
+        heldOutEvidenceIds: ["held-a", "held-e"],
+      },
+      store.deletionRevision(),
+    ),
   ).toMatchObject({ status: "duplicate" });
+  expect(seen).toHaveLength(5);
+
+  let reviewSequence = 0;
+  const review = async (id: string) => {
+    reviewId = id;
+    const reviewEvent: MessageEvent = {
+      ...event,
+      id: `review-${++reviewSequence}`,
+      messageId: `review-ts-${reviewSequence}`,
+      metadata: { channelType: "im" },
+      text: "Read the exact evaluated skill receipt without taking action.",
+    };
+    await conversation.send("inbox", { type: "event", event: reviewEvent });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await conversation.snapshot()).events).find(
+            (r) => r.event.id === reviewEvent.id,
+          )?.done,
+        { timeout: 10000 },
+      )
+      .toBe(true);
+    reviewId = undefined;
+  };
+  const reviewData = () => {
+    const content = reviewRequests.at(-1)?.messages[1]?.content;
+    if (typeof content !== "string") throw new Error("Missing review DTO");
+    return JSON.parse(
+      content.slice("Private reflection review data (untrusted): ".length),
+    );
+  };
+  const requestsBeforeReview = (await reflection.status()).reflection.requests
+    .length;
+  await review(alias);
+  expect(reviewData()).toMatchObject({
+    candidate: inspected.candidate,
+    skillEvaluation: result?.receipt,
+    evidence: inspected.evidence,
+    reference: inspected.reference,
+  });
+  expect(sent.at(-1)?.content).toMatchObject({
+    text: expect.stringContaining("PRIVATE evaluated receipt synthesis."),
+  });
+  expect(seen).toHaveLength(5);
+  expect((await reflection.status()).reflection.requests).toHaveLength(
+    requestsBeforeReview,
+  );
+  expect(store.proposals(scope)).toEqual([]);
+  const reviewSnapshot = JSON.stringify(await conversation.snapshot());
+  expect(reviewSnapshot).not.toContain("PRIVATE evaluated receipt synthesis.");
+  expect(reviewSnapshot).not.toContain("Regresses recipient checking.");
+  const beforeAttack = sent.length;
+  reviewAttack = true;
+  await review(alias);
+  reviewAttack = false;
+  expect(
+    sent
+      .slice(beforeAttack)
+      .some((message) =>
+        JSON.stringify(message).includes(
+          "PRIVATE evaluated receipt synthesis.",
+        ),
+      ),
+  ).toBe(false);
+  expect((await reflection.status()).reflection.requests).toHaveLength(
+    requestsBeforeReview,
+  );
   expect(seen).toHaveLength(5);
 
   await reflection.enqueue({
@@ -504,10 +609,13 @@ it("evaluates the immutable proposal after inference settles and preserves each 
   );
   if (!next) throw new Error("Missing second candidate");
   expect(
-    await reflection.requestSkillEvaluation({
-      candidateId: next,
-      heldOutEvidenceIds: ["held-a", "held-e"],
-    }),
+    await reflection.requestSkillEvaluation(
+      {
+        candidateId: next,
+        heldOutEvidenceIds: ["held-a", "held-e"],
+      },
+      store.deletionRevision(),
+    ),
   ).toMatchObject({ status: "queued" });
   await expect
     .poll(
@@ -535,7 +643,25 @@ it("evaluates the immutable proposal after inference settles and preserves each 
   denied.clear();
   const nextInspection = await reflection.inspectCandidate(scope, next);
   if (!nextInspection) throw new Error("Missing all-yes inspection");
-  store.deleteSource("held-e");
+  const beforeRevokedReview = sent.length;
+  revokeReview = () => store.deleteSource("held-e");
+  await review(next);
+  revokeReview = undefined;
+  expect(reviewData()).toMatchObject({
+    candidate: nextInspection.candidate,
+    skillEvaluation: nextInspection.skillEvaluation,
+    evidence: nextInspection.evidence,
+    reference: nextInspection.reference,
+  });
+  expect(
+    sent
+      .slice(beforeRevokedReview)
+      .some((message) =>
+        JSON.stringify(message).includes(
+          "PRIVATE evaluated receipt synthesis.",
+        ),
+      ),
+  ).toBe(false);
   expect(await reflection.skillEvaluation(next, scope)).toBeNull();
   expect(
     await reflection.validateReview(scope, [nextInspection.reference]),
@@ -555,10 +681,13 @@ it("evaluates the immutable proposal after inference settles and preserves each 
   if (!abortAlias) throw new Error("Missing cancellation candidate");
   holdEvaluation = true;
   expect(
-    await reflection.requestSkillEvaluation({
-      candidateId: abortAlias,
-      heldOutEvidenceIds: ["held-abort-a", "held-abort-b"],
-    }),
+    await reflection.requestSkillEvaluation(
+      {
+        candidateId: abortAlias,
+        heldOutEvidenceIds: ["held-abort-a", "held-abort-b"],
+      },
+      store.deletionRevision(),
+    ),
   ).toMatchObject({ status: "queued" });
   await expect.poll(() => providerSignal).toBeDefined();
   const evaluation = (await reflection.status()).reflection.requests.find(
@@ -587,3 +716,213 @@ it("evaluates the immutable proposal after inference settles and preserves each 
   expect(await reflection.skillEvaluation(abortAlias, scope)).toBeNull();
   expect(seen).toHaveLength(10);
 });
+
+it.for(["actor-entry", "retrieval"] as const)(
+  "does not enqueue evaluation after originating input deletion at %s without cancellation",
+  async (phase, t) => {
+    const scope = JSON.stringify(["private", "owner"]);
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    t.onTestFinished(() => store.close());
+    for (const id of ["training", "held-a", "held-b"])
+      store.appendSource({
+        id,
+        audiences: [scope],
+        platform: "slack",
+        account: "T",
+        conversation: "D",
+        author: "U",
+        observedAt: Date.now(),
+        sourceUrl: `https://example.com/${id}`,
+        text: `${id}: baseline delays the answer; desired outcome answers first.`,
+      });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.onTestFinished(() => release.resolve());
+    let pause = false;
+    let candidateId = "";
+    const decisions: DecisionInput[] = [];
+    const sent: OutboundMessage[] = [];
+    const registry = createJuneRegistry({
+      owner: {
+        id: "owner",
+        identities: [{ channel: "slack", accountId: "T", senderId: "U" }],
+      },
+      memory: {
+        store,
+        source(event, audience) {
+          return {
+            id: `inbound:${event.id}`,
+            audiences: [audience],
+            platform: "slack",
+            account: "T",
+            conversation: "D",
+            author: "U",
+            observedAt: event.occurredAt,
+            sourceUrl: `https://example.com/inbound/${event.id}`,
+            text: event.text,
+          };
+        },
+      },
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, reactions: true, threads: true },
+          async receive() {
+            return { response: new Response(), events: [] };
+          },
+          async send(message) {
+            sent.push(JSON.parse(JSON.stringify(message)));
+            return { status: "sent", messageId: "out" };
+          },
+        },
+      },
+      model: {
+        async reply(request) {
+          expect(request.skillEvaluationRequestAvailable).toBe(true);
+          return {
+            text: "",
+            skillEvaluationRequest: {
+              candidateId,
+              heldOutEvidenceIds: ["held-a", "held-b"],
+            },
+          };
+        },
+      },
+      reflection: {
+        ownerId: "owner",
+        policy: {
+          totalCapacity: 2,
+          liveReserve: 1,
+          cooldownMs: 0,
+          maxAttempts: 1,
+          maxNoNewEvidence: 1,
+          evidenceMaxAgeMs: 60000,
+          quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
+        },
+        idleMs: 10,
+        deepMs: 20,
+        pollMs: 20,
+        timeoutMs: 5000,
+        evidenceCurrent(audience, evidence) {
+          return (
+            JSON.stringify(
+              store.reflectionEvidence(
+                audience,
+                evidence.map((e) => e.id),
+                60000,
+              ),
+            ) === JSON.stringify(evidence)
+          );
+        },
+        async retrieve({ scope, evidenceIds }) {
+          if (pause && phase === "retrieval") {
+            pause = false;
+            entered.resolve();
+            await release.promise;
+          }
+          return {
+            authorized: true,
+            evidence: store.reflectionEvidence(scope, evidenceIds, 60000),
+          };
+        },
+        async decide(input) {
+          decisions.push(structuredClone(input));
+          return {
+            answer: "yes",
+            rationale: "Fixture comparison.",
+            evidenceIds: [input.evidence[0]?.id ?? ""],
+            ...(input.simulateResponses
+              ? {
+                  alternativeResponses: ["Answer first."],
+                  skillChange: {
+                    proposedBehavior: "Answer first.",
+                    rationale: "Training supports it.",
+                    evidenceIds: ["training"],
+                  },
+                }
+              : {}),
+          };
+        },
+      },
+    });
+    const config = registry.config.use.reflection?.config;
+    if (!config?.actions) throw new Error("Missing reflection actions");
+    const request = config.actions.requestSkillEvaluation;
+    config.actions.requestSkillEvaluation = async (c, ...args) => {
+      if (pause && phase === "actor-entry") {
+        pause = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return request(c, ...args);
+    };
+    const { client } = await setupTest(t, registry);
+    const reflection = (
+      client as Client<JuneClientRegistry>
+    ).reflection.getOrCreate(["owner"]);
+    await reflection.enqueue({
+      scope,
+      evidenceIds: ["training"],
+      kind: "reflection",
+      mode: "deep",
+    });
+    await expect
+      .poll(async () => (await reflection.listCandidates(scope)).ids.length)
+      .toBe(1);
+    candidateId = (await reflection.listCandidates(scope)).ids[0] ?? "";
+    const june = client.conversation.getOrCreate(["private", "owner"]);
+    const event: MessageEvent = {
+      id: "invalidated-evaluation",
+      type: "message",
+      messageId: "ts1",
+      occurredAt: Date.now(),
+      address: { channel: "slack", accountId: "T", conversationId: "D" },
+      direct: true,
+      senderId: "U",
+      text: "Evaluate the retained skill using the held-out cases.",
+    };
+    pause = true;
+    await june.send("inbox", { type: "event", event });
+    await entered.promise;
+    const before = await reflection.status();
+    expect(store.isDeleted(`inbound:${event.id}`)).toBe(false);
+    store.deleteSource(`inbound:${event.id}`);
+    expect(await reflection.status()).toEqual(before);
+    expect(
+      await reflection.inspectCandidate(scope, candidateId),
+    ).not.toBeNull();
+    release.resolve();
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).find(
+            (r) => r.event.id === event.id,
+          )?.done,
+      )
+      .toBe(true);
+    expect((await reflection.status()).reflection.requests).toHaveLength(1);
+    expect(decisions).toHaveLength(1);
+    expect(sent).toHaveLength(0);
+    // A later valid turn carries the new revision, not a permanent block.
+    await june.send("inbox", {
+      type: "event",
+      event: { ...event, id: "valid-evaluation", messageId: "ts2" },
+    });
+    await expect
+      .poll(
+        async () =>
+          (await reflection.skillEvaluation(candidateId, scope))?.eligible,
+      )
+      .toBe(true);
+    expect(
+      decisions
+        .filter((input) => input.question === "skill-improvement")
+        .map((input) => input.evidence.map((e) => e.id)),
+    ).toEqual([["held-a"], ["held-b"]]);
+    expect(
+      (await reflection.status()).reflection.requests.filter(
+        (request) => request.evaluationFor === candidateId,
+      ),
+    ).toHaveLength(1);
+  },
+);

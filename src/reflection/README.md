@@ -371,6 +371,11 @@ provider has never encountered the material.
 
 The host resolves the existing immutable `skillChange`, releases only the
 requesting inference's settled occupancy, and stages one request per candidate.
+The actor API `requestSkillEvaluation(input, expectedDeletionRevision)` requires
+the originating turn's frozen ledger revision. It rechecks that revision before
+retrieval and immediately before enqueue, so deletion of originating input or
+context blocks staging even when all candidate evidence is still current.
+MCP result-only synthesis does not advertise this action.
 Choosing a different held-out set cannot retry it. The existing reflection
 workflow owns idle delay, quiet hours, live preemption, capacity, cooldown,
 habituation and durable admission. It calls the shared settlement-aware
