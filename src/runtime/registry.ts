@@ -50,6 +50,7 @@ import type { WorkflowDependencies } from "../workflows/contracts.js";
 import {
   type CodingDependencies,
   codingJobMetadata,
+  codingJobReport,
   createCodingActor,
   DISABLED_CODING_RECOVERY,
 } from "./coding.js";
@@ -2050,6 +2051,68 @@ export function createJuneRegistry(deps: Dependencies) {
                                           !signal.aborted
                                         )
                                           text = `${heading}\nWorkspace diff (candidate file statuses only; not atomic or verified): ${JSON.stringify(summary)}\nA/M/D/T/U denote added/possibly-modified/deleted/type-changed/unmerged; ? means untracked. Stat-only changes can appear modified. Untracked directories are collapsed. Contents and submodule changes are omitted. No action was taken.`;
+                                      } else if (request.action === "report") {
+                                        const original =
+                                          step.state.memoryContexts?.[id];
+                                        const source =
+                                          state.proposal &&
+                                          deps.memory?.source(
+                                            state.proposal.source,
+                                            audience,
+                                          );
+                                        if (
+                                          !original &&
+                                          (deps.memory?.store.deletionRevision() ??
+                                            0) > 0
+                                        ) {
+                                          text =
+                                            "That saved report has no tracked source ancestry after a deletion. It is unavailable pending manual reconciliation.";
+                                        } else if (
+                                          !source ||
+                                          !deps.memory?.store.isDeleted(
+                                            source.id,
+                                          )
+                                        ) {
+                                          // Bind saved content to its original evidence, even
+                                          // when the new request no longer recalls that context.
+                                          if (deps.memory) {
+                                            step.state.memoryContexts ??= {};
+                                            step.state.memoryContexts[
+                                              eventId
+                                            ] ??= {
+                                              ...original,
+                                              sourceIds: [],
+                                              personality:
+                                                personalityDigest(audience),
+                                            };
+                                            const reference =
+                                              step.state.memoryContexts[
+                                                eventId
+                                              ];
+                                            reference.sourceIds = [
+                                              ...new Set([
+                                                ...reference.sourceIds,
+                                                ...(original?.sourceIds ?? []),
+                                              ]),
+                                            ];
+                                            reference.contextSourceIds = [
+                                              ...new Set([
+                                                ...(reference.contextSourceIds ??
+                                                  []),
+                                                ...(original?.contextSourceIds ??
+                                                  []),
+                                                ...(source ? [source.id] : []),
+                                              ]),
+                                            ];
+                                            await step.vars.persist();
+                                          }
+                                          if (
+                                            visible(id) &&
+                                            valid(step.state) &&
+                                            !signal.aborted
+                                          )
+                                            text = codingJobReport(id, state);
+                                        }
                                       } else {
                                         if (request.action === "cancel") {
                                           await job.cancel();

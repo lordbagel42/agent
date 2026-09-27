@@ -622,6 +622,20 @@ the summary is not proof of changed contents. Executable clean/process filters,
 split/sparse/v4 indexes, indexes over 4 MiB and malformed indexes make inspection
 unavailable rather than invoking filters, refreshing shared indexes or fetching.
 
+Ask June privately “show the saved report for coding job ID” to use
+`codingJob: {"action":"report","id":"<job-id-or-prefix>"}` with empty text and
+no other actions. This read returns at most 1,800 worker-report characters and
+500 saved supervisor/legacy-report characters, with explicit truncation markers.
+Worker claims remain unverified prose; separate verifier status, exit code, time
+and replay flag are saved command evidence only. Missing evidence is unknown,
+and neither completed status nor a passed/historical receipt proves current files,
+push or deployment. Retrieval runs no worker, verifier command or additional model pass.
+The original source dependencies follow the retained reply; tombstoned/stale or
+revoked jobs are unavailable. Legacy reports without tracked ancestry become
+unavailable after any source deletion, pending manual reconciliation. This is
+not arbitrary Amp-thread retrieval, and no report content enters public
+conversations or global personality.
+
 After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
 `!resume-stopped <job-prefix>` as an ordinary private message. Do not resume a

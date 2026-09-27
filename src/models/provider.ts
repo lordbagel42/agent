@@ -91,7 +91,7 @@ const companionReplySchema = z.strictObject({
     .optional(),
   codingJob: z
     .strictObject({
-      action: z.enum(["list", "inspect", "diff", "cancel"]),
+      action: z.enum(["list", "inspect", "diff", "report", "cancel"]),
       id: z
         .string()
         .regex(/^[a-f0-9]{12,64}$/)
@@ -380,7 +380,7 @@ export function replyJsonSchema(
               properties: {
                 action: {
                   type: "string",
-                  enum: ["list", "inspect", "diff", "cancel"],
+                  enum: ["list", "inspect", "diff", "report", "cancel"],
                 },
                 id: {
                   type: ["string", "null"],
@@ -390,7 +390,7 @@ export function replyJsonSchema(
               },
               required: ["action", "id"],
               description:
-                "Owner-private coding availability, durable job metadata, or cancellation request. Cancel is not proof of stoppage. Never approves, resumes, or launches work. Leave text empty and all other actions unset.",
+                "Owner-private coding availability, durable job metadata, bounded saved report, or cancellation request. report returns worker claims separately from saved verifier evidence; no verifier command runs. Cancel is not proof of stoppage. Never approves, resumes, or launches work. Leave text empty and all other actions unset.",
             },
           }
         : {}),

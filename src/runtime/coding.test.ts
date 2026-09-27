@@ -2400,4 +2400,258 @@ describe("separate coding supervisor", () => {
     expect(await request("inspect", prefix)).toContain(`"id":"${exact}"`);
     expect(launches).toBe(0);
   });
+
+  it("retrieves bounded reports only privately and suppresses deleted-source copies", async (t) => {
+    let action: CompanionReply = {
+      text: "",
+      coding: { workspace: "june", goal: "PRIVATE_GOAL" },
+    };
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    t.onTestFinished(() => store.close());
+    let launches = 0;
+    let checks = 0;
+    const { registry, manager, modelRequests } = await fixture(
+      t,
+      {
+        async run() {
+          launches++;
+          return {
+            threadId: "T-report",
+            report: `PRIVATE_WORKER_REPORT: everything passed. ${"x".repeat(2500)} OMITTED_TAIL`,
+          };
+        },
+      },
+      {
+        store,
+        source(event, audience) {
+          return {
+            id: event.id,
+            platform: "slack",
+            account: "T1",
+            conversation: "D1",
+            author: "U1",
+            audiences: [audience],
+            observedAt: event.occurredAt,
+            sourceUrl: "https://example.invalid/report-source",
+            text: event.text,
+          };
+        },
+      },
+      { reply: () => action },
+    );
+    const verify = manager.verify;
+    manager.verify = async (...args) => {
+      checks++;
+      const receipt = await verify(...args);
+      // A controlled independent failure contradicts the worker's success claim.
+      return { ...receipt, status: "failed", passed: false, exitCode: 3 };
+    };
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    let sequence = 0;
+    const deliver = async (extra: Partial<MessageEvent> = {}) => {
+      const unique = `report-${sequence++}`;
+      const event = { ...source, id: unique, messageId: unique, ...extra };
+      const scope = routeEvent(event, owner);
+      if (!scope) throw new Error("Missing report scope");
+      const conversation = client.conversation.getOrCreate(scope.key);
+      const key = createHash("sha256")
+        .update(JSON.stringify(["slack", "T1", event.id]))
+        .digest("hex");
+      await conversation.send("inbox", { type: "event", event });
+      await expect
+        .poll(async () => (await conversation.snapshot()).events[key]?.done, {
+          timeout: 15000,
+        })
+        .toBe(true);
+      const snapshot = await conversation.snapshot();
+      const content = snapshot.deliveries[`${key}:text`]?.message.content;
+      return {
+        key,
+        snapshot,
+        text: content?.type === "text" ? content.text : "",
+      };
+    };
+    const proposal = await deliver();
+    const job = client.job.getOrCreate([owner.id, proposal.key]);
+    await deliver({ text: `!approve ${proposal.key}` });
+    await expect
+      .poll(async () => (await job.snapshot()).status, { timeout: 15000 })
+      .toBe("needs_review");
+    // Proposal, approval and the asynchronous completion must all settle before
+    // measuring whether report retrieval adds a synthesis call.
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).filter((e) => e.done)
+            .length,
+        { timeout: 15000 },
+      )
+      .toBe(3);
+    action = {
+      text: "",
+      codingJob: { action: "report", id: proposal.key.slice(0, 12) },
+    };
+    // Drop surrounding history without invalidating the job. The report must
+    // carry its original provenance even when this new query retrieves none of it.
+    store.deleteSource("unrelated-history");
+    const before = modelRequests.length;
+    const report = await deliver({ text: "retrieve-saved-result" });
+    expect(modelRequests).toHaveLength(before + 1);
+    expect(JSON.stringify(modelRequests.at(-1))).not.toContain(
+      "PRIVATE_WORKER_REPORT",
+    );
+    expect(report.text).toContain("PRIVATE_WORKER_REPORT");
+    expect(report.text).toContain("Worker claims (not independently verified)");
+    expect(report.text).toContain(
+      "Separate verifier receipt: failed; exit code: 3",
+    );
+    expect(report.text).toContain("[truncated]");
+    expect(report.text).not.toContain("OMITTED_TAIL");
+    expect(report.text).not.toContain("PRIVATE_GOAL");
+    expect(report.text.length).toBeLessThanOrEqual(3500);
+    expect(report.snapshot.memoryContexts?.[report.key]?.sourceIds).toContain(
+      "report-0",
+    );
+    expect(
+      report.snapshot.history.find(
+        (entry) => entry.id === `${report.key}:reply`,
+      )?.context?.sourceIds,
+    ).toContain("report-0");
+    expect(replyJsonSchema([], modelRequests.at(-1)).properties).toHaveProperty(
+      "codingJob",
+    );
+    expect(
+      parseReply(JSON.stringify(action), [], modelRequests.at(-1)),
+    ).toEqual(action);
+    expect(() => parseReply(JSON.stringify(action), [])).toThrow();
+    for (const extra of [
+      {
+        direct: false,
+        botMentioned: true,
+        address: { ...source.address, conversationId: "C1" },
+      },
+      { senderId: "U2", metadata: { channelType: "im" as const } },
+    ]) {
+      const denied = await deliver(extra);
+      expect(denied.text).not.toContain("PRIVATE_WORKER_REPORT");
+      expect(denied.text).toContain("owner-private turn");
+      expect(JSON.stringify(modelRequests.at(-1))).not.toContain(
+        "PRIVATE_WORKER_REPORT",
+      );
+      expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(false);
+    }
+    // Tombstoning alone blocks a saved actor report, before asynchronous forget cleanup.
+    store.deleteSource("report-0");
+    const deleted = await deliver();
+    expect(deleted.text).toContain("not found in this private conversation");
+    expect(
+      deleted.snapshot.history.some((entry) =>
+        entry.content.includes("PRIVATE_WORKER_REPORT"),
+      ),
+    ).toBe(false);
+    expect(JSON.stringify(modelRequests.at(-1))).not.toContain(
+      "PRIVATE_WORKER_REPORT",
+    );
+    await june.forget("report-0");
+    expect((await deliver()).text).toContain(
+      "not found in this private conversation",
+    );
+    expect((await job.snapshot()).revoked).toBe(true);
+    expect(launches).toBe(1);
+    expect(checks).toBe(1);
+  });
+
+  it("withholds legacy reports with unknown ancestry after deletion without cleanup", async (t) => {
+    const id = "f".repeat(64);
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    t.onTestFinished(() => store.close());
+    const memory: NonNullable<Dependencies["memory"]> = {
+      store,
+      source(event, audience) {
+        return {
+          id: event.id,
+          platform: "slack",
+          account: "T1",
+          conversation: "D1",
+          author: "U1",
+          audiences: [audience],
+          observedAt: event.occurredAt,
+          sourceUrl: "https://example.invalid/legacy-source",
+          text: event.text,
+        };
+      },
+    };
+    const { registry, sent } = await fixture(
+      t,
+      {
+        async run() {
+          throw new Error("A report must not launch work");
+        },
+      },
+      memory,
+      { reply: () => ({ text: "", codingJob: { action: "report", id } }) },
+    );
+    const conversationConfig = registry.config.use.conversation.config;
+    const jobConfig = registry.config.use.job.config;
+    if (!("state" in conversationConfig) || !("state" in jobConfig))
+      throw new Error("Expected initial states");
+    const proposal = {
+      id,
+      source: { ...source, id: "initiator-B" },
+      workspace: "june",
+      goal: "Use earlier ancestor A",
+    };
+    // Legacy jobs lack transitive memoryContexts. B is valid, but the saved
+    // prose also depended on A; a source-only tombstone check cannot prove safety.
+    Object.assign(conversationConfig.state, { jobs: { [id]: proposal } });
+    Object.assign(jobConfig.state, {
+      proposal,
+      status: "completed",
+      workerClaim: "PRIVATE_ANCESTOR_A_REPORT",
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    for (const turn of ["before", "after"]) {
+      if (turn === "after") store.deleteSource("ancestor-A");
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: turn,
+          messageId: turn,
+          text: "Saved report, please",
+        },
+      });
+      await expect
+        .poll(
+          async () =>
+            Object.values((await june.snapshot()).events).filter(
+              (entry) => entry.done,
+            ).length,
+          { timeout: 15000 },
+        )
+        .toBe(turn === "before" ? 1 : 2);
+      const content = sent.at(-1)?.content;
+      if (turn === "before") {
+        expect(content?.type === "text" && content.text).toContain(
+          "PRIVATE_ANCESTOR_A_REPORT",
+        );
+      } else {
+        expect(content?.type === "text" && content.text).toContain(
+          "no tracked source ancestry after a deletion",
+        );
+        expect(content?.type === "text" && content.text).not.toContain(
+          "PRIVATE_ANCESTOR_A_REPORT",
+        );
+        expect(JSON.stringify((await june.snapshot()).history)).not.toContain(
+          "PRIVATE_ANCESTOR_A_REPORT",
+        );
+      }
+    }
+    expect(store.isDeleted("initiator-B")).toBe(false);
+    expect(
+      (await client.job.getOrCreate([owner.id, id]).snapshot()).revoked,
+    ).not.toBe(true);
+  });
 });

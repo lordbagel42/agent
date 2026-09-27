@@ -175,9 +175,9 @@ export interface CompanionReply {
   workflow?: import("../workflows/contracts.js").WorkflowCommand;
   social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
-  /** Owner-private job metadata/diff or cancellation request; never approval. */
+  /** Owner-private reports, metadata/diff or cancellation; never approval. */
   codingJob?: {
-    action: "list" | "inspect" | "diff" | "cancel";
+    action: "list" | "inspect" | "diff" | "report" | "cancel";
     id: string | null;
   };
   reaction?: string;
