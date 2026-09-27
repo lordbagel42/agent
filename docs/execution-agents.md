@@ -32,6 +32,26 @@ Changed tasks or workspaces get a fresh proposal and approval ID; changed runtim
 or execution policy cannot reuse the old approval. June must not present a coding
 approval or a passing verifier result as delivery authority.
 
+June can turn a reviewed, evaluated skill candidate into that same unapproved
+proposal in an owner-private turn:
+
+```json
+{"text":"","skillCodingProposal":{"candidateId":"<64-character reflection alias>","workspace":"june"}}
+```
+
+The host resolves the immutable skill and copies its exact proposed behavior,
+never a model-supplied replacement task, digest or approval. It checks the current
+settled all-yes held-out evaluation after inference settles and again before
+queueing; original training, held-out and conversation evidence remain deletion
+dependencies. The receiving job rechecks evaluation and the frozen originating
+deletion revision immediately before accepting the proposal, including after
+queue delays. A historical evaluation is not permission. The skill gets one job
+ID across retries: the first workspace, task, preview and runtime binding stay
+frozen, and a different workspace is refused. Existing `codingJob` inspection and
+cancellation apply. The owner must separately send `!approve ID` as an ordinary
+private message before local execution. This bridge cannot approve, run, resume,
+install, push or deploy anything, or enable dormant coding/reflection integrations.
+
 ## Boundaries and recovery
 
 - Each request reads June's approved global public-safe personality once and uses

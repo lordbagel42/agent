@@ -618,6 +618,8 @@ test("mixed host recall/browser/preview directives cannot dispatch MCP calls, pr
   f.request.personalityPreviewAvailable = true;
   f.request.forgetPreviewAvailable = true;
   f.request.personalityEvaluateAvailable = true;
+  f.request.skillCodingProposalAvailable = true;
+  f.request.workspaces = ["june"];
   for (const permission of ["read", "approval"] as const) {
     f.store.permit(f.id, f.connection().revision, "lookup", permission);
     for (const directive of [
@@ -645,6 +647,12 @@ test("mixed host recall/browser/preview directives cannot dispatch MCP calls, pr
           },
         },
         { forgetPreview: { sourceId: "s1" } },
+        {
+          skillCodingProposal: {
+            candidateId: "a".repeat(64),
+            workspace: "june",
+          },
+        },
         {
           personalityEvaluate: {
             candidateId: "candidate",
@@ -799,6 +807,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.skillEvaluationRequestAvailable = true;
   f.request.personalityPreviewAvailable = true;
   f.request.forgetPreviewAvailable = true;
+  f.request.skillCodingProposalAvailable = true;
   let evidence = "";
   let synthesis: ModelRequest | undefined;
   let modelStatusAvailable: boolean | undefined;
@@ -933,6 +942,21 @@ test("discovery grants nothing, read results are transient and credentials stay 
     ),
   ).toThrow();
   expect(f.request.skillEvaluationRequestAvailable).toBe(true);
+  expect(synthesis.skillCodingProposalAvailable).toBe(false);
+  expect(replyJsonSchema(["june"], synthesis).properties).not.toHaveProperty(
+    "skillCodingProposal",
+  );
+  expect(() =>
+    parseReply(
+      JSON.stringify({
+        text: "",
+        skillCodingProposal: { candidateId: "a".repeat(64), workspace: "june" },
+      }),
+      ["june"],
+      synthesis,
+    ),
+  ).toThrow();
+  expect(f.request.skillCodingProposalAvailable).toBe(true);
   expect(synthesis.personalityPreviewAvailable).toBe(false);
   expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
     "personalityPreview",

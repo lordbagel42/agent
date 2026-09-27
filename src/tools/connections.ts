@@ -743,6 +743,7 @@ export class McpConnections {
           reply.browserProposal !== undefined ||
           reply.personalityPreview !== undefined ||
           reply.forgetPreview !== undefined ||
+          reply.skillCodingProposal !== undefined ||
           reply.personalityEvaluate !== undefined
         )
           return parseReply(
@@ -788,6 +789,7 @@ export class McpConnections {
             reply.browserProposal !== undefined ||
             reply.personalityPreview !== undefined ||
             reply.forgetPreview !== undefined ||
+            reply.skillCodingProposal !== undefined ||
             reply.personalityEvaluate !== undefined
           )
             return parseReply(
@@ -930,6 +932,7 @@ export class McpConnections {
                 reflectionPersonalitySuggestionAvailable: false,
                 skillEvaluationRequestAvailable: false,
                 juryAvailable: false,
+                skillCodingProposalAvailable: false,
                 rivetAvailable: false,
                 browserProposalAvailable: false,
                 personalityPreviewAvailable: false,

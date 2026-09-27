@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
@@ -14,8 +15,13 @@ import type {
   CodingRuntime,
   MessageEvent,
 } from "../core/contracts.js";
+import type { SkillChangeProposal } from "../reflection/domain.js";
 import type { Lifecycle } from "./lifecycle.js";
-import type { JuneRegistry } from "./registry.js";
+import type {
+  JuneClientRegistry,
+  JuneRegistry,
+  MemoryReference,
+} from "./registry.js";
 
 // Recovery advice, not inferred diagnoses or permission to change host policy.
 export const DISABLED_CODING_RECOVERY = [
@@ -37,11 +43,42 @@ export interface CodingDependencies {
   appsWorkspace?: string;
 }
 
+/** Identity excludes workspace/evaluation attempts: retries cannot retarget a skill. */
+export function skillCodingRequest(
+  ownerId: string,
+  workspace: string,
+  skill: SkillChangeProposal,
+): (CodingRequest & { id: string }) | null {
+  const goal = `Implement only the following evaluated skill behavior as local repository changes. The evaluation is hypothetical, not proof the change works. Verify the implementation; do not change permissions, access credentials, push, publish or deploy.\nSkill: ${skill.id}\nCandidate digest: ${skill.digest}\nExact proposed behavior:\n${skill.proposedBehavior}`;
+  if (!skill.proposedBehavior.trim() || goal.length > 2000) return null;
+  return {
+    id: createHash("sha256")
+      .update(JSON.stringify(["skill-coding-v1", ownerId, skill.id]))
+      .digest("hex"),
+    workspace,
+    goal,
+  };
+}
+
+export function codingApprovalPreview(
+  id: string,
+  request: CodingRequest,
+  coding: CodingDependencies,
+): string {
+  return `Coding proposal for ${request.workspace}:\nRepository: ${JSON.stringify(coding.workspaces[request.workspace])}\nRuntime: ${coding.runtimeKind}\n\nTask:\n${request.goal}\n\nReply !approve ${id.slice(0, 12)} as an ordinary private message to authorize only this task in an isolated local checkout of that repository. No push, deployment, publication, shared-infrastructure changes, or credential access is authorized. Native execution is not a sandbox. A changed task, workspace, or runtime requires a fresh proposal.`;
+}
+
 export interface JobProposal extends CodingRequest {
   id: string;
   source: MessageEvent;
   /** Bind new previews before queue delivery; absent on legacy proposals. */
   runtimeId?: string;
+  /** Host-only authority carried across queue delivery; never a model field. */
+  skillContext?: {
+    candidateId: string;
+    deletionRevision: number;
+    reference: MemoryReference;
+  };
 }
 export interface CodingState {
   proposal: JobProposal | null;
@@ -193,6 +230,10 @@ export function codingJobReport(id: string, state: CodingState): string {
 export function createCodingActor(
   coding: CodingDependencies | undefined,
   lifecycle?: Pick<Lifecycle, "enter" | "fail">,
+  skillCurrent?: (
+    ownerId: string,
+    context: NonNullable<JobProposal["skillContext"]>,
+  ) => boolean,
 ) {
   return actor({
     state: {
@@ -312,6 +353,42 @@ export function createCodingActor(
                   !Object.hasOwn(coding.workspaces, command.proposal.workspace)
                 )
                   return;
+                const context = command.proposal.skillContext;
+                if (context) {
+                  const ownerId = step.key[0] ?? "";
+                  if (!skillCurrent?.(ownerId, context)) return;
+                  const evaluated = await step
+                    .client<JuneClientRegistry>()
+                    .reflection.getOrCreate([ownerId])
+                    .skillEvaluation(
+                      context.candidateId,
+                      JSON.stringify(["private", ownerId]),
+                    )
+                    .catch(() => null);
+                  const skill = evaluated?.candidate.skillChange;
+                  const expected =
+                    skill &&
+                    skillCodingRequest(
+                      ownerId,
+                      command.proposal.workspace,
+                      skill,
+                    );
+                  // Queue delivery and the getter both yield. Check frozen caller
+                  // authority synchronously at the actual proposal-write boundary.
+                  if (
+                    !evaluated?.eligible ||
+                    !expected ||
+                    expected.id !== command.proposal.id ||
+                    expected.goal !== command.proposal.goal ||
+                    !evaluated.evidenceIds.every((id) =>
+                      context.reference.sourceIds.includes(id),
+                    ) ||
+                    step.abortSignal.aborted ||
+                    step.state.revoked ||
+                    !skillCurrent?.(ownerId, context)
+                  )
+                    return;
+                }
                 step.state.proposal = command.proposal;
                 // Only the producer knows which configuration the owner reviewed.
                 // Legacy queued proposals cannot adopt the consumer's configuration.

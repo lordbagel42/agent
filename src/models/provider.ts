@@ -275,6 +275,12 @@ const companionReplySchema = z.strictObject({
     })
     .optional(),
   jury: juryRequestSchema.optional(),
+  skillCodingProposal: z
+    .strictObject({
+      candidateId: z.string().regex(/^[a-f0-9]{64}$/),
+      workspace: z.string().min(1),
+    })
+    .optional(),
   reflectionMemory: z
     .strictObject({
       id: z.string().regex(/^[a-f0-9]{64}$/),
@@ -340,6 +346,7 @@ export type ReplyCapabilities = Pick<
   | "reflectionReviewAvailable"
   | "reflectionRequestAvailable"
   | "juryAvailable"
+  | "skillCodingProposalAvailable"
   | "reflectionMemoryAvailable"
   | "rivetAvailable"
   | "browserProposalAvailable"
@@ -392,6 +399,7 @@ export function replyJsonSchema(
     reflectionReviewAvailable,
     reflectionRequestAvailable,
     juryAvailable,
+    skillCodingProposalAvailable,
     reflectionMemoryAvailable,
     rivetAvailable,
     browserProposalAvailable,
@@ -1066,6 +1074,21 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(skillCodingProposalAvailable && permittedWorkspaces.length > 0
+        ? {
+            skillCodingProposal: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                candidateId: { type: "string", pattern: "^[a-f0-9]{64}$" },
+                workspace: { type: "string", enum: permittedWorkspaces },
+              },
+              required: ["candidateId", "workspace"],
+              description:
+                "Create one unapproved local coding proposal from an exact reviewed, currently eligible skill candidate. Host supplies the evaluated behavior. Never approves, runs, pushes or deploys. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(personalityPreviewAvailable
         ? {
             personalityPreview: {
@@ -1414,6 +1437,9 @@ export function replyJsonSchema(
       ...(reflectionReviewAvailable ? ["reflectionReview"] : []),
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
       ...(juryAvailable ? ["jury"] : []),
+      ...(skillCodingProposalAvailable && permittedWorkspaces.length > 0
+        ? ["skillCodingProposal"]
+        : []),
       ...(reflectionMemoryAvailable ? ["reflectionMemory"] : []),
       ...(rivetAvailable ? ["rivet"] : []),
       ...(browserProposalAvailable ? ["browserProposal"] : []),
@@ -1611,6 +1637,7 @@ export function parseReply(
     reflectionReviewAvailable,
     reflectionRequestAvailable,
     juryAvailable,
+    skillCodingProposalAvailable,
     reflectionMemoryAvailable,
     rivetAvailable,
     browserProposalAvailable,
@@ -1668,6 +1695,7 @@ export function parseReply(
     "reflectionReview",
     "reflectionRequest",
     "jury",
+    "skillCodingProposal",
     "reflectionMemory",
     "rivet",
     "browserProposal",
@@ -1698,8 +1726,10 @@ export function parseReply(
   }
   const reply = parsed.data;
   if (
-    reply.coding !== undefined &&
-    !workspaces.includes(reply.coding.workspace)
+    (reply.coding !== undefined &&
+      !workspaces.includes(reply.coding.workspace)) ||
+    (reply.skillCodingProposal !== undefined &&
+      !workspaces.includes(reply.skillCodingProposal.workspace))
   ) {
     throw new ModelError("invalid_response", false);
   }
@@ -1730,6 +1760,8 @@ export function parseReply(
     (reply.reflectionReview !== undefined && !reflectionReviewAvailable) ||
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
     (reply.jury !== undefined && !juryAvailable) ||
+    (reply.skillCodingProposal !== undefined &&
+      !skillCodingProposalAvailable) ||
     (reply.reflectionMemory !== undefined && !reflectionMemoryAvailable) ||
     (reply.rivet !== undefined && !rivetAvailable) ||
     (reply.browserProposal !== undefined && !browserProposalAvailable) ||
@@ -1776,6 +1808,7 @@ export function parseReply(
     Number(reply.reflectionReview !== undefined) +
     Number(reply.reflectionRequest !== undefined) +
     Number(reply.jury !== undefined) +
+    Number(reply.skillCodingProposal !== undefined) +
     Number(reply.reflectionMemory !== undefined) +
     Number(reply.rivet !== undefined) +
     Number(reply.browserProposal !== undefined) +
@@ -1817,6 +1850,7 @@ export function parseReply(
       reply.reflectionReview !== undefined ||
       reply.reflectionRequest !== undefined ||
       reply.jury !== undefined ||
+      reply.skillCodingProposal !== undefined ||
       reply.reflectionMemory !== undefined ||
       reply.rivet !== undefined ||
       reply.browserProposal !== undefined ||

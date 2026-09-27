@@ -52,10 +52,12 @@ import {
 import type { WorkflowDependencies } from "../workflows/contracts.js";
 import {
   type CodingDependencies,
+  codingApprovalPreview,
   codingJobMetadata,
   codingJobReport,
   createCodingActor,
   DISABLED_CODING_RECOVERY,
+  skillCodingRequest,
 } from "./coding.js";
 import { type Delivery, deliver } from "./delivery.js";
 import {
@@ -161,7 +163,7 @@ export interface Dependencies {
   reflection?: ReflectionDependencies;
 }
 
-interface MemoryReference {
+export interface MemoryReference {
   sourceIds: string[];
   personality: string;
   /** Complete deletion provenance; absent on legacy, source-only references. */
@@ -213,7 +215,12 @@ export interface ConversationState {
   deliveries: Record<string, Delivery>;
   jobs: Record<
     string,
-    CodingRequest & { runtimeId?: string; preview?: string }
+    CodingRequest & {
+      runtimeId?: string;
+      preview?: string;
+      /** Frozen origin for a candidate-keyed proposal, including queue retries. */
+      source?: MessageEvent;
+    }
   >;
   lastInbound: Record<string, number>;
   /** Write-ahead admission and deduplication until record-event takes ownership. */
@@ -577,6 +584,7 @@ export function createJuneRegistry(deps: Dependencies) {
             "reflection-personality",
             2,
           );
+          const skillCodingVersion = await loop.getVersion("skill-coding", 2);
           const body = message.body;
           // Old actors can be asleep in a pre-v9 queue wait. A wakeup could
           // never have entered those old journals, so its new path is safe.
@@ -2275,6 +2283,16 @@ export function createJuneRegistry(deps: Dependencies) {
                                   !!deps.memory &&
                                   plan.reflection &&
                                   !!deps.reflection,
+                                skillCodingProposalAvailable:
+                                  skillCodingVersion >= 2 &&
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  plan.memory &&
+                                  !!deps.memory &&
+                                  plan.reflection &&
+                                  !!deps.reflection &&
+                                  !!deps.coding,
                                 juryAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2522,7 +2540,8 @@ export function createJuneRegistry(deps: Dependencies) {
                               generated.slackHistory !== undefined ||
                               generated.reflectionReview !== undefined ||
                               generated.messages !== undefined ||
-                              generated.interrupt !== undefined
+                              generated.interrupt !== undefined ||
+                              generated.skillCodingProposal !== undefined
                             )
                               generated = parseReply(
                                 JSON.stringify(generated),
@@ -4660,6 +4679,136 @@ export function createJuneRegistry(deps: Dependencies) {
                       : "Permission requests are unavailable; no access was granted.",
                 }));
               }
+              if (reply.skillCodingProposal) {
+                const action = reply.skillCodingProposal;
+                reply = await loop.step(
+                  "propose-skill-coding",
+                  async (step) => {
+                    const unavailable = {
+                      text: "No skill coding proposal was queued. A current eligible evaluation, owner-private request, retained evidence and configured coding workspace are required.",
+                    };
+                    if (
+                      skillCodingVersion < 2 ||
+                      body.type !== "event" ||
+                      !ownerTurn ||
+                      !scope.private ||
+                      !plan.memory ||
+                      !plan.reflection ||
+                      !deps.memory ||
+                      !deps.reflection ||
+                      !deps.coding ||
+                      !plan.workspaces.includes(action.workspace) ||
+                      !Object.hasOwn(
+                        deps.coding.workspaces,
+                        action.workspace,
+                      ) ||
+                      !canStartAction(step.state) ||
+                      step.abortSignal.aborted
+                    )
+                      return unavailable;
+                    // This step runs only after the raw model settled and its live
+                    // occupancy was released. A historical read is not eligibility.
+                    const reflection = step
+                      .client<JuneClientRegistry>()
+                      .reflection.getOrCreate([deps.owner.id]);
+                    const evaluated = await reflection.skillEvaluation(
+                      action.candidateId,
+                      audience,
+                    );
+                    const skill = evaluated?.candidate.skillChange;
+                    if (
+                      !evaluated?.eligible ||
+                      !skill ||
+                      !canStartAction(step.state)
+                    )
+                      return unavailable;
+                    const request = skillCodingRequest(
+                      deps.owner.id,
+                      action.workspace,
+                      skill,
+                    );
+                    if (!request) return unavailable;
+                    const { id, ...task } = request;
+                    step.state.memoryContexts ??= {};
+                    const origin = step.state.memoryContexts[eventId];
+                    if (origin?.deletionTracked !== true) return unavailable;
+                    const reference: MemoryReference = {
+                      ...origin,
+                      sourceIds: [
+                        ...new Set([
+                          ...origin.sourceIds,
+                          ...evaluated.evidenceIds,
+                        ]),
+                      ],
+                      contextSourceIds: [...(origin.contextSourceIds ?? [])],
+                    };
+                    // Keep the original turn context as well as the complete
+                    // training/held-out union; never replace it with a later read.
+                    step.state.memoryContexts[eventId] = reference;
+                    const currentProposal = () =>
+                      !step.abortSignal.aborted &&
+                      canStartAction(step.state) &&
+                      current(audience, reference) &&
+                      !step.state.forgottenEvents?.includes(id) &&
+                      (!step.state.memoryContexts?.[id] ||
+                        current(audience, step.state.memoryContexts[id]));
+                    if (!currentProposal()) return unavailable;
+                    const saved = step.state.jobs[id];
+                    if (saved && saved.workspace !== task.workspace)
+                      return {
+                        text: `This skill already has coding proposal ${id.slice(0, 12)} in ${saved.workspace}. The first workspace is frozen; no retargeting or second job was created.`,
+                      };
+                    if (saved && (saved.goal !== task.goal || !saved.source))
+                      return unavailable;
+                    step.state.memoryContexts[id] ??= reference;
+                    step.state.jobs[id] ??= {
+                      ...task,
+                      runtimeId: deps.coding.runtimeId,
+                      preview: codingApprovalPreview(id, task, deps.coding),
+                      source: { ...event, text: "" },
+                    };
+                    await step.vars.persist();
+                    // Persistence and RPCs yield: refresh eligibility before queueing,
+                    // then synchronously fence the original full provenance again.
+                    const latest = await reflection.skillEvaluation(
+                      action.candidateId,
+                      audience,
+                    );
+                    if (
+                      !latest?.eligible ||
+                      latest.candidate.skillChange?.id !== skill.id ||
+                      latest.candidate.skillChange?.digest !== skill.digest ||
+                      JSON.stringify(latest.evidenceIds) !==
+                        JSON.stringify(evaluated.evidenceIds) ||
+                      !currentProposal()
+                    )
+                      return unavailable;
+                    const proposal = step.state.jobs[id];
+                    if (!proposal.source) return unavailable;
+                    await step
+                      .client<JuneRegistry>()
+                      .job.getOrCreate([deps.owner.id, id])
+                      .send("commands", {
+                        type: "propose",
+                        proposal: {
+                          id,
+                          workspace: proposal.workspace,
+                          goal: proposal.goal,
+                          runtimeId: proposal.runtimeId,
+                          source: proposal.source,
+                          skillContext: {
+                            candidateId: action.candidateId,
+                            deletionRevision,
+                            reference: step.state.memoryContexts[id],
+                          },
+                        },
+                      });
+                    return currentProposal()
+                      ? { text: proposal.preview ?? unavailable.text }
+                      : unavailable;
+                  },
+                );
+              }
               if (reply.coding) {
                 const request = reply.coding;
                 if (
@@ -4685,7 +4834,11 @@ export function createJuneRegistry(deps: Dependencies) {
                       step.state.jobs[eventId] ??= {
                         ...request,
                         runtimeId: deps.coding.runtimeId,
-                        preview: `Coding proposal for ${request.workspace}:\nRepository: ${JSON.stringify(deps.coding.workspaces[request.workspace])}\nRuntime: ${deps.coding.runtimeKind}\n\nTask:\n${request.goal}\n\nReply !approve ${eventId.slice(0, 12)} as an ordinary private message to authorize only this task in an isolated local checkout of that repository. No push, deployment, publication, shared-infrastructure changes, or credential access is authorized. Native execution is not a sandbox. A changed task, workspace, or runtime requires a fresh proposal.`,
+                        preview: codingApprovalPreview(
+                          eventId,
+                          request,
+                          deps.coding,
+                        ),
                       };
                       const proposal = step.state.jobs[eventId];
                       if (version >= 7 && body.type === "execution_result") {
@@ -5436,7 +5589,14 @@ export function createJuneRegistry(deps: Dependencies) {
     use: {
       conversation,
       personality: createPersonalityActor(deps.owner, deps.memory?.personality),
-      job: createCodingActor(deps.coding, deps.lifecycle),
+      job: createCodingActor(
+        deps.coding,
+        deps.lifecycle,
+        (ownerId, context) =>
+          ownerId === deps.owner.id &&
+          context.deletionRevision === deps.memory?.store.deletionRevision() &&
+          current(JSON.stringify(["private", ownerId]), context.reference),
+      ),
       execution: createExecutionActor(deps, priority),
       workflowRun: createWorkflowRunActor(deps),
       workflowLibrary: createWorkflowLibraryActor(deps),

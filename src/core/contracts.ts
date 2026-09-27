@@ -289,6 +289,8 @@ export interface CompanionReply {
   };
   /** Explicit owner-private advisory evaluation of existing scoped evidence. */
   jury?: import("../reflection/jury.js").JuryRequest;
+  /** Propose exact evaluated behavior for separate coding approval, never run it. */
+  skillCodingProposal?: { candidateId: string; workspace: string };
   /** Stage an existing reflection as a pending hypothesis, never accept it. */
   reflectionMemory?: { id: string; subjectSourceId: string };
   /** Owner one-to-one Slack DM only; volatile read-only Rivet inspection. */
@@ -357,6 +359,7 @@ export interface ModelRequest {
   reflectionReviewAvailable?: boolean;
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;
+  skillCodingProposalAvailable?: boolean;
   reflectionMemoryAvailable?: boolean;
   rivetAvailable?: boolean;
   browserProposalAvailable?: boolean;

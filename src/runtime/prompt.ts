@@ -46,6 +46,7 @@ export interface PromptCapabilities {
   reflectionReviewAvailable?: boolean;
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;
+  skillCodingProposalAvailable?: boolean;
   reflectionMemoryAvailable?: boolean;
   rivetAvailable?: boolean;
   browserProposalAvailable?: boolean;
@@ -224,6 +225,11 @@ export function buildModelRequest({
     memoryAvailable &&
     capabilities.reflectionRequestAvailable === true;
   const juryAvailable = privateTurn && capabilities.juryAvailable === true;
+  const skillCodingProposalAvailable =
+    privateTurn &&
+    memoryAvailable &&
+    workspaces.length > 0 &&
+    capabilities.skillCodingProposalAvailable === true;
   const reflectionMemoryAvailable =
     privateTurn &&
     !guest &&
@@ -524,6 +530,9 @@ export function buildModelRequest({
     skillEvaluationRequestAvailable
       ? 'To evaluate an existing retained skill candidate, set skillEvaluationRequest to {"candidateId":"exact reflection candidate alias","heldOutEvidenceIds":["original source ID","another original source ID"]}. Select 2–5 distinct current original sources that were not used to generate that candidate; never invent IDs or send evidence bodies, behavior text, digests, scope, code or permissions. Leave text empty and all other actions unset/null. The host resolves the exact immutable skill proposal and stages one bounded evaluation after this inference settles. Each case must establish a baseline and desired outcome, otherwise the evaluator abstains. Training generation never receives these held-outs. Results are hypothetical comparisons, not installed-skill tests or permission grants. Requesting does not install, promote, approve coding, change permissions or promise completion. Use private reflection inspection for exact candidate-bound receipt metadata; distinguish historical results from current eligibility and preserve no/abstain/unknown outcomes.'
       : "Skill evaluation requests are unavailable in this invocation; do not claim to have evaluated or promoted a skill.",
+    skillCodingProposalAvailable
+      ? 'After reviewing an exact retained skill candidate and its held-out evaluation, use skillCodingProposal:{"candidateId":"64-character reflection candidate ID","workspace":"permitted workspace"} to request one unapproved local coding proposal. Leave text empty and all other actions unset. The host uses the exact evaluated behavior, not model-authored task text or approval claims, and rechecks current evaluation and all original plus held-out evidence after inference settles. Historical availability alone is insufficient. Repeating the same skill returns the first frozen proposal; a different workspace cannot retarget it or create a second job. The owner must separately send !approve ID to allow local work. This never installs a skill, starts or resumes a worker, enables native coding, pushes or deploys. Wait for the host receipt; no proposal is implied by this request.'
+      : "Evaluated skill-to-coding proposals are unavailable in this invocation.",
     privateTurn && capabilities.reflectionAvailable
       ? "The owner can send the exact ordinary private messages !reflection list and !reflection inspect <exact 64-character candidate ID> (not Slack slash commands) to list currently action-eligible IDs or privately inspect a retained hypothesis without starting inference or automatic extraction. Inspection returns the original rationale and provenance metadata, not source bodies; a result over the 24,000-byte budget is unavailable rather than clipped. Generic inspection counts are staged metadata, not validated eligibility. Ordinary conversation revokes action eligibility but does not erase retained published hypotheses. The host rechecks every input source; strict actions additionally require their epoch, quiet-hours and live-work gates. Both commands are read-only, not approval or permission to act. Command inspection is not supplied to you; use reflectionReview when available for model-readable review. To reject one candidate, the owner sends !reflection reject <64hex> with its exact opaque ID. Rejection is durable and safe to repeat after restart or an unconfirmed receipt; it revokes that candidate and its pending derivatives, not unrelated candidates or already accepted changes. Never invent an ID or claim your output executed the command."
       : "Private reflection candidate review is unavailable for this invocation.",
@@ -665,6 +674,7 @@ export function buildModelRequest({
     reflectionReviewAvailable,
     reflectionRequestAvailable,
     juryAvailable,
+    skillCodingProposalAvailable,
     reflectionMemoryAvailable,
     rivetAvailable,
     browserProposalAvailable,
