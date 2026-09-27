@@ -203,6 +203,20 @@ export type SupersessionInspection = {
   incomplete: boolean;
   cyclic: boolean;
 };
+export type ClaimInspection = {
+  claim: Claim | null;
+  quotations: (Pick<
+    Source,
+    | "platform"
+    | "account"
+    | "conversation"
+    | "author"
+    | "observedAt"
+    | "sourceUrl"
+  > & { sourceId: string; quote: string })[];
+  truncated?: true;
+  omitted?: number;
+};
 export type ImportCoverage = z.infer<typeof coverageSchema>;
 export type ImportProgress = z.infer<typeof progressSchema>;
 export type ImportPage = z.infer<typeof pageSchema>;
@@ -878,6 +892,85 @@ export class EvidenceStore {
   appendClaim(input: Claim): void {
     const claim = parse(claimSchema, input);
     this.transaction((state) => insertClaim(state, claim));
+  }
+
+  /** Exact retained claim only, never a pending proposal or a lexical fallback.
+   * Original quotations establish provenance, not truth. Omit whole records
+   * rather than clipping quotes; missing/foreign/deleted IDs look identical. */
+  inspectClaim(
+    audience: string,
+    claimId: string,
+    options: { limit?: number; maxCharacters?: number } = {},
+  ): ClaimInspection {
+    parse(id, claimId);
+    const limit = parse(z.number().int().min(1).max(100), options.limit ?? 6);
+    const budget = parse(
+      z.number().int().min(100).max(100000),
+      options.maxCharacters ?? 3000,
+    );
+    const visible = this.search(audience, "");
+    const claim = visible.claims.find((item) => item.id === claimId);
+    const result: ClaimInspection = { claim: null, quotations: [] };
+    if (!claim) return result;
+    const originals = this.independentEvidence(claim.id, audience);
+    // Receipt/history validity excludes automatic Slack opt-outs. Do not build
+    // a receipt that cannot be delivered or later inherited under that policy.
+    if (
+      visible.sources.some(
+        (source) =>
+          originals.includes(source.id) &&
+          source.platform === "slack" &&
+          source.text.startsWith("##"),
+      )
+    )
+      return result;
+    const quotations = originals.flatMap((sourceId) => {
+      const source = visible.sources.find((item) => item.id === sourceId);
+      if (!source) throw new Error("Missing or unauthorized evidence");
+      const cited = claim.grounding?.citations.filter(
+        (citation) => citation.sourceId === sourceId,
+      );
+      const quotes = cited?.length ? cited.map((c) => c.quote) : [source.text];
+      return quotes.map((quote) => {
+        if (!source.text.includes(quote))
+          throw new Error("Unsupported source quotation");
+        return {
+          sourceId,
+          quote,
+          platform: source.platform,
+          account: source.account,
+          conversation: source.conversation,
+          author: source.author,
+          observedAt: source.observedAt,
+          sourceUrl: source.sourceUrl,
+        };
+      });
+    });
+    const fits = () => {
+      const omitted = quotations.length - result.quotations.length;
+      return (
+        JSON.stringify({
+          ...result,
+          ...(omitted ? { truncated: true, omitted } : {}),
+        }).length <= budget
+      );
+    };
+    result.claim = claim;
+    if (!fits()) {
+      return {
+        claim: null,
+        quotations: [],
+        truncated: true,
+        omitted: quotations.length + 1,
+      };
+    }
+    for (const quotation of quotations) {
+      if (result.quotations.length >= limit) break;
+      result.quotations.push(quotation);
+      if (!fits()) result.quotations.pop();
+    }
+    const omitted = quotations.length - result.quotations.length;
+    return { ...result, ...(omitted ? { truncated: true, omitted } : {}) };
   }
 
   /** Exact scoped input for extraction, never an unfiltered model context. Reject
@@ -1671,7 +1764,8 @@ export class EvidenceStore {
     return result;
   }
 
-  /** Unique original source IDs, never a count of dream/claim repetitions. */
+  /** Unique original source IDs, including grounding-only citations. Relations
+   * are not independent corroboration; neither are dream/claim repetitions. */
   independentEvidence(claimId: string, audience: string): string[] {
     parse(id, claimId);
     const visible = this.search(audience, "");
@@ -1681,9 +1775,20 @@ export class EvidenceStore {
     const visited = new Set([claimId]);
     for (const ref of visited) {
       if (sources.has(ref)) found.add(ref);
-      else
-        for (const parent of claims.get(ref)?.dependsOn ?? [])
-          visited.add(parent);
+      else {
+        const claim = claims.get(ref);
+        if (!claim) continue;
+        for (const parent of claim.dependsOn) visited.add(parent);
+        // These fields name originals, not arbitrary claim relations.
+        for (const sourceId of claim.grounding
+          ? [
+              claim.grounding.subjectSourceId,
+              ...claim.grounding.citations.map((c) => c.sourceId),
+            ]
+          : []) {
+          if (sources.has(sourceId)) found.add(sourceId);
+        }
+      }
     }
     return [...found].sort();
   }

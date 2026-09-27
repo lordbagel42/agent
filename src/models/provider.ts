@@ -216,6 +216,10 @@ const companionReplySchema = z.strictObject({
         kind: z.literal("supersession"),
         claimId: z.string().min(1).max(2048),
       }),
+      z.strictObject({
+        kind: z.literal("claim"),
+        claimId: z.string().min(1).max(2048),
+      }),
     ])
     .optional(),
   pendingMemory: z.literal(true).optional(),
@@ -707,9 +711,22 @@ export function replyJsonSchema(
                   },
                   required: ["kind", "sourceId"],
                 },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", enum: ["claim"] },
+                    claimId: {
+                      type: "string",
+                      description:
+                        "Exact retained claim ID, 1–2048 characters. Never a keyword or prefix.",
+                    },
+                  },
+                  required: ["kind", "claimId"],
+                },
               ],
               description:
-                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with optional category, exact entity and time filters, an exact source lookup by ID, explicit contradiction-neighbor/supersession inspection by exact claim ID, or {kind:dependents,sourceId} for bounded dependent claim metadata and authorized direct/derived counts. Unknown categories and invalid time windows are rejected, never broadened. Unknown entity IDs return no matches, never name-based alternatives. The host returns bounded recorded evidence with provenance directly, not verified truth. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
+                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with optional category, exact entity and time filters, an exact source lookup by ID, exact claim inspection, explicit contradiction-neighbor/supersession inspection by exact claim ID, or {kind:dependents,sourceId} for bounded dependent claim metadata and authorized direct/derived counts. Unknown categories and invalid time windows are rejected, never broadened. Unknown entity IDs return no matches, never name-based alternatives. The host returns bounded evidence with original provenance directly; claims remain hypotheses, not facts. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
             },
           }
         : {}),

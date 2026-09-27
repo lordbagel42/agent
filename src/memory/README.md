@@ -58,6 +58,17 @@ trusted host APIs, not autonomous model tools.
   An authorized source that exceeds the serialized budget is omitted whole with
   `truncated:true, omitted:1`; it is never clipped into an apparent quotation.
   Defaults and hard character limits match `retrieve`.
+- `inspectClaim(audience, claimId, {limit?, maxCharacters?})` reads exactly one
+  retained claim, never a pending/rejected proposal or a lexical match. Missing,
+  foreign and deleted IDs all return `{claim:null, quotations:[]}`. Each quotation
+  contains its original source ID, author, platform/account/conversation, observed
+  time and URL. Grounded citations are checked against original text; sources
+  without a selected citation use their full original text, never a paraphrase.
+  Defaults are six quotations and 3,000 JSON characters; hard limits are 100 and
+  100,000. Whole oversized records are omitted with `truncated:true` and `omitted`;
+  an oversized claim returns no quotations rather than losing its uncertainty or
+  relationships. Claims (including accepted ones) remain hypotheses, dreams remain
+  speculation, and quotations prove provenance rather than truth or entailment.
 - `retrieve(audience, query, {limit?, maxCharacters?, category?})` returns `{sources,claims}`.
   Authorization precedes lexical ranking. Defaults: 12 combined records, 16,000
   serialized JSON characters; hard limits: 100 records, 100,000 characters and a
@@ -219,6 +230,21 @@ including its original observation time, author, account, conversation and URL.
 No neighboring sources or inferred claims are expanded. Missing, deleted,
 opted-out and unauthorized IDs produce the same absence without echoing private
 metadata; an authorized oversized source is explicitly omitted, not clipped.
+
+For an exact retained claim, ask "Inspect claim <ID> and its original evidence."
+June can use `recall: {kind:"claim", claimId:"<exact ID>"}` with empty text and
+no other action. The same private receipt path returns the claim and up to six
+original quotations with provenance, bounded to 3,000 escaped JSON characters.
+There is no keyword/prefix fallback and no pending-proposal promotion. Missing,
+inaccessible, pending/rejected and deleted claims share the same unavailable
+response; budget omissions are reported separately. Claims depending on Slack
+`##` opt-outs are also unavailable, consistent with the recall/history policy.
+Acceptance does not make a hypothesis fact, and quoting a source does not prove
+entailment. Claims retain uncertainty, validity dates and unresolved relation IDs;
+dreams remain speculation. Original references include transitive dependencies
+and source-bearing grounding fields, not contradiction/supersession counterparts
+as extra corroboration. The host records originals even if some quotations are
+omitted, so deletion still invalidates the receipt and derivatives.
 
 The host derives the audience from routing; the model cannot choose an audience,
 limit, provider, account, or permission. Recall is absent from guest/public,

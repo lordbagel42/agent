@@ -24,7 +24,7 @@ import {
   type JuneClientRegistry,
 } from "./registry.js";
 
-it.for(["search", "dependents"] as const)(
+it.for(["search", "dependents", "claim"] as const)(
   "recalls $0 only for the owner privately and invalidates recalled and derived replies after deletion",
   async (mode, t) => {
     const store = new EvidenceStore(":memory:", randomBytes(32));
@@ -63,6 +63,13 @@ it.for(["search", "dependents"] as const)(
       id: "large",
       text: `heron ${"x".repeat(4000)}`,
     });
+    if (mode === "claim")
+      store.appendSource({
+        ...source,
+        id: "grounding-only",
+        text: "Separate original",
+        sourceUrl: `https://example.com/${"x".repeat(4000)}`,
+      });
     for (let i = 0; i < 10; i++)
       store.appendClaim({
         id: `claim-${i}`,
@@ -88,6 +95,23 @@ it.for(["search", "dependents"] as const)(
               },
             }
           : {}),
+        ...(mode === "claim" && i === 3
+          ? {
+              grounding: {
+                subjectSourceId: "grounding-only",
+                text: "heron hypothesis",
+                category: "claim" as const,
+                citations: [
+                  { sourceId: "grounding-only", quote: "Separate original" },
+                ],
+                confidence: 0.3,
+                validFrom: null,
+                validTo: null,
+                contradicts: [],
+                supersedes: [],
+              },
+            }
+          : {}),
       });
     store.appendClaim({
       id: "foreign-claim",
@@ -104,7 +128,9 @@ it.for(["search", "dependents"] as const)(
     let recall: NonNullable<CompanionReply["recall"]> =
       mode === "search"
         ? "violet heron"
-        : { kind: "dependents", sourceId: source.id };
+        : mode === "claim"
+          ? { kind: "claim", claimId: "claim-3" }
+          : { kind: "dependents", sourceId: source.id };
     let action: CompanionReply = { text: "", recall };
     let forgetOnSend = false;
     let web = false;
@@ -124,7 +150,9 @@ it.for(["search", "dependents"] as const)(
           async send(message) {
             sent.push(JSON.parse(JSON.stringify(message)));
             if (forgetOnSend) {
-              store.deleteSource(source.id);
+              store.deleteSource(
+                mode === "claim" ? "grounding-only" : source.id,
+              );
               return {
                 status: "rejected",
                 code: "rate_limited",
@@ -147,6 +175,7 @@ it.for(["search", "dependents"] as const)(
               "set recall to one concise keyword",
             );
             expect(request.system).toContain('"kind":"dependents"');
+            expect(request.system).toContain('"kind":"claim"');
           }
           if (continueRecall) {
             const previous = request.messages
@@ -232,19 +261,25 @@ it.for(["search", "dependents"] as const)(
     const evidence = JSON.parse(
       output.text.slice(output.text.indexOf("\n") + 1),
     );
-    expect(evidence.sources).toEqual(
-      mode === "search" ? [{ ...source, text: links.redact(source.text) }] : [],
-    );
     expect(JSON.stringify(evidence)).not.toContain(credential);
     expect(store.source(audience, source.id)).toEqual(source);
-    expect(
-      evidence.sources.length + evidence.claims.length,
-    ).toBeLessThanOrEqual(6);
+    if (mode !== "claim") {
+      expect(evidence.sources).toEqual(
+        mode === "search"
+          ? [{ ...source, text: links.redact(source.text) }]
+          : [],
+      );
+      expect(
+        evidence.sources.length + evidence.claims.length,
+      ).toBeLessThanOrEqual(6);
+    }
     expect(evidence.truncated).toBe(true);
-    expect(evidence.omitted).toBe(mode === "search" ? 6 : 4);
+    expect(evidence.omitted).toBe(
+      mode === "search" ? 6 : mode === "claim" ? 1 : 4,
+    );
     if (mode === "search")
       expect(evidence.claims[0].dependsOn).toEqual([source.id]);
-    else {
+    else if (mode === "dependents") {
       expect(evidence).toMatchObject({ direct: 10, derived: 0 });
       expect(evidence.claims).toEqual(
         Array.from({ length: 6 }, (_, i) => ({
@@ -255,8 +290,55 @@ it.for(["search", "dependents"] as const)(
       );
       expect(output.text).not.toContain("PRIVATE");
       expect(output.text).not.toContain("hypothesis");
+    } else {
+      expect(output.text).toContain("claims are hypotheses");
+      expect(evidence.claim).toMatchObject({
+        id: "claim-3",
+        dependsOn: [source.id],
+        kind: "evidence",
+      });
+      expect(evidence.quotations).toEqual([
+        {
+          sourceId: source.id,
+          quote: links.redact(source.text),
+          platform: "slack",
+          account: "T1",
+          conversation: "D1/1.000001",
+          author: "U1",
+          observedAt: 1000,
+          sourceUrl: source.sourceUrl,
+        },
+      ]);
+      store.appendSource({
+        ...source,
+        id: "opt-out",
+        text: "## OPT_OUT_PRIVATE",
+      });
+      store.appendClaim({
+        id: "opt-out-claim",
+        entity: "bird",
+        text: "opt out",
+        audiences: [audience],
+        kind: "evidence",
+        dependsOn: ["opt-out"],
+        contradicts: [],
+        supersedes: [],
+      });
+      action = {
+        text: "",
+        recall: { kind: "claim", claimId: "opt-out-claim" },
+      };
+      await turn();
+      expect(JSON.stringify(sent.at(-1))).toContain(
+        "No retained claim is available",
+      );
+      expect(JSON.stringify(sent.at(-1))).not.toContain("OPT_OUT_PRIVATE");
     }
-    expect(first.state.history.at(-1)?.context?.sourceIds).toEqual([source.id]);
+    const expectedOriginals =
+      mode === "claim" ? ["grounding-only", source.id] : [source.id];
+    expect(first.state.history.at(-1)?.context?.sourceIds).toEqual(
+      expectedOriginals,
+    );
     expect(first.state.jobs).toEqual({});
     if (mode === "dependents") {
       store.appendSource({
@@ -295,7 +377,7 @@ it.for(["search", "dependents"] as const)(
         source.id,
         "escaped-root",
       ]);
-    } else {
+    } else if (mode === "search") {
       expect(evidence.nextCursor).toMatch(/^[A-Za-z0-9_-]{43}$/);
       const recalled: string[] = evidence.claims.map(
         (claim: Claim) => claim.id,
@@ -345,13 +427,13 @@ it.for(["search", "dependents"] as const)(
     action = { text: "Derived color answer" };
     const derived = await turn();
     expect(JSON.stringify(requests.at(-1)?.messages)).toContain(
-      mode === "search" ? "PRIVATE violet" : "claim-0",
+      mode === "dependents" ? "claim-0" : "PRIVATE violet",
     );
     expect(JSON.stringify(requests)).not.toContain(credential);
-    if (mode === "search")
+    if (mode !== "dependents")
       expect(JSON.stringify(requests.at(-1))).toContain("credential omitted");
     expect(derived.state.history.at(-1)?.context?.sourceIds).toEqual([
-      source.id,
+      ...expectedOriginals,
       ...(mode === "dependents" ? ["escaped-root"] : []),
     ]);
     action = { text: "", recall };
@@ -643,7 +725,9 @@ it.for(["search", "dependents"] as const)(
     expect(JSON.stringify(sent.at(-1))).toContain(
       mode === "search"
         ? "No retained evidence matched"
-        : "recall is unavailable",
+        : mode === "claim"
+          ? "No retained claim is available"
+          : "recall is unavailable",
     );
     if (mode === "dependents") {
       const absent = sent.at(-1)?.content;
@@ -652,7 +736,7 @@ it.for(["search", "dependents"] as const)(
         await turn();
         expect(sent.at(-1)?.content).toEqual(absent);
       }
-    } else {
+    } else if (mode === "search") {
       action = { text: "", recall: exactRecall };
       await turn();
       expect(sent.at(-1)?.content).toEqual(absentSource);
@@ -694,6 +778,10 @@ it.for(["search", "dependents"] as const)(
       { kind: "source", sourceId: "" },
       { kind: "source", sourceId: "x".repeat(2049) },
       { kind: "source", sourceId: source.id, audience: "other-owner" },
+      { kind: "claim", claimId: "claim-3", audience: "other-owner" },
+      { kind: "claim", claimId: "" },
+      { kind: "claim", claimId: "x".repeat(2049) },
+      { kind: "unknown", claimId: "claim-3" },
     ])
       expect(() =>
         parseReply(JSON.stringify({ text: "", recall }), [], {

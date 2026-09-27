@@ -549,6 +549,10 @@ it("excludes legacy ## Slack evidence from automatic memory but permits explicit
       .sort(),
   ).toEqual(["other", "whitespace"]);
   expect(store.retrieve("private", "").claims).toEqual([]);
+  expect(store.inspectClaim("private", "derived")).toEqual({
+    claim: null,
+    quotations: [],
+  });
   expect(() => store.extractionContext("private", ["ignored"])).toThrow();
   expect(store.search("private", "secret").sources.map((s) => s.id)).toEqual([
     "ignored",
@@ -1740,6 +1744,113 @@ it("projects only scoped reviewed patterns with intact provenance and forgets th
   );
   reopened.close();
   expect(open(path).store.reviewedPatterns("private")).toEqual([]);
+});
+
+it("inspects only exact retained claims with scoped originals and rechecks deletion across reopen", () => {
+  const { store, path } = open();
+  store.appendSource({
+    ...source(),
+    text: `${"x".repeat(10_000)} original pear`,
+  });
+  store.appendSource({ ...source("s2"), text: "original plum" });
+  const [proposal] = store.stageProposals(
+    "private",
+    ["s1", "s2"],
+    [
+      {
+        subjectSourceId: "s1",
+        text: "fruit hypothesis",
+        category: "preference",
+        citations: [
+          { sourceId: "s1", quote: "original pear" },
+          { sourceId: "s2", quote: "original plum" },
+        ],
+        confidence: 0.4,
+        validFrom: 100,
+        validTo: 200,
+        contradicts: [],
+        supersedes: [],
+      },
+    ],
+  );
+  if (!proposal) throw new Error("Missing fixture");
+  const absent = { claim: null, quotations: [] };
+  expect(store.inspectClaim("private", proposal.id)).toEqual(absent);
+  store.reviewProposal("private", proposal.id, "accepted");
+  expect(store.inspectClaim("public", proposal.id)).toEqual(absent);
+  expect(store.inspectClaim("private", "fruit")).toEqual(absent);
+  expect(store.inspectClaim("private", "s1")).toEqual(absent);
+  const result = store.inspectClaim("private", proposal.id);
+  expect(result.claim).toEqual(proposal.claim);
+  expect(result.quotations).toEqual([
+    {
+      sourceId: "s1",
+      quote: "original pear",
+      platform: "slack",
+      account: "workspace-secret",
+      conversation: "dm-secret",
+      author: "user-secret",
+      observedAt: 100,
+      sourceUrl: "https://example.com/private-message",
+    },
+    {
+      sourceId: "s2",
+      quote: "original plum",
+      platform: "slack",
+      account: "workspace-secret",
+      conversation: "dm-secret",
+      author: "user-secret",
+      observedAt: 100,
+      sourceUrl: "https://example.com/private-message",
+    },
+  ]);
+  expect(JSON.stringify(result).length).toBeLessThanOrEqual(3000);
+  expect(store.inspectClaim("private", proposal.id, { limit: 1 })).toEqual({
+    ...result,
+    quotations: [result.quotations[0]],
+    truncated: true,
+    omitted: 1,
+  });
+  expect(
+    store.inspectClaim("private", proposal.id, { maxCharacters: 100 }),
+  ).toEqual({
+    ...absent,
+    truncated: true,
+    omitted: 3,
+  });
+  store.appendClaim({
+    ...proposal.claim,
+    id: "grounding-only",
+    dependsOn: ["s2"],
+  });
+  expect(store.independentEvidence("grounding-only", "private")).toEqual([
+    "s1",
+    "s2",
+  ]);
+  expect(store.inspectClaim("private", "grounding-only").quotations).toEqual(
+    result.quotations,
+  );
+  store.appendClaim({
+    id: "dream",
+    entity: "owner",
+    text: "speculation, not another original",
+    audiences: ["private"],
+    kind: "dream",
+    dependsOn: [proposal.id],
+    contradicts: [],
+    supersedes: [],
+  });
+  const derived = store.inspectClaim("private", "dream");
+  expect(derived.claim?.kind).toBe("dream");
+  expect(derived.quotations.map((item) => item.sourceId)).toEqual(["s2"]);
+  expect(derived).toMatchObject({ truncated: true, omitted: 1 });
+  store.deleteSource("s1");
+  expect(store.inspectClaim("private", proposal.id)).toEqual(absent);
+  store.close();
+  const reopened = open(path).store;
+  expect(reopened.inspectClaim("private", "dream")).toEqual(absent);
+  expect(reopened.inspectClaim("private", "grounding-only")).toEqual(absent);
+  expect(reopened.source("private", "s2")?.text).toBe("original plum");
 });
 
 it("aborts a forgotten extraction batch without settling an uncooperative provider or cancelling unrelated extraction", async () => {

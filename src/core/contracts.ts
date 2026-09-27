@@ -228,6 +228,7 @@ export interface CompanionReply {
   recall?:
     | string
     | { kind: "dependents"; sourceId: string }
+    | { kind: "claim"; claimId: string }
     | {
         kind: "search";
         query: string;
