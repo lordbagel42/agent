@@ -33,6 +33,35 @@ const input: PromptInput = {
   capabilities: {},
 };
 
+it("excludes opted-out Slack history but keeps raw whitespace and other platforms", () => {
+  const privateEvent = {
+    ...event,
+    direct: true,
+    metadata: { channelType: "im" as const },
+  };
+  const whatsapp = {
+    ...privateEvent,
+    address: {
+      channel: "whatsapp" as const,
+      accountId: "PRIVATE-phone-account",
+      conversationId: "PRIVATE-phone-number",
+    },
+    senderId: "PRIVATE-phone-number",
+  };
+  const request = buildModelRequest({
+    ...input,
+    event: privateEvent,
+    history: [
+      { role: "user", content: "## <@U_JUNE> secret", source: privateEvent },
+      { role: "user", content: " ## keep", source: privateEvent },
+      { role: "user", content: "## WhatsApp", source: whatsapp },
+    ],
+  });
+  expect(
+    request.messages.map((message) => JSON.parse(message.content).text),
+  ).toEqual([" ## keep", "## WhatsApp"]);
+});
+
 it("keeps private/unscoped history and config out of a channel named after the owner", () => {
   const request = buildModelRequest({
     ...input,

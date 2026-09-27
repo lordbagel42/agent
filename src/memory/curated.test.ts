@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { PersonalityProposal } from "../reflection/personality.js";
 import { CuratedPersonalityStore } from "./curated.js";
 import { EvidenceStore, type Source } from "./store.js";
@@ -89,6 +89,25 @@ it("isolates personality scopes, rejects forged corrections, and never resurrect
     });
     expect(curated.effectiveTraits("public")).toEqual({ tone: "neutral" });
     expect(curated.effectiveTraits("unknown")).toEqual({});
+    // Model a pre-policy ledger whose already-curated source opted out. Keep
+    // the real encrypted curated revision and its provenance validation.
+    const search = evidence.search.bind(evidence);
+    const legacyLedger = vi
+      .spyOn(evidence, "search")
+      .mockImplementation((scope, query) => {
+        const result = search(scope, query);
+        return {
+          ...result,
+          sources: result.sources.map((entry) =>
+            entry.id === source.id
+              ? { ...entry, text: `## ${entry.text}` }
+              : entry,
+          ),
+        };
+      });
+    expect(curated.effectiveTraits("private")).toEqual({});
+    expect(curated.effectiveTraits("public")).toEqual({ tone: "neutral" });
+    legacyLedger.mockRestore();
     curated.close();
     curated = new CuratedPersonalityStore(join(root, "curated"), key, evidence);
     evidence.deleteSource(source.id);

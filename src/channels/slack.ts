@@ -135,14 +135,8 @@ async function normalizeEvent(
   const owner = ownerUserIds.has(event.user);
   const mentioned =
     typeof event.text === "string" && event.text.includes(`<@${botUserId}>`);
-  if (
-    typeof event.text === "string" &&
-    (event.text.startsWith("##") ||
-      (!mentioned &&
-        (event.text.startsWith("<>") ||
-          /<!subteam\^|<!here>|<!channel>|<!everyone>/.test(event.text))))
-  )
-    return [];
+  // Only ## is an ingress opt-out; the other conventions are model guidance.
+  if (typeof event.text === "string" && event.text.startsWith("##")) return [];
   // Guests must explicitly address June. Direct DMs also count as contact.
   if (
     !owner &&

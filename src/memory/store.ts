@@ -312,7 +312,10 @@ export class EvidenceStore {
    * rather than truncate oversized batches so citations refer to the actual input. */
   extractionContext(audience: string, sourceIds: string[]): Source[] {
     parse(ids, sourceIds);
-    const visible = this.search(audience, "").sources;
+    const visible = this.search(audience, "").sources.filter(
+      (source) =>
+        !(source.platform === "slack" && source.text.startsWith("##")),
+    );
     const sources = sourceIds.map((sourceId) => {
       const source = visible.find((s) => s.id === sourceId);
       if (!source) throw new Error("Missing or unauthorized source");
@@ -464,12 +467,32 @@ export class EvidenceStore {
       options.maxCharacters ?? 16000,
     );
     const visible = this.search(audience, "");
+    // Legacy imports may predate Slack's opt-out. Automatic context must not
+    // include those originals or claims derived from them; explicit search stays available.
+    const ignored = new Set(
+      visible.sources
+        .filter(
+          (source) =>
+            source.platform === "slack" && source.text.startsWith("##"),
+        )
+        .map((source) => source.id),
+    );
     const words = [
       ...new Set(query.toLocaleLowerCase().split(/\s+/u).filter(Boolean)),
     ];
     const candidates = [
-      ...visible.sources.map((item) => ({ type: "source" as const, item })),
-      ...visible.claims.map((item) => ({ type: "claim" as const, item })),
+      ...visible.sources
+        .filter((item) => !ignored.has(item.id))
+        .map((item) => ({ type: "source" as const, item })),
+      ...visible.claims
+        .filter(
+          (item) =>
+            ignored.size === 0 ||
+            !this.independentEvidence(item.id, audience).some((id) =>
+              ignored.has(id),
+            ),
+        )
+        .map((item) => ({ type: "claim" as const, item })),
     ]
       .map((entry) => ({
         ...entry,

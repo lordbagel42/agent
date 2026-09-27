@@ -91,6 +91,60 @@ function jsonResponse(
 }
 
 describe("createSlackAdapter", () => {
+  it.each([
+    ["## private", false],
+    ["## <@U_BOT> !stop", false],
+    ["### heading", false],
+    ["##", false],
+    [" ## leading space", true],
+    ["\n## leading newline", true],
+    ["# heading", true],
+    ["hello ## inline", true],
+    ["<> quiet", true],
+    ["<> <@U_BOT> hello", true],
+    [" <> leading space", true],
+    ["&lt;&gt; quiet", true],
+    ["<!subteam^S_GROUP|@team> hello", true],
+    ["<!subteam^S_GROUP> <@U_BOT> hello", true],
+    ["<!here> hello", true],
+    ["<!channel> hello", true],
+    ["<!everyone> hello", true],
+    ["<@U_BOT> !stop", true],
+    [" <@U_BOT>  !STOP \n", true],
+    ["<@u_bot> !stop", true],
+    ["<@U_OTHER> !stop", true],
+    ["ordinary message", true],
+  ])("only hard-blocks raw ## prefixes: %j", async (text, accepted) => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({
+        ok: true,
+        channel: { id: "C1", name: "raygen-project", is_channel: true },
+      }),
+    );
+    const adapter = makeAdapter(fetchMock, {
+      participateInOwnerChannels: true,
+    });
+    for (const type of ["message", "app_mention"]) {
+      const result = await adapter.receive(
+        signedRequest(
+          eventBody({
+            type,
+            text,
+            user: "U_HUMAN",
+            channel: type === "message" ? "D1" : "C1",
+            channel_type: type === "message" ? "im" : "channel",
+            ts: "123.456",
+            thread_ts: "123.000",
+          }),
+        ),
+      );
+      expect(result.response.status).toBe(200);
+      expect(result.events).toHaveLength(accepted ? 1 : 0);
+      if (accepted) expect(result.events[0]).toMatchObject({ text });
+    }
+    if (!accepted) expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("admits signed guest mentions and reuses native thread typing without capturing search authority", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

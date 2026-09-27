@@ -183,9 +183,17 @@ excluded. June chooses reply placement with `replyInThread`: false posts in the
 main DM/channel, true uses the existing thread or starts one on the incoming
 message, and unset preserves incoming placement. Normal DMs and ongoing channel
 conversation should generally stay unthreaded; mentions do not force threads.
-Raw `##` messages are
-excluded, including from fetched context; `<>` and group pings require a direct
-mention.
+Raw messages beginning with `##` are hard-excluded before normal processing,
+including automatic history/context and retained-history imports. Leading
+whitespace is not trimmed. Explicit tool lookups can still retrieve this text.
+The other Slack conventions are model guidance, not runtime filters: `<>` (or
+Slack's encoded `&lt;&gt;`) and group pings ask June to stay silent unless directly
+mentioned. In a thread, `@June !stop` asks her to stop without acknowledgment;
+surrounding whitespace and `!STOP` are accepted by the guidance. Later unrelated
+messages should not resume the stopped task, but a new explicit request can.
+This does not forcibly cancel an in-flight turn. The prompt receives the host's
+verified `botMentioned` flag, so names and group pings do not establish a direct
+mention. Existing owner/guest permissions still apply.
 
 ### Shared June, owner priority and approvals
 

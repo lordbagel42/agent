@@ -32,6 +32,7 @@ describe("Slack same-surface context", () => {
     const slack = adapter(fetchMock);
     expect(slack.context).toBeTypeOf("function");
     for (const input of [
+      { ...event, text: "## <@U_JUNE> ignore", botMentioned: true },
       { ...event, senderId: "U_OTHER" },
       { ...event, senderId: "U_JUNE" },
       { ...event, address: { ...event.address, accountId: "T_OTHER" } },
@@ -231,6 +232,16 @@ describe("Slack same-surface context", () => {
           ok: true,
           messages: [
             {
+              ts: "1799999997.000001",
+              user: "U_IGNORED",
+              text: "## <@U_JUNE> secret",
+            },
+            {
+              ts: "1799999997.000002",
+              user: "U_OTHER",
+              text: " ## ordinary whitespace",
+            },
+            {
               ts: "1799999999.000003",
               thread_ts: "1799999990.000001",
               user: "U_OTHER",
@@ -250,6 +261,7 @@ describe("Slack same-surface context", () => {
     });
     const context = await adapter(fetchMock).context?.(event);
     expect(context?.map((message) => message.content)).toEqual([
+      " ## ordinary whitespace",
       "earlier channel message",
       "what do you think?",
     ]);

@@ -70,6 +70,98 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("excludes ## from queued events and legacy/prefill context while delivering advisory rules on later turns", async (t) => {
+    const requests: ModelRequest[] = [];
+    const sent: OutboundMessage[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      channels: {
+        slack: {
+          ...transport("slack", sent),
+          async context(event) {
+            return [
+              {
+                role: "user",
+                content: "## ignored prefill",
+                source: { ...event, id: "prefill", messageId: "122.456" },
+              },
+            ];
+          },
+        },
+      },
+      model: {
+        async reply(request) {
+          requests.push(structuredClone(request));
+          return { text: "" };
+        },
+      },
+    });
+    const actorConfig = registry.config.use.conversation.config;
+    if (!("state" in actorConfig)) throw new Error("Expected initial state");
+    Object.assign(actorConfig.state, {
+      history: [
+        { id: "legacy", role: "user", content: "## ignored legacy" },
+        {
+          id: "legacy:reply",
+          role: "assistant",
+          content: "## ignored old assistant",
+        },
+      ],
+      events: {
+        legacy: {
+          event: { ...message, text: "## ignored legacy" },
+          done: true,
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    for (const [id, text, botMentioned] of [
+      ["ignored", "## <@U_BOT> !stop", true],
+      ["stop", "<@U_BOT> !stop", true],
+      ["next", "new request after stop", false],
+    ] as const) {
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...message,
+          id,
+          messageId: id === "stop" ? "124.456" : "125.456",
+          address: { ...message.address, threadId: "123.000" },
+          text,
+          botMentioned,
+        },
+      });
+    }
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).filter(
+            (record) => record.done,
+          ).length,
+        { timeout: 15_000 },
+      )
+      .toBe(3);
+    expect(requests).toHaveLength(2);
+    expect(conversationText(requests[0])).toEqual([
+      { role: "user", content: "<@U_BOT> !stop" },
+    ]);
+    expect(conversationText(requests[1])?.at(-1)).toEqual({
+      role: "user",
+      content: "new request after stop",
+    });
+    expect(JSON.stringify(requests)).not.toContain("ignored");
+    expect(requests[0]?.system).toContain('"botMentioned":true');
+    expect(requests[1]?.system).toContain('"botMentioned":false');
+    for (const request of requests) {
+      expect(request.system).toContain("Slack participation guidance");
+      expect(request.system).toContain("!stop");
+      expect(request.system).toContain("<!subteam^");
+      expect(request.system).toContain("raw text begins with <>");
+    }
+    expect(sent).toEqual([]);
+  });
+
   it.for([
     { direct: true, thread: undefined, choice: undefined, want: undefined },
     { direct: false, thread: undefined, choice: false, want: undefined },

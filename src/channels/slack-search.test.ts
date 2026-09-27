@@ -133,6 +133,17 @@ async function search(
 }
 
 describe("Slack Real-time Search", () => {
+  it("keeps ## content available through an explicit search", async () => {
+    const context = setup(
+      results([resultMessage({ content: "## explicitly retrieved" })]),
+    );
+    const event = await receiveMessage(context);
+    const found = await search(context.adapter, event);
+    expect(found.status).toBe("ready");
+    if (found.status === "ready")
+      expect(found.text).toContain("## explicitly retrieved");
+  });
+
   it("is absent by default and when explicitly disabled", () => {
     expect(
       createSlackAdapter({

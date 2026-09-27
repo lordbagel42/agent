@@ -316,7 +316,17 @@ export class CuratedPersonalityStore {
     )
       throw new Error("Missing or unauthorized personality evidence");
     const sources = this.evidence.independentEvidence(id, scope);
-    if (!sources.length)
+    if (
+      !sources.length ||
+      sources.some((id) =>
+        visible.sources.some(
+          (source) =>
+            source.id === id &&
+            source.platform === "slack" &&
+            source.text.startsWith("##"),
+        ),
+      )
+    )
       throw new Error("Personality requires original sources");
     return { scope, id, sources };
   }

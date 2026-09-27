@@ -118,15 +118,28 @@ export function createJuneRegistry(deps: Dependencies) {
   const current = (audience: string, reference: MemoryReference) =>
     !!deps.memory &&
     reference.personality === personalityDigest(audience) &&
-    reference.sourceIds.every(
-      (id) => !!deps.memory?.store.source(audience, id),
-    ) &&
+    reference.sourceIds.every((id) => {
+      const source = deps.memory?.store.source(audience, id);
+      return (
+        !!source &&
+        !(source.platform === "slack" && source.text.startsWith("##"))
+      );
+    }) &&
     (reference.contextSourceIds ?? []).every(
       (id) => !deps.memory?.store.isDeleted(id),
     );
   function prune(state: ConversationState, audience: string) {
     state.history = state.history.filter(
       (entry) =>
+        !(
+          (entry.source?.address.channel ??
+            state.events[
+              entry.role === "assistant"
+                ? entry.id.replace(/:reply$/, "")
+                : entry.id
+            ]?.event.address.channel) === "slack" &&
+          entry.content.startsWith("##")
+        ) &&
         (!entry.sourceId ||
           !!deps.memory?.store.source(audience, entry.sourceId)) &&
         (!entry.context || current(audience, entry.context)),
@@ -231,6 +244,14 @@ export function createJuneRegistry(deps: Dependencies) {
               )
               .digest("hex");
             const valid = (state: ConversationState) => {
+              // Legacy journals keep their recorded step order, but unfinished
+              // callbacks must not dispatch effects for opted-out Slack input.
+              if (
+                event.address.channel === "slack" &&
+                event.type === "message" &&
+                event.text.startsWith("##")
+              )
+                return false;
               if (
                 !ownerTurn &&
                 event.type === "message" &&
@@ -280,7 +301,11 @@ export function createJuneRegistry(deps: Dependencies) {
                 )
                   return false;
                 step.state.events[eventId] = { event, done: false };
-                if (event.type === "message" && body.type === "event") {
+                if (
+                  event.type === "message" &&
+                  body.type === "event" &&
+                  valid(step.state)
+                ) {
                   const { type: _type, text: _text, ...source } = event;
                   step.state.history.push({
                     id: eventId,
@@ -365,7 +390,8 @@ export function createJuneRegistry(deps: Dependencies) {
                 if (
                   !plan.memory ||
                   event.type !== "message" ||
-                  body.type !== "event"
+                  body.type !== "event" ||
+                  !valid(step.state)
                 )
                   return;
                 if (!deps.memory)
@@ -777,6 +803,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                   .filter(({ source, content }) => {
                                     if (
                                       !source ||
+                                      (source.address.channel === "slack" &&
+                                        content.startsWith("##")) ||
                                       !(
                                         source.direct === event.direct &&
                                         source.address.channel ===
@@ -1251,11 +1279,14 @@ export function createJuneRegistry(deps: Dependencies) {
               const deliveryIds = await loop.step(
                 "prepare-reply",
                 async (step) => {
-                  if (!valid(step.state)) return [];
                   const ids = [
                     `${eventId}:text`,
                     `${eventId}:reaction`,
                   ] as const;
+                  // Preserve already-persisted intents after an interrupted step;
+                  // deliver will settle them without dispatch when invalidated.
+                  if (!valid(step.state))
+                    return ids.filter((id) => step.state.deliveries[id]);
                   if (reply.text.trim() && !step.state.deliveries[ids[0]]) {
                     step.state.deliveries[ids[0]] = {
                       phase: "ready",

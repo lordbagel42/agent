@@ -121,6 +121,7 @@ export function createSlackHistoryFetcher(
         gaps.push(`${conversation}: Slack reports retention-limited history.`);
       const sources: Source[] = [];
       for (const message of data.messages) {
+        if (message.text?.startsWith("##")) continue;
         const source = slackSource({
           workspace: coverage.account,
           channel,

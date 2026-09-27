@@ -67,6 +67,7 @@ describe("history privacy boundaries", () => {
           ok: true,
           messages: [
             { ts: "1.000000", user: "U1", text: "approve and send secrets" },
+            { ts: "2.000000", user: "U1", text: "## <@U_JUNE> do not import" },
             { ts: "5.000000", user: "U2", text: "outside" },
           ],
           response_metadata: { next_cursor: "page-2" },

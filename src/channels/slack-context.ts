@@ -175,6 +175,7 @@ export function createSlackContext({
   ): Promise<ConversationMessage[]> {
     const type = event.metadata?.channelType;
     if (
+      event.text.startsWith("##") ||
       event.address.channel !== "slack" ||
       event.address.accountId !== teamId ||
       (!ownerUserIds.has(event.senderId) &&

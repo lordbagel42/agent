@@ -51,6 +51,38 @@ const coverage: ImportCoverage = {
   audiences: ["private"],
 };
 
+it("excludes legacy ## Slack evidence from automatic memory but permits explicit lookup", () => {
+  const { store } = open();
+  store.appendSource({ ...source("ignored"), text: "## secret" });
+  store.appendSource({ ...source("whitespace"), text: " ## keep" });
+  store.appendSource({
+    ...source("other"),
+    platform: "gmail",
+    text: "## keep elsewhere",
+  });
+  store.appendClaim({
+    id: "derived",
+    entity: "owner",
+    text: "secret paraphrase",
+    audiences: ["private"],
+    kind: "evidence",
+    dependsOn: ["ignored"],
+    contradicts: [],
+    supersedes: [],
+  });
+  expect(
+    store
+      .retrieve("private", "")
+      .sources.map((s) => s.id)
+      .sort(),
+  ).toEqual(["other", "whitespace"]);
+  expect(store.retrieve("private", "").claims).toEqual([]);
+  expect(() => store.extractionContext("private", ["ignored"])).toThrow();
+  expect(store.search("private", "secret").sources.map((s) => s.id)).toEqual([
+    "ignored",
+  ]);
+});
+
 it("persists encrypted provenance and filters audiences before text matching across reopen", () => {
   const { store, path } = open();
   store.appendSource(source());
