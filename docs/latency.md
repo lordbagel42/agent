@@ -200,3 +200,36 @@ The simple `report` table uses first fast/text spans; inspect the full observati
 for multi-pass/search/retry turns rather than summing overlapping work. Compare
 medians/ranges and sample counts, not one fastest response. Historical receipt
 deltas without a controlled prompt, history and revision are not regression proof.
+
+## Optional name enrichment budget
+
+Slack display-name lookups share a 200 ms budget from context loading start,
+including the later participant lookup wave. Conversation metadata and history
+keep their one-second deadline. Cached names and names already supplied by Slack
+remain usable; a slow uncached lookup leaves the exact sender ID without a display
+name. Names never establish identity or permissions. No message content is dropped
+to meet the name budget, and expired lookups are aborted rather than detached.
+
+An isolated adapter comparison on 2026-09-27 used three fresh before/after pairs
+per case, fake Slack HTTP with real cancellable timers, and unchanged message
+content. Median context durations in milliseconds:
+
+| Fixture | Before | After |
+| --- | ---: | ---: |
+| 50 ms history, 30 ms name requests | 83 | 82 |
+| 50 ms history, 800 ms name requests | 1001 | 202 |
+| 350 ms history, 800 ms name requests | 1002 | 352 |
+| 350 ms history, previously cached names | 352 | 351 |
+
+These are context-only synthetic measurements, not Slack end-to-end results.
+The supplied human `ping 8743892` → June `pong 8743892` baseline was 5747.170 ms;
+its per-stage traces were lost on restart, so slow names cannot be identified as
+its cause. The under-two-second end-to-end goal remains unverified.
+
+Two provider experiments were not shipped: a compact structured-output envelope
+reduced output tokens but regressed exact-answer correctness, and moving dynamic
+prompt fields after static instructions did not improve measured cache hits.
+The latter's six alternating Astra/low/fast pairs all returned the requested
+answer, but provider-only durations still ranged from 3.15–5.77 seconds before
+and 3.23–5.58 seconds after. Neither experiment supports a production speedup
+claim or replacing genuine human Slack measurements.

@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { MessageEvent } from "../core/contracts.js";
 import { createSlackAdapter } from "./slack.js";
@@ -27,6 +28,54 @@ function adapter(fetch: typeof globalThis.fetch) {
 }
 
 describe("Slack same-surface context", () => {
+  it("expires optional names before slower history without discarding messages", async () => {
+    let nameAborted = false;
+    let nameAbortedBeforeHistory = false;
+    const requestedUsers: string[] = [];
+    const slack = adapter(async (url, init) => {
+      if (String(url).endsWith("users.info")) {
+        requestedUsers.push(JSON.parse(String(init?.body)).user);
+        await new Promise<void>((resolve) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              nameAborted = true;
+              resolve();
+            },
+            { once: true },
+          );
+        });
+        throw new Error("aborted");
+      }
+      if (String(url).endsWith("conversations.history")) {
+        await sleep(350);
+        nameAbortedBeforeHistory = nameAborted;
+        return Response.json({
+          ok: true,
+          messages: [
+            {
+              ts: "1799999998.000001",
+              user: "U_OTHER",
+              text: "Keep this context",
+            },
+          ],
+        });
+      }
+      return Response.json({
+        ok: true,
+        channel: { id: "C1", is_channel: true },
+      });
+    });
+    const context = await slack.context?.(event);
+    expect(context?.map(({ content }) => content)).toEqual([
+      "Keep this context",
+      event.text,
+    ]);
+    expect(context?.[0]?.source?.senderId).toBe("U_OTHER");
+    expect(nameAbortedBeforeHistory).toBe(true);
+    expect(requestedUsers).toEqual(["U_OWNER"]);
+  });
+
   it("rejects unauthorized owners, workspaces, group DMs and cancellation without reading", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>();
     const slack = adapter(fetchMock);

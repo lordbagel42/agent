@@ -5,6 +5,7 @@ import type {
 } from "../core/contracts.js";
 
 const CONTEXT_TIMEOUT_MS = 1_000;
+const NAME_TIMEOUT_MS = 200;
 const MESSAGE_LIMIT = 15;
 const TEXT_LIMIT = 2_000;
 const NAME_LOOKUP_LIMIT = 4;
@@ -190,9 +191,16 @@ export function createSlackContext({
 
     const deadline = AbortSignal.timeout(CONTEXT_TIMEOUT_MS);
     const readSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    // Display names are optional enrichment, not identity or authorization.
+    // Share one short budget across both lookup waves; history keeps its full
+    // deadline and cached names remain usable after this budget expires.
+    const nameSignal = AbortSignal.any([
+      readSignal,
+      AbortSignal.timeout(NAME_TIMEOUT_MS),
+    ]);
     const channel = event.address.conversationId;
     const thread = event.address.threadId;
-    // Independent reads share one deadline; do not serialize names before history.
+    // Do not serialize names before history.
     const [info, history, ownerName] = await Promise.all([
       conversation(channel, readSignal),
       read(
@@ -206,7 +214,7 @@ export function createSlackContext({
         },
         readSignal,
       ),
-      userName(event.senderId, readSignal),
+      userName(event.senderId, nameSignal),
     ]);
     if (
       signal?.aborted ||
@@ -305,7 +313,7 @@ export function createSlackContext({
     const resolvedNames = new Map(
       await Promise.all(
         missingNames.map(
-          async (user) => [user, await userName(user, readSignal)] as const,
+          async (user) => [user, await userName(user, nameSignal)] as const,
         ),
       ),
     );
