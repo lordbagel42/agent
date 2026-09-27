@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
-import type { CompanionReply } from "../core/contracts.js";
+import type { CompanionReply, MessageEvent } from "../core/contracts.js";
 import {
   cancel,
   claim,
@@ -24,6 +24,7 @@ import {
   validateDecision,
 } from "../reflection/evaluator.js";
 import type { Lifecycle } from "./lifecycle.js";
+import type { SocialPermissions } from "./social.js";
 
 export type ReflectionMode = "interaction" | "idle" | "deep";
 
@@ -33,13 +34,25 @@ export function parseReflectionReviewCommand(
 ):
   | { action: "list" }
   | { action: "inspect" | "reject"; id: string }
+  | { action: "propose"; candidateId: string; userId: string; text: string }
   | undefined {
   const command = text.trim();
   if (command === "!reflection list") return { action: "list" };
   const inspect = /^!reflection inspect ([a-f0-9]{64})$/.exec(command)?.[1];
   if (inspect) return { action: "inspect", id: inspect };
   const id = /^!reflection reject ([a-f0-9]{64})$/.exec(command)?.[1];
-  return id ? { action: "reject", id } : undefined;
+  if (id) return { action: "reject", id };
+  const proposal = command.match(
+    /^!reflection propose ([a-f0-9]{64}) ([UW][A-Z0-9]+) ([\s\S]{1,3000})$/,
+  );
+  return proposal
+    ? {
+        action: "propose",
+        candidateId: proposal[1] as string,
+        userId: proposal[2] as string,
+        text: proposal[3] as string,
+      }
+    : undefined;
 }
 
 /** Internal IDs embed evidence IDs; private review uses bounded opaque tokens. */
@@ -62,6 +75,9 @@ export interface ReflectionDependencies {
   ownerId: string;
   policy: Policy;
   decide: DecisionFunction;
+  /** Trusted synchronous store callback; only the actor's staging action may use it. */
+  stageInterruption?: SocialPermissions["stageInterruption"];
+  deletionRevision?: () => number;
   /** Trusted memory boundary: current audience authorization AND deletion lookup.
    * IDs must identify immutable versions. Return exactly the requested evidence.
    */
@@ -892,10 +908,48 @@ export function createReflectionActor(
         }
         return { truncated: requests.length > 10, rows };
       },
+      /** Inert staging may read an older publication, never re-arm its epoch.
+       * No asynchronous gap is allowed between the final fence and store write. */
+      stageInterruption: async (
+        c,
+        event: MessageEvent,
+        input: { candidateId: string; userId: string; text: string },
+        expectedDeletionRevision: number,
+        retained = false,
+      ): Promise<string> => {
+        const unavailable =
+          "That interruption candidate is unavailable or blocked. Nothing was staged or sent.";
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
+          throw new Error("Wrong reflection owner");
+        const epoch = c.state.epoch;
+        const blocked = () =>
+          c.state.epoch !== epoch ||
+          c.state.liveActive > 0 ||
+          isQuiet(Date.now(), deps.policy.quiet) ||
+          expectedDeletionRevision !== (deps.deletionRevision?.() ?? 0);
+        if (!deps.stageInterruption || blocked()) return unavailable;
+        const scope = JSON.stringify(["private", deps.ownerId]);
+        const read = await (retained
+          ? reviewCandidate(c, input.candidateId, scope)
+          : readCandidate(c, input.candidateId, scope));
+        if (!read || blocked() || !read.isCurrent()) return unavailable;
+        return deps.stageInterruption(
+          event,
+          input,
+          {
+            ...read.candidate,
+            evidenceIds: read.evidence.map((e) => e.id),
+          },
+          read.candidate.epoch === epoch,
+        );
+      },
       /** Recheck memory on every read, including after actor recovery or forgetting. */
       candidate: async (c, id: string, scope?: string) => {
         if (c.key.length !== 1 || c.key[0] !== deps.ownerId) return null;
-        return (await readCandidate(c, id, scope))?.candidate ?? null;
+        const read = await readCandidate(c, id, scope);
+        return read
+          ? { ...read.candidate, evidenceIds: read.evidence.map((e) => e.id) }
+          : null;
       },
       /** Bounded historical metadata for model review, never a readiness grant. */
       reviewCandidates: async (c, scope: string) => {

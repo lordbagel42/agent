@@ -464,7 +464,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // first new message, while already-journaled turns keep the old path.
           const reflectionReviewVersion = await loop.getVersion(
             "reflection-review",
-            4,
+            5,
           );
           // A parked inbox can use the jury on its first new turn; journals
           // already processing a turn retain the original capability plan.
@@ -521,7 +521,9 @@ export function createJuneRegistry(deps: Dependencies) {
               (parsedReflectionReview?.action === "inspect" &&
                 reflectionReviewVersion < 3) ||
               (parsedReflectionReview?.action === "reject" &&
-                reflectionReviewVersion < 4)
+                reflectionReviewVersion < 4) ||
+              (parsedReflectionReview?.action === "propose" &&
+                reflectionReviewVersion < 5)
                 ? undefined
                 : parsedReflectionReview;
             if (version >= 5 && !ownerTurn) {
@@ -681,7 +683,12 @@ export function createJuneRegistry(deps: Dependencies) {
             if (!accepted) return;
             if (version >= 9 && body.type !== "wakeup") {
               await loop.step("publish-native-event", async (step) => {
-                if (!deps.wakeups || !valid(step.state)) return;
+                if (
+                  !deps.wakeups ||
+                  !valid(step.state) ||
+                  reflectionReview?.action === "propose"
+                )
+                  return;
                 let native: WakeupEvent;
                 if (body.type === "event") {
                   native = {
@@ -957,6 +964,12 @@ export function createJuneRegistry(deps: Dependencies) {
                         ? "Your wakeup fired, but I couldn't generate its notification. Inspect the wakeup for its recorded event; I won't retry it automatically."
                         : "I couldn't reach my model. Your message is saved; please try again shortly.",
               };
+              let interruptionProposal:
+                | { candidateId: string; userId: string; text: string }
+                | undefined =
+                reflectionReview?.action === "propose"
+                  ? reflectionReview
+                  : undefined;
               const command =
                 scope.private && body.type === "event"
                   ? event.text
@@ -3932,13 +3945,24 @@ export function createJuneRegistry(deps: Dependencies) {
               }
               if (version >= 5 && reply.social) {
                 const action = reply.social;
+                if (
+                  reflectionReviewVersion >= 5 &&
+                  action.kind === "interruption_proposal" &&
+                  body.type === "event" &&
+                  ownerTurn &&
+                  scope.private &&
+                  plan.reflection
+                )
+                  interruptionProposal = action;
                 reply = await loop.step("social-proposal", async (step) => ({
                   text:
                     plan.social &&
                     deps.social &&
                     valid(step.state) &&
                     !step.abortSignal.aborted
-                      ? await deps.social.propose(event, action)
+                      ? interruptionProposal
+                        ? "[Private reflection interruption preview; content not retained]"
+                        : await deps.social.propose(event, action)
                       : "Permission requests are unavailable; no access was granted.",
                 }));
               }
@@ -4113,7 +4137,9 @@ export function createJuneRegistry(deps: Dependencies) {
                     step.state.deliveries[ids[0]] = {
                       phase: "ready",
                       attempts: 0,
-                      ...(reflectionReview ? { ephemeral: true as const } : {}),
+                      ...(reflectionReview || interruptionProposal
+                        ? { ephemeral: true as const }
+                        : {}),
                       message: {
                         id: randomUUID(),
                         address: replyAddress,
@@ -4166,6 +4192,51 @@ export function createJuneRegistry(deps: Dependencies) {
                               code: "memory_invalidated",
                               retryable: false,
                             };
+                          }
+                          if (interruptionProposal) {
+                            let text =
+                              "Interruption staging is unavailable; no delivery or access grant is authorized.";
+                            if (
+                              plan.reflection &&
+                              plan.social &&
+                              deps.reflection &&
+                              deps.social &&
+                              !step.abortSignal.aborted
+                            ) {
+                              try {
+                                text = await step
+                                  .client<JuneClientRegistry>()
+                                  .reflection.getOrCreate([deps.owner.id])
+                                  .stageInterruption(
+                                    event,
+                                    interruptionProposal,
+                                    deletionRevision,
+                                    !reflectionReview,
+                                  );
+                              } catch {
+                                // A missing response does not prove that the
+                                // synchronous store write never completed.
+                                text =
+                                  "Interruption staging could not be confirmed. No delivery or access grant is authorized.";
+                              }
+                            }
+                            if (!valid(step.state) || step.abortSignal.aborted)
+                              return {
+                                status: "rejected",
+                                code: "memory_invalidated",
+                                retryable: false,
+                              };
+                            return send(
+                              {
+                                ...outbound,
+                                content: {
+                                  type: "text",
+                                  text: PRIVATE_REFLECTION_REVIEW_PREFIX + text,
+                                  plainText: true,
+                                },
+                              },
+                              "text",
+                            );
                           }
                           if (reflectionReview?.action === "list") {
                             let text =
@@ -4540,7 +4611,24 @@ export function createJuneRegistry(deps: Dependencies) {
           }
         : {}),
       ...(deps.reflection
-        ? { reflection: createReflectionActor(deps.reflection, deps.lifecycle) }
+        ? {
+            reflection: createReflectionActor(
+              {
+                ...deps.reflection,
+                deletionRevision: () =>
+                  deps.memory?.store.deletionRevision() ?? 0,
+                stageInterruption: deps.social?.stageInterruption.bind(
+                  deps.social,
+                ),
+                rejectProposals: (scope, id): undefined => {
+                  deps.reflection?.rejectProposals?.(scope, id);
+                  deps.social?.rejectInterruption(scope, id);
+                  return undefined;
+                },
+              },
+              deps.lifecycle,
+            ),
+          }
         : {}),
     },
     startServices: false,

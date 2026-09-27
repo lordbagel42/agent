@@ -277,6 +277,43 @@ This is inert review data only: no code, instructions, skills, personality or
 permissions are modified, and no coding job, promotion or installation is
 authorized. Evaluation and any separately approved coding are later capabilities.
 
+### Private interruption previews
+
+In an owner-private Slack turn, June can emit
+`social: {kind: "interruption_proposal", candidateId, userId, text}` with empty
+reply text and no other directives. After inference settles, the actor revalidates
+the immutable publication, all original evidence and rejection status, and checks
+live work, quiet hours, deletion revision and the operation's current epoch
+immediately before synchronously staging an inert draft. It never changes the
+candidate's creation epoch or publication. A retained draft with an old creation
+epoch is explicitly **not currently send-eligible**; approval alone cannot send it.
+
+In the owner's Slack DM, send the literal message
+`!reflection propose <candidate-id> <Slack-user-id> <message>` (not a Slack slash command).
+It stages one pending outreach proposal from a current, non-dream-only interruption
+candidate. Use the opaque 64-character ID returned by `!reflection list` and
+review provenance with `!reflection inspect <candidate-id>`. The host consumes
+this exact command without inference, evidence ingestion, or extraction. Unlike
+inert model staging, this path also requires the original creation epoch to remain
+current. Neither path approves a candidate or refreshes its send eligibility.
+
+The preview quotes the exact frozen recipient/message privately in the current
+conversation. It sends no separate notification or outreach, grants no tools,
+and copies no candidate rationale into the social ledger. Candidate provenance
+includes all original request evidence IDs, not just cited evidence. Repeating
+the command retains the first recipient/message, including across restart.
+Missing/expired publications, stale evidence, quiet/live, wrong-scope, rejected,
+or forgotten candidates cannot produce a preview. Preview text is sent ephemerally,
+not copied into conversation history. Forgetting revokes and redacts staged text.
+Candidate rejection synchronously revokes pending or approved copies and stores
+a content-free restaging tombstone before acknowledging success. That tombstone
+survives restart, including rejection before any draft exists.
+
+Candidate-linked `!allow` is deliberately unavailable until the guarded delivery
+path is installed; it cannot fall through to ordinary outreach. `!deny` and
+`!revoke` still close the proposal. Pending proposals expire after 24 hours.
+Inspection and staging are never permission to send.
+
 Verification: `pnpm exec vitest run src/runtime/reflection.test.ts
 src/reflection/domain.test.ts` exercises the real disposable engine plus domain
 rules. The runtime test protects audience/deletion checks, duplicate admission,

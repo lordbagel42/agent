@@ -17,16 +17,31 @@ import {
   socialActionSchema,
 } from "../core/social.js";
 import { type Delivery, deliver } from "./delivery.js";
+import {
+  type ReflectionCandidate,
+  reflectionCandidateId,
+} from "./reflection.js";
 
 const DAY = 86_400_000;
+export interface InterruptionReference {
+  candidateId: string;
+  scope: string;
+  requestId: string;
+  epoch: number;
+  evidenceIds: string[];
+  publication: { version: 1; expiresAt: number };
+}
+
 interface Proposal {
   id: string;
   accountId: string;
   requester: string;
-  action: Exclude<SocialAction, { kind: "post" }>;
+  action: Extract<SocialAction, { kind: "request_access" | "outreach" }>;
   status: "pending" | "approved" | "denied" | "revoked";
   created: number;
   expires: number;
+  /** Private source binding, not permission. Generic outreach must not send it. */
+  reflection?: InterruptionReference;
 }
 
 /** Permissions are explicit owner decisions, never inferred relationship scores.
@@ -49,7 +64,10 @@ export class SocialPermissions {
     chmodSync(options.file, 0o600);
     this.db.exec(`CREATE TABLE IF NOT EXISTS social_proposals (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS social_deliveries (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS social_privacy (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS social_privacy (id INTEGER PRIMARY KEY, revision INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS social_reflection_rejections (
+        account_id TEXT NOT NULL, scope TEXT NOT NULL, candidate_id TEXT NOT NULL,
+        PRIMARY KEY (account_id, scope, candidate_id));`);
     this.forget();
   }
   close() {
@@ -254,6 +272,8 @@ export class SocialPermissions {
       this.save(proposal);
       return "Denied. No additional access was granted.";
     }
+    if (proposal.reflection)
+      return "Interruption delivery is unavailable. This remains an unapproved proposal; no message was sent or permission granted.";
     if (!resumeOutreach) {
       proposal.status = "approved";
       proposal.expires = this.now() + 30 * DAY;
@@ -273,9 +293,125 @@ export class SocialPermissions {
     }
     return `Approved access ${proposal.id} for 30 days, only for the named person in the named conversation. Revoke with !revoke ${proposal.id}.`;
   }
+  /** Commit before the actor acknowledges rejection. The content-free marker
+   * also prevents restaging after recovery, even when no draft existed yet. */
+  rejectInterruption(scope: string, candidateId: string): undefined {
+    this.forget();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db
+        .prepare(
+          "INSERT OR IGNORE INTO social_reflection_rejections VALUES (?, ?, ?)",
+        )
+        .run(this.options.teamId, scope, candidateId);
+      for (const row of this.db
+        .prepare("SELECT value FROM social_proposals")
+        .all()) {
+        const proposal = JSON.parse(String(row.value)) as Proposal;
+        if (
+          proposal.accountId === this.options.teamId &&
+          proposal.reflection?.scope === scope &&
+          proposal.reflection.candidateId === candidateId &&
+          (proposal.status === "pending" || proposal.status === "approved")
+        ) {
+          proposal.status = "revoked";
+          this.save(proposal);
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    return undefined;
+  }
+  /** Trusted actor callback, called synchronously after current provenance and
+   * operation fences are checked. Never accepts a model-provided candidate,
+   * notifies a recipient, or creates an access grant. */
+  stageInterruption(
+    event: MessageEvent,
+    input: { candidateId: string; userId: string; text: string },
+    candidate: (ReflectionCandidate & { evidenceIds: string[] }) | null,
+    sendEligible: boolean,
+  ): string {
+    if (!(this.owner(event) && event.direct))
+      return "Interruption proposals require Raygen's private conversation.";
+    const parsed = socialActionSchema.safeParse({
+      kind: "outreach",
+      userId: input.userId,
+      text: input.text,
+    });
+    if (
+      !/^[a-f0-9]{64}$/.test(input.candidateId) ||
+      !parsed.success ||
+      parsed.data.kind !== "outreach" ||
+      parsed.data.userId === RAYGEN_SLACK_ID ||
+      parsed.data.userId === this.options.botUserId
+    )
+      return "Choose a valid candidate, human recipient other than Raygen or June, and a message of 1–3000 characters.";
+    this.forget();
+    if (
+      !candidate ||
+      reflectionCandidateId(candidate.id) !== input.candidateId ||
+      candidate.scope !== JSON.stringify(["private", this.options.owner.id]) ||
+      candidate.kind !== "interruption-candidate" ||
+      candidate.hypothesisOnly ||
+      candidate.decision.answer !== "yes" ||
+      !candidate.publication ||
+      !candidate.decision.evidenceIds.length
+    )
+      return "That interruption candidate is unavailable or no longer eligible. Nothing was staged or sent.";
+    if (
+      this.db
+        .prepare(
+          "SELECT 1 FROM social_reflection_rejections WHERE account_id = ? AND scope = ? AND candidate_id = ?",
+        )
+        .get(this.options.teamId, candidate.scope, input.candidateId)
+    )
+      return "That interruption candidate was rejected. Nothing was staged or sent.";
+    const id = createHash("sha256")
+      .update(
+        JSON.stringify([
+          event.address.accountId,
+          input.candidateId,
+          "reflection-outreach",
+        ]),
+      )
+      .digest("hex")
+      .slice(0, 24);
+    let proposal = this.get(id);
+    if (!proposal) {
+      proposal = {
+        id,
+        accountId: event.address.accountId,
+        requester: event.senderId,
+        action: parsed.data,
+        status: "pending",
+        created: this.now(),
+        expires: this.now() + DAY,
+        reflection: {
+          candidateId: input.candidateId,
+          scope: candidate.scope,
+          requestId: candidate.requestId,
+          epoch: candidate.epoch,
+          evidenceIds: [...candidate.evidenceIds],
+          publication: { ...candidate.publication },
+        },
+      };
+      this.save(proposal);
+    }
+    if (proposal.status !== "pending" || proposal.expires <= this.now())
+      return `Request ${id} is no longer pending. Nothing was staged or sent.`;
+    if (proposal.action.kind !== "outreach")
+      return "That interruption proposal is unavailable.";
+    const quoted = JSON.stringify(proposal.action.text);
+    return `Interruption proposal ${id}. Exact recipient: ${proposal.action.userId}. Exact message (JSON quoted):\n${quoted}\nCandidate ${input.candidateId} is a generated hypothesis, not permission. ${sendEligible ? "Eligibility must be checked again at delivery." : "The original candidate is not currently send-eligible; approving this draft alone cannot send it."} No outreach or separate notification was sent, and no access was granted. Delivery is unavailable until the guarded approval path is enabled. Deny with !deny ${id} or revoke with !revoke ${id}. Expires at ${new Date(proposal.expires).toISOString()}; repeated staging keeps the original recipient and message.`;
+  }
   async propose(event: MessageEvent, input: SocialAction): Promise<string> {
     if (!this.authorized(event)) return "This conversation is not authorized.";
     const action = socialActionSchema.parse(input);
+    if (action.kind === "interruption_proposal")
+      return "Interruption staging requires the current private reflection gate. Nothing was staged or sent.";
     const owner = this.owner(event);
     if (action.kind === "post") {
       if (!owner) return "Only Raygen's turns can post to other destinations.";

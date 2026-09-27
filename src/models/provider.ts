@@ -1066,7 +1066,7 @@ export function replyJsonSchema(
             social: {
               ...socialSchema,
               description:
-                "For Raygen's current turn, post sends directly to a chosen Slack destination. request_access and outreach create approval proposals, never grant permission. Leave text empty and other actions unset.",
+                "For Raygen's current turn, post sends directly to a chosen Slack destination. request_access and outreach create approval proposals, never grant permission. interruption_proposal stages an inert private candidate-bound draft, never sends or grants permission. Leave text empty and other actions unset.",
             },
           }
         : {}),

@@ -38,6 +38,12 @@ export const socialActionSchema = z.union([
     userId: z.string().regex(/^[UW][A-Z0-9]+$/),
     text: z.string().trim().min(1).max(3000),
   }),
+  z.strictObject({
+    kind: z.literal("interruption_proposal"),
+    candidateId: z.string().regex(/^[a-f0-9]{64}$/),
+    userId: z.string().regex(/^[UW][A-Z0-9]+$/),
+    text: z.string().trim().min(1).max(3000),
+  }),
 ]);
 
 export type SocialAction = z.infer<typeof socialActionSchema>;
