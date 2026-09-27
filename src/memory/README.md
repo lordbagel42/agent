@@ -446,6 +446,19 @@ and URL slashes in displayed values; live platform rendering is not verified.
 The view itself never accepts or rejects a proposal; review remains a separate
 authenticated operation. Rejection does not delete the source evidence.
 
+The owner can also ask “Which imports support these pending claims?” The same
+view includes `recordedImports`: selection IDs, the claim's cited source IDs
+recorded in each selection, and extraction IDs whose receipts link that proposal.
+Selection membership alone does not mean that selection produced the claim;
+uncited batch inputs are never presented as support. Empty lists mean no recorded
+linkage, not proof no import occurred. Older imports may have no membership data.
+Exact page attribution is unavailable: the existing ledger records selection-level
+membership, not individual page boundaries. Importing never approves a claim.
+This projection joins existing records through
+`pendingImportProvenance(audience, proposalId)`; it creates no separate store,
+infers no membership from dates/coverage, and shares the row size limit and
+deletion provenance of the pending view.
+
 The view is unavailable in public/guest turns, disabled memory, worker results,
 and search/MCP synthesis. Scope comes only from routing, and availability is
 frozen in the turn plan. Returned claims carry original source provenance into

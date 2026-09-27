@@ -952,6 +952,51 @@ export class EvidenceStore {
     return this.proposals(audience).find((p) => p.id === proposalId);
   }
 
+  /** Recorded selection membership, not inferred page attribution or approval.
+   * Only actual citations are support; other extraction inputs are not. */
+  pendingImportProvenance(audience: string, proposalId: string) {
+    parse(id, audience);
+    parse(id, proposalId);
+    const state = this.read();
+    const proposal = state.proposals.find(
+      (p) =>
+        p.id === proposalId &&
+        p.audience === audience &&
+        p.status === "pending",
+    );
+    if (!proposal) return [];
+    const cited = new Set(
+      proposal.claim.grounding?.citations.map((citation) => citation.sourceId),
+    );
+    const sourceIds = state.sources
+      .filter(
+        (source) => source.audiences.includes(audience) && cited.has(source.id),
+      )
+      .map((source) => source.id);
+    return state.imports
+      .filter((progress) => progress.coverage.audiences.includes(audience))
+      .flatMap((progress) => {
+        const members = sourceIds.filter((sourceId) =>
+          progress.sourceIds.includes(sourceId),
+        );
+        if (!members.length) return [];
+        return [
+          {
+            selectionId: progress.id,
+            sourceIds: members,
+            extractionIds: state.importExtractions
+              .filter(
+                (entry) =>
+                  entry.audience === audience &&
+                  entry.importId === progress.id &&
+                  entry.proposalIds.includes(proposalId),
+              )
+              .map((entry) => entry.id),
+          },
+        ];
+      });
+  }
+
   /** Trusted operator action, not a model tool. Repeated identical decisions are
    * idempotent; rejected proposals cannot silently become accepted on retry. */
   reviewProposal(

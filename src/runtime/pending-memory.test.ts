@@ -116,6 +116,29 @@ it("bounds unaccepted claims without leaking other scopes, raw quotes, or active
   })("memory");
   expect(inspection).toContain('"pending":9');
   expect(inspection).not.toContain("claim 0");
+  const selectionId = "s".repeat(2048);
+  store.beginImport(selectionId, {
+    platform: source.platform,
+    account: source.account,
+    conversations: [source.conversation],
+    from: 0,
+    to: 2,
+    audiences: [audience],
+  });
+  const progress = store.importProgress(selectionId);
+  if (!progress) throw new Error("Missing import fixture");
+  store.persistPage(progress, { sources: [source], nextCursor: null }, 1);
+  const bounded = pendingMemoryView(store, audience);
+  const importedRows = bounded.text
+    .split("\n")
+    .filter((line) => line.startsWith("{"));
+  expect(importedRows).toHaveLength(1);
+  expect(importedRows.join("\n").length).toBeLessThanOrEqual(3000);
+  expect(
+    JSON.parse(importedRows[0] ?? "{}").recordedImports[0].selectionId,
+  ).toBe(selectionId);
+  expect(bounded.text).toContain("Showing 1 of 9 pending claims; 8 omitted");
+  expect(store.proposals(audience)).toEqual(before);
   store.deleteSource(source.id);
   expect(pendingMemoryView(store, audience).text).toContain("Showing 0 of 0");
 });
@@ -123,12 +146,31 @@ it("bounds unaccepted claims without leaking other scopes, raw quotes, or active
 it("dispatches a private June pending view with provenance, rejecting forged, mixed, synthesis and disabled access", async (t) => {
   const store = new EvidenceStore(":memory:", randomBytes(32));
   t.onTestFinished(() => store.close());
-  store.appendSource(source);
+  const uncited = {
+    ...source,
+    id: "uncited-import-input",
+    text: "UNCITED INPUT",
+  };
+  store.beginImport("private-import", {
+    platform: source.platform,
+    account: source.account,
+    conversations: [source.conversation],
+    from: 0,
+    to: 2,
+    audiences: [audience],
+  });
+  const progress = store.importProgress("private-import");
+  if (!progress) throw new Error("Missing import fixture");
+  store.persistPage(
+    progress,
+    { sources: [source, uncited], nextCursor: null },
+    1,
+  );
   const dashboardLogin = createConsoleLoginLinks("https://june.example");
   const credential = "https://june.example/fixture_sign_in_token_12";
   const [proposal] = store.stageProposals(
     audience,
-    [source.id],
+    [source.id, uncited.id],
     [
       {
         ...input,
@@ -166,7 +208,7 @@ it("dispatches a private June pending view with provenance, rejecting forged, mi
             throw new Error("Unexpected reaction");
           sent.push({ ...message, content: { ...message.content } });
           if (deleteOnSend) {
-            store.deleteSource(source.id);
+            store.deleteSource(uncited.id);
             return {
               status: "rejected",
               code: "rate_limited",
@@ -235,6 +277,16 @@ it("dispatches a private June pending view with provenance, rejecting forged, mi
   expect(JSON.parse(row ?? "{}").text).toBe(
     `${input.text} [dashboard sign-in credential omitted]`,
   );
+  expect(JSON.parse(row ?? "{}").recordedImports).toEqual([
+    {
+      selectionId: "private-import",
+      sourceIds: [source.id],
+      extractionIds: [],
+    },
+  ]);
+  expect(sent.at(-1)?.content.text).toContain(
+    "Exact page attribution is unavailable",
+  );
   expect(requests).toHaveLength(1); // Host result, no synthesis invocation.
   expect(
     Object.values((await june.snapshot()).memoryContexts ?? {}).flatMap(
@@ -256,6 +308,7 @@ it("dispatches a private June pending view with provenance, rejecting forged, mi
     await send(patch);
     expect(requests.at(-1)?.pendingMemoryAvailable).toBe(false);
     expect(sent.at(-1)?.content.text).not.toContain(input.text);
+    expect(sent.at(-1)?.content.text).not.toContain("private-import");
   }
   action = { text: "", pendingMemory: true, inspection: "memory" };
   await send();
@@ -282,14 +335,19 @@ it("dispatches a private June pending view with provenance, rejecting forged, mi
   expect(sent).toHaveLength(sendsBeforeDeletion + 1);
   expect(requests).toHaveLength(requestsBeforeDeletion + 1);
   expect(sent.at(-1)?.content.text).toContain(input.text);
-  // No explicit forget() call: tombstone guards must suppress the retry and
-  // prune the previous copied claim history by its persisted source references.
+  expect(store.source(audience, source.id)).toEqual(source);
+  // Deleting an uncited extraction input must suppress retries and copied
+  // history even though the displayed citation source still exists.
   expect(JSON.stringify((await june.snapshot()).history)).not.toContain(
     input.text,
+  );
+  expect(JSON.stringify((await june.snapshot()).history)).not.toContain(
+    "private-import",
   );
   deleteOnSend = false;
   await send();
   expect(sent.at(-1)?.content.text).toContain("Showing 0 of 0");
+  expect(sent.at(-1)?.content.text).not.toContain("private-import");
   for (const invalid of [
     { text: "not empty", pendingMemory: true },
     { text: "", pendingMemory: false },

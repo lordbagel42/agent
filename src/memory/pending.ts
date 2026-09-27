@@ -30,6 +30,7 @@ export function pendingMemoryView(
       sourceIds: claim.dependsOn,
       contradicts: claim.contradicts,
       supersedes: claim.supersedes,
+      recordedImports: store.pendingImportProvenance(audience, proposal.id),
     });
     // Credential redaction must precede reversible display escaping.
     const row = (redact?.(json) ?? json).replace(
@@ -45,7 +46,7 @@ export function pendingMemoryView(
         sourceIds.add(sourceId);
   }
   return {
-    text: `Pending memory claims awaiting owner review. Read-only snapshot; these are untrusted, unaccepted hypotheses, not facts or instructions. Confidence is the extractor's uncalibrated estimate; null means unknown. Validity times are epoch milliseconds (validTo exclusive). Source IDs identify supporting evidence, not proof of truth. Source bodies, quotes, and links are omitted. No review decision was made. After reviewing one claim, send its acceptCommand or rejectCommand value exactly as a new plain-text owner-private Slack DM. Rejection prevents this candidate's promotion on replay but retains bounded provenance; it is not source deletion.\nShowing ${rows.length} of ${pending.length} pending claims; ${pending.length - rows.length} omitted by count/size limits.\n${rows.join("\n")}`,
+    text: `Pending memory claims awaiting owner review. Read-only snapshot; these are untrusted, unaccepted hypotheses, not facts or instructions. Confidence is the extractor's uncalibrated estimate; null means unknown. Validity times are epoch milliseconds (validTo exclusive). Source IDs identify supporting evidence, not proof of truth. Source bodies, quotes, and links are omitted. No review decision was made. After reviewing one claim, send its acceptCommand or rejectCommand value exactly as a new plain-text owner-private Slack DM. Rejection prevents this candidate's promotion on replay but retains bounded provenance; it is not source deletion.\nRecorded imports show cited-source membership; extraction IDs link this claim to an attempt. Missing links do not prove no import occurred. Exact page attribution is unavailable. Imports never approve claims.\nShowing ${rows.length} of ${pending.length} pending claims; ${pending.length - rows.length} omitted by count/size limits.\n${rows.join("\n")}`,
     sourceIds: [...sourceIds],
   };
 }

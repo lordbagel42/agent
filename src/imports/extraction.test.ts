@@ -64,6 +64,71 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
 });
 
+it("joins only scoped cited import membership and receipts across restart and forgetting", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "june-import-provenance-"));
+  dirs.push(dir);
+  const path = join(dir, "evidence.db");
+  let store = open(path);
+  persist(store, [
+    source("cited"),
+    source("uncited"),
+    source("foreign", "other"),
+  ]);
+  persist(store, [source("cited")], "overlap");
+  const extraction = new ImportedMemoryExtraction(
+    store,
+    { mail: coverage },
+    audience,
+    {},
+    async () => [proposal("cited")],
+  );
+  const review = extraction.review("mail");
+  if (!review.digest) throw new Error("Missing extraction fixture");
+  await extraction.start("mail", review.digest);
+  const imported = store.proposals(audience)[0];
+  if (!imported) throw new Error("Missing proposal fixture");
+  // Same coverage/date is not proof this source appeared in an imported page.
+  store.appendSource(source("unrecorded"));
+  const [unrecorded] = store.stageProposals(
+    audience,
+    ["unrecorded"],
+    [proposal("unrecorded")],
+  );
+  const [foreign] = store.stageProposals(
+    "other",
+    ["foreign"],
+    [proposal("foreign")],
+  );
+  if (!unrecorded || !foreign) throw new Error("Missing proposal fixtures");
+  const expected = [
+    {
+      selectionId: "mail",
+      sourceIds: ["cited"],
+      extractionIds: [review.digest],
+    },
+    { selectionId: "overlap", sourceIds: ["cited"], extractionIds: [] },
+  ];
+  expect(store.pendingImportProvenance(audience, imported.id)).toEqual(
+    expected,
+  );
+  expect(store.pendingImportProvenance("other", imported.id)).toEqual([]);
+  expect(store.pendingImportProvenance(audience, foreign.id)).toEqual([]);
+  expect(store.pendingImportProvenance(audience, unrecorded.id)).toEqual([]);
+  expect(store.search(audience, "").claims).toEqual([]);
+  expect(store.proposal(audience, imported.id)?.status).toBe("pending");
+  store.close();
+  store = open(path);
+  expect(store.pendingImportProvenance(audience, imported.id)).toEqual(
+    expected,
+  );
+  store.deleteSource("cited");
+  store.close();
+  store = open(path);
+  expect(store.importProgress("mail")?.sourceIds).toContain("cited");
+  expect(store.pendingImportProvenance(audience, imported.id)).toEqual([]);
+  expect(store.proposal(audience, unrecorded.id)?.status).toBe("pending");
+});
+
 it("requires exact operator consent, extracts only imported audience-scoped batches and never accepts or replays actions", async () => {
   const store = open();
   const sources = Array.from({ length: 21 }, (_, i) =>
