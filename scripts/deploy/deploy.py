@@ -34,6 +34,7 @@ SOURCE = (
     "tsconfig.json",
     "vitest.config.ts",
     "biome.json",
+    ".gitignore",
     ".npmrc",
     ".node-version",
 )
