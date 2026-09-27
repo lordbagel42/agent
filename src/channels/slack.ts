@@ -18,6 +18,7 @@ import {
   createSlackSearch,
   type SlackPrivateSearchOptions,
 } from "./slack-search.js";
+import type { SlackThreads } from "./slack-threads.js";
 
 const SIGNATURE_TOLERANCE_SECONDS = 300;
 const SLACK_TEXT_LIMIT = 40_000;
@@ -118,6 +119,7 @@ async function normalizeEvent(
   ownerUserIds: ReadonlySet<string>,
   participateInOwnerChannels: boolean,
   context: ReturnType<typeof createSlackContext>,
+  threads?: Pick<SlackThreads, "has" | "record">,
 ): Promise<ChannelEvent[]> {
   if (!nonEmptyString(payload.event_id) || !isJsonObject(payload.event)) {
     return [];
@@ -189,7 +191,15 @@ async function normalizeEvent(
       return [];
     if (event.type === "app_mention" && channelType === "im") return [];
 
-    if (channelType !== "im" && !mentioned) {
+    const participatingThread =
+      channelType !== "im" &&
+      !mentioned &&
+      owner &&
+      nonEmptyString(event.thread_ts) &&
+      event.thread_ts !== event.ts &&
+      (event.parent_user_id === botUserId ||
+        threads?.has(teamId, botUserId, event.channel, event.thread_ts));
+    if (channelType !== "im" && !mentioned && !participatingThread) {
       if (!owner || !participateInOwnerChannels) return [];
       // Never authorize by an ID, event-supplied name, text, or stale name cache.
       const info = await context.conversation(
@@ -286,6 +296,7 @@ export function createSlackAdapter({
   privateSearch,
   ingressDiagnostics,
   latency,
+  threads,
   fetch: fetchImpl = globalThis.fetch,
   now = () => Date.now(),
 }: {
@@ -303,6 +314,7 @@ export function createSlackAdapter({
   privateSearch?: SlackPrivateSearchOptions;
   ingressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
+  threads?: Pick<SlackThreads, "has" | "record">;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
 }): ChannelAdapter {
@@ -484,6 +496,7 @@ export function createSlackAdapter({
         owners,
         participateInOwnerChannels,
         context,
+        threads,
       );
       ingressDiagnostics?.record(
         request,
@@ -619,6 +632,22 @@ export function createSlackAdapter({
             return { status: "unknown", code: "malformed_response" };
           }
           successMessageId = responsePayload.ts;
+          try {
+            threads?.record(
+              teamId,
+              botUserId,
+              nonEmptyString(responsePayload.channel)
+                ? responsePayload.channel
+                : message.address.conversationId,
+              message.address.threadId ??
+                message.content.replyTo ??
+                responsePayload.ts,
+            );
+          } catch {
+            // Slack already accepted this message. A local write failure must
+            // not turn a successful delivery into an uncertain/retryable send.
+            console.warn("Could not save Slack thread participation");
+          }
         }
         return { status: "sent", messageId: successMessageId };
       } catch {

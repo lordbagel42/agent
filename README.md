@@ -182,7 +182,15 @@ Anyone in that workspace can initiate a turn by directly mentioning June or
 messaging her 1:1. Group pings alone are not invitations. Set
 `slack.participateInOwnerChannels: true` to also accept Raygen's unmentioned messages
 in channels whose verified current name contains `raygen`. Group DMs remain
-excluded. June chooses reply placement with `replyInThread`: false posts in the
+excluded. Raygen can also follow up without another mention in threads June
+started or has posted text in. Successful Slack sends record thread participation
+locally across restarts, without a Slack lookup on each follow-up. Slack's signed
+parent-author field, when present, also recognizes older threads June started. Older threads
+she joined need one new reply from June to enter the local record. This requires
+Slack to deliver channel message events (`message.channels`/`message.groups`
+and the corresponding installed history scopes); an app-mention subscription
+alone cannot deliver unmentioned follow-ups. Guest mention rules are unchanged.
+June chooses reply placement with `replyInThread`: false posts in the
 main DM/channel, true uses the existing thread or starts one on the incoming
 message, and unset preserves incoming placement. Normal DMs and ongoing channel
 conversation should generally stay unthreaded; mentions do not force threads.

@@ -1,4 +1,7 @@
 import { createHmac } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { MessageEvent, OutboundMessage } from "../core/contracts.js";
 import { createSlackAdapter } from "./slack.js";
@@ -6,6 +9,7 @@ import {
   createSlackIngressDiagnostics,
   type SlackIngressStage,
 } from "./slack-ingress.js";
+import { SlackThreads } from "./slack-threads.js";
 
 const signingSecret = "slack-signing-secret";
 const now = 1_800_000_000_000;
@@ -91,6 +95,180 @@ function jsonResponse(
 }
 
 describe("createSlackAdapter", () => {
+  it("admits owner follow-ups only in threads June successfully posted to", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "june-slack-threads-"));
+    const file = join(root, "threads.sqlite");
+    let threads = new SlackThreads(file);
+    t.onTestFinished(() => {
+      threads.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        jsonResponse({ ok: true, ts: "100.123", channel: "C_THREAD" }),
+      );
+    let adapter = makeAdapter(fetchImpl, { threads });
+    const reply = async (overrides: Record<string, unknown> = {}) =>
+      (
+        await adapter.receive(
+          signedRequest(
+            eventBody({
+              type: "message",
+              channel_type: "channel",
+              channel: "C_THREAD",
+              user: "U_HUMAN",
+              ts: "101.456",
+              thread_ts: "100.123",
+              text: "and what about this?",
+              ...overrides,
+            }),
+          ),
+        )
+      ).events;
+    expect(await reply()).toEqual([]);
+    await adapter.send(
+      textMessage({
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "C_THREAD",
+      }),
+    );
+    threads.close();
+    threads = new SlackThreads(file);
+    adapter = makeAdapter(fetchImpl, { threads });
+    expect(threads.has("T_OTHER", botUserId, "C_THREAD", "100.123")).toBe(
+      false,
+    );
+    expect(threads.has(teamId, "U_OTHER_BOT", "C_THREAD", "100.123")).toBe(
+      false,
+    );
+    expect(await reply()).toMatchObject([
+      { botMentioned: false, address: { threadId: "100.123" } },
+    ]);
+    expect(await reply({ channel: "C_OTHER" })).toEqual([]);
+    expect(await reply({ thread_ts: "99.999" })).toEqual([]);
+    expect(await reply({ thread_ts: undefined })).toEqual([]);
+    expect(await reply({ user: "U_GUEST" })).toEqual([]);
+    expect(await reply({ text: "## don't read" })).toEqual([]);
+    fetchImpl.mockResolvedValue(
+      jsonResponse({ ok: true, ts: "102.789", channel: "C_THREAD" }),
+    );
+    await adapter.send({
+      ...textMessage({
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "C_THREAD",
+      }),
+      content: { type: "text", text: "reply", replyTo: "99.999" },
+    });
+    expect(await reply({ thread_ts: "99.999" })).toHaveLength(1);
+    fetchImpl.mockResolvedValue(
+      jsonResponse({ ok: false, error: "not_in_channel" }),
+    );
+    await adapter.send(
+      textMessage({
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "C_THREAD",
+        threadId: "88.888",
+      }),
+    );
+    expect(await reply({ thread_ts: "88.888" })).toEqual([]);
+    fetchImpl.mockResolvedValue(
+      jsonResponse({ ok: true, ts: "103.456", channel: "C_THREAD" }),
+    );
+    await adapter.send(
+      textMessage({
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "C_THREAD",
+        threadId: "77.777",
+      }),
+    );
+    expect(await reply({ thread_ts: "77.777" })).toHaveLength(1);
+    fetchImpl.mockRejectedValue(new Error("ambiguous connection failure"));
+    await adapter.send(
+      textMessage({
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "C_THREAD",
+        threadId: "66.666",
+      }),
+    );
+    expect(await reply({ thread_ts: "66.666" })).toEqual([]);
+    // Recognition is local and does not add a Slack API round trip on ingress.
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+  });
+
+  it("preserves successful sends and explicit contact when the thread ledger fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        jsonResponse({ ok: true, ts: "300.123", channel: "C_THREAD" }),
+      );
+    const unavailable = () => {
+      throw new Error("ledger unavailable");
+    };
+    const adapter = makeAdapter(fetchImpl, {
+      threads: { has: unavailable, record: unavailable },
+    });
+    try {
+      expect(await adapter.send(textMessage())).toEqual({
+        status: "sent",
+        messageId: "300.123",
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      for (const channel_type of ["im", "channel"]) {
+        const result = await adapter.receive(
+          signedRequest(
+            eventBody({
+              type: "message",
+              channel_type,
+              channel: channel_type === "im" ? "D1" : "C1",
+              user: "U_HUMAN",
+              ts: "301.234",
+              thread_ts: "300.123",
+              text: channel_type === "im" ? "follow up" : "<@U_BOT> follow up",
+            }),
+          ),
+        );
+        expect(result.events).toHaveLength(1);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("recognizes Slack's signed June-authored thread parent without stored history", async () => {
+    const adapter = makeAdapter();
+    const reply = async (overrides: Record<string, unknown>) =>
+      (
+        await adapter.receive(
+          signedRequest(
+            eventBody({
+              type: "message",
+              channel_type: "channel",
+              channel: "C_OLD",
+              user: "U_HUMAN",
+              ts: "201.234",
+              thread_ts: "200.123",
+              parent_user_id: botUserId,
+              text: "follow up",
+              ...overrides,
+            }),
+          ),
+        )
+      ).events;
+    expect(await reply({})).toHaveLength(1);
+    expect(await reply({ parent_user_id: "U_OTHER" })).toEqual([]);
+    expect(await reply({ user: "U_GUEST" })).toEqual([]);
+    expect(await reply({ thread_ts: undefined })).toEqual([]);
+    expect(await reply({ thread_ts: "201.234" })).toEqual([]);
+    expect(await reply({ text: "## ignored" })).toEqual([]);
+  });
+
   it.each([
     ["## private", false],
     ["## <@U_BOT> !stop", false],
