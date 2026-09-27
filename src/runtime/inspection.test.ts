@@ -11,10 +11,52 @@ import type {
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { HistoryImports } from "../imports/index.js";
+import type { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { createInspectionReader } from "./inspection.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
+
+it("reports retained-copy boundaries without accessing retained data", async () => {
+  const forbidden = () => {
+    throw new Error("Retention inspection must not access stored data");
+  };
+  for (const configured of [true, false]) {
+    const read = createInspectionReader({
+      audience: "SECRET AUDIENCE",
+      memory: configured
+        ? {
+            store: new Proxy({} as EvidenceStore, { get: forbidden }),
+            personality: new Proxy({} as CuratedPersonalityStore, {
+              get: forbidden,
+            }),
+          }
+        : undefined,
+      get imports() {
+        return forbidden();
+      },
+      get selections() {
+        return forbidden();
+      },
+      nativeCoding: forbidden,
+      reflection: forbidden,
+    });
+    const report = await read("retention");
+    expect(report).toContain(
+      `Ledger: ${configured ? "configured" : "not configured in this runtime"}`,
+    );
+    expect(report).toContain(
+      `curated encrypted snapshot storage is ${configured ? "configured" : "not configured in this runtime"}`,
+    );
+    expect(report).toContain(
+      "Physical erasure is unverified for every category",
+    );
+    expect(report).toContain("Per-source deletion status is unknown");
+    expect(report).toContain("Unknown does not mean absent");
+    expect(report).not.toContain("SECRET");
+    expect(report.length).toBeLessThan(4000);
+  }
+});
 
 it("inspects bounded metadata through June while enforcing owner, guest, synthesis and read-only boundaries", async (t) => {
   const owner = {
@@ -161,6 +203,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
             'Set inspection to "memory", "imports", "reflection", or "native-coding"',
           );
         if (request.inspectionAvailable)
+          expect(request.system).toContain('Set inspection to "retention"');
+        if (request.inspectionAvailable)
           expect(request.system).toContain("serialized-byte usage/limits");
         if (search && request.webSearchAvailable)
           return { text: "", webSearch: "public query" };
@@ -306,44 +350,53 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain(
     "coding.enabled is false (activation gate closed)",
   );
-  expect(reads).toBe(4);
-  expect(requests).toHaveLength(4);
-  for (const extra of [
-    {
-      direct: false,
-      address: {
-        channel: "slack" as const,
-        accountId: "T1",
-        conversationId: "C1",
+  action = { text: "", inspection: "retention" };
+  const retentionReport = await deliver();
+  for (const category of [
+    "Ledger:",
+    "Rivet journals:",
+    "Snapshots:",
+    "Backups:",
+    "Delivered messages:",
+  ])
+    expect(retentionReport).toContain(category);
+  expect(retentionReport).toContain("Physical erasure is unverified");
+  expect(retentionReport.length).toBeLessThan(4000);
+  expect(reads).toBe(5);
+  expect(requests).toHaveLength(5);
+  for (const inspection of ["native-coding", "memory", "retention"] as const) {
+    action = { text: "", inspection };
+    for (const extra of [
+      {
+        direct: false,
+        address: {
+          channel: "slack" as const,
+          accountId: "T1",
+          conversationId: "C1",
+        },
       },
-    },
-    { senderId: "U2", metadata: { channelType: "im" as const } },
-  ]) {
-    for (const inspection of ["native-coding", "memory"] as const) {
-      action = { text: "", inspection };
+      { senderId: "U2", metadata: { channelType: "im" as const } },
+    ]) {
       const before = requests.length;
       expect(await deliver(extra)).toContain("owner-private turn");
       expect(requests).toHaveLength(before + 1);
       expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-      expect(reads).toBe(4);
+      expect(reads).toBe(5);
     }
-  }
-  search = true;
-  for (const inspection of ["native-coding", "memory"] as const) {
-    action = { text: "", inspection };
+    search = true;
     await deliver();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(4);
+    expect(reads).toBe(5);
+    search = false;
+    action = {
+      text: "",
+      inspection,
+      release: { action: "inspect", revision: null },
+    };
+    expect(await deliver()).toContain("inspection is unavailable");
+    expect(reads).toBe(5);
   }
-  search = false;
-  action = {
-    text: "",
-    inspection: "native-coding",
-    release: { action: "inspect", revision: null },
-  };
-  expect(await deliver()).toContain("inspection is unavailable");
-  expect(reads).toBe(4);
   action = { text: "", inspection: "memory" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
@@ -367,6 +420,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain(
     "preflight is unavailable; readiness cannot be inferred",
   );
+  action = { text: "", inspection: "retention" };
+  expect(await deliver()).toContain("Ledger: not configured in this runtime");
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   expect(JSON.stringify(sent)).not.toContain("private-account");
   expect(fetches).toBe(0);

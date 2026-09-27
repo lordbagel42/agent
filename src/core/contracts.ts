@@ -182,7 +182,12 @@ export interface CompanionReply {
   /** Owner-private aggregate token usage for the last 1, 7, or 30 days. */
   analytics?: { days: 1 | 7 | 30 };
   /** Owner-private bounded metadata inspection; never recall or mutation. */
-  inspection?: "memory" | "imports" | "reflection" | "native-coding";
+  inspection?:
+    | "memory"
+    | "imports"
+    | "reflection"
+    | "native-coding"
+    | "retention";
   /** One owner-private query of retained evidence, never a permission grant. */
   recall?: string;
   /** Owner-private bounded view of unaccepted memory claims; never review. */

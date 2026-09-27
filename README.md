@@ -570,7 +570,7 @@ Reflection enqueues one idle proposal per evidence set, uses durable timers and
 owner-wide live turn IDs, and never sends a message or changes permissions.
 
 June can inspect these subsystems in an owner-private turn using
-`inspection: "memory" | "imports" | "reflection"`, with empty text and no other
+`inspection: "memory" | "imports" | "reflection" | "retention"`, with empty text and no other
 actions. The host replies directly with timestamped proposal/revision counts,
 up to ten configured import progress summaries, or reflection queue/candidate
 counts. Disabled subsystems report unavailable. These metadata-only receipts do
@@ -591,6 +591,17 @@ instructions, public messages, guests, and model output cannot create it.
 This only records evidence: a separate owner-reviewed curated revision must cite
 that ID with the matching trait/value within the existing freshness window.
 It does not alter arbitrary memories, June's global style profile, or permissions.
+
+For "what copies can remain after forgetting?", June uses `inspection: "retention"`.
+This fixed five-category report covers the evidence ledger, Rivet journals,
+curated/filesystem snapshots, backups, and delivered messages. It uses only
+runtime wiring, not ledger reads, actor snapshots, filesystem enumeration or
+provider queries. It remains available when memory is disabled: unconfigured
+does not mean no old copies exist. Logical deletion removes data from active
+use; physical erasure is unverified for every category. Copy counts, backup ages,
+retention deadlines, external copies and individual deletion status remain
+unknown. This is a category inventory, not a copy census or deletion certificate;
+it neither deletes anything nor authorizes a scan or purge.
 
 The existing `conversation-v1` workflow remains. Journaled old iterations stay
 on their old path; new iterations persist optional feature choices before use.

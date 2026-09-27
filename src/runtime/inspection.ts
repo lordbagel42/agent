@@ -32,6 +32,19 @@ export function createInspectionReader(deps: {
         return deps.nativeCoding
           ? deps.nativeCoding()
           : `${heading}\nNative coding preflight is unavailable; readiness cannot be inferred.`;
+      case "retention":
+        // Wiring only: even apparently read-only store/actor getters can
+        // decrypt evidence or prune state. Do not enumerate retained data.
+        return [
+          heading,
+          "Retained-copy category inventory, not a census of files or messages. Basis: current runtime wiring and implementation behavior only; no storage or provider scan.",
+          `Ledger: ${deps.memory ? "configured" : "not configured in this runtime"}. Source deletion removes affected sources and dependent claims/proposals from the active evidence ledger and retains tombstones. Per-source deletion status is unknown here; no source was checked. Encryption and SQLite secure deletion are not proof of physical erasure across copies.`,
+          "Rivet journals: runtime persistence can retain historical conversation, workflow and delivery payloads. Clearing current actor state does not purge old journals. The optional evidence-ledger encryption does not encrypt Rivet data. Retained contents and copy counts are unknown.",
+          `Snapshots: curated encrypted snapshot storage is ${deps.memory?.personality ? "configured" : "not configured in this runtime"}. Logical deletion filters evidence-derived projections, not old encrypted revisions. Git rollback is not erasure. Historical curated copies and filesystem snapshots may remain; their inventory is unknown.`,
+          "Backups: existence, locations, ages, retention deadlines and purge status are unknown; no backup inventory was supplied or scanned. An older ledger must not serve traffic until later tombstones are replayed. Retain tombstones through the backup retention window; physical purge and retention policy require operator verification.",
+          "Delivered messages: platform and recipient copies may remain after local history or delivery text is cleared. Logical forgetting does not retract already delivered messages or already submitted model requests. Platform, recipient and provider retention is unknown; no remote lookup or deletion was attempted.",
+          "Physical erasure is unverified for every category. Logical deletion means removal from active use, not proof that all bytes or external copies are gone. Unknown does not mean absent; an unconfigured subsystem does not prove older copies are absent. This report contains no content, IDs, paths or keys, performs no deletion, and certifies no individual deletion request.",
+        ].join("\n");
       case "memory": {
         if (!deps.memory) return `${heading}\nMemory is unavailable.`;
         const capacity = deps.memory.store.capacity(deps.audience);
