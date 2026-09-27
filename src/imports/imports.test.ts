@@ -367,7 +367,10 @@ describe("history privacy boundaries", () => {
         expect(imports.cancel("edit").lastConflict).toBe("immutable_source");
         await expect(imports.start("provider")).rejects.toThrow("immutable");
         expect(imports.status("provider").lastConflict).toBeNull();
-        expect(store.importProgress("edit")).toEqual(beforeEdit);
+        expect(store.importProgress("edit")).toEqual({
+          ...beforeEdit,
+          cancelled: true,
+        });
         expect(store.search("owner", "").sources).toEqual(expected);
         for (const source of live)
           expect(() =>
@@ -376,7 +379,8 @@ describe("history privacy boundaries", () => {
 
         root.text = liveRoot.text;
         await imports.start("edit");
-        expect(imports.status("edit").lastConflict).toBeNull();
+        // Cancellation forbids retrying even after the remote content changes.
+        expect(imports.status("edit").lastConflict).toBe("immutable_source");
         store.deleteSource("slack:T1:C1:1.234999");
         store.beginImport("deleted", coverage);
         await expect(
@@ -835,14 +839,91 @@ describe("history privacy boundaries", () => {
     });
     try {
       const running = imports.start("job");
-      imports.cancel("job");
+      const cancelled = imports.cancel("job");
+      expect(cancelled.running).toBe(true);
+      expect(cancelled.progress?.cancelled).toBe(true);
       release?.();
       const progress = await running;
       expect(progress.pages).toBe(0);
       expect(progress.complete).toBe(false);
+      expect(progress.cancelled).toBe(true);
       expect(imports.status("job").running).toBe(false);
     } finally {
       store.close();
+    }
+  });
+
+  it("durably cancels queued pages across restart and rejects late commits from another service", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "june-cancel-"));
+    const path = join(directory, "evidence.sqlite");
+    let store = new EvidenceStore(path, new Uint8Array(32));
+    let reads = 0;
+    let release: ((page: ImportPage) => void) | undefined;
+    const selections = {
+      job: {
+        coverage: slack,
+        credentialAccount: "FIXTURE_SLACK_ACCOUNT",
+        fetchPage: async () => {
+          reads++;
+          return new Promise<ImportPage>((resolve) => {
+            release = resolve;
+          });
+        },
+      },
+      queued: {
+        coverage: slack,
+        credentialAccount: "FIXTURE_SLACK_ACCOUNT",
+        fetchPage: async () => {
+          reads++;
+          return { sources: [], nextCursor: null };
+        },
+      },
+    };
+    try {
+      store.beginImport("job", slack);
+      const initial = store.importProgress("job");
+      if (!initial) throw new Error("Missing fixture import");
+      store.persistPage(
+        initial,
+        { sources: [], nextCursor: "private-cursor", gaps: ["private-gap"] },
+        10,
+      );
+      const before = store.importProgress("job");
+      const imports = new HistoryImports(store, selections);
+      const pending = imports.start("job");
+      const other = new HistoryImports(store, selections);
+      expect(() => other.cancel("queued", "public")).toThrow("authorized");
+      expect(store.importProgress("queued")).toBeUndefined();
+      other.cancel("job", "owner");
+      other.cancel("queued", "owner");
+      expect(imports.status("job").running).toBe(true);
+      await expect(imports.start("queued")).resolves.toMatchObject({
+        cancelled: true,
+        pages: 0,
+      });
+      release?.({ sources: [], nextCursor: null });
+      expect(await pending).toEqual({ ...before, cancelled: true });
+      const cancelled = store.importProgress("job");
+      if (!cancelled) throw new Error("Missing fixture import");
+      expect(() =>
+        store.persistPage(cancelled, { sources: [], nextCursor: null }, 11),
+      ).toThrow("Stale import page");
+      store.close();
+      store = new EvidenceStore(path, new Uint8Array(32));
+      const restarted = new HistoryImports(store, selections);
+      expect(restarted.cancel("job").progress).toEqual(cancelled);
+      expect(await restarted.start("job")).toEqual(cancelled);
+      expect(await restarted.start("queued")).toMatchObject({
+        cancelled: true,
+        pages: 0,
+      });
+      expect(
+        await importHistory(store, "job", slack, selections.job.fetchPage),
+      ).toEqual(cancelled);
+      expect(reads).toBe(1);
+    } finally {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

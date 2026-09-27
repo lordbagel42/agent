@@ -130,6 +130,7 @@ export interface Dependencies {
   browserProposal?: (operation: string | null) => string;
   personalityEvaluation?: ReturnType<typeof createPersonalityPreview>;
   apps?: ReturnType<typeof createAppsClient>;
+  importCancel?: (selection: string) => string;
   dashboardLogin?: {
     issue(): { url: string; expiresAt: string } | undefined;
     redact(text: string): string;
@@ -2022,6 +2023,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   scope.private &&
                                   !!deps.personalityEvaluation,
+                                importCancelAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.importCancel,
                                 dashboardLoginAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -3283,6 +3289,39 @@ export function createJuneRegistry(deps: Dependencies) {
                                 }
                               }
                               generated = result;
+                            } else if (generated.importCancel !== undefined) {
+                              let text =
+                                "Import cancellation requires an owner-private turn and an available integration.";
+                              if (
+                                scope.private &&
+                                modelRequest.importCancelAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                deps.importCancel
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  // Synchronous durable, idempotent cancellation;
+                                  // no new workflow position or remote operation.
+                                  if (checked.importCancel !== undefined)
+                                    text = deps.importCancel(
+                                      checked.importCancel,
+                                    );
+                                } catch {
+                                  text =
+                                    "Import cancellation could not be confirmed. Inspect imports for current status; no remote settlement can be inferred.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
                             } else if (generated.inspection !== undefined) {
                               // Metadata-only read in the existing model receipt.
                               // Revalidate even custom providers before dispatch.

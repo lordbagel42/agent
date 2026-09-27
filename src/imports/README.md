@@ -5,24 +5,34 @@ Host API: construct `createSlackHistoryFetcher(config)` or
 `{coverage, credentialAccount, fetchPage}` under
 an operator-chosen job ID in `new HistoryImports(store, selections)`.
 `await start(id)` starts/resumes **one page**; `status(id)` returns running state
-and encrypted durable progress; `cancel(id)` aborts the current fetch without
-committing its page. Resume is explicit, including after cancellation/restart.
+and encrypted durable progress; `cancel(id)` durably blocks future pages before
+aborting the current fetch without committing its page. Cancellation is permanent
+for that job ID, including before its first start and across restart. A new
+import requires a newly authorized job ID; replaying an old start/continuation
+cannot clear cancellation. Already imported evidence is not deleted.
 No timers, background loops, actions, approvals, models or message dispatch run
 here. A host operator route must authenticate/authorize **all three methods**;
-never expose them as model tools. Route wiring belongs to the integration host.
+June can request cancellation in an authenticated owner-private turn using
+`{"text":"","importCancel":"exact-selection-id"}`. The host revalidates the
+directive and selection's owner audience before mutation. No start/resume or
+coverage authorization is granted by this directive. Use
+`{"text":"","inspection":"imports"}` to discover IDs and read the durable
+`cancelled` flag. Public, guest, synthesis and mixed-action requests are denied.
 
 Signatures: `start(id: string): Promise<ImportProgress>`;
-`status(id: string)` and `cancel(id: string)` return
+`status(id: string)` and `cancel(id: string, audience?: string)` return
 `{ running, progress, notBefore, cooldownReason, coolingDown, budget, lastConflict }`. `progress`
 is the selection's durable progress (or undefined); the top-level cooldown is
 the maximum deadline across all persisted jobs for the same platform/account,
 including completed or no-longer-configured jobs.
 `coolingDown` compares the current clock with that deadline, not provider health.
 `budget` is `{ limits: ImportBudget, lastRejection: keyof ImportBudget | null }`.
-Cancellation has no durable flag in the baseline store: it discards in-flight
-work, preserves the durable cursor, and leaves the job idle. Restart never
-automatically resumes any job. A host scheduler must persist its own disabled
-state if cancellation should override future scheduled `start` calls.
+Cancellation changes only `progress.cancelled`, preserving coverage, cursor,
+page counts, cooldown and gaps. `running` tracks local activity until the fetch
+settles, not whether the external service stopped reading. Cancellation cannot
+undo a read or resolve uncertainty about it; no remote settlement is inferred
+from abort or restart. The store rejects late page commits even from another
+service instance that does not share the AbortSignal.
 
 `EvidenceStore(path, key, importBudget?)` bounds every page's projected ledger
 before committing: by default 1,000 sources, 1,000 stored claims (including dreams),

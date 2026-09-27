@@ -40,6 +40,7 @@ export function capabilitySnapshot(
     | "execution"
     | "release"
     | "inspection"
+    | "importCancel"
   >,
   importsMounted: boolean,
   env: NodeJS.ProcessEnv = process.env,
@@ -94,11 +95,11 @@ export function capabilitySnapshot(
       row(
         "history-imports",
         importsMounted,
-        false,
+        turn && !!runtime.importCancel,
         memoryEnabled &&
           Object.keys(config.imports).length > 0 &&
           env.JUNE_ALLOW_HISTORY_IMPORTS === "1",
-        "Operator-controlled import execution. inspection: imports only reads progress; selections do not prove imported history or authorization.",
+        "importCancel only cancels an exact selection durably; start/continuation remains operator-controlled. inspection: imports reads progress. Cancellation cannot undo reads or settle uncertainty; selections do not prove imported history or authorization.",
       ),
       row(
         "reflection",
@@ -603,7 +604,7 @@ export function createInspectionReader(deps: {
               throw new Error("Import coverage changed");
             const extraction = deps.importExtraction?.review(id);
             return {
-              selection: id.slice(0, 80),
+              selection: id,
               conversations: coverage.conversations.length,
               from: coverage.from,
               to: coverage.to,
@@ -611,6 +612,7 @@ export function createInspectionReader(deps: {
               started: progress !== undefined,
               pages: progress?.pages ?? 0,
               complete: progress?.complete ?? false,
+              cancelled: progress?.cancelled ?? false,
               notBefore,
               cooldownReason,
               coolingDown,
@@ -657,8 +659,9 @@ export function createInspectionReader(deps: {
         const budget = deps.memory?.store.importBudget;
         const guidance = `Effective import limits: ${budget ? JSON.stringify(budget) : "unavailable"} (ledger-global import pages; full UTF-8 JSON, not disk/RAM). Small-import guidance: 1,000 sources / 4 MiB. Disposable LEGION/Node24, 2026-09-27, no claims: page max 237 ms; retrieval max 32 ms. Small samples, not a latency guarantee; claim-heavy/larger overrides unmeasured. Method: src/imports/README.md; current counters: memory inspection. No automatic cap increase.`;
         const report = () =>
-          `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\n${guidance}\nnotBefore: persisted account cooldown deadline (epoch ms). cooldownReason: rate_limit, provider_backoff, pacing, unknown (legacy), or null. coolingDown is a time gate, not provider readiness. Wait until notBefore; no polling or automatic retry. Explicit operator confirmation is needed to resume, even after expiry/restart.\nbudgetRejected and lastConflict are last observed this process; page-count advancement or restart clears them, but cooldown-only updates do not. Null proves neither capacity nor absence of conflicts. Budget rejection: whole page exceeds ledger-wide source/claim/full-snapshot UTF-8 byte ceilings; no page evidence or progress committed. Reduce import or request operator capacity review.\nWindows are requested [from,to) epoch milliseconds, not verified coverage. Pages count persisted pages; a finished page does not mean pagination is exhausted. Complete means only that pagination exhausted the selected window, not gap-free coverage or complete account history. Gap counts are persisted limitation/omission notes, may repeat, and are not counts of missing messages. Zero recorded gaps is not proof of completeness; unstarted selections have not been assessed. Gap kinds are content-free summaries of recognized notes; unclassified details are withheld. Only shown selections are summarized. Raw gap contents, account/conversation IDs, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.${reconciliation}${deps.importExtraction ? "\nGET the request review path with owner bearer auth to check source/context IDs, coverage and model; POST that path + /start with {confirmed:true,digest}. Approval permits one batch (20 sources / 64,000 serialized characters + 20 scoped claims / 16,000 characters), one paid call, pending claims only; acceptance is separate. One slot across selections; no queue/backfill/retry. Overflow is unattempted input outside the review batch. Paused needs its blocker cleared and explicit approval. Unknown holds require operator investigation; cancellation holds capacity until settlement. Idle is not success. Oversized sources and untracked pages remain unextracted. Inspection grants nothing and runs no extraction." : "\nExtraction unavailable."}`;
-        // Preserve guidance and accurate omission counts within channel limits.
+          `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\n${guidance}\nnotBefore: persisted account cooldown deadline (epoch ms). cooldownReason: rate_limit, provider_backoff, pacing, unknown (legacy), or null. coolingDown is a time gate, not provider readiness. Wait until notBefore; no polling or automatic retry. Explicit operator confirmation is needed to resume, even after expiry/restart.\nbudgetRejected/lastConflict: last observed this process; cleared by page advancement/restart but not cooldown-only updates. Null proves neither capacity nor absence of conflicts. Budget rejection exceeds ledger-wide source/claim/full-snapshot UTF-8 byte limits; no page evidence or progress committed. Reduce import or request operator capacity review.\nWindows request [from,to) epoch ms, not verified coverage. Pages count persisted pages; complete means pagination exhausted that window, not gap-free coverage or complete account history. Gap counts are repeatable limitation/omission notes, not counts of missing messages. Zero recorded gaps is not proof of completeness; unstarted selections are unassessed. Gap kinds summarize recognized notes; unclassified details are withheld. Only shown selections are summarized. Cancelled permanently blocks pages; running is local activity, not remote settlement. Cancellation cannot undo reads or settle uncertainty. Raw gaps, account/conversation IDs, cursors, errors, credentials and message bodies are omitted. Inspection starts/cancels nothing.${reconciliation}${deps.importExtraction ? "\nGET the request review path with owner bearer auth to check source/context IDs, coverage and model; POST that path + /start with {confirmed:true,digest}. Approval permits one batch (20 sources / 64,000 serialized characters + 20 scoped claims / 16,000 characters), one paid call, pending claims only; acceptance is separate. One slot across selections; no queue/backfill/retry. Overflow is unattempted input outside the review batch. Paused needs its blocker cleared and explicit approval. Unknown holds require operator investigation; cancellation holds capacity until settlement. Idle is not success. Oversized sources and untracked pages remain unextracted. Inspection grants nothing and runs no extraction." : "\nExtraction unavailable."}`;
+        // Selection IDs are actionable cancellation targets. Never clip one
+        // into a different configured job; omit whole rows to bound the report.
         while (rows.length && report().length > 4000) rows.pop();
         return report();
       }

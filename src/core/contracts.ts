@@ -285,6 +285,8 @@ export interface CompanionReply {
   forgetPreview?: { sourceId: string };
   /** Owner-private held-out candidate suitability; never promotion or a send. */
   personalityEvaluate?: import("../runtime/personality-evaluation-preview.js").PersonalityEvaluateInput;
+  /** Permanently cancel one configured history selection, owner-private only. */
+  importCancel?: string;
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
   /** Owner-private persistent schedules and event subscriptions. */
@@ -337,6 +339,7 @@ export interface ModelRequest {
   personalityPreviewAvailable?: boolean;
   forgetPreviewAvailable?: boolean;
   personalityEvaluateAvailable?: boolean;
+  importCancelAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
   wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;

@@ -61,6 +61,14 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
         };
       },
     },
+    queued: {
+      coverage,
+      credentialAccount: "FIXTURE_MAIL_TOKEN",
+      async fetchPage() {
+        reads++;
+        return { sources: [], nextCursor: "pending-page" };
+      },
+    },
   });
   const token = "fixture-only-operator-token-long-enough";
   const app = createHttpApp({
@@ -85,7 +93,7 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
   });
   app.route(
     "/operator/imports",
-    createImportRoutes(imports, { mail: coverage }),
+    createImportRoutes(imports, { mail: coverage, queued: coverage }),
   );
   let cleanups = 0;
   app.route(
@@ -113,7 +121,7 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
   expect((await app.request("/operator/memory")).status).toBe(401);
   const review = await app.request("/operator/imports", { headers });
   expect(review.headers.get("cache-control")).toBe("no-store");
-  const { mail } = await review.json();
+  const { mail, queued } = await review.json();
   const inspect = createInspectionReader({
     audience,
     imports,
@@ -283,6 +291,41 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
   );
   expect((await start(nextConfirmation)).status).toBe(409);
   expect(reads).toBe(2);
+  const queuedStart = (expectedPages: number) =>
+    app.request("/operator/imports/queued/start", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        confirmed: true,
+        digest: queued.digest,
+        expectedPages,
+      }),
+    });
+  expect((await queuedStart(0)).status).toBe(200);
+  expect(store.importProgress("queued")).toMatchObject({
+    pages: 1,
+    complete: false,
+    cancelled: false,
+  });
+  expect(reads).toBe(3);
+  expect(
+    (await app.request("/operator/imports/queued/cancel", { method: "POST" }))
+      .status,
+  ).toBe(401);
+  expect(store.importProgress("queued")?.cancelled).toBe(false);
+  expect(
+    (
+      await app.request("/operator/imports/queued/cancel", {
+        method: "POST",
+        headers,
+      })
+    ).status,
+  ).toBe(200);
+  // Even a correctly confirmed continuation queued before cancellation cannot read.
+  const cancelled = await queuedStart(1);
+  expect(cancelled.status).toBe(200);
+  expect((await cancelled.json()).cancelled).toBe(true);
+  expect(reads).toBe(3);
   expect(
     (await app.request("/operator/memory?audience=public", { headers })).status,
   ).toBe(400);

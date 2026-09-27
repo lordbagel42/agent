@@ -37,7 +37,7 @@ export function importCoverageDigest(
     .digest("hex");
 }
 
-/** Host-only operator service. No model tools, event dispatch, approvals or sends.
+/** Host service. No event dispatch, approvals or sends.
  * Register authenticated selections at boot; callers cannot supply coverage.
  * Each start/resume processes at most one page, never sleeps or spins.
  */
@@ -113,8 +113,14 @@ export class HistoryImports {
     };
   }
 
-  cancel(id: string) {
-    this.selection(id);
+  cancel(id: string, audience?: string) {
+    const { coverage } = this.selection(id);
+    if (audience !== undefined && !coverage.audiences.includes(audience))
+      throw new Error("Import selection is not authorized");
+    this.store.beginImport(id, coverage);
+    // Persist first: queued continuations and other service instances do not
+    // share this controller. Never release a durable uncertain-read marker.
+    this.store.cancelImport(id);
     this.active.get(id)?.abort();
     return this.status(id);
   }
@@ -125,6 +131,7 @@ export class HistoryImports {
     this.store.beginImport(id, selection.coverage);
     const progress = this.store.importProgress(id);
     if (!progress) throw new Error("Missing import progress");
+    if (progress.cancelled) return progress;
     for (const [otherId, other] of this.selections) {
       if (
         other.coverage.platform !== selection.coverage.platform ||

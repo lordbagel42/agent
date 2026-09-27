@@ -130,6 +130,7 @@ const progressSchema = z.strictObject({
   cursor: id.nullable(),
   pages: timestamp,
   complete: z.boolean(),
+  cancelled: z.boolean().default(false),
   notBefore: timestamp,
   // Older snapshots have a deadline but no recorded reason.
   cooldownReason: cooldownReasonSchema.nullable().optional(),
@@ -2301,6 +2302,7 @@ export class EvidenceStore {
           cursor: null,
           pages: 0,
           complete: false,
+          cancelled: false,
           notBefore: 0,
           gaps: [],
           sourceIds: [],
@@ -2318,6 +2320,16 @@ export class EvidenceStore {
         throw new ImportBudgetExceeded(dimension);
   }
 
+  /** Irreversible for this job: preserve cursor, coverage and read uncertainty. */
+  cancelImport(jobId: string): void {
+    parse(id, jobId);
+    this.transaction((state) => {
+      const progress = state.imports.find((p) => p.id === jobId);
+      if (!progress) throw new Error("Missing import");
+      progress.cancelled = true;
+    });
+  }
+
   /** Atomic compare-and-swap prevents concurrent fetches advancing stale pages. */
   persistPage(expected: ImportProgress, input: ImportPage, now: number): void {
     const page = parse(pageSchema, input);
@@ -2328,6 +2340,7 @@ export class EvidenceStore {
         !progress ||
         !isDeepStrictEqual(progress, expected) ||
         progress.complete ||
+        progress.cancelled ||
         now < progress.notBefore
       )
         throw new Error("Stale import page");
@@ -2563,6 +2576,7 @@ export async function importHistory(
     if (!progress) throw new Error("Missing import");
     if (
       progress.complete ||
+      progress.cancelled ||
       options.signal?.aborted ||
       parse(timestamp, now()) < progress.notBefore
     )
@@ -2575,10 +2589,14 @@ export async function importHistory(
         signal: options.signal,
       });
     } catch (error) {
-      if (options.signal?.aborted) return progress;
+      const current = store.importProgress(jobId);
+      if (current && (options.signal?.aborted || current.cancelled))
+        return current;
       throw error;
     }
-    if (options.signal?.aborted) return progress;
+    const current = store.importProgress(jobId);
+    if (current && (options.signal?.aborted || current.cancelled))
+      return current;
     store.persistPage(progress, result, now());
     if (result.rateLimited || result.retryAfterMs) break;
   }

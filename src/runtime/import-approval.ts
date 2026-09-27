@@ -16,7 +16,12 @@ export function proposeImportApproval(
 ): string {
   if (progress && !isDeepStrictEqual(progress.coverage, coverage))
     throw new Error("Import coverage changed");
-  if (coverage.audiences.length !== 1 || running || progress?.complete)
+  if (
+    coverage.audiences.length !== 1 ||
+    running ||
+    progress?.cancelled ||
+    progress?.complete
+  )
     return "A one-page import approval is unavailable for this selection. Inspect its current coverage and progress; no import was started.";
 
   const expectedPages = progress?.pages ?? 0;

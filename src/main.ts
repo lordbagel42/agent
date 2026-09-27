@@ -1029,6 +1029,12 @@ async function main() {
             evidenceMaxAgeMs: reflection.policy.evidenceMaxAgeMs,
           })
         : undefined,
+    importCancel: imports
+      ? (selection) => {
+          const status = imports.cancel(selection, ownerAudience);
+          return `Import cancellation recorded durably. Future pages for this job are blocked, including after restart. Local fetch running: ${status.running}. This does not undo external reads, settle uncertain reads, or erase imported evidence. Inspect imports for a fresh metadata snapshot.`;
+        }
+      : undefined,
     dashboardLogin: loginLinks,
     apps:
       config.dynamicApps && appToken

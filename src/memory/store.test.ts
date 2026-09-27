@@ -1465,6 +1465,7 @@ it("bounds the whole projected import atomically at one-under, exact and one-ove
     cursor: "next-🦉",
     pages: 1,
     complete: false,
+    cancelled: false,
     notBefore: 150,
     cooldownReason: "pacing",
     gaps: ["metadata counts too: 🦉"],

@@ -884,6 +884,7 @@ export class McpConnections {
                 personalityPreviewAvailable: false,
                 forgetPreviewAvailable: false,
                 personalityEvaluateAvailable: false,
+                importCancelAvailable: false,
                 dashboardLoginAvailable: false,
                 modelStatusAvailable: false,
                 wakeupAvailable: false,

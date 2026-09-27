@@ -15,6 +15,7 @@ it("never proposes an approval for a partial review, widened audience or stale c
     coverage,
     pages: 0,
     complete: false,
+    cancelled: false,
     notBefore: 0,
     cursor: null,
     gaps: [],
@@ -26,6 +27,8 @@ it("never proposes an approval for a partial review, widened audience or stale c
   expect(review()).toContain('"conversations":["C1/1234567890.123456","C2"]');
   for (const status of [
     { running: true, progress },
+    { running: false, progress: { ...progress, cancelled: true } },
+    { running: false, progress: { ...progress, cancelled: true, pages: 7 } },
     { running: false, progress: { ...progress, complete: true } },
   ])
     expect(review(coverage, status)).not.toContain('"confirmation"');

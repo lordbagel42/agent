@@ -263,6 +263,7 @@ const companionReplySchema = z.strictObject({
     .strictObject({ sourceId: z.string().min(1).max(2048) })
     .optional(),
   personalityEvaluate: personalityEvaluateSchema.optional(),
+  importCancel: z.string().min(1).max(2048).optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -305,6 +306,7 @@ export type ReplyCapabilities = Pick<
   | "personalityPreviewAvailable"
   | "forgetPreviewAvailable"
   | "personalityEvaluateAvailable"
+  | "importCancelAvailable"
   | "dashboardLoginAvailable"
   | "wakeupAvailable"
   | "replyPlacementAvailable"
@@ -351,6 +353,7 @@ export function replyJsonSchema(
     personalityPreviewAvailable,
     forgetPreviewAvailable,
     personalityEvaluateAvailable,
+    importCancelAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -989,6 +992,15 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(importCancelAvailable
+        ? {
+            importCancel: {
+              type: ["string", "null"],
+              description:
+                "Permanently cancel one exact configured import selection ID (1–2048 characters) at the owner's private request. Inspect imports first for selection IDs. Leave text empty and other actions unset. Blocks future pages after restart, but cannot undo external reads or erase uncertainty. Cannot start or resume imports.",
+            },
+          }
+        : {}),
       ...(analyticsAvailable
         ? {
             analytics: {
@@ -1225,6 +1237,7 @@ export function replyJsonSchema(
       ...(personalityPreviewAvailable ? ["personalityPreview"] : []),
       ...(forgetPreviewAvailable ? ["forgetPreview"] : []),
       ...(personalityEvaluateAvailable ? ["personalityEvaluate"] : []),
+      ...(importCancelAvailable ? ["importCancel"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
       ...(wakeupAvailable ? ["wakeup"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
@@ -1417,6 +1430,7 @@ export function parseReply(
     personalityPreviewAvailable,
     forgetPreviewAvailable,
     personalityEvaluateAvailable,
+    importCancelAvailable,
     dashboardLoginAvailable,
     wakeupAvailable,
     replyPlacementAvailable,
@@ -1466,6 +1480,7 @@ export function parseReply(
     "personalityPreview",
     "forgetPreview",
     "personalityEvaluate",
+    "importCancel",
     "dashboardLogin",
     "wakeup",
     "replyInThread",
@@ -1523,6 +1538,7 @@ export function parseReply(
     (reply.forgetPreview !== undefined && !forgetPreviewAvailable) ||
     (reply.personalityEvaluate !== undefined &&
       !personalityEvaluateAvailable) ||
+    (reply.importCancel !== undefined && !importCancelAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.wakeup !== undefined && !wakeupAvailable) ||
@@ -1560,6 +1576,7 @@ export function parseReply(
     Number(reply.personalityPreview !== undefined) +
     Number(reply.forgetPreview !== undefined) +
     Number(reply.personalityEvaluate !== undefined) +
+    Number(reply.importCancel !== undefined) +
     Number(reply.dashboardLogin === true) +
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
@@ -1593,6 +1610,7 @@ export function parseReply(
       reply.personalityPreview !== undefined ||
       reply.forgetPreview !== undefined ||
       reply.personalityEvaluate !== undefined ||
+      reply.importCancel !== undefined ||
       reply.dashboardLogin === true ||
       reply.wakeup !== undefined ||
       reply.latency !== undefined) &&

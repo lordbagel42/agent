@@ -28,6 +28,37 @@ import {
 } from "./inspection.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
+it("advertises import cancellation only when mounted outside setup mode", () => {
+  const config = parseConfig({
+    setupMode: true,
+    owner: { id: "owner", identities: [] },
+    model: {
+      protocol: "openai",
+      model: "fixture",
+      apiKeyEnv: "FIXTURE_KEY",
+    },
+  });
+  const integration = {
+    importCancel: () => {
+      throw new Error("Inspection must not cancel");
+    },
+  };
+  for (const [setupMode, mounted, expected] of [
+    [false, true, "yes"],
+    [false, false, "no"],
+    [true, true, "no"],
+  ] as const) {
+    const row = capabilitySnapshot(
+      { ...config, setupMode },
+      mounted ? integration : {},
+      true,
+      {},
+    ).capabilities.find((row) => row.capability === "history-imports");
+    expect(row?.juneCallable).toBe(expected);
+    expect(row?.liveVerified).toBe("unknown");
+  }
+});
+
 it("reports retained-copy boundaries without accessing retained data", async () => {
   const forbidden = () => {
     throw new Error("Retention inspection must not access stored data");
@@ -255,7 +286,7 @@ it("hides tombstoned interruption receipts before conversation cleanup, includin
   expect(calls).toBe(2);
 });
 
-// Dozens of sequential actor turns exceed 30s; each deliver still has a 5s bound.
+// Expanded inspection/cancellation turns exceed 60s; each deliver retains its 5s bound.
 it("inspects bounded metadata through June while enforcing owner, guest, synthesis and read-only boundaries", async (t) => {
   const owner = {
     id: "owner",
@@ -478,6 +509,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       throw new Error("SECRET-vault-item");
     },
   );
+  let cancellations = 0;
   const registry = createJuneRegistry({
     owner,
     channels: {
@@ -499,6 +531,14 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         expect(
           Object.hasOwn(replyJsonSchema([], request).properties, "inspection"),
         ).toBe(request.inspectionAvailable);
+        expect(
+          Object.hasOwn(
+            replyJsonSchema([], request).properties,
+            "importCancel",
+          ),
+        ).toBe(request.importCancelAvailable);
+        if (request.importCancelAvailable)
+          expect(request.system).toContain("set importCancel");
         if (request.inspectionAvailable) {
           expect(request.system).toContain(
             'Set inspection to "memory", "imports", "reflection", or "native-coding"',
@@ -560,6 +600,11 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
             ? extractionRead
             : read
       )(target, event);
+    },
+    importCancel: (id) => {
+      cancellations++;
+      imports.cancel(id, audience);
+      return "Import cancellation recorded durably; external read settlement is unknown.";
     },
     reflection: {
       ownerId: owner.id,
@@ -723,11 +768,16 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(memoryReport.length).toBeLessThan(4000);
   action = { text: "", inspection: "imports" };
   const importReport = await deliver();
-  expect(importReport).toContain("Configured selections: 12; showing 4");
+  const shown = importReport.match(/"selection":/g)?.length ?? 0;
+  expect(shown).toBeGreaterThan(0);
+  expect(shown).toBeLessThanOrEqual(10);
+  expect(importReport).toContain(`Configured selections: 12; showing ${shown}`);
   expect(importReport).toContain('"pages":1,"complete":false');
-  expect(importReport.match(/"notBefore":1000000/g)).toHaveLength(4);
-  expect(importReport.match(/"cooldownReason":"rate_limit"/g)).toHaveLength(4);
-  expect(importReport.match(/"coolingDown":true/g)).toHaveLength(4);
+  expect(importReport.match(/"notBefore":1000000/g)).toHaveLength(shown);
+  expect(importReport.match(/"cooldownReason":"rate_limit"/g)).toHaveLength(
+    shown,
+  );
+  expect(importReport.match(/"coolingDown":true/g)).toHaveLength(shown);
   expect(importReport).toContain("not provider readiness");
   expect(importReport).toContain("no polling or automatic retry");
   expect(importReport).toContain('"lastConflict":"immutable_source"');
@@ -750,7 +800,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(importReport).toContain(
     "Zero recorded gaps is not proof of completeness",
   );
-  expect(importReport.length).toBeLessThan(4000);
+  expect(importReport.length).toBeLessThanOrEqual(4000);
   expect(importReport).not.toContain("private-account");
   action = { text: "", inspection: "reflection" };
   const curiosityReport = await deliver();
@@ -1056,6 +1106,38 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(tombstoneReport.length).toBeLessThan(1000);
   expect(requests.at(-1)?.system).toContain('set inspection to "tombstones"');
   expect(reads).toBe(readsBeforeTombstone + 1);
+  // Unauthorized/custom providers and synthesis must not reach cancellation.
+  action = { text: "", importCancel: "selection-0" };
+  expect(await deliver({ direct: false })).toContain("owner-private turn");
+  // Use an independent guest so admission limits cannot hide this guard.
+  expect(
+    await deliver({ senderId: "U3", metadata: { channelType: "im" } }),
+  ).toContain("owner-private turn");
+  search = true;
+  expect(await deliver()).toContain("owner-private turn");
+  search = false;
+  action = {
+    text: "",
+    importCancel: "selection-0",
+    release: { action: "inspect", revision: null },
+  };
+  expect(await deliver()).toContain("could not be confirmed");
+  expect(cancellations).toBe(0);
+  action = { text: "", importCancel: "selection-0" };
+  expect(await deliver()).toContain("recorded durably");
+  expect(await deliver()).toContain("recorded durably");
+  expect(store.importProgress("selection-0")).toEqual({
+    ...progress,
+    cancelled: true,
+  });
+  selections["selection-1"] = coverage;
+  action = { text: "", inspection: "imports" };
+  expect(await deliver()).toContain('"cancelled":true');
+  expect(fetches).toBe(1); // Cancellation/inspection never retried the conflict.
+  expect(JSON.stringify(sent)).not.toContain("SECRET");
+  expect(() =>
+    parseReply('{"text":"","importCancel":"selection-0"}', []),
+  ).toThrow();
   action = { text: "", inspection: "memory" };
   expect(() =>
     store.appendSource({ ...retainedSource, text: "SECRET WRITE ERROR" }),
@@ -1095,6 +1177,58 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     ).toThrow();
   expect(() => parseReply('{"text":"","inspection":"memory"}', [])).toThrow();
 }, 90_000);
+
+it("preserves exact cancellation targets with shared prefixes while bounding metadata", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const prefix = "s".repeat(80);
+  const longer = `${prefix}-separate-job`;
+  const omitted = "y".repeat(2048);
+  const coverage = {
+    platform: "slack",
+    account: "fixture",
+    conversations: ["C1"],
+    from: 1,
+    to: 2,
+    audiences: ["owner"],
+  };
+  const selections = Object.fromEntries(
+    [prefix, longer, "unrelated", omitted].map((id) => [id, coverage]),
+  );
+  const imports = new HistoryImports(
+    store,
+    Object.fromEntries(
+      Object.entries(selections).map(([id, coverage]) => [
+        id,
+        {
+          coverage,
+          credentialAccount: "FIXTURE_SLACK_ACCOUNT",
+          fetchPage: async () => {
+            throw new Error("No reads allowed");
+          },
+        },
+      ]),
+    ),
+  );
+  const report = await createInspectionReader({
+    audience: "owner",
+    imports,
+    selections,
+  })("imports");
+  expect(report).toContain(JSON.stringify({ selection: prefix }).slice(0, -1));
+  expect(report).toContain(JSON.stringify({ selection: longer }).slice(0, -1));
+  expect(report).toContain("showing 3");
+  expect(report).not.toContain(omitted);
+  expect(report.length).toBeLessThanOrEqual(4000);
+  const action = parseReply(
+    JSON.stringify({ text: "", importCancel: longer }),
+    [],
+    { importCancelAvailable: true },
+  );
+  imports.cancel(action.importCancel ?? "", "owner");
+  expect(store.importProgress(longer)?.cancelled).toBe(true);
+  expect(store.importProgress(prefix)).toBeUndefined();
+});
 
 it("keeps interrupted reflection inspection bounded, private and read-only without claiming settlement", async () => {
   const audience = "owner-private";
