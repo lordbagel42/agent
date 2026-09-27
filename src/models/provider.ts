@@ -98,6 +98,7 @@ const companionReplySchema = z.strictObject({
     ])
     .optional(),
   replyInThread: z.boolean().optional(),
+  inspection: z.enum(["memory", "imports", "reflection"]).optional(),
   analytics: z
     .strictObject({
       days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
@@ -122,6 +123,7 @@ export type ReplyCapabilities = Pick<
   | "mcpAvailable"
   | "latencyAvailable"
   | "analyticsAvailable"
+  | "inspectionAvailable"
   | "replyPlacementAvailable"
   | "socialAvailable"
   | "executionAvailable"
@@ -148,6 +150,7 @@ export function replyJsonSchema(
     mcpAvailable,
     latencyAvailable,
     analyticsAvailable,
+    inspectionAvailable,
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
@@ -246,6 +249,16 @@ export function replyJsonSchema(
               required: ["action", "revision"],
               description:
                 "Inspect deployment progress, blockers, and revision identity using existing controller evidence. Read-only; no activation, approval, push, or retry. Leave text empty and other actions unset.",
+            },
+          }
+        : {}),
+      ...(inspectionAvailable
+        ? {
+            inspection: {
+              type: ["string", "null"],
+              enum: ["memory", "imports", "reflection", null],
+              description:
+                "Read owner-private bounded subsystem metadata, not recalled content. Leave text empty and all other actions unset. No approvals, imports, reflection triggers or mutations are performed.",
             },
           }
         : {}),
@@ -363,6 +376,7 @@ export function replyJsonSchema(
       ...(webSearchAvailable ? ["webSearch"] : []),
       ...(latencyAvailable ? ["latency"] : []),
       ...(analyticsAvailable ? ["analytics"] : []),
+      ...(inspectionAvailable ? ["inspection"] : []),
       ...(replyPlacementAvailable ? ["replyInThread"] : []),
       ...(socialAvailable ? ["social"] : []),
     ],
@@ -536,6 +550,7 @@ export function parseReply(
     mcpAvailable,
     latencyAvailable,
     analyticsAvailable,
+    inspectionAvailable,
     replyPlacementAvailable,
     socialAvailable,
     executionAvailable,
@@ -564,6 +579,7 @@ export function parseReply(
     "mcpCatalog",
     "latency",
     "analytics",
+    "inspection",
     "replyInThread",
     "social",
   ]) {
@@ -592,6 +608,7 @@ export function parseReply(
     (reply.mcpCatalog !== undefined && !mcpAvailable) ||
     (reply.latency !== undefined && !latencyAvailable) ||
     (reply.analytics !== undefined && !analyticsAvailable) ||
+    (reply.inspection !== undefined && !inspectionAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
@@ -608,6 +625,7 @@ export function parseReply(
     Number(reply.social !== undefined) +
     Number(reply.latency !== undefined) +
     Number(reply.analytics !== undefined) +
+    Number(reply.inspection !== undefined) +
     Number(reply.escalate === true);
   if (
     directiveCount > 1 ||
@@ -621,6 +639,7 @@ export function parseReply(
       reply.mcp !== undefined ||
       reply.mcpCatalog !== undefined ||
       reply.analytics !== undefined ||
+      reply.inspection !== undefined ||
       reply.latency !== undefined) &&
       reply.text.trim().length > 0)
   ) {

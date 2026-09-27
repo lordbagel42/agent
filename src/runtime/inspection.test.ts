@@ -1,0 +1,301 @@
+import { randomBytes } from "node:crypto";
+import type { Client } from "rivetkit/client";
+import { expect, it } from "vitest";
+import { setupTest } from "../../tests/rivet.js";
+import type {
+  CompanionReply,
+  MessageEvent,
+  ModelRequest,
+  OutboundMessage,
+} from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
+import { HistoryImports } from "../imports/index.js";
+import { EvidenceStore } from "../memory/store.js";
+import { parseReply, replyJsonSchema } from "../models/provider.js";
+import { createInspectionReader } from "./inspection.js";
+import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
+
+it("inspects bounded metadata through June while enforcing owner, guest, synthesis and read-only boundaries", async (t) => {
+  const owner = {
+    id: "owner",
+    identities: [
+      { channel: "slack" as const, accountId: "T1", senderId: "U1" },
+    ],
+  };
+  const audience = JSON.stringify(["private", owner.id]);
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  store.appendSource({
+    id: "secret-source",
+    audiences: [audience],
+    platform: "slack",
+    account: "T1",
+    conversation: "D1",
+    author: "U1",
+    observedAt: 1,
+    sourceUrl: "https://example.com/private",
+    text: "SECRET CONTENT",
+  });
+  store.stageProposals(
+    audience,
+    ["secret-source"],
+    [
+      {
+        subjectSourceId: "secret-source",
+        text: "SECRET PROPOSAL",
+        category: "claim",
+        citations: [{ sourceId: "secret-source", quote: "SECRET CONTENT" }],
+        confidence: 0.5,
+        validFrom: null,
+        validTo: null,
+        contradicts: [],
+        supersedes: [],
+      },
+    ],
+  );
+  const coverage = {
+    platform: "slack",
+    account: "private-account",
+    conversations: ["private-channel"],
+    from: 1,
+    to: 999,
+    audiences: [audience],
+  };
+  const selections = Object.fromEntries(
+    Array.from({ length: 12 }, (_, i) => [`selection-${i}`, coverage]),
+  );
+  let fetches = 0;
+  const imports = new HistoryImports(
+    store,
+    Object.fromEntries(
+      Object.entries(selections).map(([id, coverage]) => [
+        id,
+        {
+          coverage,
+          async fetchPage() {
+            fetches++;
+            throw new Error("must not fetch");
+          },
+        },
+      ]),
+    ),
+  );
+  store.beginImport("selection-0", coverage);
+  const initial = store.importProgress("selection-0");
+  if (!initial) throw new Error("Missing fixture import");
+  store.persistPage(
+    initial,
+    { sources: [], nextCursor: "SECRET CURSOR", gaps: ["SECRET GAP"] },
+    1,
+  );
+  const progress = store.importProgress("selection-0");
+  const sent: OutboundMessage[] = [];
+  const requests: ModelRequest[] = [];
+  let action: CompanionReply = { text: "", inspection: "memory" };
+  let search = false;
+  let fail = false;
+  let disabled = false;
+  let reads = 0;
+  const registry = createJuneRegistry({
+    owner,
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        async receive() {
+          return { response: new Response(), events: [] };
+        },
+        async send(message) {
+          sent.push(JSON.parse(JSON.stringify(message)));
+          return { status: "sent", messageId: `out${sent.length}` };
+        },
+      },
+    },
+    model: {
+      async reply(request) {
+        requests.push(request);
+        expect(
+          Object.hasOwn(replyJsonSchema([], request).properties, "inspection"),
+        ).toBe(request.inspectionAvailable);
+        if (request.inspectionAvailable)
+          expect(request.system).toContain(
+            'Set inspection to "memory", "imports", or "reflection"',
+          );
+        if (search && request.webSearchAvailable)
+          return { text: "", webSearch: "public query" };
+        // Exercise provider parsing for valid actions, and host guards against
+        // providers that return forbidden or mixed directives without parsing.
+        if (request.inspectionAvailable && !action.release)
+          return parseReply(JSON.stringify(action), [], request);
+        return action;
+      },
+    },
+    webSearch: {
+      available: true,
+      description: "fixture",
+      async search() {
+        return {
+          status: "ready",
+          results: [
+            {
+              title: "public",
+              url: "https://example.com",
+              snippet: "public evidence",
+            },
+          ],
+        };
+      },
+    },
+    inspection: async (target) => {
+      reads++;
+      if (fail) throw new Error("SECRET ERROR PATH");
+      return (
+        disabled ? createInspectionReader({ audience, selections: {} }) : read
+      )(target);
+    },
+    reflection: {
+      ownerId: owner.id,
+      policy: {
+        totalCapacity: 2,
+        liveReserve: 1,
+        cooldownMs: 1,
+        maxAttempts: 1,
+        maxNoNewEvidence: 1,
+        evidenceMaxAgeMs: 60000,
+        quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
+      },
+      idleMs: 86400000,
+      deepMs: 86400000,
+      pollMs: 10000,
+      timeoutMs: 1000,
+      async retrieve() {
+        throw new Error("must not retrieve reflection evidence");
+      },
+      async decide() {
+        throw new Error("must not reflect");
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const reflection = (
+    client as Client<JuneClientRegistry>
+  ).reflection.getOrCreate([owner.id]);
+  await reflection.enqueue({
+    scope: audience,
+    evidenceIds: ["SECRET EVIDENCE ID"],
+    kind: "reflection",
+    mode: "idle",
+  });
+  const read = createInspectionReader({
+    audience,
+    memory: { store },
+    imports,
+    selections,
+    reflection: () => reflection.status(),
+  });
+  const deliver = async (extra: Partial<MessageEvent> = {}) => {
+    const event: MessageEvent = {
+      id: `in${requests.length}`,
+      type: "message",
+      messageId: `ts${requests.length}`,
+      occurredAt: Date.now(),
+      address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+      direct: true,
+      senderId: "U1",
+      text: "Inspect your status",
+      ...extra,
+    };
+    const scope = routeEvent(event, owner, true);
+    if (!scope) throw new Error("Missing fixture scope");
+    const actor = client.conversation.getOrCreate(scope.key);
+    const done = Object.values((await actor.snapshot()).events).filter(
+      (e) => e.done,
+    ).length;
+    await actor.send("inbox", { type: "event", event });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await actor.snapshot()).events).filter((e) => e.done)
+            .length,
+      )
+      .toBe(done + 1);
+    const content = sent.at(-1)?.content;
+    return content?.type === "text" ? content.text : "";
+  };
+  expect(await deliver()).toContain('"pending":1,"accepted":0,"rejected":0');
+  action = { text: "", inspection: "imports" };
+  const importReport = await deliver();
+  expect(importReport).toContain("Configured selections: 12; showing 10");
+  expect(importReport).toContain('"pages":1,"complete":false');
+  expect(importReport).toContain('"gapCount":1');
+  expect(importReport.length).toBeLessThan(4000);
+  action = { text: "", inspection: "reflection" };
+  expect(await deliver()).toContain('"pending":1,"running":0');
+  expect(reads).toBe(3);
+  expect(requests).toHaveLength(3);
+  for (const extra of [
+    {
+      direct: false,
+      address: {
+        channel: "slack" as const,
+        accountId: "T1",
+        conversationId: "C1",
+      },
+    },
+    { senderId: "U2", metadata: { channelType: "im" as const } },
+  ]) {
+    const before = requests.length;
+    expect(await deliver(extra)).toContain("owner-private turn");
+    expect(requests).toHaveLength(before + 1);
+    expect(requests.at(-1)?.inspectionAvailable).toBe(false);
+    expect(reads).toBe(3);
+  }
+  search = true;
+  await deliver();
+  expect(requests.at(-1)?.usageStage).toBe("synthesis");
+  expect(requests.at(-1)?.inspectionAvailable).toBe(false);
+  expect(reads).toBe(3);
+  search = false;
+  action = {
+    text: "",
+    inspection: "memory",
+    release: { action: "inspect", revision: null },
+  };
+  expect(await deliver()).toContain("inspection is unavailable");
+  expect(reads).toBe(3);
+  action = { text: "", inspection: "memory" };
+  fail = true;
+  expect(await deliver()).toContain("inspection is unavailable");
+  fail = false;
+  // A completed old window must never describe a newly configured window.
+  store.beginImport("selection-1", coverage);
+  const oldWindow = store.importProgress("selection-1");
+  if (!oldWindow) throw new Error("Missing fixture import");
+  store.persistPage(oldWindow, { sources: [], nextCursor: null }, 1);
+  expect(store.importProgress("selection-1")?.complete).toBe(true);
+  selections["selection-1"] = { ...coverage, to: 1001 };
+  action = { text: "", inspection: "imports" };
+  expect(await deliver()).toContain("inspection is unavailable");
+  expect(store.importProgress("selection-1")?.coverage.to).toBe(999);
+  disabled = true;
+  for (const target of ["memory", "imports", "reflection"] as const) {
+    action = { text: "", inspection: target };
+    expect(await deliver()).toContain("unavailable.");
+  }
+  expect(JSON.stringify(sent)).not.toContain("SECRET");
+  expect(JSON.stringify(sent)).not.toContain("private-account");
+  expect(fetches).toBe(0);
+  expect(store.importProgress("selection-0")).toEqual(progress);
+  expect(store.proposals(audience)[0]?.status).toBe("pending");
+  for (const inspection of [
+    "start",
+    "forget",
+    { target: "memory", audience: "guest" },
+  ])
+    expect(() =>
+      parseReply(JSON.stringify({ text: "", inspection }), [], {
+        inspectionAvailable: true,
+      }),
+    ).toThrow();
+  expect(() => parseReply('{"text":"","inspection":"memory"}', [])).toThrow();
+});

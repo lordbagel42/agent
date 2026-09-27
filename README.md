@@ -468,6 +468,17 @@ only original inbound source IDs, stages pending claims and cannot accept them.
 Reflection enqueues one idle proposal per evidence set, uses durable timers and
 owner-wide live turn IDs, and never sends a message or changes permissions.
 
+June can inspect these subsystems in an owner-private turn using
+`inspection: "memory" | "imports" | "reflection"`, with empty text and no other
+actions. The host replies directly with timestamped proposal/revision counts,
+up to ten configured import progress summaries, or reflection queue/candidate
+counts. Disabled subsystems report unavailable. These metadata-only receipts do
+not duplicate recall or expose source text, personality values, cursors, gap
+contents, or reflection rationale. They grant no review, forget, import control,
+reflection trigger, or approval authority; guests, public turns and synthesis
+cannot call them. Changed import coverage fails closed rather than attributing
+old progress to a new window.
+
 The existing `conversation-v1` workflow remains. Journaled old iterations stay
 on their old path; new iterations persist optional feature choices before use.
 New live/extraction attempts persist intent before provider work and never

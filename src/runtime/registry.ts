@@ -63,6 +63,9 @@ export interface Dependencies {
   ) => Promise<string>;
   latency?: LatencyDiagnostics;
   analytics?: (days: 1 | 7 | 30) => string;
+  inspection?: (
+    target: NonNullable<CompanionReply["inspection"]>,
+  ) => Promise<string>;
   runningRevision?: string;
   lifecycle?: {
     enter(signal: AbortSignal): Promise<() => void>;
@@ -1051,6 +1054,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   scope.private &&
                                   !!deps.analytics,
+                                inspectionAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.inspection,
                                 replyPlacementAvailable:
                                   body.type === "event" &&
                                   (version < 4 || version >= 6) &&
@@ -1207,7 +1215,40 @@ export function createJuneRegistry(deps: Dependencies) {
                             } finally {
                               deps.latency?.mark(event, `${stage}_finished`);
                             }
-                            if (generated.release) {
+                            if (generated.inspection !== undefined) {
+                              // Metadata-only read in the existing model receipt.
+                              // Revalidate even custom providers before dispatch.
+                              let text =
+                                "Subsystem inspection requires an owner-private turn and an available integration.";
+                              if (
+                                scope.private &&
+                                modelRequest.inspectionAvailable &&
+                                !signal.aborted &&
+                                valid(step.state) &&
+                                deps.inspection
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  if (checked.inspection)
+                                    text = await deps.inspection(
+                                      checked.inspection,
+                                    );
+                                } catch {
+                                  text =
+                                    "Subsystem inspection is unavailable; no status can be inferred and no action was taken.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (generated.release) {
                               // Read-only controller inspection.
                               // Keep the result in the existing model step's receipt: no
                               // new workflow position or replayable activation side effect.

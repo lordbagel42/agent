@@ -172,6 +172,8 @@ export interface CompanionReply {
   latency?: string;
   /** Owner-private aggregate token usage for the last 1, 7, or 30 days. */
   analytics?: { days: 1 | 7 | 30 };
+  /** Owner-private bounded metadata inspection; never recall or mutation. */
+  inspection?: "memory" | "imports" | "reflection";
   /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */
   replyInThread?: boolean;
 }
@@ -191,6 +193,7 @@ export interface ModelRequest {
   mcpAvailable?: boolean;
   latencyAvailable?: boolean;
   analyticsAvailable?: boolean;
+  inspectionAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   socialAvailable?: boolean;
   executionAvailable?: boolean;

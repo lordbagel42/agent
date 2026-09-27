@@ -44,6 +44,7 @@ import { createMemoryExtractor } from "./models/extraction.js";
 import { createModelProvider } from "./models/provider.js";
 import { UsageLedger } from "./models/usage.js";
 import { freshEvidence } from "./reflection/domain.js";
+import { createInspectionReader } from "./runtime/inspection.js";
 import { createLatencyDiagnostics } from "./runtime/latency.js";
 import { createLifecycle } from "./runtime/lifecycle.js";
 import {
@@ -602,6 +603,15 @@ async function main() {
     lifecycle,
     latency,
     analytics: (days) => usage.report(days),
+    inspection: createInspectionReader({
+      audience: ownerAudience,
+      memory,
+      imports,
+      selections,
+      reflection: reflection
+        ? () => client.reflection.getOrCreate([config.owner.id]).status()
+        : undefined,
+    }),
     release: readDeployment
       ? createReleaseTool({
           read: () => readDeployment(config.owner.id),

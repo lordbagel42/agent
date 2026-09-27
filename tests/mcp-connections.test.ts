@@ -249,6 +249,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.store.permit(f.id, f.connection().revision, "lookup", "read");
   f.request.latencyAvailable = true;
   f.request.analyticsAvailable = true;
+  f.request.inspectionAvailable = true;
   let evidence = "";
   let synthesis: ModelRequest | undefined;
   let modelStatusAvailable: boolean | undefined;
@@ -288,6 +289,13 @@ test("discovery grants nothing, read results are transient and credentials stay 
     parseReply('{"text":"","analytics":{"days":7}}', [], synthesis),
   ).toThrow();
   expect(f.request.analyticsAvailable).toBe(true);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
+    "inspection",
+  );
+  expect(() =>
+    parseReply('{"text":"","inspection":"memory"}', [], synthesis),
+  ).toThrow();
+  expect(f.request.inspectionAvailable).toBe(true);
   expect(evidence).toContain("private result [credential redacted]");
   expect(modelStatusAvailable).toBe(false);
   expect(evidence).not.toContain("private-token");
