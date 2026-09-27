@@ -604,6 +604,24 @@ including historical jobs; it does not mean capacity is available. A new
 authorized attempt clears the old reason. Inspection cannot release the lease,
 bypass workspace limits, or authorize a retry.
 
+Ask “show the workspace diff for coding job ID” privately to use
+`codingJob: {"action":"diff","id":"<job-id-or-prefix>"}`. The host reads only
+that running approved job's isolated checkout, under its saved runtime/worktree
+binding and active attempt lease. It reports candidate file statuses relative to
+the approved base (including committed changes) and untracked entries, not patch
+contents or line counts. Untracked directories are collapsed; submodules and
+ignored files are omitted. At most 40 entries and 2,600 encoded entry characters
+are returned, with filenames capped at 200 characters and truncation explicit.
+Each fixed Git read is capped at 5 seconds and 64 KiB; exceeding a read limit
+makes the report unavailable, not a clean diff. No caller paths, commands,
+worktree creation, approval or execution are accepted. A running checkout may
+change during these reads: this is a non-atomic observation, not verification,
+proof of isolation, or delivery authority. Native execution remains gated.
+Index refresh and lazy fetch are disabled. Stat-only changes may appear modified;
+the summary is not proof of changed contents. Executable clean/process filters,
+split/sparse/v4 indexes, indexes over 4 MiB and malformed indexes make inspection
+unavailable rather than invoking filters, refreshing shared indexes or fetching.
+
 After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
 `!resume-stopped <job-prefix>` as an ordinary private message. Do not resume a
@@ -633,6 +651,9 @@ Private operator endpoints require `Authorization: Bearer <operator-token>`:
 - `GET /operator/conversation`: history, events, outbox, and coding proposals.
 - `GET /operator/jobs/<full-job-id>`: job state, saved thread ID, and report;
   forgotten-source jobs are no longer exposed or resumable.
+- `GET /operator/jobs/<full-job-id>/diff`: the same bounded, read-only workspace
+  summary; accepts only the job ID, no query parameters. Unavailable or unsafe
+  reads return `409 diff_unavailable`; authentication is required even locally.
 - `POST /operator/jobs/<full-job-id>/resume`: JSON `{"confirmedStopped":true}`
   and a UUID `Idempotency-Key` header. Reuse the same key when retrying a request;
   a new deliberate attempt needs a new key. HTTP 202 means queued, not completed.

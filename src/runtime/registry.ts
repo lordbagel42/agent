@@ -2004,7 +2004,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                     const state = await step
                                       .client<JuneRegistry>()
                                       .job.getOrCreate([deps.owner.id, id])
-                                      .snapshot();
+                                      .snapshot(request.action !== "diff");
                                     if (!state.revoked && visible(id))
                                       matches.push(id);
                                     // One extra match records truncation without
@@ -2028,19 +2028,36 @@ export function createJuneRegistry(deps: Dependencies) {
                                     const job = step
                                       .client<JuneRegistry>()
                                       .job.getOrCreate([deps.owner.id, id]);
-                                    let state = await job.snapshot();
+                                    let state = await job.snapshot(
+                                      request.action !== "diff",
+                                    );
                                     if (
                                       !state.revoked &&
                                       visible(id) &&
                                       valid(step.state) &&
                                       !signal.aborted
                                     ) {
-                                      if (request.action === "cancel") {
-                                        await job.cancel();
-                                        state = await job.snapshot();
+                                      if (request.action === "diff") {
+                                        text =
+                                          "Workspace diff is unavailable; a running approved job with an unchanged workspace binding is required.";
+                                        const summary = await job.diffSummary();
+                                        state = await job.snapshot(false);
+                                        if (
+                                          summary &&
+                                          !state.revoked &&
+                                          visible(id) &&
+                                          valid(step.state) &&
+                                          !signal.aborted
+                                        )
+                                          text = `${heading}\nWorkspace diff (candidate file statuses only; not atomic or verified): ${JSON.stringify(summary)}\nA/M/D/T/U denote added/possibly-modified/deleted/type-changed/unmerged; ? means untracked. Stat-only changes can appear modified. Untracked directories are collapsed. Contents and submodule changes are omitted. No action was taken.`;
+                                      } else {
+                                        if (request.action === "cancel") {
+                                          await job.cancel();
+                                          state = await job.snapshot();
+                                        }
+                                        if (!state.revoked && visible(id))
+                                          text = `${heading}\n${request.action === "cancel" ? "Cancellation requested durably; not confirmed stopped.\n" : ""}${JSON.stringify(codingJobMetadata(id, state, deps.coding?.runtimeId))}\n${caution} Binding/recovery metadata describes current blockers, not a proven historical failure cause or permission to resume. Inspect the saved thread and isolated workspace before owner-only !resume-stopped ID as an ordinary private message; prepared work without a saved thread requires manual reconciliation, never a replacement launch.`;
                                       }
-                                      if (!state.revoked && visible(id))
-                                        text = `${heading}\n${request.action === "cancel" ? "Cancellation requested durably; not confirmed stopped.\n" : ""}${JSON.stringify(codingJobMetadata(id, state, deps.coding?.runtimeId))}\n${caution} Binding/recovery metadata describes current blockers, not a proven historical failure cause or permission to resume. Inspect the saved thread and isolated workspace before owner-only !resume-stopped ID as an ordinary private message; prepared work without a saved thread requires manual reconciliation, never a replacement launch.`;
                                     }
                                   }
                                 }

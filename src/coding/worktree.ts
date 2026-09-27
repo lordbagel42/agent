@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readlink, realpath, rm } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 
 const exec = promisify(execFile);
 
@@ -45,6 +45,17 @@ export interface VerificationArtifact {
   headCommit: string;
   /** SHA-256 of HEAD, paths, file modes, bytes and symlink targets. */
   digest: string;
+}
+
+export interface WorktreeDiffSummary {
+  baseCommit: string;
+  observedAt: string;
+  comparison: "approved_base_to_worktree";
+  accuracy: "candidate_statuses_not_content_verified";
+  files: { status: string; path: string; pathTruncated: boolean }[];
+  truncated: boolean;
+  contents: "omitted";
+  submodules: "omitted";
 }
 
 /** Command-outcome evidence for a local source artifact, never deployment proof. */
@@ -138,11 +149,31 @@ async function readJson(file: string): Promise<unknown> {
   }
 }
 
-async function git(cwd: string, args: string[], trim = true): Promise<string> {
+async function git(
+  cwd: string,
+  args: string[],
+  inspection = false,
+): Promise<string> {
   try {
     const { stdout } = await exec(
       "git",
-      ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
+      [
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        ...(inspection
+          ? [
+              "-c",
+              "diff.autoRefreshIndex=false",
+              "-c",
+              "core.sparseCheckout=false",
+              "-c",
+              "core.splitIndex=false",
+            ]
+          : []),
+        ...args,
+      ],
       {
         cwd,
         // In particular, never inherit GIT_DIR, GIT_WORK_TREE, or GIT_INDEX_FILE.
@@ -151,12 +182,19 @@ async function git(cwd: string, args: string[], trim = true): Promise<string> {
           GIT_TERMINAL_PROMPT: "0",
           GIT_CONFIG_NOSYSTEM: "1",
           GIT_CONFIG_GLOBAL: "/dev/null",
+          ...(inspection
+            ? {
+                GIT_OPTIONAL_LOCKS: "0",
+                GIT_NO_LAZY_FETCH: "1",
+                GIT_NO_REPLACE_OBJECTS: "1",
+              }
+            : {}),
         },
-        timeout: 60_000,
-        maxBuffer: 1024 * 1024,
+        timeout: inspection ? 5_000 : 60_000,
+        maxBuffer: inspection ? 65_536 : 1024 * 1024,
       },
     );
-    return trim ? stdout.trim() : stdout;
+    return args.includes("-z") ? stdout : stdout.trim();
   } catch {
     return fail("Git operation failed; inspect locally before retrying");
   }
@@ -237,6 +275,72 @@ async function identifyArtifact(cwd: string): Promise<VerificationArtifact> {
   };
 }
 
+/** Git's index reader freshens split-index files even with optional locks off.
+ * Parse the bounded v2/v3 envelope before any index-reading Git operation.
+ * Unsupported indexes and executable clean/process filters fail closed.
+ */
+async function assertReadOnlyIndex(cwd: string) {
+  const configuration = await git(cwd, ["config", "--null", "--list"], true);
+  if (
+    configuration
+      .split("\0")
+      .some((entry) => /^filter\..*\.(clean|process)\n/.test(entry))
+  )
+    fail("diff unavailable with executable Git filters");
+  const algorithm = await git(
+    cwd,
+    ["rev-parse", "--show-object-format=storage"],
+    true,
+  );
+  if (algorithm !== "sha1" && algorithm !== "sha256")
+    fail("unsupported object format");
+  const hashSize = algorithm === "sha1" ? 20 : 32;
+  const gitDir = await git(cwd, ["rev-parse", "--absolute-git-dir"], true);
+  await directory(gitDir);
+  const handle = await open(
+    path.join(gitDir, "index"),
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > 4 * 1024 * 1024)
+      fail("unsupported index");
+    const data = await handle.readFile();
+    const end = data.length - hashSize;
+    if (
+      end < 12 ||
+      data.toString("ascii", 0, 4) !== "DIRC" ||
+      ![2, 3].includes(data.readUInt32BE(4)) ||
+      !createHash(algorithm)
+        .update(data.subarray(0, end))
+        .digest()
+        .equals(data.subarray(end))
+    )
+      fail("unsupported index");
+    const count = data.readUInt32BE(8);
+    let offset = 12;
+    for (let i = 0; i < count; i++) {
+      const start = offset;
+      const flagsAt = start + 40 + hashSize;
+      if (flagsAt + 2 > end) fail("invalid index entry");
+      offset = flagsAt + 2 + (data.readUInt16BE(flagsAt) & 0x4000 ? 2 : 0);
+      const nul = data.indexOf(0, offset);
+      if (nul < 0 || nul >= end) fail("invalid index entry");
+      offset = start + Math.ceil((nul + 1 - start) / 8) * 8;
+    }
+    while (offset < end) {
+      if (offset + 8 > end) fail("invalid index extension");
+      const signature = data.toString("ascii", offset, offset + 4);
+      // Lowercase signatures are mandatory extensions, including link/sdir.
+      if (!/^[A-Z]/.test(signature)) fail("unsupported index extension");
+      offset += 8 + data.readUInt32BE(offset + 4);
+    }
+    if (offset !== end) fail("invalid index length");
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * Call prepare only after the supervisor durably records approval. This helper
  * never launches a coding worker, resumes one, pushes, merges, or deploys.
@@ -258,7 +362,7 @@ export function createWorktreeManager(input: WorktreeConfig) {
   };
   const metadataRoot = path.join(config.worktreeRoot, ".june-jobs");
 
-  async function roots() {
+  async function roots(createMetadata = true) {
     await directory(config.repositoryRoot);
     await directory(config.worktreeRoot);
     if (
@@ -267,15 +371,19 @@ export function createWorktreeManager(input: WorktreeConfig) {
     )
       fail("repository and worktree roots must be separate");
     if (
-      (await git(config.repositoryRoot, ["rev-parse", "--show-toplevel"])) !==
-      config.repositoryRoot
+      (await git(
+        config.repositoryRoot,
+        ["rev-parse", "--show-toplevel"],
+        !createMetadata,
+      )) !== config.repositoryRoot
     )
       fail("repository root must be the Git checkout root");
-    await mkdir(metadataRoot, { mode: 0o700 }).catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code !== "EEXIST") throw error;
-      },
-    );
+    if (createMetadata)
+      await mkdir(metadataRoot, { mode: 0o700 }).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "EEXIST") throw error;
+        },
+      );
     await directory(metadataRoot);
   }
 
@@ -289,9 +397,12 @@ export function createWorktreeManager(input: WorktreeConfig) {
     };
   }
 
-  async function owned(jobId: string): Promise<WorktreeManifest> {
-    await roots();
+  async function owned(
+    jobId: string,
+    createMetadata = true,
+  ): Promise<WorktreeManifest> {
     const { cwd, record } = locations(jobId);
+    await roots(createMetadata);
     await directory(record);
     const raw = await readJson(path.join(record, "manifest.json"));
     if (!raw || typeof raw !== "object") fail("invalid manifest");
@@ -312,25 +423,29 @@ export function createWorktreeManager(input: WorktreeConfig) {
     const dotGit = await lstat(path.join(cwd, ".git"));
     if (!dotGit.isFile() || dotGit.isSymbolicLink())
       fail("invalid worktree Git marker");
-    const gitDir = await git(cwd, ["rev-parse", "--absolute-git-dir"]);
-    const common = await git(config.repositoryRoot, [
+    const readGit = (root: string, args: string[]) =>
+      git(root, args, !createMetadata);
+    const gitDir = await readGit(cwd, ["rev-parse", "--absolute-git-dir"]);
+    const common = await readGit(config.repositoryRoot, [
       "rev-parse",
       "--path-format=absolute",
       "--git-common-dir",
     ]);
+    await directory(gitDir);
+    await directory(common);
     if (
       ready?.gitDir !== gitDir ||
       !within(path.join(common, "worktrees"), gitDir) ||
-      (await git(cwd, [
+      (await readGit(cwd, [
         "rev-parse",
         "--path-format=absolute",
         "--git-common-dir",
       ])) !== common ||
-      (await git(cwd, ["rev-parse", "--show-toplevel"])) !== cwd
+      (await readGit(cwd, ["rev-parse", "--show-toplevel"])) !== cwd
     )
       fail("worktree registration mismatch");
     const entries = (
-      await git(config.repositoryRoot, ["worktree", "list", "--porcelain"])
+      await readGit(config.repositoryRoot, ["worktree", "list", "--porcelain"])
     ).split("\n");
     if (!entries.includes(`worktree ${cwd}`))
       fail("worktree is not registered");
@@ -388,6 +503,103 @@ export function createWorktreeManager(input: WorktreeConfig) {
         !(await exists(path.join(metadataRoot, "admission-lock"))) &&
         !(await exists(path.join(metadataRoot, "active")))
       );
+    },
+
+    /** Fixed metadata-only Git reads. No caller paths, patches, or commands.
+     * A running checkout can change between reads; this is not verification or
+     * a sandbox against a same-UID worker changing Git config/filesystem state.
+     */
+    async diffSummary(
+      jobId: string,
+      approved: WorktreeManifest,
+      attempt: number,
+    ): Promise<WorktreeDiffSummary> {
+      const manifest = await owned(jobId, false);
+      if (!isDeepStrictEqual(manifest, approved))
+        fail("approved worktree binding changed");
+      const lease = path.join(metadataRoot, "active");
+      await directory(lease);
+      const owner = (await readJson(path.join(lease, "owner.json"))) as {
+        jobId: string;
+        attempt: number;
+      };
+      if (owner.jobId !== jobId || owner.attempt !== attempt)
+        fail("execution lease ownership mismatch");
+      await assertReadOnlyIndex(manifest.cwd);
+      const changed = await git(
+        manifest.cwd,
+        [
+          "diff",
+          "--name-status",
+          "-z",
+          "--no-renames",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--ignore-submodules=all",
+          manifest.baseCommit,
+          "--",
+        ],
+        true,
+      );
+      const untracked = await git(
+        manifest.cwd,
+        [
+          "ls-files",
+          "--others",
+          "--exclude-standard",
+          "--directory",
+          "--no-empty-directory",
+          "-z",
+        ],
+        true,
+      );
+      const files: WorktreeDiffSummary["files"] = [];
+      let count = 0;
+      let encodedSize = 0;
+      const add = (status: string | undefined, file: string | undefined) => {
+        // Never reinterpret Git output as a filesystem path or command.
+        if (
+          !status ||
+          !/^[AMDTUXB?]$/.test(status) ||
+          !file ||
+          path.isAbsolute(file) ||
+          file.split("/").some((part) => part === ".." || part === ".")
+        )
+          fail("invalid diff metadata");
+        count++;
+        const entry = {
+          status,
+          path: file.slice(0, 200),
+          pathTruncated: file.length > 200,
+        };
+        const size = JSON.stringify(entry).length + 1;
+        if (
+          files.length < 40 &&
+          count === files.length + 1 &&
+          encodedSize + size <= 2600
+        ) {
+          files.push(entry);
+          encodedSize += size;
+        }
+      };
+      const parts = changed.split("\0");
+      if (parts.pop() !== "" || parts.length % 2 !== 0)
+        fail("invalid diff metadata");
+      for (let index = 0; index < parts.length; index += 2)
+        add(parts[index], parts[index + 1]);
+      const others = untracked.split("\0");
+      if (others.pop() !== "") fail("invalid diff metadata");
+      for (const file of others) add("?", file);
+      return {
+        baseCommit: manifest.baseCommit,
+        observedAt: new Date().toISOString(),
+        comparison: "approved_base_to_worktree",
+        accuracy: "candidate_statuses_not_content_verified",
+        files,
+        truncated: count > files.length,
+        contents: "omitted",
+        submodules: "omitted",
+      };
     },
 
     /** Exclusive per-workspace admission. Unknown execution keeps this lease.

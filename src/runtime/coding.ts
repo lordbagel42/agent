@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import {
@@ -181,12 +182,13 @@ export function createCodingActor(
     }),
     queues: { commands: queue<Command>() },
     actions: {
-      snapshot: async (c): Promise<CodingState> => {
+      // Diff authorization must not trigger the content-reading artifact check.
+      snapshot: async (c, inspectArtifact = true): Promise<CodingState> => {
         const state = JSON.parse(JSON.stringify(c.state)) as CodingState;
         if (state.verification && state.proposal) {
           const manager = coding?.isolation?.[state.proposal.workspace];
           state.verification.artifactMatches =
-            state.status === "running"
+            !inspectArtifact || state.status === "running"
               ? null
               : ((await manager?.checkArtifact(
                   state.proposal.id,
@@ -202,6 +204,45 @@ export function createCodingActor(
           }
         }
         return state;
+      },
+      // Host must check owner-private conversation membership before this read.
+      diffSummary: async (c) => {
+        const approved =
+          c.state.worktree &&
+          (JSON.parse(JSON.stringify(c.state.worktree)) as WorktreeManifest);
+        const attempt = c.state.attempts;
+        const proposal = c.state.proposal;
+        const allowed = () =>
+          coding &&
+          proposal &&
+          approved &&
+          proposal.id === c.key[1] &&
+          proposal.source.direct &&
+          c.state.status === "running" &&
+          !c.state.revoked &&
+          !c.state.cancelRequested &&
+          proposal.runtimeId === coding.runtimeId &&
+          c.state.runtimeId === coding.runtimeId &&
+          c.state.attempts === attempt &&
+          attempt > 0 &&
+          Object.values(c.state.commandApprovals).includes(attempt) &&
+          isDeepStrictEqual(c.state.worktree, approved) &&
+          Object.hasOwn(coding.workspaces, proposal.workspace) &&
+          coding.workspaces[proposal.workspace] === approved.repositoryRoot;
+        if (!allowed() || !coding || !proposal || !approved) return null;
+        const manager = coding.isolation?.[proposal.workspace];
+        if (!manager) return null;
+        try {
+          const summary = await manager.diffSummary(
+            proposal.id,
+            approved,
+            attempt,
+          );
+          return allowed() ? summary : null;
+        } catch {
+          // Filesystem/Git errors may contain private host paths or content.
+          return null;
+        }
       },
       // Host must expose this only through authenticated owner/operator ingress.
       cancel: async (c, revoke = false) => {

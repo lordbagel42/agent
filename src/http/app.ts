@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { SlackIngressDiagnostics } from "../channels/slack-ingress.js";
+import type { WorktreeDiffSummary } from "../coding/worktree.js";
 import {
   type ConnectionDependencies,
   createConnectionRoutes,
@@ -65,6 +66,7 @@ export interface HttpDependencies {
   ready(): Promise<boolean>;
   inspectConversation(): Promise<unknown>;
   inspectJob(id: string): Promise<unknown | undefined>;
+  inspectJobDiff?(id: string): Promise<WorktreeDiffSummary | null>;
   resumeJob(id: string, commandId: string): Promise<boolean>;
   cancelJob?(id: string): Promise<boolean>;
 }
@@ -381,6 +383,18 @@ export function createHttpApp(deps: HttpDependencies) {
       ? c.json({ error: "not_found" }, 404)
       : Response.json(job);
   });
+  if (deps.inspectJobDiff) {
+    const inspect = deps.inspectJobDiff;
+    app.get("/operator/jobs/:id/diff", async (c) => {
+      const id = c.req.param("id");
+      if (!/^[a-f0-9]{64}$/.test(id) || c.req.url.includes("?"))
+        return c.json({ error: "job_id_only" }, 400);
+      const summary = await inspect(id);
+      return summary
+        ? c.json(summary)
+        : c.json({ error: "diff_unavailable" }, 409);
+    });
+  }
   app.post("/operator/jobs/:id/resume", async (c) => {
     const id = c.req.param("id");
     const input = await c.req.json().catch(() => null);

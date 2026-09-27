@@ -718,6 +718,26 @@ describe("webhook and operator HTTP boundary", () => {
     expect(resumes).toEqual([commandId]);
   });
 
+  it("limits workspace diff reads to bearer-authenticated job IDs", async () => {
+    const inspectJobDiff = vi.fn(async () => null);
+    const app = createHttpApp(dependencies({ inspectJobDiff }));
+    const url = `/operator/jobs/${"a".repeat(64)}/diff`;
+    expect((await app.request(url)).status).toBe(401);
+    const headers = { authorization: `Bearer ${token}` };
+    for (const input of [
+      "/operator/jobs/..%2Fescape/diff",
+      `${url}?path=/etc/passwd`,
+      `${url}?command=whoami`,
+    ])
+      expect((await app.request(input, { headers })).status).toBe(400);
+    expect(inspectJobDiff).not.toHaveBeenCalled();
+    const response = await app.request(url, { headers });
+    expect(response.status).toBe(409);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ error: "diff_unavailable" });
+    expect(inspectJobDiff).toHaveBeenCalledExactlyOnceWith("a".repeat(64));
+  });
+
   it("requires bearer authority for idempotent cancellation and does not claim stoppage", async () => {
     const cancelled: string[] = [];
     const id = "a".repeat(64);

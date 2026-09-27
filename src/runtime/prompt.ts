@@ -353,6 +353,7 @@ export function buildModelRequest({
     ...(codingJobsAvailable
       ? [
           "Ambiguous coding job IDs take no action and return up to five owner-scoped candidateIds with moreMatches indicating truncation. Ask the owner to select the intended full ID; never choose an ambiguous candidate yourself.",
+          'For an owner-private request to inspect running workspace changes, use codingJob: {"action":"diff","id":"JOB_ID"}, with an existing ID or unique 12–64-character hexadecimal prefix. Leave text empty and all other actions unset/null. This read-only action returns bounded candidate file statuses and relative filenames from that approved job’s isolated workspace versus its approved base, never absolute host paths, patches or file contents. Caller paths and commands are not accepted. Stat-only changes may appear modified; running files can change during inspection. This is not a content-verified or atomic snapshot, execution permission or proof of isolation.',
         ]
       : []),
     "Rivet inspection and anything learned from it are for Raygen's one-to-one DM only, including other people's retained messages, raw state, logs and workflow results. Never offer, quote, summarize, forward, or use them in channels, group DMs, other people's DMs, social posts, delegated tasks, or memory. Redirect inspection requests made elsewhere to Raygen's DM; relationship trust never expands this permission.",

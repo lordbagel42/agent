@@ -4,8 +4,11 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
+  stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import os from "node:os";
@@ -100,6 +103,140 @@ test("worktree ownership rejects escapes and preserves the shared dirty checkout
       path.join(created.manifest.cwd, ".git"),
     );
     await expect(manager.prepare("approved-1")).rejects.toThrow("Git marker");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("diff inspection is bound, bounded, read-only and never follows workspace symlinks", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "june-diff-"));
+  try {
+    const repositoryRoot = path.join(root, "repo");
+    const worktreeRoot = path.join(root, "worktrees");
+    await mkdir(repositoryRoot);
+    await mkdir(worktreeRoot);
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim();
+    git(repositoryRoot, "init");
+    await writeFile(path.join(repositoryRoot, "tracked"), "original");
+    git(repositoryRoot, "add", "tracked");
+    git(
+      repositoryRoot,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "fixture",
+    );
+    const manager = createWorktreeManager({ repositoryRoot, worktreeRoot });
+    const { manifest } = await manager.prepare("approved");
+    await manager.admit("approved", 1);
+    const inspect = () => manager.diffSummary("approved", manifest, 1);
+    expect((await inspect()).files).toEqual([]);
+    const index = git(manifest.cwd, "rev-parse", "--git-path", "index");
+    const untouchedIndex = await readFile(index);
+    const untouchedTime = (await stat(index)).mtimeMs;
+    await utimes(path.join(manifest.cwd, "tracked"), new Date(0), new Date(0));
+    expect(await inspect()).toMatchObject({
+      accuracy: "candidate_statuses_not_content_verified",
+    });
+    expect(await readFile(index)).toEqual(untouchedIndex);
+    expect((await stat(index)).mtimeMs).toBe(untouchedTime);
+    await writeFile(
+      path.join(manifest.cwd, "tracked"),
+      "PRIVATE WORKER CONTENT",
+    );
+    git(manifest.cwd, "add", "tracked");
+    // Committed changes still differ from the approved base, even with clean HEAD.
+    git(
+      manifest.cwd,
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "-m",
+      "worker",
+    );
+    await writeFile(path.join(repositoryRoot, "outside-secret"), "HOST SECRET");
+    await symlink(repositoryRoot, path.join(manifest.cwd, "outside-link"));
+    await writeFile(path.join(manifest.cwd, "odd\nfilename "), "PRIVATE");
+    const beforeIndex = await readFile(index);
+    const metadata = path.join(
+      worktreeRoot,
+      ".june-jobs",
+      path.basename(manifest.cwd),
+    );
+    const beforeManifest = await readFile(path.join(metadata, "manifest.json"));
+    const summary = await inspect();
+    expect(summary.files).toEqual([
+      { status: "M", path: "tracked", pathTruncated: false },
+      { status: "?", path: "odd\nfilename ", pathTruncated: false },
+      { status: "?", path: "outside-link", pathTruncated: false },
+    ]);
+    expect(summary.truncated).toBe(false);
+    expect(summary.baseCommit).toBe(manifest.baseCommit);
+    expect(JSON.stringify(summary)).not.toMatch(
+      /PRIVATE|HOST SECRET|outside-secret/,
+    );
+    expect(await readFile(index)).toEqual(beforeIndex);
+    expect(await readFile(path.join(metadata, "manifest.json"))).toEqual(
+      beforeManifest,
+    );
+    for (let i = 0; i < 42; i++)
+      await writeFile(
+        path.join(manifest.cwd, `untracked-${i}`),
+        "ignored content",
+      );
+    expect(await inspect()).toMatchObject({
+      files: expect.any(Array),
+      truncated: true,
+    });
+    expect((await inspect()).files).toHaveLength(40);
+    await expect(
+      manager.diffSummary("../approved", manifest, 1),
+    ).rejects.toThrow("invalid job ID");
+    await expect(
+      manager.diffSummary("approved", { ...manifest, cwd: repositoryRoot }, 1),
+    ).rejects.toThrow("binding changed");
+    await expect(manager.diffSummary("approved", manifest, 2)).rejects.toThrow(
+      "lease ownership",
+    );
+    git(manifest.cwd, "config", "filter.fixture.clean", "touch FILTER-RAN");
+    await expect(inspect()).rejects.toThrow("executable Git filters");
+    await expect(
+      readFile(path.join(manifest.cwd, "FILTER-RAN")),
+    ).rejects.toThrow();
+    git(manifest.cwd, "config", "--unset", "filter.fixture.clean");
+    git(manifest.cwd, "update-index", "--split-index");
+    const shared = path.resolve(
+      manifest.cwd,
+      git(manifest.cwd, "rev-parse", "--shared-index-path"),
+    );
+    await utimes(shared, new Date(0), new Date(0));
+    await expect(inspect()).rejects.toThrow("unsupported index extension");
+    expect((await stat(shared)).mtimeMs).toBe(0);
+    git(manifest.cwd, "update-index", "--no-split-index");
+    // Reject symlinks at the checkout, metadata directory, and Git marker.
+    for (const target of [
+      manifest.cwd,
+      metadata,
+      path.join(manifest.cwd, ".git"),
+    ]) {
+      await rename(target, `${target}-saved`);
+      await symlink(`${target}-saved`, target);
+      await expect(inspect()).rejects.toThrow();
+      await rm(target);
+      await rename(`${target}-saved`, target);
+    }
+    await manager.release("approved", 1);
+    await rm(path.join(worktreeRoot, ".june-jobs"), { recursive: true });
+    await expect(inspect()).rejects.toThrow();
+    await expect(
+      readFile(path.join(metadata, "manifest.json")),
+    ).rejects.toThrow();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

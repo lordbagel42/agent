@@ -175,8 +175,11 @@ export interface CompanionReply {
   workflow?: import("../workflows/contracts.js").WorkflowCommand;
   social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
-  /** Owner-private lifecycle metadata or cancellation request; never approval. */
-  codingJob?: { action: "list" | "inspect" | "cancel"; id: string | null };
+  /** Owner-private job metadata/diff or cancellation request; never approval. */
+  codingJob?: {
+    action: "list" | "inspect" | "diff" | "cancel";
+    id: string | null;
+  };
   reaction?: string;
   /** Request one current-channel lookup instead of a conversational reply. */
   search?: string;

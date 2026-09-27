@@ -774,7 +774,11 @@ describe("separate coding supervisor", () => {
       await fixture(
         t,
         {
-          async run() {
+          async run(input) {
+            await writeFile(
+              path.join(input.cwd, "worker-change"),
+              "SECRET CONTENT",
+            );
             launches++;
             // Model the uncertain pre-ID startup gap, including an uncooperative
             // process. Cancelling it cannot permit a replacement launch.
@@ -835,6 +839,8 @@ describe("separate coding supervisor", () => {
       { action: "cancel", id: null },
       { action: "list", id: "a".repeat(64) },
       { action: "inspect", id: "a".repeat(11) },
+      { action: "diff", id: "../escape" },
+      { action: "diff", id: "a".repeat(64), path: "/etc/passwd" },
     ])
       expect(() =>
         parseReply(JSON.stringify({ text: "", codingJob }), [], request),
@@ -915,6 +921,8 @@ describe("separate coding supervisor", () => {
     expect(launches).toBe(0);
     await rm(admissionLock, { recursive: true });
     coding.runtimeId = "/private/SECRET-CURRENT-BINDING";
+    action = { text: "", codingJob: { action: "diff", id: proposal.key } };
+    expect((await deliver()).text).toContain("Workspace diff is unavailable");
     action = { text: "", codingJob: { action: "cancel", id: proposal.key } };
     for (const extra of [
       {
@@ -945,6 +953,27 @@ describe("separate coding supervisor", () => {
     await manager.release("SECRET-OCCUPYING-JOB", 4);
     await deliver({ text: `/resume-stopped ${proposal.key}` });
     await expect.poll(() => launches).toBe(1);
+    action = {
+      text: "",
+      codingJob: { action: "diff", id: proposal.key.slice(0, 12) },
+    };
+    const diff = (await deliver()).text;
+    expect(diff).toContain('"path":"worker-change"');
+    expect(diff).toContain("not atomic or verified");
+    expect(diff).not.toMatch(/SECRET|june-supervisor-/);
+    expect(modelRequests.at(-1)?.system).toContain('"action":"diff"');
+    for (const extra of [
+      {
+        direct: false,
+        botMentioned: true,
+        address: { ...source.address, conversationId: "C1" },
+      },
+      { senderId: "U2", metadata: { channelType: "im" as const } },
+    ]) {
+      const denied = (await deliver(extra)).text;
+      expect(denied).toContain("owner-private turn");
+      expect(denied).not.toContain("worker-change");
+    }
     action = { text: "", codingJob: { action: "cancel", id: proposal.key } };
     const cancellation = await deliver({ id: "cancel-native" });
     expect(cancellation.text).toContain(
@@ -972,6 +1001,7 @@ describe("separate coding supervisor", () => {
     expect((await job.snapshot()).threadId).toBeUndefined();
     expect((await job.snapshot()).verification).toBeUndefined();
     await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
+    action = { text: "", codingJob: { action: "diff", id: proposal.key } };
     store.deleteSource("lifecycle-1");
     await client.conversation
       .getOrCreate(["private", owner.id])
@@ -1053,6 +1083,59 @@ describe("separate coding supervisor", () => {
       expect(text).not.toContain("Configuration:");
       expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(false);
     }
+  });
+
+  it("reads only an approved running diff with the unchanged runtime binding", async (t) => {
+    const pending = Promise.withResolvers<{
+      threadId: string;
+      report: string;
+    }>();
+    t.onTestFinished(() =>
+      pending.resolve({ threadId: "T-diff", report: "done" }),
+    );
+    let started = false;
+    const { registry, coding } = await fixture(t, {
+      async run(input) {
+        await writeFile(path.join(input.cwd, "worker-change"), "PRIVATE BODY");
+        started = true;
+        return pending.promise;
+      },
+    });
+    coding.timeoutMs = 60_000;
+    const { client } = await setupTest(t, registry);
+    const job = client.job.getOrCreate(["raygen", "diff-job"]);
+    await job.send("commands", {
+      type: "propose",
+      proposal: {
+        id: "diff-job",
+        source,
+        workspace: "june",
+        goal: "Change a file",
+        runtimeId: coding.runtimeId,
+      },
+    });
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("awaiting_approval");
+    expect(await job.diffSummary()).toBeNull();
+    await job.send("commands", { type: "approve", commandId: "approved" });
+    await expect.poll(() => started, { timeout: 5000 }).toBe(true);
+    expect(await job.diffSummary()).toMatchObject({
+      files: [{ status: "?", path: "worker-change", pathTruncated: false }],
+      contents: "omitted",
+      truncated: false,
+    });
+    coding.runtimeId = "changed-binding";
+    expect(await job.diffSummary()).toBeNull();
+    coding.runtimeId = "fixture-runtime-v1";
+    await job.cancel();
+    expect(await job.diffSummary()).toBeNull();
+    await job.cancel(true);
+    expect(await job.diffSummary()).toBeNull();
+    pending.resolve({ threadId: "T-diff", report: "done" });
+    await expect
+      .poll(async () => (await job.snapshot()).status, { timeout: 5000 })
+      .toBe("needs_review");
   });
 
   it.for([false, true])(
@@ -1327,22 +1410,28 @@ describe("separate coding supervisor", () => {
   it("requires a private approval, then reports the worker result without pretending it verified it", async (t) => {
     const launches: { prompt: string; cwd: string }[] = [];
     const options: { reply?: () => CompanionReply } = {};
-    const { registry, sent, modelRequests, repositoryRoot, worktreeRoot } =
-      await fixture(
-        t,
-        {
-          async run(input) {
-            launches.push({ prompt: input.prompt, cwd: input.cwd });
-            await input.onThread("T-coding-worker");
-            return {
-              threadId: "T-coding-worker",
-              report: "Changed reactions and ran the checks.",
-            };
-          },
+    const {
+      registry,
+      sent,
+      modelRequests,
+      repositoryRoot,
+      worktreeRoot,
+      manager,
+    } = await fixture(
+      t,
+      {
+        async run(input) {
+          launches.push({ prompt: input.prompt, cwd: input.cwd });
+          await input.onThread("T-coding-worker");
+          return {
+            threadId: "T-coding-worker",
+            report: "Changed reactions and ran the checks.",
+          };
         },
-        undefined,
-        options,
-      );
+      },
+      undefined,
+      options,
+    );
     const { client } = await setupTest(t, registry);
     const june = client.conversation.getOrCreate(["private", "raygen"]);
     await june.send("inbox", {
@@ -1461,6 +1550,31 @@ describe("separate coding supervisor", () => {
     const completed = await job.snapshot();
     expect(completed.status).toBe("completed");
     expect(completed.verification?.artifactMatches).toBe(true);
+    const artifactCheck = vi.spyOn(manager, "checkArtifact");
+    expect(
+      (await job.snapshot(false)).verification?.artifactMatches,
+    ).toBeNull();
+    options.reply = () => ({ text: "", codingJob: { action: "diff", id } });
+    await june.send("inbox", {
+      type: "event",
+      event: {
+        ...source,
+        id: "diff-completed",
+        messageId: "diff-completed",
+        text: "Show this job's workspace diff",
+      },
+    });
+    await expect
+      .poll(() =>
+        sent.some(
+          (message) =>
+            message.content.type === "text" &&
+            message.content.text.includes("Workspace diff is unavailable"),
+        ),
+      )
+      .toBe(true);
+    expect(artifactCheck).not.toHaveBeenCalled();
+    artifactCheck.mockRestore();
     await writeFile(path.join(cwd, "post-verification"), "unchecked change");
     const stale = await job.snapshot();
     expect(stale.status).toBe("needs_review");
@@ -2153,7 +2267,7 @@ describe("separate coding supervisor", () => {
     const forgotten = idFor("8");
     const stale = idFor("9");
     const foreign = idFor("f");
-    let action: "inspect" | "cancel" = "inspect";
+    let action: "inspect" | "diff" | "cancel" = "inspect";
     let requestedId = prefix;
     let launches = 0;
     const { registry, sent } = await fixture(
@@ -2226,7 +2340,7 @@ describe("separate coding supervisor", () => {
     );
     const june = client.conversation.getOrCreate(["private", owner.id]);
     let sequence = 0;
-    const request = async (next: "inspect" | "cancel", id: string) => {
+    const request = async (next: "inspect" | "diff" | "cancel", id: string) => {
       action = next;
       requestedId = id;
       const eventId = `collision-${sequence++}`;
@@ -2238,7 +2352,7 @@ describe("separate coding supervisor", () => {
       const content = sent.at(-1)?.content;
       return content?.type === "text" ? content.text : "";
     };
-    for (const next of ["inspect", "cancel"] as const) {
+    for (const next of ["inspect", "diff", "cancel"] as const) {
       const ambiguous = await request(next, prefix);
       expect(ambiguous).toContain("ambiguous");
       expect(ambiguous.match(/[a-f0-9]{64}/g)).toEqual(ids.slice(0, 5));

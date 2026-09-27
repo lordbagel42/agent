@@ -91,7 +91,7 @@ const companionReplySchema = z.strictObject({
     .optional(),
   codingJob: z
     .strictObject({
-      action: z.enum(["list", "inspect", "cancel"]),
+      action: z.enum(["list", "inspect", "diff", "cancel"]),
       id: z
         .string()
         .regex(/^[a-f0-9]{12,64}$/)
@@ -377,7 +377,10 @@ export function replyJsonSchema(
               type: ["object", "null"],
               additionalProperties: false,
               properties: {
-                action: { type: "string", enum: ["list", "inspect", "cancel"] },
+                action: {
+                  type: "string",
+                  enum: ["list", "inspect", "diff", "cancel"],
+                },
                 id: {
                   type: ["string", "null"],
                   description:

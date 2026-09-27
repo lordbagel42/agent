@@ -1036,6 +1036,13 @@ async function main() {
         return undefined;
       return client.job.getOrCreate([config.owner.id, id]).snapshot();
     },
+    async inspectJobDiff(id) {
+      if (!coding || !(await june.canResumeJob(id))) return null;
+      const summary = await client.job
+        .getOrCreate([config.owner.id, id])
+        .diffSummary();
+      return (await june.canResumeJob(id)) ? summary : null;
+    },
     async resumeJob(id, commandId) {
       if (!coding || !(await june.canResumeJob(id))) return false;
       const job = client.job.getOrCreate([config.owner.id, id]);
