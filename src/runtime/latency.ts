@@ -1,5 +1,17 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
-import type { MessageEvent, SendResult } from "../core/contracts.js";
+import type {
+  MessageEvent,
+  ProviderTimingStage,
+  SendResult,
+} from "../core/contracts.js";
+
+const providerStages = [
+  "submitted",
+  "terminal",
+  "validated",
+  "retired",
+] as const satisfies readonly ProviderTimingStage[];
+type ProviderPhase = "fast" | "deep" | "synthesis";
 
 const stages = [
   "accepted",
@@ -17,6 +29,10 @@ const stages = [
   "deep_finished",
   "synthesis_started",
   "synthesis_finished",
+  "provider_submitted",
+  "provider_terminal",
+  "provider_validated",
+  "provider_retired",
   "typing_started",
   "typing_accepted",
   "typing_unavailable",
@@ -44,7 +60,12 @@ export interface LatencyTrace {
   threaded: boolean;
   probe?: string;
   transportMs?: number;
-  observations: { stage: LatencyStage; ms: number }[];
+  observations: {
+    stage: LatencyStage;
+    ms: number;
+    providerCall?: number;
+    providerPhase?: ProviderPhase;
+  }[];
   deliveries: {
     kind: ReplyKind;
     status: SendResult["status"];
@@ -72,7 +93,10 @@ export function latencyProbe(text: string): string | undefined {
 export function createLatencyDiagnostics() {
   const startedAt = Date.now();
   const salt = randomBytes(32);
-  const traces = new Map<string, { start: number; trace: LatencyTrace }>();
+  const traces = new Map<
+    string,
+    { start: number; trace: LatencyTrace; nextProviderCall: number }
+  >();
   const key = (event: MessageEvent) =>
     createHmac("sha256", salt)
       .update(
@@ -111,6 +135,7 @@ export function createLatencyDiagnostics() {
       const probe = latencyProbe(event.text);
       traces.set(id, {
         start: arrival.monotonic,
+        nextProviderCall: 0,
         trace: {
           id: randomUUID(),
           receivedAt: arrival.at,
@@ -127,6 +152,28 @@ export function createLatencyDiagnostics() {
       mark(event, "accepted");
     },
     mark,
+    /** Create only inside a live provider effect, never while replaying a receipt.
+     * Call IDs keep delayed retirement separate from subsequent provider calls. */
+    providerTiming(event: MessageEvent, phase: ProviderPhase) {
+      const id = key(event);
+      const entry = traces.get(id);
+      const providerCall = entry ? entry.nextProviderCall++ : undefined;
+      return (stage: ProviderTimingStage) => {
+        if (
+          !providerStages.includes(stage) ||
+          !entry ||
+          traces.get(id) !== entry ||
+          entry.trace.observations.length >= 128
+        )
+          return;
+        entry.trace.observations.push({
+          stage: `provider_${stage}`,
+          ms: performance.now() - entry.start,
+          providerCall,
+          providerPhase: phase,
+        });
+      };
+    },
     delivered(
       event: MessageEvent,
       kind: ReplyKind,
@@ -196,10 +243,35 @@ export function createLatencyDiagnostics() {
           time("finished") !== undefined && time("released") !== undefined
             ? "released"
             : "incomplete";
+        const firstProvider = trace.observations.find(
+          (o) => o.providerCall !== undefined,
+        );
+        const providerTime = (stage: ProviderTimingStage) =>
+          firstProvider === undefined
+            ? undefined
+            : trace.observations.find(
+                (o) =>
+                  o.providerCall === firstProvider.providerCall &&
+                  o.stage === `provider_${stage}`,
+              )?.ms;
+        const providerSpan = (
+          start: ProviderTimingStage,
+          end: ProviderTimingStage,
+        ) => {
+          const a = providerTime(start),
+            b = providerTime(end);
+          return a === undefined || b === undefined || b < a
+            ? undefined
+            : b - a;
+        };
+        const missing = providerStages.filter(
+          (stage) => providerTime(stage) === undefined,
+        );
         return [
           `${new Date(trace.receivedAt).toISOString()} ${trace.channel} ${trace.threaded ? "thread" : "top-level"}; ${state}${trace.probe ? `; probe ${trace.probe}; pong ${sent?.pong === true ? "accepted" : "not confirmed"}` : ""}`,
           `Slack E2E ${ms(sent?.platformMs)}; host text ${ms(time("text_sent"))}; HTTP ack ${ms(time("http_ack"))}; typing ack ${ms(time("typing_accepted"))}; textual ack ${ms(time("ack_sent"))}.`,
           `Queue ${ms(span("submission_started", "dequeued"))}; context ${ms(span("context_started", "context_ready"))}; provider fast/deep/synthesis ${ms(span("fast_started", "fast_finished"))}/${ms(span("deep_started", "deep_finished"))}/${ms(span("synthesis_started", "synthesis_finished"))}; send ${ms(span("text_started", "text_sent"))}.`,
+          `Provider first observed call (${firstProvider?.providerPhase ?? "unobserved"}): submitted→terminal ${ms(providerSpan("submitted", "terminal"))}; validation ${ms(providerSpan("terminal", "validated"))}; answer-ready ${ms(providerTime("validated"))} since arrival; submitted→answer-ready ${ms(providerSpan("submitted", "validated"))}; cleanup ${ms(providerSpan("validated", "retired"))}; missing stages: ${missing.length ? missing.map((stage) => `provider_${stage}`).join(", ") : "none"}.`,
         ].join("\n");
       });
       return [
@@ -208,7 +280,7 @@ export function createLatencyDiagnostics() {
           ? `${selected.length} retained sample(s), newest first, excluding this request:`
           : "No matching retained samples. Missing is not proof no reply occurred; do not resend a probe.",
         ...rows,
-        "Times are first spans, not additive totals. Provider includes process/transport, not TTFT or inference alone; acknowledgments overlap. E2E means Slack timestamp delta, not human read time. At most 128 volatile traces; restarts/eviction lose data. Model settings and cold-provider state are not measured; do not infer a speedup from one sample.",
+        "Times are first spans, not additive totals. Provider includes process/transport, not TTFT or inference alone; acknowledgments overlap. Provider retirement can arrive after turn completion; missing stages are unobserved, not zero, and do not prove success or failure. E2E means Slack timestamp delta, not human read time. At most 128 volatile traces; restarts/eviction lose data. Model settings and cold-provider state are not measured; do not infer a speedup from one sample.",
       ].join("\n\n");
     },
   };

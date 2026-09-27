@@ -1234,6 +1234,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                 {
                                   ...modelRequest,
                                   usageStage: stage,
+                                  onProviderTiming:
+                                    deps.latency?.providerTiming(event, stage),
                                   system:
                                     modelRequest.system +
                                     (version < 3 ? memory : ""),

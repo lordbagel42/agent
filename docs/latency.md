@@ -29,6 +29,14 @@ retained as such. Raw diagnostic observations remain process-local.
 Reports include revision/process identity, missing/ambiguous/incomplete states,
 queue/context/provider/send spans and separate acknowledgments. They do not
 establish provider-only inference time, live model settings, or a cold cache.
+The same private report separates provider answer readiness from cleanup for
+the first observed provider call in each sample: submitted→terminal,
+terminal→validated (validation), submitted→validated, arrival→validated, and
+validated→retired (cleanup). Missing stages are explicitly unobserved, never
+zero. A report requested before retirement can show cleanup as unobserved;
+request timings again later without resending the original message. Unsupported
+providers, failed calls, restarts, eviction, and observation limits also leave
+stages missing. Missing retirement is not proof the answer failed.
 
 ## Genuine Slack ping/pong
 
@@ -159,6 +167,20 @@ over SSH is not a live June turn, even with the actual model and login.
   persistence and occupancy. No journal durability is skipped to save time.
 - `fast/deep/synthesis_started` → corresponding `finished`: full provider call,
   not first-token time; SDK/subprocess overhead and accounting are included.
+- Providers may invoke the optional host-only `ModelRequest.onProviderTiming`
+  callback with `submitted`, `terminal`, `validated`, or `retired`. The runtime
+  records distinct `provider_*` observations only inside live model effects;
+  replayed receipts do not install callbacks or reconstruct timings. Submitted
+  means the turn was submitted to the provider, terminal means its terminal
+  result arrived, validated means the answer passed provider validation and is
+  ready to return, and retired means provider resource cleanup completed.
+  Retirement may arrive after model return, text delivery, `finished`, or
+  `released`. It does not delay or change those existing stages. Volatile numeric
+  `providerCall` and fixed `providerPhase` labels prevent delayed cleanup from
+  being paired with another call; raw observations retain later calls while the
+  private summary reports only the first observed call. All provider observations
+  share the existing 128-observation cap per trace and retain no content, errors,
+  provider IDs, or credentials. Evicted callbacks cannot recreate traces.
 - `typing_accepted`: Slack accepted the thread status, not proof the client
   rendered it. Existing-thread status starts before context loading; top-level
   input does not create a thread for status. June chooses reply placement

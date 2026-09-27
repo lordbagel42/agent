@@ -35,6 +35,13 @@ Pinned official source, tag `rust-v0.157.1`:
   output schema are supplied only when consuming the thread.
 - At most one unused session older than 60 seconds rotates every 20 seconds.
   Replacement follows confirmed unload, including after cancellation.
+- Completed, validated answers return before thread disposal. Disposal stays
+  tracked in the background and occupies its slot until confirmed closure;
+  only then can replenishment start. Late usage is still recorded. Cleanup
+  failure disables the provider but cannot retract or replay a delivered answer.
+  Private latency inspection separates submission, terminal, validated-answer,
+  and confirmed-retirement observations. Usage-ledger duration includes disposal;
+  the reply's provider span ends when the answer is available.
 - Cancellation waits for the `turn/start` response, then interrupts the identified
   turn only if no validated terminal event has arrived, then unloads it. Failed
   and interrupted terminal turns do not trigger another interrupt. An interrupt
@@ -46,7 +53,8 @@ Pinned official source, tag `rust-v0.157.1`:
   a process-level failure; there is no restart loop or fallback to exec.
 - The application drains its workflows before closing providers. Explicit close
   stops admission and terminates remaining work, waits for process close, and
-  removes the empty temporary workspace. Startup failure also closes providers.
+  settles tracked cleanup/accounting before removing the empty temporary
+  workspace. Startup failure also closes providers.
 - One MiB framing/per-turn output bound, 64 KiB final-message bound, existing
   structured reply validation, bounded RPC/turn/cleanup deadlines. Diagnostics
   are drained but not retained. Usage records contain only numeric accounting;

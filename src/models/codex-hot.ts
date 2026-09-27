@@ -83,6 +83,7 @@ interface ActiveTurn {
   usage?: TokenUsage;
   bytes: number;
   terminal: boolean;
+  timing?: ModelRequest["onProviderTiming"];
   ended: PromiseWithResolvers<void>;
   resolve(): void;
   reject(e: unknown): void;
@@ -117,6 +118,7 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
     }
   >();
   const active = new Map<string, ActiveTurn>();
+  const operations = new Set<Promise<CompanionReply>>();
 
   function fail(code: string) {
     errorCode ??= code;
@@ -237,6 +239,7 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
         return fail("malformed_response");
       a.turn = turn.id;
       a.terminal = true;
+      a.timing?.("terminal");
       a.ended.resolve();
       if (turn.status === "completed") a.resolve();
       else a.reject(failure());
@@ -401,7 +404,16 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
       signal?.throwIfAborted();
       if (stopping || errorCode)
         throw failure(errorCode ?? "provider_unavailable");
-      return observeUsage(
+      const answer = Promise.withResolvers<CompanionReply>();
+      // Telemetry must never change inference or retirement behavior.
+      const timing: NonNullable<ModelRequest["onProviderTiming"]> = (stage) => {
+        try {
+          request.onProviderTiming?.(stage);
+        } catch {
+          /* observational only */
+        }
+      };
+      const operation = observeUsage(
         options.usage,
         { provider: "codex", model, stage: request.usageStage ?? "fast" },
         async (report) => {
@@ -414,6 +426,7 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
             ...done,
             bytes: 0,
             terminal: false,
+            timing,
             ended: Promise.withResolvers<void>(),
           };
           active.set(slot.id, a);
@@ -427,6 +440,7 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
           let requestError: unknown;
           try {
             // Never race/drop this RPC: without its ID, cancellation would orphan a turn.
+            timing("submitted");
             const result = object(
               await rpc("turn/start", {
                 threadId: slot.id,
@@ -447,8 +461,14 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
             if (signal?.aborted) cancel();
             await done.promise;
             signal?.throwIfAborted();
+            if (stopping || errorCode)
+              throw failure(errorCode ?? "provider_closed");
             if (!a.answer) throw failure("malformed_response");
             reply = parseReply(a.answer, request.workspaces, request);
+            timing("validated");
+            // A completed, validated answer no longer depends on session disposal.
+            // Keep the operation/slot tracked until cleanup and usage recording finish.
+            answer.resolve(reply);
           } catch (error) {
             requestError = error;
           } finally {
@@ -477,7 +497,10 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
                   }
                 }
                 if (!a.turn) fail("generation_failed");
-                else await retire(slot.id);
+                else {
+                  await retire(slot.id);
+                  timing("retired");
+                }
               }
             } catch {
               fail("cleanup_failed");
@@ -487,12 +510,18 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
             active.delete(slot.id);
             if (!stopping && !errorCode) void replenish();
           }
+          // Disposal failure disables future calls, not an answer already delivered.
+          if (reply) return reply;
           if (errorCode) throw failure(errorCode);
           if (requestError) throw requestError;
-          if (!reply) throw failure("malformed_response");
-          return reply;
+          throw failure("malformed_response");
         },
       );
+      operations.add(operation);
+      void operation
+        .then(answer.resolve, answer.reject)
+        .finally(() => operations.delete(operation));
+      return answer.promise;
     },
     close(): Promise<void> {
       closed ??= (async () => {
@@ -502,6 +531,7 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
         // Caller drains workflows first. Force-close also settles any remaining calls.
         fail("provider_closed");
         await processClosed;
+        await Promise.allSettled(operations);
         if (root) await rm(root, { recursive: true, force: true });
       })();
       return closed;

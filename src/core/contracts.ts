@@ -178,11 +178,20 @@ export interface CompanionReply {
   replyInThread?: boolean;
 }
 
+export type ProviderTimingStage =
+  | "submitted"
+  | "terminal"
+  | "validated"
+  | "retired";
+
 export interface ModelRequest {
   system: string;
   messages: ConversationMessage[];
   /** Host-only accounting label, never part of a provider prompt. */
   usageStage?: "fast" | "deep" | "synthesis" | "execution";
+  /** Volatile host diagnostics only; never serialize into prompts or journals.
+   * Retirement may be observed after reply resolves and the turn finishes. */
+  onProviderTiming?: (stage: ProviderTimingStage) => void;
   /** Only these configured workspace names may be delegated. */
   workspaces: string[];
   searchAvailable?: boolean;

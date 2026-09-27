@@ -94,13 +94,24 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (first && ['interrupt-race','interrupt-usage','interrupt-unconfirmed'].includes(${JSON.stringify(mode)})) continue;
     if (['hang','late'].includes(${JSON.stringify(mode)})) continue;
     const item = {type:${JSON.stringify(mode === "tool" ? "commandExecution" : "agentMessage")},phase:'final_answer',text:${JSON.stringify(mode === "schema" ? '{"text":"hello","coding":{"workspace":"not-authorized","goal":"run"}}' : '{"text":"hello"}')}};
+    if (${JSON.stringify(mode)} === 'completed-then-invalid') {
+      process.stdout.write([
+        {method:'item/completed',params:{threadId,turnId:result.turn.id,item}},
+        {method:'turn/completed',params:{threadId,turn:{id:result.turn.id,status:'completed'}}},
+        {id:700,method:'item/commandExecution/requestApproval',params:{threadId}}
+      ].map(x=>JSON.stringify(x)+'\\n').join(''));
+      continue;
+    }
     emit({method:'item/completed',params:{threadId,turnId:result.turn.id,item}});
     if (['failed-first','terminal-before-ack','interrupt-race','interrupt-usage'].includes(${JSON.stringify(mode)})) setTimeout(()=>finish(threadId),400);
     else finish(threadId);
     continue;
   }
   emit({id:r.id,result});
-  if (r.method === 'thread/unsubscribe' && ${JSON.stringify(mode)}!=='no-close') emit({method:'thread/closed',params:{threadId:r.params.threadId}});
+  if (r.method === 'thread/unsubscribe' && ${JSON.stringify(mode)}!=='no-close') {
+    if (${JSON.stringify(mode)}==='slow-close') setTimeout(()=>{usage(r.params.threadId);emit({method:'thread/closed',params:{threadId:r.params.threadId}});},500);
+    else emit({method:'thread/closed',params:{threadId:r.params.threadId}});
+  }
 }
 `,
     { mode: 0o700 },
@@ -291,7 +302,78 @@ for (const file of [
   });
 }
 
-for (const mode of ["no-ack", "no-close", "interrupt-unconfirmed"]) {
+it("returns validated answers before retirement without freeing occupied slots", async (t) => {
+  const { provider, calls, ledger } = await fixture(t, "slow-close");
+  await provider.ready();
+  const stages: string[] = [];
+  const replies = await Promise.all(
+    Array.from({ length: 3 }, () =>
+      provider.reply({
+        ...request,
+        onProviderTiming: (stage) => stages.push(stage),
+      }),
+    ),
+  );
+  expect(replies.map((x) => x.text)).toEqual(["hello", "hello", "hello"]);
+  expect(stages.filter((x) => x === "validated")).toHaveLength(3);
+  expect(stages).not.toContain("retired");
+  expect(provider.inspect()).toMatchObject({ idle: 0, active: 3 });
+  await expect(provider.reply(request)).rejects.toMatchObject({
+    code: "provider_busy",
+  });
+  expect(
+    (await calls()).filter((x) => x.method === "thread/start"),
+  ).toHaveLength(3);
+  await expect.poll(() => stages.filter((x) => x === "retired").length).toBe(3);
+  await expect.poll(() => provider.inspect().idle).toBe(3);
+  expect(
+    ledger.snapshot().recent.filter((x) => x.status === "completed"),
+  ).toHaveLength(3);
+  expect(
+    ledger.snapshot().recent.find((x) => x.status === "completed"),
+  ).toMatchObject({ input: 123, output: 19 });
+});
+
+it("fails closed on missing retirement without retracting or replaying the answer", async (t) => {
+  const { provider, calls, ledger } = await fixture(t, "no-close");
+  await provider.ready();
+  await expect(provider.reply(request)).resolves.toEqual({ text: "hello" });
+  await expect
+    .poll(() => provider.inspect().state, { timeout: 20000 })
+    .toBe("failed");
+  await provider.close();
+  expect((await calls()).filter((x) => x.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(
+    (await calls()).filter((x) => x.method === "thread/start"),
+  ).toHaveLength(3);
+  expect(ledger.snapshot().recent[0]?.status).toBe("completed");
+}, 25000);
+
+it("close settles pending retirement and telemetry without replacing its slot", async (t) => {
+  const { provider, calls, ledger } = await fixture(t, "no-close");
+  await provider.ready();
+  await provider.reply({
+    ...request,
+    onProviderTiming: () => {
+      throw new Error("observer failure");
+    },
+  });
+  expect(provider.inspect().active).toBe(1);
+  await provider.close();
+  expect(provider.inspect().active).toBe(0);
+  expect(ledger.snapshot().recent[0]?.status).toBe("completed");
+  expect(
+    (await calls()).filter((x) => x.method === "thread/start"),
+  ).toHaveLength(3);
+});
+
+for (const mode of [
+  "no-ack",
+  "interrupt-unconfirmed",
+  "completed-then-invalid",
+]) {
   it(`fails closed without replay when ${mode}`, async (t) => {
     const { provider, calls } = await fixture(t, mode);
     await provider.ready();
