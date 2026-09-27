@@ -156,9 +156,15 @@ export function createReflectionActor(
       c,
     ): {
       persist: () => Promise<void>;
+      replaceReflection: (reflection: ReflectionState) => void;
       active: Map<string, AbortController>;
     } => ({
       persist: () => c.saveState({ immediate: true }),
+      replaceReflection: (reflection) => {
+        // Domain spreads retain proxied children. Only Rivet's whole-state setter
+        // unwraps them; workflow steps expose state through a getter only.
+        c.state = { ...c.state, reflection };
+      },
       active: new Map<string, AbortController>(),
     }),
     queues: { wake: queue<{ wake: true }>() },
@@ -194,7 +200,7 @@ export function createReflectionActor(
         ).catch(() => null);
         if (!evidence) return { status: "unavailable" as const };
         const result = enqueue(c.state.reflection, request, Date.now());
-        c.state.reflection = result.state;
+        c.vars.replaceReflection(result.state);
         if (result.accepted) c.state.modes[result.id] = request.mode;
         await c.vars.persist();
         if (result.accepted) await c.queue.send("wake", { wake: true });
@@ -214,14 +220,14 @@ export function createReflectionActor(
         )
           throw new Error("Invalid reflection request");
         const result = enqueue(c.state.reflection, input, Date.now());
-        c.state.reflection = result.state;
+        c.vars.replaceReflection(result.state);
         if (result.accepted) c.state.modes[result.id] = input.mode;
         await c.vars.persist();
         await c.queue.send("wake", { wake: true });
         return { id: result.id, accepted: result.accepted };
       },
       cancel: async (c, id: string) => {
-        c.state.reflection = cancel(c.state.reflection, id);
+        c.vars.replaceReflection(cancel(c.state.reflection, id));
         for (const [key, candidate] of Object.entries(c.state.candidates))
           if (candidate.requestId === id) delete c.state.candidates[key];
         await c.vars.persist();
@@ -407,15 +413,17 @@ export function createReflectionActor(
           request,
           AbortSignal.timeout(deps.timeoutMs),
         );
+        const current = c.state.candidates[id];
         if (
           !evidence ||
-          c.state.candidates[id] !== candidate ||
-          candidate.epoch !== c.state.epoch ||
+          !current ||
+          current.id !== candidate.id ||
+          current.epoch !== c.state.epoch ||
           isQuiet(Date.now(), deps.policy.quiet) ||
           c.state.liveActive > 0
         )
           return null;
-        return candidate;
+        return current;
       },
       /** Operator-only recovery after confirming the old worker/provider has stopped.
        * Never retries this request or clears its dedupe tombstone.
@@ -425,13 +433,15 @@ export function createReflectionActor(
         const request = c.state.reflection.requests.find((r) => r.id === id);
         if (!request || !["running", "cancelling"].includes(request.status))
           return false;
-        c.state.reflection = finish(
-          cancel(c.state.reflection, id),
-          id,
-          request.attempts,
-          Date.now(),
-          [],
-          deps.policy,
+        c.vars.replaceReflection(
+          finish(
+            cancel(c.state.reflection, id),
+            id,
+            request.attempts,
+            Date.now(),
+            [],
+            deps.policy,
+          ),
         );
         c.state.invocations[JSON.stringify([id, request.attempts])] = "settled";
         await c.vars.persist();
@@ -508,9 +518,8 @@ export function createReflectionActor(
                   const evidence = await retrieve(request, signal);
                   if (signal.aborted || step.state.liveActive > 0) return;
                   if (!evidence) {
-                    step.state.reflection = cancel(
-                      step.state.reflection,
-                      request.id,
+                    step.vars.replaceReflection(
+                      cancel(step.state.reflection, request.id),
                     );
                     await step.vars.persist();
                     return;
@@ -523,16 +532,15 @@ export function createReflectionActor(
                     evidence,
                     step.state.liveActive,
                   );
-                  step.state.reflection = admitted.state;
+                  step.vars.replaceReflection(admitted.state);
                   attempt = admitted.attempt;
                   if (!attempt) {
                     if (
                       admitted.reason === "stopped" ||
                       admitted.reason === "stale-evidence"
                     )
-                      step.state.reflection = cancel(
-                        step.state.reflection,
-                        request.id,
+                      step.vars.replaceReflection(
+                        cancel(step.state.reflection, request.id),
                       );
                     await step.vars.persist();
                     return;
@@ -618,20 +626,21 @@ export function createReflectionActor(
                   // No exception text or evidence enters receipts/state. Failure consumes
                   // the admitted attempt rather than causing automatic provider replay.
                   if (!attempt && !signal.aborted)
-                    step.state.reflection = cancel(
-                      step.state.reflection,
-                      request.id,
+                    step.vars.replaceReflection(
+                      cancel(step.state.reflection, request.id),
                     );
                 } finally {
                   step.vars.active.delete(request.id);
                   if (attempt) {
-                    step.state.reflection = finish(
-                      step.state.reflection,
-                      request.id,
-                      attempt,
-                      Date.now(),
-                      [],
-                      deps.policy,
+                    step.vars.replaceReflection(
+                      finish(
+                        step.state.reflection,
+                        request.id,
+                        attempt,
+                        Date.now(),
+                        [],
+                        deps.policy,
+                      ),
                     );
                     step.state.invocations[invocation] = "settled";
                   }

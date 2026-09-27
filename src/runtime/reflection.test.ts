@@ -21,6 +21,8 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   let providerSignal: AbortSignal | undefined;
   let beforeSave: (() => Promise<void>) | undefined;
   let releaseSave = () => {};
+  let beforeRetrieve: (() => Promise<void>) | undefined;
+  let releaseRetrieve = () => {};
   const lifecycle: Lifecycle = createLifecycle(async () => handle.isSettled());
   const enter = vi.spyOn(lifecycle, "enter");
   const registry = setup({
@@ -42,6 +44,7 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
           pollMs: 20,
           timeoutMs: 10000,
           async retrieve({ scope, evidenceIds }) {
+            await beforeRetrieve?.();
             return {
               authorized,
               evidence: evidenceIds.map((id) => ({
@@ -101,6 +104,8 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   t.onTestFinished(async () => {
     beforeSave = undefined;
     releaseSave();
+    beforeRetrieve = undefined;
+    releaseRetrieve();
     lifecycle.resume();
     release();
     await registry.shutdown();
@@ -255,13 +260,32 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     .toBe(1);
   const candidateId = (await handle.status()).candidateIds[0];
   if (!candidateId) throw new Error("Missing fixture candidate");
-  expect(await handle.candidate(candidateId)).toMatchObject({
-    decision: { answer: "yes" },
-  });
   deleted = true;
   expect(await handle.candidate(candidateId)).toBeNull();
-
   deleted = false;
+  for (const invalidate of [false, true]) {
+    const retrievalStarted = Promise.withResolvers<void>();
+    const retrievalFinished = Promise.withResolvers<void>();
+    releaseRetrieve = retrievalFinished.resolve;
+    beforeRetrieve = async () => {
+      beforeRetrieve = undefined;
+      retrievalStarted.resolve();
+      await retrievalFinished.promise;
+    };
+    const reading = handle.candidate(candidateId);
+    await retrievalStarted.promise;
+    if (invalidate) await handle.cancel(queued.id);
+    else
+      expect(
+        (await handle.enqueue({ ...input, evidenceIds: ["read-after-delete"] }))
+          .accepted,
+      ).toBe(false);
+    releaseRetrieve();
+    // Unrelated root replacement preserves the invocation; cancellation does not.
+    if (invalidate) expect(await reading).toBeNull();
+    else expect(await reading).toMatchObject({ decision: { answer: "yes" } });
+  }
+
   const epoch = (await handle.status()).epoch;
   await Promise.all([
     handle.occupancy("turn-a", true),
@@ -344,4 +368,26 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
       .accepted,
   ).toBe(false);
   expect(calls).toBe(4);
+
+  // Settlement must allow sustained fresh work, not just one more provider call.
+  // Nested state-proxy layers previously stalled persistence/status by this point.
+  for (let index = 0; index < 4; index++) {
+    const freshInput = { ...input, evidenceIds: [`after-preemption-${index}`] };
+    const fresh = await handle.enqueue(freshInput);
+    expect(fresh.accepted).toBe(true);
+    await expect.poll(() => calls).toBe(5 + index);
+    release();
+    await expect
+      .poll(async () => {
+        const status = await handle.status();
+        return {
+          request: status.reflection.requests.find((r) => r.id === fresh.id)
+            ?.status,
+          invocation: status.invocations[JSON.stringify([fresh.id, 1])],
+        };
+      })
+      .toEqual({ request: "stopped", invocation: "settled" });
+    expect((await handle.enqueue(freshInput)).accepted).toBe(false);
+  }
+  expect(calls).toBe(8);
 });
