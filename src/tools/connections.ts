@@ -347,6 +347,22 @@ export class McpConnections {
     connection.revision = randomUUID();
     this.#save(connection);
   }
+  #proposalStatus(proposal: McpProposal): string {
+    // A changed connection cannot erase the outcome of a consumed grant.
+    if (proposal.grant)
+      return (
+        this.#broker.audit(this.options.owner, proposal.grant)?.status ??
+        "not_started"
+      );
+    if (proposal.expiresAt <= Date.now()) return "expired";
+    try {
+      return this.#get(proposal.connection).revision === proposal.revision
+        ? "awaiting_approval"
+        : "invalidated";
+    } catch {
+      return "invalidated";
+    }
+  }
   proposals(): (McpProposal & { status: string })[] {
     return this.#db
       .prepare("SELECT id,value FROM proposals ORDER BY rowid DESC LIMIT 50")
@@ -358,12 +374,7 @@ export class McpConnections {
         );
         return {
           ...proposal,
-          status: proposal.grant
-            ? (this.#broker.audit(this.options.owner, proposal.grant)?.status ??
-              "not_started")
-            : proposal.expiresAt <= Date.now()
-              ? "expired"
-              : "awaiting_approval",
+          status: this.#proposalStatus(proposal),
         };
       });
   }

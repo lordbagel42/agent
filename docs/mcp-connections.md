@@ -25,6 +25,10 @@ Contract changes disable the affected tool until reviewed again. Permission
 changes, reconnects and disconnects invalidate pending approvals. Disconnect
 removes June's saved authorization; revoke the grant at its provider separately
 when needed. Credentials and stored contracts/arguments are encrypted on disk.
+June and the dashboard label unexpired, unconsumed requests from an older connection
+revision `invalidated`. Re-enabling a tool does not revive those confirmations.
+Recorded execution outcomes remain historical receipts, including `unknown`;
+changing one connection does not invalidate another connection's grants.
 
 ## Host configuration
 

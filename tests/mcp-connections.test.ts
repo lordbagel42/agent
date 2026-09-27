@@ -650,6 +650,70 @@ test("mutation approval executes exactly once, including concurrent confirmation
   expect(f.calls).toHaveLength(1);
 });
 
+test("revocation invalidates June's pending request without affecting another connection's grant", async () => {
+  const f = await fixture();
+  f.store.permit(f.id, f.store.generation(f.id), "lookup", "approval");
+  const other = f.store.add({
+    name: "Other connection",
+    url: "https://other.example/mcp",
+  });
+  await f.store.discover(other, f.store.generation(other));
+  f.store.permit(other, f.store.generation(other), "lookup", "approval");
+  await f.invoke();
+  await f.invoke(other);
+  const revoked = f.store.proposals().find((item) => item.connection === f.id);
+  const current = f.store.proposals().find((item) => item.connection === other);
+  assert(revoked && current);
+  expect(f.calls).toHaveLength(0);
+
+  // Revoke A while B's exact grant is already admitted and discovering tools.
+  f.duringList(() => {
+    f.duringList(() => {});
+    f.store.permit(f.id, f.store.generation(f.id), "lookup", "disabled");
+  });
+  expect(await f.store.confirm(current.id)).toBe("succeeded");
+  await expect(f.store.confirm(revoked.id)).rejects.toThrow("proposal_expired");
+  expect((await f.invoke()).text).toContain("isn't enabled");
+  expect(f.calls).toHaveLength(1);
+
+  // Re-enabling and reopening cannot revive an old confirmation.
+  f.store.permit(f.id, f.store.generation(f.id), "lookup", "approval");
+  await f.restart();
+  await expect(f.store.confirm(revoked.id)).rejects.toThrow("proposal_expired");
+  expect(await f.store.confirm(current.id)).toBe("succeeded");
+  expect(f.calls).toHaveLength(1);
+  expect(
+    f.store.proposals().find((item) => item.id === revoked.id)?.status,
+  ).toBe("invalidated");
+  await f.store
+    .wrap({
+      reply: async (request) => {
+        expect(request.system).toContain(
+          JSON.stringify({
+            id: revoked.id,
+            tool: "lookup",
+            status: "invalidated",
+          }),
+        );
+        expect(request.system).not.toContain("record-9");
+        return {
+          text: "The previous request is no longer available for approval.",
+        };
+      },
+    })
+    .reply(f.request);
+
+  await f.invoke();
+  const fresh = f.store.proposals()[0];
+  assert(fresh && fresh.id !== revoked.id);
+  expect(await f.store.confirm(fresh.id)).toBe("succeeded");
+  f.store.permit(f.id, f.store.generation(f.id), "lookup", "disabled");
+  expect(f.store.proposals().find((item) => item.id === fresh.id)?.status).toBe(
+    "succeeded",
+  );
+  expect(f.calls).toHaveLength(2);
+});
+
 test("approval review identifies only the matching destination and preserves consent checks", async () => {
   const f = await fixture({
     name: 'Research <img src=x onerror="alert(1)">',
@@ -701,11 +765,12 @@ test("approval review identifies only the matching destination and preserves con
   f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
   f.store.add({ name: "Other server", url: "https://other.example/mcp" });
   const stale = await (await app.request(path())).text();
+  expect(stale).toContain("invalidated");
   expect(stale).toContain("connection has changed or been removed");
   expect(stale).not.toContain("https://other.example/mcp");
   expect(stale).not.toContain('name="proof"');
   expect((await post({ proof: staleProof, confirmed: "yes" })).status).toBe(
-    503,
+    403,
   );
   expect(f.calls).toHaveLength(1);
   f.store.disconnect(f.id, f.connection().revision);
@@ -714,16 +779,29 @@ test("approval review identifies only the matching destination and preserves con
   );
 });
 
-test("disconnect during discovery prevents an already-approved mutation from dispatching", async () => {
-  const f = await fixture();
-  f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-  await f.invoke();
-  f.duringList(() => f.store.disconnect(f.id, f.connection().revision));
-  const proposal = f.store.proposals()[0];
-  assert(proposal);
-  expect(await f.store.confirm(proposal.id)).toBe("unknown");
-  expect(f.calls).toHaveLength(0);
-});
+test.each(["disconnect", "revoke"])(
+  "%s during discovery prevents an already-approved mutation from dispatching",
+  async (change) => {
+    const f = await fixture();
+    f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+    await f.invoke();
+    f.duringList(() => {
+      if (change === "disconnect") {
+        f.store.disconnect(f.id, f.connection().revision);
+      } else {
+        f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
+        f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+      }
+    });
+    const proposal = f.store.proposals()[0];
+    assert(proposal);
+    expect(await f.store.confirm(proposal.id)).toBe("unknown");
+    await f.restart();
+    expect(f.store.proposals()[0]?.status).toBe("unknown");
+    expect(await f.store.confirm(proposal.id)).toBe("unknown");
+    expect(f.calls).toHaveLength(0);
+  },
+);
 
 test("private routes reject unauthenticated and cross-site writes", async () => {
   const f = await fixture();
