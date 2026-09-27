@@ -51,6 +51,13 @@ trusted host APIs, not autonomous model tools.
   Imports separately enforce ledger-global source/claim/full-snapshot byte
   ceilings via `importBudget` (see `../imports/README.md`). Scoped usage cannot
   be subtracted from those global limits. Retrieval/extraction limits are separate.
+- `retrieveSource(audience, sourceId, {maxCharacters?})` is the bounded exact
+  recall projection. It returns the original source and provenance in the same
+  `{sources,claims}` envelope as `retrieve`, with no inferred claims. Missing,
+  deleted, foreign-audience, and opted-out Slack sources all return empty arrays.
+  An authorized source that exceeds the serialized budget is omitted whole with
+  `truncated:true, omitted:1`; it is never clipped into an apparent quotation.
+  Defaults and hard character limits match `retrieve`.
 - `retrieve(audience, query, {limit?, maxCharacters?, category?})` returns `{sources,claims}`.
   Authorization precedes lexical ranking. Defaults: 12 combined records, 16,000
   serialized JSON characters; hard limits: 100 records, 100,000 characters and a
@@ -203,6 +210,15 @@ keywords. `query: ""` permits time-only recall. Omitted fields (or `null` on the
 provider wire) apply no time filter. Ask for original messages within a date
 window versus claims with known validity at an instant; these are different
 questions, with the half-open and unknown-bound semantics described above.
+
+For an exact original, ask "Show source ID …" in the same owner-private turn.
+June can use `recall: {kind: "source", sourceId: "…"}` with empty text and no
+other action. The ID is exact (1–2048 characters, not a keyword query). The
+same 3,000-character serialized/escaped budget applies to that one whole source,
+including its original observation time, author, account, conversation and URL.
+No neighboring sources or inferred claims are expanded. Missing, deleted,
+opted-out and unauthorized IDs produce the same absence without echoing private
+metadata; an authorized oversized source is explicitly omitted, not clipped.
 
 The host derives the audience from routing; the model cannot choose an audience,
 limit, provider, account, or permission. Recall is absent from guest/public,

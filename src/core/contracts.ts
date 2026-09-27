@@ -238,6 +238,7 @@ export interface CompanionReply {
         /** Select only claims with known validity [validFrom, validTo) at this instant. */
         validAt?: number;
       }
+    | { kind: "source"; sourceId: string }
     | { kind: "contradictions"; claimId: string }
     | { kind: "supersession"; claimId: string };
   /** Owner-private bounded view of unaccepted memory claims; never review. */

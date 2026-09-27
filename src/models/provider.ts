@@ -202,6 +202,10 @@ const companionReplySchema = z.strictObject({
             value.observedFrom < value.observedTo,
         ),
       z.strictObject({
+        kind: z.literal("source"),
+        sourceId: z.string().min(1).max(2048),
+      }),
+      z.strictObject({
         kind: z.literal("contradictions"),
         claimId: z.string().min(1).max(2048),
       }),
@@ -626,6 +630,18 @@ export function replyJsonSchema(
                   type: "object",
                   additionalProperties: false,
                   properties: {
+                    kind: { type: "string", enum: ["source"] },
+                    sourceId: {
+                      type: "string",
+                      description: "Exact source ID, 1–2048 characters.",
+                    },
+                  },
+                  required: ["kind", "sourceId"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
                     kind: { type: "string", enum: ["contradictions"] },
                     claimId: {
                       type: "string",
@@ -663,7 +679,7 @@ export function replyJsonSchema(
                 },
               ],
               description:
-                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with optional category, exact entity and time filters, explicit contradiction-neighbor/supersession inspection by exact claim ID, or {kind:dependents,sourceId} for bounded dependent claim metadata and authorized direct/derived counts. Unknown categories and invalid time windows are rejected, never broadened. Unknown entity IDs return no matches, never name-based alternatives. The host returns bounded recorded evidence with provenance directly, not verified truth. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
+                "One owner-private retained-memory query: a 1–500 character keyword string, a search object with optional category, exact entity and time filters, an exact source lookup by ID, explicit contradiction-neighbor/supersession inspection by exact claim ID, or {kind:dependents,sourceId} for bounded dependent claim metadata and authorized direct/derived counts. Unknown categories and invalid time windows are rejected, never broadened. Unknown entity IDs return no matches, never name-based alternatives. The host returns bounded recorded evidence with provenance directly, not verified truth. Leave text empty and all other actions unset. No imports, mutations or permission changes.",
             },
           }
         : {}),

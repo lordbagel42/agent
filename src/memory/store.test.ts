@@ -227,6 +227,44 @@ it("excludes legacy ## Slack evidence from automatic memory but permits explicit
   ]);
 });
 
+it("projects an exact source with bounded provenance and indistinguishable scoped absence", () => {
+  const { store } = open();
+  const original = source("original");
+  store.appendSource(original);
+  store.appendSource({
+    ...source("foreign", "other-owner"),
+    text: "x".repeat(10000),
+  });
+  store.appendSource({ ...source("ignored"), text: "## private opt-out" });
+  store.appendSource(source("deleted"));
+  store.deleteSource("deleted");
+  const expected = { sources: [original], claims: [] };
+  const size = JSON.stringify(expected).length;
+  expect(
+    store.retrieveSource("private", "original", { maxCharacters: size }),
+  ).toEqual(expected);
+  expect(
+    store.retrieveSource("private", "original", { maxCharacters: size - 1 }),
+  ).toEqual({
+    sources: [],
+    claims: [],
+    truncated: true,
+    omitted: 1,
+  });
+  for (const id of ["foreign", "missing", "deleted", "ignored", "orig"]) {
+    expect(store.retrieveSource("private", id, { maxCharacters: 100 })).toEqual(
+      { sources: [], claims: [] },
+    );
+  }
+  expect(store.retrieveSource("guest", "original")).toEqual({
+    sources: [],
+    claims: [],
+  });
+  expect(() =>
+    store.retrieveSource("private", "original", { maxCharacters: 100001 }),
+  ).toThrow("Invalid memory input");
+});
+
 it("persists encrypted provenance and filters audiences before text matching across reopen", () => {
   const { store, path } = open();
   store.appendSource(source());

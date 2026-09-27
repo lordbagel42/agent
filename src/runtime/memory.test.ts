@@ -528,6 +528,79 @@ it.for(["search", "dependents"] as const)(
       expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE violet");
       expect(JSON.stringify(sent.at(-1))).not.toContain("Alex likes pears");
     }
+    const exactRecall = { kind: "source" as const, sourceId: source.id };
+    let absentSource: OutboundMessage["content"] | undefined;
+    if (mode === "search") {
+      // Exact inspection adds provenance independently of keyword retrieval,
+      // and must never expand neighboring claims.
+      const exactSource = {
+        ...source,
+        id: "exact-original",
+        text: "PRIVATE exact observation",
+      };
+      store.appendSource(exactSource);
+      action = {
+        text: "",
+        recall: { kind: "source", sourceId: exactSource.id },
+      };
+      const exact = await turn();
+      const exactOutput = sent.at(-1)?.content;
+      if (exactOutput?.type !== "text") throw new Error("Missing exact output");
+      expect(
+        JSON.parse(exactOutput.text.split("\n").slice(1).join("\n")),
+      ).toEqual({
+        sources: [exactSource],
+        claims: [],
+      });
+      expect(exact.state.history.at(-1)?.context?.sourceIds).toContain(
+        exactSource.id,
+      );
+      expect(requests.at(-1)?.system).toContain('"kind":"source"');
+      for (const sourceId of ["nonexistent", "other-audience"]) {
+        action = { text: "", recall: { kind: "source", sourceId } };
+        await turn();
+        if (absentSource) expect(sent.at(-1)?.content).toEqual(absentSource);
+        absentSource = sent.at(-1)?.content;
+      }
+      store.appendSource({
+        ...source,
+        id: "escaped-large",
+        text: "@".repeat(1000),
+      });
+      for (const sourceId of ["large", "escaped-large"]) {
+        action = { text: "", recall: { kind: "source", sourceId } };
+        await turn();
+        const largeOutput = sent.at(-1)?.content;
+        if (largeOutput?.type !== "text")
+          throw new Error("Missing bounded output");
+        expect(
+          JSON.parse(largeOutput.text.split("\n").slice(1).join("\n")),
+        ).toEqual({
+          sources: [],
+          claims: [],
+          truncated: true,
+          omitted: 1,
+        });
+      }
+      action = { text: "", recall: exactRecall };
+      for (const extra of [
+        {
+          direct: false,
+          address: {
+            channel: "slack" as const,
+            accountId: "T1",
+            conversationId: "C1",
+          },
+        },
+        { senderId: "U2", metadata: { channelType: "im" as const } },
+      ]) {
+        await turn(extra);
+        expect(requests.at(-1)?.recallAvailable).toBe(false);
+        expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE violet");
+        expect(JSON.stringify(sent.at(-1))).toContain("owner-private turn");
+        expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE violet");
+      }
+    }
     web = true;
     await turn();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
@@ -579,6 +652,10 @@ it.for(["search", "dependents"] as const)(
         await turn();
         expect(sent.at(-1)?.content).toEqual(absent);
       }
+    } else {
+      action = { text: "", recall: exactRecall };
+      await turn();
+      expect(sent.at(-1)?.content).toEqual(absentSource);
     }
     await after.june.send("inbox", { type: "event", event: first.event });
     action = { text: "barrier" };
@@ -614,6 +691,9 @@ it.for(["search", "dependents"] as const)(
       { kind: "dependents", sourceId: "x".repeat(2049) },
       { kind: "dependents", sourceId: "original", audience: "other-owner" },
       { kind: "dependents", sourceId: "original", limit: 100 },
+      { kind: "source", sourceId: "" },
+      { kind: "source", sourceId: "x".repeat(2049) },
+      { kind: "source", sourceId: source.id, audience: "other-owner" },
     ])
       expect(() =>
         parseReply(JSON.stringify({ text: "", recall }), [], {
@@ -621,6 +701,9 @@ it.for(["search", "dependents"] as const)(
         }),
       ).toThrow();
     expect(() => parseReply('{"text":"","recall":"bird"}', [])).toThrow();
+    expect(() =>
+      parseReply(JSON.stringify({ text: "", recall: exactRecall }), []),
+    ).toThrow();
     expect(
       parseReply(
         '{"text":"","recall":{"kind":"search","query":"bird","category":null}}',

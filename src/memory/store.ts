@@ -668,6 +668,29 @@ export class EvidenceStore {
     return this.search(audience, "").sources.find((s) => s.id === sourceId);
   }
 
+  /** Exact model-facing source projection. Never expose foreign/deleted IDs or
+   * clip an original into a purported complete quotation. Same opt-out as recall. */
+  retrieveSource(
+    audience: string,
+    sourceId: string,
+    options: { maxCharacters?: number } = {},
+  ): MemoryRetrieval {
+    const budget = parse(
+      z.number().int().min(100).max(100000),
+      options.maxCharacters ?? 16000,
+    );
+    const source = this.source(audience, sourceId);
+    if (
+      !source ||
+      (source.platform === "slack" && source.text.startsWith("##"))
+    )
+      return { sources: [], claims: [] };
+    const result = { sources: [source], claims: [] };
+    return JSON.stringify(result).length <= budget
+      ? result
+      : { sources: [], claims: [], truncated: true, omitted: 1 };
+  }
+
   appendClaim(input: Claim): void {
     const claim = parse(claimSchema, input);
     this.transaction((state) => insertClaim(state, claim));
