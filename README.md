@@ -524,7 +524,12 @@ digest does not authenticate external credentials, executable contents or native
 configuration; changing those still requires operator review, not automatic resumption.
 
 Ask June privately for a coding task. She returns the scope and an
-`/approve <job-prefix>` command; approval is for local work, not push/deployment.
+`!approve <job-prefix>` command; send it as an ordinary private message, not a
+Slack slash command. Approval is for local work, not push/deployment. Only a
+fresh, plain owner message can approve: quoted/code-block text, attachments,
+public messages and guests cannot. Legacy literal `/approve` and
+`/resume-stopped` messages remain accepted under the same checks; no Slack slash
+commands are registered.
 June can also discover availability and recent jobs with
 `codingJob: {"action":"list","id":null}`, inspect one with
 `{"action":"inspect","id":"<job-id-or-prefix>"}`, or request cancellation with
@@ -532,7 +537,11 @@ June can also discover availability and recent jobs with
 directives with empty text and no other actions, so asking June “show my coding
 jobs” or “cancel coding job ID” uses the existing supervisor directly. IDs must
 belong to the owner-private conversation; prefixes must be unique and at least
-12 hexadecimal characters. Forgotten/revoked jobs are not exposed.
+12 hexadecimal characters. Forgotten/revoked jobs are not exposed. Ambiguous
+inspect/cancel prefixes take no action and return up to five visible full
+`candidateIds`, with `moreMatches` indicating omitted matches. Select the
+intended full ID before retrying; June must not pick a candidate herself.
+No-match requests return not found without exposing other owners' jobs.
 
 The host returns timestamped, bounded metadata: durable status, attempt count,
 cancellation flag, saved native thread ID, worktree presence, and separate
@@ -583,7 +592,8 @@ bypass workspace limits, or authorize a retry.
 
 After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
-`/resume-stopped <job-prefix>`. Do not resume a job with an unknown live worker.
+`!resume-stopped <job-prefix>` as an ordinary private message. Do not resume a
+job with an unknown live worker.
 If a worktree exists but no thread ID was saved, even confirmed-stopped resume
 is rejected: manual reconciliation only, never a replacement session. June's job
 report explains that the external run may still be active. The operator must

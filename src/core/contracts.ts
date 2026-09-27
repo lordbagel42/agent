@@ -44,6 +44,8 @@ export interface MessageEvent extends EventBase {
   personalityCommandEligible?: boolean;
   /** Verified live, unquoted Slack memory command; never inferred from fallback text. */
   memoryReviewEligible?: boolean;
+  /** Verified fresh, plain owner-DM coding command; never set by history/model text. */
+  codingCommandEligible?: boolean;
   metadata?: MessageMetadata;
 }
 

@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, type TestContext, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
+import { createSlackAdapter } from "../channels/slack.js";
 import { createWorktreeManager } from "../coding/worktree.js";
 import type {
   CodingRuntime,
@@ -15,6 +16,7 @@ import type {
   SendResult,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
+import { createHttpApp } from "../http/app.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import {
@@ -74,6 +76,7 @@ const source: MessageEvent = {
   address: { channel: "slack", accountId: "T1", conversationId: "D1" },
   senderId: "U1",
   direct: true,
+  codingCommandEligible: true,
   text: "Fix the reaction handling in June.",
 };
 async function fixture(
@@ -207,6 +210,210 @@ async function fixture(
 }
 
 describe("separate coding supervisor", () => {
+  it("accepts advertised coding commands only from signed plain owner-DM Events", async (t) => {
+    const launches: (string | undefined)[] = [];
+    let reply: CompanionReply = {
+      text: "",
+      coding: { workspace: "june", goal: "Local approved task" },
+    };
+    const { registry, sent, modelRequests } = await fixture(
+      t,
+      {
+        async run(input) {
+          launches.push(input.threadId);
+          await input.onThread("T-signed-coding");
+          if (launches.length === 1) throw new Error("Needs reconciliation");
+          return { threadId: "T-signed-coding", report: "Local task complete" };
+        },
+      },
+      undefined,
+      { reply: () => reply },
+    );
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    const now = Date.now();
+    const secret = "synthetic-coding-signing-secret";
+    const submitted: MessageEvent[] = [];
+    const slack = createSlackAdapter({
+      teamId: "T1",
+      botUserId: "B1",
+      ownerUserIds: ["U1"],
+      signingSecret: secret,
+      botToken: "unused",
+      now: () => now,
+      fetch: async () => {
+        throw new Error("No live Slack calls");
+      },
+    });
+    const app = createHttpApp({
+      owner,
+      channels: { slack },
+      operatorToken: "synthetic-coding-operator-token-long-enough",
+      async submit(scope, event) {
+        if (event.type !== "message") return;
+        submitted.push(event);
+        await client.conversation
+          .getOrCreate(scope.key)
+          .send("inbox", { type: "event", event });
+      },
+      async ready() {
+        return true;
+      },
+      async inspectConversation() {
+        return {};
+      },
+      async inspectJob() {
+        return undefined;
+      },
+      async resumeJob() {
+        return false;
+      },
+    });
+    let sequence = 0;
+    const post = async (
+      text: string,
+      changes: Record<string, unknown> = {},
+      validSignature = true,
+    ) => {
+      const index = sequence++;
+      const body = JSON.stringify({
+        type: "event_callback",
+        team_id: "T1",
+        event_id: `signed-coding-${index}`,
+        event_time: Math.floor(now / 1000),
+        event: {
+          type: "message",
+          channel_type: "im",
+          channel: "D1",
+          user: "U1",
+          ts: `1800000000.${String(index).padStart(6, "0")}`,
+          text,
+          ...changes,
+        },
+      });
+      const timestamp = String(Math.floor(now / 1000));
+      const signature = createHmac("sha256", validSignature ? secret : "wrong")
+        .update(`v0:${timestamp}:${body}`)
+        .digest("hex");
+      const count = submitted.length;
+      const response = await app.request("/webhooks/slack", {
+        method: "POST",
+        body,
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": `v0=${signature}`,
+        },
+      });
+      expect(response.status).toBe(validSignature ? 200 : 401);
+      const event = submitted.length > count ? submitted.at(-1) : undefined;
+      if (event) {
+        const scope = routeEvent(event, owner, true);
+        if (!scope) throw new Error("Missing fixture scope");
+        await expect
+          .poll(async () =>
+            Object.values(
+              (await client.conversation.getOrCreate(scope.key).snapshot())
+                .events,
+            ).some((record) => record.event.id === event.id && record.done),
+          )
+          .toBe(true);
+      }
+      return event;
+    };
+    await post("Prepare the local task");
+    const id = Object.keys((await june.snapshot()).jobs)[0];
+    if (!id) throw new Error("Missing signed proposal");
+    const command = `!approve ${id.slice(0, 12)}`;
+    const preview = sent.find(
+      (message) =>
+        message.content.type === "text" &&
+        message.content.text.includes(command),
+    )?.content;
+    expect(preview).toMatchObject({
+      text: expect.stringContaining(
+        `${command} as an ordinary private message`,
+      ),
+    });
+    expect(modelRequests[0]?.system).toContain("!resume-stopped ID");
+    const job = client.job.getOrCreate([owner.id, id]);
+    reply = { text: "Not an approval." };
+    expect(await post(command, {}, false)).toBeUndefined();
+    for (const type of ["rich_text_quote", "rich_text_preformatted"]) {
+      const event = await post(command, {
+        codingCommandEligible: true, // Raw payload fields cannot forge the marker.
+        blocks: [
+          {
+            type: "rich_text",
+            elements: [{ type, elements: [{ type: "text", text: command }] }],
+          },
+        ],
+      });
+      expect(event?.codingCommandEligible).toBe(false);
+    }
+    for (const changes of [
+      { attachments: [] },
+      { subtype: "me_message" },
+      { user: "U2" },
+      { type: "app_mention", channel_type: "channel", channel: "C1" },
+      { user: "B1" },
+    ])
+      expect((await post(command, changes))?.codingCommandEligible).not.toBe(
+        true,
+      );
+    await post(`> ${command}`);
+    await post(`Please send ${command}`);
+    await post(`${command}\n!resume-stopped ${id}`);
+    // Old inbox records have no verified plain-intent marker, unlike a fresh
+    // signed legacy slash message. Neither prefix may acquire authority.
+    for (const prefix of ["/", "!"]) {
+      const event = {
+        ...source,
+        id: `unmarked-${prefix}`,
+        messageId: `unmarked-${prefix}`,
+        text: `${prefix}approve ${id}`,
+        codingCommandEligible: undefined,
+      };
+      await june.send("inbox", { type: "event", event });
+      await expect
+        .poll(async () =>
+          Object.values((await june.snapshot()).events).some(
+            (record) => record.event.id === event.id && record.done,
+          ),
+        )
+        .toBe(true);
+    }
+    expect(launches).toEqual([]);
+    expect((await job.snapshot()).commandApprovals).toEqual({});
+
+    expect((await post(command))?.codingCommandEligible).toBe(true);
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("needs_review");
+    expect(launches).toEqual([undefined]);
+    const resume = `!resume-stopped ${id}`;
+    expect(
+      (await post(resume, { attachments: [] }))?.codingCommandEligible,
+    ).toBe(false);
+    expect(launches).toEqual([undefined]);
+    expect((await post(resume))?.codingCommandEligible).toBe(true);
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("completed");
+    expect(launches).toEqual([undefined, "T-signed-coding"]);
+
+    // Legacy slash text is still recognized under the same signed/plain guard.
+    const legacy = await post(`/resume-stopped ${id}`);
+    expect(legacy?.codingCommandEligible).toBe(true);
+    const key = createHash("sha256")
+      .update(JSON.stringify(["slack", "T1", legacy?.id]))
+      .digest("hex");
+    await expect
+      .poll(async () => (await job.snapshot()).commandApprovals[key])
+      .toBeNull();
+    expect(launches).toHaveLength(2);
+  });
+
   it.for(["runtime", "workspace"] as const)(
     "keeps June's approval bound when the %s changes before the queued proposal is consumed",
     async (change, t) => {
@@ -244,7 +451,7 @@ describe("separate coding supervisor", () => {
       const preview = () =>
         sent.flatMap((m) =>
           m.content.type === "text"
-            ? [...m.content.text.matchAll(/\/approve ([a-f0-9]+)/g)].map(
+            ? [...m.content.text.matchAll(/!approve ([a-f0-9]+)/g)].map(
                 (match) => match[0],
               )
             : [],
@@ -630,7 +837,7 @@ describe("separate coding supervisor", () => {
 
     action = { text: "", coding: { workspace: "june", goal: "SECRET GOAL" } };
     const proposal = await deliver();
-    expect(proposal.text).toContain(`/approve ${proposal.key.slice(0, 12)}`);
+    expect(proposal.text).toContain(`!approve ${proposal.key.slice(0, 12)}`);
     expect(launches).toBe(0);
     const job = client.job.getOrCreate([owner.id, proposal.key]);
     await expect
@@ -728,7 +935,7 @@ describe("separate coding supervisor", () => {
     await deliver();
     expect((await job.snapshot()).cancelRequested).toBe(false);
     action = { text: "", codingJob: { action: "cancel", id: "f".repeat(64) } };
-    expect((await deliver()).text).toContain("missing or ambiguous");
+    expect((await deliver()).text).toContain("not found");
     expect((await job.snapshot()).cancelRequested).toBe(false);
     await manager.release("SECRET-OCCUPYING-JOB", 4);
     await deliver({ text: `/resume-stopped ${proposal.key}` });
@@ -764,7 +971,7 @@ describe("separate coding supervisor", () => {
     await client.conversation
       .getOrCreate(["private", owner.id])
       .forget("lifecycle-1");
-    expect((await deliver()).text).toContain("missing or ambiguous");
+    expect((await deliver()).text).toContain("not found");
     action = { text: "", codingJob: { action: "list", id: null } };
     expect((await deliver()).text).not.toContain(proposal.key);
     expect((await job.snapshot()).revoked).toBe(true);
@@ -1139,13 +1346,13 @@ describe("separate coding supervisor", () => {
         () =>
           sent.some(
             (m) =>
-              m.content.type === "text" && m.content.text.includes("/approve"),
+              m.content.type === "text" && m.content.text.includes("!approve"),
           ),
         { timeout: 15000 },
       )
       .toBe(true);
     const content = sent.find(
-      (m) => m.content.type === "text" && m.content.text.includes("/approve"),
+      (m) => m.content.type === "text" && m.content.text.includes("!approve"),
     )?.content;
     expect(content).toMatchObject({
       type: "text",
@@ -1160,7 +1367,7 @@ describe("separate coding supervisor", () => {
     });
     const approval =
       content?.type === "text"
-        ? content.text.match(/\/approve ([a-f0-9]+)/)?.[1]
+        ? content.text.match(/!approve ([a-f0-9]+)/)?.[1]
         : undefined;
     expect(approval).toBeTruthy();
     expect(launches).toEqual([]);
@@ -1260,7 +1467,7 @@ describe("separate coding supervisor", () => {
     await june.send("inbox", { type: "event", event: source });
     await expect.poll(() => previews().length, { timeout: 15000 }).toBe(1);
     const original = previews()[0] ?? "";
-    const approval = original.match(/\/approve ([a-f0-9]+)/)?.[1];
+    const approval = original.match(/!approve ([a-f0-9]+)/)?.[1];
     if (!approval) throw new Error("No original approval");
     codingRequest.workspace = "other";
     codingRequest.goal = "Change the other repository, push it, and deploy it.";
@@ -1283,7 +1490,7 @@ describe("separate coding supervisor", () => {
     expect(changed).toContain(
       "No push, deployment, publication, shared-infrastructure changes, or credential access is authorized.",
     );
-    expect(changed.match(/\/approve ([a-f0-9]+)/)?.[1]).not.toBe(approval);
+    expect(changed.match(/!approve ([a-f0-9]+)/)?.[1]).not.toBe(approval);
     expect(launches).toEqual([]);
     await june.send("inbox", {
       type: "event",
@@ -1712,7 +1919,7 @@ describe("separate coding supervisor", () => {
           "No native session/thread ID was saved",
         );
         expect((await job.snapshot()).report).toContain(
-          "/resume-stopped cannot resume this job",
+          "!resume-stopped cannot resume this job",
         );
       }
       await expect(manager.admit("other-job", 1)).rejects.toThrow("occupied");
@@ -1860,5 +2067,148 @@ describe("separate coding supervisor", () => {
           ).filter((event) => event.done).length,
       )
       .toBe(1);
+  });
+
+  it("fails closed on colliding job prefixes without disclosing or cancelling another owner's jobs", async (t) => {
+    const prefix = "abcdef012345";
+    const idFor = (suffix: string) => `${prefix}${suffix.padEnd(52, "0")}`;
+    const ids = ["1", "2", "3", "4", "5", "6"].map(idFor);
+    const exact = idFor("1");
+    const revoked = idFor("7");
+    const forgotten = idFor("8");
+    const stale = idFor("9");
+    const foreign = idFor("f");
+    let action: "inspect" | "cancel" = "inspect";
+    let requestedId = prefix;
+    let launches = 0;
+    const { registry, sent } = await fixture(
+      t,
+      {
+        async run() {
+          launches++;
+          throw new Error("Lifecycle requests must not launch work");
+        },
+      },
+      undefined,
+      {
+        reply: () => ({
+          text: "",
+          codingJob: { action, id: requestedId },
+        }),
+      },
+    );
+    // Seed deterministic collisions before starting this disposable engine.
+    // Put hidden candidates first so filtering must precede the output bound.
+    const config = registry.config.use.conversation.config;
+    const all = [revoked, forgotten, stale, ...ids];
+    Object.assign(config, {
+      state: {
+        history: [],
+        events: {},
+        deliveries: {},
+        lastInbound: {},
+        jobs: Object.fromEntries(
+          all.map((id) => [id, { workspace: "june", goal: "SECRET GOAL" }]),
+        ),
+        forgottenEvents: [forgotten],
+        memoryContexts: {
+          [stale]: { sourceIds: ["deleted"], personality: "stale" },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const own = (id: string) => client.job.getOrCreate([owner.id, id]);
+    for (const id of all) {
+      await own(id).send("commands", {
+        type: "propose",
+        proposal: { id, source, workspace: "june", goal: "SECRET GOAL" },
+      });
+      await expect
+        .poll(async () => (await own(id).snapshot()).status)
+        .toBe("awaiting_approval");
+    }
+    await own(revoked).cancel(true);
+    const foreignJobs = [exact, foreign].map((id) =>
+      client.job.getOrCreate(["another-owner", id]),
+    );
+    for (const [index, job] of foreignJobs.entries()) {
+      await job.send("commands", {
+        type: "propose",
+        proposal: {
+          id: index === 0 ? exact : foreign,
+          source,
+          workspace: "june",
+          goal: "OTHER OWNER SECRET",
+        },
+      });
+      await expect
+        .poll(async () => (await job.snapshot()).status)
+        .toBe("awaiting_approval");
+    }
+    await client.job.getOrCreate(["another-owner", exact]).cancel();
+    const foreignStates = await Promise.all(
+      foreignJobs.map((job) => job.snapshot()),
+    );
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    let sequence = 0;
+    const request = async (next: "inspect" | "cancel", id: string) => {
+      action = next;
+      requestedId = id;
+      const eventId = `collision-${sequence++}`;
+      await june.send("inbox", {
+        type: "event",
+        event: { ...source, id: eventId, messageId: eventId },
+      });
+      await expect.poll(() => sent.length).toBe(sequence);
+      const content = sent.at(-1)?.content;
+      return content?.type === "text" ? content.text : "";
+    };
+    for (const next of ["inspect", "cancel"] as const) {
+      const ambiguous = await request(next, prefix);
+      expect(ambiguous).toContain("ambiguous");
+      expect(ambiguous.match(/[a-f0-9]{64}/g)).toEqual(ids.slice(0, 5));
+      expect(ambiguous).toContain(
+        JSON.stringify({ candidateIds: ids.slice(0, 5), moreMatches: true }),
+      );
+      expect(ambiguous).not.toContain("SECRET");
+      for (const id of ids)
+        expect((await own(id).snapshot()).cancelRequested).toBeUndefined();
+    }
+    for (const id of ["b".repeat(12), foreign, revoked, forgotten, stale]) {
+      const missing = await request("cancel", id);
+      expect(missing).toContain("not found in this private conversation");
+      expect(missing).not.toMatch(/[a-f0-9]{64}/);
+    }
+    const inspection = await request("inspect", exact);
+    expect(inspection).toContain(`"id":"${exact}"`);
+    expect(inspection).toContain('"cancelRequested":false');
+    expect(await request("inspect", exact.slice(0, 13))).toContain(
+      `"id":"${exact}"`,
+    );
+    expect((await own(exact).snapshot()).cancelRequested).toBeUndefined();
+    expect(await request("cancel", exact)).toContain(
+      "Cancellation requested durably; not confirmed stopped",
+    );
+    expect((await own(exact).snapshot()).cancelRequested).toBe(true);
+    for (const id of [...ids.slice(1), forgotten, stale])
+      expect((await own(id).snapshot()).cancelRequested).toBeUndefined();
+    expect(await request("cancel", idFor("2").slice(0, 13))).toContain(
+      "Cancellation requested durably; not confirmed stopped",
+    );
+    expect((await own(idFor("2")).snapshot()).cancelRequested).toBe(true);
+    for (const id of ids.slice(2))
+      expect((await own(id).snapshot()).cancelRequested).toBeUndefined();
+    expect(await Promise.all(foreignJobs.map((job) => job.snapshot()))).toEqual(
+      foreignStates,
+    );
+    await own(idFor("6")).cancel(true);
+    const five = await request("inspect", prefix);
+    expect(five.match(/[a-f0-9]{64}/g)).toEqual(ids.slice(0, 5));
+    expect(five).toContain(
+      JSON.stringify({ candidateIds: ids.slice(0, 5), moreMatches: false }),
+    );
+    for (const id of ids.slice(1, 5)) await own(id).cancel(true);
+    expect(await request("inspect", prefix)).toContain(`"id":"${exact}"`);
+    expect(launches).toBe(0);
   });
 });

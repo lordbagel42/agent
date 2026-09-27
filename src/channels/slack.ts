@@ -293,6 +293,11 @@ async function normalizeEvent(
                 owner && channelType === "im" && isPlainSlackCommand(event),
             }
           : {}),
+        ...(owner &&
+        channelType === "im" &&
+        /^[!/](approve|resume-stopped)(?:\s|$)/.test(event.text.trim())
+          ? { codingCommandEligible: isPlainSlackCommand(event) }
+          : {}),
         metadata: {
           ...slackMetadata(event, channelType),
           ...(channelName ? { channelName } : {}),

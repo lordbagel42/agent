@@ -210,7 +210,7 @@ it.for(["before-session", "after-session"])(
       expect(report).toContain("No native session/thread ID was saved");
       expect(report).toContain("external run may still be active");
       expect(report).toContain("Do not retry or launch a replacement");
-      expect(report).toContain("/resume-stopped cannot resume this job");
+      expect(report).toContain("!resume-stopped cannot resume this job");
       expect(report).toContain("Manual operator reconciliation is required");
       await expect
         .poll(() => messages.find((m) => m.kind === "coding-report")?.text, {

@@ -154,7 +154,7 @@ export function codingJobMetadata(
 }
 
 const missingSessionReport =
-  "No confirmed completion. No native session/thread ID was saved; the external run may still be active. Do not retry or launch a replacement. /resume-stopped cannot resume this job, even after confirming the worker stopped. Manual operator reconciliation is required: inspect the isolated workspace and the native runtime's sessions/processes, identify any existing run and confirm it stopped, and inspect workspace admission and reconcile any retained admission record before separately approved work. Preserve the workspace and any retained admission record until reconciliation is complete. Cancellation or host restart is not proof that the external run stopped.";
+  "No confirmed completion. No native session/thread ID was saved; the external run may still be active. Do not retry or launch a replacement. !resume-stopped cannot resume this job, even after confirming the worker stopped. Manual operator reconciliation is required: inspect the isolated workspace and the native runtime's sessions/processes, identify any existing run and confirm it stopped, and inspect workspace admission and reconcile any retained admission record before separately approved work. Preserve the workspace and any retained admission record until reconciliation is complete. Cancellation or host restart is not proof that the external run stopped.";
 
 export function createCodingActor(
   coding: CodingDependencies | undefined,

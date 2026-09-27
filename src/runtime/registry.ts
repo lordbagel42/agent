@@ -337,6 +337,11 @@ export function createJuneRegistry(deps: Dependencies) {
             "memory-claim-review",
             2,
           );
+          // Old iterations must not turn previously ordinary ! text into approval.
+          const codingCommandVersion = await loop.getVersion(
+            "coding-command-ingress",
+            2,
+          );
           const [message] = await loop.queue.nextBatch("inbox", {
             names: ["inbox"],
             count: 1,
@@ -779,7 +784,11 @@ export function createJuneRegistry(deps: Dependencies) {
                 scope.private && body.type === "event"
                   ? event.text
                       .trim()
-                      .match(/^\/(approve|resume-stopped) ([a-f0-9]{12,64})$/)
+                      .match(
+                        codingCommandVersion >= 2
+                          ? /^[!/](approve|resume-stopped) ([a-f0-9]{12,64})$/
+                          : /^\/(approve|resume-stopped) ([a-f0-9]{12,64})$/,
+                      )
                   : null;
               const correctionCommand =
                 correctionVersion >= 2 &&
@@ -876,6 +885,14 @@ export function createJuneRegistry(deps: Dependencies) {
                 reply = await loop.step(
                   "coding-command",
                   async (step): Promise<CompanionReply> => {
+                    if (
+                      codingCommandVersion >= 2 &&
+                      event.address.channel === "slack" &&
+                      event.codingCommandEligible !== true
+                    )
+                      return {
+                        text: "Coding approval and reconciliation require a fresh, plain owner-private message. Send !approve ID or !resume-stopped ID as ordinary text, not a quote, code block or attachment.",
+                      };
                     const matches = Object.keys(step.state.jobs).filter(
                       (id) =>
                         id.startsWith(command[2] ?? "") &&
@@ -1881,19 +1898,39 @@ export function createJuneRegistry(deps: Dependencies) {
                                         ).admissionReason,
                                       });
                                   }
-                                  text = `${heading}\nNative coding: ${deps.coding ? "configured; login and provider health are not verified" : "disabled or unavailable; no native execution can be requested"}. Permitted workspace names: ${JSON.stringify(workspaces.slice(0, 20))}.\nRecent jobs (up to 5): ${JSON.stringify(rows)}\nUse inspect with a job ID for durable details. New work requires a proposal and /approve ID. ${caution}`;
+                                  text = `${heading}\nNative coding: ${deps.coding ? "configured; login and provider health are not verified" : "disabled or unavailable; no native execution can be requested"}. Permitted workspace names: ${JSON.stringify(workspaces.slice(0, 20))}.\nRecent jobs (up to 5): ${JSON.stringify(rows)}\nUse inspect with a job ID for durable details. New work requires a proposal and !approve ID as an ordinary private message. ${caution}`;
                                   if (!deps.coding)
                                     text += `\n\n${DISABLED_CODING_RECOVERY}`;
                                 } else {
-                                  const matches = ids.filter((id) =>
-                                    id.startsWith(request.id ?? ""),
-                                  );
+                                  const matches: string[] = [];
+                                  for (const id of ids) {
+                                    if (!id.startsWith(request.id ?? ""))
+                                      continue;
+                                    if (!valid(step.state) || signal.aborted)
+                                      break;
+                                    const state = await step
+                                      .client<JuneRegistry>()
+                                      .job.getOrCreate([deps.owner.id, id])
+                                      .snapshot();
+                                    if (!state.revoked && visible(id))
+                                      matches.push(id);
+                                    // One extra match records truncation without
+                                    // treating the bounded list as a unique ID.
+                                    if (matches.length === 6) break;
+                                  }
                                   const id =
                                     matches.length === 1
                                       ? matches[0]
                                       : undefined;
                                   text =
-                                    "That coding job is missing or ambiguous in this private conversation.";
+                                    "That coding job was not found in this private conversation.";
+                                  if (
+                                    matches.length > 1 &&
+                                    valid(step.state) &&
+                                    !signal.aborted &&
+                                    matches.every(visible)
+                                  )
+                                    text = `That coding job ID is ambiguous in this private conversation. No action was taken. ${JSON.stringify({ candidateIds: matches.slice(0, 5), moreMatches: matches.length > 5 })} Choose the intended job and retry with its full ID.`;
                                   if (id) {
                                     const job = step
                                       .client<JuneRegistry>()
@@ -1910,7 +1947,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                         state = await job.snapshot();
                                       }
                                       if (!state.revoked && visible(id))
-                                        text = `${heading}\n${request.action === "cancel" ? "Cancellation requested durably; not confirmed stopped.\n" : ""}${JSON.stringify(codingJobMetadata(id, state, deps.coding?.runtimeId))}\n${caution} Binding/recovery metadata describes current blockers, not a proven historical failure cause or permission to resume. Inspect the saved thread and isolated workspace before owner-only /resume-stopped ID; prepared work without a saved thread requires manual reconciliation, never a replacement launch.`;
+                                        text = `${heading}\n${request.action === "cancel" ? "Cancellation requested durably; not confirmed stopped.\n" : ""}${JSON.stringify(codingJobMetadata(id, state, deps.coding?.runtimeId))}\n${caution} Binding/recovery metadata describes current blockers, not a proven historical failure cause or permission to resume. Inspect the saved thread and isolated workspace before owner-only !resume-stopped ID as an ordinary private message; prepared work without a saved thread requires manual reconciliation, never a replacement launch.`;
                                     }
                                   }
                                 }
@@ -2778,7 +2815,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       step.state.jobs[eventId] ??= {
                         ...request,
                         runtimeId: deps.coding.runtimeId,
-                        preview: `Coding proposal for ${request.workspace}:\nRepository: ${JSON.stringify(deps.coding.workspaces[request.workspace])}\nRuntime: ${deps.coding.runtimeKind}\n\nTask:\n${request.goal}\n\nReply /approve ${eventId.slice(0, 12)} to authorize only this task in an isolated local checkout of that repository. No push, deployment, publication, shared-infrastructure changes, or credential access is authorized. Native execution is not a sandbox. A changed task, workspace, or runtime requires a fresh proposal.`,
+                        preview: `Coding proposal for ${request.workspace}:\nRepository: ${JSON.stringify(deps.coding.workspaces[request.workspace])}\nRuntime: ${deps.coding.runtimeKind}\n\nTask:\n${request.goal}\n\nReply !approve ${eventId.slice(0, 12)} as an ordinary private message to authorize only this task in an isolated local checkout of that repository. No push, deployment, publication, shared-infrastructure changes, or credential access is authorized. Native execution is not a sandbox. A changed task, workspace, or runtime requires a fresh proposal.`,
                       };
                       const proposal = step.state.jobs[eventId];
                       if (version >= 7 && body.type === "execution_result") {
@@ -2809,7 +2846,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     typeof proposed === "string"
                       ? proposed
                       : version < 2 || proposed
-                        ? `Coding proposal for ${request.workspace}:\n${request.goal}\n\nReply /approve ${eventId.slice(0, 12)} to allow this local coding task. No push or deployment is authorized.`
+                        ? `Coding proposal for ${request.workspace}:\n${request.goal}\n\nReply !approve ${eventId.slice(0, 12)} as an ordinary private message to allow this local coding task. No push or deployment is authorized.`
                         : "The coding integration is no longer available for that proposal.";
                 } else
                   reply = {
