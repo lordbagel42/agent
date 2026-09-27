@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     "deploy", Path(__file__).with_name("deploy.py")
@@ -31,6 +32,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200 if body["ready"] else 503); self.end_headers()
         self.wfile.write(json.dumps(body).encode())
     def do_POST(self):
+        with (data / "drains").open("a") as f: f.write(release["revision"] + "\\n")
         self.send_response(200); self.end_headers()
         self.wfile.write(json.dumps({"revision": release["revision"], "drained": not (data / "busy").exists()}).encode())
     def do_DELETE(self):
@@ -173,6 +175,96 @@ class DeploymentSafety(unittest.TestCase):
         self.host.service("stop")
         self.store.close()
         self.tmp.cleanup()
+
+    def test_low_disk_defers_without_build_or_drain_and_recovers_without_a_new_commit(
+        self,
+    ):
+        target = self.host.commit("src/console/view.ts", "two")
+        disk = deploy.shutil.disk_usage(self.host.root)
+        with patch.object(
+            deploy.shutil,
+            "disk_usage",
+            return_value=disk._replace(free=4 * 1024**3 - 1),
+        ):
+            self.loop.tick()
+            self.loop.tick()
+        self.assertEqual(self.store.status(target), "deferred")
+        self.assertEqual(self.store.get("active"), self.first)
+        self.assertFalse(self.store.get("intent"))
+        self.assertFalse((self.host.releases / target).exists())
+        self.assertFalse((self.host.data / "drains").exists())
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(), [self.first]
+        )
+        events = json.loads(self.store.feed.read_text())["events"]
+        self.assertEqual(
+            [event["status"] for event in events], ["received", "deferred"]
+        )
+        self.assertEqual(events[-1]["reason"], "insufficient_disk")
+
+        available = 4 * 1024**3
+        build = self.host.build
+
+        def growing_build(stage):
+            nonlocal available
+            build(stage)
+            available = 1024**3 - 1
+
+        with (
+            patch.object(
+                deploy.shutil,
+                "disk_usage",
+                side_effect=lambda _: disk._replace(free=available),
+            ),
+            patch.object(self.host, "build", growing_build),
+        ):
+            self.loop.tick()
+        self.assertEqual(self.store.status(target), "deferred")
+        self.assertFalse((self.host.releases / target).exists())
+        self.assertEqual(list(self.host.stage_root.glob("stage-*")), [])
+        self.assertFalse((self.host.data / "drains").exists())
+        with patch.object(
+            deploy.shutil, "disk_usage", return_value=disk._replace(free=4 * 1024**3)
+        ):
+            self.loop.tick()
+        self.assertEqual(self.store.get("active"), target)
+        self.assertEqual(
+            (self.host.data / "messages").read_text(), "new messages must survive\n"
+        )
+
+    def test_retention_protects_bootstrap_recent_running_and_unowned_paths(self):
+        unknown = self.host.releases / ("f" * 40)
+        unknown.mkdir()
+        (unknown / "unowned").write_text("leave me alone")
+        revisions = []
+        for content in ("two", "three", "four", "five"):
+            target = self.host.commit("src/console/view.ts", content)
+            revisions.append(target)
+            self.loop.tick()
+            self.assertEqual(self.store.get("active"), target)
+        obsolete = self.host.releases / revisions[0]
+        self.assertFalse(obsolete.exists())
+        for commit in (self.first, *revisions[1:]):
+            self.assertTrue(
+                (self.host.releases / commit / ".june-release.json").is_file()
+            )
+        self.assertEqual((unknown / "unowned").read_text(), "leave me alone")
+        self.host.prune({revisions[-1]})
+        self.assertTrue(self.host.running(revisions[-1]))
+
+        # An interrupted unlink can resume, but a symlink must never reach data.
+        trash = self.host.releases / f".prune-{revisions[0]}"
+        trash.mkdir()
+        (trash / "partial").write_text("incomplete cleanup")
+        self.host.prune({revisions[0]})
+        self.assertFalse(trash.exists())
+        obsolete.symlink_to(self.host.data, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.host.prune({revisions[0]})
+        self.assertTrue(obsolete.is_symlink())
+        self.assertEqual(
+            (self.host.data / "messages").read_text(), "new messages must survive\n"
+        )
 
     def test_duplicate_arrival_and_restart_never_repeat_activation(self):
         target = self.host.commit("src/console/view.ts", "two")

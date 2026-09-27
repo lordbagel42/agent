@@ -37,6 +37,7 @@ const feedSchema = z.strictObject({
             "preflight_failed",
             "health_failed",
             "drain_busy",
+            "insufficient_disk",
             "resume_failed",
             "current_unhealthy",
             "candidate_not_drained",

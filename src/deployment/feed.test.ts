@@ -63,6 +63,22 @@ test("deployment evidence is owner-only, read-only, bounded and never raw proces
     expect((await app.request("/events?after=-1", authorized)).status).toBe(
       400,
     );
+    const deferred = {
+      ...feed,
+      events: [
+        { ...feed.events[1], status: "deferred", reason: "insufficient_disk" },
+      ],
+    };
+    await writeFile(file, JSON.stringify(deferred));
+    expect(await read("owner")).toEqual(deferred);
+    await writeFile(
+      file,
+      JSON.stringify({
+        ...feed,
+        events: [{ ...feed.events[1], reason: "private process output" }],
+      }),
+    );
+    await expect(read("owner")).rejects.toThrow("deployment_feed_unavailable");
     await writeFile(
       file,
       JSON.stringify({ ...feed, stderr: "private credential" }),

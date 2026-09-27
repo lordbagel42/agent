@@ -43,9 +43,26 @@ Measure push-to-observation externally and `received` → `healthy` from the eve
 timestamps. `elapsedMs` measures observation-to-outcome, not Git commit age:
 commit timestamps can be older or supplied by a different clock. Cold dependency
 downloads, large installs, busy workers and compatibility recovery can exceed
-the target. This first version deliberately retains releases and has no automatic
-garbage collector. Budget disk for the pnpm cache and multiple complete releases;
-the current development dependency tree is approximately 2.3 GiB per release.
+the target. The current development dependency tree is approximately 2.3 GiB per
+release; the first verified automatic rollouts took about four minutes each.
+
+Before building, the controller prunes only obsolete releases recorded in its
+own SQLite history. It retains the bootstrap revision, the two most recently
+healthy/reconciled revisions, the recorded active revision and the candidate.
+It also refuses to remove the actual `current` target. A normal rollout therefore
+holds at most four controller releases, including the candidate. Cleanup runs
+only with an identified running service and no pending service-manager job;
+blocked/unknown operations do not prune. Root-owned, immutable release directories
+and valid identity markers are required. Atomic rename to `.prune-<SHA>` makes
+interrupted removal resumable. Unknown directories, legacy releases, backups,
+the package cache and all conversation data are untouched.
+
+A new build requires at least 4 GiB available; a prepared candidate requires
+1 GiB. The 1 GiB reserve is checked again after building, before promotion.
+Insufficient capacity records `deferred/insufficient_disk`, leaves June serving,
+and retries after space is available without requiring another commit. These
+checks are not a filesystem quota: substantially larger dependency changes still
+require a capacity review. Budget separately for cache growth and legacy artifacts.
 
 ## Rollback never rewinds conversations
 

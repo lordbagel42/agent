@@ -42,6 +42,10 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 HASH = re.compile(r"^[0-9a-f]{64}$")
 
 
+class InsufficientDisk(Exception):
+    pass
+
+
 def revision(value):
     if not isinstance(value, str) or not SHA.fullmatch(value):
         raise ValueError("invalid_revision")
@@ -85,6 +89,7 @@ def atomic_json(path, value, mode=0o600, gid=None):
 class Store:
     def __init__(self, root, feed, initial, feed_gid=None):
         self.feed, self.feed_gid = feed, feed_gid
+        self.initial = revision(initial)
         root.mkdir(mode=0o700, exist_ok=True)
         self.db = sqlite3.connect(root / "deploy.sqlite")
         self.db.row_factory = sqlite3.Row
@@ -120,6 +125,21 @@ class Store:
             (commit,),
         ).fetchone()
         return row[0] if row else None
+
+    def obsolete(self, keep):
+        recent = {
+            row[0]
+            for row in self.db.execute(
+                "SELECT revision FROM events WHERE status IN ('healthy','reconciled') GROUP BY revision ORDER BY MAX(sequence) DESC LIMIT 2"
+            )
+        }
+        known = {
+            row[0]
+            for row in self.db.execute(
+                "SELECT DISTINCT revision FROM events WHERE status IN ('healthy','reconciled','failed','rolled_back','superseded')"
+            )
+        }
+        return known - {self.initial, *keep, *recent}
 
     def event(self, commit, status, reason=None, committed_at=None):
         now = time.time_ns() // 1_000_000
@@ -237,6 +257,13 @@ class Deployer:
             return
         previous = s.get("active")
         try:
+            if not h.running(previous) or not h.settled():
+                s.block(target, "current_unhealthy")
+                return
+            h.prune(s.obsolete({previous, target}))
+            # Check before recording preparation so capacity deferrals do not
+            # spam the feed or latch a terminal failed revision.
+            h.require_space(target)
             s.event(target, "preparing")
             candidate = h.prepare(target)
             prior = h.manifest(previous)
@@ -247,6 +274,9 @@ class Deployer:
             if not h.healthy(previous):
                 s.block(target, "current_unhealthy")
                 return
+        except InsufficientDisk:
+            s.event(target, "deferred", "insufficient_disk")
+            return
         except Exception:  # noqa: BLE001 - candidate/build output is private
             s.event(target, "failed", "preflight_failed")
             return
@@ -350,8 +380,60 @@ class Host:
     def committed_at(self, commit):
         return int(self.git("show", "-s", "--format=%ct", revision(commit))) * 1000
 
+    def prune(self, commits):
+        # Only SQLite-recorded obsolete controller releases reach this method.
+        # Legacy/unregistered paths, cache, backups and all June data are untouched.
+        for commit in sorted(commits):
+            release = self.releases / revision(commit)
+            trash = self.releases / f".prune-{commit}"
+            if self.current.resolve() in (release, trash):
+                continue
+            for path in (trash, release):
+                try:
+                    meta = path.lstat()
+                except FileNotFoundError:
+                    continue
+                if (
+                    path.resolve() != path
+                    or not stat.S_ISDIR(meta.st_mode)
+                    or meta.st_uid != os.geteuid()
+                    or meta.st_mode & 0o022
+                ):
+                    raise ValueError("unsafe_retired_release")
+                if path == release:
+                    marker_path = path / ".june-release.json"
+                    meta = marker_path.lstat()
+                    if (
+                        not stat.S_ISREG(meta.st_mode)
+                        or meta.st_uid != os.geteuid()
+                        or meta.st_mode & 0o022
+                        or meta.st_size > 4096
+                    ):
+                        raise ValueError("unsafe_retired_marker")
+                    marker = json.loads(marker_path.read_text())
+                    if marker.get("revision") != commit or any(
+                        not isinstance(marker.get(key), str)
+                        or not HASH.fullmatch(marker[key])
+                        for key in ("compatibility", "binding", "artifactSha256")
+                    ):
+                        raise ValueError("invalid_retired_marker")
+                    # Rename first: a crash during recursive removal must leave
+                    # recognisable disposable trash, not a broken retained release.
+                    os.rename(release, trash)
+                    sync_directory(self.releases)
+                shutil.rmtree(trash)
+                sync_directory(self.releases)
+
+    def require_space(self, commit):
+        # Current pinned dependencies occupy about 2.3 GiB. Admission leaves
+        # margin for source/cache growth; check the reserve again after building.
+        minimum = (1 if (self.releases / revision(commit)).exists() else 4) * 1024**3
+        if shutil.disk_usage(self.stage_root).free < minimum:
+            raise InsufficientDisk()
+
     def prepare(self, commit):
         release = self.releases / revision(commit)
+        self.require_space(commit)
         if release.exists():
             return self.manifest(commit)
         # All non-test source except the pure HTML view is conservatively bound.
@@ -405,6 +487,8 @@ class Host:
             ):
                 raise ValueError("unexpected_package_manager")
             self.build(stage)
+            if shutil.disk_usage(self.stage_root).free < 1024**3:
+                raise InsufficientDisk()
             self.seal(stage)
             marker = {
                 "revision": commit,
