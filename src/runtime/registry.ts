@@ -6,7 +6,6 @@ import type {
   Channel,
   ChannelAdapter,
   ChannelEvent,
-  CodingRequest,
   CompanionReply,
   ConversationMessage,
   MessageEvent,
@@ -86,6 +85,10 @@ import {
   type ReflectionReviewReference,
 } from "./reflection.js";
 import type { RivetReader } from "./rivet-inspection.js";
+import {
+  createScopeCatalogAuthority,
+  type ScopeCatalog,
+} from "./scope-catalog.js";
 import type { SocialPermissions } from "./social.js";
 import { startTyping, withTyping } from "./typing.js";
 
@@ -172,7 +175,7 @@ type ForgetCleanup =
       jobIds: string[];
     };
 
-export interface ConversationState {
+export interface ConversationState extends ScopeCatalog {
   history: (ConversationMessage & {
     id: string;
     sourceId?: string;
@@ -200,15 +203,6 @@ export interface ConversationState {
     }
   >;
   deliveries: Record<string, Delivery>;
-  jobs: Record<
-    string,
-    CodingRequest & {
-      runtimeId?: string;
-      preview?: string;
-      /** Frozen origin for a candidate-keyed proposal, including queue retries. */
-      source?: MessageEvent;
-    }
-  >;
   lastInbound: Record<string, number>;
   /** Write-ahead admission and deduplication until record-event takes ownership. */
   pendingInputs?: Record<string, MessageEvent>;
@@ -217,26 +211,9 @@ export interface ConversationState {
   forgottenEvents?: string[];
   modelInvocations?: Record<string, "started" | "settled" | "uncertain">;
   webInvocations?: Record<string, "started" | "settled" | "uncertain">;
-  agents?: Record<string, string>;
-  jobAgents?: Record<string, { agentId: string; requestId: string }>;
-  delegations?: Record<string, ExecutionContext>;
   deletionRevision?: number;
   /** JSON-encoded source IDs avoid special object-property names. */
   forgetCleanups?: Record<string, ForgetCleanup>;
-  forgetConfirmations?: Record<
-    string,
-    {
-      sourceId: string;
-      fingerprint: string;
-      /** Absent on old previews: do not retroactively authorize archive loss. */
-      includeArchives?: true;
-      archivedTurns?: number;
-      previewEventId: string;
-      expiresAt: number;
-      commandEventId?: string;
-      status: "pending" | "started" | "completed";
-    }
-  >;
 }
 
 function captureForgetTargets(
@@ -342,49 +319,16 @@ export function createJuneRegistry(deps: Dependencies) {
         state.history.splice(index, 1);
     }
   }
-  // Trusted metadata reads only. Tool execution stays in the worker, and never
-  // takes the conversation inbox or copies its approval catalog into worker state.
-  function delegatedScope(
-    state: ConversationState,
-    key: string[],
-    requestId: string,
-  ) {
-    const context = state.delegations?.[requestId];
-    const id = context?.originEventId ?? "";
-    const event = state.events[id]?.event;
-    const scope = event && routeEvent(event, deps.owner);
-    if (
-      !context ||
-      !event ||
-      !scope ||
-      !isOwner(event, deps.owner) ||
-      state.forgottenEvents?.includes(id) ||
-      JSON.stringify(context.conversationKey) !== JSON.stringify(key) ||
-      JSON.stringify(context.scopeKey) !== JSON.stringify(scope.key) ||
-      context.audience !== JSON.stringify(scope.key) ||
-      context.personality !== personalityDigest(context.audience) ||
-      context.deletionRevision !==
-        (deps.memory?.store.deletionRevision() ?? 0) ||
-      context.sourceIds.some(
-        (sourceId) => !deps.memory?.store.source(context.audience, sourceId),
-      ) ||
-      context.contextSourceIds.some((sourceId) =>
-        deps.memory?.store.isDeleted(sourceId),
-      ) ||
-      (state.memoryContexts?.[id] &&
-        !current(context.audience, state.memoryContexts[id]))
-    )
-      throw new Error("Execution authority is no longer current");
-    return context;
-  }
-  function visibleJob(state: ConversationState, audience: string, id: string) {
-    const reference = state.memoryContexts?.[id];
-    return (
-      Object.hasOwn(state.jobs, id) &&
-      !state.forgottenEvents?.includes(id) &&
-      (!reference || current(audience, reference))
-    );
-  }
+  const { delegatedScope, visibleJob } = createScopeCatalogAuthority({
+    get owner() {
+      return deps.owner;
+    },
+    get store() {
+      return deps.memory?.store;
+    },
+    current,
+    personalityDigest,
+  });
   const conversation = actor({
     state: {
       history: [],

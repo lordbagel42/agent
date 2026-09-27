@@ -986,6 +986,11 @@ it.for(["relation", "grounding"] as const)(
     expect((await worker.summary()).evidenceIds).toEqual(
       expect.arrayContaining(["B", "C"]),
     );
+    expect(await june.executionJobs(id)).toEqual([]);
+    store.close();
+    store = new EvidenceStore(path, key);
+    memory.store = store;
+    expect(await june.executionJobs(id)).toEqual([]);
     store.deleteSource("A"); // Crash window: never call conversation.forget.
     store.close();
     store = new EvidenceStore(path, key);
