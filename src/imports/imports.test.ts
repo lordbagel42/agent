@@ -1,7 +1,11 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   EvidenceStore,
   type ImportCoverage,
+  type ImportPage,
   importHistory,
 } from "../memory/store.js";
 import {
@@ -230,6 +234,180 @@ describe("history privacy boundaries", () => {
         expect(store.search("owner", "").sources).toEqual([expected[1]]);
       } finally {
         store.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "deduplicates overlapping Gmail labels across restart (legacy=%s)",
+    async (legacy) => {
+      const directory = mkdtempSync(join(tmpdir(), "gmail-labels-"));
+      const path = join(directory, "memory.db");
+      const key = new Uint8Array(32);
+      let store = new EvidenceStore(path, key);
+      const coverage = {
+        ...slack,
+        platform: "gmail",
+        account: "owner@example.com",
+        conversations: ["INBOX"],
+      };
+      const original = {
+        id: "gmail:owner@example.com:a1",
+        platform: "gmail",
+        account: coverage.account,
+        conversation: "INBOX",
+        audiences: ["owner"],
+        observedAt: 2000,
+        author: "unknown",
+        sourceUrl: "https://mail.google.com/mail/u/owner%40example.com/#all/b1",
+        text: JSON.stringify({
+          kind: "historical-evidence",
+          text: "selected body",
+          headers: [],
+          thread: "b1",
+          message: "a1",
+          method: "gmail.users.messages.get",
+        }),
+      };
+      const fetcher = (selection: ImportCoverage, message = "a1") =>
+        createGmailHistoryFetcher({
+          coverage: selection,
+          accessToken: credentials,
+          transport: async (input) => {
+            const url = new URL(String(input));
+            if (url.pathname.endsWith("/messages")) {
+              expect(url.searchParams.get("labelIds")).toBe(
+                selection.conversations[0],
+              );
+              return Response.json({
+                messages: [{ id: message, threadId: "b1" }],
+              });
+            }
+            return Response.json({
+              id: message,
+              threadId: "b1",
+              internalDate: "2000",
+              labelIds: ["INBOX", "STARRED"],
+              payload: {
+                mimeType: "text/plain",
+                body: {
+                  data: Buffer.from("selected body").toString("base64url"),
+                },
+              },
+            });
+          },
+        });
+      try {
+        if (legacy) {
+          store.beginImport("inbox", coverage);
+          const progress = store.importProgress("inbox");
+          if (!progress) throw new Error("Missing fixture progress");
+          // Persist exactly the pre-fix source/page format, with a resumable job.
+          store.persistPage(
+            progress,
+            { sources: [original], nextCursor: '{"index":0,"token":"next"}' },
+            0,
+          );
+        } else {
+          await importHistory(store, "inbox", coverage, fetcher(coverage));
+        }
+        store.close();
+        store = new EvidenceStore(path, key);
+        store.appendClaim({
+          id: "claim",
+          entity: "sender",
+          text: "selected body",
+          audiences: ["owner"],
+          kind: "evidence",
+          dependsOn: [original.id],
+          contradicts: [],
+          supersedes: [],
+        });
+        store.close();
+        store = new EvidenceStore(path, key);
+        expect(store.source("owner", original.id)).toEqual({
+          ...original,
+          conversation: "thread:b1",
+        });
+        expect(store.importProgress("inbox")?.coverage).toEqual(coverage);
+        await importHistory(store, "inbox", coverage, fetcher(coverage));
+        const starred = { ...coverage, conversations: ["STARRED"] };
+        for (const job of ["starred", "repeat"])
+          expect(
+            (await importHistory(store, job, starred, fetcher(starred)))
+              .complete,
+          ).toBe(true);
+        expect(store.search("owner", "").sources).toHaveLength(1);
+        expect(store.search("owner", "").claims[0]?.dependsOn).toEqual([
+          original.id,
+        ]);
+        expect(store.importProgress("starred")?.coverage.conversations).toEqual(
+          ["STARRED"],
+        );
+        await importHistory(
+          store,
+          "other-message",
+          starred,
+          fetcher(starred, "a2"),
+        );
+        const otherAccount = { ...starred, account: "other@example.com" };
+        await importHistory(
+          store,
+          "other-account",
+          otherAccount,
+          fetcher(otherAccount),
+        );
+        store.close();
+        store = new EvidenceStore(path, key);
+        expect(
+          store
+            .search("owner", "")
+            .sources.map((s) => s.id)
+            .sort(),
+        ).toEqual([
+          "gmail:other@example.com:a1",
+          "gmail:owner@example.com:a1",
+          "gmail:owner@example.com:a2",
+        ]);
+        expect(store.search("public", "")).toEqual({ sources: [], claims: [] });
+        const page = await fetcher(starred)({
+          coverage: starred,
+          cursor: null,
+        });
+        const source = page.sources[0];
+        if (!source) throw new Error("Missing Gmail fixture");
+        for (const [job, changed] of [
+          ["wrong-label", { ...page, gmailLabel: "SENT" }],
+          ["missing-label", { ...page, gmailLabel: undefined }],
+          [
+            "wrong-date",
+            { ...page, sources: [{ ...source, observedAt: 5000 }] },
+          ],
+          [
+            "wrong-audience",
+            { ...page, sources: [{ ...source, audiences: ["public"] }] },
+          ],
+          ["edited", { ...page, sources: [{ ...source, text: "changed" }] }],
+        ] satisfies [string, ImportPage][]) {
+          store.beginImport(job, starred);
+          const before = store.importProgress(job);
+          if (!before) throw new Error("Missing progress");
+          expect(() => store.persistPage(before, changed, Date.now())).toThrow(
+            job === "edited"
+              ? "immutable"
+              : "Source outside authorized import coverage",
+          );
+          expect(store.importProgress(job)).toEqual(before);
+        }
+        store.deleteSource(original.id);
+        store.close();
+        store = new EvidenceStore(path, key);
+        await expect(
+          importHistory(store, "deleted", starred, fetcher(starred)),
+        ).rejects.toThrow("Tombstoned");
+      } finally {
+        store.close();
+        rmSync(directory, { recursive: true, force: true });
       }
     },
   );

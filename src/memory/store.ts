@@ -101,6 +101,11 @@ const stateSchema = z.strictObject({
 });
 const pageSchema = z.strictObject({
   sources: z.array(sourceSchema).max(1000),
+  // Fetcher-verified selection membership, not immutable evidence identity.
+  gmailLabel: z
+    .string()
+    .regex(/^[A-Za-z0-9_]+$/)
+    .optional(),
   nextCursor: id.nullable(),
   gaps: z.array(z.string().max(10000)).max(1000).optional(),
   retryAfterMs: timestamp.optional(),
@@ -125,6 +130,36 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
 function dependencies(claim: Claim): string[] {
   return [...claim.dependsOn, ...claim.contradicts, ...claim.supersedes];
 }
+
+/** Upgrade the old Gmail connector's label-valued conversation without changing
+ * evidence IDs, audiences, claims, tombstones or authorized import selections.
+ * Applied on every snapshot read; the next transaction persists the upgrade.
+ */
+function upgradeGmailConversation(source: Source): void {
+  if (
+    source.platform !== "gmail" ||
+    !/^[A-Za-z0-9_]+$/.test(source.conversation)
+  )
+    return;
+  try {
+    const body = JSON.parse(source.text);
+    if (
+      body.kind === "historical-evidence" &&
+      body.method === "gmail.users.messages.get" &&
+      typeof body.message === "string" &&
+      /^[a-f0-9]+$/i.test(body.message) &&
+      typeof body.thread === "string" &&
+      /^[a-f0-9]+$/i.test(body.thread) &&
+      source.id === `gmail:${source.account}:${body.message}` &&
+      source.sourceUrl ===
+        `https://mail.google.com/mail/u/${encodeURIComponent(source.account)}/#all/${body.thread}`
+    )
+      source.conversation = `thread:${body.thread}`;
+  } catch {
+    // Other Gmail evidence formats are not this connector's legacy records.
+  }
+}
+
 function insertSource(state: State, source: Source) {
   if (state.tombstones.includes(source.id))
     throw new Error("Tombstoned evidence cannot reappear");
@@ -244,7 +279,7 @@ export class EvidenceStore {
       );
       decipher.setAAD(Buffer.from("june-evidence-v1"));
       decipher.setAuthTag(bytes.subarray(12, 28));
-      return parse(
+      const state = parse(
         stateSchema,
         JSON.parse(
           Buffer.concat([
@@ -253,6 +288,8 @@ export class EvidenceStore {
           ]).toString("utf8"),
         ),
       );
+      for (const source of state.sources) upgradeGmailConversation(source);
+      return state;
     } catch {
       throw new Error("Memory store authentication failed");
     }
@@ -658,6 +695,11 @@ export class EvidenceStore {
       if (page.nextCursor !== null && page.nextCursor === progress.cursor)
         throw new Error("Import cursor did not advance");
       const c = progress.coverage;
+      if (
+        page.gmailLabel !== undefined &&
+        (c.platform !== "gmail" || !c.conversations.includes(page.gmailLabel))
+      )
+        throw new Error("Source outside authorized import coverage");
       for (const source of page.sources) {
         // Slack roots and replies share a canonical channel/root-ts conversation
         // across live/history ingestion. A channel grant includes its threads;
@@ -671,7 +713,10 @@ export class EvidenceStore {
           source.platform !== c.platform ||
           source.account !== c.account ||
           (!c.conversations.includes(source.conversation) &&
-            !(slackChannel && c.conversations.includes(slackChannel))) ||
+            !(slackChannel && c.conversations.includes(slackChannel)) &&
+            !(
+              page.gmailLabel && /^thread:[a-f0-9]+$/i.test(source.conversation)
+            )) ||
           source.observedAt < c.from ||
           source.observedAt >= c.to ||
           !source.audiences.every((a) => c.audiences.includes(a))

@@ -108,6 +108,14 @@ deletion requires refiltering/retrying that same page, not skipping conflicts.
 The connector does not inspect the ledger or bypass either check.
 
 `gmailSourceId(account, messageId)` remains `gmail:${account}:${messageId}`.
+Gmail conversations are `thread:${threadId}`, independent of the selected label.
+The fetcher reports verified membership as page `gmailLabel`; the store checks it
+against the job's selected labels, which remain in durable import coverage.
+Overlapping labels deduplicate identical evidence without widening audiences.
+Legacy connector records with label-valued conversations are normalized on ledger
+read using their matching message ID, thread ID and permalink; the next transaction
+persists that normalization. IDs, evidence bodies, claims, tombstones and import
+coverage are preserved. Other immutable-field conflicts still stop the page.
 Gmail alone retains a JSON evidence envelope with inline body text, thread/message
 IDs, method and selected original From/To/Cc/Bcc/Reply-To headers. It does not merge
 people by display name. Account/conversation/audiences/date/link are first-class

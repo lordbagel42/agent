@@ -167,7 +167,7 @@ export function createGmailHistoryFetcher(
             id: gmailSourceId(coverage.account, message.id),
             platform: "gmail",
             account: coverage.account,
-            conversation,
+            conversation: `thread:${message.threadId}`,
             audiences: [...coverage.audiences],
             observedAt,
             author:
@@ -191,6 +191,7 @@ export function createGmailHistoryFetcher(
       }
       return {
         sources,
+        gmailLabel: conversation,
         gaps,
         nextCursor: nextCursor(index, list.nextPageToken ?? "", 1),
         retryAfterMs: 1000,

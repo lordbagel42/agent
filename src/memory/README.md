@@ -30,9 +30,10 @@ trusted host APIs, not autonomous model tools.
   original evidence ID. A changed text, audience, URL or other field under an
   existing ID is an immutable-source conflict, not another observation. Surface
   the conflict; never silently skip an existing ID, overwrite it, widen scope,
-  or invent a new ID for a changed envelope. A ledger containing an older
-  noncanonical representation needs explicit reconciliation before replay;
-  this module does not automatically rewrite it or discard its derivatives.
+  or invent a new ID for a changed envelope. Older noncanonical Slack records
+  need explicit reconciliation. The legacy Gmail connector's label-valued
+  conversation alone is normalized to `thread:threadId` on read, preserving
+  IDs, content, audiences and derivatives (see `../imports/README.md`).
 - `source(audience, sourceId)` reads one authorized source, or `undefined`.
   `isDeleted(sourceId)` is only for trusted ingestion/replay filtering; it is
   not a model-visible existence oracle. Tombstones must outlive replayable data.
@@ -52,7 +53,11 @@ canonical `C123/root-ts` conversations, including replies. An exact thread grant
 such as `C123/1710000000.100000` includes only that conversation, not the channel
 or sibling threads. Prefix matches, malformed thread suffixes, other accounts,
 audiences outside the grant, and observations outside `[from,to)` are rejected.
-Other platforms retain exact conversation matching. This is a coverage check,
+Gmail pages may supply the trusted connector's verified `gmailLabel`, which must
+match selected coverage, separately from canonical `thread:threadId` evidence.
+The connector checks label/date membership before and after fetching the body;
+label selection never authorizes importing the rest of a thread. Other platforms
+retain exact conversation matching. This is a coverage check,
 not a claim that a connector fetched every reply or bypassed platform retention.
 
 Edits and deletion remain different cases. An edited immutable source fails
