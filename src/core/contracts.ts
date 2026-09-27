@@ -226,7 +226,8 @@ export interface CompanionReply {
     | "slack-search"
     | "snapshot-retention"
     | "mcp-connections"
-    | "personality";
+    | "personality"
+    | { target: "imports"; selection: string | null; offset: number };
   /** One owner-private query of retained evidence, never a permission grant. */
   recall?:
     | string

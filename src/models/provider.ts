@@ -154,21 +154,28 @@ const companionReplySchema = z.strictObject({
     .optional(),
   replyInThread: z.boolean().optional(),
   inspection: z
-    .enum([
-      "tombstones",
-      "memory",
-      "imports",
-      "reflection",
-      "native-coding",
-      "inference",
-      "retention",
-      "capabilities",
-      "credentials",
-      "slack-search",
-      "snapshot-retention",
-      "operations",
-      "mcp-connections",
-      "personality",
+    .union([
+      z.enum([
+        "tombstones",
+        "memory",
+        "imports",
+        "reflection",
+        "native-coding",
+        "inference",
+        "retention",
+        "capabilities",
+        "credentials",
+        "slack-search",
+        "snapshot-retention",
+        "operations",
+        "mcp-connections",
+        "personality",
+      ]),
+      z.strictObject({
+        target: z.literal("imports"),
+        selection: z.string().min(1).nullable(),
+        offset: z.number().int().nonnegative().safe(),
+      }),
     ])
     .optional(),
   recall: z
@@ -604,26 +611,48 @@ export function replyJsonSchema(
       ...(inspectionAvailable
         ? {
             inspection: {
-              type: ["string", "null"],
-              enum: [
-                "tombstones",
-                "memory",
-                "imports",
-                "reflection",
-                "native-coding",
-                "inference",
-                "retention",
-                "capabilities",
-                "credentials",
-                "slack-search",
-                "snapshot-retention",
-                "operations",
-                "mcp-connections",
-                "personality",
-                null,
+              anyOf: [
+                {
+                  type: ["string", "null"],
+                  enum: [
+                    "tombstones",
+                    "memory",
+                    "imports",
+                    "reflection",
+                    "native-coding",
+                    "inference",
+                    "retention",
+                    "capabilities",
+                    "credentials",
+                    "slack-search",
+                    "snapshot-retention",
+                    "operations",
+                    "mcp-connections",
+                    "personality",
+                    null,
+                  ],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    target: { type: "string", enum: ["imports"] },
+                    selection: {
+                      type: ["string", "null"],
+                      description:
+                        "Exact configured selection ID, or null to list IDs.",
+                    },
+                    offset: {
+                      type: "integer",
+                      description:
+                        "Non-negative safe integer. Start at 0; continue at the returned nextOffset.",
+                    },
+                  },
+                  required: ["target", "selection", "offset"],
+                },
               ],
               description:
-                "Read owner-private bounded subsystem metadata, MCP connection inventory (even disconnected), interrupted inference receipts, capability-route status, native-coding preflight, credential-binding configuration, public Slack search readiness or unresolved durable operation markers, not recalled content or secrets. personality returns pending global suggestions with exact proposalId/expectedVersion, fixed-vocabulary changes and safe provenance fingerprints, never private rationale or evidence bodies. retention explains retained-copy categories and logical deletion versus unverified physical erasure without scanning copies. snapshot-retention separately inspects bounded curated snapshot metadata for an operator-review dry run, never deletion permission. Leave text empty and all other actions unset. No deletions, approvals, retries, admission release, searches, credential resolution, native execution, network probes, imports, reflection triggers or mutations are performed.",
+                "Read owner-private bounded subsystem metadata, MCP connection inventory (even disconnected), interrupted inference receipts, capability-route status, native-coding preflight, credential-binding configuration, public Slack search readiness or unresolved durable operation markers, not recalled content or secrets. personality returns pending global suggestions with exact proposalId/expectedVersion, fixed-vocabulary changes and safe provenance fingerprints, never private rationale or evidence bodies. retention explains retained-copy categories and logical deletion versus unverified physical erasure without scanning copies. snapshot-retention separately inspects bounded curated snapshot metadata for an operator-review dry run, never deletion permission. For exact import coverage use {target:imports, selection:null or exact ID, offset:0 or nextOffset}. Concatenate JSON chunks until nextOffset is null. Leave text empty and all other actions unset. No deletions, approvals, retries, admission release, searches, credential resolution, native execution, network probes, account reads, imports, reflection triggers or mutations are performed.",
             },
           }
         : {}),

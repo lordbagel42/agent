@@ -336,6 +336,15 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   const selections = Object.fromEntries(
     Array.from({ length: 12 }, (_, i) => [`selection-${i}`, coverage]),
   );
+  selections["selection-11"] = {
+    ...coverage,
+    platform: "gmail",
+    account: "owner@example.test",
+    conversations: ["Label_42"],
+    from: 1000,
+    to: 3000,
+  };
+  selections.hidden = { ...coverage, audiences: ["another-audience"] };
   let fetches = 0;
   const imports = new HistoryImports(
     store,
@@ -485,22 +494,21 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         expect(
           Object.hasOwn(replyJsonSchema([], request).properties, "inspection"),
         ).toBe(request.inspectionAvailable);
-        if (request.inspectionAvailable)
+        if (request.inspectionAvailable) {
           expect(request.system).toContain(
             'Set inspection to "memory", "imports", "reflection", or "native-coding"',
           );
-        if (request.inspectionAvailable)
           expect(request.system).toContain('set inspection to "inference"');
-        if (request.inspectionAvailable)
           expect(request.system).toContain('set inspection to "credentials"');
-        if (request.inspectionAvailable)
           expect(request.system).toContain('Set inspection to "retention"');
-        if (request.inspectionAvailable)
           expect(request.system).toContain("serialized-byte usage/limits");
-        if (request.inspectionAvailable)
           expect(request.system).toContain(
             "Never retry unknown reflection, assert settlement, or reconcile it yourself",
           );
+          expect(request.system).toContain(
+            'inspection {target:"imports",selection:null,offset:0}',
+          );
+        }
         if (
           request.inspectionAvailable &&
           action.inspection === "snapshot-retention"
@@ -714,6 +722,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "Zero recorded gaps is not proof of completeness",
   );
   expect(importReport.length).toBeLessThan(4000);
+  expect(importReport).not.toContain("private-account");
   action = { text: "", inspection: "reflection" };
   const reflectionReport = await deliver();
   expect(reflectionReport).toContain('"pending":1,"running":0');
@@ -794,7 +803,42 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(requests.at(-1)?.mcpAvailable).toBe(false);
   expect(reads).toBe(9);
   expect(requests).toHaveLength(10);
-  for (const inspection of [
+  action = {
+    text: "",
+    inspection: { target: "imports", selection: null, offset: 0 },
+  };
+  const catalog = JSON.parse((await deliver()).split("\n")[1] ?? "");
+  expect(JSON.parse(catalog.selectionsJson)).toEqual(
+    Array.from({ length: 12 }, (_, i) => `selection-${i}`),
+  );
+  for (const id of ["selection-0", "selection-11"]) {
+    action = {
+      text: "",
+      inspection: { target: "imports", selection: id, offset: 0 },
+    };
+    const report = await deliver();
+    const data = JSON.parse(report.split("\n")[1] ?? "");
+    const { audiences: _audiences, ...expected } = selections[id] ?? coverage;
+    expect(JSON.parse(data.coverageJson)).toEqual({
+      selection: id,
+      ...expected,
+    });
+    expect(data.nextOffset).toBeNull();
+    expect(data.digest).toBe(
+      createHash("sha256")
+        .update(JSON.stringify([id, selections[id]]))
+        .digest("hex"),
+    );
+    expect(data.pages).toBe(id === "selection-0" ? 1 : 0);
+    expect(report).toContain(
+      id === "selection-0" ? "timeline only" : "label IDs, not threads",
+    );
+    expect(report).toContain("no account data was read");
+    expect(report.length).toBeLessThan(3500);
+  }
+  expect(reads).toBe(12);
+  expect(requests).toHaveLength(13);
+  const deniedInspections = [
     "tombstones",
     "native-coding",
     "memory",
@@ -806,7 +850,9 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "snapshot-retention",
     "operations",
     "mcp-connections",
-  ] as const) {
+    { target: "imports", selection: "selection-11", offset: 0 },
+  ] as const;
+  for (const inspection of deniedInspections) {
     action = { text: "", inspection };
     for (const extra of [
       {
@@ -828,16 +874,18 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         : []),
     ]) {
       const before = requests.length;
-      expect(await deliver(extra)).toContain("owner-private turn");
+      const denied = await deliver(extra);
+      expect(denied).toContain("owner-private turn");
+      expect(denied).not.toContain("owner@example.test");
       expect(requests).toHaveLength(before + 1);
       expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-      expect(reads).toBe(9);
+      expect(reads).toBe(12);
     }
     search = true;
     await deliver();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(9);
+    expect(reads).toBe(12);
     search = false;
     action = {
       text: "",
@@ -845,7 +893,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       release: { action: "inspect", revision: null },
     };
     expect(await deliver()).toContain("inspection is unavailable");
-    expect(reads).toBe(9);
+    expect(reads).toBe(12);
   }
   action = { text: "", inspection: "slack-search" };
   const readiness = await deliver();
@@ -854,7 +902,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(readiness).toContain("actual installed bot grant is unverified");
   expect(readiness).toContain("Live search access is unverified");
   expect(readiness).toContain("No Slack request was made");
-  expect(reads).toBe(10);
+  expect(reads).toBe(13);
   action = { text: "", inspection: "credentials" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
@@ -864,7 +912,17 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   selections["selection-1"] = { ...coverage, to: 1001 };
   action = { text: "", inspection: "imports" };
   expect(await deliver()).toContain("inspection is unavailable");
+  action = {
+    text: "",
+    inspection: { target: "imports", selection: "selection-1", offset: 0 },
+  };
+  expect(await deliver()).toContain("inspection is unavailable");
   expect(store.importProgress("selection-1")?.coverage.to).toBe(999);
+  action = {
+    text: "",
+    inspection: { target: "imports", selection: "hidden", offset: 0 },
+  };
+  expect(await deliver()).toContain("inspection is unavailable");
   disabled = true;
   for (const target of [
     "tombstones",
@@ -918,7 +976,6 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(requests.at(-1)?.system).toContain('use inspection:"imports"');
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   expect(JSON.stringify(sent)).not.toContain("secret-source");
-  expect(JSON.stringify(sent)).not.toContain("private-account");
   expect(fetches).toBe(1); // Inspection never retried the rejected page.
   expect(store.source(audience, retainedSource.id)).toEqual(retainedSource);
   expect(JSON.stringify(sent)).not.toContain("https://secret.example");
@@ -963,6 +1020,9 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "start",
     "forget",
     { target: "memory", audience: "guest" },
+    { target: "imports", selection: "selection-0", offset: 0, audience },
+    { target: "imports", selection: "selection-0", offset: -1 },
+    { target: "imports", selection: "selection-0", offset: 0.5 },
   ])
     expect(() =>
       parseReply(JSON.stringify({ text: "", inspection }), [], {
@@ -1099,5 +1159,85 @@ it("projects bounded unresolved metadata without reading payloads or mutating re
   expect(outstandingOperationMetadata({ deliveries: {} }).recorded).toEqual({
     model: false,
     web: false,
+  });
+});
+
+it("pages exact scope without widening audiences or fetching history", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const coverage = {
+    platform: "slack",
+    account: "TEXACT",
+    conversations: Array.from({ length: 130 }, (_, i) => `C${i}/123.456789`),
+    from: 123001,
+    to: 987999,
+    audiences: ["private"],
+  };
+  // Similar long IDs must remain distinguishable, even beyond summary limits.
+  const ids = Array.from({ length: 12 }, (_, i) => `${"s".repeat(100)}-${i}`);
+  const selections = Object.fromEntries<typeof coverage>([
+    ["SECRET", { ...coverage, audiences: ["other"] }],
+    ...ids.map((id) => [id, coverage] as const),
+  ]);
+  const imports = new HistoryImports(
+    store,
+    Object.fromEntries(
+      Object.entries(selections).map(([id, coverage]) => [
+        id,
+        {
+          coverage,
+          async fetchPage() {
+            throw new Error("must not fetch history");
+          },
+        },
+      ]),
+    ),
+  );
+  const read = createInspectionReader({
+    audience: "private",
+    selections,
+    imports,
+  });
+  for (const selection of [null, ids[11] as string]) {
+    let offset: number | null = 0;
+    let json = "";
+    let pages = 0;
+    while (offset !== null) {
+      const report = await read({ target: "imports", selection, offset });
+      expect(report).not.toContain("SECRET");
+      expect(report.length).toBeLessThan(3500);
+      const data = JSON.parse(report.split("\n")[1] ?? "");
+      json += selection === null ? data.selectionsJson : data.coverageJson;
+      expect(data.nextOffset === null || data.nextOffset > offset).toBe(true);
+      offset = data.nextOffset;
+      pages++;
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(JSON.parse(json)).toEqual(
+      selection === null
+        ? ids
+        : {
+            selection,
+            platform: "slack",
+            account: "TEXACT",
+            conversations: coverage.conversations,
+            from: 123001,
+            to: 987999,
+          },
+    );
+  }
+  for (const selection of ["SECRET", "constructor", "missing"])
+    await expect(
+      read({ target: "imports", selection, offset: 0 }),
+    ).rejects.toThrow("unavailable");
+  await expect(
+    read({ target: "imports", selection: null, offset: 999999 }),
+  ).rejects.toThrow("offset");
+  expect(imports.status(ids[11] as string)).toMatchObject({
+    running: false,
+    progress: undefined,
+    notBefore: 0,
+    cooldownReason: null,
+    coolingDown: false,
   });
 });

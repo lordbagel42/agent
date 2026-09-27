@@ -1,8 +1,7 @@
-import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { ImportedMemoryExtraction } from "../imports/extraction.js";
-import type { HistoryImports } from "../imports/index.js";
+import { type HistoryImports, importCoverageDigest } from "../imports/index.js";
 import { ImportBudgetExceeded, type ImportCoverage } from "../memory/store.js";
 
 /** Mount behind owner bearer auth. A selection is not consent to fetch it.
@@ -19,9 +18,7 @@ export function createImportRoutes(
       id,
       {
         coverage: structuredClone(coverage),
-        digest: createHash("sha256")
-          .update(JSON.stringify([id, coverage]))
-          .digest("hex"),
+        digest: importCoverageDigest(id, coverage),
       },
     ]),
   );

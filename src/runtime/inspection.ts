@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { CompanionReply, MessageEvent } from "../core/contracts.js";
 import type { BitwardenCredentialResolver } from "../credentials/bitwarden.js";
 import type { ImportedMemoryExtraction } from "../imports/extraction.js";
-import type { HistoryImports } from "../imports/index.js";
+import { type HistoryImports, importCoverageDigest } from "../imports/index.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import {
@@ -162,6 +162,20 @@ export type OutstandingOperationSnapshot = ReturnType<
   typeof outstandingOperationMetadata
 >;
 
+function jsonPage(json: string, offset: number) {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > json.length)
+    throw new Error("Invalid metadata offset");
+  // JSON text has no raw control characters. Even escaped a second time, a
+  // 1000-code-unit chunk leaves room for the receipt and limitations below.
+  const end = Math.min(offset + 1000, json.length);
+  return {
+    offset,
+    nextOffset: end < json.length ? end : null,
+    totalCharacters: json.length,
+    json: json.slice(offset, end),
+  };
+}
+
 /** Host-bound audience and selections, never model-supplied scope or query.
  * Reports contain metadata only, so retained receipts cannot resurrect evidence.
  * No mutating service methods or remote history fetches are called here.
@@ -199,7 +213,8 @@ export function createInspectionReader(deps: {
   >,
   event?: MessageEvent,
 ) => Promise<string> {
-  return async (target, event) => {
+  return async (query, event) => {
+    const target = typeof query === "string" ? query : query.target;
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {
       case "capabilities":
@@ -300,6 +315,41 @@ export function createInspectionReader(deps: {
         const selections = Object.entries(deps.selections).filter(
           ([, coverage]) => coverage.audiences.includes(deps.audience),
         );
+        if (typeof query === "object") {
+          if (query.selection === null) {
+            const { json, ...page } = jsonPage(
+              JSON.stringify(selections.map(([id]) => id)),
+              query.offset,
+            );
+            return `${heading}\n${JSON.stringify({ configuredSelections: selections.length, ...page, selectionsJson: json })}\nConcatenate selectionsJson chunks using nextOffset until null. These are exact configured IDs, not proof of access or imported history. Inspect an exact ID with inspection {target:"imports",selection:ID,offset:0}. No account data was read.`;
+          }
+          const selected = selections.find(([id]) => id === query.selection);
+          if (!selected) throw new Error("Import selection is unavailable");
+          const [id, coverage] = selected;
+          const { running, progress, notBefore, cooldownReason, coolingDown } =
+            imports.status(id);
+          if (progress && !isDeepStrictEqual(progress.coverage, coverage))
+            throw new Error("Import coverage changed");
+          const { platform, account, conversations, from, to } = coverage;
+          const { json, ...page } = jsonPage(
+            JSON.stringify({
+              selection: id,
+              platform,
+              account,
+              conversations,
+              from,
+              to,
+            }),
+            query.offset,
+          );
+          const scope =
+            platform === "slack"
+              ? "Slack account is a workspace ID. conversations are channel IDs (timeline only, not all replies) or channel/thread_ts for explicitly selected threads."
+              : platform === "gmail"
+                ? "Gmail account is the configured email address. conversations are label IDs, not threads or the whole mailbox. Gmail's strict after search may omit the exact lower boundary; labels can change during pagination."
+                : "Provider-specific coverage semantics are unavailable.";
+          return `${heading}\n${JSON.stringify({ digest: importCoverageDigest(id, coverage), ...page, coverageJson: json, running, started: progress !== undefined, pages: progress?.pages ?? 0, complete: progress?.complete ?? false, notBefore, cooldownReason, coolingDown, gapCount: progress?.gaps.length ?? 0 })}\nConcatenate coverageJson chunks using nextOffset until null; do not mix digests. from/to are configured epoch milliseconds [from,to). ${scope} Complete means selected traversal exhausted, not gap-free account history. Configuration is not verified access. notBefore is the persisted account cooldown deadline, not provider readiness; no polling or automatic retry. Cursors, gap contents, credentials and message bodies are omitted. No import was started or cancelled; no account data was read.`;
+        }
         const rows = selections
           .slice(0, deps.importExtraction ? 5 : 10)
           .map(([id, coverage]) => {

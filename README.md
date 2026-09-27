@@ -896,6 +896,19 @@ Reconciliation does not prove reflection succeeded, approve a candidate, clear
 dedupe or retry work. June cannot perform it. Ordinary live occupancy can include
 the inspection itself and is not evidence of interruption.
 
+For exact configured import scope, June can use
+`inspection: {target:"imports", selection:null, offset:0}` to list authorized
+selection IDs, then set `selection` to an exact ID. Responses page `selectionsJson`
+or `coverageJson` in bounded chunks; concatenate using `nextOffset` until null,
+without mixing coverage digests. This includes IDs beyond the ten-summary limit
+and preserves full account/channel/thread/label IDs and epoch-millisecond
+`[from,to)` bounds. The coverage digest matches the operator review route, but is
+not approval. Only local configuration and existing progress are read: no token
+lookup, provider call, or new account data. Configured access is not verified
+access; Slack timelines omit unselected thread replies, Gmail labels are not
+whole-mailbox/thread coverage, and Gmail's strict lower search boundary may omit
+messages. Finished traversal is not proof of gap-free history.
+
 To list current private reflection candidates, the authenticated owner sends
 exactly `!reflection list` as an ordinary message in a private conversation
 (not a Slack slash command). The host returns at most ten

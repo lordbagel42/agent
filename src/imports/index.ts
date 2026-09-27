@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type EvidenceStore,
   ImmutableSourceConflictError,
@@ -12,6 +13,13 @@ export type { ConnectorConfig } from "./common.js";
 export { createGmailHistoryFetcher } from "./gmail.js";
 export { gmailSourceId, slackSource, slackSourceId } from "./identity.js";
 export { createSlackHistoryFetcher } from "./slack.js";
+
+/** Identifies configured coverage for review; never consent to fetch it. */
+export function importCoverageDigest(id: string, coverage: ImportCoverage) {
+  return createHash("sha256")
+    .update(JSON.stringify([id, coverage]))
+    .digest("hex");
+}
 
 /** Host-only operator service. No model tools, event dispatch, approvals or sends.
  * Register authenticated selections at boot; callers cannot supply coverage.
