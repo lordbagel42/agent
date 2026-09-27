@@ -12,6 +12,16 @@ const retentionMs = 30 * 86_400_000;
 const lifecycleStages = [
   "process_started",
   "process_stopping",
+  "shutdown_http_close_started",
+  "shutdown_http_close_returned",
+  "shutdown_client_dispose_started",
+  "shutdown_client_dispose_returned",
+  "shutdown_registry_started",
+  "shutdown_registry_returned",
+  "shutdown_providers_close_started",
+  "shutdown_providers_close_returned",
+  "shutdown_resources_close_started",
+  "shutdown_resources_close_returned",
   "process_stopped",
   "shutdown_failed",
   "http_listener_failed",
@@ -172,6 +182,7 @@ export class DiagnosticLog {
     return [
       `Persistent diagnostic log, as of ${new Date().toISOString()}. Retention: 30 days, capped at 10,000 traces / 20,000 events (pruned every 128 writes).`,
       `Write failures this process: ${snapshot.writeFailures}; missing records are unknown, not proof no work occurred.`,
+      "Shutdown phase returns record control flow only, not durable settlement.",
       "Latest 12 lifecycle/Slack ingress events (no message contents or credentials):",
       ...snapshot.events
         .slice(0, 12)

@@ -1411,12 +1411,21 @@ async function main() {
     (stopping ??= (async () => {
       diagnosticLog?.lifecycle("process_stopping");
       try {
+        diagnosticLog?.lifecycle("shutdown_http_close_started");
         await new Promise<void>((done) => server.close(() => done()));
+        diagnosticLog?.lifecycle("shutdown_http_close_returned");
+        diagnosticLog?.lifecycle("shutdown_client_dispose_started");
         await client.dispose();
+        diagnosticLog?.lifecycle("shutdown_client_dispose_returned");
+        diagnosticLog?.lifecycle("shutdown_registry_started");
         await registry.shutdown();
+        diagnosticLog?.lifecycle("shutdown_registry_returned");
       } finally {
+        diagnosticLog?.lifecycle("shutdown_providers_close_started");
         await Promise.all(hotProviders.map((provider) => provider.close()));
+        diagnosticLog?.lifecycle("shutdown_providers_close_returned");
       }
+      diagnosticLog?.lifecycle("shutdown_resources_close_started");
       await browser?.close();
       await connections?.close();
       capabilities?.close();
@@ -1424,6 +1433,7 @@ async function main() {
       memory?.store.close();
       social?.close();
       slackThreads?.close();
+      diagnosticLog?.lifecycle("shutdown_resources_close_returned");
       // Rivet's own signal handler terminates after draining. With custom signal
       // handling we own that final step too; native runtime handles may remain.
     })().then(
