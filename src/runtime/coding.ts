@@ -63,6 +63,7 @@ type Command =
 
 /** Explicit projection: never return goals, source messages, paths or raw reports. */
 export function codingJobMetadata(id: string, state: CodingState) {
+  const verification = state.verification;
   return {
     id,
     workspace: state.proposal?.workspace.slice(0, 80) ?? null,
@@ -72,14 +73,31 @@ export function codingJobMetadata(id: string, state: CodingState) {
     threadId: state.threadId?.slice(0, 256) ?? null,
     worktreePrepared: !!state.worktree,
     workerResultRecorded: state.workerClaim !== undefined,
-    verification: state.verification
-      ? {
-          status: state.verification.status,
-          exitCode: state.verification.exitCode,
-          finishedAt: state.verification.finishedAt,
-          historical: state.verification.replayed,
-        }
-      : null,
+    verification: {
+      source: "operator_verifier",
+      status: verification?.status ?? "unknown",
+      passed: verification?.passed ?? null,
+      exitCode: verification?.exitCode ?? null,
+      finishedAt: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(
+        verification?.finishedAt ?? "",
+      )
+        ? verification?.finishedAt
+        : null,
+      historical: verification?.replayed ?? null,
+      baseCommit: /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(
+        verification?.baseCommit ?? "",
+      )
+        ? verification?.baseCommit
+        : null,
+      headCommit: /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(
+        verification?.headCommit ?? "",
+      )
+        ? verification?.headCommit
+        : null,
+      output: "omitted",
+      limitations:
+        "Command outcome only; no immutable artifact binding or deployment attestation. Historical receipts do not verify current files.",
+    },
     // A missing saved ID is not proof that a worker never started.
     manualReconciliationRequired:
       state.status === "needs_review" && !!state.worktree && !state.threadId,

@@ -455,6 +455,16 @@ confirmed stopped**; uncertain capacity stays held. Neither directive approves,
 resumes, launches, pushes or deploys work. Public turns, guests, worker results
 and synthesis cannot invoke them. Old workflow iterations keep their old path.
 
+Ask June “inspect the independent verifier outcome for coding job ID” to read
+`verification` separately from `workerResultRecorded`. No recorded receipt means
+`status: "unknown"` and `passed: null`, even if the worker claimed success or a
+legacy job says completed. A recorded receipt exposes the operator verifier's
+status, tri-state pass result, exit code, bounded base/HEAD commit IDs, original
+receipt time, and historical flag; missing or invalid provenance is null.
+HEAD is captured before the command, not bound to immutable file contents.
+Historical receipts do not verify current files. Command output stays omitted;
+these results neither attest a deployment nor authorize one.
+
 After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
 `/resume-stopped <job-prefix>`. Do not resume a job with an unknown live worker.
