@@ -83,6 +83,14 @@ const companionReplySchema = z.strictObject({
       argumentsJson: z.string().max(4000),
     })
     .optional(),
+  mcpCatalog: z
+    .strictObject({
+      connection: z.string().min(1).max(256).nullable(),
+      tool: z.string().min(1).max(256).nullable(),
+      offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    })
+    .refine((value) => value.tool === null || value.connection !== null)
+    .optional(),
   latency: z
     .union([
       z.literal("recent"),
@@ -278,6 +286,22 @@ export function replyJsonSchema(
               },
               required: ["connection", "tool", "argumentsJson"],
             },
+            mcpCatalog: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                connection: { type: ["string", "null"] },
+                tool: { type: ["string", "null"] },
+                offset: {
+                  type: "integer",
+                  description:
+                    "Non-negative safe integer. Start at 0; continue at the returned nextOffset.",
+                },
+              },
+              required: ["connection", "tool", "offset"],
+              description:
+                "Read approved MCP catalog only. Null tool pages summaries; exact connection and tool retrieve JSON contract chunks. Start offset 0, continue at nextOffset. Leave text empty and other actions unset.",
+            },
           }
         : {}),
       ...(searchAvailable
@@ -333,7 +357,7 @@ export function replyJsonSchema(
       ...(executionAvailable ? ["execution"] : []),
       ...(releaseAvailable ? ["release"] : []),
       ...(modelStatusAvailable ? ["modelStatus"] : []),
-      ...(mcpAvailable ? ["mcp"] : []),
+      ...(mcpAvailable ? ["mcp", "mcpCatalog"] : []),
       ...(searchAvailable ? ["search"] : []),
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
@@ -537,6 +561,7 @@ export function parseReply(
     "release",
     "modelStatus",
     "mcp",
+    "mcpCatalog",
     "latency",
     "analytics",
     "replyInThread",
@@ -564,6 +589,7 @@ export function parseReply(
     (reply.modelStatus !== undefined && !modelStatusAvailable) ||
     (reply.social !== undefined && !socialAvailable) ||
     (reply.mcp !== undefined && !mcpAvailable) ||
+    (reply.mcpCatalog !== undefined && !mcpAvailable) ||
     (reply.latency !== undefined && !latencyAvailable) ||
     (reply.analytics !== undefined && !analyticsAvailable) ||
     (reply.execution !== undefined && !executionAvailable) ||
@@ -574,6 +600,7 @@ export function parseReply(
   const directiveCount =
     Number(reply.modelStatus === true) +
     Number(reply.mcp !== undefined) +
+    Number(reply.mcpCatalog !== undefined) +
     Number(reply.execution !== undefined) +
     Number(reply.search !== undefined) +
     Number(reply.webSearch !== undefined) +
@@ -592,6 +619,7 @@ export function parseReply(
       reply.release !== undefined ||
       reply.social !== undefined ||
       reply.mcp !== undefined ||
+      reply.mcpCatalog !== undefined ||
       reply.analytics !== undefined ||
       reply.latency !== undefined) &&
       reply.text.trim().length > 0)

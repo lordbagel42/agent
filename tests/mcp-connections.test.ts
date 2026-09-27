@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Hono } from "hono";
 import { afterEach, expect, test } from "vitest";
 import { createConnectionRoutes } from "../src/console/connections.js";
@@ -21,6 +22,7 @@ async function fixture(
     url: "https://mcp.example/rpc",
     token: "private-token",
   },
+  tools?: Tool[],
 ) {
   const directory = await mkdtemp(join(tmpdir(), "june-mcp-"));
   const calls: unknown[] = [];
@@ -55,7 +57,7 @@ async function fixture(
                   }
                 : message.method === "tools/list"
                   ? {
-                      tools: [
+                      tools: tools ?? [
                         {
                           name: "lookup",
                           description,
@@ -369,6 +371,164 @@ test("June can use enabled tools privately but channels receive no MCP catalog o
     expect(answer.execution).toBeUndefined();
     expect(f.calls).toHaveLength(direct ? 1 : 0);
   }
+});
+
+test("June discovers and calls beyond the first catalog page without granting disabled tools", async () => {
+  const tools: Tool[] = Array.from({ length: 43 }, (_, index) => ({
+    name: `lookup_${index}`,
+    description: `Record lookup ${index}`,
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string", const: `record-${index}` } },
+      required: ["id"],
+      additionalProperties: false,
+      // A large early contract must not hide any later tools.
+      ...(index === 0 ? { description: "x".repeat(45_000) } : {}),
+    },
+  }));
+  const f = await fixture(undefined, tools);
+  for (const tool of tools.slice(0, 42))
+    f.store.permit(f.id, f.connection().revision, tool.name, "read");
+  const query = (tool: string | null, offset = 0) => ({
+    text: "",
+    mcpCatalog: { connection: f.id, tool, offset },
+  });
+  const call = (tool: string, id: string) => ({
+    text: "",
+    mcp: { connection: f.id, tool, argumentsJson: JSON.stringify({ id }) },
+  });
+  let phase = 0;
+  const answer = await f.store
+    .wrap({
+      reply: async (request) => {
+        const respond = (value: unknown) =>
+          parseReply(JSON.stringify(value), [], request);
+        if (!request.mcpAvailable) return respond({ text: "Found record-41" });
+        expect(replyJsonSchema([], request).properties).toHaveProperty(
+          "mcpCatalog",
+        );
+        const lines = request.system.split("\n");
+        if (phase++ === 0) {
+          const initial = JSON.parse(
+            lines
+              .find((line) => line.startsWith("Owner-approved MCP tools"))
+              ?.split(": ")
+              .slice(1)
+              .join(": ") ?? "",
+          );
+          expect(initial.tools).toHaveLength(40);
+          expect(initial.nextOffset).toBe(40);
+          expect(
+            initial.tools.map((tool: { name: string }) => tool.name),
+          ).not.toContain("lookup_41");
+          expect(request.system.length).toBeLessThan(40_000);
+          return respond(query(null, initial.nextOffset));
+        }
+        const result = JSON.parse(lines.at(-1) ?? "").result;
+        expect(JSON.stringify(result).length).toBeLessThan(40_000);
+        if (phase === 2) {
+          expect(
+            result.tools.map((tool: { name: string }) => tool.name),
+          ).toEqual(["lookup_40", "lookup_41"]);
+          expect(result.nextOffset).toBeNull();
+          return respond(query("lookup_41"));
+        }
+        expect(JSON.parse(result.contractJson).inputSchema).toEqual(
+          tools[41]?.inputSchema,
+        );
+        expect(result.nextOffset).toBeNull();
+        return respond(call("lookup_41", "record-41"));
+      },
+    })
+    .reply(f.request);
+  expect(answer.text).toBe("Found record-41");
+  expect(f.calls).toEqual([
+    { name: "lookup_41", arguments: { id: "record-41" } },
+  ]);
+
+  // Exact calls do not require prior discovery, but disabled names remain denied.
+  for (const index of [40, 42]) {
+    await f.store
+      .wrap({
+        reply: async (request) =>
+          request.mcpAvailable
+            ? call(`lookup_${index}`, `record-${index}`)
+            : { text: "done" },
+      })
+      .reply(f.request);
+  }
+  expect(f.calls).toHaveLength(2);
+  expect(f.calls[1]).toEqual({
+    name: "lookup_40",
+    arguments: { id: "record-40" },
+  });
+
+  // Schema chunks are retained for stateless providers and have a finite turn budget.
+  let rounds = 0;
+  await f.store
+    .wrap({
+      reply: async (request) => {
+        const lines = request.system.split("\n");
+        if (rounds++ === 0) return query("lookup_42");
+        const last = JSON.parse(lines.at(-1) ?? "");
+        if (rounds === 2) {
+          expect(last.result).toEqual({ error: "tool_not_enabled" });
+          return query("lookup_0");
+        }
+        const chunks = lines
+          .filter((line) => line.startsWith('{"query":'))
+          .map((line) => JSON.parse(line))
+          .filter((item) => item.query.tool === "lookup_0");
+        for (const chunk of chunks)
+          expect(JSON.stringify(chunk).length).toBeLessThan(40_000);
+        expect(
+          chunks.map((chunk) => chunk.result.contractJson).join("").length,
+        ).toBe((rounds - 2) * 6000);
+        return query("lookup_0", last.result.nextOffset);
+      },
+    })
+    .reply(f.request)
+    .then((result) => expect(result.text).toContain("lookup limit"));
+  expect(rounds).toBe(9);
+  expect(f.calls).toHaveLength(2);
+});
+
+test("catalog discovery obeys the MCP capability and action exclusivity contract", () => {
+  const catalog = { connection: "fixture", tool: "lookup", offset: 0 };
+  expect(
+    replyJsonSchema([], { mcpAvailable: true }).properties.mcpCatalog
+      ?.properties.offset,
+  ).not.toHaveProperty("minimum");
+  expect(() =>
+    parseReply(JSON.stringify({ text: "", mcpCatalog: catalog }), [], {}),
+  ).toThrow();
+  for (const extra of [
+    { text: "also talk" },
+    { mcp: { connection: "fixture", tool: "lookup", argumentsJson: "{}" } },
+    { analytics: { days: 7 } },
+    { modelStatus: true },
+  ])
+    expect(() =>
+      parseReply(
+        JSON.stringify({ text: "", mcpCatalog: catalog, ...extra }),
+        [],
+        {
+          mcpAvailable: true,
+          analyticsAvailable: true,
+          modelStatusAvailable: true,
+        },
+      ),
+    ).toThrow();
+  for (const invalid of [
+    { ...catalog, offset: -1 },
+    { ...catalog, offset: 0.5 },
+    { ...catalog, connection: null },
+  ])
+    expect(() =>
+      parseReply(JSON.stringify({ text: "", mcpCatalog: invalid }), [], {
+        mcpAvailable: true,
+      }),
+    ).toThrow();
 });
 
 test("mutation approval executes exactly once, including concurrent confirmation", async () => {

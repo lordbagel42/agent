@@ -162,6 +162,12 @@ export interface CompanionReply {
   modelStatus?: boolean;
   /** One owner-private MCP call; host resolves credentials and permissions. */
   mcp?: { connection: string; tool: string; argumentsJson: string };
+  /** Page approved tool summaries, or retrieve an exact tool's JSON contract. */
+  mcpCatalog?: {
+    connection: string | null;
+    tool: string | null;
+    offset: number;
+  };
   /** Owner-private read-only timings: "recent" or one ping UUIDv4. */
   latency?: string;
   /** Owner-private aggregate token usage for the last 1, 7, or 30 days. */
