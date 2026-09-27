@@ -227,6 +227,31 @@ describe("bounded typed decisions", () => {
     );
   });
 
+  it("shares capacity with settlement-aware durable callers after timeout", async () => {
+    const executor = new DecisionExecutor(1, 5);
+    const raw = Promise.withResolvers<Decision>();
+    let signal: AbortSignal | undefined;
+    let settled = false;
+    const result = executor
+      .evaluateSettled(input, async (_input, active) => {
+        signal = active;
+        return raw.promise;
+      })
+      .finally(() => {
+        settled = true;
+      });
+    await expect.poll(() => signal?.aborted).toBe(true);
+    expect(settled).toBe(false);
+    expect((await executor.evaluate(input, async () => yes)).rationale).toBe(
+      "capacity",
+    );
+    raw.resolve(yes);
+    expect((await result).rationale).toBe("timeout");
+    expect((await executor.evaluate(input, async () => yes)).answer).toBe(
+      "yes",
+    );
+  });
+
   it("times out failed providers and never starts pre-cancelled work", async () => {
     const executor = new DecisionExecutor(1, 5);
     const controller = new AbortController();

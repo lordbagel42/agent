@@ -18,6 +18,7 @@ reflectionPriority(request, now): number
 
 new DecisionExecutor(capacity, timeoutMs)
 executor.evaluate(input, decide, signal?): Promise<Decision>
+executor.evaluateSettled(input, decide, signal?): Promise<Decision>
 typedEvaluator(decide: DecisionFunction): DecisionFunction
 validateDecision(value: unknown, input): Decision
 runJury(input, executor, providers, signal?): Promise<JuryResult>
@@ -165,8 +166,10 @@ never an empty success. It leaves occupancy and ordinary preemption unchanged.
   Pending scores are not eligibility claims; all existing admission gates apply.
 - Calls are deliberately serial even if the policy allows more background
   capacity. Live work preempts them and the domain reserves live capacity.
-  Inject the raw provider, **not** `DecisionExecutor.evaluate` or another wrapper
-  that returns before the underlying provider settles. Cancellation/timeout
+  Inject a provider that awaits actual settlement, **not**
+  `DecisionExecutor.evaluate` or another early-return wrapper. Main uses the
+  shared executor's `evaluateSettled` so reflection and explicit jury calls
+  consume the same slots without releasing durable claims early. Cancellation/timeout
   signals are cooperative; an ignoring provider holds its claim and blocks
   further background work, but does not block the separate live actor. The
   workflow abort signal also cancels on shutdown; there is no second scheduler

@@ -280,6 +280,7 @@ const schema = z
     reflection: z
       .strictObject({
         model: decisionModel,
+        juryEnabled: z.boolean().default(false),
         idleMs: z.number().int().min(1000).max(86400000).default(300000),
         deepMs: z.number().int().min(1000).max(86400000).default(3600000),
         pollMs: z.number().int().min(1000).max(86400000).default(60000),

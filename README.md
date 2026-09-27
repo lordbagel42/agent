@@ -793,6 +793,26 @@ means staged, never approved. A changed global head must be reviewed again;
 suggestions never retarget automatically. Deletion hides affected suggestions,
 but old encrypted snapshots/backups are not physically purged by this check.
 
+Opt-in `reflection.juryEnabled: true` exposes an explicit owner-private `jury`
+directive with empty text and no other actions: `{question: "relevance" |
+"novelty" | "uncertainty" | "interruption-cost", prompt: "one atomic question",
+evidenceIds: ["original source ID"]}`. Prompts are limited to 2,000 characters
+and 1–20 distinct source IDs already supplied in the current scoped turn. The
+host resolves original evidence, rejecting foreign, missing, opted-out, stale,
+oversized or deleted sources before each call and before returning a result.
+It uses the existing `runJury`: two independent calls to the configured decision
+model, then critic and synthesis. Calls share one `DecisionExecutor` sized to
+`totalCapacity - liveReserve`; excess calls abstain, so the default one-slot
+allocation cannot run both first passes. There are no retries or extra tools.
+The existing durable model-attempt receipt prevents replay from relaunching any
+part of an interrupted jury; its outcome becomes unknown. Cancellation/timeout
+retains capacity and live occupancy until the underlying calls actually settle.
+The direct bounded reply is advisory, not unanimous agreement, new evidence,
+permission, or an approved action. It uses the turn's existing deletion-protected
+history; no separate jury store, scheduler, or automatic follow-up is created.
+Public, guest, worker-result and synthesis turns cannot request it. This remains
+disabled by default and requires the same memory-provider privacy gate above.
+
 June can inspect these subsystems in an owner-private turn using
 `inspection: "memory" | "imports" | "reflection" | "retention"`, with empty text and no other
 actions. The host replies directly with timestamped proposal/revision counts,

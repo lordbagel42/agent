@@ -12,6 +12,7 @@ import {
 import { slackHistorySchema } from "../core/slack-history.js";
 import { socialActionSchema } from "../core/social.js";
 import { globalProposalInputSchema } from "../reflection/global-proposal.js";
+import { juryRequestSchema } from "../reflection/jury.js";
 import { globalStyleSchema } from "../runtime/personality.js";
 import { wakeupActionSchema } from "../wakeups/state.js";
 import { workflowCommandSchema } from "../workflows/contracts.js";
@@ -225,6 +226,7 @@ const companionReplySchema = z.strictObject({
       kind: z.enum(["reflection", "curiosity"]).optional(),
     })
     .optional(),
+  jury: juryRequestSchema.optional(),
   rivet: rivetRequestSchema.optional(),
   browserProposal: z
     .strictObject({ operation: z.string().min(1).max(128).nullable() })
@@ -264,6 +266,7 @@ export type ReplyCapabilities = Pick<
   | "personalitySuggestionAvailable"
   | "jevObservationAvailable"
   | "reflectionRequestAvailable"
+  | "juryAvailable"
   | "rivetAvailable"
   | "browserProposalAvailable"
   | "dashboardLoginAvailable"
@@ -305,6 +308,7 @@ export function replyJsonSchema(
     personalitySuggestionAvailable,
     jevObservationAvailable,
     reflectionRequestAvailable,
+    juryAvailable,
     rivetAvailable,
     browserProposalAvailable,
     dashboardLoginAvailable,
@@ -800,6 +804,43 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(juryAvailable
+        ? {
+            jury: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                question: {
+                  type: "string",
+                  enum: [
+                    "relevance",
+                    "novelty",
+                    "uncertainty",
+                    "interruption-cost",
+                  ],
+                },
+                prompt: {
+                  type: "string",
+                  description:
+                    "One nonempty atomic question, at most 2000 characters.",
+                },
+                evidenceIds: {
+                  type: "array",
+                  items: {
+                    type: "string",
+                    description: "An existing source ID, 1–512 characters.",
+                  },
+                  minItems: 1,
+                  description:
+                    "1–20 distinct original source IDs from this turn's scoped memory.",
+                },
+              },
+              required: ["question", "prompt", "evidenceIds"],
+              description:
+                "One explicitly requested owner-private advisory jury over 1–20 existing source IDs. No new evidence or authority. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
       ...(dashboardLoginAvailable
         ? {
             dashboardLogin: {
@@ -980,6 +1021,7 @@ export function replyJsonSchema(
       ...(personalitySuggestionAvailable ? ["personalitySuggestion"] : []),
       ...(jevObservationAvailable ? ["jevObservation"] : []),
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
+      ...(juryAvailable ? ["jury"] : []),
       ...(rivetAvailable ? ["rivet"] : []),
       ...(browserProposalAvailable ? ["browserProposal"] : []),
       ...(dashboardLoginAvailable ? ["dashboardLogin"] : []),
@@ -1167,6 +1209,7 @@ export function parseReply(
     personalitySuggestionAvailable,
     jevObservationAvailable,
     reflectionRequestAvailable,
+    juryAvailable,
     rivetAvailable,
     browserProposalAvailable,
     dashboardLoginAvailable,
@@ -1211,6 +1254,7 @@ export function parseReply(
     "personalitySuggestion",
     "jevObservation",
     "reflectionRequest",
+    "jury",
     "rivet",
     "browserProposal",
     "dashboardLogin",
@@ -1262,6 +1306,7 @@ export function parseReply(
       !personalitySuggestionAvailable) ||
     (reply.jevObservation !== undefined && !jevObservationAvailable) ||
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
+    (reply.jury !== undefined && !juryAvailable) ||
     (reply.rivet !== undefined && !rivetAvailable) ||
     (reply.browserProposal !== undefined && !browserProposalAvailable) ||
     (reply.dashboardLogin !== undefined && !dashboardLoginAvailable) ||
@@ -1294,6 +1339,7 @@ export function parseReply(
     Number(reply.personalitySuggestion !== undefined) +
     Number(reply.jevObservation === true) +
     Number(reply.reflectionRequest !== undefined) +
+    Number(reply.jury !== undefined) +
     Number(reply.rivet !== undefined) +
     Number(reply.browserProposal !== undefined) +
     Number(reply.dashboardLogin === true) +
@@ -1322,6 +1368,7 @@ export function parseReply(
       reply.personalitySuggestion !== undefined ||
       reply.jevObservation === true ||
       reply.reflectionRequest !== undefined ||
+      reply.jury !== undefined ||
       reply.rivet !== undefined ||
       reply.browserProposal !== undefined ||
       reply.dashboardLogin === true ||

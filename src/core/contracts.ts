@@ -254,6 +254,8 @@ export interface CompanionReply {
     /** Omitted by older replies; defaults to reflection. No additional sources/tools. */
     kind?: "reflection" | "curiosity";
   };
+  /** Explicit owner-private advisory evaluation of existing scoped evidence. */
+  jury?: import("../reflection/jury.js").JuryRequest;
   /** Owner one-to-one Slack DM only; volatile read-only Rivet inspection. */
   rivet?: import("./rivet.js").RivetRequest;
   /** List named mutations (null), or propose one for separate exact human approval. */
@@ -302,6 +304,7 @@ export interface ModelRequest {
   personalitySuggestionAvailable?: boolean;
   jevObservationAvailable?: boolean;
   reflectionRequestAvailable?: boolean;
+  juryAvailable?: boolean;
   rivetAvailable?: boolean;
   browserProposalAvailable?: boolean;
   dashboardLoginAvailable?: boolean;

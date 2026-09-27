@@ -167,6 +167,28 @@ export class DecisionExecutor {
       signal?.removeEventListener("abort", abort);
     }
   }
+
+  /** Durable hosts may release their claim only after the raw call settles.
+   * Keep evaluate's timeout/cancellation classification and shared admission,
+   * but never return early while the provider still occupies a slot.
+   */
+  async evaluateSettled(
+    input: DecisionInput,
+    decide: DecisionFunction,
+    signal?: AbortSignal,
+  ): Promise<Decision> {
+    let work: Promise<Decision> | undefined;
+    const result = await this.evaluate(
+      input,
+      (context, callSignal) => {
+        work = decide(context, callSignal);
+        return work;
+      },
+      signal,
+    );
+    await work?.catch(() => {});
+    return result;
+  }
 }
 
 export interface JuryProviders {

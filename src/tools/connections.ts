@@ -822,6 +822,7 @@ export class McpConnections {
                 pendingMemoryAvailable: false,
                 jevObservationAvailable: false,
                 reflectionRequestAvailable: false,
+                juryAvailable: false,
                 rivetAvailable: false,
                 browserProposalAvailable: false,
                 dashboardLoginAvailable: false,

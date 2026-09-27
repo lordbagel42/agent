@@ -51,6 +51,11 @@ import { createJevObserver } from "./models/jev.js";
 import { createModelProvider } from "./models/provider.js";
 import { UsageLedger } from "./models/usage.js";
 import { freshEvidence } from "./reflection/domain.js";
+import {
+  DecisionExecutor,
+  type DecisionFunction,
+} from "./reflection/evaluator.js";
+import { createJuryTool } from "./reflection/jury.js";
 import { DiagnosticLog } from "./runtime/diagnostics.js";
 import { createInspectionReader } from "./runtime/inspection.js";
 import { createLatencyDiagnostics } from "./runtime/latency.js";
@@ -631,17 +636,36 @@ async function main() {
         }),
       ),
     );
+  const decisionModel = config.reflection
+    ? {
+        ...config.reflection.model,
+        usage,
+        auth: "api-key" as const,
+        apiKey: secret(config.reflection.model.apiKeyEnv),
+      }
+    : undefined;
+  // All typed evaluation paths share this pool, including raw reflection.
+  // A zero background allocation disables admission rather than making a pool.
+  const decisionCapacity = config.reflection
+    ? config.reflection.policy.totalCapacity -
+      config.reflection.policy.liveReserve
+    : 0;
+  const decisionExecutor =
+    config.reflection && decisionCapacity > 0
+      ? new DecisionExecutor(decisionCapacity, config.reflection.timeoutMs)
+      : undefined;
+  const rawDecision = decisionModel && createDecisionProvider(decisionModel);
+  const decide: DecisionFunction | undefined =
+    decisionExecutor && rawDecision
+      ? (input, signal) =>
+          decisionExecutor.evaluateSettled(input, rawDecision, signal)
+      : undefined;
   const reflection =
-    config.reflection && memory
+    config.reflection && memory && decide
       ? {
           ...config.reflection,
           ownerId: config.owner.id,
-          decide: createDecisionProvider({
-            ...config.reflection.model,
-            usage,
-            auth: "api-key",
-            apiKey: secret(config.reflection.model.apiKeyEnv),
-          }),
+          decide,
           async retrieve(
             input: { ownerId: string; scope: string; evidenceIds: string[] },
             signal: AbortSignal,
@@ -664,6 +688,32 @@ async function main() {
             };
           },
         }
+      : undefined;
+  const jury =
+    config.reflection?.juryEnabled &&
+    memory &&
+    decisionExecutor &&
+    decisionModel
+      ? createJuryTool({
+          store: memory.store,
+          scope: ownerAudience,
+          executor: decisionExecutor,
+          evidenceMaxAgeMs: config.reflection.policy.evidenceMaxAgeMs,
+          providers: {
+            jurors: ["one", "two"].map((id) => ({
+              id,
+              decide: createDecisionProvider(decisionModel),
+            })),
+            critic: createDecisionProvider({
+              ...decisionModel,
+              role: "critic",
+            }),
+            synthesize: createDecisionProvider({
+              ...decisionModel,
+              role: "synthesis",
+            }),
+          },
+        })
       : undefined;
   const channels: Partial<Record<Channel, ChannelAdapter>> = {};
   startupStage = "private diagnostic log";
@@ -891,6 +941,7 @@ async function main() {
       : undefined,
     memory,
     reflection,
+    jury,
     coding,
   });
   Object.assign(registry.config, {

@@ -31,6 +31,7 @@ import type {
 } from "../memory/store.js";
 import type { JevObserver, JevQuestion } from "../models/jev.js";
 import { ModelError, parseReply } from "../models/provider.js";
+import { type createJuryTool, formatJuryResult } from "../reflection/jury.js";
 import type { McpConnections } from "../tools/connections.js";
 import type {
   WebSearchCitation,
@@ -109,6 +110,7 @@ export interface Dependencies {
     target: Exclude<NonNullable<CompanionReply["inspection"]>, "inference">,
     event: MessageEvent,
   ) => Promise<string>;
+  jury?: ReturnType<typeof createJuryTool>;
   rivet?: RivetReader;
   /** Pure exact-action proposal only; never grant or execute from model output. */
   browserProposal?: (operation: string | null) => string;
@@ -375,6 +377,9 @@ export function createJuneRegistry(deps: Dependencies) {
             "reflection-review",
             2,
           );
+          // A parked inbox can use the jury on its first new turn; journals
+          // already processing a turn retain the original capability plan.
+          const juryVersion = await loop.getVersion("jury-request", 2);
           const body = message.body;
           // Old actors can be asleep in a pre-v9 queue wait. A wakeup could
           // never have entered those old journals, so its new path is safe.
@@ -645,6 +650,7 @@ export function createJuneRegistry(deps: Dependencies) {
               wakeups?: boolean;
               jev?: boolean;
               workflow?: boolean;
+              jury?: boolean;
             } =
               version >= 2
                 ? await loop.step("turn-plan", async () => ({
@@ -656,6 +662,15 @@ export function createJuneRegistry(deps: Dependencies) {
                     extraction: !!deps.memory?.extract && scope.private,
                     reflection: ownerTurn && !!deps.reflection,
                     jev: ownerTurn && scope.private && !!deps.jev,
+                    ...(juryVersion >= 2
+                      ? {
+                          jury:
+                            ownerTurn &&
+                            scope.private &&
+                            !!deps.jury &&
+                            !!deps.memory,
+                        }
+                      : {}),
                     workspaces:
                       scope.private && deps.coding
                         ? Object.keys(deps.coding.workspaces)
@@ -1644,6 +1659,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                   !!deps.memory &&
                                   plan.reflection &&
                                   !!deps.reflection,
+                                juryAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!plan.jury &&
+                                  !!deps.jury,
                                 rivetAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -1958,6 +1979,51 @@ export function createJuneRegistry(deps: Dependencies) {
                                 } catch {
                                   text =
                                     "Workflow command failed or its result is uncertain. Inspect the workflow library before repeating a start or signal; no completion is claimed.";
+                                }
+                              }
+                              generated = {
+                                text,
+                                ...(generated.replyInThread !== undefined
+                                  ? { replyInThread: generated.replyInThread }
+                                  : {}),
+                              };
+                            } else if (generated.jury !== undefined) {
+                              let text =
+                                "The advisory jury is unavailable for this turn or its evidence. No result or authority can be inferred.";
+                              if (
+                                modelRequest.juryAvailable &&
+                                scope.private &&
+                                ownerTurn &&
+                                deps.jury &&
+                                !signal.aborted &&
+                                valid(step.state)
+                              ) {
+                                const request = parseReply(
+                                  JSON.stringify(generated),
+                                  workspaces,
+                                  modelRequest,
+                                ).jury;
+                                const reference =
+                                  step.state.memoryContexts?.[eventId];
+                                // Only host-supplied originals already tracked for
+                                // this turn's deletion-safe history/delivery may leave.
+                                if (
+                                  request &&
+                                  reference &&
+                                  request.evidenceIds.every((id) =>
+                                    reference.sourceIds.includes(id),
+                                  )
+                                ) {
+                                  const result = await deps.jury(
+                                    request,
+                                    signal,
+                                  );
+                                  if (
+                                    result &&
+                                    !signal.aborted &&
+                                    valid(step.state)
+                                  )
+                                    text = formatJuryResult(result);
                                 }
                               }
                               generated = {

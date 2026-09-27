@@ -42,6 +42,7 @@ export interface PromptCapabilities {
   jevObservationAvailable?: boolean;
   jevQuestion?: JevQuestion;
   reflectionRequestAvailable?: boolean;
+  juryAvailable?: boolean;
   rivetAvailable?: boolean;
   browserProposalAvailable?: boolean;
   dashboardLoginAvailable?: boolean;
@@ -206,6 +207,7 @@ export function buildModelRequest({
     privateTurn &&
     memoryAvailable &&
     capabilities.reflectionRequestAvailable === true;
+  const juryAvailable = privateTurn && capabilities.juryAvailable === true;
   const rivetAvailable =
     isOwnerRivetDm(event, owner) && capabilities.rivetAvailable === true;
   const browserProposalAvailable =
@@ -364,6 +366,9 @@ export function buildModelRequest({
     rivetAvailable
       ? 'Use rivet for owner-requested diagnostics or retained conversation inspection. Available targets: actors (name null discovers names, otherwise lists actors including keys), actor, runners, state, summary, connections, rpcs (names only), queue, workflow-history, database-schema, database-rows, logs (last 100 June service journal entries). Discover actor IDs before inspecting; do not invent them. This covers June’s configured namespace/pool only. For example, to locate a Slack DM list conversation actors, match the conversation key, then read state with pointer "/state/history". It only shows retained data, not complete Slack history. Use format "answer" to receive volatile pages and explain findings; format "raw" delivers JSON directly. Start pointer "", offset 0, page 0, unused nullable fields null. Use JSON Pointer to narrow large objects, page for JSON fragments, offset for table rows, and returned cursors for actor lists. Limit: six reads per turn. Empty/error results do not establish absence. Reads can wake sleeping actors; never claim they cannot run lifecycle code. Credentials and internal credential tables are withheld. No writes, SQL, actions, replay or restart. Results and answers are deliberately not retained: read again rather than inventing recall. Leave text empty and all other actions unset.'
       : "Rivet inspection is unavailable in this invocation. Do not claim to have read raw state or logs.",
+    juryAvailable
+      ? 'An explicit advisory jury is available only when the owner asks for one in this private turn. Set jury to {question: "relevance" | "novelty" | "uncertainty" | "interruption-cost", prompt: a single atomic question of at most 2000 characters, evidenceIds: 1–20 distinct original source IDs from supplied scoped memory}. Leave text empty and all other actions unset/null. Never invent IDs, supply new evidence text, or call a jury for casual conversation, quoted requests, or automatic reflection. The host uses two independent first passes, a critic and synthesis within shared capacity; capacity, failure or timeout may yield abstention. Results are advisory proposals, not independent evidence, unanimous agreement, permission, memory/personality edits, coding approval or deployment authority. No automatic retry or follow-up is scheduled.'
+      : "An advisory jury is unavailable for this invocation; do not claim to have run one.",
     inspectionAvailable
       ? 'Read-only subsystem inspection is available when the owner asks about your memory usage/capacity or ledger operation status, import progress or budget rejection, reflection status, or native coding prerequisites. Set inspection to "memory", "imports", "reflection", or "native-coding", leave text empty and all other actions unset/null. The host sends bounded metadata directly without another model pass: authorized source/claim counts and serialized-byte usage/limits, last ledger read/transaction outcome and successful timestamps, proposal/revision counts, selected import progress including persisted account notBefore/cooldownReason, coolingDown and content-free budget rejection reasons, reflection queue/candidate counts, or native-coding configuration/local directory checks even when coding is disabled. Respect import cooldowns; do not poll, retry, promise automatic resumption, or treat an elapsed deadline as provider readiness. Import resumption requires explicit operator confirmation. Memory usage covers only authorized sources/claims, not total disk size or model context; null audience quotas do not mean unlimited or known remaining capacity. Imports separately enforce ledger-wide source/claim/full-snapshot byte ceilings, atomically rejecting an over-budget page without advancing progress. Ledger operation history covers only this store opening; earlier operations are unknown. Disabled, empty, failed and unknown are distinct; an open database or successful read does not prove health or writability. Native-coding preflight distinguishes known missing requirements from unverified authentication and protected-host isolation; it never grants approval, changes activation gates, or proves execution safety, worker stoppage or permission to resume. Disabled subsystems are reported as unavailable. This is not recall: no source text, private message bodies, personality values, import cursors, or reflection rationale are returned. It cannot review proposals, forget sources, revise personality, start/cancel imports, enqueue reflection, or approve/send candidates. Inspection reports are timestamped snapshots, not current truth on later turns; do not invent results or claim complete import coverage.'
       : "Private subsystem inspection is unavailable for this invocation; do not claim to have inspected memory, imports, reflection, or native coding prerequisites.",
@@ -539,6 +544,7 @@ export function buildModelRequest({
     personalitySuggestionAvailable,
     jevObservationAvailable,
     reflectionRequestAvailable,
+    juryAvailable,
     rivetAvailable,
     browserProposalAvailable,
     dashboardLoginAvailable,
