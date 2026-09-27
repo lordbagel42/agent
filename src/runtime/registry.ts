@@ -29,6 +29,7 @@ import {
   type CodingDependencies,
   codingJobMetadata,
   createCodingActor,
+  DISABLED_CODING_RECOVERY,
 } from "./coding.js";
 import { type Delivery, deliver } from "./delivery.js";
 import {
@@ -1372,6 +1373,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                       });
                                   }
                                   text = `${heading}\nNative coding: ${deps.coding ? "configured; login and provider health are not verified" : "disabled or unavailable; no native execution can be requested"}. Permitted workspace names: ${JSON.stringify(workspaces.slice(0, 20))}.\nRecent jobs (up to 5): ${JSON.stringify(rows)}\nUse inspect with a job ID for durable details. New work requires a proposal and /approve ID. ${caution}`;
+                                  if (!deps.coding)
+                                    text += `\n\n${DISABLED_CODING_RECOVERY}`;
                                 } else {
                                   const matches = ids.filter((id) =>
                                     id.startsWith(request.id ?? ""),

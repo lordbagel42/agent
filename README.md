@@ -419,6 +419,15 @@ are not containment evidence. Automatic deployment drain with native coding
 remains unsupported; idle/cancelled job labels do not prove settlement. This
 inspection never enables coding, grants approval or permits uncertain resumes.
 
+When coding is unavailable, ask June privately how to recover it. Her
+`codingJob: {action:"list", id:null}` response separates operator configuration
+review from unverified authentication and host isolation. An unavailable runtime
+does not establish which prerequisite failed or mean that the account is signed
+out; use preflight for observed prerequisite failures. Never paste credentials
+into chat or reuse the companion's login as proof of coding access. Recovery
+guidance grants no activation, job, push or deployment permission and does not
+change configuration or launch a worker.
+
 Each proposal durably binds the parsed runtime/execution configuration before
 approval. Changing that configuration cannot resume a saved thread under a new
 adapter, state directory or verifier. Jobs from an older unbound schema require

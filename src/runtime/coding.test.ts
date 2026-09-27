@@ -225,9 +225,9 @@ describe("separate coding supervisor", () => {
       const content = state.deliveries[`${key}:text`]?.message.content;
       return { key, text: content?.type === "text" ? content.text : "" };
     };
-    expect((await deliver()).text).toContain(
-      "login and provider health are not verified",
-    );
+    const available = (await deliver()).text;
+    expect(available).toContain("login and provider health are not verified");
+    expect(available).not.toContain("Keep native execution disabled");
     const request = modelRequests.at(-1);
     expect(request?.system).toContain("Use codingJob");
     expect(replyJsonSchema([], request).properties).toHaveProperty("codingJob");
@@ -339,9 +339,55 @@ describe("separate coding supervisor", () => {
     expect(modelRequests[0]?.workspaces).toEqual([]);
     expect(modelRequests[0]?.codingJobsAvailable).toBe(true);
     const content = sent[0]?.content;
-    expect(content?.type === "text" && content.text).toContain(
+    const recovery = content?.type === "text" ? content.text : "";
+    expect(recovery).toContain(
       "disabled or unavailable; no native execution can be requested",
     );
+    expect(recovery).toContain("Configuration: an authorized operator");
+    expect(recovery).toContain(
+      "Authentication: unverified, not necessarily signed out",
+    );
+    expect(recovery).toContain("Never paste tokens into chat");
+    expect(recovery).toContain("Isolation: unverified");
+    expect(recovery).toContain("worktrees are not a sandbox");
+    expect(recovery).toContain("native-coding preflight when available");
+    expect(recovery).toContain("separate owner authorization to activate it");
+    expect(recovery).toContain("no push or deployment is authorized");
+    expect(modelRequests[0]?.system).toContain("how to recover it");
+    expect(replyJsonSchema([], modelRequests[0]).properties.coding).toEqual({
+      type: "null",
+    });
+    expect(
+      (await client.conversation.getOrCreate(["private", owner.id]).snapshot())
+        .jobs,
+    ).toEqual({});
+    for (const extra of [
+      {
+        id: "public-recovery",
+        direct: false,
+        botMentioned: true,
+        address: { ...source.address, conversationId: "C1" },
+      },
+      {
+        id: "guest-recovery",
+        senderId: "U2",
+        metadata: { channelType: "im" as const },
+      },
+    ]) {
+      const event = { ...source, ...extra, messageId: extra.id };
+      const scope = routeEvent(event, owner, true);
+      if (!scope) throw new Error("Missing fixture scope");
+      const count = sent.length;
+      await client.conversation
+        .getOrCreate(scope.key)
+        .send("inbox", { type: "event", event });
+      await expect.poll(() => sent.length).toBe(count + 1);
+      const content = sent.at(-1)?.content;
+      const text = content?.type === "text" ? content.text : "";
+      expect(text).toContain("owner-private turn");
+      expect(text).not.toContain("Configuration:");
+      expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(false);
+    }
   });
 
   it.for([false, true])(

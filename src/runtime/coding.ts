@@ -12,6 +12,14 @@ import type {
 } from "../core/contracts.js";
 import type { JuneRegistry } from "./registry.js";
 
+// Recovery advice, not inferred diagnoses or permission to change host policy.
+export const DISABLED_CODING_RECOVERY = [
+  "Configuration: an authorized operator must review the explicit runtime, named workspaces, per-workspace isolation policy, coding.enabled and separate host opt-in. Unavailable status alone does not identify which prerequisite is missing.",
+  "Authentication: unverified, not necessarily signed out. An operator must check the selected runtime's supported login in its dedicated execution environment. Never paste tokens into chat, copy another tool's credentials, or assume the companion model's login also authenticates the coding worker.",
+  "Isolation: unverified. Missing or failed isolation prerequisites need operator repair; worktrees are not a sandbox or proof of credential, process or network containment. Ask for native-coding preflight when available to inspect prerequisites without launching a worker.",
+  "Keep native execution disabled until protected-host acceptance and separate owner authorization to activate it. This guidance performs no login, configuration change or launch. Each local coding job still needs separate approval; no push or deployment is authorized.",
+].join("\n");
+
 export interface CodingDependencies {
   runtime: CodingRuntime;
   runtimeKind: "amp" | "codex" | "claude" | "pi";
