@@ -268,7 +268,11 @@ async function main() {
     for (const manager of Object.values(isolation)) {
       if (!(await manager.isSettled())) return false;
     }
-    return true;
+    // A recovered reflection actor can be locally idle with unresolved work.
+    // This read never clears its durable holds or enables automatic deployment.
+    return reflection
+      ? client.reflection.getOrCreate([config.owner.id]).isSettled()
+      : true;
   });
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);

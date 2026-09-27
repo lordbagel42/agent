@@ -35,7 +35,7 @@ an `attempt` or a denial `reason`. `finish` ignores stale/duplicate attempts.
 
 ## Rivet actor factory
 
-`createReflectionActor(deps)` in `../runtime/reflection.ts` returns a mountable
+`createReflectionActor(deps, lifecycle?)` in `../runtime/reflection.ts` returns a mountable
 Rivet actor definition. Mount it once and use key `[ownerId]`, not one actor per
 audience. The separate `reflection-v1` workflow serializes admissions and uses
 Rivet's journaled queue timeout for durable wakeups. It does not modify or mount
@@ -71,6 +71,7 @@ cancel(id): Promise<boolean>
 occupancy(id: string, active: boolean): Promise<void>
 trigger({id, type: "interaction" | "idle", liveActive}): Promise<void>
 status(): Promise<{reflection, invocations, candidateIds, liveActive, activeTurnIds, epoch}>
+isSettled(): Promise<boolean>
 candidate(id): Promise<ReflectionCandidate | null>
 reconcile(requestId, confirmedStopped): Promise<boolean>
 ```
@@ -83,6 +84,17 @@ to cancel all dependent requests; cancellation removes their staged candidates.
 Actor storage, engine inspection and backups must remain private. Deletion of
 the memory store alone does not erase a candidate from actor storage/backups.
 
+- The host passes the shared process lifecycle fence. Each reflection step
+  reacquires admission outside the journal and holds it through raw provider
+  settlement and the final state flush. Drain pauses new steps, not durable
+  pending requests; timeout resumes admission without cancelling or releasing
+  active work. `isSettled()` is the host's additional read-only check under that
+  fence: local workers, live occupancy, running/cancelling requests and any
+  started/uncertain invocation prevent certification. It never reconciles or
+  retries unknown work. Forced workflow aborts and persistence failures poison
+  process drain; provider cancellation alone is not settlement. Automatic
+  deployment with reflection remains unsupported until the complete lifecycle,
+  recovery and transport behavior is proven. No feature is enabled by this wiring.
 - Before live model work, await `occupancy(turnAttemptId, true)` with a stable,
   owner-wide unique turn/attempt ID. The owner actor derives occupancy from
   durable active IDs, so overlapping conversation actors never read/modify/write

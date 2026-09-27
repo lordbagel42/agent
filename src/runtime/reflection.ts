@@ -19,6 +19,7 @@ import {
   type DecisionInput,
   validateDecision,
 } from "../reflection/evaluator.js";
+import type { Lifecycle } from "./lifecycle.js";
 
 export type ReflectionMode = "interaction" | "idle" | "deep";
 export interface ReflectionInput extends RequestInput {
@@ -73,7 +74,10 @@ export interface ReflectionRuntimeState {
 /** One actor keyed [ownerId], never one actor per scope (capacity is owner-wide).
  * Actions are trusted host APIs, not an internet-facing authorization boundary.
  */
-export function createReflectionActor(deps: ReflectionDependencies) {
+export function createReflectionActor(
+  deps: ReflectionDependencies,
+  lifecycle?: Pick<Lifecycle, "enter" | "fail">,
+) {
   for (const ms of [deps.idleMs, deps.deepMs, deps.pollMs, deps.timeoutMs]) {
     if (!Number.isSafeInteger(ms) || ms < 1 || ms > 86_400_000)
       throw new Error("Invalid reflection timing");
@@ -234,6 +238,17 @@ export function createReflectionActor(deps: ReflectionDependencies) {
           .map((turn) => turn.id),
         epoch: c.state.epoch,
       }),
+      /** Host drain check under the lifecycle fence, not reconciliation. A quiet
+       * local callback cannot prove that a pre-recovery provider stopped. */
+      isSettled: (c) =>
+        c.vars.active.size === 0 &&
+        c.state.liveActive === 0 &&
+        Object.values(c.state.invocations).every(
+          (phase) => phase === "settled",
+        ) &&
+        !c.state.reflection.requests.some((request) =>
+          ["running", "cancelling"].includes(request.status),
+        ),
       /** Recheck memory on every read, including after actor recovery or forgetting. */
       candidate: async (c, id: string) => {
         const candidate = c.state.candidates[id];
@@ -276,194 +291,218 @@ export function createReflectionActor(deps: ReflectionDependencies) {
         return true;
       },
     },
-    run: workflow(async (ctx) => {
-      await ctx.loop("reflection-v1", async (loop) => {
-        // Queue timeout is a Rivet durable timer, not a process-local scheduler.
-        await loop.queue.nextBatch("wake-or-timer", {
-          names: ["wake"],
-          count: 100,
-          timeout: deps.pollMs,
-        });
-        await loop.step({
-          name: "reflect",
-          timeout: 0,
-          run: async (step) => {
-            if (step.key.length !== 1 || step.key[0] !== deps.ownerId) return;
-            // A started marker with no local worker means an interrupted step.
-            // Never repeat a possibly completed external generation on replay.
-            let recovered = false;
-            for (const [key, phase] of Object.entries(step.state.invocations))
-              if (phase === "started") {
-                step.state.invocations[key] = "uncertain";
-                recovered = true;
-              }
-            if (recovered) await step.vars.persist();
-            if (step.state.liveActive > 0) return;
-            const now = Date.now();
-            const request = step.state.reflection.requests.find((r) => {
-              const mode = step.state.modes[r.id];
-              const delay =
-                mode === "deep"
-                  ? deps.deepMs
-                  : mode === "idle"
-                    ? deps.idleMs
-                    : 0;
-              const progress = step.state.reflection.scopes.find(
-                (s) => s.scope === r.scope,
-              );
-              return (
-                r.status === "pending" &&
-                !step.state.reflection.requests.some(
-                  (other) =>
-                    other.scope === r.scope &&
-                    ["running", "cancelling"].includes(other.status),
-                ) &&
-                now >=
-                  Math.max(r.createdAt, step.state.lastInteractionAt) + delay &&
-                now >= (progress?.nextEligibleAt ?? 0)
-              );
-            });
-            if (!request || isQuiet(now, deps.policy.quiet)) return;
-            const controller = new AbortController();
-            step.vars.active.set(request.id, controller);
-            const signal = AbortSignal.any([
-              controller.signal,
-              step.abortSignal,
-              AbortSignal.timeout(deps.timeoutMs),
-            ]);
-            let attempt: number | undefined;
-            let invocation = "";
-            try {
-              const evidence = await retrieve(request, signal);
-              if (signal.aborted || step.state.liveActive > 0) return;
-              if (!evidence) {
-                step.state.reflection = cancel(
-                  step.state.reflection,
-                  request.id,
-                );
-                await step.vars.persist();
-                return;
-              }
-              const admitted = claim(
-                step.state.reflection,
-                request.id,
-                Date.now(),
-                deps.policy,
-                evidence,
-                step.state.liveActive,
-              );
-              step.state.reflection = admitted.state;
-              attempt = admitted.attempt;
-              if (!attempt) {
-                if (
-                  admitted.reason === "stopped" ||
-                  admitted.reason === "stale-evidence"
-                )
-                  step.state.reflection = cancel(
+    run: workflow(
+      async (ctx) => {
+        await ctx.loop("reflection-v1", async (loop) => {
+          // Queue timeout is a Rivet durable timer, not a process-local scheduler.
+          await loop.queue.nextBatch("wake-or-timer", {
+            names: ["wake"],
+            count: 100,
+            timeout: deps.pollMs,
+          });
+          // Admission is process-local, outside the journal so replay reacquires it.
+          // The timeout-free step awaits the raw provider AND its final state flush.
+          const release = await lifecycle?.enter(ctx.abortSignal);
+          try {
+            await loop.step({
+              name: "reflect",
+              timeout: 0,
+              run: async (step) => {
+                if (step.key.length !== 1 || step.key[0] !== deps.ownerId)
+                  return;
+                // A started marker with no local worker means an interrupted step.
+                // Never repeat a possibly completed external generation on replay.
+                let recovered = false;
+                for (const [key, phase] of Object.entries(
+                  step.state.invocations,
+                ))
+                  if (phase === "started") {
+                    step.state.invocations[key] = "uncertain";
+                    recovered = true;
+                  }
+                if (recovered) await step.vars.persist();
+                if (step.state.liveActive > 0) return;
+                const now = Date.now();
+                const request = step.state.reflection.requests.find((r) => {
+                  const mode = step.state.modes[r.id];
+                  const delay =
+                    mode === "deep"
+                      ? deps.deepMs
+                      : mode === "idle"
+                        ? deps.idleMs
+                        : 0;
+                  const progress = step.state.reflection.scopes.find(
+                    (s) => s.scope === r.scope,
+                  );
+                  return (
+                    r.status === "pending" &&
+                    !step.state.reflection.requests.some(
+                      (other) =>
+                        other.scope === r.scope &&
+                        ["running", "cancelling"].includes(other.status),
+                    ) &&
+                    now >=
+                      Math.max(r.createdAt, step.state.lastInteractionAt) +
+                        delay &&
+                    now >= (progress?.nextEligibleAt ?? 0)
+                  );
+                });
+                if (!request || isQuiet(now, deps.policy.quiet)) return;
+                const controller = new AbortController();
+                step.vars.active.set(request.id, controller);
+                const signal = AbortSignal.any([
+                  controller.signal,
+                  step.abortSignal,
+                  AbortSignal.timeout(deps.timeoutMs),
+                ]);
+                let attempt: number | undefined;
+                let invocation = "";
+                try {
+                  const evidence = await retrieve(request, signal);
+                  if (signal.aborted || step.state.liveActive > 0) return;
+                  if (!evidence) {
+                    step.state.reflection = cancel(
+                      step.state.reflection,
+                      request.id,
+                    );
+                    await step.vars.persist();
+                    return;
+                  }
+                  const admitted = claim(
                     step.state.reflection,
                     request.id,
+                    Date.now(),
+                    deps.policy,
+                    evidence,
+                    step.state.liveActive,
                   );
-                await step.vars.persist();
-                return;
-              }
-              invocation = JSON.stringify([request.id, attempt]);
-              step.state.invocations[invocation] = "started";
-              await step.vars.persist();
-              const executionEvidence = await retrieve(request, signal);
-              if (
-                !executionEvidence ||
-                signal.aborted ||
-                step.state.liveActive > 0 ||
-                isQuiet(Date.now(), deps.policy.quiet) ||
-                step.state.reflection.requests.find((r) => r.id === request.id)
-                  ?.status !== "running"
-              )
-                return;
-              const mode = step.state.modes[request.id] ?? "interaction";
-              const epoch = step.state.epoch;
-              const input: DecisionInput = {
-                scope: request.scope,
-                question:
-                  request.kind === "curiosity"
-                    ? "interruption-cost"
-                    : "novelty",
-                prompt:
-                  mode === "deep"
-                    ? "Consider patterns and alternative interpretations. Dreams are hypotheses, never independent evidence. Stage a proposal only; no actions or permission changes."
-                    : "Evaluate whether these episodes support a useful reflection proposal or interruption candidate. Silence is normal; do not repeatedly contact an idle owner. No actions or permission changes.",
-                now: Date.now(),
-                evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
-                evidence: executionEvidence,
-              };
-              // Await actual settlement. An uncooperative provider keeps its durable
-              // claim; abort is not evidence that its external request has stopped.
-              const decision = validateDecision(
-                await deps.decide(structuredClone(input), signal),
-                input,
-              );
-              const current = await retrieve(request, signal);
-              const running = step.state.reflection.requests.find(
-                (r) => r.id === request.id,
-              );
-              if (
-                current &&
-                !signal.aborted &&
-                running?.status === "running" &&
-                epoch === step.state.epoch &&
-                !step.state.liveActive &&
-                !isQuiet(Date.now(), deps.policy.quiet) &&
-                decision.answer === "yes"
-              ) {
-                const interruption = request.kind === "curiosity";
-                const hypothesisOnly = !current.some(
-                  (e) =>
-                    e.source !== "dream" && decision.evidenceIds.includes(e.id),
-                );
-                if (
-                  !interruption ||
-                  (!hypothesisOnly && step.state.interruptionEpoch !== epoch)
-                ) {
-                  step.state.candidates[invocation] = {
-                    id: invocation,
-                    requestId: request.id,
+                  step.state.reflection = admitted.state;
+                  attempt = admitted.attempt;
+                  if (!attempt) {
+                    if (
+                      admitted.reason === "stopped" ||
+                      admitted.reason === "stale-evidence"
+                    )
+                      step.state.reflection = cancel(
+                        step.state.reflection,
+                        request.id,
+                      );
+                    await step.vars.persist();
+                    return;
+                  }
+                  invocation = JSON.stringify([request.id, attempt]);
+                  step.state.invocations[invocation] = "started";
+                  await step.vars.persist();
+                  const executionEvidence = await retrieve(request, signal);
+                  if (
+                    !executionEvidence ||
+                    signal.aborted ||
+                    step.state.liveActive > 0 ||
+                    isQuiet(Date.now(), deps.policy.quiet) ||
+                    step.state.reflection.requests.find(
+                      (r) => r.id === request.id,
+                    )?.status !== "running"
+                  )
+                    return;
+                  const mode = step.state.modes[request.id] ?? "interaction";
+                  const epoch = step.state.epoch;
+                  const input: DecisionInput = {
                     scope: request.scope,
-                    attempt,
-                    mode,
-                    kind: interruption ? "interruption-candidate" : "proposal",
-                    hypothesisOnly,
-                    decision,
-                    createdAt: Date.now(),
-                    epoch,
+                    question:
+                      request.kind === "curiosity"
+                        ? "interruption-cost"
+                        : "novelty",
+                    prompt:
+                      mode === "deep"
+                        ? "Consider patterns and alternative interpretations. Dreams are hypotheses, never independent evidence. Stage a proposal only; no actions or permission changes."
+                        : "Evaluate whether these episodes support a useful reflection proposal or interruption candidate. Silence is normal; do not repeatedly contact an idle owner. No actions or permission changes.",
+                    now: Date.now(),
+                    evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
+                    evidence: executionEvidence,
                   };
-                  if (interruption) step.state.interruptionEpoch = epoch;
+                  // Await actual settlement. An uncooperative provider keeps its durable
+                  // claim; abort is not evidence that its external request has stopped.
+                  const decision = validateDecision(
+                    await deps.decide(structuredClone(input), signal),
+                    input,
+                  );
+                  const current = await retrieve(request, signal);
+                  const running = step.state.reflection.requests.find(
+                    (r) => r.id === request.id,
+                  );
+                  if (
+                    current &&
+                    !signal.aborted &&
+                    running?.status === "running" &&
+                    epoch === step.state.epoch &&
+                    !step.state.liveActive &&
+                    !isQuiet(Date.now(), deps.policy.quiet) &&
+                    decision.answer === "yes"
+                  ) {
+                    const interruption = request.kind === "curiosity";
+                    const hypothesisOnly = !current.some(
+                      (e) =>
+                        e.source !== "dream" &&
+                        decision.evidenceIds.includes(e.id),
+                    );
+                    if (
+                      !interruption ||
+                      (!hypothesisOnly &&
+                        step.state.interruptionEpoch !== epoch)
+                    ) {
+                      step.state.candidates[invocation] = {
+                        id: invocation,
+                        requestId: request.id,
+                        scope: request.scope,
+                        attempt,
+                        mode,
+                        kind: interruption
+                          ? "interruption-candidate"
+                          : "proposal",
+                        hypothesisOnly,
+                        decision,
+                        createdAt: Date.now(),
+                        epoch,
+                      };
+                      if (interruption) step.state.interruptionEpoch = epoch;
+                    }
+                  }
+                } catch {
+                  // No exception text or evidence enters receipts/state. Failure consumes
+                  // the admitted attempt rather than causing automatic provider replay.
+                  if (!attempt && !signal.aborted)
+                    step.state.reflection = cancel(
+                      step.state.reflection,
+                      request.id,
+                    );
+                } finally {
+                  step.vars.active.delete(request.id);
+                  if (attempt) {
+                    step.state.reflection = finish(
+                      step.state.reflection,
+                      request.id,
+                      attempt,
+                      Date.now(),
+                      [],
+                      deps.policy,
+                    );
+                    step.state.invocations[invocation] = "settled";
+                  }
+                  await step.vars.persist();
                 }
-              }
-            } catch {
-              // No exception text or evidence enters receipts/state. Failure consumes
-              // the admitted attempt rather than causing automatic provider replay.
-              if (!attempt && !signal.aborted)
-                step.state.reflection = cancel(
-                  step.state.reflection,
-                  request.id,
-                );
-            } finally {
-              step.vars.active.delete(request.id);
-              if (attempt) {
-                step.state.reflection = finish(
-                  step.state.reflection,
-                  request.id,
-                  attempt,
-                  Date.now(),
-                  [],
-                  deps.policy,
-                );
-                step.state.invocations[invocation] = "settled";
-              }
-              await step.vars.persist();
-            }
-          },
+              },
+            });
+          } finally {
+            release?.();
+          }
         });
-      });
-    }),
+      },
+      {
+        // Normal durable queue/timer suspension is not a workflow failure.
+        onError(ctx) {
+          if (!ctx.abortSignal.aborted) lifecycle?.fail();
+        },
+      },
+    ),
   });
 }

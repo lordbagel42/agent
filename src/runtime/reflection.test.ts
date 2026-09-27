@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { setup } from "rivetkit";
 import { setupTest } from "rivetkit/test";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { freeEnginePort, stopTestEngine } from "../../tests/rivet.js";
+import { createLifecycle, type Lifecycle } from "./lifecycle.js";
 import { createReflectionActor } from "./reflection.js";
 
 it("rechecks audience/deletion and holds deduplicated work across cancellation and overlapping live turns", async (t) => {
@@ -18,50 +19,57 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   let calls = 0;
   let release = () => {};
   let providerSignal: AbortSignal | undefined;
+  let beforeSave: (() => Promise<void>) | undefined;
+  let releaseSave = () => {};
+  const lifecycle: Lifecycle = createLifecycle(async () => handle.isSettled());
+  const enter = vi.spyOn(lifecycle, "enter");
   const registry = setup({
     use: {
-      reflection: createReflectionActor({
-        ownerId: "owner",
-        policy: {
-          totalCapacity: 2,
-          liveReserve: 1,
-          cooldownMs: 1,
-          maxAttempts: 1,
-          maxNoNewEvidence: 1,
-          evidenceMaxAgeMs: 60000,
-          quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
+      reflection: createReflectionActor(
+        {
+          ownerId: "owner",
+          policy: {
+            totalCapacity: 2,
+            liveReserve: 1,
+            cooldownMs: 1,
+            maxAttempts: 1,
+            maxNoNewEvidence: 1,
+            evidenceMaxAgeMs: 60000,
+            quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
+          },
+          idleMs: 100,
+          deepMs: 200,
+          pollMs: 20,
+          timeoutMs: 10000,
+          async retrieve({ scope, evidenceIds }) {
+            return {
+              authorized,
+              evidence: evidenceIds.map((id) => ({
+                id,
+                scope: id === "wrong-scope" ? "private" : scope,
+                text: "Private fixture",
+                source: "episode" as const,
+                observedAt: Date.now(),
+                expiresAt: Date.now() + 60000,
+                invalidated: deleted,
+              })),
+            };
+          },
+          async decide(input, signal) {
+            calls++;
+            providerSignal = signal;
+            await new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            return {
+              answer: "yes",
+              rationale: "Fixture",
+              evidenceIds: input.evidence.map((e) => e.id),
+            };
+          },
         },
-        idleMs: 100,
-        deepMs: 200,
-        pollMs: 20,
-        timeoutMs: 10000,
-        async retrieve({ scope, evidenceIds }) {
-          return {
-            authorized,
-            evidence: evidenceIds.map((id) => ({
-              id,
-              scope: id === "wrong-scope" ? "private" : scope,
-              text: "Private fixture",
-              source: "episode" as const,
-              observedAt: Date.now(),
-              expiresAt: Date.now() + 60000,
-              invalidated: deleted,
-            })),
-          };
-        },
-        async decide(input, signal) {
-          calls++;
-          providerSignal = signal;
-          await new Promise<void>((resolve) => {
-            release = resolve;
-          });
-          return {
-            answer: "yes",
-            rationale: "Fixture",
-            evidenceIds: input.evidence.map((e) => e.id),
-          };
-        },
-      }),
+        lifecycle,
+      ),
     },
     startEngine: true,
     startServices: false,
@@ -71,7 +79,29 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     token: "default",
     envoy: { poolName: "default" },
   });
+  const actorConfig = registry.config.use.reflection.config;
+  if (
+    !("createVars" in actorConfig) ||
+    !actorConfig.createVars ||
+    !("state" in actorConfig) ||
+    !actorConfig.actions
+  )
+    throw new Error("Expected reflection actor configuration");
+  const createVars = actorConfig.createVars;
+  actorConfig.createVars = async (c, input) => {
+    const vars = await createVars(c, input);
+    return {
+      ...vars,
+      persist: async () => {
+        await beforeSave?.();
+        await vars.persist();
+      },
+    };
+  };
   t.onTestFinished(async () => {
+    beforeSave = undefined;
+    releaseSave();
+    lifecycle.resume();
     release();
     await registry.shutdown();
     await stopTestEngine(directory, port);
@@ -81,6 +111,20 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
   });
   const { client } = await setupTest(t, registry);
   const handle = client.reflection.getOrCreate(["owner"]);
+  // Durable markers must independently block drain, even with no local worker
+  // or running request left in memory. The check must never reconcile them.
+  const settled = actorConfig.actions.isSettled;
+  const context = {
+    state: structuredClone(actorConfig.state),
+    vars: { active: new Map<string, AbortController>(), async persist() {} },
+  } as Parameters<typeof settled>[0];
+  for (const phase of ["started", "uncertain"] as const) {
+    context.state.invocations.old = phase;
+    expect(settled(context)).toBe(false);
+    expect(context.state.invocations.old).toBe(phase);
+  }
+  context.state.invocations.old = "settled";
+  expect(settled(context)).toBe(true);
   const input = {
     scope: "public",
     kind: "reflection" as const,
@@ -142,7 +186,45 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
       (r) => r.id === cancelled.id,
     )?.status,
   ).toBe("cancelling");
+  expect(providerSignal?.aborted).toBe(true);
+  expect(await handle.isSettled()).toBe(false);
+  context.state.reflection = (await handle.status()).reflection;
+  const heldRequest = context.state.reflection.requests.find(
+    (r) => r.id === cancelled.id,
+  );
+  if (!heldRequest) throw new Error("Missing held request");
+  for (const status of ["running", "cancelling"] as const) {
+    heldRequest.status = status;
+    expect(settled(context)).toBe(false);
+    expect(heldRequest.status).toBe(status);
+  }
+  expect(lifecycle.active).toBe(1);
+  expect(await lifecycle.drain(20)).toBe(false);
+  expect(lifecycle.active).toBe(1);
+  expect(lifecycle.ready).toBe(true);
+  const saveStarted = Promise.withResolvers<void>();
+  const saveFinished = Promise.withResolvers<void>();
+  releaseSave = saveFinished.resolve;
+  beforeSave = async () => {
+    beforeSave = undefined;
+    saveStarted.resolve();
+    await saveFinished.promise;
+  };
+  let drained = false;
+  const draining = lifecycle.drain().then((result) => {
+    drained = result;
+    return result;
+  });
   release();
+  await saveStarted.promise;
+  // The raw provider has returned but its settlement is not durable yet.
+  expect(lifecycle.active).toBe(1);
+  expect(drained).toBe(false);
+  const admittedBefore = enter.mock.calls.length;
+  releaseSave();
+  expect(await draining).toBe(true);
+  expect(lifecycle.active).toBe(0);
+  expect(lifecycle.ready).toBe(false);
   await expect
     .poll(
       async () =>
@@ -153,7 +235,19 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     .toBe("cancelled");
   expect((await handle.status()).candidateIds).toEqual([]);
   expect(calls).toBe(2);
-  await handle.enqueue({ ...input, evidenceIds: ["read-after-delete"] });
+  const queued = await handle.enqueue({
+    ...input,
+    evidenceIds: ["read-after-delete"],
+  });
+  await expect
+    .poll(() => enter.mock.calls.length)
+    .toBeGreaterThan(admittedBefore);
+  expect(calls).toBe(2);
+  expect(
+    (await handle.status()).reflection.requests.find((r) => r.id === queued.id)
+      ?.status,
+  ).toBe("pending");
+  lifecycle.resume();
   await expect.poll(() => calls).toBe(3);
   release();
   await expect
@@ -181,6 +275,12 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     candidateIds: [],
   });
   expect(overlapping.activeTurnIds.sort()).toEqual(["turn-a", "turn-b"]);
+  expect(await handle.isSettled()).toBe(false);
+  expect(await lifecycle.drain()).toBe(false);
+  expect((await handle.status()).activeTurnIds.sort()).toEqual([
+    "turn-a",
+    "turn-b",
+  ]);
   await handle.trigger({ id: "legacy-hold", type: "idle", liveActive: 1 });
   expect((await handle.status()).liveActive).toBe(3);
   await handle.occupancy("finished-before-start", false);

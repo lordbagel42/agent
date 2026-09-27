@@ -3031,7 +3031,7 @@ export function createJuneRegistry(deps: Dependencies) {
           }
         : {}),
       ...(deps.reflection
-        ? { reflection: createReflectionActor(deps.reflection) }
+        ? { reflection: createReflectionActor(deps.reflection, deps.lifecycle) }
         : {}),
     },
     startServices: false,

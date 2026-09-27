@@ -242,6 +242,14 @@ the public workflow error hook latches actual failures. Forced aborts cannot
 certify natural drain. Native coding, reflection and WhatsApp currently make
 the controller drain endpoint refuse certification even if the inbox is idle.
 
+Reflection now holds lifecycle admission through each raw provider call and
+its final durable flush, and pauses new steps while fenced. Its additional
+`isSettled()` check rejects started/uncertain invocations, running/cancelling
+requests and live occupancy even when no local callback remains. Drain never
+clears those holds or treats cancellation as settlement. This accounting is
+not activation proof: the reflection automatic-deployment gate remains closed
+pending complete recovery and transport verification.
+
 The feed is `/var/lib/june-deploy/public/events.json`, atomic root:june `0640`.
 It exposes the last 100 events with a monotonically increasing sequence, exact
 revision, observation/commit times, status, fixed failure reason and elapsed
