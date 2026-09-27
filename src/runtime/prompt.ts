@@ -18,6 +18,7 @@ export interface PromptCapabilities {
   searchAvailable?: boolean;
   webSearchAvailable?: boolean;
   releaseAvailable?: boolean;
+  mcpAvailable?: boolean;
   webSearchProvider?: string;
   escalationAvailable?: boolean;
   replyPlacementAvailable?: boolean;
@@ -266,6 +267,7 @@ export function buildModelRequest({
     searchAvailable,
     webSearchAvailable,
     releaseAvailable,
+    mcpAvailable: privateTurn && capabilities.mcpAvailable === true,
     escalationAvailable,
     replyPlacementAvailable,
     socialAvailable: capabilities.socialAvailable === true,

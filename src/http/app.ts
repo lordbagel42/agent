@@ -4,6 +4,10 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { SlackIngressDiagnostics } from "../channels/slack-ingress.js";
 import {
+  type ConnectionDependencies,
+  createConnectionRoutes,
+} from "../console/connections.js";
+import {
   type ConsoleDependencies,
   type ConsoleSnapshot,
   createConsoleRoutes,
@@ -41,6 +45,7 @@ export interface HttpDependencies {
     origin: string;
     inspect(): Promise<ConsoleSnapshot>;
     usage?: ConsoleDependencies["usage"];
+    connections?: ConnectionDependencies;
   };
   submit(scope: Scope, event: ChannelEvent): Promise<void>;
   ready(): Promise<boolean>;
@@ -165,12 +170,21 @@ export function createHttpApp(deps: HttpDependencies) {
     // Session routes must precede console authentication. Cookies authorize only
     // this read-only surface, never the Bearer-only operator mutation endpoints.
     app.route("/console/session", sessions.routes);
+    if (deps.console.connections)
+      app.route(
+        "/console/connections",
+        createConnectionRoutes(
+          { ...security, authenticate: sessions.authenticate },
+          deps.console.connections,
+        ),
+      );
     app.route(
       "/console",
       createConsoleRoutes({
         security: { ...security, authenticate: sessions.authenticate },
         inspect: deps.console.inspect,
         usage: deps.console.usage,
+        connectionsAvailable: !!deps.console.connections,
         // No action inspection/confirmation callbacks until domain guarantees exist.
       }),
     );

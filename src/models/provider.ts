@@ -58,6 +58,13 @@ const companionReplySchema = z.strictObject({
     })
     .refine((value) => value.action !== "request" || value.revision !== null)
     .optional(),
+  mcp: z
+    .strictObject({
+      connection: z.string().min(1).max(256),
+      tool: z.string().min(1).max(256),
+      argumentsJson: z.string().max(4000),
+    })
+    .optional(),
   replyInThread: z.boolean().optional(),
 });
 
@@ -73,6 +80,7 @@ export type ReplyCapabilities = Pick<
   | "escalationAvailable"
   | "webSearchAvailable"
   | "releaseAvailable"
+  | "mcpAvailable"
   | "replyPlacementAvailable"
   | "socialAvailable"
 >;
@@ -94,6 +102,7 @@ export function replyJsonSchema(
     escalationAvailable,
     webSearchAvailable,
     releaseAvailable,
+    mcpAvailable,
     replyPlacementAvailable,
     socialAvailable,
   } = replyCapabilities(capabilities);
@@ -171,6 +180,24 @@ export function replyJsonSchema(
             },
           }
         : {}),
+      ...(mcpAvailable
+        ? {
+            mcp: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                connection: { type: "string" },
+                tool: { type: "string" },
+                argumentsJson: {
+                  type: "string",
+                  description:
+                    "JSON object of tool arguments, at most 4000 characters. No credentials.",
+                },
+              },
+              required: ["connection", "tool", "argumentsJson"],
+            },
+          }
+        : {}),
       ...(searchAvailable
         ? {
             search: {
@@ -213,6 +240,7 @@ export function replyJsonSchema(
       "coding",
       "reaction",
       ...(releaseAvailable ? ["release"] : []),
+      ...(mcpAvailable ? ["mcp"] : []),
       ...(searchAvailable ? ["search"] : []),
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
@@ -385,6 +413,7 @@ export function parseReply(
     escalationAvailable,
     webSearchAvailable,
     releaseAvailable,
+    mcpAvailable,
     replyPlacementAvailable,
     socialAvailable,
   } = replyCapabilities(capabilities);
@@ -406,6 +435,7 @@ export function parseReply(
     "escalate",
     "webSearch",
     "release",
+    "mcp",
     "replyInThread",
     "social",
   ]) {
@@ -429,11 +459,13 @@ export function parseReply(
     (reply.webSearch !== undefined && !webSearchAvailable) ||
     (reply.release !== undefined && !releaseAvailable) ||
     (reply.social !== undefined && !socialAvailable) ||
+    (reply.mcp !== undefined && !mcpAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);
   }
   const directiveCount =
+    Number(reply.mcp !== undefined) +
     Number(reply.search !== undefined) +
     Number(reply.webSearch !== undefined) +
     Number(reply.release !== undefined) +
@@ -446,7 +478,8 @@ export function parseReply(
     ((reply.search !== undefined ||
       reply.webSearch !== undefined ||
       reply.release !== undefined ||
-      reply.social !== undefined) &&
+      reply.social !== undefined ||
+      reply.mcp !== undefined) &&
       reply.text.trim().length > 0)
   ) {
     throw new ModelError("invalid_response", false);

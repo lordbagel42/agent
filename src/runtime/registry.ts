@@ -49,6 +49,7 @@ export interface Dependencies {
   deepModel?: ModelProvider;
   models?: PromptInput["models"];
   webSearch?: WebSearchProvider;
+  mcpAvailable?: boolean;
   deploymentStatus?: () => Promise<string | undefined>;
   release?: (
     request: NonNullable<CompanionReply["release"]>,
@@ -915,6 +916,9 @@ export function createJuneRegistry(deps: Dependencies) {
                                   !!plan.web &&
                                   !!deps.webSearch?.available,
                                 webSearchProvider: deps.webSearch?.description,
+                                mcpAvailable:
+                                  phase !== "synthesis" &&
+                                  deps.mcpAvailable === true,
                                 replyPlacementAvailable:
                                   version < 4 &&
                                   phase === "reply" &&

@@ -533,6 +533,13 @@ remove the optional `console` field before restart; the older parser rejects
 unknown keys. Preserve current durable state and reconcile unknown effects rather
 than restoring an old data snapshot blindly.
 
+## MCP connections
+
+The private dashboard's **Connections** page adds remote MCP servers and native
+Slack OAuth. June can use explicitly enabled tools in owner-private conversations;
+effects require exact, single-use dashboard approvals. See
+[MCP setup and permissions](docs/mcp-connections.md) for configuration and limits.
+
 ## Development checks and limitations
 
 ```sh

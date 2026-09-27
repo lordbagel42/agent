@@ -29,6 +29,21 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
+test("revocation after SDK call admission still prevents HTTP dispatch", async () => {
+  const f = await fixture();
+  let permitted = true;
+  await expect(
+    f.adapter.execute(action, credential, () => {
+      const current = permitted;
+      queueMicrotask(() => {
+        permitted = false;
+      });
+      return current;
+    }),
+  ).rejects.toMatchObject({ outcome: "not_started" });
+  expect(f.calls).toHaveLength(0);
+});
+
 async function fixture(
   mode = "json",
   overrides: Partial<McpToolConfig> = {},

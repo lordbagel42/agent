@@ -44,6 +44,7 @@ export interface ConsoleAction {
 }
 export interface ConsoleDependencies {
   security: PrivateRouteSecurity;
+  connectionsAvailable?: boolean;
   inspect(principal: string): Promise<ConsoleSnapshot>;
   usage?(
     principal: string,
@@ -119,6 +120,9 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
           navigation: [
             { label: "Overview", href: base || "/", current: true },
             { label: "Token intelligence", href: `${base}/usage` },
+            ...(deps.connectionsAvailable
+              ? [{ label: "Connections", href: `${base}/connections` }]
+              : []),
             ...consoleSections.map((name) => ({
               label: `${name[0]?.toUpperCase()}${name.slice(1)}`,
               href: `#${name}`,

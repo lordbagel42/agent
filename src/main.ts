@@ -50,6 +50,8 @@ import {
   type JuneClientRegistry,
 } from "./runtime/registry.js";
 import { SocialPermissions } from "./runtime/social.js";
+import { McpConnections } from "./tools/connections.js";
+import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
 import { createTavilyWebSearchProvider } from "./tools/web-search.js";
 
 let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
@@ -270,6 +272,44 @@ async function main() {
         });
   const model = provider(config.model);
   const deepModel = config.deepModel && provider(config.deepModel);
+  startupStage = "private MCP connections";
+  let connections: McpConnections | undefined;
+  let slackMcp: ReturnType<typeof createSlackMcpOAuth> | undefined;
+  if (config.mcp) {
+    if (!config.console) throw new Error("MCP requires the private console");
+    await privateDirectory(config.mcp.directory);
+    connections = new McpConnections({
+      directory: config.mcp.directory,
+      key: memoryKey(config.mcp.keyEnv),
+      owner: config.owner.id,
+      origin: config.console.origin,
+    });
+    const store = connections;
+    if (config.mcp.slack) {
+      const slack = config.mcp.slack;
+      if (
+        !config.owner.identities.some(
+          (identity) =>
+            identity.channel === "slack" &&
+            identity.accountId === slack.teamId &&
+            identity.senderId === slack.userId,
+        )
+      )
+        throw new Error("Slack MCP identity must be the configured owner");
+      slackMcp = createSlackMcpOAuth({
+        clientId: secret(slack.clientIdEnv),
+        clientSecret: secret(slack.clientSecretEnv),
+        redirectUrl: `${config.console.origin}/console/connections/slack/callback`,
+        teamId: slack.teamId,
+        userId: slack.userId,
+        scopes: slack.scopes,
+        generation: () => store.generation("slack"),
+        async saveAuthorization(value) {
+          store.connectSlack(value);
+        },
+      });
+    }
+  }
   const models = {
     current: { provider: config.model.protocol, model: config.model.model },
     fast: { provider: config.model.protocol, model: config.model.model },
@@ -524,8 +564,10 @@ async function main() {
     owner: config.owner,
     social,
     channels,
-    model,
-    deepModel,
+    model: connections ? connections.wrap(model) : model,
+    deepModel:
+      deepModel && (connections ? connections.wrap(deepModel) : deepModel),
+    mcpAvailable: !!connections,
     models,
     webSearch,
     lifecycle,
@@ -588,6 +630,9 @@ async function main() {
     console: config.console
       ? {
           origin: config.console.origin,
+          connections: connections
+            ? { store: connections, slack: slackMcp }
+            : undefined,
           async usage(_principal, days, model) {
             return usage.snapshot(days, model);
           },
@@ -817,6 +862,7 @@ async function main() {
       await new Promise<void>((done) => server.close(() => done()));
       await client.dispose();
       await registry.shutdown();
+      await connections?.close();
       memory?.personality?.close();
       memory?.store.close();
       social?.close();

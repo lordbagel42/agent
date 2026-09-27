@@ -76,6 +76,24 @@ const schema = z
         }, "Use a canonical private HTTPS origin, or loopback HTTP for an SSH tunnel"),
       })
       .optional(),
+    mcp: z
+      .strictObject({
+        directory: absolutePath,
+        keyEnv: envName.default("JUNE_MCP_KEY"),
+        slack: z
+          .strictObject({
+            clientIdEnv: envName.default("JUNE_SLACK_CLIENT_ID"),
+            clientSecretEnv: envName.default("JUNE_SLACK_CLIENT_SECRET"),
+            teamId: nonempty,
+            userId: nonempty,
+            scopes: z
+              .array(z.string().regex(/^[a-z][a-z0-9:._-]*$/))
+              .min(1)
+              .max(30),
+          })
+          .optional(),
+      })
+      .optional(),
     setupMode: z.boolean().default(false),
     owner: z.strictObject({
       id: z.string().regex(/^[a-zA-Z0-9_-]+$/),

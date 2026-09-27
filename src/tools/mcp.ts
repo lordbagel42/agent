@@ -17,6 +17,7 @@ export interface McpToolConfig {
   allowedOrigins: readonly string[];
   timeoutMs?: number;
   maxResponseBytes?: number;
+  allowUnauthenticated?: boolean;
   /** Explicit operator review, NOT a server readOnlyHint. Enables read() only
    * for this exact tool contract; execute() continues discarding all output. */
   readContractDigest?: string;
@@ -56,7 +57,7 @@ function readText(text: string, token: string): McpReadResult {
     encodeURIComponent(token),
     Buffer.from(token).toString("base64"),
   ]))
-    text = text.replaceAll(secret, "[credential redacted]");
+    if (secret) text = text.replaceAll(secret, "[credential redacted]");
   text = text.replace(/[\p{Cc}\p{Cf}]/gu, (c) =>
     c === "\n" || c === "\t" ? c : " ",
   );
@@ -191,8 +192,21 @@ export class McpToolAdapter implements ToolAdapter {
     return { serverId: this.#config.id, tool: this.#config.tool };
   }
 
-  async execute(action: ToolAction, credential: unknown): Promise<void> {
-    await this.#invoke(action, credential);
+  /** Owner-triggered discovery only. Does not approve or invoke any tool. */
+  async listTools(credential: unknown): Promise<Tool[]> {
+    let tools: Tool[] = [];
+    await this.#run(credential, undefined, undefined, (found) => {
+      tools = found;
+    });
+    return tools;
+  }
+
+  async execute(
+    action: ToolAction,
+    credential: unknown,
+    authorized?: () => boolean,
+  ): Promise<void> {
+    await this.#invoke(action, credential, undefined, authorized);
   }
 
   /** Only for operator-reviewed reads. This does not grant authorization and
@@ -214,6 +228,7 @@ export class McpToolAdapter implements ToolAdapter {
     action: ToolAction,
     credential: unknown,
     read?: () => boolean,
+    authorized?: () => boolean,
   ): Promise<McpReadResult | undefined> {
     const config = this.#config;
     if (
@@ -235,7 +250,7 @@ export class McpToolAdapter implements ToolAdapter {
     } catch {
       throw new McpAdapterError("not_started");
     }
-    return this.#run(credential, args, read);
+    return this.#run(credential, args, read, undefined, authorized);
   }
 
   /** Stops local work; cancellation is NOT proof that a remote effect stopped. */
@@ -249,10 +264,15 @@ export class McpToolAdapter implements ToolAdapter {
     credential: unknown,
     args?: Record<string, unknown>,
     read?: () => boolean,
+    discovered?: (tools: Tool[]) => void,
+    authorized?: () => boolean,
   ): Promise<McpReadResult | undefined> {
     if (this.#closed) throw new McpAdapterError("not_started");
-    let token: string;
+    let token = "";
     try {
+      if (credential === undefined && this.#config.allowUnauthenticated) {
+        credential = { bearerToken: "" };
+      }
       if (!credential || typeof credential !== "object") throw new Error();
       const value = Object.getOwnPropertyDescriptor(
         credential,
@@ -260,7 +280,8 @@ export class McpToolAdapter implements ToolAdapter {
       )?.value;
       if (
         typeof value !== "string" ||
-        !/^[A-Za-z0-9._~+/-]+=*$/u.test(value) ||
+        (!/^[A-Za-z0-9._~+/-]+=*$/u.test(value) &&
+          !(value === "" && this.#config.allowUnauthenticated)) ||
         value.length > 8192
       )
         throw new Error();
@@ -301,7 +322,7 @@ export class McpToolAdapter implements ToolAdapter {
             if (init?.method === "GET")
               return new Response(null, { status: 405 });
             const headers = new Headers(init?.headers);
-            headers.set("authorization", `Bearer ${token}`);
+            if (token) headers.set("authorization", `Bearer ${token}`);
             const signal = AbortSignal.any([
               controller.signal,
               ...(init?.signal ? [init.signal] : []),
@@ -310,7 +331,14 @@ export class McpToolAdapter implements ToolAdapter {
             if (typeof init?.body === "string") {
               const message = JSON.parse(init.body);
               if (message.method === "tools/call") {
-                if (dispatched) throw new Error();
+                // SDK transport header preparation yields after callTool().
+                // Check again at actual HTTP dispatch, with no intervening await.
+                if (
+                  dispatched ||
+                  (read && !read()) ||
+                  (authorized && !authorized())
+                )
+                  throw new Error();
                 dispatched = true;
               }
             }
@@ -412,16 +440,22 @@ export class McpToolAdapter implements ToolAdapter {
       let cursor: string | undefined;
       let selected: Tool | undefined;
       const names = new Set<string>();
+      const tools: Tool[] = [];
       for (let page = 0; ; page++) {
         if (page >= 16) throw new Error();
         const result = await client.listTools({ cursor }, options);
         for (const tool of result.tools) {
           if (names.has(tool.name) || names.size >= 256) throw new Error();
           names.add(tool.name);
+          tools.push(tool);
           if (tool.name === config.remoteTool) selected = tool;
         }
         cursor = result.nextCursor;
         if (cursor === undefined) break;
+      }
+      if (discovered) {
+        discovered(tools);
+        return;
       }
       if (!selected || selected.execution?.taskSupport === "required")
         throw new Error();
@@ -436,7 +470,12 @@ export class McpToolAdapter implements ToolAdapter {
       )
         throw new Error();
       if (args !== undefined) {
-        if (!validate(args) || (read && read() !== true)) throw new Error();
+        if (
+          !validate(args) ||
+          (read && read() !== true) ||
+          (authorized && authorized() !== true)
+        )
+          throw new Error();
         controller.signal.throwIfAborted();
         const result = await client.callTool(
           { name: config.remoteTool, arguments: args },

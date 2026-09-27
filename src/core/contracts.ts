@@ -150,6 +150,8 @@ export interface CompanionReply {
   webSearch?: string;
   /** Owner-private release tracking; never activation or approval authority. */
   release?: { action: "request" | "inspect"; revision: string | null };
+  /** One owner-private MCP call; host resolves credentials and permissions. */
+  mcp?: { connection: string; tool: string; argumentsJson: string };
   /** Only chooses placement for top-level Slack input; existing threads stay put. */
   replyInThread?: boolean;
 }
@@ -165,6 +167,7 @@ export interface ModelRequest {
   escalationAvailable?: boolean;
   webSearchAvailable?: boolean;
   releaseAvailable?: boolean;
+  mcpAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   socialAvailable?: boolean;
 }
