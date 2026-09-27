@@ -264,6 +264,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   const audience = JSON.stringify(["private", owner.id]);
   const store = new EvidenceStore(":memory:", randomBytes(32));
   t.onTestFinished(() => store.close());
+  // The same historical source exercises import coverage and permitted reflection.
+  const evidenceMaxAgeMs = Date.now() + 60000;
   const retainedSource = {
     id: "secret-source",
     audiences: [audience],
@@ -564,15 +566,22 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         cooldownMs: 1,
         maxAttempts: 1,
         maxNoNewEvidence: 1,
-        evidenceMaxAgeMs: 60000,
+        evidenceMaxAgeMs,
         quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
       },
       idleMs: 86400000,
       deepMs: 86400000,
       pollMs: 10000,
       timeoutMs: 1000,
-      async retrieve() {
-        throw new Error("must not retrieve reflection evidence");
+      async retrieve({ scope, evidenceIds }) {
+        return {
+          authorized: scope === audience,
+          evidence: store.reflectionEvidence(
+            scope,
+            evidenceIds,
+            evidenceMaxAgeMs,
+          ),
+        };
       },
       async decide() {
         throw new Error("must not reflect");
@@ -585,8 +594,8 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   ).reflection.getOrCreate([owner.id]);
   await reflection.enqueue({
     scope: audience,
-    evidenceIds: ["SECRET EVIDENCE ID"],
-    kind: "reflection",
+    evidenceIds: ["secret-source"],
+    kind: "curiosity",
     mode: "idle",
   });
   const read = createInspectionReader({
@@ -616,6 +625,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         .getOrCreate(["private", owner.id])
         .outstandingOperations(),
     reflection: () => reflection.status(),
+    curiosity: (scope) => reflection.curiosityProgress(scope),
   });
   const extractionRead = createInspectionReader({
     audience,
@@ -724,11 +734,20 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(importReport.length).toBeLessThan(4000);
   expect(importReport).not.toContain("private-account");
   action = { text: "", inspection: "reflection" };
-  const reflectionReport = await deliver();
-  expect(reflectionReport).toContain('"pending":1,"running":0');
-  expect(reflectionReport).toContain("Reconciliation is operator-only");
-  expect(reflectionReport).toContain(
+  const curiosityReport = await deliver();
+  expect(curiosityReport).toContain('"pending":1,"running":0');
+  expect(curiosityReport).toContain("Reconciliation is operator-only");
+  expect(curiosityReport).toContain(
     "Live occupancy may include this inspection turn",
+  );
+  expect(curiosityReport).toContain('"progress":"pending"');
+  expect(curiosityReport).toContain(
+    '"currentInputs":{"episodes":1,"ownerCorrections":0,"dreamHypotheses":0}',
+  );
+  expect(curiosityReport).toContain('"recordedOutcome":"not-recorded"');
+  expect(curiosityReport).toContain("Public search: not performed");
+  expect(requests.at(-1)?.system).toContain(
+    'For curiosity progress or provenance, use inspection:"reflection"',
   );
   expect(reads).toBe(3);
   expect(requests).toHaveLength(3);
@@ -1008,6 +1027,15 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   const failedWriteReport = await deliver();
   expect(failedWriteReport).toContain('"transaction":{"status":"failed"');
   expect(failedWriteReport).toContain('"sources":2,"claims":0');
+  store.deleteSource("secret-source");
+  extractionEnabled = false;
+  action = { text: "", inspection: "reflection" };
+  const afterDeletion = await deliver();
+  expect(afterDeletion).toContain('"currentInputs":null');
+  expect(afterDeletion).toContain('"recordedOutcome":"withheld"');
+  expect(afterDeletion).not.toContain("secret-source");
+  extractionEnabled = true;
+  action = { text: "", inspection: "memory" };
   store.close();
   const failedReadReport = await deliver();
   expect(failedReadReport).toContain("snapshot failed");

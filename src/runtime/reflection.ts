@@ -84,6 +84,23 @@ export interface ReflectionCandidate {
   publication?: { version: 1; expiresAt: number };
 }
 
+export interface CuriosityProgress {
+  truncated: boolean;
+  rows: {
+    reference: string;
+    status: ReflectionState["requests"][number]["status"];
+    progress: "pending" | "settled" | "unknown";
+    attempt: number;
+    invocation: "started" | "settled" | "uncertain" | "not-started" | "unknown";
+    currentInputs: {
+      episodes: number;
+      ownerCorrections: number;
+      dreamHypotheses: number;
+    } | null;
+    recordedOutcome: Decision["answer"] | "not-recorded" | "withheld";
+  }[];
+}
+
 export interface ReflectionRuntimeState {
   reflection: ReflectionState;
   modes: Record<string, ReflectionMode>;
@@ -636,6 +653,65 @@ export function createReflectionActor(
           ids: current.slice(0, 10),
           truncated: truncated || current.length > 10,
         };
+      },
+      /** Private metadata only. Current inputs are not proof an attempt succeeded. */
+      curiosityProgress: async (
+        c,
+        scope: string,
+      ): Promise<CuriosityProgress> => {
+        if (
+          c.key.length !== 1 ||
+          c.key[0] !== deps.ownerId ||
+          scope !== JSON.stringify(["private", deps.ownerId])
+        )
+          throw new Error("Wrong reflection audience");
+        const requests = c.state.reflection.requests.filter(
+          (request) => request.scope === scope && request.kind === "curiosity",
+        );
+        const rows: CuriosityProgress["rows"] = [];
+        const signal = AbortSignal.timeout(deps.timeoutMs);
+        for (const selected of requests.slice(-10).reverse()) {
+          // One bounded read per row, with the same authorization/deletion/freshness
+          // checks as execution. Never retain source IDs, text, or rationale here.
+          const evidence = await retrieve(selected, signal).catch(() => null);
+          const request = c.state.reflection.requests.find(
+            (entry) => entry.id === selected.id,
+          );
+          if (!request || request.scope !== scope) continue;
+          const key = JSON.stringify([request.id, request.attempts]);
+          const invocation =
+            c.state.invocations[key] ??
+            (request.attempts ? "unknown" : "not-started");
+          const progress =
+            invocation === "uncertain" || invocation === "unknown"
+              ? "unknown"
+              : invocation === "started" ||
+                  ["pending", "running", "cancelling"].includes(request.status)
+                ? "pending"
+                : "settled";
+          rows.push({
+            reference: createHash("sha256").update(request.id).digest("hex"),
+            status: request.status,
+            progress,
+            attempt: request.attempts,
+            invocation,
+            currentInputs: evidence
+              ? {
+                  episodes: evidence.filter((e) => e.source === "episode")
+                    .length,
+                  ownerCorrections: evidence.filter(
+                    (e) => e.source === "owner-correction",
+                  ).length,
+                  dreamHypotheses: evidence.filter((e) => e.source === "dream")
+                    .length,
+                }
+              : null,
+            recordedOutcome: evidence
+              ? (c.state.decisionOutcomes?.[key] ?? "not-recorded")
+              : "withheld",
+          });
+        }
+        return { truncated: requests.length > 10, rows };
       },
       /** Recheck memory on every read, including after actor recovery or forgetting. */
       candidate: async (c, id: string, scope?: string) => {

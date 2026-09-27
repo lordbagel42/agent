@@ -7,7 +7,10 @@ import { setupTest } from "rivetkit/test";
 import { expect, it, vi } from "vitest";
 import { freeEnginePort, stopTestEngine } from "../../tests/rivet.js";
 import { createLifecycle, type Lifecycle } from "./lifecycle.js";
-import { createReflectionActor } from "./reflection.js";
+import {
+  createReflectionActor,
+  type ReflectionRuntimeState,
+} from "./reflection.js";
 
 it("rechecks audience/deletion and holds deduplicated work across cancellation and overlapping live turns", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "june-reflection-"));
@@ -432,4 +435,134 @@ it("rechecks audience/deletion and holds deduplicated work across cancellation a
     expect((await handle.enqueue(freshInput)).accepted).toBe(false);
   }
   expect(calls).toBe(8);
+});
+
+it("bounds private curiosity provenance and withholds revoked inputs and hypotheses", async () => {
+  const scope = JSON.stringify(["private", "owner"]);
+  let authorized = true;
+  let invalidated = false;
+  const reads: string[] = [];
+  const definition = createReflectionActor({
+    ownerId: "owner",
+    policy: {
+      totalCapacity: 2,
+      liveReserve: 1,
+      cooldownMs: 1,
+      maxAttempts: 1,
+      maxNoNewEvidence: 1,
+      evidenceMaxAgeMs: 60000,
+      quiet: { timeZone: "UTC", startMinute: 0, endMinute: 0 },
+    },
+    idleMs: 1,
+    deepMs: 1,
+    pollMs: 1000,
+    timeoutMs: 1000,
+    async retrieve(input) {
+      reads.push(input.scope);
+      return {
+        authorized,
+        evidence: input.evidenceIds.map((id, index) => ({
+          id,
+          scope: input.scope,
+          text: "SECRET SOURCE TEXT",
+          source: index === 0 ? ("episode" as const) : ("dream" as const),
+          observedAt: Date.now(),
+          expiresAt: Date.now() + 60000,
+          invalidated,
+        })),
+      };
+    },
+    async decide() {
+      throw new Error("Inspection must not call the provider");
+    },
+  });
+  const inspect = definition.config.actions?.curiosityProgress;
+  if (!inspect) throw new Error("Missing curiosity inspection action");
+  const state: ReflectionRuntimeState = {
+    reflection: { version: 1, requests: [], scopes: [] },
+    modes: {},
+    invocations: {},
+    candidates: {},
+    liveActive: 0,
+    lastInteractionAt: 0,
+    epoch: 0,
+    interruptionEpoch: -1,
+    triggerIds: [],
+  };
+  state.reflection.requests = Array.from({ length: 13 }, (_, index) => ({
+    id: `SECRET REQUEST ${index}`,
+    scope: index === 12 ? "SECRET OTHER SCOPE" : scope,
+    evidenceIds: ["SECRET EPISODE", "SECRET DREAM 1", "SECRET DREAM 2"],
+    kind: "curiosity",
+    createdAt: index,
+    attempts: index < 10 ? 1 : 0,
+    status: index < 10 ? "stopped" : "pending",
+  }));
+  state.invocations = Object.fromEntries(
+    state.reflection.requests
+      .slice(0, 10)
+      .map((request, index) => [
+        JSON.stringify([request.id, 1]),
+        index === 9 ? "uncertain" : "settled",
+      ]),
+  );
+  state.decisionOutcomes = {
+    [JSON.stringify(["SECRET REQUEST 7", 1])]: "no",
+  };
+  const context = { key: ["owner"], state } as Parameters<typeof inspect>[0];
+  const result = await inspect(context, scope);
+  expect(result.truncated).toBe(true);
+  expect(result.rows).toHaveLength(10);
+  expect(reads).toEqual(Array(10).fill(scope));
+  expect(result.rows.map((row) => row.progress)).toEqual([
+    "pending",
+    "pending",
+    "unknown",
+    "settled",
+    "settled",
+    "settled",
+    "settled",
+    "settled",
+    "settled",
+    "settled",
+  ]);
+  expect(result.rows[0]?.currentInputs).toEqual({
+    episodes: 1,
+    ownerCorrections: 0,
+    dreamHypotheses: 2,
+  });
+  expect(result.rows[3]?.recordedOutcome).toBe("not-recorded");
+  expect(result.rows[4]?.recordedOutcome).toBe("no");
+  expect(result.rows.every((row) => /^[a-f0-9]{64}$/.test(row.reference))).toBe(
+    true,
+  );
+  expect(JSON.stringify(result)).not.toContain("SECRET");
+  const snapshot = structuredClone(state);
+  for (const revoke of [
+    () => {
+      invalidated = true;
+    },
+    () => {
+      invalidated = false;
+      authorized = false;
+    },
+  ]) {
+    revoke();
+    const redacted = await inspect(context, scope);
+    expect(
+      redacted.rows.every(
+        (row) =>
+          row.currentInputs === null && row.recordedOutcome === "withheld",
+      ),
+    ).toBe(true);
+  }
+  expect(state).toEqual(snapshot);
+  const count = reads.length;
+  await expect(inspect(context, "public")).rejects.toThrow(
+    "Wrong reflection audience",
+  );
+  await expect(inspect({ ...context, key: ["other"] }, scope)).rejects.toThrow(
+    "Wrong reflection audience",
+  );
+  expect(reads).toHaveLength(count);
 });

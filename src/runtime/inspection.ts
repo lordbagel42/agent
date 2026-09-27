@@ -17,7 +17,10 @@ import {
 } from "../reflection/domain.js";
 import type { McpConnections } from "../tools/connections.js";
 import type { Delivery } from "./delivery.js";
-import type { ReflectionRuntimeState } from "./reflection.js";
+import type {
+  CuriosityProgress,
+  ReflectionRuntimeState,
+} from "./reflection.js";
 
 /** Project existing recovery receipts only; absence is not an outcome. */
 export function inspectInterruptedInference(
@@ -197,6 +200,7 @@ export function createInspectionReader(deps: {
     hasActionToken?: (event: MessageEvent) => boolean;
   };
   operations?: () => Promise<OutstandingOperationSnapshot>;
+  curiosity?: (audience: string) => Promise<CuriosityProgress>;
   reflection?: () => Promise<
     Pick<
       ReflectionRuntimeState,
@@ -471,12 +475,26 @@ export function createInspectionReader(deps: {
             ] ?? "not_recorded",
         }));
         const turns = status.activeTurnIds.slice(0, 5).map(reference);
-        return `${heading}\nScoped request counts: ${JSON.stringify(counts)}. Scoped invocation counts: ${JSON.stringify(invocations)}. Owner-wide live turns: ${status.liveActive}. Owner-wide candidate count: ${status.candidateIds.length}. Candidates are provisional, not approved messages; a live turn may invalidate them. No evidence IDs, rationale or candidate contents returned.
+        const curiosity = await deps.curiosity?.(deps.audience);
+        const render =
+          () => `${heading}\nScoped request counts: ${JSON.stringify(counts)}. Scoped invocation counts: ${JSON.stringify(invocations)}. Owner-wide live turns: ${status.liveActive}. Owner-wide candidate count: ${status.candidateIds.length}. Candidates are provisional, not approved messages; a live turn may invalidate them. No evidence IDs, rationale or candidate contents returned.
 Pending effective priorities (highest first, up to 10): ${JSON.stringify(priorities)}. Reason: enqueue-age decay (half-life ${reflectionDriveHalfLifeMs}ms); duplicates/retries do not refresh. Ties keep enqueue order. Scores only rank eligible work: idle/deep, quiet, live reserve, cooldown, evidence and attempt gates remain; no tools or actions granted.
 Held scoped requests: ${held.length}; showing ${rows.length}. ${JSON.stringify(rows)}
 Owner-wide live turn references: ${status.activeTurnIds.length}; showing ${turns.length}. ${JSON.stringify(turns)}
 An uncertain invocation was interrupted; its outcome is unknown, not success or confirmed failure. Running/started may still be active; cancelling is not stopped. Live occupancy may include this inspection turn and does not by itself prove interruption. Unidentified legacy live holds may also remain. Cancellation, timeout, restart, elapsed time or a model assertion cannot prove provider settlement. Do not retry unknown work or release its capacity automatically.
-Reconciliation is operator-only: use the existing owner bearer authentication on the private GET /operator/reflection endpoint. References are SHA-256 of the exact UTF-8 request id or activeTurnIds entry; match locally, never paste raw IDs or credentials into chat. Inspect the old worker/provider and confirm it actually stopped. If stoppage cannot be verified, leave the hold and outcome unknown. Only after that confirmation, POST /operator/reflection/reconcile with {"id":"<exact request id>","confirmedStopped":true,"live":false}, or {"id":"<exact active turn id>","confirmedStopped":true,"live":true} for live occupancy. Never substitute a reference for an id or guess an id for a legacy hold. Require reconciled:true and read status again before reporting the hold released. Reconciliation is not successful reflection, candidate approval or permission to retry; dedupe remains. This inspection changed nothing and cannot reconcile, cancel, enqueue or send.`;
+Reconciliation is operator-only: use the existing owner bearer authentication on the private GET /operator/reflection endpoint. References are SHA-256 of the exact UTF-8 request id or activeTurnIds entry; match locally, never paste raw IDs or credentials into chat. Inspect the old worker/provider and confirm it actually stopped. If stoppage cannot be verified, leave the hold and outcome unknown. Only after that confirmation, POST /operator/reflection/reconcile with {"id":"<exact request id>","confirmedStopped":true,"live":false}, or {"id":"<exact active turn id>","confirmedStopped":true,"live":true} for live occupancy. Never substitute a reference for an id or guess an id for a legacy hold. Require reconciled:true and read status again before reporting the hold released. Reconciliation is not successful reflection, candidate approval or permission to retry; dedupe remains. This inspection changed nothing and cannot reconcile, cancel, enqueue or send.
+${curiosity ? `Curiosity (up to 10 newest; owner-private retained inputs): ${JSON.stringify(curiosity)}\nPublic search: not performed by this workflow. Current inputs are observations/corrections or dream hypotheses, not new findings. Recorded outcomes are historical judgments/hypotheses, never observations or approval; abstain may be host-generated, not proof of model evaluation. Settled means ended, not success; not-recorded is unknown. Null inputs/withheld means provenance could not be revalidated.` : "Curiosity provenance inspection is unavailable."}`;
+        // Keep complete rows and all safety guidance within the smallest channel
+        // text limit. Retain at least one row of each available metadata category.
+        while (render().length > 4000) {
+          if (curiosity && curiosity.rows.length > 1) {
+            curiosity.rows.pop();
+            curiosity.truncated = true;
+          } else if (rows.length > 1) rows.pop();
+          else if (turns.length > 1) turns.pop();
+          else break;
+        }
+        return render();
       }
     }
   };

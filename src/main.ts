@@ -948,6 +948,12 @@ async function main() {
       reflection: reflection
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
         : undefined,
+      curiosity: reflection
+        ? (scope) =>
+            client.reflection
+              .getOrCreate([config.owner.id])
+              .curiosityProgress(scope)
+        : undefined,
     }),
     personalityEvaluation:
       reflection && memory?.personality
