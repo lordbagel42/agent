@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { appsRequestSchema } from "../apps/client.js";
 import type {
   CompanionReply,
   ModelProvider,
@@ -153,6 +154,7 @@ const companionReplySchema = z.strictObject({
     ])
     .optional(),
   replyInThread: z.boolean().optional(),
+  apps: appsRequestSchema.optional(),
   inspection: z
     .union([
       z.enum([
@@ -285,6 +287,7 @@ export type ReplyCapabilities = Pick<
   | "latencyAvailable"
   | "analyticsAvailable"
   | "inspectionAvailable"
+  | "appsAvailable"
   | "recallAvailable"
   | "pendingMemoryAvailable"
   | "personalitySuggestionAvailable"
@@ -330,6 +333,7 @@ export function replyJsonSchema(
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
+    appsAvailable,
     recallAvailable,
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
@@ -521,6 +525,38 @@ export function replyJsonSchema(
                 },
                 required: ["agent", "action", "task"],
               },
+            },
+          }
+        : {}),
+      ...(appsAvailable
+        ? {
+            apps: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                action: {
+                  type: "string",
+                  enum: ["build", "prepare", "inspect"],
+                },
+                appId: {
+                  type: "string",
+                  description:
+                    "Lowercase app ID, letters/digits/hyphens, starting with a letter, max 48 characters.",
+                },
+                jobId: {
+                  type: ["string", "null"],
+                  description:
+                    "Exact 64-character coding job ID for prepare; null otherwise.",
+                },
+                goal: {
+                  type: ["string", "null"],
+                  description:
+                    "Build task (1–900 characters) for build; null otherwise.",
+                },
+              },
+              required: ["action", "appId", "jobId", "goal"],
+              description:
+                "Request an app coding proposal, prepare verified source for separate owner approval, or inspect recorded deployment status. Never approves or deploys. Empty text, no other directives.",
             },
           }
         : {}),
@@ -1149,6 +1185,7 @@ export function replyJsonSchema(
       ...(latencyAvailable ? ["latency"] : []),
       ...(analyticsAvailable ? ["analytics"] : []),
       ...(inspectionAvailable ? ["inspection"] : []),
+      ...(appsAvailable ? ["apps"] : []),
       ...(recallAvailable ? ["recall"] : []),
       ...(pendingMemoryAvailable ? ["pendingMemory"] : []),
       ...(personalitySuggestionAvailable ? ["personalitySuggestion"] : []),
@@ -1340,6 +1377,7 @@ export function parseReply(
     latencyAvailable,
     analyticsAvailable,
     inspectionAvailable,
+    appsAvailable,
     recallAvailable,
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
@@ -1388,6 +1426,7 @@ export function parseReply(
     "latency",
     "analytics",
     "inspection",
+    "apps",
     "recall",
     "pendingMemory",
     "personalitySuggestion",
@@ -1442,6 +1481,7 @@ export function parseReply(
     (reply.latency !== undefined && !latencyAvailable) ||
     (reply.analytics !== undefined && !analyticsAvailable) ||
     (reply.inspection !== undefined && !inspectionAvailable) ||
+    (reply.apps !== undefined && !appsAvailable) ||
     (reply.recall !== undefined && !recallAvailable) ||
     (reply.pendingMemory !== undefined && !pendingMemoryAvailable) ||
     (reply.personalitySuggestion !== undefined &&
@@ -1480,6 +1520,7 @@ export function parseReply(
     Number(reply.latency !== undefined) +
     Number(reply.analytics !== undefined) +
     Number(reply.inspection !== undefined) +
+    Number(reply.apps !== undefined) +
     Number(reply.recall !== undefined) +
     Number(reply.pendingMemory === true) +
     Number(reply.personalitySuggestion !== undefined) +
@@ -1512,6 +1553,7 @@ export function parseReply(
       reply.mcpProposal !== undefined ||
       reply.analytics !== undefined ||
       reply.inspection !== undefined ||
+      reply.apps !== undefined ||
       reply.recall !== undefined ||
       reply.pendingMemory === true ||
       reply.personalitySuggestion !== undefined ||

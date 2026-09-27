@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
+import { appIdSchema, readAppArtifact } from "../apps/artifact.js";
 import {
   type createWorktreeManager,
   type VerificationResult,
@@ -33,6 +34,7 @@ export interface CodingDependencies {
   timeoutMs: number;
   /** Missing managers fail closed, never fall back to the shared checkout. */
   isolation?: Record<string, ReturnType<typeof createWorktreeManager>>;
+  appsWorkspace?: string;
 }
 
 export interface JobProposal extends CodingRequest {
@@ -57,6 +59,7 @@ export interface CodingState {
   worktree?: WorktreeManifest;
   workerClaim?: string;
   verification?: VerificationResult;
+  appArtifact?: Awaited<ReturnType<typeof readAppArtifact>>;
   cancelRequested?: boolean;
   revoked?: boolean;
   /** Last attempt's admission denial, not a live queue position or grant. */
@@ -272,6 +275,7 @@ export function createCodingActor(
         // Forgetting is permanent, including when it overtakes a queued proposal
         // or resume. A normal cancellation may later be reconciled by the owner.
         if (revoke) c.state.revoked = true;
+        delete c.state.appArtifact;
         c.state.cancelRequested = true;
         await c.vars.persist();
         c.vars.controller?.abort();
@@ -301,6 +305,10 @@ export function createCodingActor(
                   step.state.revoked ||
                   !command.proposal.source.direct ||
                   command.proposal.id !== step.key[1] ||
+                  (command.proposal.appId !== undefined &&
+                    (command.proposal.workspace !== coding.appsWorkspace ||
+                      !appIdSchema.safeParse(command.proposal.appId)
+                        .success)) ||
                   !Object.hasOwn(coding.workspaces, command.proposal.workspace)
                 )
                   return;
@@ -384,6 +392,7 @@ export function createCodingActor(
                 step.state.attempts = approved;
                 delete step.state.verification;
                 delete step.state.workerClaim;
+                delete step.state.appArtifact;
                 delete step.state.admissionReason;
                 await step.vars.persist();
                 const controller = new AbortController();
@@ -481,6 +490,9 @@ export function createCodingActor(
                   step.state.threadId = result.threadId;
                   step.state.workerClaim = result.report;
                   await step.vars.persist();
+                  const appArtifact = proposal.appId
+                    ? await readAppArtifact(manifest.cwd, proposal.appId)
+                    : undefined;
                   settled = false;
                   const verification = await Promise.race([
                     manager.verify(proposal.id, signal, approved),
@@ -501,6 +513,17 @@ export function createCodingActor(
                     !signal.aborted
                       ? "completed"
                       : "needs_review";
+                  if (appArtifact && step.state.status === "completed") {
+                    const after = await readAppArtifact(
+                      manifest.cwd,
+                      appArtifact.appId,
+                    );
+                    if (after.digest !== appArtifact.digest)
+                      throw new Error("verified_app_changed");
+                    signal.throwIfAborted();
+                    // Retain exact verified bytes, never mutable worker paths.
+                    step.state.appArtifact = appArtifact;
+                  }
                 } catch (error) {
                   step.state.status = "needs_review";
                   if (admissionAttempted && !admitted) {
@@ -545,7 +568,7 @@ export function createCodingActor(
                   ? status === "completed"
                     ? `Amp reports (not independently verified):\n${report ?? "No report supplied."}`
                     : `Coding job ${proposal.id.slice(0, 12)} needs review. ${report ?? ""}`
-                  : `Coding job ${proposal.id.slice(0, 12)}: ${status}.\n${report ?? "No verification evidence."}\n\nWorker claims (not independently verified):\n${workerClaim?.slice(0, 2200) ?? "No confirmed worker result."}`;
+                  : `Coding job ${proposal.id.slice(0, 12)}: ${status}.\n${report ?? "No verification evidence."}${step.state.appArtifact ? `\nDynamic App ${step.state.appArtifact.appId}: artifact ${step.state.appArtifact.digest}. Job ID ${proposal.id}. Ask June to prepare this app for separate deployment approval.` : ""}\n\nWorker claims (not independently verified):\n${workerClaim?.slice(0, 2200) ?? "No confirmed worker result."}`;
               await step
                 .client<JuneRegistry>()
                 .conversation.getOrCreate(["private", step.key[0] ?? ""])

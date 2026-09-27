@@ -317,6 +317,11 @@ async function normalizeEvent(
         ...(owner && channelType === "im" && event.text === "!memory-backup"
           ? { memoryBackupEligible: isPlainSlackCommand(event) }
           : {}),
+        ...(owner &&
+        channelType === "im" &&
+        /^[!/]deploy-app(?:\s|$)/.test(event.text.trim())
+          ? { appDeploymentEligible: isPlainSlackCommand(event) }
+          : {}),
         metadata: {
           ...slackMetadata(event, channelType),
           ...(channelName ? { channelName } : {}),

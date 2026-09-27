@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { actor, queue, type Registry, setup } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
+import type { createAppsClient } from "../apps/client.js";
 import type {
   Channel,
   ChannelAdapter,
@@ -124,6 +125,7 @@ export interface Dependencies {
   /** Pure exact-action proposal only; never grant or execute from model output. */
   browserProposal?: (operation: string | null) => string;
   personalityEvaluation?: ReturnType<typeof createPersonalityPreview>;
+  apps?: ReturnType<typeof createAppsClient>;
   dashboardLogin?: {
     issue(): { url: string; expiresAt: string } | undefined;
     redact(text: string): string;
@@ -358,9 +360,9 @@ export function createJuneRegistry(deps: Dependencies) {
     run: workflow(
       async (ctx) => {
         await ctx.loop("conversation-v1", async (loop) => {
-          // Preserve v1–v10 journals and their capability decisions;
-          // only fresh v11 turns gain authenticated MCP commands.
-          const journalVersion = await loop.getVersion("memory-dispatch", 11);
+          // Preserve v1–v11 journals; only fresh v12 turns gain app actions
+          // and the separate owner deployment command.
+          const journalVersion = await loop.getVersion("memory-dispatch", 12);
           // Preserve already-processing journals. Legacy queued events also
           // lack the ingress eligibility marker and cannot gain authority.
           const correctionVersion = await loop.getVersion(
@@ -677,6 +679,7 @@ export function createJuneRegistry(deps: Dependencies) {
               social?: boolean;
               grantFingerprint?: string;
               execution?: boolean;
+              apps?: boolean;
               deletionRevision?: number;
               wakeups?: boolean;
               jev?: boolean;
@@ -718,6 +721,9 @@ export function createJuneRegistry(deps: Dependencies) {
                       : {}),
                     ...(version >= 10
                       ? { workflow: scope.private && !!deps.workflows }
+                      : {}),
+                    ...(version >= 12
+                      ? { apps: scope.private && !!deps.apps }
                       : {}),
                     ...(version >= 9
                       ? {
@@ -875,6 +881,10 @@ export function createJuneRegistry(deps: Dependencies) {
                           : /^\/(approve|resume-stopped) ([a-f0-9]{12,64})$/,
                       )
                   : null;
+              const appCommand =
+                version >= 12 && scope.private && body.type === "event"
+                  ? event.text.trim().match(/^[!/]deploy-app ([a-f0-9]{64})$/)
+                  : null;
               const correctionCommand =
                 correctionVersion >= 2 &&
                 body.type === "event" &&
@@ -899,6 +909,34 @@ export function createJuneRegistry(deps: Dependencies) {
                 event.text === "!memory-backup";
               if (body.type === "job_result" && version < 7) {
                 reply = { text: body.text };
+              } else if (appCommand) {
+                reply = await loop.step("dynamic-app-command", async (step) => {
+                  if (
+                    event.address.channel !== "slack" ||
+                    event.appDeploymentEligible !== true
+                  )
+                    return {
+                      text: "Send !deploy-app as a fresh plain-text owner Slack DM, not a quote, code block, attachment or forwarded message. No deployment was approved.",
+                    };
+                  return {
+                    text:
+                      plan.apps &&
+                      deps.apps &&
+                      valid(step.state) &&
+                      !step.abortSignal.aborted
+                        ? await deps.apps
+                            .approve(
+                              appCommand[1] ?? "",
+                              () =>
+                                valid(step.state) && !step.abortSignal.aborted,
+                            )
+                            .catch(
+                              () =>
+                                "App deployment outcome is unavailable. Ask me to inspect the app receipt; do not assume failure or retry the deployment.",
+                            )
+                        : "Dynamic Apps are unavailable or this approval context was revoked.",
+                  };
+                });
               } else if (correctionCommand) {
                 reply = await loop.step(
                   "record-owner-correction",
@@ -1692,6 +1730,13 @@ export function createJuneRegistry(deps: Dependencies) {
                                   phase !== "synthesis" &&
                                   scope.private &&
                                   !!deps.inspection,
+                                appsAvailable:
+                                  version >= 12 &&
+                                  plan.apps === true &&
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.apps,
                                 recallAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -2950,6 +2995,37 @@ export function createJuneRegistry(deps: Dependencies) {
                                   ? { replyInThread: generated.replyInThread }
                                   : {}),
                               };
+                            } else if (generated.apps !== undefined) {
+                              let result: CompanionReply = {
+                                text: "Dynamic Apps require an available integration and an owner-private turn.",
+                              };
+                              if (
+                                scope.private &&
+                                modelRequest.appsAvailable &&
+                                deps.apps &&
+                                !signal.aborted &&
+                                valid(step.state)
+                              ) {
+                                try {
+                                  const checked = parseReply(
+                                    JSON.stringify(generated),
+                                    modelRequest.workspaces,
+                                    modelRequest,
+                                  );
+                                  if (checked.apps)
+                                    result = await deps.apps.request(
+                                      checked.apps,
+                                      eventId,
+                                      () =>
+                                        valid(step.state) && !signal.aborted,
+                                    );
+                                } catch {
+                                  result = {
+                                    text: "The app request could not be confirmed. No deployment approval was granted. Inspect the app receipt before trying further actions.",
+                                  };
+                                }
+                              }
+                              generated = result;
                             } else if (generated.inspection !== undefined) {
                               // Metadata-only read in the existing model receipt.
                               // Revalidate even custom providers before dispatch.
@@ -3545,6 +3621,9 @@ export function createJuneRegistry(deps: Dependencies) {
                           proposal: {
                             workspace: proposal.workspace,
                             goal: proposal.goal,
+                            ...(version >= 12 && proposal.appId
+                              ? { appId: proposal.appId }
+                              : {}),
                             runtimeId: proposal.runtimeId,
                             id: eventId,
                             source: event,

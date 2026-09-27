@@ -61,6 +61,21 @@ const schema = z
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    dynamicApps: z
+      .strictObject({
+        endpoint: baseUrl.refine(
+          (value) =>
+            new URL(value).origin === value &&
+            (value.startsWith("https://") ||
+              ["127.0.0.1", "localhost", "[::1]"].includes(
+                new URL(value).hostname,
+              )),
+          "Use an HTTPS origin or loopback HTTP for the dedicated app host",
+        ),
+        tokenEnv: envName,
+        workspace: name,
+      })
+      .optional(),
     eventWebhooks: z
       .record(
         z.string().regex(/^[a-z][a-z0-9-]{0,47}$/),
@@ -442,6 +457,14 @@ const schema = z
           Object.hasOwn(config.coding.workspaces, key),
         )),
     "Enabled coding requires an explicit runtime and an isolation root for every workspace",
+  )
+  .refine(
+    (config) =>
+      !config.dynamicApps ||
+      (config.coding.enabled &&
+        !!config.coding.isolation[config.dynamicApps.workspace]?.verifier &&
+        config.dynamicApps.tokenEnv !== config.operatorTokenEnv),
+    "Dynamic Apps require enabled coding, a verified workspace and a separate app-host credential",
   );
 
 export type Config = z.infer<typeof schema>;

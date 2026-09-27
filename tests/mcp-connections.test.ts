@@ -628,6 +628,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   f.request.latencyAvailable = true;
   f.request.analyticsAvailable = true;
   f.request.inspectionAvailable = true;
+  f.request.appsAvailable = true;
   f.request.jevObservationAvailable = true;
   f.request.codingJobsAvailable = true;
   f.request.recallAvailable = true;
@@ -659,6 +660,8 @@ test("discovery grants nothing, read results are transient and credentials stay 
     .reply(f.request);
   expect(f.calls).toEqual([{ name: "lookup", arguments: { id: "record-9" } }]);
   assert(synthesis);
+  expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty("apps");
+  expect(f.request.appsAvailable).toBe(true);
   expect(replyJsonSchema([], synthesis).properties).not.toHaveProperty(
     "latency",
   );

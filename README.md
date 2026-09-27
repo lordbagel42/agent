@@ -43,6 +43,10 @@ into June or tested with a real account.
   dedicated login directory and the normal browser OAuth callback flow.
 - Separate, approval-gated Amp jobs, saved thread IDs, and explicit recovery of
   uncertain runs. June reports worker results as reported, not verified.
+- Opt-in [Rivet Dynamic Apps](docs/dynamic-apps.md) build/prepare/inspect tools
+  for Fetch/HTTP apps, connected to coding jobs with separate owner deployment
+  approval and an isolated app host. Real SDK deployment and authenticated
+  serving are verified locally; production activation and actor apps are not included.
 - Headless configuration, health check, and bearer-protected inspection API.
 - Optional owner-private, read-only browser console using the existing operator
   credential. It cannot approve actions or change configuration.

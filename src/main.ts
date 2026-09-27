@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { serve } from "@hono/node-server";
 import { createClient } from "rivetkit/client";
 import { z } from "zod";
+import { createAppsClient } from "./apps/client.js";
 import { createSlackAdapter } from "./channels/slack.js";
 import { createSlackIngressDiagnostics } from "./channels/slack-ingress.js";
 import { SlackThreads } from "./channels/slack-threads.js";
@@ -284,10 +285,17 @@ async function main() {
       isolation,
       runtime: worker,
       runtimeKind: selection.kind,
+      appsWorkspace: config.dynamicApps?.workspace,
       // Config contains references to secrets, not their values. Changing the
       // runtime, session roots or execution policy cannot rebind existing jobs.
       runtimeId: createHash("sha256")
-        .update(JSON.stringify(config.coding))
+        .update(
+          JSON.stringify(
+            config.dynamicApps
+              ? { coding: config.coding, dynamicApps: config.dynamicApps }
+              : config.coding,
+          ),
+        )
         .digest("hex"),
     };
   }
@@ -304,6 +312,11 @@ async function main() {
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);
   if (operatorToken.length < 32) throw new Error("Short operator token");
+  const appToken = config.dynamicApps
+    ? secret(config.dynamicApps.tokenEnv)
+    : undefined;
+  if (appToken && (appToken.length < 32 || appToken === operatorToken))
+    throw new Error("Separate app-host credential required");
   startupStage = "isolated browser execution prerequisites";
   const browserHostGate = process.env.JUNE_ALLOW_ISOLATED_BROWSER === "1";
   const browserOperations = [
@@ -970,6 +983,25 @@ async function main() {
           })
         : undefined,
     dashboardLogin: loginLinks,
+    apps:
+      config.dynamicApps && appToken
+        ? createAppsClient({
+            ...config.dynamicApps,
+            token: appToken,
+            readJob: async (id) => {
+              const state = await june.snapshot();
+              if (
+                !Object.hasOwn(state.jobs, id) ||
+                state.forgottenEvents?.includes(id)
+              )
+                return undefined;
+              const job = await client.job
+                .get([config.owner.id, id])
+                .snapshot();
+              return job.runtimeId === coding?.runtimeId ? job : undefined;
+            },
+          })
+        : undefined,
     release: readDeployment
       ? createReleaseTool({
           read: () => readDeployment(config.owner.id),

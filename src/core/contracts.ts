@@ -55,6 +55,8 @@ export interface MessageEvent extends EventBase {
   mcpCommandEligible?: boolean;
   /** Verified fresh plain Slack backup command; absent on old/context events. */
   memoryBackupEligible?: boolean;
+  /** Fresh, plain owner-DM deployment approval; never set by history/model text. */
+  appDeploymentEligible?: boolean;
   metadata?: MessageMetadata;
 }
 
@@ -164,6 +166,8 @@ export interface ConversationMessage {
 export interface CodingRequest {
   workspace: string;
   goal: string;
+  /** Host-created Dynamic Apps build, never a deployment grant. */
+  appId?: string;
 }
 
 export interface ExecutionCommand {
@@ -280,6 +284,7 @@ export interface CompanionReply {
   dashboardLogin?: boolean;
   /** Owner-private persistent schedules and event subscriptions. */
   wakeup?: import("../wakeups/state.js").WakeupAction;
+  apps?: import("../apps/client.js").AppsRequest;
   /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */
   replyInThread?: boolean;
 }
@@ -315,6 +320,7 @@ export interface ModelRequest {
   latencyAvailable?: boolean;
   analyticsAvailable?: boolean;
   inspectionAvailable?: boolean;
+  appsAvailable?: boolean;
   recallAvailable?: boolean;
   pendingMemoryAvailable?: boolean;
   personalitySuggestionAvailable?: boolean;

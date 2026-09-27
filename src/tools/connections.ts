@@ -873,6 +873,7 @@ export class McpConnections {
                 latencyAvailable: false,
                 analyticsAvailable: false,
                 inspectionAvailable: false,
+                appsAvailable: false,
                 recallAvailable: false,
                 pendingMemoryAvailable: false,
                 jevObservationAvailable: false,

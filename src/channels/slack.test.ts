@@ -107,6 +107,11 @@ describe("createSlackAdapter", () => {
       text: "!memory-backup",
       field: "memoryBackupEligible" as const,
     },
+    {
+      kind: "app deployment",
+      text: `!deploy-app ${"a".repeat(64)}`,
+      field: "appDeploymentEligible" as const,
+    },
   ])(
     "marks only fresh plain owner-DM $kind commands as eligible",
     async ({ text, field }) => {
