@@ -12,14 +12,38 @@ never expose them as model tools. Route wiring belongs to the integration host.
 
 Signatures: `start(id: string): Promise<ImportProgress>`;
 `status(id: string)` and `cancel(id: string)` return
-`{ running, progress, notBefore, cooldownReason, coolingDown }`. `progress`
+`{ running, progress, notBefore, cooldownReason, coolingDown, budget }`. `progress`
 is the selection's durable progress (or undefined); the top-level cooldown is
 the maximum persisted deadline across registered selections for that account.
 `coolingDown` compares the current clock with that deadline, not provider health.
+`budget` is `{ limits: ImportBudget, lastRejection: keyof ImportBudget | null }`.
 Cancellation has no durable flag in the baseline store: it discards in-flight
 work, preserves the durable cursor, and leaves the job idle. Restart never
 automatically resumes any job. A host scheduler must persist its own disabled
 state if cancellation should override future scheduled `start` calls.
+
+`EvidenceStore(path, key, importBudget?)` bounds every page's projected ledger
+before committing: by default 1,000 sources, 1,000 stored claims (including dreams),
+and 4 MiB of compact UTF-8 JSON for the **entire snapshot**, including import
+progress, gaps, proposals and tombstones. These are ledger-global import ceilings,
+not the audience-scoped evidence usage from `capacity(audience)`, disk/RSS limits,
+or a performance guarantee. Trusted host overrides are positive safe integers;
+omitted fields retain defaults. Ordinary ingestion/review/deletion are unchanged.
+A ledger already over a ceiling rejects pages; it is not truncated or migrated.
+The store checks inside the write transaction, after deduplication and projected
+progress updates. Exceeding any ceiling rejects the whole page: no source, cursor,
+page count, gap or retry-boundary update is committed. Import creation/coverage
+binding can precede a rejected first page. Do not blindly retry a budget failure.
+
+The private operator start route returns HTTP 409 `import_budget_exceeded` with
+the exceeded dimension and a content-free reason. June's owner-private
+`inspection: "imports"` reports each selection's `budgetRejected` dimension and
+explains rollback/remediation; no source IDs, current global counts or evidence
+are disclosed. `lastRejection` is observed only by this `HistoryImports` instance,
+cleared when a page advances its page count or the service is recreated.
+Cooldown-only updates do not clear it; null does not prove the next page fits.
+Reduce the selected import or have the operator review capacity. No automatic
+deletion, budget increase or resume occurs.
 
 Configure exact immutable coverage (`platform`, `account`, `conversations`,
 epoch-millisecond `[from,to)`, `audiences`) before starting. The fetcher rejects

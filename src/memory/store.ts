@@ -158,6 +158,26 @@ export type ImportProgress = z.infer<typeof progressSchema>;
 export type ImportPage = z.infer<typeof pageSchema>;
 type State = z.infer<typeof stateSchema>;
 
+export const DEFAULT_IMPORT_BUDGET = Object.freeze({
+  sources: 1_000,
+  claims: 1_000,
+  serializedBytes: 4 * 1024 * 1024,
+});
+const importBudgetSchema = z.strictObject({
+  sources: z.number().int().positive().safe(),
+  claims: z.number().int().positive().safe(),
+  serializedBytes: z.number().int().positive().safe(),
+});
+export type ImportBudget = z.infer<typeof importBudgetSchema>;
+export class ImportBudgetExceeded extends Error {
+  constructor(readonly dimension: keyof ImportBudget) {
+    super(
+      `Import page exceeds the ledger-wide ${dimension} budget; no page evidence or progress was committed. Reduce the import or ask the operator to review capacity.`,
+    );
+    this.name = "ImportBudgetExceeded";
+  }
+}
+
 // Never include input data in validation errors (these may reach operator logs).
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
@@ -217,6 +237,15 @@ function removeEvidence(state: State, sourceIds: string[]): void {
   for (const entry of state.extractions)
     entry.proposalIds = entry.proposalIds.filter((id) => !removed.has(id));
   state.tombstones = [...new Set([...state.tombstones, ...removed])];
+}
+
+// Count records and measure the exact supplied object, including its metadata.
+function measureCapacity(snapshot: { sources: Source[]; claims: Claim[] }) {
+  return {
+    sources: snapshot.sources.length,
+    claims: snapshot.claims.length,
+    serializedBytes: Buffer.byteLength(JSON.stringify(snapshot), "utf8"),
+  };
 }
 
 /** Upgrade the old Gmail connector's label-valued conversation without changing
@@ -302,16 +331,24 @@ function insertClaim(state: State, claim: Claim): void {
 export class EvidenceStore {
   private readonly db: DatabaseSync;
   private readonly key: Buffer;
+  readonly importBudget: Readonly<ImportBudget>;
   private closed = false;
   private readonly index = new Map<
     string,
     { sources: Source[]; claims: Claim[] }
   >();
 
-  constructor(path: string, key: Uint8Array) {
+  constructor(
+    path: string,
+    key: Uint8Array,
+    importBudget: Partial<ImportBudget> = {},
+  ) {
     parse(id, path);
     if (!(key instanceof Uint8Array) || key.byteLength !== 32)
       throw new Error("Memory key must be 32 bytes");
+    this.importBudget = Object.freeze(
+      parse(importBudgetSchema, { ...DEFAULT_IMPORT_BUDGET, ...importBudget }),
+    );
     this.key = Buffer.from(key);
     this.db = new DatabaseSync(path);
     try {
@@ -796,13 +833,11 @@ export class EvidenceStore {
 
   /** Content-free usage for one host-authorized audience, not total disk usage.
    * Bytes measure UTF-8 JSON of {sources,claims}, including record metadata.
-   * The ledger currently has no configured/enforced total capacity budgets. */
+   * No audience quota; importBudget separately bounds global page admission. */
   capacity(audience: string) {
     const visible = this.search(audience, "");
     return {
-      sources: visible.sources.length,
-      claims: visible.claims.length,
-      serializedBytes: Buffer.byteLength(JSON.stringify(visible), "utf8"),
+      ...measureCapacity(visible),
       limits: { sources: null, claims: null, serializedBytes: null },
     };
   }
@@ -953,6 +988,15 @@ export class EvidenceStore {
     });
   }
 
+  private checkImportBudget(state: State): void {
+    // The entire candidate snapshot counts, not only newly fetched sources or
+    // audience-visible evidence. Check under the write lock, after deduplication.
+    const usage = measureCapacity(state);
+    for (const dimension of ["sources", "claims", "serializedBytes"] as const)
+      if (usage[dimension] > this.importBudget[dimension])
+        throw new ImportBudgetExceeded(dimension);
+  }
+
   /** Atomic compare-and-swap prevents concurrent fetches advancing stale pages. */
   persistPage(expected: ImportProgress, input: ImportPage, now: number): void {
     const page = parse(pageSchema, input);
@@ -971,6 +1015,7 @@ export class EvidenceStore {
           throw new Error("Invalid rate limit boundary");
         progress.notBefore = parse(timestamp, now + page.retryAfterMs);
         progress.cooldownReason = page.cooldownReason ?? "rate_limit";
+        this.checkImportBudget(state);
         return;
       }
       if (page.nextCursor !== null && page.nextCursor === progress.cursor)
@@ -1017,6 +1062,7 @@ export class EvidenceStore {
       progress.notBefore = parse(timestamp, now + (page.retryAfterMs ?? 0));
       progress.cooldownReason = page.retryAfterMs ? "pacing" : null;
       progress.gaps.push(...(page.gaps ?? []));
+      this.checkImportBudget(state);
     });
   }
 

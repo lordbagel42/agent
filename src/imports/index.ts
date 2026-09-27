@@ -1,5 +1,7 @@
 import {
   type EvidenceStore,
+  type ImportBudget,
+  ImportBudgetExceeded,
   type ImportCoverage,
   importHistory,
   type PageFetcher,
@@ -16,6 +18,7 @@ export { createSlackHistoryFetcher } from "./slack.js";
  */
 export class HistoryImports {
   private readonly active = new Map<string, AbortController>();
+  private readonly budgetRejections = new Map<string, keyof ImportBudget>();
   private readonly selections: Map<
     string,
     { coverage: ImportCoverage; fetchPage: PageFetcher }
@@ -62,6 +65,10 @@ export class HistoryImports {
       notBefore,
       cooldownReason,
       coolingDown: this.now() < notBefore,
+      budget: {
+        limits: this.store.importBudget,
+        lastRejection: this.budgetRejections.get(id) ?? null,
+      },
     };
   }
 
@@ -87,34 +94,40 @@ export class HistoryImports {
         throw new Error("Account import already running");
     }
     const now = this.now();
-    if (!progress.complete && now >= progress.notBefore && now < notBefore) {
-      this.store.persistPage(
-        progress,
-        {
-          sources: [],
-          nextCursor: progress.cursor,
-          rateLimited: true,
-          retryAfterMs: notBefore - now,
-          cooldownReason: cooldownReason ?? "unknown",
-        },
-        now,
-      );
-      return {
-        ...progress,
-        notBefore,
-        cooldownReason: cooldownReason ?? "unknown",
-      };
-    }
     const controller = new AbortController();
     this.active.set(id, controller);
     try {
-      return await importHistory(
+      if (!progress.complete && now >= progress.notBefore && now < notBefore) {
+        this.store.persistPage(
+          progress,
+          {
+            sources: [],
+            nextCursor: progress.cursor,
+            rateLimited: true,
+            retryAfterMs: notBefore - now,
+            cooldownReason: cooldownReason ?? "unknown",
+          },
+          now,
+        );
+        return {
+          ...progress,
+          notBefore,
+          cooldownReason: cooldownReason ?? "unknown",
+        };
+      }
+      const result = await importHistory(
         this.store,
         id,
         selection.coverage,
         selection.fetchPage,
         { signal: controller.signal, now: this.now, maxPages: 1 },
       );
+      if (result.pages > progress.pages) this.budgetRejections.delete(id);
+      return result;
+    } catch (error) {
+      if (error instanceof ImportBudgetExceeded)
+        this.budgetRejections.set(id, error.dimension);
+      throw error;
     } finally {
       this.active.delete(id);
     }

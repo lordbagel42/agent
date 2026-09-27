@@ -38,7 +38,7 @@ export function createInspectionReader(deps: {
         const proposals = deps.memory.store.proposals(deps.audience);
         const counts = { pending: 0, accepted: 0, rejected: 0 };
         for (const proposal of proposals) counts[proposal.status]++;
-        return `${heading}\nAuthorized memory capacity: ${JSON.stringify(capacity)}. Counts include only retained sources and stored claims visible to this host-bound audience, not pending/rejected proposals. serializedBytes measures UTF-8 JSON of {sources,claims}, including record metadata and the empty container; it excludes other audiences' records, proposals, imports, tombstones, curated history, encryption and database overhead. This is not total ledger/disk size or model context usage. Null limits mean total budgets are not configured/enforced, not unlimited capacity; remaining capacity is unknown.\nProposal counts: ${JSON.stringify(counts)}. Curated revision count: ${deps.memory.personality?.ownerHistory().revisions.length ?? "unavailable"}. No evidence, proposal text, or personality values returned.\n${MEMORY_CORRECTION_HELP}`;
+        return `${heading}\nAuthorized memory capacity: ${JSON.stringify(capacity)}. Counts include only retained sources and stored claims visible to this host-bound audience, not pending/rejected proposals. serializedBytes measures UTF-8 JSON of {sources,claims}, including record metadata and the empty container; it excludes other audiences' records, proposals, imports, tombstones, curated history, encryption and database overhead. This is not total ledger/disk size or model context usage. Null limits mean no audience-specific quota, not unlimited capacity; remaining capacity is unknown. Imports separately enforce ledger-wide source/claim/full-snapshot byte ceilings.\nProposal counts: ${JSON.stringify(counts)}. Curated revision count: ${deps.memory.personality?.ownerHistory().revisions.length ?? "unavailable"}. No evidence, proposal text, or personality values returned.\n${MEMORY_CORRECTION_HELP}`;
       }
       case "imports": {
         const imports = deps.imports;
@@ -47,8 +47,14 @@ export function createInspectionReader(deps: {
           ([, coverage]) => coverage.audiences.includes(deps.audience),
         );
         const rows = selections.slice(0, 10).map(([id, coverage]) => {
-          const { running, progress, notBefore, cooldownReason, coolingDown } =
-            imports.status(id);
+          const {
+            running,
+            progress,
+            notBefore,
+            cooldownReason,
+            coolingDown,
+            budget,
+          } = imports.status(id);
           if (progress && !isDeepStrictEqual(progress.coverage, coverage))
             throw new Error("Import coverage changed");
           return {
@@ -64,9 +70,10 @@ export function createInspectionReader(deps: {
             cooldownReason,
             coolingDown,
             gapCount: progress?.gaps.length ?? 0,
+            budgetRejected: budget.lastRejection,
           };
         });
-        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nnotBefore is the persisted account cooldown deadline (epoch milliseconds); cooldownReason is rate_limit, provider_backoff, pacing, unknown for legacy deadlines, or null. coolingDown is only the time gate at this snapshot, not provider readiness. Wait until notBefore; no polling or automatic retry. Resuming requires explicit operator confirmation, even after expiry or restart. Complete means the selected window was exhausted, not complete account history. Gap contents, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.`;
+        return `${heading}\nConfigured selections: ${selections.length}; showing ${rows.length}. ${JSON.stringify(rows)}\nnotBefore is the persisted account cooldown deadline (epoch milliseconds); cooldownReason is rate_limit, provider_backoff, pacing, unknown for legacy deadlines, or null. coolingDown is only the time gate at this snapshot, not provider readiness. Wait until notBefore; no polling or automatic retry. Resuming requires explicit operator confirmation, even after expiry or restart.\nBudget rejections are last observed this process, cleared when a page advances its page count or the service is recreated; cooldown-only updates do not clear them. Null is not proof a page will fit. A rejection means the whole page exceeded a ledger-wide source, claim, or full-snapshot UTF-8 byte budget; no page evidence or progress committed. Reduce the import or ask the operator to review capacity. Complete means the selected window was exhausted, not complete account history. Gap contents, cursors, provider errors, credentials and message bodies are omitted. No import was started or cancelled.`;
       }
       case "reflection": {
         if (!deps.reflection) return `${heading}\nReflection is unavailable.`;

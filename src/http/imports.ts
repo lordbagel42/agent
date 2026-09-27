@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { z } from "zod";
 import type { HistoryImports } from "../imports/index.js";
-import type { ImportCoverage } from "../memory/store.js";
+import { ImportBudgetExceeded, type ImportCoverage } from "../memory/store.js";
 
 /** Mount behind owner bearer auth. A selection is not consent to fetch it.
  * Every page requires exact coverage confirmation and the expected page count;
@@ -24,7 +24,18 @@ export function createImportRoutes(
     ]),
   );
   const app = new Hono();
-  app.onError((_error, c) => c.json({ error: "import_request_rejected" }, 400));
+  app.onError((error, c) =>
+    error instanceof ImportBudgetExceeded
+      ? c.json(
+          {
+            error: "import_budget_exceeded",
+            dimension: error.dimension,
+            reason: error.message,
+          },
+          409,
+        )
+      : c.json({ error: "import_request_rejected" }, 400),
+  );
   app.get("/", (c) =>
     c.json(
       Object.fromEntries(

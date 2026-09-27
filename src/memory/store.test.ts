@@ -8,6 +8,8 @@ import {
   type Claim,
   EvidenceStore,
   extractMemory,
+  type ImportBudget,
+  ImportBudgetExceeded,
   type ImportCoverage,
   importHistory,
   type MemoryProposalInput,
@@ -17,13 +19,13 @@ import {
 const dirs: string[] = [];
 const stores: EvidenceStore[] = [];
 const key = randomBytes(32);
-function open(path?: string, secret = key) {
+function open(path?: string, secret = key, budget?: Partial<ImportBudget>) {
   if (!path) {
     const dir = mkdtempSync(join(tmpdir(), "june-memory-"));
     dirs.push(dir);
     path = join(dir, "evidence.db");
   }
-  const store = new EvidenceStore(path, secret);
+  const store = new EvidenceStore(path, secret, budget);
   stores.push(store);
   return { store, path };
 }
@@ -705,6 +707,124 @@ it("rejects malformed and out-of-date coverage pages without partial writes acro
     return { sources: [source()], nextCursor: null };
   });
   expect(reopened.search("private", "").sources).toEqual([source()]);
+});
+
+it("bounds the whole projected import atomically at one-under, exact and one-over capacity", () => {
+  const existing = [source(), source("hidden", "other-audience")];
+  const claims: Claim[] = existing.map((s, i) => ({
+    id: `claim-${i}`,
+    entity: s.author,
+    text: "claim with 独立 evidence",
+    audiences: s.audiences,
+    kind: i ? "dream" : "evidence",
+    dependsOn: [s.id],
+    contradicts: [],
+    supersedes: [],
+  }));
+  const additions = [source("new1"), { ...source("new2"), text: "🦉" }];
+  const progress = {
+    id: "budget",
+    coverage,
+    cursor: "next-🦉",
+    pages: 1,
+    complete: false,
+    notBefore: 150,
+    cooldownReason: "pacing",
+    gaps: ["metadata counts too: 🦉"],
+  };
+  // Independent expected full snapshot, including import metadata and empty
+  // containers. Counting only evidence or UTF-16 characters must fail this case.
+  const serializedBytes = Buffer.byteLength(
+    JSON.stringify({
+      version: 1,
+      sources: [...existing, ...additions],
+      claims,
+      tombstones: [],
+      imports: [progress],
+      proposals: [],
+      extractions: [],
+      corrections: [],
+    }),
+    "utf8",
+  );
+  const projected = { sources: 4, claims: 2, serializedBytes };
+  for (const dimension of ["sources", "claims", "serializedBytes"] as const) {
+    for (const headroom of [1, 0, -1]) {
+      const budget = { [dimension]: projected[dimension] + headroom };
+      const { store, path } = open(undefined, key, budget);
+      for (const s of existing) store.appendSource(s);
+      for (const c of claims) store.appendClaim(c);
+      store.beginImport("budget", coverage);
+      const before = store.importProgress("budget");
+      if (!before) throw new Error("Missing fixture progress");
+      const disk = readFileSync(path);
+      const persist = () =>
+        store.persistPage(
+          before,
+          {
+            // Duplicate source must not consume another count.
+            sources: [source(), ...additions],
+            nextCursor: progress.cursor,
+            retryAfterMs: 50,
+            gaps: progress.gaps,
+          },
+          100,
+        );
+      if (headroom < 0) {
+        expect(persist).toThrow(new ImportBudgetExceeded(dimension));
+        expect(store.importProgress("budget")).toEqual(before);
+        expect(store.search("private", "").sources).toEqual([source()]);
+        expect(readFileSync(path)).toEqual(disk);
+      } else {
+        persist();
+        expect(store.importProgress("budget")).toEqual(progress);
+        expect(store.search("private", "").sources).toEqual([
+          source(),
+          ...additions,
+        ]);
+      }
+      store.close();
+      const reopened = open(path, key, budget).store;
+      expect(reopened.importProgress("budget")).toEqual(
+        headroom < 0 ? before : progress,
+      );
+      expect(reopened.search("other-audience", "")).toEqual({
+        sources: [existing[1]],
+        claims: [claims[1]],
+      });
+    }
+  }
+
+  const { store, path } = open();
+  store.beginImport("cooldown", coverage);
+  const before = store.importProgress("cooldown");
+  if (!before) throw new Error("Missing fixture progress");
+  const cooldownBytes = Buffer.byteLength(
+    JSON.stringify({
+      version: 1,
+      sources: [],
+      claims: [],
+      tombstones: [],
+      imports: [{ ...before, notBefore: 150, cooldownReason: "rate_limit" }],
+      proposals: [],
+      extractions: [],
+      corrections: [],
+    }),
+    "utf8",
+  );
+  store.close();
+  const bounded = open(path, key, { serializedBytes: cooldownBytes - 1 }).store;
+  const disk = readFileSync(path);
+  expect(() =>
+    bounded.persistPage(
+      before,
+      { sources: [], nextCursor: null, rateLimited: true, retryAfterMs: 50 },
+      100,
+    ),
+  ).toThrow(new ImportBudgetExceeded("serializedBytes"));
+  expect(readFileSync(path)).toEqual(disk);
+  bounded.close();
+  expect(open(path).store.importProgress("cooldown")).toEqual(before);
 });
 
 it("stages quoted proposals without granting authority, scopes before ranking, and forgets pending and accepted derivatives", async () => {

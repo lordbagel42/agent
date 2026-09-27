@@ -46,9 +46,11 @@ trusted host APIs, not autonomous model tools.
   `{sources,claims}` object, including full record metadata and its empty
   container. Other audiences' records, proposals, imports, tombstones, curated
   history, encryption and SQLite overhead are excluded; this is not total ledger
-  size, disk usage or model context size. Total source/claim/byte budgets are not
-  configured or enforced, so limits are `null` and remaining capacity is unknown,
-  not unlimited. Retrieval/extraction character limits below are separate.
+  size, disk usage or model context size. Audience quotas are not configured, so
+  these limits are `null` and remaining capacity is unknown, not unlimited.
+  Imports separately enforce ledger-global source/claim/full-snapshot byte
+  ceilings via `importBudget` (see `../imports/README.md`). Scoped usage cannot
+  be subtracted from those global limits. Retrieval/extraction limits are separate.
 - `retrieve(audience, query, {limit?, maxCharacters?})` returns `{sources,claims}`.
   Authorization precedes lexical ranking. Defaults: 12 combined records, 16,000
   serialized JSON characters; hard limits: 100 records, 100,000 characters and a

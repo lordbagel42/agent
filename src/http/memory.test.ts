@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { expect, it } from "vitest";
 import { HistoryImports } from "../imports/index.js";
 import { EvidenceStore } from "../memory/store.js";
+import { createInspectionReader } from "../runtime/inspection.js";
 import { createHttpApp } from "./app.js";
 import { createImportRoutes } from "./imports.js";
 import { createMemoryRoutes } from "./memory.js";
@@ -133,4 +134,82 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
     physicalPurge: false,
   });
   expect(cleanups).toBe(2);
+});
+
+it("reports rejected budgets without evidence and retries the same uncommitted page explicitly", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32), { sources: 1 });
+  t.onTestFinished(() => store.close());
+  const coverage = {
+    platform: "slack",
+    account: "private-account",
+    conversations: ["private-conversation"],
+    from: 0,
+    to: 10,
+    audiences: ["owner"],
+  };
+  const source = {
+    id: "private-id",
+    audiences: coverage.audiences,
+    platform: coverage.platform,
+    account: coverage.account,
+    conversation: "private-conversation",
+    author: "private-author",
+    observedAt: 1,
+    sourceUrl: "https://example.invalid/private-url",
+    text: "private-content",
+  };
+  let sources = [source, { ...source, id: "private-second-id" }];
+  let fetches = 0;
+  const imports = new HistoryImports(store, {
+    selected: {
+      coverage,
+      async fetchPage() {
+        fetches++;
+        return { sources, nextCursor: null };
+      },
+    },
+  });
+  const app = createImportRoutes(imports, { selected: coverage });
+  const { selected } = await (await app.request("/")).json();
+  const start = () =>
+    app.request("/selected/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        confirmed: true,
+        digest: selected.digest,
+        expectedPages: 0,
+      }),
+    });
+  const rejected = await start();
+  expect(rejected.status).toBe(409);
+  expect(await rejected.json()).toMatchObject({
+    error: "import_budget_exceeded",
+    dimension: "sources",
+    reason: expect.stringContaining(
+      "no page evidence or progress was committed",
+    ),
+  });
+  expect(store.search("owner", "").sources).toEqual([]);
+  expect(imports.status("selected")).toMatchObject({
+    running: false,
+    progress: { pages: 0, cursor: null, complete: false },
+    budget: { limits: { sources: 1 }, lastRejection: "sources" },
+  });
+  const inspect = createInspectionReader({
+    audience: "owner",
+    imports,
+    selections: { selected: coverage },
+  });
+  const report = await inspect("imports");
+  expect(report).toContain('"budgetRejected":"sources"');
+  expect(report).toContain("no page evidence or progress committed");
+  expect(report).toContain("last observed this process");
+  expect(report).not.toContain("private-");
+  expect(fetches).toBe(1);
+  sources = [source];
+  expect((await start()).status).toBe(200);
+  expect(store.search("owner", "").sources).toEqual([source]);
+  expect(imports.status("selected").budget.lastRejection).toBeNull();
+  expect(fetches).toBe(2);
 });
