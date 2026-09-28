@@ -44,7 +44,9 @@ The bulk scheduler starts at four simultaneous descriptions and doubles no
 faster than every 30 seconds after enough completions. It retains at least
 4096 MiB host available memory and 1 GiB disk space by default, limits native
 image preparation to two operations, and skips isolated, confirmed generation
-failures (including terminal server errors) without retrying them.
+failures (including terminal server and request-connection errors) without
+retrying them. This requires a healthy app-server and confirmed turn retirement;
+uncertain connection failures still stop the batch.
 On each distinct terminal generation failure,
 the batch pauses if the last minute contains at least five such failures and
 they make up 10% or more of terminal model calls. Cached results and

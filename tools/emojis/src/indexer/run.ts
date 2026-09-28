@@ -195,6 +195,7 @@ export async function runIndexer(
                     [
                       "generation_failed",
                       "provider_internal_error",
+                      "connection_failed",
                       "invalid_analysis",
                       "policy_blocked",
                     ].includes(code)))

@@ -285,11 +285,15 @@ export class Store {
       availableMemoryMb: alive ? (meta.availableMemoryMb ?? null) : null,
       reason: alive
         ? (meta.reason ?? null)
-        : counts.unknown || counts.running
-          ? "Interrupted work requires explicit retry after confirming the old indexer has stopped."
-          : counts.failed
-            ? "Failed work requires inspection and explicit retry."
-            : null,
+        : (counts.unknown || counts.failed || counts.running) &&
+            meta.state === "blocked" &&
+            typeof meta.reason === "string"
+          ? meta.reason
+          : counts.unknown || counts.running
+            ? "Interrupted attempts need review before retrying. Pending work can resume separately."
+            : counts.failed
+              ? "Failed attempts need review before retrying. Pending work can resume separately."
+              : null,
       recent: recent.map((row) => ({
         name: row.name,
         state: row.state,
