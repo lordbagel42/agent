@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -70,6 +71,54 @@ class ResponderTests(unittest.TestCase):
         self.marker.write_text(
             json.dumps({"version": 1, "revision": revision, "blocked": blocked})
         )
+
+    def test_explicit_private_bind_forwards_original_signed_request(self):
+        received = []
+
+        class Upstream(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                received.append(
+                    (
+                        self.path,
+                        self.rfile.read(int(self.headers["content-length"])),
+                        self.headers["x-slack-signature"],
+                    )
+                )
+                self.send_response(202)
+                self.end_headers()
+                self.wfile.write(b"forwarded")
+
+        # A different loopback address catches hard-coded 127.0.0.1 routing.
+        upstream = HTTPServer(("127.0.0.2", 0), Upstream)
+        worker = threading.Thread(target=upstream.serve_forever, daemon=True)
+        worker.start()
+        self.set_marker(None)
+        responder = Responder(
+            {**CONFIG, "host": "127.0.0.2", "upstreamPort": upstream.server_port},
+            self.marker,
+            ":memory:",
+        )
+        server = Server(0, responder)
+        try:
+            self.assertEqual(server.server_address[0], "127.0.0.2")
+            raw, headers = signed(event(41))
+            self.assertEqual(responder.receive(raw, headers)[:2], (202, b"forwarded"))
+            self.assertEqual(
+                received, [("/webhooks/slack", raw, headers["x-slack-signature"])]
+            )
+        finally:
+            server.server_close()
+            responder.db.close()
+            upstream.shutdown()
+            worker.join()
+            upstream.server_close()
+
+        for host in ("0.0.0.0", "example.com", "8.8.8.8", "::", "::1"):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                Responder({**CONFIG, "host": host}, self.marker, ":memory:")
 
     def test_authentication_and_narrow_reply_audience(self):
         raw, headers = signed(event(1))

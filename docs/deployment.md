@@ -841,9 +841,9 @@ combined candidate and disposable state before the initial live activation.
 ## Optional Slack deployment responder
 
 `scripts/deploy/slack_responder.py` is a separate Python-standard-library service,
-installed outside app releases. It listens on loopback port 3081 and accepts only
-POST `/webhooks/slack`; normal requests are forwarded byte-for-byte to June's
-loopback port 3080, including Slack signatures. It does not expose June's health,
+installed outside app releases. It listens on private port 3081 and accepts only
+POST `/webhooks/slack`; normal requests are forwarded byte-for-byte to June on
+the same host address, port 3080, including Slack signatures. It does not expose June's health,
 console, or operator routes. Keep it behind the existing public HTTPS ingress,
 with a 1 MiB request limit and short request/header timeouts; do not expose the
 Python HTTP server directly to the Internet.
@@ -894,7 +894,13 @@ publication does **not** activate this integration. In a coordinated window:
 2. Provision root-owned mode-0600 `/etc/june/slack-responder.json` through the
    existing secret mechanism. Required keys: `teamId`, `botUserId`,
    `signingSecret`, and `botToken` for the **same existing Slack app/workspace**.
-   Optional integer keys: `port` (3081) and `upstreamPort` (3080). The unit uses
+   Optional integer keys: `port` (3081) and `upstreamPort` (3080). `host` defaults
+   to `127.0.0.1` and controls both the listener and upstream address. With the
+   existing remote Traefik ingress, set it to June's private `192.168.0.215`
+   address, where the app already listens. Only literal loopback or RFC1918
+   IPv4 addresses are accepted; public, wildcard, and DNS binds are rejected.
+   Change only the existing POST-only Consul/Traefik service's port to 3081;
+   do not broaden its route or restart the unrelated Cloudflare tunnel. The unit uses
    systemd `LoadCredential`, not command-line/environment secret values. Update
    this credential whenever the app's token/signing secret rotates. No new Slack
    scopes, subscriptions, installations, or app Request URL are needed when

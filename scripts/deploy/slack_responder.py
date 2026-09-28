@@ -1,4 +1,4 @@
-"""Independent, loopback-only Slack ingress. Install outside June's releases.
+"""Independent private Slack ingress. Install outside June's releases.
 
 No model, message queue, or send retry. Only hashes of handled events persist.
 The controller's explicit intent, not upstream failure, enables deploy notices.
@@ -7,6 +7,7 @@ The controller's explicit intent, not upstream failure, enables deploy notices.
 import hashlib
 import hmac
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -31,6 +32,13 @@ def matches(pattern, value):
 class Responder:
     def __init__(self, config, marker, database):
         self.config, self.marker = config, Path(marker)
+        address = ipaddress.IPv4Address(config.get("host", "127.0.0.1"))
+        if not address.is_loopback and not any(
+            address in ipaddress.IPv4Network(network)
+            for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+        ):
+            raise ValueError("invalid_responder_host")
+        self.host = str(address)
         for key in ("teamId", "botUserId"):
             if not matches(ID, config.get(key)):
                 raise ValueError("invalid_responder_config")
@@ -67,7 +75,7 @@ class Responder:
 
     def forward(self, raw, headers):
         connection = http.client.HTTPConnection(
-            "127.0.0.1", self.config.get("upstreamPort", 3080), timeout=2
+            self.host, self.config.get("upstreamPort", 3080), timeout=2
         )
         try:
             connection.request(
@@ -299,7 +307,7 @@ class Server(ThreadingHTTPServer):
     def __init__(self, port, responder):
         self.responder = responder
         self.slots = threading.BoundedSemaphore(32)
-        super().__init__(("127.0.0.1", port), Handler)
+        super().__init__((responder.host, port), Handler)
 
     def process_request(self, request, address):
         if not self.slots.acquire(blocking=False):
