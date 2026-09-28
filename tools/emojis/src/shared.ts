@@ -3,7 +3,12 @@ import { z } from "zod";
 export const SCHEMA_VERSION = 1;
 export const PROMPT_VERSION = "emoji-vision-1";
 export const WORKSPACE_ID = "T0266FRGM";
-export const nameSchema = z.string().regex(/^[a-zA-Z0-9_+-]{1,100}$/);
+// Existing Slack catalogues include Unicode and legacy apostrophes in names.
+export const nameSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .regex(/^[\p{L}\p{M}\p{N}_+'-]+$/u);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const terms = z.array(z.string().min(1).max(100)).max(40);
 

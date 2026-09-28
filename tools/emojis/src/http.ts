@@ -37,14 +37,14 @@ export const catalogSchema = z.record(z.string(), z.string().min(1).max(2048));
 export async function slackCatalog(
   token: string,
 ): Promise<Record<string, string>> {
-  async function call(method: string) {
+  async function call(method: string, parameters: Record<string, string> = {}) {
     const response = await fetch(`https://slack.com/api/${method}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
       },
-      body: JSON.stringify({ team_id: WORKSPACE_ID }),
+      body: new URLSearchParams(parameters),
       redirect: "error",
       signal: AbortSignal.timeout(30_000),
     });
@@ -63,9 +63,28 @@ export async function slackCatalog(
     return data;
   }
   const auth = await call("auth.test");
-  if (auth.team_id !== WORKSPACE_ID)
-    throw new Error("slack_workspace_mismatch");
-  return catalogSchema.parse((await call("emoji.list")).emoji);
+  let allowed = auth.team_id === WORKSPACE_ID;
+  if (!allowed && auth.is_enterprise_install === true) {
+    let cursor = "";
+    // Org tokens identify the enterprise, not a workspace. Verify the actual grant.
+    for (let page = 0; page < 10; page++) {
+      const result = z
+        .object({
+          teams: z.array(z.object({ id: z.string() })).max(1000),
+          response_metadata: z
+            .object({ next_cursor: z.string().max(4096).optional() })
+            .optional(),
+        })
+        .parse(await call("auth.teams.list", { limit: "1000", cursor }));
+      allowed = result.teams.some((team) => team.id === WORKSPACE_ID);
+      cursor = result.response_metadata?.next_cursor ?? "";
+      if (allowed || !cursor) break;
+    }
+  }
+  if (!allowed) throw new Error("slack_workspace_mismatch");
+  return catalogSchema.parse(
+    (await call("emoji.list", { team_id: WORKSPACE_ID })).emoji,
+  );
 }
 
 export const securityHeaders = {

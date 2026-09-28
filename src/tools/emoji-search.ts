@@ -21,7 +21,7 @@ const name = z
   .string()
   .min(1)
   .max(100)
-  .regex(/^[a-zA-Z0-9_+-]+$/);
+  .regex(/^[\p{L}\p{M}\p{N}_+'-]+$/u);
 const responseSchema = z.strictObject({
   results: z
     .array(
@@ -31,7 +31,7 @@ const responseSchema = z.strictObject({
           shortcode: z
             .string()
             .max(102)
-            .regex(/^:[a-zA-Z0-9_+-]+:$/),
+            .regex(/^:[\p{L}\p{M}\p{N}_+'-]+:$/u),
           canonicalName: name.nullable(),
           imageUrl: z
             .url()

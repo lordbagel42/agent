@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { URL } from "node:url";
 import { getPlatformProxy, unstable_splitSqlQuery } from "wrangler";
+import { slackCatalog } from "../http.js";
 import {
   catalogSources,
   type EmojiLease,
@@ -20,6 +21,62 @@ type SearchResponse = {
   semanticAvailable: boolean;
   degraded?: string;
 };
+
+test("Slack catalogues require a matching workspace or an explicit enterprise workspace grant", async (t) => {
+  let identity = { team_id: "E_ORG", is_enterprise_install: true };
+  let granted = true;
+  const calls: string[] = [];
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (...[input, init]: Parameters<typeof fetch>) => {
+      const request = new Request(input, init);
+      const method = new URL(request.url).pathname.split("/").pop();
+      const params = new URLSearchParams(await request.text());
+      calls.push(method ?? "");
+      if (method === "auth.test")
+        return Response.json({ ok: true, ...identity });
+      if (method === "auth.teams.list") {
+        return Response.json({
+          ok: true,
+          teams: [
+            { id: params.get("cursor") && granted ? "T0266FRGM" : "T_OTHER" },
+          ],
+          response_metadata: {
+            next_cursor: params.get("cursor") ? "" : "page2",
+          },
+        });
+      }
+      assert.equal(method, "emoji.list");
+      assert.equal(params.get("team_id"), "T0266FRGM");
+      return Response.json({
+        ok: true,
+        emoji: { wave: "https://emoji.slack-edge.com/wave.png" },
+      });
+    },
+  );
+  assert.deepEqual(await slackCatalog("fixture"), {
+    wave: "https://emoji.slack-edge.com/wave.png",
+  });
+  assert.deepEqual(calls, [
+    "auth.test",
+    "auth.teams.list",
+    "auth.teams.list",
+    "emoji.list",
+  ]);
+  calls.length = 0;
+  granted = false;
+  await assert.rejects(slackCatalog("fixture"), /slack_workspace_mismatch/);
+  assert.ok(!calls.includes("emoji.list"));
+  calls.length = 0;
+  identity = { team_id: "T_OTHER", is_enterprise_install: false };
+  await assert.rejects(slackCatalog("fixture"), /slack_workspace_mismatch/);
+  assert.deepEqual(calls, ["auth.test"]);
+  calls.length = 0;
+  identity = { team_id: "T0266FRGM", is_enterprise_install: false };
+  await slackCatalog("fixture");
+  assert.deepEqual(calls, ["auth.test", "emoji.list"]);
+});
 
 test("local D1: role boundaries, lease fencing, idempotency, alias/removal and signed events", async () => {
   const platform = await getPlatformProxy<Env>({

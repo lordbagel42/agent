@@ -85,10 +85,13 @@ coalesced counter is incremented **before** the acknowledgement. Slack's signed
 URL verification payload has no team ID; only that challenge is exempt from
 workspace validation. Retries may increment the counter again harmlessly.
 
-Reconciliation validates Slack `auth.test` before `emoji.list`, uses a durable
-fenced ten-minute lock, bounded D1 batches, and only removes unseen sources after
-all batches succeed. Events arriving during a sync remain dirty. Partial failures
-leave the marker pending; next cron retries. Catalog publication is incremental,
+Reconciliation validates Slack `auth.test` before `emoji.list`. Enterprise tokens
+must independently prove access to `T0266FRGM` through `auth.teams.list`; an
+enterprise ID alone is never accepted. Every catalogue request explicitly selects
+that workspace. Reconciliation uses a durable fenced ten-minute lock, bounded D1
+batches, and only removes unseen sources after all batches succeed. Events arriving
+during a sync remain dirty. Partial failures leave the marker pending; next cron
+retries. Catalog publication is incremental,
 not a whole-catalog snapshot swap. Partial administrative imports should not run
 concurrently with authoritative sync unless overwriting them is intended.
 
