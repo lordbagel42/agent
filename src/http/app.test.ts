@@ -312,7 +312,7 @@ describe("webhook and operator HTTP boundary", () => {
       },
       body: new URLSearchParams({ proof, token }),
     });
-    expect(login.status).toBe(200);
+    expect(login.status).toBe(303);
     const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
     expect(cookie).not.toBe("");
     expect(
@@ -391,7 +391,7 @@ describe("webhook and operator HTTP boundary", () => {
     expect((await post("/grants", grantInput)).status).toBe(503);
   });
 
-  it("issues short login links only to operators and redeems exactly once after confirmation", async () => {
+  it("issues short login links only to operators and redeems exactly once through the link page's own signed POST", async () => {
     const deps = dependencies({
       console: {
         origin: "https://june.example",
@@ -425,7 +425,19 @@ describe("webhook and operator HTTP boundary", () => {
       expect(preview.status).toBe(200);
       expect(preview.headers.get("set-cookie")).toBeNull();
     }
-    const form = await (await app.request(target)).text();
+    const page = await app.request(target);
+    const csp = page.headers.get("content-security-policy") ?? "";
+    const nonce = csp.match(/script-src 'nonce-([^']+)'/)?.[1];
+    expect(nonce).toBeTruthy();
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).not.toContain("unsafe-inline");
+    const form = await page.text();
+    // Only the nonce-authorized continuation script; it carries no values.
+    expect(form.match(/<script/g)).toHaveLength(1);
+    expect(form).toContain(`<script nonce="${nonce}">`);
+    expect(form).toContain("data-attended");
+    expect(form).not.toContain(target.split("/").at(-1));
+    expect(form).not.toContain(token);
     const proof = form.match(/name="proof" value="([^"]+)"/)?.[1] ?? "";
     const redeem = (origin = "https://june.example", value = proof) =>
       app.request(target, {
@@ -434,7 +446,7 @@ describe("webhook and operator HTTP boundary", () => {
           origin,
           "content-type": "application/x-www-form-urlencoded",
         },
-        body: new URLSearchParams({ confirmed: "yes", proof: value }),
+        body: new URLSearchParams({ proof: value }),
       });
     expect((await redeem("https://evil.example")).status).toBe(403);
     expect((await redeem("https://june.example", "bad")).status).toBe(403);
@@ -461,6 +473,44 @@ describe("webhook and operator HTTP boundary", () => {
       ).status,
     ).toBe(401);
     expect((await app.request(target)).status).toBe(410);
+    // Sign-in remembers the page that needed it, so a new June link resumes
+    // that page instead of starting over.
+    const signIn = await app.request(
+      "/console/session/login?returnTo=%2Fconsole%2Fusage",
+    );
+    const remembered = signIn.headers.get("set-cookie") ?? "";
+    expect(remembered).toContain("HttpOnly");
+    expect(remembered).toContain("SameSite=Strict");
+    const resume = await (await issue()).json();
+    const resumeTarget =
+      (await app.request(new URL(resume.url).pathname)).headers.get(
+        "location",
+      ) ?? "";
+    const resumed = await app.request(resumeTarget, {
+      method: "POST",
+      headers: {
+        origin: "https://june.example",
+        cookie: remembered.split(";")[0] ?? "",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        proof:
+          (await (await app.request(resumeTarget)).text()).match(
+            /name="proof" value="([^"]+)"/,
+          )?.[1] ?? "",
+      }),
+    });
+    expect(resumed.status).toBe(303);
+    expect(resumed.headers.get("location")).toBe("/console/usage");
+    expect(
+      resumed.headers
+        .getSetCookie()
+        .some(
+          (value) =>
+            value.startsWith("__Host-june-console-return=;") &&
+            value.includes("Max-Age=0"),
+        ),
+    ).toBe(true);
     const expires = await (await issue()).json();
     const expiredTarget =
       (await app.request(new URL(expires.url).pathname)).headers.get(
@@ -630,7 +680,7 @@ describe("webhook and operator HTTP boundary", () => {
       },
       body: new URLSearchParams({ proof: proof ?? "", token }),
     });
-    expect(login.status).toBe(200);
+    expect(login.status).toBe(303);
     expect(await login.text()).not.toContain(token);
     const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
     expect(cookie).not.toBe("");

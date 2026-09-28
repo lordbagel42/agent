@@ -5,7 +5,7 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { messagePage } from "./view.js";
 
@@ -15,10 +15,25 @@ export interface PrivateRouteSecurity {
   csrfSecret: string;
   /** Set only when this host mounts the browser session bridge. */
   signInPath?: string;
+  /** The bridge's sign-out page, linked from authenticated pages. */
+  signOutPath?: string;
   /** Trusted owner/session identity, never a request field. Undefined denies access. */
   authenticate(request: Request): Promise<string | undefined>;
 }
 export type PrivateEnv = { Variables: { principal: string; nonce: string } };
+
+/** Scripts stay nonce-only and are allowed solely on pages that opt in. */
+export function contentSecurityPolicy(nonce: string, script = false) {
+  return `default-src 'none';${script ? ` script-src 'nonce-${nonce}';` : ""} style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
+}
+
+/** Permit this response's nonce script: mechanical continuation, never consent. */
+export function allowNonceScript(c: Context<PrivateEnv>) {
+  c.header(
+    "Content-Security-Policy",
+    contentSecurityPolicy(c.get("nonce"), true),
+  );
+}
 
 /** Mount only on private ingress. Disable/redact URL and body access logs upstream. */
 export function privateRoutes(security: PrivateRouteSecurity) {
@@ -53,27 +68,34 @@ export function privateRoutes(security: PrivateRouteSecurity) {
     c.header("X-Content-Type-Options", "nosniff");
     c.header("X-Frame-Options", "DENY");
     c.header("X-Robots-Tag", "noindex, nofollow, noarchive");
-    c.header(
-      "Content-Security-Policy",
-      `default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
-    );
+    c.header("Content-Security-Policy", contentSecurityPolicy(nonce));
     const principal = await security.authenticate(c.req.raw);
-    if (!principal)
+    if (!principal) {
+      // A cross-site navigation omits the Strict session cookie, so a GET
+      // continues through a same-origin document to sign-in. That route
+      // forwards an existing session and never redirects back unauthenticated.
+      const navigation = c.req.method === "GET" && !!security.signInPath;
       return c.html(
         messagePage(
           nonce,
-          "Authentication required",
-          "Sign in through this host's private session entry point, then open the console or original action link again.",
+          navigation ? "Sign in to continue" : "Authentication required",
+          navigation
+            ? "Opening sign-in. If this browser is already signed in, your page opens next."
+            : c.req.method === "GET"
+              ? "Sign in through this host's private session entry point, then open the console or original action link again."
+              : "This request was not processed because there is no active dashboard session. Sign in again, then repeat the step from its page.",
           401,
           security.signInPath
             ? {
-                label: "Sign in →",
-                href: `${security.signInPath}${c.req.method === "GET" ? `?returnTo=${encodeURIComponent(new URL(c.req.url).pathname)}` : ""}`,
+                label: "Sign in",
+                href: `${security.signInPath}${navigation ? `?returnTo=${encodeURIComponent(new URL(c.req.url).pathname)}` : ""}`,
+                automatic: navigation,
               }
             : undefined,
         ),
         401,
       );
+    }
     c.set("principal", principal);
     // no-referrer makes native form submissions send Origin: null in browsers.
     // Accept that only with browser-enforced same-origin fetch metadata; the

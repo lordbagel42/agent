@@ -8,16 +8,20 @@ import {
 import {
   badge,
   confirmForm,
+  consoleNavigation,
   messagePage,
   metadata,
   outcomeDescription,
   page,
+  utc,
 } from "../console/view.js";
 import type { ToolAction } from "../tools/broker.js";
 import type { OpaqueActionLinks } from "./opaque.js";
 
 export interface ActionLinkDependencies {
   security: PrivateRouteSecurity;
+  /** Console mount for shared navigation; omitted for standalone mounts. */
+  console?: { path: string; connectionsAvailable?: boolean };
   links: OpaqueActionLinks;
   /** Trusted host resolution only. Return no credentials/secrets in arguments.
    * Verify matchesGrant with the configured owner before returning a payload for review.
@@ -32,6 +36,16 @@ export interface ActionLinkDependencies {
 export function createActionLinkRoutes(deps: ActionLinkDependencies) {
   const app = privateRoutes(deps.security);
   const proof = confirmations(deps.security.csrfSecret);
+  const chrome = deps.console
+    ? {
+        navigation: consoleNavigation(
+          deps.console.path,
+          undefined,
+          deps.console.connectionsAvailable,
+        ),
+        signOut: deps.security.signOutPath,
+      }
+    : {};
   app.get("/:token", async (c) => {
     const principal = c.get("principal");
     let link: ReturnType<OpaqueActionLinks["inspect"]>;
@@ -53,19 +67,17 @@ export function createActionLinkRoutes(deps: ActionLinkDependencies) {
       link.grantId,
       c.req.param("token"),
     );
+    const ready = link.status === "ready" && action;
     return c.html(
       page(
         "Review linked action",
         c.get("nonce"),
-        html`<div class="review-grid"><div class="stack"><section class="panel" id="scope"><div class="panel-heading"><h2>Action scope</h2>${badge(link.status)}</div>${metadata({ ...(action ? { Tool: action.tool, Account: action.account, "Credential item": action.item, "Destination origin": action.origin } : {}), "Intended audience": principal, "Link expires": new Date(link.expiresAt).toISOString() })}</section><section class="panel" id="payload">${action ? html`<details open><summary>Exact action payload <span class="format">JSON</span></summary><pre>${JSON.stringify(action, null, 2)}</pre></details>` : html`<div class="panel-heading"><h2>Action payload</h2></div><div class="empty"><span class="empty-mark" aria-hidden="true">—</span><span>Action details unavailable. Execution is disabled.</span></div>`}</section></div><aside class="panel" id="confirmation"><div class="panel-heading"><h2>${link.status === "ready" && action ? "Authorize execution" : "Execution unavailable"}</h2></div><div class="panel-body">${link.status === "ready" && action ? html`<div class="callout"><strong>One grant. One execution.</strong><p>Review the exact payload and intended audience. Permission is checked again before execution.</p></div>${confirmForm(proof.issue(principal, new URL(c.req.url).pathname, binding(action)), "Confirm and execute once")}<p class="hint">The review proof is valid for 10 minutes. The link and grant may expire sooner; the proof does not extend either expiry.</p>` : html`<div class="callout ${link.status === "unknown" ? "warning" : ""}"><strong>${link.status === "unknown" ? "Outcome unknown" : "Execution disabled"}</strong><p>${link.status === "ready" ? "The host could not resolve the approved payload. Nothing can execute without those details." : outcomeDescription(link.status)}</p></div><button type="button" class="full" disabled>Execution disabled</button>`}</div></aside></div>`,
+        html`<div class="grid-2"><div class="section">${metadata({ ...(action ? { Tool: action.tool, Account: action.account, "Credential item": action.item, "Destination origin": action.origin } : {}), "Intended audience": principal, "Link expires": utc(link.expiresAt) })}${action ? html`<details class="disclosure section" open><summary>Exact action payload</summary><div class="disclosure-body"><pre>${JSON.stringify(action, null, 2)}</pre></div></details>` : html`<div class="section notice"><strong>Action details unavailable</strong><p>Execution is disabled.</p></div>`}</div><section class="section card" aria-labelledby="decision"><h2 id="decision">${ready ? "Authorize execution" : "Execution unavailable"}</h2>${ready ? html`<p><strong>One grant. One execution.</strong> Review the exact payload and intended audience. Permission is checked again before execution.</p>${confirmForm(proof.issue(principal, new URL(c.req.url).pathname, binding(action)), "Confirm and execute once")}<p class="hint">The review proof is valid for 10 minutes. The link and grant may expire sooner; the proof does not extend either expiry.</p>` : html`<p>${link.status === "ready" ? "The host could not resolve the approved payload. Nothing can execute without those details." : outcomeDescription(link.status)}</p><button type="button" class="full" disabled>Execution disabled</button>`}</section></div>`,
         {
+          ...chrome,
           description:
             "A private, scoped action. Opening this link never executes it.",
-          navigation: [
-            { label: "Scope", href: "#scope", current: true },
-            { label: "Exact payload", href: "#payload" },
-            { label: "Confirmation", href: "#confirmation" },
-          ],
+          status: badge(link.status),
         },
       ),
     );
@@ -129,8 +141,10 @@ export function createActionLinkRoutes(deps: ActionLinkDependencies) {
       page(
         "Action receipt",
         c.get("nonce"),
-        html`<section class="panel receipt"><div class="panel-body">${badge(receipt.status)}<h2>${receipt.status === "unknown" ? "The outcome needs reconciliation" : "The host recorded an outcome"}</h2><div class="callout ${receipt.status === "unknown" ? "warning" : ""}"><p>${outcomeDescription(receipt.status)}</p></div><div class="receipt-meta"><span class="eyebrow">Receipt ID</span><code>${receipt.id}</code></div></div></section>`,
+        html`<div class="card">${badge(receipt.status)}<h2>${receipt.status === "unknown" ? "The outcome needs reconciliation" : "The host recorded an outcome"}</h2><p>${outcomeDescription(receipt.status)}</p><p class="hint">Receipt ID <code>${receipt.id}</code></p></div>`,
         {
+          ...chrome,
+          narrow: true,
           description:
             "This grant has been consumed. It will not execute again.",
         },

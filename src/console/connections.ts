@@ -1,8 +1,8 @@
-import { Hono } from "hono";
-import { getCookie } from "hono/cookie";
+import { type Context, Hono } from "hono";
 import { html } from "hono/html";
 import {
   ConnectionInputError,
+  type ConnectionView,
   type McpConnections,
   type ToolPermission,
 } from "../tools/connections.js";
@@ -14,10 +14,19 @@ import { createConnectionOAuthRoutes } from "./connection-oauth.js";
 import {
   binding,
   confirmations,
+  type PrivateEnv,
   type PrivateRouteSecurity,
   privateRoutes,
 } from "./security.js";
-import { badge, confirmForm, consoleNavigation, page } from "./view.js";
+import {
+  badge,
+  confirmForm,
+  consoleNavigation,
+  metadata,
+  page,
+  relative,
+  utc,
+} from "./view.js";
 
 export interface ConnectionDependencies {
   store: McpConnections;
@@ -27,6 +36,137 @@ export interface ConnectionDependencies {
   githubAppSlug?: string;
 }
 
+// Account providers use their own sign-in; every other entry is a tool server.
+const providers = [
+  {
+    id: "github",
+    name: "GitHub",
+    purpose:
+      "Commits, repositories and issues through GitHub's official MCP server.",
+    setup:
+      "The host must register a GitHub App and configure its client credentials, owner account ID and webhook secret.",
+    notes:
+      "Account authorization, repository installation and tool permissions are separate steps. Tokens refresh privately when possible; a failed or uncertain refresh requires reconnecting. Events wake June only when the host's shared event ingress is enabled, and receiving an event grants no permissions.",
+  },
+  {
+    id: "slack",
+    name: "Slack",
+    purpose:
+      "Search Slack as you through Slack's official MCP server. Separate from June's bot login.",
+    setup:
+      "The host must configure the Slack app client credentials and register this dashboard's callback.",
+    notes: `Slack app ${SLACK_APP_ID}. Expired Slack authorization requires reconnecting.`,
+  },
+  {
+    id: "amp",
+    name: "Amp",
+    purpose:
+      "Use Amp through your own Amp account. No copied CLI login or API key.",
+    setup: "Amp sign-in requires a public HTTPS dashboard origin.",
+    notes:
+      "Expired Amp access requires reconnecting; there is no background refresh.",
+  },
+] as const;
+const accountIds: readonly string[] = providers.map(({ id }) => id);
+
+const expired = (connection: ConnectionView) =>
+  !!connection.expiresAt &&
+  connection.expiresAt <= Date.now() &&
+  !connection.refreshable;
+const serverStatus = (connection: ConnectionView) =>
+  expired(connection)
+    ? "Authorization expired"
+    : connection.status === "connected"
+      ? "Tools discovered"
+      : connection.status === "unavailable"
+        ? "Discovery failed"
+        : "Not tested";
+const toolSummary = (connection: ConnectionView) => {
+  const enabled = connection.tools.filter(
+    (tool) => tool.permission !== "disabled",
+  ).length;
+  return connection.status === "not_tested"
+    ? "Tools not discovered yet"
+    : connection.status === "unavailable"
+      ? "Last discovery failed"
+      : `${enabled} of ${connection.tools.length} tools enabled`;
+};
+const requestStatus: Record<string, string> = {
+  awaiting_approval: "Awaiting approval",
+  unknown: "Outcome unknown",
+  not_started: "Not started",
+};
+
+/** Items the owner should act on, for the overview. Links only; no actions. */
+export function connectionAttention(store: McpConnections) {
+  const base = "/console/connections";
+  const connections = store.list();
+  const name = (id: string) =>
+    connections.find((connection) => connection.id === id)?.name ??
+    "a removed connection";
+  return [
+    ...store
+      .proposals()
+      .filter(({ status }) => ["awaiting_approval", "unknown"].includes(status))
+      .map((proposal) =>
+        proposal.status === "awaiting_approval"
+          ? {
+              title: `Review ${proposal.tool}`,
+              detail: `Tool request on ${name(proposal.connection)} · expires ${relative(proposal.expiresAt)}`,
+              href: `${base}/approvals/${proposal.id}`,
+              status: "Awaiting approval",
+            }
+          : {
+              title: `Reconcile ${proposal.tool}`,
+              detail: `Outcome unknown on ${name(proposal.connection)}. Check the external result; it is never retried automatically.`,
+              href: `${base}/approvals/${proposal.id}`,
+              status: "Outcome unknown",
+            },
+      ),
+    ...connections
+      .filter(
+        (connection) =>
+          expired(connection) || connection.status === "unavailable",
+      )
+      .map((connection) =>
+        expired(connection)
+          ? {
+              title: `Reconnect ${connection.name}`,
+              detail: "Its saved authorization has expired.",
+              href: accountIds.includes(connection.id)
+                ? `${base}#${connection.id}`
+                : `${base}/${connection.id}`,
+              status: "Authorization expired",
+            }
+          : {
+              title: `Check ${connection.name}`,
+              detail:
+                "Tool discovery failed. No tools were called; the cause is unknown.",
+              href: `${base}/${connection.id}`,
+              status: "Discovery failed",
+            },
+      ),
+  ];
+}
+
+/** Counts for the overview. proposals() reports recent history only. */
+export function connectionSummary(store: McpConnections) {
+  const connections = store.list();
+  return {
+    saved: connections.length,
+    enabled: connections.reduce(
+      (sum, connection) =>
+        sum +
+        connection.tools.filter((tool) => tool.permission !== "disabled")
+          .length,
+      0,
+    ),
+    awaiting: store
+      .proposals()
+      .filter(({ status }) => status === "awaiting_approval").length,
+  };
+}
+
 export function createConnectionRoutes(
   security: PrivateRouteSecurity,
   deps: ConnectionDependencies,
@@ -34,7 +174,11 @@ export function createConnectionRoutes(
   const root = new Hono();
   const proof = confirmations(security.csrfSecret);
   const base = "/console/connections";
-  const navigation = consoleNavigation("/console", "connections", true);
+  const chrome = {
+    navigation: consoleNavigation("/console", "connections", true),
+    signOut: security.signOutPath,
+  };
+  const crumbs = [{ label: "Connections", href: base }];
   const addForm = (
     principal: string,
     values = { name: "", url: "" },
@@ -44,14 +188,31 @@ export function createConnectionRoutes(
       error?.field === field
         ? html` aria-invalid="true" aria-describedby="add-error"`
         : "";
-    return html`<section class="panel"><div class="panel-heading"><h2>Add an MCP server</h2>${badge("Streamable HTTP")}</div><div class="panel-body"><form method="post" action="${base}/add" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue(principal, `${base}/add`, "add")}">${error ? html`<div id="add-error" class="callout warning" role="alert"><strong>Connection not added</strong><p>${error.message}</p><p>Safe name and URL entries are retained. For your security, sensitive URL entries are cleared and any bearer token must be entered again.</p></div>` : ""}<label class="field" for="name">Name</label><input id="name" name="name" required maxlength="80" placeholder="My research tools" value="${values.name}"${invalid("name")}><label class="field" for="url">HTTPS server URL</label><input id="url" name="url" type="url" required maxlength="2048" placeholder="https://example.com/mcp" value="${values.url}"${invalid("url")}><label class="field" for="token">Bearer token <span class="muted">optional for public servers</span></label><input id="token" name="token" type="password" maxlength="4000" autocomplete="off"${invalid("token")}><p class="small muted">Use HTTPS without a username, password, query or fragment. Use a server you trust. Its operator receives your token and tool arguments. Credentials are encrypted on the host, never shown again. Generic OAuth and local commands are not supported.</p><button type="submit">Add connection</button></form></div></section>`;
+    return html`<form method="post" action="${base}/add" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue(principal, `${base}/add`, "add")}">${error ? html`<div id="add-error" class="notice" data-tone="warn" role="alert"><strong>Server not added</strong><p>${error.message}</p><p>Safe name and URL entries are kept. Sensitive URL entries are cleared, and any bearer token must be entered again.</p></div>` : ""}<label class="field" for="name"><span>Name</span><input id="name" name="name" required maxlength="80" placeholder="My research tools" value="${values.name}"${invalid("name")}></label><label class="field" for="url"><span>HTTPS server URL</span><input id="url" name="url" type="url" required maxlength="2048" placeholder="https://example.com/mcp" value="${values.url}"${invalid("url")}></label><label class="field" for="token"><span>Bearer token <span class="hint">optional for public servers</span></span><input id="token" name="token" type="password" maxlength="4000" autocomplete="off"${invalid("token")}></label><p class="hint">Streamable HTTP over HTTPS, without a username, password, query or fragment. Use a server you trust: its operator receives your token and tool arguments. Credentials are encrypted on the host and never shown again. Generic OAuth and local commands are not supported.</p><div class="actions"><button type="submit">Add server</button></div></form>`;
   };
-  const slackOAuth = createConnectionOAuthRoutes(security, {
-    id: "slack",
-    name: "Slack",
-    flow: deps.slack,
-  });
-  root.route("/slack", slackOAuth.routes);
+  const oauth = {
+    github: createConnectionOAuthRoutes(security, {
+      id: "github",
+      name: "GitHub",
+      flow: deps.github,
+    }),
+    slack: createConnectionOAuthRoutes(security, {
+      id: "slack",
+      name: "Slack",
+      flow: deps.slack,
+    }),
+    amp: createConnectionOAuthRoutes(security, {
+      id: "amp",
+      name: "Amp",
+      flow: deps.amp,
+    }),
+  };
+  const configured = {
+    github: !!deps.github,
+    slack: !!deps.slack,
+    amp: !!deps.amp,
+  };
+  root.route("/slack", oauth.slack.routes);
   // The OAuth server fetches this static public document without a June session.
   // Ingress must expose only this exact metadata path, not the private console.
   root.get("/amp/client.json", (c) => {
@@ -65,56 +226,97 @@ export function createConnectionRoutes(
     );
     return c.json(deps.amp.clientMetadataDocument);
   });
-  const ampOAuth = createConnectionOAuthRoutes(security, {
-    id: "amp",
-    name: "Amp",
-    flow: deps.amp,
-  });
-  root.route("/amp", ampOAuth.routes);
-  const githubOAuth = createConnectionOAuthRoutes(security, {
-    id: "github",
-    name: "GitHub",
-    flow: deps.github,
-  });
-  root.route("/github", githubOAuth.routes);
+  root.route("/amp", oauth.amp.routes);
+  root.route("/github", oauth.github.routes);
   const app = privateRoutes(security);
   const field = (value: unknown) => (typeof value === "string" ? value : "");
-  app.get("/", (c) => {
-    const connections = deps.store.list();
-    const slack = connections.find((connection) => connection.id === "slack");
-    const expired = !!slack?.expiresAt && slack.expiresAt <= Date.now();
-    const resumable = slackOAuth.hasPending(getCookie(c, slackOAuth.cookie));
-    const amp = connections.find((connection) => connection.id === "amp");
-    const ampExpired = !!amp?.expiresAt && amp.expiresAt <= Date.now();
-    const ampPending = ampOAuth.hasPending(getCookie(c, ampOAuth.cookie));
-    const github = connections.find((connection) => connection.id === "github");
-    const githubExpired =
-      !!github?.expiresAt &&
-      github.expiresAt <= Date.now() &&
-      !github.refreshable;
-    const githubPending = githubOAuth.hasPending(
-      getCookie(c, githubOAuth.cookie),
+  const connectForm = (principal: string, id: string, label: string) =>
+    html`<form method="post" action="${base}/${id}/connect"><input type="hidden" name="proof" value="${proof.issue(principal, `${base}/${id}/connect`, id)}"><button type="submit">${label}</button></form>`;
+  const rejected = (c: Context<PrivateEnv>, title: string, detail: string) =>
+    c.html(
+      page(
+        title,
+        c.get("nonce"),
+        html`<div class="notice" data-tone="danger"><p>${detail}</p></div><div class="actions"><a class="button secondary" href="${base}">Back to Connections</a></div>`,
+        { ...chrome, narrow: true },
+      ),
+      403,
     );
+  const account = (
+    c: Context<PrivateEnv>,
+    provider: (typeof providers)[number],
+    connection: ConnectionView | undefined,
+  ) => {
+    const principal = c.get("principal");
+    const { id, name } = provider;
+    const pending = oauth[id].pending(c, principal);
+    const manage = connection
+      ? html`<a class="button secondary" href="${base}/${id}">Manage</a>`
+      : "";
+    let status: ReturnType<typeof badge>;
+    let detail: string;
+    let action: ReturnType<typeof html> | string = "";
+    if (pending?.state === "returned") {
+      status = badge("Approval received");
+      detail = `${name} approved June. Finish to verify your account and save the connection.`;
+      action = html`<form method="post" action="${base}/${id}/finish"><input type="hidden" name="proof" value="${pending.proof}"><button type="submit">Finish connecting</button></form>`;
+    } else if (pending) {
+      status = badge(`Waiting for ${name}`, "warn");
+      detail = `A ${name} sign-in started in this browser hasn't returned yet. Starting again replaces it.`;
+      action = html`${connectForm(principal, id, "Start again")}${manage}`;
+    } else if (connection && expired(connection)) {
+      status = badge("Authorization expired");
+      detail = `Reconnect to use ${name} tools again. Reconnecting resets tool permissions.`;
+      action = html`${configured[id] ? connectForm(principal, id, `Reconnect ${name}`) : ""}${manage}`;
+    } else if (connection?.authenticated) {
+      status = badge("Authorization saved");
+      detail = `${toolSummary(connection)}${connection.account ? ` · account ${connection.account}` : ""}`;
+      action = html`${manage}${id === "github" && deps.githubAppSlug ? html`<a class="button secondary" href="${`https://github.com/apps/${encodeURIComponent(deps.githubAppSlug)}/installations/new`}">Choose repositories</a>` : ""}`;
+    } else {
+      status = badge("Not connected");
+      detail = provider.purpose;
+      action = html`${configured[id] ? connectForm(principal, id, `Connect ${name}`) : ""}${manage}`;
+    }
+    return html`<li class="item" id="${id}"><div class="item-body"><h3>${name}</h3><p>${detail}</p></div><div class="item-side">${status}${action}</div><details class="more"><summary>About ${name} access</summary><div class="more-body"><p class="hint">${connection && detail !== provider.purpose ? `${provider.purpose} ` : ""}${provider.notes} Saving authorization does not enable tools; each tool starts disabled.</p></div></details></li>`;
+  };
+  app.get("/", (c) => {
+    const principal = c.get("principal");
+    const connections = deps.store.list();
+    const proposals = deps.store.proposals();
+    const find = (id: string) =>
+      connections.find((connection) => connection.id === id);
+    const available = providers.filter(({ id }) => configured[id] || find(id));
+    const unavailable = providers.filter(
+      ({ id }) => !configured[id] && !find(id),
+    );
+    const servers = connections.filter(({ id }) => !accountIds.includes(id));
+    const open = proposals.filter(({ status }) =>
+      ["awaiting_approval", "unknown"].includes(status),
+    );
+    const earlier = proposals.filter((proposal) => !open.includes(proposal));
+    const request = (proposal: (typeof proposals)[number]) =>
+      html`<li class="item"><div class="item-body"><h3>${proposal.tool}</h3><p class="item-meta">${find(proposal.connection)?.name ?? "Removed connection"}${proposal.status === "awaiting_approval" ? ` · expires ${relative(proposal.expiresAt)}` : ""}</p></div><div class="item-side">${badge(requestStatus[proposal.status] ?? proposal.status)}<a class="button${proposal.status === "awaiting_approval" ? "" : " secondary"}" href="${base}/approvals/${proposal.id}">Review</a></div></li>`;
     return c.html(
       page(
         "Connections",
         c.get("nonce"),
-        html`
-    <div class="stack">
-    <section class="panel"><div class="panel-heading"><h2>GitHub</h2>${badge(githubPending ? "Save confirmation needed" : githubExpired ? "Reconnect required" : github?.authenticated ? "Authorization saved" : deps.github ? "Not connected" : "Setup required")}</div><div class="panel-body">
-    <p>Let June inspect commits, work with repositories and issues, and receive GitHub events. Account authorization, repository installation and tool permissions are separate steps.</p>
-    ${githubPending ? html`<a class="button" href="${base}/github/finish">Resume GitHub setup →</a>` : html`<div class="actions">${deps.github ? html`<form method="post" action="${base}/github/connect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/github/connect`, "github")}"><button type="submit">${github ? "Reconnect GitHub →" : "Connect GitHub →"}</button></form>` : html`<p>The host must register a GitHub App and configure its client credentials, owner account ID and webhook secret.</p>`}${github ? html`<a class="button" href="${base}/github">Manage GitHub tools →</a>` : ""}${deps.githubAppSlug ? html`<a class="button" href="${`https://github.com/apps/${encodeURIComponent(deps.githubAppSlug)}/installations/new`}">Choose GitHub repositories →</a>` : ""}</div>`}
-    <p class="small muted">Tools start disabled. Enable trusted reads; other actions require approval. Tokens refresh privately when possible; failed or uncertain refresh requires reconnecting. Reconnecting resets tool permissions. Events wake June only when the host's shared event ingress is enabled; receiving an event does not grant permissions.</p></div></section>
-    <div class="summary-bar"><div><span class="eyebrow">MCP servers</span><p>${deps.store.list().length} connected configurations</p></div><div><span class="eyebrow">Audience</span><p>Owner-private conversations only</p></div><div><span class="eyebrow">Default permission</span><p>All tools disabled</p></div></div>
-    </div>
-    <section class="panel"><div class="panel-heading"><h2>Amp</h2>${badge(ampPending ? "Save confirmation needed" : ampExpired ? "Authorization expired" : amp?.authenticated ? "Authorization saved" : deps.amp ? "Not connected" : "Setup required")}</div><div class="panel-body">${ampPending ? html`<p>Your Amp sign-in is waiting for confirmation. Resume to verify the account and save its authorization.</p><a class="button" href="${base}/amp/finish">Resume Amp setup →</a>` : html`<p>${ampExpired ? "Your Amp authorization has expired. Reconnect to use Amp tools again." : amp?.authenticated ? "Your Amp authorization is saved. Discover tools, then choose what June may read or propose from your private conversations." : "Let June use Amp through your account. Sign in directly with Amp; no copied CLI login or API key is needed."}</p><div class="actions">${amp ? html`<a class="button" href="${base}/amp">Manage Amp tools →</a>` : ""}${deps.amp ? html`<form method="post" action="${base}/amp/connect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/amp/connect`, "amp")}"><button type="submit">${amp ? "Reconnect Amp →" : "Connect Amp →"}</button></form>` : html`<p>A public HTTPS console origin is required for Amp sign-in.</p>`}</div>`}<p class="small muted">Saving authorization does not enable tools. Reads need your permission; actions need approval. Expired grants require reconnecting.</p></div></section>
-    <div class="grid"><section class="panel"><div class="panel-heading"><h2>Slack</h2>${badge(resumable ? "Save confirmation needed" : expired ? "Authorization expired" : slack?.authenticated ? "Authorization saved" : deps.slack ? "Not connected" : "Setup required")}</div><div class="panel-body">${resumable ? html`<p>Your Slack return is waiting for confirmation. Resume to save this authorization; do not start another Slack sign-in.</p><div class="actions"><a class="button" href="${base}/slack/finish">Resume Slack setup →</a></div>` : html`<p>${slack?.authenticated ? (expired ? "Your saved Slack authorization has expired. Reconnect to use Slack tools again." : "June has saved your Slack authorization. Manage the connection to discover tools and review their permissions.") : "Connect Slack's official MCP with your own Slack account. This is separate from June's bot login."}</p>${slack ? html`<div class="actions"><a class="button" href="${base}/slack">Manage Slack tools →</a></div>` : ""}${deps.slack ? html`<form method="post" action="${base}/slack/connect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/slack/connect`, "slack")}"><button type="submit">${slack ? "Reconnect Slack →" : "Connect Slack →"}</button></form>` : html`<div class="callout">The host must configure the Slack app client credentials and register this dashboard's callback before OAuth is available.</div>`}`}<p class="small muted">App ${SLACK_APP_ID} · Saving authorization does not enable tools. Reconnecting resets tool permissions.</p></div></section>
-    ${addForm(c.get("principal"))}</div>
-    <div class="section-heading"><h2>Your connections</h2><span class="small muted">Test, inspect, then enable tools</span></div><div class="stack">${deps.store.list().map((connection) => html`<section class="panel"><div class="panel-heading"><h2>${connection.name}</h2>${badge(connection.expiresAt && connection.expiresAt <= Date.now() ? "Authorization expired" : connection.status)}</div><div class="panel-body"><p><code>${connection.url}</code></p><p class="small muted">${connection.authenticated ? "Credential saved" : "No credential"} · ${connection.tools.filter((tool) => tool.permission !== "disabled").length} enabled / ${connection.tools.length} discovered</p>${connection.status === "unavailable" ? html`<div class="callout warning">Discovery failed. Check the URL, credential, account permissions and server availability. No tools were called.</div>` : ""}<div class="actions"><a class="button" href="${base}/${connection.id}">Manage connection →</a></div></div></section>`)}${deps.store.list().length ? "" : html`<section class="panel"><div class="empty">No connections yet. Add a server or connect Slack to get started.</div></section>`}</div>
-    <div class="section-heading"><h2>Tool approvals</h2><span class="small muted">Recent requests and recorded outcomes</span></div><section class="panel">${deps.store.proposals().map((proposal) => html`<article class="record"><div><h3>${proposal.tool}</h3><p>Expires ${new Date(proposal.expiresAt).toISOString()}</p><a href="${base}/approvals/${proposal.id}">Review exact request →</a></div>${badge(proposal.status)}</article>`)}${deps.store.proposals().length ? "" : html`<div class="empty">No pending requests. June will link you here when a tool needs approval.</div>`}</section>`,
+        html`${
+          open.some(({ status }) => status === "awaiting_approval")
+            ? html`<div class="notice" data-tone="warn"><strong>${open.filter(({ status }) => status === "awaiting_approval").length} recent tool request${open.filter(({ status }) => status === "awaiting_approval").length === 1 ? "" : "s"} awaiting your approval</strong><p>Nothing runs until you approve the exact request. <a href="#requests">Review requests</a></p></div>`
+            : ""
+        }<section class="section" aria-labelledby="accounts"><div class="section-head"><h2 id="accounts">Accounts</h2><span class="section-note">Sign in once on the provider; June saves the connection when you return</span></div>${available.length ? html`<ul class="list">${available.map((provider) => account(c, provider, find(provider.id)))}</ul>` : html`<div class="list"><p class="empty">No account providers are configured on this host.</p></div>`}${
+          unavailable.length
+            ? html`<details class="disclosure"><summary>Not set up on this host: ${unavailable.map(({ name }) => name).join(", ")}</summary><div class="disclosure-body">${unavailable.map((provider) => html`<p><strong>${provider.name}.</strong> <span class="hint">${provider.setup}</span></p>`)}</div></details>`
+            : ""
+        }</section><section class="section" aria-labelledby="servers"><div class="section-head"><h2 id="servers">Tool servers</h2><span class="section-note">Test, review contracts, then choose what June may use</span></div>${
+          servers.length
+            ? html`<ul class="list">${servers.map((connection) => html`<li class="item"><div class="item-body"><h3>${connection.name}</h3><p><code>${connection.url}</code></p><p class="item-meta">${connection.authenticated ? "Credential saved" : "No credential"} · ${toolSummary(connection)}</p></div><div class="item-side">${badge(serverStatus(connection))}<a class="button secondary" href="${base}/${connection.id}">Manage</a></div></li>`)}</ul>`
+            : html`<div class="list"><p class="empty">No tool servers yet. Add a trusted MCP server below.</p></div>`
+        }<details class="disclosure"${servers.length ? "" : html` open`}><summary>Add an MCP server</summary><div class="disclosure-body">${addForm(principal)}</div></details></section><section class="section" aria-labelledby="requests"><div class="section-head"><h2 id="requests">Tool requests</h2><span class="section-note">Recent history only. June links you here when a tool needs approval</span></div>${open.length ? html`<ul class="list">${open.map(request)}</ul>` : html`<div class="list"><p class="empty">No recent requests are waiting for you.</p></div>`}${earlier.length ? html`<details class="disclosure"><summary>Earlier requests (${earlier.length})</summary><ul class="list">${earlier.map(request)}</ul></details>` : ""}</section>`,
         {
-          navigation,
-          description: "Give June useful tools without giving away control.",
+          ...chrome,
+          description:
+            "Accounts and tool servers June can use. Every tool starts disabled until you choose otherwise.",
         },
       ),
     );
@@ -127,7 +329,12 @@ export function createConnectionRoutes(
       "add",
       form.proof,
     );
-    if (!command) return c.text("Invalid or expired form", 403);
+    if (!command)
+      return rejected(
+        c,
+        "Form expired",
+        "This form expired or came from elsewhere. Open Connections for a fresh form. Nothing was added.",
+      );
     // The store durably consumes this command, even after disconnection.
     const input = {
       name: field(form.name),
@@ -163,10 +370,14 @@ export function createConnectionRoutes(
       }
       return c.html(
         page(
-          "Check connection details",
+          "Check the server details",
           c.get("nonce"),
-          html`${addForm(c.get("principal"), { name: safe(input.name, 80), url }, error)}<p><a href="${base}">← Back to connections</a></p>`,
-          { navigation },
+          addForm(
+            c.get("principal"),
+            { name: safe(input.name, 80), url },
+            error,
+          ),
+          { ...chrome, crumbs, narrow: true },
         ),
         400,
       );
@@ -186,12 +397,35 @@ export function createConnectionRoutes(
           value.id === proposal.connection &&
           value.revision === proposal.revision,
       );
+    const reviewable = connection && proposal.status === "awaiting_approval";
     return c.html(
       page(
         "Review tool request",
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-heading"><h2>${proposal.tool}</h2>${badge(proposal.status)}</div><div class="panel-body">${connection ? html`<h3>${connection.name}</h3><p>Destination: <code>${connection.url}</code></p><p class="small muted">${connection.authenticated ? "Uses the credential saved for this connection. The credential is not shown." : "No saved credential is sent."}</p>` : html`<div class="callout warning">The connection has changed or been removed. The reviewed destination is no longer available. Ask June for a new request; this request cannot be approved.</div>`}<p class="small muted">Connection ID: ${proposal.connection} · Revision: ${proposal.revision}</p><p>This action may change external data. Verify the exact destination and arguments below. Approval authorizes this tool call once, not future calls. Approval expires ${new Date(proposal.expiresAt).toISOString()}.</p><pre>${JSON.stringify(proposal.arguments, null, 2)}</pre>${connection && proposal.status === "awaiting_approval" ? confirmForm(proof.issue(c.get("principal"), `${base}/approvals/${proposal.id}`, binding(proposal)), "Approve and execute once") : html`<p>No execution is available. Unknown outcomes must be checked externally; they are never retried here.</p>`}</div></section>`,
-        { navigation },
+        html`${connection ? "" : html`<div class="notice" data-tone="danger"><strong>Connection changed since this request</strong><p>The connection has changed or been removed, so the reviewed destination is no longer shown and this request can't be approved. Ask June for a new request if you still need it.</p></div>`}${metadata(
+          {
+            // The tool stays identifiable after any connection change.
+            Tool: proposal.tool,
+            // Destination facts only from the exact reviewed revision.
+            ...(connection
+              ? {
+                  Server: connection.name,
+                  Destination: connection.url,
+                  Credential: connection.authenticated
+                    ? "The saved credential for this connection is sent. It is not shown."
+                    : "No saved credential is sent.",
+                }
+              : {}),
+            Expires: `${utc(proposal.expiresAt)} (${relative(proposal.expiresAt)})`,
+          },
+        )}<section class="section" aria-labelledby="arguments"><div class="section-head"><h2 id="arguments">Exact arguments</h2><span class="section-note">Request ${proposal.id} · connection ${proposal.connection} · revision ${proposal.revision}</span></div><pre>${JSON.stringify(proposal.arguments, null, 2)}</pre></section><section class="section" aria-labelledby="decision"><div class="section-head"><h2 id="decision">Decision</h2></div><div class="card">${reviewable ? html`<p>This call may change external data. Approval runs this exact call once, not future calls.</p>${confirmForm(proof.issue(c.get("principal"), `${base}/approvals/${proposal.id}`, binding(proposal)), "Approve and run once", { statement: "I reviewed this exact request and approve running it once.", detail: `Approval must happen before ${utc(proposal.expiresAt)}.` })}` : proposal.status === "unknown" ? html`<p>The outcome is unknown and is never retried here. After checking independently that the call stopped and what it did, record the result by sending <code>!mcp-reconcile ${proposal.id} confirmed-stopped verified-succeeded</code> (or <code>verified-failed</code>) in your private conversation with June.</p>` : html`<p>No execution is available here. Unknown outcomes must be checked externally; they are never retried here.</p>`}</div></section>`,
+        {
+          ...chrome,
+          crumbs,
+          status: badge(requestStatus[proposal.status] ?? proposal.status),
+          description:
+            "Verify the destination and arguments. Approval authorizes exactly this call, once.",
+        },
       ),
     );
   });
@@ -210,7 +444,11 @@ export function createConnectionRoutes(
         form.proof,
       )
     )
-      return c.text("Request changed or confirmation expired", 403);
+      return rejected(
+        c,
+        "Request changed or approval expired",
+        "Nothing ran. Open the request again for a fresh review; changed, cancelled and expired requests cannot be approved.",
+      );
     await deps.store.confirm(proposal.id);
     return c.redirect(`${base}/approvals/${proposal.id}`, 303);
   });
@@ -219,29 +457,103 @@ export function createConnectionRoutes(
       .list()
       .find((value) => value.id === c.req.param("id"));
     if (!connection) return c.notFound();
+    const principal = c.get("principal");
     const path = `${base}/${connection.id}`;
-    const expired =
-      !!connection.expiresAt &&
-      connection.expiresAt <= Date.now() &&
-      !connection.refreshable;
+    const provider = providers.find(({ id }) => id === connection.id);
+    const lapsed = expired(connection);
+    const enabled = connection.tools.filter(
+      (tool) => tool.permission !== "disabled",
+    ).length;
+    // Enabled tools first; discovery order otherwise.
+    const tools = [...connection.tools].sort(
+      (a, b) =>
+        Number(a.permission === "disabled") -
+        Number(b.permission === "disabled"),
+    );
+    const next = lapsed
+      ? html`<div class="notice" data-tone="warn"><strong>Authorization expired</strong><p>${provider ? `Reconnect ${connection.name} to renew it. Reconnecting resets tool permissions.` : "Update this server's credential by adding it again; June can't renew it."}</p></div>`
+      : connection.status === "not_tested"
+        ? html`<div class="notice"><strong>${provider ? `Your ${connection.name} authorization is saved` : "Next: discover tools"}</strong><p>${provider ? "Next, discover tools, then review and enable the ones June may use. No tools are enabled yet." : "Discovery sends the saved credential to this exact server and lists its tools. It never runs a tool."}</p></div>`
+        : connection.status === "unavailable"
+          ? html`<div class="notice" data-tone="warn"><strong>Discovery failed</strong><p>Check the URL, credential, account permissions and server availability, then test again. No tools were called.</p></div>`
+          : enabled
+            ? ""
+            : html`<div class="notice"><strong>No tools enabled</strong><p>Review a tool's contract below and choose what June may use.</p></div>`;
     return c.html(
       page(
         connection.name,
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-heading"><h2>Connection</h2>${badge(expired ? "Authorization expired" : connection.status)}</div><div class="panel-body">${["slack", "amp"].includes(connection.id) && connection.authenticated ? html`<div class="callout"><strong>${expired ? "Authorization expired" : "Authorization saved"}</strong><p>${expired ? `Reconnect from Connections to renew your ${connection.name} authorization.` : connection.status === "not_tested" ? `Your ${connection.name} account was verified and its authorization saved. Next, discover tools below, then review and enable the ones June may use. No tools are enabled yet.` : `Your ${connection.name} authorization is stored. Tool discovery and permissions are separate; review their status below.`}</p>${connection.account ? html`<p class="small muted">Verified account: <code>${connection.account}</code></p>` : ""}<a href="${base}">← Connections</a></div>` : ""}<p><code>${connection.url}</code></p><p>Discovering tools sends your credential to this exact server. It never runs a tool. Changing a contract disables that tool until reviewed again.</p><form method="post" action="${path}/discover"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${path}/discover`, connection.revision)}"><button type="submit">Test & discover tools</button></form></div></section><div class="section-heading"><h2>Tool permissions</h2><span class="small muted">Changes apply immediately</span></div><div class="callout warning"><strong>Read-only is your authorization, not a server guarantee.</strong><p>Review the complete contract before allowing automatic reads. Use “Approval required” for anything that sends, edits, creates or deletes. Private results go to June's configured model; her answer enters your conversation history.</p></div><div class="stack">${connection.tools.map(
-          ({ contract, permission }) =>
-            html`<section class="panel"><div class="panel-heading"><h2>${contract.name}</h2>${badge(permission)}</div><div class="panel-body"><p>${contract.description ?? "No description supplied."}</p><details><summary>Inspect full tool contract</summary><pre>${JSON.stringify(contract, null, 2)}</pre></details><form method="post" action="${path}/permission"><input type="hidden" name="tool" value="${contract.name}"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${path}/permission`, binding([connection.revision, contract.name]))}"><label class="field">Permission <select name="permission">${(
-              [
-                ["disabled", "Disabled"],
-                ["read", "Allow read-only use in my DMs"],
-                ["approval", "Approval required for every call"],
-              ] as const
-            ).map(
-              ([value, label]) =>
-                html`<option value="${value}"${permission === value ? html` selected` : ""}>${label}</option>`,
-            )}</select></label><label class="field"><input type="checkbox" name="confirmed" value="yes" required> I reviewed this contract and authorize this permission.</label><button type="submit">Save permission</button></form></div></section>`,
-        )}${connection.tools.length ? "" : html`<section class="panel"><div class="empty">No tools discovered. Test this connection first.</div></section>`}</div><section class="panel"><div class="panel-body"><h2>Disconnect</h2><p>Forget this credential and block future calls. Already-started external actions cannot be recalled.</p><form method="post" action="${path}/disconnect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${path}/disconnect`, connection.revision)}"><label class="field"><input type="checkbox" name="confirmed" value="yes" required> Disconnect this server</label><button class="secondary" type="submit">Disconnect</button></form></div></section>`,
-        { navigation },
+        html`${next}<section class="section" aria-labelledby="details"><div class="section-head"><h2 id="details">Connection</h2></div>${metadata(
+          {
+            Endpoint: connection.url,
+            ...(connection.account
+              ? { "Verified account": connection.account }
+              : {}),
+            Credential: connection.authenticated
+              ? "Saved and encrypted on the host"
+              : "None",
+            ...(connection.expiresAt
+              ? {
+                  Authorization: lapsed
+                    ? `Expired ${utc(connection.expiresAt)}`
+                    : connection.refreshable
+                      ? `Renews automatically · current token ${connection.expiresAt <= Date.now() ? "renews when next used" : `until ${utc(connection.expiresAt)}`}`
+                      : `Expires ${utc(connection.expiresAt)}`,
+                }
+              : {}),
+            Tools: toolSummary(connection),
+          },
+        )}<div class="actions"><form method="post" action="${path}/discover"><input type="hidden" name="proof" value="${proof.issue(principal, `${path}/discover`, connection.revision)}"><button type="submit"${connection.status === "not_tested" ? "" : html` class="secondary"`}>Test & discover tools</button></form>${provider && configured[provider.id] ? html`<form method="post" action="${path}/connect"><input type="hidden" name="proof" value="${proof.issue(principal, `${path}/connect`, provider.id)}"><button type="submit" class="secondary">Reconnect ${connection.name}</button></form>` : ""}</div><p class="hint">Discovery sends your credential to this exact server and never runs a tool. A changed contract disables that tool until you review it again.${provider ? " Reconnecting replaces the saved authorization and resets tool permissions." : ""}</p></section><section class="section" aria-labelledby="tools"><div class="section-head"><h2 id="tools">Tools</h2><span class="section-note">${connection.tools.length} discovered · ${enabled} enabled · changes apply immediately</span></div>${
+          tools.length
+            ? html`<div class="notice" data-tone="warn"><strong>Read-only is your authorization, not a server guarantee.</strong><p>Review the complete contract before allowing automatic reads. Use approval for anything that sends, edits, creates or deletes. Private results go to June's configured model, and her answer enters your conversation history.</p></div><ul class="list">${tools.map(
+                ({ contract, permission }) =>
+                  html`<li class="item"><div class="item-body"><h3><code>${contract.name}</code></h3><p>${contract.description ?? "No description supplied."}</p></div><div class="item-side">${badge(permission === "read" ? "Reads allowed" : permission === "approval" ? "Needs approval" : "Disabled")}</div><details class="more"><summary>Review contract and permission</summary><div class="more-body"><pre>${JSON.stringify(contract, null, 2)}</pre>${confirmForm(
+                    proof.issue(
+                      principal,
+                      `${path}/permission`,
+                      binding([connection.revision, contract.name]),
+                    ),
+                    "Save permission",
+                    {
+                      action: `${path}/permission`,
+                      statement:
+                        "I reviewed this contract and authorize this permission.",
+                      detail:
+                        "The choice applies to this contract only. A changed contract disables the tool again.",
+                      fields: html`<input type="hidden" name="tool" value="${contract.name}"><label class="field"><span>Permission</span><select name="permission">${(
+                        [
+                          ["disabled", "Disabled"],
+                          ["read", "Allow read-only use in my DMs"],
+                          ["approval", "Approval required for every call"],
+                        ] as const
+                      ).map(
+                        ([value, label]) =>
+                          html`<option value="${value}"${permission === value ? html` selected` : ""}>${label}</option>`,
+                      )}</select></label>`,
+                    },
+                  )}</div></details></li>`,
+              )}</ul>`
+            : html`<div class="list"><p class="empty">No tools discovered. Test this connection first.</p></div>`
+        }</section><section class="section" aria-labelledby="disconnect"><div class="section-head"><h2 id="disconnect">Disconnect</h2></div><div class="card"><p>Forget this credential and block future calls. Already-started external actions can't be recalled.${provider ? ` Revoke June's access at ${connection.name} separately if needed.` : ""}</p>${confirmForm(
+          proof.issue(principal, `${path}/disconnect`, connection.revision),
+          "Disconnect",
+          {
+            action: `${path}/disconnect`,
+            statement: `Disconnect ${connection.name} from June`,
+            detail:
+              "June loses this connection and every tool permission on it.",
+            danger: true,
+          },
+        )}</div></section>`,
+        {
+          ...chrome,
+          crumbs,
+          status: badge(
+            provider && connection.authenticated && !lapsed
+              ? "Authorization saved"
+              : serverStatus(connection),
+          ),
+        },
       ),
     );
   });
@@ -264,7 +576,11 @@ export function createConnectionRoutes(
         ) ||
         (action !== "discover" && form.confirmed !== "yes")
       )
-        return c.text("Connection changed or confirmation expired", 403);
+        return rejected(
+          c,
+          "Connection changed or form expired",
+          "Nothing changed. Open the connection again and review its current state before retrying.",
+        );
       if (action === "discover")
         await deps.store.discover(connection.id, connection.revision);
       if (action === "disconnect")

@@ -1,18 +1,24 @@
-import { randomBytes } from "node:crypto";
-import { Hono } from "hono";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { type Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html } from "hono/html";
 import {
+  allowNonceScript,
   binding,
   confirmations,
+  type PrivateEnv,
   type PrivateRouteSecurity,
   privateRoutes,
 } from "./security.js";
-import { confirmForm, consoleNavigation, messagePage, page } from "./view.js";
+import { consoleNavigation, continueForm, page } from "./view.js";
 
-/** Shared browser return/owner-confirmation boundary for explicitly configured
- * providers. Callback URLs stay volatile; only an authenticated same-origin POST
- * exchanges a code. This does not relax the console's Strict session cookie. */
+/** Browser return for explicitly configured providers. The owner consents once,
+ * on the provider. Each attempt is bound to the initiating principal, the
+ * provider's state and the browser that started it: an HttpOnly Lax cookie,
+ * which a provider's top-level redirect still carries. The callback only
+ * records the return and moves to a same-origin document, where the Strict
+ * console session is present for an authenticated, signed finish POST.
+ * Pending state is consumed before the exchange, which is never retried. */
 export function createConnectionOAuthRoutes(
   security: PrivateRouteSecurity,
   provider: {
@@ -30,140 +36,264 @@ export function createConnectionOAuthRoutes(
   const proof = confirmations(security.csrfSecret);
   const base = "/console/connections";
   const path = `${base}/${id}`;
-  const navigation = consoleNavigation("/console", "connections", true);
+  const chrome = {
+    narrow: true,
+    navigation: consoleNavigation("/console", "connections", true),
+    signOut: security.signOutPath,
+  };
   const secure = security.origin.startsWith("https:");
-  const cookie = secure ? `__Host-june-${id}-return` : `june-${id}-return-dev`;
-  const callbacks = new Map<string, { url: string; expires: number }>();
-  const problem = (nonce: string, title: string, detail: string) =>
-    page(
-      title,
-      nonce,
-      html`<section class="panel"><div class="panel-body"><div class="callout warning"><p>${detail}</p></div><a class="button" href="${base}">Return to Connections →</a></div></section>`,
-      { navigation },
+  const cookie = secure ? `__Host-june-${id}-oauth` : `june-${id}-oauth-dev`;
+  const attempts = new Map<
+    string,
+    { principal: string; state: string; expires: number; callback?: string }
+  >();
+  const prune = () => {
+    for (const [key, attempt] of attempts)
+      if (attempt.expires <= Date.now()) attempts.delete(key);
+  };
+  const same = (a: string, b: string) => {
+    const left = Buffer.from(a);
+    const right = Buffer.from(b);
+    return left.length === right.length && timingSafeEqual(left, right);
+  };
+  const connectForm = (principal: string, label: string) =>
+    html`<form method="post" action="${path}/connect"><input type="hidden" name="proof" value="${proof.issue(principal, `${path}/connect`, id)}"><button type="submit">${label}</button></form>`;
+  const back = html`<a class="button secondary" href="${base}">Back to Connections</a>`;
+  const problem = (
+    c: Context<PrivateEnv>,
+    title: string,
+    detail: string,
+    status: 400 | 403 | 409 | 503,
+    options: {
+      signedIn?: boolean;
+      tone?: "neutral" | "warn";
+      actions?: ReturnType<typeof html>;
+    } = {},
+  ) =>
+    c.html(
+      page(
+        title,
+        c.get("nonce"),
+        html`<div class="notice" data-tone="${options.tone ?? (status === 503 ? "warn" : "danger")}"><p>${detail}</p></div><div class="actions">${options.actions ?? back}</div>`,
+        options.signedIn ? chrome : { narrow: true },
+      ),
+      status,
     );
+  // Anonymous: the provider's cross-site redirect omits the Strict session.
   const callback = privateRoutes({
     ...security,
     authenticate: async () => "oauth-return",
   });
   callback.get("/", (c) => {
-    for (const [key, value] of callbacks)
-      if (value.expires <= Date.now()) callbacks.delete(key);
-    if (!flow || callbacks.size >= 32 || c.req.url.length > 12_000)
-      return c.html(
-        messagePage(
-          c.get("nonce"),
-          `${name} connection unavailable`,
-          "Return to Connections and start a fresh sign-in.",
-          400,
-        ),
+    prune();
+    if (!flow || c.req.url.length > 12_000)
+      return problem(
+        c,
+        `${name} connection unavailable`,
+        "Return to Connections and start a fresh sign-in. Nothing was saved.",
         400,
       );
+    const key = getCookie(c, cookie) ?? "";
+    const attempt = attempts.get(key);
     const query = new URL(c.req.url).searchParams;
-    if (query.has("error") || !query.get("code") || !query.get("state"))
-      return c.html(
-        problem(
-          c.get("nonce"),
-          `${name} authorization incomplete`,
-          `${name} did not return a complete authorization. No new connection was saved. Return to Connections to start again.`,
-        ),
+    const state = query.get("state") ?? "";
+    const matches = !!attempt && !!state && same(state, attempt.state);
+    if (query.has("error")) {
+      if (matches) {
+        attempts.delete(key);
+        deleteCookie(c, cookie, { path: "/", secure });
+      }
+      return matches && query.get("error") === "access_denied"
+        ? problem(
+            c,
+            `${name} sign-in cancelled`,
+            `You cancelled on ${name}. Nothing was saved and June's tools are unchanged. Connect again from Connections whenever you're ready.`,
+            400,
+            { tone: "neutral" },
+          )
+        : problem(
+            c,
+            `${name} didn't authorize June`,
+            `${name} returned without an authorization. Nothing was saved. Start again from Connections.`,
+            400,
+            { tone: "warn" },
+          );
+    }
+    if (!attempt)
+      return problem(
+        c,
+        `${name} return not recognized`,
+        `This return doesn't belong to a ${name} sign-in started in this browser, or it expired or was already used. Nothing was saved. Start again from Connections in the browser you want to use.`,
         400,
       );
-    const key = randomBytes(32).toString("base64url");
-    callbacks.set(key, {
-      url: `${security.origin}${path}/callback${new URL(c.req.url).search}`,
-      expires: Date.now() + 600_000,
-    });
-    setCookie(c, cookie, key, {
-      secure,
-      httpOnly: true,
-      sameSite: "Strict",
-      path: "/",
-      maxAge: 600,
-    });
+    if (!matches)
+      return problem(
+        c,
+        `${name} return doesn't match`,
+        `This return doesn't match the ${name} sign-in started in this browser. Nothing was saved. Start again from Connections.`,
+        400,
+      );
+    if (!query.get("code"))
+      return problem(
+        c,
+        `${name} authorization incomplete`,
+        `${name} did not return a complete authorization. Nothing was saved. Start again from Connections.`,
+        400,
+      );
+    const url = `${security.origin}${path}/callback${new URL(c.req.url).search}`;
+    // A reload repeats the same return; a different code never replaces it.
+    if (attempt.callback && attempt.callback !== url)
+      return problem(
+        c,
+        `${name} return already received`,
+        `June already has a ${name} return for this sign-in. This one was ignored and nothing new was saved.`,
+        409,
+      );
+    attempt.callback = url;
     return c.html(
       page(
-        `${name} setup is not finished`,
+        "Returning to June",
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-body"><h2>One save confirmation remains</h2><p>You have returned from ${name}, but June has not saved this authorization yet. Continue here to review and save it with your owner session.</p><div class="actions"><a class="button" href="${path}/finish">Continue to save ${name} connection →</a></div><p class="small muted">This step expires after 10 minutes or if June restarts. Saving authorization does not enable tools.</p></div></section>`,
-        { navigation },
+        html`<div class="card"><p class="working" role="status">Finishing your ${name} connection…</p><div class="actions"><a class="button full" href="${path}/finish">Continue</a></div></div>`,
+        { narrow: true, refresh: `${path}/finish` },
       ),
     );
   });
   root.route("/callback", callback);
   app.post("/connect", async (c) => {
     const form = await c.req.parseBody();
+    const principal = c.get("principal");
+    if (!flow || !proof.verify(principal, `${path}/connect`, id, form.proof))
+      return problem(
+        c,
+        `${name} connection unavailable`,
+        "This Connect button expired or isn't available on this host. Open Connections and try again. Nothing was started.",
+        403,
+        { signedIn: true },
+      );
+    prune();
     if (
-      !flow ||
-      !proof.verify(c.get("principal"), `${path}/connect`, id, form.proof)
+      [...attempts.values()].filter(
+        (attempt) => attempt.principal !== principal,
+      ).length >= 8
     )
-      return c.text(`${name} connection unavailable`, 403);
-    const target = await flow.begin(c.get("principal"));
+      return problem(
+        c,
+        `${name} sign-in busy`,
+        "Too many sign-ins are waiting. Try again in 10 minutes. Nothing was started.",
+        503,
+        { signedIn: true },
+      );
+    let target: URL;
+    try {
+      target = new URL(await flow.begin(principal));
+    } catch {
+      return problem(
+        c,
+        `${name} sign-in couldn't start`,
+        `June couldn't start a ${name} sign-in. A save may still be finishing; check Connections before trying again.`,
+        503,
+        { signedIn: true },
+      );
+    }
+    const state = target.searchParams.get("state");
+    if (!state)
+      return problem(
+        c,
+        `${name} sign-in couldn't start`,
+        `June couldn't bind this ${name} sign-in to your browser. Nothing was saved.`,
+        503,
+        { signedIn: true },
+      );
+    // A fresh start replaces this owner's earlier attempt, as the provider does.
+    for (const [key, attempt] of attempts)
+      if (attempt.principal === principal) attempts.delete(key);
+    const key = randomBytes(32).toString("base64url");
+    attempts.set(key, { principal, state, expires: Date.now() + 600_000 });
+    setCookie(c, cookie, key, {
+      httpOnly: true,
+      secure,
+      sameSite: "Lax",
+      path: "/",
+      maxAge: 600,
+    });
+    // form-action 'self' blocks a redirect to the provider after this POST,
+    // so a same-origin document continues instead (no script needed).
     return c.html(
       page(
-        `Authorize ${name}`,
+        `Continue on ${name}`,
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-body"><h2>Continue on ${name}</h2><p>Review ${name}'s requested permissions before accepting. Returning here does not enable tools automatically.</p><a class="button" href="${target}">Authorize June in ${name} →</a></div></section>`,
-        { navigation },
+        html`<div class="card"><p class="working" role="status">Opening ${name}…</p><p>Review what ${name} asks for there. After you approve, you come back here and June saves the connection. Tools stay disabled until you enable them.</p><div class="actions"><a class="button full" href="${target.href}">Continue to ${name}</a></div></div>`,
+        { ...chrome, refresh: target.href },
       ),
     );
   });
   app.get("/finish", (c) => {
+    prune();
     const key = getCookie(c, cookie) ?? "";
-    const pending = callbacks.get(key);
-    if (!pending || pending.expires <= Date.now())
-      return c.html(
-        problem(
-          c.get("nonce"),
-          `${name} setup expired`,
-          "This save confirmation is no longer available. It may have expired, already been used, or been cleared by a June restart. Check your saved connection in Connections before starting again.",
-        ),
+    const attempt = attempts.get(key);
+    const principal = c.get("principal");
+    if (!flow || !attempt || attempt.principal !== principal)
+      return problem(
+        c,
+        `No ${name} connection to finish`,
+        `No ${name} return is waiting in this browser. It may have finished already, expired after 10 minutes, or been cleared by a June restart. Check Connections for the saved state.`,
         400,
+        {
+          signedIn: true,
+          actions: html`<a class="button" href="${base}">Open Connections</a>`,
+        },
       );
+    if (!attempt.callback)
+      return c.html(
+        page(
+          `Waiting for ${name}`,
+          c.get("nonce"),
+          html`<div class="card"><p>${name} hasn't sent this browser back to June yet. Finish approving in the ${name} tab, or start again.</p><div class="actions">${connectForm(principal, "Start again")}${back}</div></div>`,
+          chrome,
+        ),
+      );
+    allowNonceScript(c);
     return c.html(
       page(
-        `Save ${name} connection`,
+        `Saving your ${name} connection`,
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-body"><p>This is the final step, not another ${name} sign-in. Confirm below to verify your ${name} account and save its authorization to June's encrypted store. All tools start disabled; reconnecting resets existing permissions.</p>${confirmForm(proof.issue(c.get("principal"), `${path}/finish`, binding(key)), `Save ${name} connection`)}</div></section>`,
-        { navigation },
+        html`<div class="card"><p class="working" role="status">Verifying your ${name} account and saving the connection…</p>${continueForm(proof.issue(principal, `${path}/finish`, binding(key)), `Finish connecting ${name}`, { action: `${path}/finish` })}<p class="hint">This uses the approval you gave on ${name}. Saving the connection doesn't enable any tools.</p></div>`,
+        { ...chrome, script: true },
       ),
     );
   });
   app.post("/finish", async (c) => {
     const form = await c.req.parseBody();
     const key = getCookie(c, cookie) ?? "";
-    const pending = callbacks.get(key);
+    const attempt = attempts.get(key);
+    const principal = c.get("principal");
     if (
       !flow ||
-      !pending ||
-      pending.expires <= Date.now() ||
-      form.confirmed !== "yes" ||
-      !proof.verify(
-        c.get("principal"),
-        `${path}/finish`,
-        binding(key),
-        form.proof,
-      )
+      !attempt?.callback ||
+      attempt.principal !== principal ||
+      attempt.expires <= Date.now() ||
+      !proof.verify(principal, `${path}/finish`, binding(key), form.proof)
     )
-      return c.html(
-        problem(
-          c.get("nonce"),
-          `${name} confirmation rejected`,
-          "This confirmation is invalid, expired, or already used. No token exchange was started by this submission. Return to Connections to check the saved status or resume setup.",
-        ),
+      return problem(
+        c,
+        `${name} connection not finished`,
+        "This return is invalid, expired, already used, or belongs to another browser. No token exchange was started. Check Connections for the saved state before starting again.",
         403,
+        { signedIn: true },
       );
-    callbacks.delete(key);
+    // Consume first: a lost response or repeated POST cannot replay the code.
+    attempts.delete(key);
     deleteCookie(c, cookie, { path: "/", secure });
     try {
-      await flow.complete(c.get("principal"), pending.url);
+      await flow.complete(principal, attempt.callback);
     } catch {
-      return c.html(
-        problem(
-          c.get("nonce"),
-          `${name} connection not confirmed`,
-          `June could not confirm that this ${name} authorization was verified and saved. The attempt may have expired or been rejected by ${name}. Check the saved status in Connections before starting a fresh sign-in; this confirmation cannot be reused.`,
-        ),
+      return problem(
+        c,
+        `${name} connection not confirmed`,
+        `June could not confirm that this ${name} authorization was verified and saved. ${name} may have rejected it or it may have expired. Check Connections before starting a fresh sign-in; this return can't be reused.`,
         400,
+        { signedIn: true },
       );
     }
     return c.redirect(path, 303);
@@ -171,10 +301,19 @@ export function createConnectionOAuthRoutes(
   root.route("/", app);
   return {
     routes: root,
-    cookie,
-    hasPending(key: string | undefined) {
-      const pending = callbacks.get(key ?? "");
-      return !!flow && !!pending && pending.expires > Date.now();
+    /** This browser's attempt, for Connections: waiting on the provider, or
+     * returned and ready to finish with one signed POST. */
+    pending(c: Context, principal: string) {
+      prune();
+      const key = getCookie(c, cookie) ?? "";
+      const attempt = attempts.get(key);
+      if (!flow || !attempt || attempt.principal !== principal) return;
+      return attempt.callback
+        ? {
+            state: "returned" as const,
+            proof: proof.issue(principal, `${path}/finish`, binding(key)),
+          }
+        : { state: "waiting" as const };
     },
   };
 }

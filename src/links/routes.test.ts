@@ -202,7 +202,7 @@ test("mounted links require owner auth, preserve exact grants, and fail closed o
         proof: await proof(await app.request("/console/session/login")),
       }),
     });
-    expect(login.status).toBe(200);
+    expect(login.status).toBe(303);
     const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
     const review = await app.request(path, { headers: { cookie } });
     expect(review.status).toBe(200);

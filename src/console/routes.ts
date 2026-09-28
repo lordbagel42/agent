@@ -1,5 +1,7 @@
 import { html } from "hono/html";
 import type { UsageSnapshot } from "../models/usage.js";
+import type { McpConnections } from "../tools/connections.js";
+import { connectionAttention, connectionSummary } from "./connections.js";
 import {
   binding,
   confirmations,
@@ -15,6 +17,7 @@ import {
   messagePage,
   metadata,
   page,
+  when,
 } from "./view.js";
 
 export { consoleSections } from "./view.js";
@@ -45,6 +48,8 @@ export interface ConsoleAction {
 export interface ConsoleDependencies {
   security: PrivateRouteSecurity;
   connectionsAvailable?: boolean;
+  /** Read-only: surfaces pending requests and connection problems on the overview. */
+  connections?: McpConnections;
   inspect(principal: string): Promise<ConsoleSnapshot>;
   usage?(
     principal: string,
@@ -63,10 +68,23 @@ export interface ConsoleDependencies {
   ): Promise<{ status: "succeeded" | "unknown" | "rejected"; detail: string }>;
 }
 
+type SectionName = (typeof consoleSections)[number];
+const labels: Record<SectionName, string> = {
+  configuration: "Configuration",
+  capabilities: "Capabilities",
+  jobs: "Work",
+  memory: "Memory",
+  reflection: "Reflection",
+  approvals: "Approvals",
+  revocations: "Revocations",
+};
+
 export function createConsoleRoutes(deps: ConsoleDependencies) {
   const app = privateRoutes(deps.security);
   const proof = confirmations(deps.security.csrfSecret);
+  const actions = !!(deps.inspectAction && deps.confirmAction);
   app.get("/usage/:export?", async (c) => {
+    const base = new URL(c.req.url).pathname.replace(/\/usage(\/.*)?$/, "");
     if (
       !deps.usage ||
       (c.req.param("export") && c.req.param("export") !== "export")
@@ -77,6 +95,7 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
           "Usage unavailable",
           "The host has not connected a usage ledger. No usage or spending can be confirmed.",
           404,
+          { label: "Back to Overview", href: base || "/" },
         ),
         404,
       );
@@ -97,33 +116,86 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
         recentLimit: 100,
       });
     }
-    const base = new URL(c.req.url).pathname.replace(/\/usage\/?$/, "");
     return c.html(
-      usagePage(snapshot, c.get("nonce"), base, deps.connectionsAvailable),
+      usagePage(snapshot, c.get("nonce"), base, {
+        connectionsAvailable: deps.connectionsAvailable,
+        signOut: deps.security.signOutPath,
+      }),
     );
   });
   app.get("/", async (c) => {
     const snapshot = await deps.inspect(c.get("principal"));
     // Absolute path preserves nesting whether mounted with or without a trailing slash.
     const base = new URL(c.req.url).pathname.replace(/\/$/, "");
+    const review = (id: string) => `${base}/actions/${encodeURIComponent(id)}`;
+    const reported = (name: SectionName) => {
+      const section = snapshot.sections[name];
+      return section &&
+        (section.status === "available" || section.records.length)
+        ? section
+        : undefined;
+    };
+    const records = (name: SectionName) => {
+      const section = reported(name);
+      if (!section) return "";
+      return html`<section class="section" id="${name}" aria-labelledby="${name}-title"><div class="section-head"><h2 id="${name}-title">${labels[name]}</h2>${section.status === "available" ? "" : badge("Unavailable")}</div><p class="hint section-intro">${section.detail}</p>${
+        section.records.length
+          ? html`<ul class="list">${section.records.map((record) => html`<li class="item"><div class="item-body"><h3>${record.title}</h3><p>${record.detail}</p>${record.actionId && actions ? html`<p class="item-meta"><a href="${review(record.actionId)}">Review action</a></p>` : ""}</div><div class="item-side">${badge(record.status)}</div></li>`)}</ul>`
+          : html`<div class="list"><p class="empty">No records returned by the host.</p></div>`
+      }</section>`;
+    };
+    const attention = [
+      ...(deps.connections ? connectionAttention(deps.connections) : []),
+      ...(actions
+        ? consoleSections.flatMap((name) =>
+            (snapshot.sections[name]?.records ?? []).flatMap((record) =>
+              record.actionId
+                ? [
+                    {
+                      title: record.title,
+                      detail: record.detail,
+                      href: review(record.actionId),
+                      status: record.status,
+                    },
+                  ]
+                : [],
+            ),
+          )
+        : []),
+    ];
+    const unreported = consoleSections.filter((name) => !reported(name));
+    const summary = deps.connections && connectionSummary(deps.connections);
     return c.html(
       page(
         "Overview",
         c.get("nonce"),
-        html`<div class="summary-bar"><div><span class="eyebrow">Host snapshot</span><p><time>${snapshot.observedAt}</time></p></div><div><span class="eyebrow">Access</span><p>Owner-authenticated</p></div><div><span class="eyebrow">Actions</span><p>${deps.inspectAction && deps.confirmAction ? "Explicit confirmation required" : "Read-only · actions not connected"}</p></div></div><div class="section-heading"><h2>Workspace services</h2><span class="small muted">Reported by the host</span></div><div class="grid">${consoleSections.map(
-          (name) => {
-            const section = snapshot.sections[name];
-            return html`<section class="panel" id="${name}"><div class="panel-heading"><h2>${name[0]?.toUpperCase()}${name.slice(1)}</h2>${badge(section?.status ?? "unavailable")}</div><div class="panel-description"><p>${section?.detail ?? "This integration is not connected. No state can be confirmed."}</p></div>${section?.records.length ? section.records.map((record) => html`<article class="record"><div><h3>${record.title}</h3><p>${record.detail}</p>${record.actionId && deps.inspectAction && deps.confirmAction ? html`<a class="record-action" href="${base}/actions/${encodeURIComponent(record.actionId)}">Review action <span aria-hidden="true">↗</span></a>` : ""}</div>${badge(record.status)}</article>`) : html`<div class="empty"><span class="empty-mark" aria-hidden="true">—</span><span>${section?.status === "available" ? "No records returned by the host." : "Unavailable · no state to inspect"}</span></div>`}</section>`;
-          },
-        )}</div>`,
+        html`<section class="section" aria-labelledby="attention"><div class="section-head"><h2 id="attention">Needs your attention</h2></div>${
+          attention.length
+            ? html`<ul class="list">${attention.map((item) => html`<li><a class="item" href="${item.href}"><div class="item-body"><h3>${item.title}</h3><p>${item.detail}</p></div><div class="item-side">${badge(item.status)}</div></a></li>`)}</ul>`
+            : html`<div class="list"><p class="empty">No actionable items are reported here. Recent tool requests, unknown outcomes and connection problems appear here when the host reports them.</p></div>`
+        }</section>${records("jobs")}${
+          deps.connectionsAvailable
+            ? html`<section class="section" aria-labelledby="connections-title"><div class="section-head"><h2 id="connections-title">Connections</h2><a class="section-note" href="${base}/connections">Open Connections</a></div>${summary ? metadata({ "Saved connections": String(summary.saved), "Enabled tools": String(summary.enabled), "Recent requests awaiting approval": String(summary.awaiting) }) : html`<div class="list"><a class="item" href="${base}/connections"><div class="item-body"><h3>Accounts and tool servers</h3><p>Connect accounts, review tool contracts and approve requests.</p></div></a></div>`}</section>`
+            : ""
+        }${records("memory")}${records("reflection")}${records("approvals")}${records("revocations")}${
+          reported("configuration") || reported("capabilities")
+            ? html`<div class="grid-2 section">${records("configuration")}${records("capabilities")}</div>`
+            : ""
+        }${
+          unreported.length
+            ? html`<section class="section"><details class="disclosure"><summary>Not reported by this host: ${unreported.map((name) => labels[name]).join(", ")}</summary><div class="disclosure-body"><p class="hint">No connected source reports these here, so no state is confirmed.</p>${unreported.map((name) => html`<p><strong>${labels[name]}.</strong> <span class="hint">${snapshot.sections[name]?.detail ?? "Not connected."}</span></p>`)}</div></details></section>`
+            : ""
+        }`,
         {
           description:
-            "Inspect configuration, work, and permissions. Changes always start with a review.",
+            "What June reports right now, with decisions first. Viewing never approves or runs anything.",
+          actions: html`<p class="section-note">Observed ${when(snapshot.observedAt)} · ${actions ? "Actions need explicit confirmation" : "Read-only"}</p>`,
           navigation: consoleNavigation(
             base,
             "overview",
             deps.connectionsAvailable,
           ),
+          signOut: deps.security.signOutPath,
         },
       ),
     );
@@ -133,6 +205,7 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
       c.get("principal"),
       c.req.param("id"),
     );
+    const overview = new URL(c.req.url).pathname.split("/actions/")[0] || "/";
     if (!action || !deps.confirmAction)
       return c.html(
         messagePage(
@@ -140,22 +213,25 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
           "Action unavailable",
           "The host has not made this action available for confirmation.",
           404,
+          { label: "Back to Overview", href: overview },
         ),
         404,
       );
-    const overview = new URL(c.req.url).pathname.split("/actions/")[0] || "/";
     return c.html(
       page(
-        "Review action",
+        action.title,
         c.get("nonce"),
-        html`<div class="review-grid"><div class="stack"><section class="panel" id="scope"><div class="panel-heading"><h2>${action.title}</h2>${badge("Awaiting review")}</div><div class="panel-description"><p>${action.detail}</p></div>${metadata(action.facts)}<div class="panel-description"><span class="eyebrow">Revision</span><code>${action.revision}</code></div></section><details class="panel" id="payload" open><summary>Exact review data <span class="format">JSON</span></summary><pre>${JSON.stringify(action, null, 2)}</pre></details></div><aside class="panel" id="confirmation"><div class="panel-heading"><h2>Confirm action</h2></div><div class="panel-body"><div class="callout"><strong>Review before you authorize</strong><p>The review proof is valid for 10 minutes. It does not extend the action's expiry. Any change requires a fresh review.</p></div>${confirmForm(proof.issue(c.get("principal"), new URL(c.req.url).pathname, binding(action)), "Confirm this action")}</div></aside></div>`,
+        html`<div class="grid-2"><div class="section">${metadata(action.facts)}<p class="hint">Revision <code>${action.revision}</code></p><details class="disclosure" open><summary>Exact review data</summary><div class="disclosure-body"><pre>${JSON.stringify(action, null, 2)}</pre></div></details></div><section class="section card" aria-labelledby="decision"><h2 id="decision">Decision</h2><p class="hint">The review proof is valid for 10 minutes. It does not extend the action's expiry. Any change requires a fresh review.</p>${confirmForm(proof.issue(c.get("principal"), new URL(c.req.url).pathname, binding(action)), "Confirm this action")}</section></div>`,
         {
-          description:
-            "Verify the scope and consequences before giving permission.",
-          navigation: [
-            { label: "← Overview", href: overview },
-            { label: "Action review", href: "#scope", current: true },
-          ],
+          description: action.detail,
+          status: badge("Awaiting review"),
+          crumbs: [{ label: "Overview", href: overview }],
+          navigation: consoleNavigation(
+            overview,
+            undefined,
+            deps.connectionsAvailable,
+          ),
+          signOut: deps.security.signOutPath,
         },
       ),
     );
@@ -165,6 +241,7 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
       c.get("principal"),
       c.req.param("id"),
     );
+    const overview = new URL(c.req.url).pathname.split("/actions/")[0] || "/";
     if (!action || !deps.confirmAction)
       return c.html(
         messagePage(
@@ -172,6 +249,7 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
           "Action unavailable",
           "The host has not made this action available for confirmation.",
           404,
+          { label: "Back to Overview", href: overview },
         ),
         404,
       );
@@ -189,6 +267,7 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
           "Confirmation rejected",
           "Confirmation expired, changed or invalid. Open a fresh review before trying again.",
           403,
+          { label: "Open a fresh review", href: new URL(c.req.url).pathname },
         ),
         403,
       );
@@ -201,16 +280,17 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
       page(
         "Action receipt",
         c.get("nonce"),
-        html`<section class="panel receipt"><div class="panel-body">${badge(result.status)}<h2>${result.status === "unknown" ? "The outcome needs reconciliation" : result.status === "succeeded" ? "Success recorded by the host" : "Action rejected"}</h2><p>${result.detail}</p>${result.status === "unknown" ? html`<div class="receipt-meta"><div class="callout warning"><strong>Do not repeat this action.</strong><p>Reconcile the external state first. This page cannot confirm whether the effect occurred.</p></div></div>` : ""}</div></section>`,
+        html`<div class="card">${badge(result.status)}<h2>${result.status === "unknown" ? "The outcome needs reconciliation" : result.status === "succeeded" ? "Success recorded by the host" : "Action rejected"}</h2><p>${result.detail}</p></div>${result.status === "unknown" ? html`<div class="notice" data-tone="warn"><strong>Do not repeat this action.</strong><p>Reconcile the external state first. This page cannot confirm whether the effect occurred.</p></div>` : ""}`,
         {
           description:
             "The host's recorded result, not an invitation to retry.",
-          navigation: [
-            {
-              label: "← Overview",
-              href: new URL(c.req.url).pathname.split("/actions/")[0] || "/",
-            },
-          ],
+          crumbs: [{ label: "Overview", href: overview }],
+          navigation: consoleNavigation(
+            overview,
+            undefined,
+            deps.connectionsAvailable,
+          ),
+          signOut: deps.security.signOutPath,
         },
       ),
     );

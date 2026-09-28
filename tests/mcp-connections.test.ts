@@ -326,7 +326,8 @@ test("enrollment inspection reveals no credentials or private configuration and 
     mcp: f.store,
   })("mcp-enrollment");
   expect(report).toContain('"next":"owner_tool_consent_required"');
-  expect(report).toContain("Browser consent/save progress is unknown");
+  expect(report).toContain("Browser consent progress is unknown");
+  expect(report).toContain("there is no separate save confirmation");
   expect(report).toContain("do not prove current authorization");
   for (const secret of [
     "PRIVATE NAME",
@@ -2735,6 +2736,9 @@ test("approval review identifies only the matching destination and preserves con
   const stale = await (await app.request(path())).text();
   expect(stale).toContain("invalidated");
   expect(stale).toContain("connection has changed or been removed");
+  // The original request stays identifiable without borrowing destinations.
+  expect(stale).toContain("<dd>lookup</dd>");
+  expect(stale).not.toContain("https://mcp.example/research/rpc");
   expect(stale).not.toContain("https://other.example/mcp");
   expect(stale).not.toContain('name="proof"');
   expect((await post({ proof: staleProof, confirmed: "yes" })).status).toBe(
@@ -2812,12 +2816,13 @@ test("private routes reject unauthenticated and cross-site writes", async () => 
   ).toThrow();
 });
 
-test("Slack OAuth resumes pending setup and reports saved authorization without enabling tools", async () => {
+test("Slack OAuth returns once to a saved connection, bound to the starting browser and state", async () => {
   const f = await fixture();
   f.store.disconnect(f.id, f.connection().revision);
   const base = "/console/connections";
   const origin = "https://june.example";
   let rejectExchange = false;
+  let exchanges = 0;
   const slack = createSlackMcpOAuth(
     {
       clientId: "fixture",
@@ -2832,8 +2837,9 @@ test("Slack OAuth resumes pending setup and reports saved authorization without 
       },
     },
     {
-      fetch: async (url) =>
-        Response.json(
+      fetch: async (url) => {
+        if (!String(url).endsWith("auth.test")) exchanges++;
+        return Response.json(
           rejectExchange
             ? { ok: false, error: "invalid_code" }
             : String(url).endsWith("auth.test")
@@ -2845,7 +2851,8 @@ test("Slack OAuth resumes pending setup and reports saved authorization without 
                   authed_user: { id: "U1", scope: "search:read" },
                   team: { id: "T1" },
                 },
-        ),
+        );
+      },
     },
   );
   const app = new Hono().route(
@@ -2862,10 +2869,12 @@ test("Slack OAuth resumes pending setup and reports saved authorization without 
       { store: f.store, slack },
     ),
   );
+  // The browser that starts sign-in holds the binding cookie; Bearer stands in
+  // for its Strict owner session, which the provider's redirect never carries.
   let cookie = "";
-  const get = (path: string) =>
+  const get = (path: string, jar = cookie) =>
     app.request(`${base}${path}`, {
-      headers: { authorization: "Bearer owner", cookie },
+      headers: { authorization: "Bearer owner", cookie: jar },
     });
   const proof = (body: string) =>
     body.match(/name="proof" value="([^"]+)"/)?.[1] ?? "";
@@ -2873,74 +2882,126 @@ test("Slack OAuth resumes pending setup and reports saved authorization without 
     path: string,
     body: Record<string, string>,
     requestOrigin = origin,
+    jar = cookie,
   ) =>
     app.request(`${base}${path}`, {
       method: "POST",
       headers: {
         authorization: "Bearer owner",
-        cookie,
+        cookie: jar,
         origin: requestOrigin,
         "content-type": "application/x-www-form-urlencoded",
       },
       body: new URLSearchParams(body),
     });
-  const start = async () => {
-    const page = await get("");
-    const begin = await post("/slack/connect", {
-      proof: proof(await page.text()),
+  const callback = (query: string, jar = cookie) =>
+    app.request(`${base}/slack/callback?${query}`, {
+      headers: { cookie: jar },
     });
-    const target = new URL(
-      (await begin.text())
+  // Connect is on Connections; Reconnect for a saved account is on its page.
+  const start = async (from = "") => {
+    const begin = await post("/slack/connect", {
+      proof:
+        (await (await get(from)).text()).match(
+          /action="\/console\/connections\/slack\/connect"><input type="hidden" name="proof" value="([^"]+)"/,
+        )?.[1] ?? "",
+    });
+    expect(begin.status).toBe(200);
+    const binding = begin.headers.get("set-cookie") ?? "";
+    expect(binding).toContain("HttpOnly");
+    expect(binding).toContain("Secure");
+    expect(binding).toContain("SameSite=Lax");
+    cookie = binding.split(";")[0] ?? "";
+    expect(cookie).toContain("__Host-june-slack-oauth=");
+    const markup = await begin.text();
+    // Straight on to Slack's consent: no interstitial click, no script.
+    expect(markup).toContain('http-equiv="refresh"');
+    expect(markup).not.toContain("<script");
+    return new URL(
+      markup
         .match(/href="(https:\/\/slack.com[^"]+)"/)?.[1]
         ?.replaceAll("&amp;", "&") ?? "",
-    );
-    const callback = await app.request(
-      `${base}/slack/callback?state=${target.searchParams.get("state")}&code=fixture-code`,
-    );
-    cookie = callback.headers.get("set-cookie")?.split(";")[0] ?? "";
-    expect(callback.status).toBe(200);
-    expect(cookie).toContain("__Host-june-slack-return=");
+    ).searchParams.get("state");
   };
-  await start();
+  const state = await start();
+  // Neither another browser nor a forged state can attach a return.
+  expect((await callback(`state=${state}&code=fixture-code`, "")).status).toBe(
+    400,
+  );
+  expect((await callback("state=forged&code=fixture-code")).status).toBe(400);
+  const returned = await callback(`state=${state}&code=fixture-code`);
+  expect(returned.status).toBe(200);
+  expect(returned.headers.get("set-cookie")).toBeNull();
+  expect(returned.headers.get("content-security-policy")).not.toContain(
+    "script-src",
+  );
+  const bridge = await returned.text();
+  // A same-origin document continues to the authenticated finish page.
+  expect(bridge).toContain(`url='${base}/slack/finish'`);
+  expect(bridge).not.toContain("fixture-code");
+  expect((await callback(`state=${state}&code=replacement-code`)).status).toBe(
+    409,
+  );
+  expect(exchanges).toBe(0);
   expect(f.store.list()).toHaveLength(0);
   const pending = await (await get("")).text();
-  expect(pending).toContain(`href="${base}/slack/finish"`);
-  expect(pending).not.toContain(`action="${base}/slack/connect"`);
-  const confirmation = {
-    proof: proof(await (await get("/slack/finish")).text()),
-    confirmed: "yes",
-  };
+  expect(pending).toContain("Approval received");
+  expect(pending).toContain(`action="${base}/slack/finish"`);
+  expect((await get("/slack/finish", "")).status).toBe(400); // Another browser.
+  const finish = await get("/slack/finish");
+  const csp = finish.headers.get("content-security-policy") ?? "";
+  const nonce = csp.match(/script-src 'nonce-([^']+)'/)?.[1];
+  expect(nonce).toBeTruthy();
+  expect(csp).toContain("default-src 'none'");
+  expect(csp).not.toContain("unsafe-inline");
+  const finishMarkup = await finish.text();
+  expect(finishMarkup).toContain(`<script nonce="${nonce}">`);
+  expect(finishMarkup).toContain("data-continue");
+  expect(finishMarkup).not.toContain('type="checkbox"');
+  expect(finishMarkup).not.toContain("fixture-code");
+  const confirmation = { proof: proof(finishMarkup) };
   expect(
     (await post("/slack/finish", confirmation, "https://elsewhere.example"))
       .status,
   ).toBe(403);
-  expect(
-    (await post("/slack/finish", { proof: confirmation.proof })).status,
-  ).toBe(403);
+  expect((await post("/slack/finish", confirmation, origin, "")).status).toBe(
+    403,
+  );
+  expect((await post("/slack/finish", {})).status).toBe(403);
+  expect(exchanges).toBe(0);
   expect(f.store.list()).toHaveLength(0);
-  expect((await post("/slack/finish", confirmation)).status).toBe(303);
+  const finished = await post("/slack/finish", confirmation);
+  expect(finished.status).toBe(303);
+  expect(finished.headers.get("location")).toBe(`${base}/slack`);
+  expect(exchanges).toBe(1);
   expect(f.store.list()).toMatchObject([
     { id: "slack", authenticated: true, status: "not_tested", tools: [] },
   ]);
+  // Consumed before the exchange: neither the POST nor the return replays.
   expect((await post("/slack/finish", confirmation)).status).toBe(403);
+  expect((await callback(`state=${state}&code=fixture-code`)).status).toBe(400);
+  expect(exchanges).toBe(1);
   const saved = await (await get("")).text();
   expect(saved).toContain("Authorization saved");
   expect(saved).toContain(`href="${base}/slack"`);
-  expect(saved).not.toContain("Connect Slack →");
+  expect(saved).not.toContain("Connect Slack");
   expect(saved).not.toContain("fixture-slack-token");
   expect(await (await get("/slack")).text()).toContain("Authorization saved");
 
-  // Reconnecting must not claim success or erase an existing credential on failure.
-  await start();
+  // A failed reconnect neither claims success, erases the credential, nor retries.
+  const retry = await start("/slack");
+  await callback(`state=${retry}&code=fixture-code`);
   rejectExchange = true;
   const failed = await post("/slack/finish", {
     proof: proof(await (await get("/slack/finish")).text()),
-    confirmed: "yes",
   });
   expect(failed.status).toBe(400);
   const failurePage = await failed.text();
   expect(failurePage).toContain("Slack connection not confirmed");
   expect(failurePage).not.toContain("invalid_code");
+  expect(failurePage).not.toContain("<script");
+  expect(exchanges).toBe(2);
+  expect((await get("/slack/finish")).status).toBe(400);
   expect(f.store.list()).toMatchObject([{ id: "slack", authenticated: true }]);
   f.store.connectSlack({
     accessToken: "fixture-expired",
@@ -2951,15 +3012,38 @@ test("Slack OAuth resumes pending setup and reports saved authorization without 
     expect(expired).toContain("Authorization expired");
     expect(expired).not.toContain("Authorization saved");
   }
-  const denied = await app.request(
+
+  // Cancelling on Slack is actionable and clears only this browser's attempt.
+  const cancelled = await start();
+  const denied = await callback(`state=${cancelled}&error=access_denied`);
+  expect(denied.status).toBe(400);
+  expect(denied.headers.get("set-cookie")).toContain("Max-Age=0");
+  const deniedPage = await denied.text();
+  expect(deniedPage).toContain("You cancelled on Slack");
+  expect(deniedPage).toContain(`href="${base}"`);
+  expect(deniedPage).not.toContain(`${base}/slack/finish`);
+  const forged = await app.request(
     `${base}/slack/callback?state=fixture&error=access_denied`,
   );
-  expect(denied.status).toBe(400);
-  expect(denied.headers.get("set-cookie")).toBeNull();
-  expect(await denied.text()).not.toContain(`${base}/slack/finish`);
+  expect(forged.status).toBe(400);
+  expect(forged.headers.get("set-cookie")).toBeNull();
+  expect(await forged.text()).not.toContain(`${base}/slack/finish`);
+  expect(exchanges).toBe(2);
+
+  // Returns expire with their attempt.
+  const late = await start();
+  vi.spyOn(Date, "now").mockReturnValue(Date.now() + 600_001);
+  try {
+    expect((await callback(`state=${late}&code=fixture-code`)).status).toBe(
+      400,
+    );
+  } finally {
+    vi.restoreAllMocks();
+  }
+  expect(exchanges).toBe(2);
 });
 
-test("Amp consent saves once behind owner confirmation; June needs tool consent and reconnect revokes it", async () => {
+test("Amp consent saves once without a second confirmation, resumes after the session lapses; June needs tool consent and reconnect revokes it", async () => {
   const f = await fixture();
   f.store.disconnect(f.id, f.connection().revision);
   const origin = "https://june.example";
@@ -3032,28 +3116,54 @@ test("Amp consent saves once behind owner confirmation; June needs tool consent 
       connections: { store: f.store, amp },
     },
   });
-  let cookie = "";
-  const get = (path: string) =>
-    app.request(`${base}${path}`, {
-      headers: { authorization: `Bearer ${ownerToken}`, cookie },
+  // One browser: a cookie jar that follows Set-Cookie as a user agent would.
+  const jar = new Map<string, string>();
+  const browser = async (
+    path: string,
+    init: { method?: string; headers?: Record<string, string>; body?: string },
+  ) => {
+    const response = await app.request(path, {
+      ...init,
+      headers: {
+        ...init.headers,
+        cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; "),
+      },
     });
+    for (const header of response.headers.getSetCookie()) {
+      const [pair = ""] = header.split(";");
+      const name = pair.slice(0, pair.indexOf("="));
+      if (/Max-Age=0/i.test(header)) jar.delete(name);
+      else jar.set(name, pair.slice(name.length + 1));
+    }
+    return response;
+  };
+  const open = (path: string) => browser(path, {});
   const proof = (body: string) =>
     body.match(/name="proof" value="([^"]+)"/)?.[1] ?? "";
-  const post = (
+  const submit = (
     path: string,
     body: Record<string, string>,
     requestOrigin = origin,
   ) =>
-    app.request(`${base}${path}`, {
+    browser(path, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${ownerToken}`,
-        cookie,
         origin: requestOrigin,
         "content-type": "application/x-www-form-urlencoded",
       },
-      body: new URLSearchParams(body),
+      body: new URLSearchParams(body).toString(),
     });
+  const signIn = async () => {
+    const issued = await app.request("/operator/console/login-links", {
+      method: "POST",
+      headers: { authorization: `Bearer ${ownerToken}` },
+    });
+    const link =
+      (
+        await app.request(new URL((await issued.json()).url).pathname)
+      ).headers.get("location") ?? "";
+    return submit(link, { proof: proof(await (await open(link)).text()) });
+  };
   const metadata = await app.request(`${base}/amp/client.json`);
   expect(metadata.status).toBe(200);
   expect(await metadata.json()).toEqual({
@@ -3070,39 +3180,61 @@ test("Amp consent saves once behind owner confirmation; June needs tool consent 
   expect(
     (await app.request(`${base}/amp/connect`, { method: "POST" })).status,
   ).toBe(401);
-  const beginProof = proof(await (await get("")).text());
+  expect((await signIn()).headers.get("location")).toBe("/console");
+  const beginProof = proof(await (await open(base)).text());
   expect(
-    (await post("/amp/connect", { proof: beginProof }, "https://evil.example"))
-      .status,
+    (
+      await submit(
+        `${base}/amp/connect`,
+        { proof: beginProof },
+        "https://evil.example",
+      )
+    ).status,
   ).toBe(403);
-  const begin = await post("/amp/connect", { proof: beginProof });
+  const begin = await submit(`${base}/amp/connect`, { proof: beginProof });
+  expect(jar.has("__Host-june-amp-oauth")).toBe(true);
   const target = new URL(
     (await begin.text())
       .match(/href="(https:\/\/auth.ampcode.com[^"]+)"/)?.[1]
       ?.replaceAll("&amp;", "&") ?? "",
   );
   nonce = target.searchParams.get("nonce") ?? "";
-  const callback = await app.request(
+  // The dashboard session lapses while the owner is on Amp.
+  jar.delete("__Host-june-console");
+  const returned = await open(
     `${base}/amp/callback?state=${target.searchParams.get("state")}&code=fixture-code`,
   );
-  cookie = callback.headers.get("set-cookie")?.split(";")[0] ?? "";
-  expect(cookie).toContain("__Host-june-amp-return=");
+  expect(returned.status).toBe(200);
+  const finish = await open(`${base}/amp/finish`);
+  expect(finish.status).toBe(401);
+  const signInPath = `/console/session/login?returnTo=${encodeURIComponent(`${base}/amp/finish`)}`;
+  const recovery = await finish.text();
+  expect(recovery).toContain(`url='${signInPath}'`);
+  expect(recovery).not.toContain("fixture-code");
+  expect((await open(signInPath)).status).toBe(200);
+  expect(jar.get("__Host-june-console-return")).toBe(
+    encodeURIComponent(`${base}/amp/finish`),
+  );
   expect(exchanges).toBe(0);
-  expect(f.store.list()).toHaveLength(0);
-  expect(await (await get("")).text()).toContain("Resume Amp setup");
+  // A fresh June link resumes the save; the return was never discarded.
+  const resumed = await signIn();
+  expect(resumed.status).toBe(303);
+  expect(resumed.headers.get("location")).toBe(`${base}/amp/finish`);
+  expect(jar.has("__Host-june-console-return")).toBe(false);
   const confirmation = {
-    proof: proof(await (await get("/amp/finish")).text()),
-    confirmed: "yes",
+    proof: proof(await (await open(`${base}/amp/finish`)).text()),
   };
   expect(
-    (await post("/amp/finish", confirmation, "https://evil.example")).status,
+    (await submit(`${base}/amp/finish`, confirmation, "https://evil.example"))
+      .status,
   ).toBe(403);
-  expect(
-    (await post("/amp/finish", { proof: confirmation.proof })).status,
-  ).toBe(403);
+  expect((await submit(`${base}/amp/finish`, {})).status).toBe(403);
   expect(exchanges).toBe(0);
-  expect((await post("/amp/finish", confirmation)).status).toBe(303);
-  expect((await post("/amp/finish", confirmation)).status).toBe(403);
+  expect(f.store.list()).toHaveLength(0);
+  const saved = await submit(`${base}/amp/finish`, confirmation);
+  expect(saved.status).toBe(303);
+  expect(saved.headers.get("location")).toBe(`${base}/amp`);
+  expect((await submit(`${base}/amp/finish`, confirmation)).status).toBe(403);
   expect(exchanges).toBe(1);
   expect(f.store.list()).toMatchObject([
     {
@@ -3114,10 +3246,10 @@ test("Amp consent saves once behind owner confirmation; June needs tool consent 
       status: "not_tested",
     },
   ]);
-  const saved = await (await get("/amp")).text();
-  expect(saved).toContain("Authorization saved");
-  expect(saved).toContain("fixture-amp-owner");
-  expect(saved).not.toContain("private-token");
+  const savedPage = await (await open(`${base}/amp`)).text();
+  expect(savedPage).toContain("Authorization saved");
+  expect(savedPage).toContain("fixture-amp-owner");
+  expect(savedPage).not.toContain("private-token");
   await f.restart();
   expect(
     (await readFile(join(f.directory, "connections.sqlite"))).includes(

@@ -505,7 +505,7 @@ export function createInspectionReader(deps: {
           renew_authentication:
             "Saved credential expired. The owner must renew authentication in Connections; Slack reconnect resets tool permissions.",
           owner_authentication_required:
-            "No Slack authorization is saved. The owner must review Slack consent and save authorization in Connections; bot login is not user consent.",
+            "No Slack authorization is saved. The owner chooses Connect Slack in Connections and approves Slack's consent; the return saves it automatically. Bot login is not user consent.",
           owner_discovery_required:
             "Not tested. The owner can review the destination and choose Test & discover tools; discovery sends any saved credential but runs no tools.",
           review_discovery_failure:
@@ -546,12 +546,12 @@ export function createInspectionReader(deps: {
           ? ""
           : inventory.truncated
             ? "Slack enrollment status is unknown because inventory is truncated. Check the existing connection in Connections before any sign-in."
-            : "No saved Slack authorization is visible. To use Slack, the owner must review user consent and save authorization after host setup.";
+            : "No saved Slack authorization is visible. To use Slack after host setup, the owner connects Slack in Connections and approves Slack's user consent; the return saves it automatically.";
         const report = () => {
           const guidance = [...new Set(rows.map((row) => row.next))]
             .map((step) => `${step}: ${steps[step]}`)
             .join("\n");
-          return `${heading}\nHost configuration loaded. Saved connections: ${inventory.configuredConnections}; showing ${rows.length}; omitted: ${inventory.configuredConnections - rows.length}. Check Connections for omitted rows.\n${inventory.configuredConnections === 0 ? "Owner enrollment required: no connections saved. The owner can add a trusted server in Connections; no consent or server health is established.\n" : ""}Slack OAuth setup (optional for other servers): ${deps.slackMcpConfigured ? "configured locally; provider app setup is not verified" : "configuration required for Slack enrollment/reconnect; the owner/operator must configure the Slack app and dashboard callback"}. ${slackEnrollment}\nBrowser consent/save progress is unknown here. The owner should check Connections for Resume Slack setup before starting another sign-in. Saving authorization does not enable tools.\n${JSON.stringify(rows)}\n${guidance}\nFor remote servers, an absent credential is not automatically a blocker: public servers may need none; the server's requirement is unknown here. ${caution}`;
+          return `${heading}\nHost configuration loaded. Saved connections: ${inventory.configuredConnections}; showing ${rows.length}; omitted: ${inventory.configuredConnections - rows.length}. Check Connections for omitted rows.\n${inventory.configuredConnections === 0 ? "Owner enrollment required: no connections saved. The owner can add a trusted server in Connections; no consent or server health is established.\n" : ""}Slack OAuth setup (optional for other servers): ${deps.slackMcpConfigured ? "configured locally; provider app setup is not verified" : "configuration required for Slack enrollment/reconnect; the owner/operator must configure the Slack app and dashboard callback"}. ${slackEnrollment}\nBrowser consent progress is unknown here. After the owner approves on the provider, the dashboard verifies and saves the authorization automatically; there is no separate save confirmation. An interrupted return resumes when the owner signs in again in the same browser within 10 minutes, and Connections offers Finish connecting while one is waiting. Saving authorization does not enable tools.\n${JSON.stringify(rows)}\n${guidance}\nFor remote servers, an absent credential is not automatically a blocker: public servers may need none; the server's requirement is unknown here. ${caution}`;
         };
         let text = report();
         // Preserve the checklist and caveats within the smallest chat limit.

@@ -47,7 +47,7 @@ const script = String.raw`(() => {
   function fail() {
     state = 'error';
     status.textContent = 'Disconnected';
-    status.dataset.status = 'failed';
+    status.dataset.tone = 'danger';
     clear('Live view unavailable. Reload to reconnect.');
     stream.close();
     clearInterval(watchdog);
@@ -61,7 +61,7 @@ const script = String.raw`(() => {
       generation = data.generation; epoch = data.epoch; state = data.state; last = Date.now();
       const labels = { live: 'Live', private: 'Private input', ended: 'Ended', error: 'Disconnected' };
       status.textContent = labels[state] || 'Unavailable';
-      status.dataset.status = state === 'live' ? 'active' : state === 'private' ? 'awaiting-review' : 'unknown';
+      status.dataset.tone = state === 'live' ? 'ok' : state === 'ended' ? 'neutral' : 'warn';
       if (state === 'error') { fail(); return; }
       if (state !== 'live') clear(state === 'private' ? 'Observation paused for private input. The browser remains open.' : 'This live view has ended. No browser was restarted.');
       if (state === 'ended') { stream.close(); clearInterval(watchdog); }
@@ -117,11 +117,11 @@ export function createBrowserLiveView(
         "Browser live view",
         nonce,
         html`
-      <style nonce="${nonce}">#frame{display:block;width:100%;height:auto}#frame[hidden],#placeholder[hidden]{display:none}.viewer{min-height:240px}.viewer-meta{margin-bottom:20px}</style>
-      <div class="summary-bar viewer-meta"><div><span class="eyebrow">Status</span><span class="status" id="viewer-status" role="status">Connecting</span></div><div><span class="eyebrow">Captured</span><time id="captured">—</time></div><div><span class="eyebrow">Coverage</span><p>Up to 2 frames/s · No audio</p></div></div>
-      <section class="panel viewer" aria-label="Read-only browser view"><p class="empty" id="placeholder">Waiting for a fresh frame…</p><img id="frame" alt="Current page in June’s browser" hidden></section>
+      <style nonce="${nonce}">#frame{display:block;width:100%;height:auto}#frame[hidden],#placeholder[hidden]{display:none}.viewer{min-height:240px;padding:0;overflow:hidden}.viewer:has(#frame:not([hidden])){min-height:0}.viewer>*+*{margin-top:0}.viewer-meta{margin-bottom:20px}.viewer+.hint,.viewer+.hint+noscript .notice{margin-top:12px}</style>
+      <dl class="facts viewer-meta"><div><dt>Status</dt><dd><span class="status" id="viewer-status" role="status" data-tone="neutral">Connecting</span></dd></div><div><dt>Captured</dt><dd><time id="captured">—</time></dd></div><div><dt>Coverage</dt><dd>Up to 2 frames/s · No audio</dd></div></dl>
+      <section class="card viewer" aria-label="Read-only browser view"><p class="empty" id="placeholder">Waiting for a fresh frame…</p><img id="frame" alt="Current page in June’s browser" hidden></section>
       <p class="hint">The same browser June is using. Read-only; no controls or recordings. Private input clears this view.</p>
-      <noscript><p class="callout">JavaScript is required for the live view. No browser is started by opening this page.</p></noscript>
+      <noscript><div class="notice" data-tone="warn"><p>JavaScript is required for the live view. No browser is started by opening this page.</p></div></noscript>
       <script nonce="${nonce}">${raw(script)}</script>`,
         {
           description:

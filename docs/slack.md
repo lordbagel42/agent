@@ -139,8 +139,9 @@ deployment procedure for immutable-release configuration changes; never mutate
 configuration concurrently with activation. A broader app manifest does not
 automatically broaden the configured OAuth request or an existing grant.
 
-The owner must complete **Connections → Connect Slack → Slack consent → Save
-Slack connection**, then **Test & discover tools**. Review the discovered contracts
+The owner must complete **Connections → Connect Slack → Slack consent**; the
+dashboard saves the authorization automatically on return, with no second
+confirmation. Then **Manage → Test & discover tools**. Review the discovered contracts
 and enable trusted reads; keep writes approval-required. OAuth consent cannot be
 completed by June, the bot credential or a management token. Existing official MCP
 enrollment remains in use; no second OAuth implementation or Amp-account MCP

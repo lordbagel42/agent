@@ -5,13 +5,14 @@ import { html } from "hono/html";
 import type { ModelProvider } from "../core/contracts.js";
 import { wrapModelProvider } from "../models/invocation.js";
 import {
+  allowNonceScript,
   confirmations,
   type PrivateEnv,
   type PrivateRouteSecurity,
   privateRoutes,
   sessionReturnPath,
 } from "./security.js";
-import { badge, confirmForm, messagePage, page } from "./view.js";
+import { continueForm, messagePage, page } from "./view.js";
 
 /** Process-local bearer links. Restart revokes all outstanding links. */
 export function createConsoleLoginLinks(origin: string) {
@@ -90,6 +91,11 @@ export function createConsoleSessionBridge(
   const sessions = new Map<string, { token: string; expires: number }>();
   const secure = security.origin.startsWith("https:");
   const cookie = secure ? "__Host-june-console" : "june-console-dev";
+  // A validated local path to continue after the next sign-in, including one
+  // through a June link. Never a query: OAuth codes stay server-side.
+  const returnCookie = secure
+    ? "__Host-june-console-return"
+    : "june-console-return-dev";
   const proof = confirmations(security.csrfSecret);
   const authenticateToken = (token: string) =>
     security.authenticate(
@@ -134,6 +140,48 @@ export function createConsoleSessionBridge(
     if (!principal && id) sessions.delete(id);
     return principal;
   };
+  const path = (c: Context) => new URL(c.req.url).pathname;
+  const mount = (c: Context) =>
+    path(c).replace(/\/(?:login|logout|link\/[^/]*)$/, "");
+  // Never continue into another session route, such as a used sign-in link.
+  const target = (c: Context, value: unknown) => {
+    const returnTo = sessionReturnPath(value, consolePath);
+    const prefix = mount(c);
+    return prefix && (returnTo === prefix || returnTo.startsWith(`${prefix}/`))
+      ? consolePath
+      : returnTo;
+  };
+  const forgetReturn = (c: Context) => {
+    if (getCookie(c, returnCookie) !== undefined)
+      deleteCookie(c, returnCookie, { path: "/", secure });
+  };
+  const resume = (c: Context) => {
+    const returnTo = target(c, getCookie(c, returnCookie));
+    forgetReturn(c);
+    return returnTo;
+  };
+  const signedOut = (c: Context<PrivateEnv>) =>
+    c.html(
+      messagePage(
+        c.get("nonce"),
+        "You're signed out",
+        "There is no active dashboard session in this browser.",
+        401,
+        { label: "Sign in", href: `${mount(c)}/login` },
+      ),
+      401,
+    );
+  const signOutPage = (
+    c: Context<PrivateEnv>,
+    principal: string,
+    notice?: string,
+  ) =>
+    page(
+      "Sign out of June?",
+      c.get("nonce"),
+      html`${notice ? html`<div class="notice" data-tone="warn"><p>${notice}</p></div>` : ""}<div class="card"><p>This ends the dashboard session in this browser. Tool permissions and work June has already started are unchanged.</p><form method="post" action="${mount(c)}/logout" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue(principal, `${mount(c)}/logout`, "logout")}"><div class="actions"><button type="submit">Sign out</button><a class="button secondary" href="${consolePath}">Stay signed in</a></div></form></div>`,
+      { narrow: true },
+    );
   // Anonymous access is confined to login rendering, not console/action routes.
   const routes = privateRoutes({
     ...security,
@@ -143,35 +191,35 @@ export function createConsoleSessionBridge(
     const unavailable = (c: Context<PrivateEnv>) =>
       c.html(
         page(
-          "This sign-in link is no longer available",
+          "This sign-in link can't be used",
           c.get("nonce"),
-          html`<section class="panel"><div class="panel-body"><p>It may have expired, already been used, or been cleared by a restart.</p><p>Ask June in your private conversation, or ask Amp, for a new link.</p><div class="actions"><a class="button secondary" href="${consolePath}/session/login">Use an operator token</a></div></div></section>`,
-          { narrow: true, description: "No new session was created." },
+          html`<div class="card"><p>It may have expired, been used already, or been cleared when June restarted. No session was created.</p><p class="hint">Ask June in your private conversation for a new link. If this browser is already signed in, the dashboard still opens.</p><div class="actions"><a class="button" href="${consolePath}">Open dashboard</a><a class="button secondary" href="${mount(c)}/login">Use an operator token</a></div></div>`,
+          { narrow: true },
         ),
         410,
       );
+    // GET and HEAD only render: previews and unfurlers never redeem a link.
+    // A visible, attended browser submits the signed form by itself.
     routes.get("/link/:id", (c) => {
       if (!login.links.has(c.req.param("id"))) return unavailable(c);
+      allowNonceScript(c);
       return c.html(
         page(
-          "Sign in to June",
+          "Signing you in",
           c.get("nonce"),
-          html`<section class="panel"><div class="panel-body"><h2>One-time dashboard access</h2><p>Continue to your private dashboard. Only use this link if you requested it from June or Amp.</p><form method="post" autocomplete="off"><input type="hidden" name="proof" value="${proof.issue("login", new URL(c.req.url).pathname, "link")}"><input type="hidden" name="confirmed" value="yes"><button class="full" type="submit">Sign in</button></form></div><div class="login-note">Single-use link · Expires 10 minutes after creation<br>Your browser session lasts 15 minutes. Tool permissions are unchanged.</div></section>`,
-          { narrow: true, description: "No operator token to copy or paste." },
+          html`<div class="card"><p class="working" role="status">Opening your private dashboard…</p>${continueForm(proof.issue("login", path(c), "link"), "Continue to June", { attended: true })}<p class="hint">This one-time link came from June. If the dashboard doesn't open by itself, choose Continue. Tool permissions are unchanged.</p></div>`,
+          { narrow: true, script: true },
         ),
       );
     });
     routes.post("/link/:id", async (c) => {
       const form = await c.req.parseBody();
-      if (
-        form.confirmed !== "yes" ||
-        !proof.verify("login", new URL(c.req.url).pathname, "link", form.proof)
-      )
+      if (!proof.verify("login", path(c), "link", form.proof))
         return c.html(
           messagePage(
             c.get("nonce"),
-            "Sign-in confirmation rejected",
-            "Open your sign-in link again and use its Sign in button.",
+            "Sign-in not completed",
+            "This sign-in form expired or didn't come from your link. Your link has not been used; open it again.",
             403,
           ),
           403,
@@ -190,38 +238,45 @@ export function createConsoleSessionBridge(
         );
       if (!login.links.consume(c.req.param("id"))) return unavailable(c);
       setSession(c, login.token);
-      return c.redirect(consolePath, 303);
+      return c.redirect(resume(c), 303);
     });
   }
-  routes.get("/login", (c) => {
-    const returnTo = sessionReturnPath(c.req.query("returnTo"), consolePath);
+  routes.get("/login", async (c) => {
+    const returnTo = target(c, c.req.query("returnTo"));
+    // Cross-site links reach this route through the console's same-origin
+    // bridge, where the Strict cookie is sent: existing sessions continue.
+    if (await authenticate(c.req.raw)) return c.redirect(returnTo, 303);
+    if (returnTo === consolePath) forgetReturn(c);
+    else
+      setCookie(c, returnCookie, returnTo, {
+        httpOnly: true,
+        secure,
+        sameSite: "Strict",
+        path: "/",
+        maxAge: 600,
+      });
     return c.html(
       page(
         "Sign in to June",
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-body"><h2>Operator authentication</h2><p class="small">Use the token for this trusted private host. It never appears in a URL or browser storage.</p><form method="post" autocomplete="off"><input type="hidden" name="returnTo" value="${returnTo}"><input type="hidden" name="proof" value="${proof.issue("login", new URL(c.req.url).pathname, returnTo)}"><label class="field" for="operator-token">Operator token</label><input id="operator-token" name="token" type="password" autocomplete="off" required maxlength="4096"><button class="full" type="submit">Sign in</button></form></div><div class="login-note">15-minute session · Token held in server memory<br>Signing in does not grant additional tool permissions.</div></section>`,
-        {
-          narrow: true,
-          description: "Your private workspace. Owner access only.",
-        },
+        html`<div class="card"><p>Ask June for a sign-in link in your private conversation. Opening it signs this browser in directly${returnTo === consolePath ? "" : " and continues where you left off"}.</p><p class="hint">Links work once and expire after 10 minutes. A session lasts 15 minutes and never changes tool permissions.</p></div><details class="disclosure"><summary>Use an operator token</summary><div class="disclosure-body"><form method="post" action="${path(c)}" autocomplete="off"><input type="hidden" name="returnTo" value="${returnTo}"><input type="hidden" name="proof" value="${proof.issue("login", path(c), returnTo)}"><label class="field" for="operator-token"><span>Operator token</span><input id="operator-token" name="token" type="password" autocomplete="off" required maxlength="4096"></label><p class="hint">Held in server memory only; never placed in a URL or browser storage.</p><div class="actions"><button type="submit" class="full">Sign in</button></div></form></div></details>`,
+        { narrow: true },
       ),
     );
   });
   routes.post("/login", async (c) => {
     const form = await c.req.parseBody();
-    const returnTo = sessionReturnPath(form.returnTo, consolePath);
+    const returnTo = target(c, form.returnTo);
     const recovery = {
-      label: "Return to sign in",
-      href: `${new URL(c.req.url).pathname}?returnTo=${encodeURIComponent(returnTo)}`,
+      label: "Back to sign in",
+      href: `${path(c)}?returnTo=${encodeURIComponent(returnTo)}`,
     };
-    if (
-      !proof.verify("login", new URL(c.req.url).pathname, returnTo, form.proof)
-    )
+    if (!proof.verify("login", path(c), returnTo, form.proof))
       return c.html(
         messagePage(
           c.get("nonce"),
-          "Sign-in confirmation rejected",
-          "Open the private login page again for a fresh form.",
+          "Sign-in form expired",
+          "Open the sign-in page again for a fresh form. No session was created.",
           403,
           recovery,
         ),
@@ -267,82 +322,39 @@ export function createConsoleSessionBridge(
         503,
       );
     setSession(c, form.token);
-    return c.html(
-      page(
-        "Signed in",
-        c.get("nonce"),
-        html`<section class="panel"><div class="panel-body">${badge("Active")}<p>Your private session is active for 15 minutes. The host rechecks your token on every request.</p><div class="actions"><a class="button" href="${returnTo}">${returnTo === consolePath ? "Open console →" : "Continue →"}</a><a class="button secondary" href="${new URL(c.req.url).pathname.replace(/\/login$/, "/logout")}">End this session</a></div></div></section>`,
-        {
-          narrow: true,
-          description:
-            "Authentication confirmed. Tool permissions are unchanged.",
-        },
-      ),
-    );
+    forgetReturn(c);
+    return c.redirect(returnTo, 303);
   });
   routes.get("/logout", async (c) => {
     const principal = await authenticate(c.req.raw);
-    if (!principal)
-      return c.html(
-        messagePage(
-          c.get("nonce"),
-          "Authentication required",
-          "There is no authenticated session to end. Open the private login page to sign in.",
-          401,
-          {
-            label: "Sign in →",
-            href: new URL(c.req.url).pathname.replace(/\/logout$/, "/login"),
-          },
-        ),
-        401,
-      );
-    return c.html(
-      page(
-        "End this session",
-        c.get("nonce"),
-        html`<section class="panel"><div class="panel-body"><div class="callout"><strong>Only this browser session will end</strong><p>This does not revoke tool grants or stop already-started actions.</p></div>${confirmForm(proof.issue(principal, new URL(c.req.url).pathname, "logout"), "Sign out")}</div></section>`,
-        {
-          narrow: true,
-          description: "Confirm before revoking this browser's console access.",
-          navigation: [{ label: "← Console", href: consolePath }],
-        },
-      ),
-    );
+    if (!principal) return signedOut(c);
+    return c.html(signOutPage(c, principal));
   });
+  // Signing out is CSRF-checked, not a consent decision: a stale form is
+  // replaced with a fresh one instead of a dead end.
   routes.post("/logout", async (c) => {
     const principal = await authenticate(c.req.raw);
     const form = await c.req.parseBody();
-    if (
-      !principal ||
-      form.confirmed !== "yes" ||
-      !proof.verify(
-        principal,
-        new URL(c.req.url).pathname,
-        "logout",
-        form.proof,
-      )
-    )
+    if (!principal) return signedOut(c);
+    if (!proof.verify(principal, path(c), "logout", form.proof))
       return c.html(
-        messagePage(
-          c.get("nonce"),
-          "Sign-out confirmation rejected",
-          "Open the session logout page again and review the confirmation.",
-          403,
+        signOutPage(
+          c,
+          principal,
+          "That sign-out form expired. Choose Sign out again.",
         ),
         403,
       );
     const id = getCookie(c, cookie);
     if (id) sessions.delete(id);
     deleteCookie(c, cookie, { path: "/", secure });
+    forgetReturn(c);
     return c.html(
       page(
         "Signed out",
         c.get("nonce"),
-        html`<section class="panel"><div class="panel-body">${badge("Session ended")}<p>This browser session has been revoked. Tool grants and already-started actions are unchanged.</p><div class="actions"><a class="button secondary" href="${new URL(c.req.url).pathname.replace(/\/logout$/, "/login")}">Return to sign in</a></div></div></section>`,
-        {
-          narrow: true,
-          description: "Private console access is closed for this browser.",
-        },
+        html`<div class="card"><p>This browser's dashboard session has ended. Tool permissions and work already started are unchanged.</p><div class="actions"><a class="button secondary" href="${mount(c)}/login">Sign in again</a></div></div>`,
+        { narrow: true },
       ),
     );
   });

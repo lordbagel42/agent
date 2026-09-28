@@ -15,6 +15,7 @@ import {
   type ConsoleSnapshot,
   createConsoleRoutes,
 } from "../console/routes.js";
+import { contentSecurityPolicy } from "../console/security.js";
 import {
   createConsoleLoginLinks,
   createConsoleSessionBridge,
@@ -191,6 +192,7 @@ export function createHttpApp(deps: HttpDependencies) {
       origin: deps.console.origin,
       csrfSecret: randomBytes(32).toString("base64url"),
       signInPath: "/console/session/login",
+      signOutPath: "/console/session/logout",
       authenticate,
     };
     const sessions = createConsoleSessionBridge(
@@ -219,10 +221,7 @@ export function createHttpApp(deps: HttpDependencies) {
           c.header("X-Content-Type-Options", "nosniff");
           c.header("X-Frame-Options", "DENY");
           c.header("X-Robots-Tag", "noindex, nofollow, noarchive");
-          c.header(
-            "Content-Security-Policy",
-            `default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
-          );
+          c.header("Content-Security-Policy", contentSecurityPolicy(nonce));
           c.header("Retry-After", "60");
           return c.html(
             messagePage(
@@ -254,6 +253,10 @@ export function createHttpApp(deps: HttpDependencies) {
         "/console/action-links",
         createActionLinkRoutes({
           security: { ...security, authenticate: sessions.authenticate },
+          console: {
+            path: "/console",
+            connectionsAvailable: !!deps.console.connections,
+          },
           links: actionLinks,
           resolveAction: async (principal, grantId, token) =>
             actionLinks.resolveAction(principal, grantId, token),
@@ -274,6 +277,7 @@ export function createHttpApp(deps: HttpDependencies) {
         inspect: deps.console.inspect,
         usage: deps.console.usage,
         connectionsAvailable: !!deps.console.connections,
+        connections: deps.console.connections?.store,
         // No action inspection/confirmation callbacks until domain guarantees exist.
       }),
     );

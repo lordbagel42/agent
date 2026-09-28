@@ -1388,8 +1388,9 @@ ssh -N -L 127.0.0.1:3080:127.0.0.1:3080 <authorized-ssh-host>
 ```
 
 Open `http://127.0.0.1:3080/console/session/login` on that computer. The hostname
-and port must match the configured origin. Enter the existing operator token
-through the password form, not a URL. An explicitly configured private HTTPS
+and port must match the configured origin. Under **Use an operator token**, enter
+the existing operator token through the password form, not a URL; the browser then
+goes straight to the page it came from. An explicitly configured private HTTPS
 origin is also supported. Non-loopback HTTP origins are rejected. Never publish
 `/console`, `/console/session/*` or `/operator/*` through the Slack proxy, a
 development portal, or any public ingress. Disable access/body logging for these
@@ -1397,9 +1398,18 @@ private routes, and do not place untrusted content on the same origin.
 
 The server exchanges the token for a 15-minute HttpOnly, SameSite=Strict session;
 HTTPS cookies are Secure. Restarting the host revokes sessions. Login POSTs are
-limited to ten per minute across this owner-only host. Sign out at
+limited to ten per minute across this owner-only host. **Sign out** in the page
+header opens a one-button, CSRF-protected sign-out form at
 `/console/session/logout`. Browser cookies authorize only the console, not the
 Bearer-only operator API. Existing operator clients are unchanged.
+
+Browsers withhold Strict cookies on cross-site navigations, such as a dashboard
+link opened from Slack. Instead of a dead end, an unauthenticated page request
+continues through a same-origin sign-in document (no script, no query string
+carried): an existing session then opens the requested page directly, and
+otherwise the sign-in page appears and remembers that page for up to ten minutes
+in an HttpOnly Strict cookie. Signing in by token or by a new June link returns
+there. Unauthenticated POSTs are never replayed; they ask you to repeat the step.
 
 ### One-time dashboard sign-in links
 
@@ -1420,11 +1430,19 @@ curl --fail --request POST \
 The response is `201` JSON with `url` and `expiresAt`. URLs use the configured
 console origin, never request headers. Each link has a random 144-bit identifier,
 expires after **10 minutes**, and can create exactly one **15-minute** session.
-Opening it shows a **Sign in** button; only that same-origin confirmed POST
-consumes it, so GET/HEAD previews do not burn the link. Expired, used, and
-restart-invalidated links return `410` with recovery instructions. At most 32
-unexpired unused links are held in memory; issuance at capacity returns `429`.
-Restarts revoke links and sessions. The operator token never appears in a link.
+Opening it in an ordinary browser signs in directly: the page's own signed,
+same-origin POST redeems the link and opens the dashboard (or the page that
+asked for sign-in), with no **Sign in** click. GET/HEAD only render, so unfurlers
+and previews do not burn the link. A small nonce-authorized script submits only
+when the page is visible and not prerendering; background tabs wait until shown,
+and browsers without JavaScript or under automation (`navigator.webdriver`) see
+one **Continue to June** button instead. Consumption stays atomic: concurrent
+redemptions have one winner. A preview service that runs a real, unautomated
+browser could still redeem a link, so share links only in the private
+conversation. Expired, used, and restart-invalidated links return `410` with
+recovery instructions. At most 32 unexpired unused links are held in memory;
+issuance at capacity returns `429`. Restarts revoke links and sessions. The
+operator token never appears in a link.
 
 The delivery record retains the link, but the host redacts login URLs from
 June's subsequent conversation-model inputs, including history and fetched
@@ -1438,14 +1456,20 @@ private dashboard must forward root `/<24-character-id>` GET/HEAD requests and
 `/operator/*` private. Disable/redact URL and body logs on those routes. Links do
 **not** bypass Cloudflare Access, SSH, or other private-ingress authentication,
 and they do not grant tool permissions. No arbitrary redirect destinations are
-accepted; redemption always opens `/console`.
+accepted; redemption opens `/console`, or a validated local console path that the
+sign-in page remembered, never a URL from the link or a query string.
 
-The overview shows selected configuration facts, content-free Slack ingress
-counts, durable event counts, capability gates and saved proposal counts. It
-does not show credentials, conversation text, job goals/reports, provider paths,
-or infer provider health from configuration. Unconnected memory, reflection,
-approval and revocation sections remain unavailable. No action callbacks or
-approvals are mounted on the overview; viewing the page cannot approve or run work.
+Navigation is task-based: **Overview**, **Connections** (when MCP is configured)
+and **Usage**. The overview puts decisions first: tool requests awaiting approval,
+unknown tool outcomes needing reconciliation, expired authorizations and failed
+discovery, each linking to its page. It then shows work, a connections summary,
+and the selected configuration facts, content-free Slack ingress counts, durable
+event counts and capability gates. It does not show credentials, conversation
+text, job goals/reports, provider paths, or infer provider health from
+configuration. Sections the host does not report (currently memory, reflection,
+approvals and revocations) are listed together as not reported, never as empty.
+No action callbacks or approvals are mounted on the overview; viewing the page
+cannot approve or run work.
 
 ### Opaque action links (separate from sign-in)
 
@@ -1477,7 +1501,7 @@ old token. Keep these routes on private ingress, disable/redact URL and body log
 and never share action links with other audiences. Enabling route configuration
 does not register tools, establish provider health, or expand execution gates.
 
-### Token intelligence
+### Usage
 
 `/console/usage` is an owner-session-only dashboard with rolling 24-hour, 7-day,
 and 30-day windows, model filtering, UTC input/output charts, cache and reasoning

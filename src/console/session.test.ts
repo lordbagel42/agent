@@ -52,7 +52,9 @@ test("browser sessions require host auth, same-origin proof, expire, and revoke 
   );
   expect((await post("/session/login", { token: accepted })).status).toBe(403);
   const login = await post("/session/login", { proof, token: accepted });
-  expect(login.status).toBe(200);
+  // Straight to the validated destination, not a success interstitial.
+  expect(login.status).toBe(303);
+  expect(login.headers.get("location")).toBe("/console");
   expect(await login.text()).not.toContain(accepted);
   const setCookie = login.headers.get("set-cookie") ?? "";
   expect(setCookie).toContain("HttpOnly");
@@ -63,18 +65,32 @@ test("browser sessions require host auth, same-origin proof, expire, and revoke 
   expect((await app.request("/console", { headers: { cookie } })).status).toBe(
     200,
   );
+  // An existing session continues instead of asking for the token again.
+  const again = await app.request("/session/login", { headers: { cookie } });
+  expect(again.status).toBe(303);
+  expect(again.headers.get("location")).toBe("/console");
+  const logoutPage = await (
+    await app.request("/session/logout", { headers: { cookie } })
+  ).text();
+  expect(logoutPage).not.toContain('type="checkbox"');
   const logoutProof = await getProof("/session/logout", cookie);
-  expect((await app.request("/console", { headers: { cookie } })).status).toBe(
-    200,
-  );
+  // One click, but still CSRF-bound: no proof or a cross-site POST changes nothing.
+  expect((await post("/session/logout", {}, cookie)).status).toBe(403);
   expect(
     (
       await post(
         "/session/logout",
-        { proof: logoutProof, confirmed: "yes" },
+        { proof: logoutProof },
         cookie,
+        "cross-site",
       )
     ).status,
+  ).toBe(403);
+  expect((await app.request("/console", { headers: { cookie } })).status).toBe(
+    200,
+  );
+  expect(
+    (await post("/session/logout", { proof: logoutProof }, cookie)).status,
   ).toBe(200);
   expect((await app.request("/console", { headers: { cookie } })).status).toBe(
     401,
@@ -133,10 +149,19 @@ test("missing and expired sessions recover locally without replaying actions or 
   expect(recoveryHtml).toContain(
     'href="/session/login?returnTo=%2Fconsole%2Freview"',
   );
+  // A cross-site navigation lacks the Strict cookie: continue through a
+  // same-origin document, never carrying the query.
+  expect(recoveryHtml).toContain(
+    `http-equiv="refresh" content="0; url='/session/login?returnTo=%2Fconsole%2Freview'"`,
+  );
   expect(recoveryHtml).not.toContain("not-carried");
-  const formHtml = await (
-    await app.request("/session/login?returnTo=%2Fconsole%2Freview")
-  ).text();
+  const formPage = await app.request(
+    "/session/login?returnTo=%2Fconsole%2Freview",
+  );
+  // Without a session, sign-in renders instead of redirecting back: no loop.
+  expect(formPage.status).toBe(200);
+  const formHtml = await formPage.text();
+  expect(formHtml).not.toContain('http-equiv="refresh"');
   const proof = formHtml.match(/name="proof" value="([^"]+)"/)?.[1] ?? "";
   const post = (returnTo: string, token = "fixture") =>
     app.request("/session/login", {
@@ -154,8 +179,8 @@ test("missing and expired sessions recover locally without replaying actions or 
     'href="/session/login?returnTo=%2Fconsole%2Freview"',
   );
   const login = await post("/console/review");
-  expect(login.status).toBe(200);
-  expect(await login.text()).toContain('href="/console/review">Continue');
+  expect(login.status).toBe(303);
+  expect(login.headers.get("location")).toBe("/console/review");
   const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? "";
   expect(
     await (
@@ -177,7 +202,9 @@ test("missing and expired sessions recover locally without replaying actions or 
       body: "never-replay",
     });
     expect(deniedPost.status).toBe(401);
-    expect(await deniedPost.text()).toContain('href="/session/login"');
+    const deniedHtml = await deniedPost.text();
+    expect(deniedHtml).toContain('href="/session/login"');
+    expect(deniedHtml).not.toContain('http-equiv="refresh"');
     expect(writes).toBe(0);
   } finally {
     vi.restoreAllMocks();

@@ -1,0 +1,598 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-28T16:27:39.872Z",
+  "title": "Design System: June private console",
+  "extensions": {
+    "colorMeta": {
+      "bg": {
+        "role": "neutral",
+        "displayName": "Console Night",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Panel Charcoal",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "surface-raised": {
+        "role": "neutral",
+        "displayName": "Raised Charcoal",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "inset": {
+        "role": "neutral",
+        "displayName": "Well Black",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "line-strong": {
+        "role": "neutral",
+        "displayName": "Strong Hairline",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "control": {
+        "role": "neutral",
+        "displayName": "Control Gray",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "text": {
+        "role": "primary",
+        "displayName": "Signal White",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Soft Text",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Muted Text",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "on-accent": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "hover": {
+        "role": "neutral",
+        "displayName": "Pure White",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "badge-neutral": {
+        "role": "neutral",
+        "displayName": "Badge Charcoal",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "code-text": {
+        "role": "neutral",
+        "displayName": "Code Gray",
+        "tonalRamp": [
+          "oklch(15.0% 0 0)",
+          "oklch(26.4% 0 0)",
+          "oklch(37.9% 0 0)",
+          "oklch(49.3% 0 0)",
+          "oklch(60.7% 0 0)",
+          "oklch(72.1% 0 0)",
+          "oklch(83.6% 0 0)",
+          "oklch(95.0% 0 0)"
+        ]
+      },
+      "focus": {
+        "role": "secondary",
+        "displayName": "Focus Blue",
+        "tonalRamp": [
+          "oklch(15.0% 0.096 257.8)",
+          "oklch(26.4% 0.096 257.8)",
+          "oklch(37.9% 0.096 257.8)",
+          "oklch(49.3% 0.096 257.8)",
+          "oklch(60.7% 0.096 257.8)",
+          "oklch(72.1% 0.096 257.8)",
+          "oklch(83.6% 0.096 257.8)",
+          "oklch(95.0% 0.096 257.8)"
+        ]
+      },
+      "ok": {
+        "role": "status",
+        "displayName": "Settled Green",
+        "tonalRamp": [
+          "oklch(15.0% 0.089 161.7)",
+          "oklch(26.4% 0.089 161.7)",
+          "oklch(37.9% 0.089 161.7)",
+          "oklch(49.3% 0.089 161.7)",
+          "oklch(60.7% 0.089 161.7)",
+          "oklch(72.1% 0.089 161.7)",
+          "oklch(83.6% 0.089 161.7)",
+          "oklch(95.0% 0.089 161.7)"
+        ]
+      },
+      "ok-bg": {
+        "role": "status",
+        "displayName": "Settled Green fill",
+        "tonalRamp": [
+          "oklch(15.0% 0.026 160.4)",
+          "oklch(26.4% 0.026 160.4)",
+          "oklch(37.9% 0.026 160.4)",
+          "oklch(49.3% 0.026 160.4)",
+          "oklch(60.7% 0.026 160.4)",
+          "oklch(72.1% 0.026 160.4)",
+          "oklch(83.6% 0.026 160.4)",
+          "oklch(95.0% 0.026 160.4)"
+        ]
+      },
+      "ok-line": {
+        "role": "status",
+        "displayName": "Settled Green line",
+        "tonalRamp": [
+          "oklch(15.0% 0.050 159.1)",
+          "oklch(26.4% 0.050 159.1)",
+          "oklch(37.9% 0.050 159.1)",
+          "oklch(49.3% 0.050 159.1)",
+          "oklch(60.7% 0.050 159.1)",
+          "oklch(72.1% 0.050 159.1)",
+          "oklch(83.6% 0.050 159.1)",
+          "oklch(95.0% 0.050 159.1)"
+        ]
+      },
+      "warn": {
+        "role": "status",
+        "displayName": "Attention Amber",
+        "tonalRamp": [
+          "oklch(15.0% 0.098 81.6)",
+          "oklch(26.4% 0.098 81.6)",
+          "oklch(37.9% 0.098 81.6)",
+          "oklch(49.3% 0.098 81.6)",
+          "oklch(60.7% 0.098 81.6)",
+          "oklch(72.1% 0.098 81.6)",
+          "oklch(83.6% 0.098 81.6)",
+          "oklch(95.0% 0.098 81.6)"
+        ]
+      },
+      "warn-bg": {
+        "role": "status",
+        "displayName": "Attention Amber fill",
+        "tonalRamp": [
+          "oklch(15.0% 0.022 78.7)",
+          "oklch(26.4% 0.022 78.7)",
+          "oklch(37.9% 0.022 78.7)",
+          "oklch(49.3% 0.022 78.7)",
+          "oklch(60.7% 0.022 78.7)",
+          "oklch(72.1% 0.022 78.7)",
+          "oklch(83.6% 0.022 78.7)",
+          "oklch(95.0% 0.022 78.7)"
+        ]
+      },
+      "warn-line": {
+        "role": "status",
+        "displayName": "Attention Amber line",
+        "tonalRamp": [
+          "oklch(15.0% 0.045 79.0)",
+          "oklch(26.4% 0.045 79.0)",
+          "oklch(37.9% 0.045 79.0)",
+          "oklch(49.3% 0.045 79.0)",
+          "oklch(60.7% 0.045 79.0)",
+          "oklch(72.1% 0.045 79.0)",
+          "oklch(83.6% 0.045 79.0)",
+          "oklch(95.0% 0.045 79.0)"
+        ]
+      },
+      "danger": {
+        "role": "status",
+        "displayName": "Stop Rose",
+        "tonalRamp": [
+          "oklch(15.0% 0.094 24.3)",
+          "oklch(26.4% 0.094 24.3)",
+          "oklch(37.9% 0.094 24.3)",
+          "oklch(49.3% 0.094 24.3)",
+          "oklch(60.7% 0.094 24.3)",
+          "oklch(72.1% 0.094 24.3)",
+          "oklch(83.6% 0.094 24.3)",
+          "oklch(95.0% 0.094 24.3)"
+        ]
+      },
+      "danger-bg": {
+        "role": "status",
+        "displayName": "Stop Rose fill",
+        "tonalRamp": [
+          "oklch(15.0% 0.022 23.5)",
+          "oklch(26.4% 0.022 23.5)",
+          "oklch(37.9% 0.022 23.5)",
+          "oklch(49.3% 0.022 23.5)",
+          "oklch(60.7% 0.022 23.5)",
+          "oklch(72.1% 0.022 23.5)",
+          "oklch(83.6% 0.022 23.5)",
+          "oklch(95.0% 0.022 23.5)"
+        ]
+      },
+      "danger-line": {
+        "role": "status",
+        "displayName": "Stop Rose line",
+        "tonalRamp": [
+          "oklch(15.0% 0.054 25.0)",
+          "oklch(26.4% 0.054 25.0)",
+          "oklch(37.9% 0.054 25.0)",
+          "oklch(49.3% 0.054 25.0)",
+          "oklch(60.7% 0.054 25.0)",
+          "oklch(72.1% 0.054 25.0)",
+          "oklch(83.6% 0.054 25.0)",
+          "oklch(95.0% 0.054 25.0)"
+        ]
+      },
+      "data-input": {
+        "role": "data",
+        "displayName": "Data Mint",
+        "tonalRamp": [
+          "oklch(15.0% 0.086 172.1)",
+          "oklch(26.4% 0.086 172.1)",
+          "oklch(37.9% 0.086 172.1)",
+          "oklch(49.3% 0.086 172.1)",
+          "oklch(60.7% 0.086 172.1)",
+          "oklch(72.1% 0.086 172.1)",
+          "oklch(83.6% 0.086 172.1)",
+          "oklch(95.0% 0.086 172.1)"
+        ]
+      },
+      "data-output": {
+        "role": "data",
+        "displayName": "Data Violet",
+        "tonalRamp": [
+          "oklch(15.0% 0.112 296.0)",
+          "oklch(26.4% 0.112 296.0)",
+          "oklch(37.9% 0.112 296.0)",
+          "oklch(49.3% 0.112 296.0)",
+          "oklch(60.7% 0.112 296.0)",
+          "oklch(72.1% 0.112 296.0)",
+          "oklch(83.6% 0.112 296.0)",
+          "oklch(95.0% 0.112 296.0)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "The single page title; 20px at 720px and below."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Section headings."
+      },
+      "title-small": {
+        "displayName": "Title Small",
+        "purpose": "Row and card headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default text. Ledes stop at 70ch; notice, card and section-intro prose stops at 75ch."
+      },
+      "body-small": {
+        "displayName": "Body Small",
+        "purpose": "Row details, notices, breadcrumbs and consent statements."
+      },
+      "button": {
+        "displayName": "Button",
+        "purpose": "Every button label."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Status badges (on a 20px line box) and table headers."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Fact labels, hints, section notes, row meta and the footer."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "Usage totals only; 22px at 720px and below."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Inline code and table data cells; code blocks set 12px at 1.7, and usage metric values 15px with tabular numerals."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "state-change",
+        "value": "120ms ease",
+        "purpose": "Button background, border and text color changes, and the disclosure chevron turn."
+      },
+      {
+        "name": "working-pulse",
+        "value": "900ms ease-in-out infinite alternate, opacity 0.3 to 1",
+        "purpose": "The continuation status dot; the only looping motion."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "prefers-reduced-motion: reduce removes every animation and transition",
+        "purpose": "Motion is optional feedback, never required to read state."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "usage-panels",
+        "value": "960px"
+      },
+      {
+        "name": "compact",
+        "value": "720px"
+      },
+      {
+        "name": "small-phone",
+        "value": "400px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one Signal White action per decision; also the full-width continuation fallback.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">Approve and run once</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 7px 14px; border-radius: var(--radius-small, 6px); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 13px; font-weight: 600; line-height: 1.3; text-align: center; text-decoration: none; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; border: 1px solid var(--text, #ededed); background: var(--text, #ededed); color: var(--on-accent, #151515); } .ds-btn-primary:hover { border-color: #fff; background: #fff; color: #111; } .ds-btn-primary:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: 2px; } .ds-btn-primary:disabled { border-color: var(--line-strong, #3a3a3a); background: var(--surface-raised, #202020); color: var(--text-muted, #a3a3a3); cursor: not-allowed; } @media (max-width: 720px) { .ds-btn-primary { min-height: 44px; } } @media (prefers-reduced-motion: reduce) { .ds-btn-primary { transition: none; } }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Outlined alternative actions such as filters, exports and recovery links.",
+      "html": "<button class=\"ds-btn-secondary\" type=\"button\">Export JSON</button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 7px 14px; border-radius: var(--radius-small, 6px); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 13px; font-weight: 600; line-height: 1.3; text-align: center; text-decoration: none; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; border: 1px solid var(--control, #6b6b6b); background: transparent; color: var(--text, #ededed); } .ds-btn-secondary:hover { border-color: var(--text-muted, #a3a3a3); background: var(--surface-raised, #202020); color: #fff; } .ds-btn-secondary:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: 2px; } .ds-btn-secondary:disabled { border-color: var(--line-strong, #3a3a3a); background: var(--surface-raised, #202020); color: var(--text-muted, #a3a3a3); cursor: not-allowed; } @media (max-width: 720px) { .ds-btn-secondary { min-height: 44px; } } @media (prefers-reduced-motion: reduce) { .ds-btn-secondary { transition: none; } }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Destructive actions only, such as Disconnect.",
+      "html": "<button class=\"ds-btn-danger\" type=\"button\">Disconnect</button>",
+      "css": ".ds-btn-danger { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 7px 14px; border-radius: var(--radius-small, 6px); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 13px; font-weight: 600; line-height: 1.3; text-align: center; text-decoration: none; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; border: 1px solid var(--danger-line, #5a3532); background: transparent; color: var(--danger, #eea09a); } .ds-btn-danger:hover { border-color: var(--danger, #eea09a); background: var(--danger-bg, #2a1c1b); color: var(--danger, #eea09a); } .ds-btn-danger:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: 2px; } .ds-btn-danger:disabled { border-color: var(--line-strong, #3a3a3a); background: var(--surface-raised, #202020); color: var(--text-muted, #a3a3a3); cursor: not-allowed; } @media (max-width: 720px) { .ds-btn-danger { min-height: 44px; } } @media (prefers-reduced-motion: reduce) { .ds-btn-danger { transition: none; } }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Labelled native field on a Well Black inset with a muted hint.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">Server URL</span><input class=\"ds-input\" type=\"url\" placeholder=\"https://mcp.example.com/mcp\"><span class=\"ds-hint\">Every tool starts disabled until you choose otherwise.</span></label>",
+      "css": ".ds-field { display: grid; gap: 6px; color: var(--text, #ededed); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 14px; line-height: 1.5; } .ds-field-label { font-size: 13px; font-weight: 500; } .ds-input { width: 100%; min-height: 38px; padding: 8px 11px; border: 1px solid var(--control, #6b6b6b); border-radius: var(--radius-small, 6px); background: var(--inset, #141414); color: var(--text, #ededed); font: inherit; caret-color: var(--focus, #9ac3ff); } .ds-input:hover { border-color: var(--text-muted, #a3a3a3); } .ds-input:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: 2px; } .ds-input::placeholder { color: var(--text-muted, #a3a3a3); opacity: .8; } .ds-input[aria-invalid=true] { border-color: var(--danger, #eea09a); } .ds-hint { color: var(--text-muted, #a3a3a3); font-size: 12px; }"
+    },
+    {
+      "name": "Top Navigation",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "Brand, three task tabs and Owner/Sign out; tabs become a second row of equal segments at 720px.",
+      "html": "<header class=\"ds-topbar\"><div class=\"ds-topbar-inner\"><a class=\"ds-brand\" href=\"#\"><span class=\"ds-brand-mark\" aria-hidden=\"true\">J</span>June</a><nav class=\"ds-nav\" aria-label=\"Primary\"><a href=\"#\" aria-current=\"page\">Overview</a><a href=\"#\">Connections</a><a href=\"#\">Usage</a></nav><div class=\"ds-account\"><span class=\"ds-owner\"><svg viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.4\" aria-hidden=\"true\"><rect x=\"3.5\" y=\"7\" width=\"9\" height=\"7\" rx=\"1.5\"/><path d=\"M5.5 7V4a2.5 2.5 0 0 1 5 0v3\"/></svg><span>Owner</span></span><a href=\"#\">Sign out</a></div></div></header>",
+      "css": ".ds-topbar { background: var(--surface, #181818); border-bottom: 1px solid var(--line, #2a2a2a); color: var(--text, #ededed); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 14px; line-height: 1.5; } .ds-topbar-inner { display: flex; align-items: stretch; gap: 28px; min-height: 56px; padding: 0 24px; } .ds-brand { display: flex; align-items: center; gap: 10px; color: inherit; font-size: 15px; font-weight: 650; text-decoration: none; } .ds-brand-mark { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; background: var(--text, #ededed); color: var(--on-accent, #151515); font-size: 13px; font-weight: 700; } .ds-nav { display: flex; gap: 4px; } .ds-nav a { display: flex; align-items: center; padding: 0 10px; margin-bottom: -1px; border-bottom: 2px solid transparent; color: var(--text-secondary, #b8b8b8); font-weight: 500; text-decoration: none; } .ds-nav a:hover { color: var(--text, #ededed); } .ds-nav a[aria-current=page] { color: var(--text, #ededed); border-bottom-color: var(--text, #ededed); } .ds-nav a:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: -4px; } .ds-account { display: flex; align-items: center; gap: 16px; margin-left: auto; color: var(--text-muted, #a3a3a3); font-size: 13px; } .ds-owner { display: inline-flex; align-items: center; gap: 6px; } .ds-owner svg { width: 13px; height: 13px; } .ds-account a { color: var(--text-secondary, #b8b8b8); text-decoration-thickness: 1px; text-underline-offset: 3px; } .ds-account a:hover { color: #fff; } .ds-brand:focus-visible, .ds-account a:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: 2px; } @media (max-width: 720px) { .ds-topbar-inner { flex-wrap: wrap; gap: 0 12px; padding: 0 16px; } .ds-brand { min-height: 52px; } .ds-nav { order: 3; width: calc(100% + 32px); margin: 0 -16px; padding: 0 8px; border-top: 1px solid var(--line, #2a2a2a); } .ds-nav a { flex: 1; justify-content: center; min-height: 44px; padding: 0 6px; } } @media (max-width: 400px) { .ds-owner { display: none; } }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Status text in a pill; tone supplements the words and unmapped labels stay neutral.",
+      "html": "<span class=\"ds-badge\">recorded</span> <span class=\"ds-badge\" data-tone=\"ok\">Authorization saved</span> <span class=\"ds-badge\" data-tone=\"warn\">Awaiting approval</span> <span class=\"ds-badge\" data-tone=\"danger\">failed</span>",
+      "css": ".ds-badge { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 1px 9px; border: 1px solid var(--line-strong, #3a3a3a); border-radius: 999px; background: #1e1e1e; color: var(--text-secondary, #b8b8b8); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 12px; font-weight: 500; line-height: 20px; white-space: nowrap; } .ds-badge::before { content: \"\"; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; } .ds-badge[data-tone=ok] { border-color: var(--ok-line, #2c4d3b); background: var(--ok-bg, #15241c); color: var(--ok, #86ceaa); } .ds-badge[data-tone=warn] { border-color: var(--warn-line, #54442a); background: var(--warn-bg, #282116); color: var(--warn, #e3bd78); } .ds-badge[data-tone=danger] { border-color: var(--danger-line, #5a3532); background: var(--danger-bg, #2a1c1b); color: var(--danger, #eea09a); }"
+    },
+    {
+      "name": "Notice",
+      "kind": "custom",
+      "refersTo": "notice",
+      "description": "Standalone state message with a full 1px outline; tinted tones carry foreground text.",
+      "html": "<div class=\"ds-notice\" data-tone=\"danger\"><strong>Connection changed since this request</strong><p>The connection has changed or been removed, so the reviewed destination is no longer shown and this request can't be approved. Ask June for a new request if you still need it.</p></div>",
+      "css": ".ds-notice { padding: 12px 14px; border: 1px solid var(--line-strong, #3a3a3a); border-radius: var(--radius-small, 6px); background: var(--surface, #181818); color: var(--text-secondary, #b8b8b8); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 13px; line-height: 1.5; } .ds-notice strong { display: block; margin-bottom: 2px; color: var(--text, #ededed); font-weight: 600; } .ds-notice p { margin: 0; max-width: 75ch; } .ds-notice p + p { margin-top: 6px; } .ds-notice[data-tone=ok] { border-color: var(--ok-line, #2c4d3b); background: var(--ok-bg, #15241c); color: var(--text, #ededed); } .ds-notice[data-tone=warn] { border-color: var(--warn-line, #54442a); background: var(--warn-bg, #282116); color: var(--text, #ededed); } .ds-notice[data-tone=danger] { border-color: var(--danger-line, #5a3532); background: var(--danger-bg, #2a1c1b); color: var(--text, #ededed); }"
+    },
+    {
+      "name": "List Row",
+      "kind": "custom",
+      "refersTo": "list-row",
+      "description": "Records in a hairline-divided list; linked rows hover to Raised Charcoal and show a drawn chevron.",
+      "html": "<div class=\"ds-list\"><a class=\"ds-item\" href=\"#\"><div class=\"ds-item-body\"><h3>Review create_note</h3><p>Tool request on Research notes (fixture) · expires in 10 min</p></div><div class=\"ds-item-side\"><span class=\"ds-badge\" data-tone=\"warn\">Awaiting approval</span></div></a><div class=\"ds-item\"><div class=\"ds-item-body\"><h3>Coding proposals</h3><p>3 proposals in the private conversation. Detailed job inspection remains in the authenticated operator API.</p></div><div class=\"ds-item-side\"><span class=\"ds-badge\">recorded</span></div></div></div>",
+      "css": ".ds-list { background: var(--surface, #181818); border: 1px solid var(--line, #2a2a2a); border-radius: var(--radius, 8px); overflow: hidden; color: var(--text, #ededed); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 14px; line-height: 1.5; } .ds-list > * + * { border-top: 1px solid var(--line, #2a2a2a); } .ds-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 10px 20px; padding: 14px 16px; color: inherit; text-decoration: none; } .ds-item h3 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.3; } .ds-item-body { min-width: 0; } .ds-item-body > p { margin: 3px 0 0; color: var(--text-secondary, #b8b8b8); font-size: 13px; overflow-wrap: anywhere; } .ds-item-side { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 10px; } a.ds-item:hover { background: var(--surface-raised, #202020); } a.ds-item:hover h3 { text-decoration: underline; } a.ds-item:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: -3px; } a.ds-item .ds-item-side::after { content: \"\"; flex: none; width: 7px; height: 7px; margin: 0 2px 0 4px; border-top: 1.5px solid var(--text-muted, #a3a3a3); border-right: 1.5px solid var(--text-muted, #a3a3a3); transform: rotate(45deg); } .ds-badge { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 1px 9px; border: 1px solid var(--line-strong, #3a3a3a); border-radius: 999px; background: #1e1e1e; color: var(--text-secondary, #b8b8b8); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 12px; font-weight: 500; line-height: 20px; white-space: nowrap; } .ds-badge::before { content: \"\"; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; } .ds-badge[data-tone=ok] { border-color: var(--ok-line, #2c4d3b); background: var(--ok-bg, #15241c); color: var(--ok, #86ceaa); } .ds-badge[data-tone=warn] { border-color: var(--warn-line, #54442a); background: var(--warn-bg, #282116); color: var(--warn, #e3bd78); } .ds-badge[data-tone=danger] { border-color: var(--danger-line, #5a3532); background: var(--danger-bg, #2a1c1b); color: var(--danger, #eea09a); }"
+    },
+    {
+      "name": "Decision Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "One decision per card: a checked statement plus one submit that stays de-emphasized until checked.",
+      "html": "<div class=\"ds-card\"><p>This call may change external data. Approval runs this exact call once, not future calls.</p><form class=\"ds-confirm\"><label class=\"ds-check\"><input type=\"checkbox\" required><span>I reviewed this exact request and approve running it once.<small>Approval must happen before 2026-09-28 16:12 UTC.</small></span></label><button class=\"ds-submit\" type=\"submit\">Approve and run once</button></form></div>",
+      "css": ".ds-card { padding: 20px; background: var(--surface, #181818); border: 1px solid var(--line, #2a2a2a); border-radius: var(--radius, 8px); color: var(--text, #ededed); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 14px; line-height: 1.5; } .ds-card > p { margin: 0; max-width: 75ch; } .ds-card > * + * { margin-top: 16px; } .ds-check { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; font-size: 13px; cursor: pointer; } .ds-check input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--text, #ededed); } .ds-check input:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: 2px; } .ds-check small { display: block; margin-top: 2px; color: var(--text-muted, #a3a3a3); font-size: 12px; } .ds-submit { margin-top: 14px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 7px 14px; border-radius: var(--radius-small, 6px); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 13px; font-weight: 600; line-height: 1.3; text-align: center; text-decoration: none; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; border: 1px solid var(--text, #ededed); background: var(--text, #ededed); color: var(--on-accent, #151515); } .ds-submit:hover { border-color: #fff; background: #fff; color: #111; } .ds-submit:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: 2px; } .ds-confirm:has(input:not(:checked)) .ds-submit { border-color: var(--line-strong, #3a3a3a); background: transparent; color: var(--text-secondary, #b8b8b8); } @media (max-width: 720px) { .ds-submit { min-height: 44px; } } @media (prefers-reduced-motion: reduce) { .ds-submit { transition: none; } }"
+    },
+    {
+      "name": "Continuation Status",
+      "kind": "custom",
+      "refersTo": "continuation-status",
+      "description": "Mechanical steps: a pulsing status line that continues on its own, with a full-width fallback button.",
+      "html": "<p class=\"ds-working\" role=\"status\">Finishing your GitHub connection…</p><div class=\"ds-actions\"><a class=\"ds-btn-full\" href=\"#\">Continue</a></div>",
+      "css": ".ds-working { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--text-secondary, #b8b8b8); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 14px; line-height: 1.5; } .ds-working::before { content: \"\"; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted, #a3a3a3); animation: ds-pulse .9s ease-in-out infinite alternate; } @keyframes ds-pulse { from { opacity: .3; } to { opacity: 1; } } .ds-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; } .ds-btn-full { width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 7px 14px; border-radius: var(--radius-small, 6px); font-family: var(--font, system-ui, -apple-system, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, sans-serif); font-size: 13px; font-weight: 600; line-height: 1.3; text-align: center; text-decoration: none; cursor: pointer; transition: background-color .12s, border-color .12s, color .12s; border: 1px solid var(--text, #ededed); background: var(--text, #ededed); color: var(--on-accent, #151515); } .ds-btn-full:hover { border-color: #fff; background: #fff; color: #111; } .ds-btn-full:focus-visible { outline: 2px solid var(--focus, #9ac3ff); outline-offset: 2px; } @media (max-width: 720px) { .ds-btn-full { min-height: 44px; } } @media (prefers-reduced-motion: reduce) { .ds-working::before { animation: none; } .ds-btn-full { transition: none; } }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Control Panel",
+    "overview": "June's console is a private instrument panel, not a showroom. It opens on what needs the owner and gets out of the way. Familiar navigation, clear typography and responsive behavior take precedence over decorative effects. Every surface is a dark neutral layer separated by hairline dividers, set in the platform's own sans. One light-filled button marks the next decision, and everything else is outline or text. State is always written in words. Color only reinforces what the words already say, so a glance and a careful read agree.\n\nDensity is moderate and familiar: lists of rows, key/value fact grids, disclosures for detail, and cards reserved for a single task or decision. Mechanical steps (sign-in links, provider returns, finishing a save) continue on their own and always leave a visible fallback button. Meaningful consent (approvals, tool permissions, disconnects) stays a checked statement plus one explicit button. Empty states say only what the host reports and teach what would appear.",
+    "keyCharacteristics": [
+      "Achromatic dark layers (#111111 → #181818 → #202020) with 1px dividers, no shadows.",
+      "A single light action accent; a focus blue reserved for focus, caret and selection.",
+      "Status as text first, in pill badges, fully outlined notices and plain-language rows.",
+      "The Overview puts decisions before work before system facts; review pages put the exact evidence above the decision.",
+      "System sans throughout; monospace only for code and data that must be read exactly."
+    ],
+    "rules": [
+      {
+        "name": "The Text-First Status Rule",
+        "body": "Every state is written in words: in a badge, a heading, a notice or the row itself. Tone color only supplements it, and configuration states such as configured, observed or recorded stay neutral.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Light Action Rule",
+        "body": "Each decision gets at most one Signal White button. Alternatives are outlined.",
+        "section": "colors"
+      },
+      {
+        "name": "The Foreground-on-Tint Rule",
+        "body": "Text inside a tinted notice uses the foreground (#ededed), never gray.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Family Rule",
+        "body": "System sans carries every heading, label, button and sentence. Monospace is for code and data that must be read exactly, never a \"technical\" costume.",
+        "section": "typography"
+      },
+      {
+        "name": "The Decisions-First Rule",
+        "body": "The Overview leads with what needs the owner, then work, then system facts. A review page shows exactly what is being approved above its single decision. Sources the host does not report are grouped into one disclosure, never shown as empty panels.",
+        "section": "layout"
+      },
+      {
+        "name": "The Flat Layer Rule",
+        "body": "Declare depth with a lighter layer and a hairline, never a shadow or gradient.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Two Radii Rule",
+        "body": "Controls take 6px and containers 8px. Only badges and thin data bars round fully.",
+        "section": "shapes"
+      },
+      {
+        "name": "The No-Stripe Rule",
+        "body": "Nothing gets a thick or colored side border. Notices, rows and cards keep a full 1px outline.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do lead the Overview with what needs the owner, then work, then system facts, and keep a review's exact evidence above its decision.",
+      "Do write every state in words; tone color (#86ceaa, #e3bd78, #eea09a) only supplements it.",
+      "Do keep one Signal White (#ededed) button per decision and outline the alternatives.",
+      "Do use fact grids for key/value data and list rows for records, and keep prose within 75ch.",
+      "Do theme browser surfaces from the palette: Focus Blue (#9ac3ff) for focus rings and the caret, selection at 30% Focus Blue, and a #6b6b6b scrollbar thumb.",
+      "Do scope empty states to what the host reports, and say what would appear there."
+    ],
+    "donts": [
+      "Don't add thick or colored side borders to notices, rows or cards.",
+      "Don't nest a notice or a card inside another card.",
+      "Don't put eyebrow or kicker labels above headings, number sections, or use glyphs in place of drawn icons.",
+      "Don't use shadows or gradients for depth.",
+      "Don't color configuration states as health; configured, observed and recorded stay neutral.",
+      "Don't state absence as fact when a source is unreported or history is limited to recent requests."
+    ]
+  }
+}

@@ -90,14 +90,18 @@ source and enrolls it as a decision source; machine payloads cannot enroll sourc
 
 ## Connect and verify through June
 
-1. In **Connections → GitHub**, choose **Connect GitHub**, authorize the intended
-   account, then **Continue to save GitHub connection → Save GitHub connection**.
-   June checks the numeric user ID against host configuration. Browser return
-   alone saves nothing. State expires after ten minutes or a restart.
-2. Choose **Choose GitHub repositories** and install the app on the intended
+1. In **Connections → Accounts → GitHub**, choose **Connect GitHub** and authorize
+   the intended account. The browser returns to June's GitHub page with the
+   authorization saved; there is no second save step. June checks the numeric
+   user ID against host configuration before saving. The return is bound to the
+   browser, owner session and state that started it; a cancelled, replayed or
+   other-browser return saves nothing. State expires after ten minutes or a
+   restart. If the dashboard session lapses meanwhile, signing in again in that
+   browser resumes the save.
+2. Choose **Choose repositories** and install the app on the intended
    repositories, including `lordbagel42/agent`. Installation and user authorization
    are separate. Subscribe to desired events in the app's GitHub settings.
-3. **Manage GitHub tools → Test & discover tools**. Review the returned contracts.
+3. **Manage → Test & discover tools**. Review the returned contracts.
    Tools start disabled; enable trusted reads and approval-required effects.
 4. Ask June privately: “Inspect your GitHub tool catalog”, then “Read the latest
    commit on lordbagel42/agent and explain its diff.” June uses

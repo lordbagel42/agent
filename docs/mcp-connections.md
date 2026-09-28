@@ -144,9 +144,10 @@ means unknown enrollment, not a reason to reconnect.
 The checklist distinguishes missing host configuration, no saved enrollment,
 expired authentication, untested connections, failed discovery, no discovered
 tools, and missing owner tool consent. Slack app setup is separate from the
-owner's user consent and final dashboard save. Browser-bound consent progress is
-unknown to this inspection: check **Connections** for **Resume Slack setup**
-before starting another sign-in. Slack setup is optional for other MCP servers.
+owner's user consent. Browser-bound consent progress is unknown to this
+inspection. After consent the dashboard saves automatically; **Connections**
+shows **Finish connecting** if a return is still waiting in that browser. Slack
+setup is optional for other MCP servers.
 
 For a remote server, no saved credential may be intentional public access; the
 host cannot infer that server's authentication requirements. Failed discovery
@@ -197,11 +198,19 @@ tokens do not qualify. Only configured user scopes are requested. Other Slack
 tools require their corresponding user scopes and a new consent. Expiring grants
 currently require reconnecting; automatic refresh is not implemented.
 
-After Slack returns, choose **Continue to save Slack connection**, then confirm
-**Save Slack connection** with your owner session. Returning from Slack alone
-does not save the authorization. Connections offers **Resume Slack setup** while
-confirmation is pending and **Authorization saved** after verification and storage.
-Then discover tools and review permissions; saving alone does not enable them.
+Choose **Connect Slack**, review Slack's consent screen and approve. The browser
+returns to June, which verifies the account, saves the authorization and opens
+the Slack connection page; there is no second confirmation. Only the browser that
+started the attempt, with the same owner session and Slack state, can finish it
+within ten minutes. Slack's cross-site redirect cannot carry June's Strict session
+cookie, so the callback only records the return (its code stays server-side) and a
+same-origin page submits the signed finish request; without JavaScript that page
+shows one **Finish connecting Slack** button. If the dashboard session lapsed,
+sign in again in the same browser (a new June link works) and the save resumes;
+**Connections** also offers **Finish connecting** while a return is waiting.
+Cancelling on Slack saves nothing. **Authorization saved** appears after
+verification and storage. Then discover tools and review permissions; saving
+alone does not enable them.
 
 State is volatile, bound to the owner and connection generation, single-use and
 ten-minute limited. Restarting June during consent requires beginning again.
@@ -219,8 +228,9 @@ Only fixed labels and allowlisted Slack error codes are retained, never callback
 URLs, tokens, account IDs or raw provider errors. Unknown provider errors remain
 `provider_rejected`; network/storage exceptions remain `operation_failed`.
 These labels do not prove whether Slack issued a token or storage committed.
-Check Connections before beginning a fresh sign-in; never replay a consumed
-confirmation. Historical failures without diagnostics cannot be recovered.
+Check Connections before beginning a fresh sign-in. A return is consumed before
+its exchange and is never replayed or retried automatically. Historical failures
+without diagnostics cannot be recovered.
 
 ## Amp consent and activation gates
 
@@ -241,13 +251,14 @@ Keep these gates separate:
    The browser returns to `/console/connections/amp/callback` on the same configured
    origin. Keep callback query strings out of upstream logs. An ingress change
    requires separate operator authorization; publishing source does not apply it.
-3. **Owner consent:** choose **Connect Amp**, authorize the intended Amp account,
-   then **Continue to save Amp connection** and **Save Amp connection** with your
-   June owner session. The callback alone stores no credential. June verifies the
-   signed ID token's issuer, audience, expiry and nonce, and saves the verified
-   account identifier and access token in the encrypted connection store. Check
-   the account shown on the Amp detail page. Abandoned consent expires after ten
-   minutes or a restart; **Resume Amp setup** continues a pending browser return.
+3. **Owner consent:** choose **Connect Amp** and authorize the intended Amp
+   account. On return, June verifies the signed ID token's issuer, audience,
+   expiry and nonce, and saves the verified account identifier and access token
+   in the encrypted connection store without a second confirmation. The callback
+   itself stores no credential: only the authenticated, signed finish from the
+   starting browser exchanges the code, once. Check the account shown on the Amp
+   page. Abandoned consent expires after ten minutes or a restart; if the
+   dashboard session lapsed, signing in again in that browser resumes the save.
 4. **Tool consent:** **Test & discover tools**, review actual returned contracts,
    then enable selected reads or approval-required effects. Nothing is enabled
    automatically. Read authorization trusts the remote tool's behavior and may

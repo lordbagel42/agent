@@ -401,7 +401,7 @@ describe("runnable June host", () => {
       expect(html).toContain("0 proposals");
       const record = (title: string) =>
         html.match(
-          new RegExp(`<article[^>]*>[^]*?<h3>${title}</h3>([^]*?)</article>`),
+          new RegExp(`<li class="item">[^]*?<h3>${title}</h3>([^]*?)</li>`),
         )?.[1];
       expect(record("History imports")).toContain(
         mode === "imports" ? "1 configured selection" : "No import selections",

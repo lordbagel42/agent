@@ -198,7 +198,7 @@ test("usage persists only allowlisted counters and remains owner-only in HTML an
     const html = await (
       await app.request("/console/usage", { headers: { "test-owner": "yes" } })
     ).text();
-    expect(html).toContain("Token intelligence");
+    expect(html).toContain("<h1>Usage</h1>");
     expect(html).not.toContain(sentinel);
     expect(ledger.snapshot(7, "not-recorded").total).toMatchObject({
       calls: 0,
