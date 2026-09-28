@@ -8,9 +8,9 @@ No release proposal, PR gate, inbound webhook or whole-homelab update is needed.
 **This code does not provision or activate itself.** The operator integrates and
 bootstraps it.
 
-For a private repository, use a dedicated **read-only GitHub
-deploy key** and pinned GitHub host keys, not a person's `gh` login or the coding
-worker's write credential. Coding agents need separately scoped write access to
+The controller uses the June GitHub App's repository-scoped installation tokens
+for HTTPS Git fetch, check reporting and Actions artifact reads, never a person's
+PAT, `gh` login or coding worker credential. Coding agents need separately scoped write access to
 this one repository; they cannot write the installed deployment controller.
 
 Paths below describe an example service layout, not a published deployment.
@@ -94,11 +94,9 @@ timings and raw logs are not in the controller feed; missing evidence is unknown
    independently installed preflight boundary: an app commit cannot silently
    remove the required checks. Policy changes require a fresh operator review
    and pin update before a new forward candidate is admitted.
-3. Provision a separate root-owned `0600` `/etc/june/github-actions-token`
-   through the existing secret mechanism. Restrict its fine-grained GitHub
-   permission to **Actions: read** on this repository. Do not reuse the coding
-   worker credential, SSH deploy key or model environment. The existing status
-   token's permissions do not automatically grant artifact access.
+3. Provision the GitHub App configuration described below. Actions reads use a
+   separate short-lived installation token requesting only **Actions: read** on
+   this repository. The old `/etc/june/github-actions-token` is no longer read.
 4. With explicit installation authorization, settle controller operations and
    install the reviewed `deploy.py` under the normal operator lock. Do not
    install the producer/workflow on June or change configuration concurrently
@@ -298,7 +296,7 @@ An authorized operator installs the updated controller, `/usr/bin/openssl`,
 and the App's RSA PEM private key through the existing private secret mechanism.
 The key must be a root-owned regular file, mode `0600`, without symlinks or hard
 links, under root-controlled directories; suggested path `/etc/june/github-app.pem`.
-Add this optional object to root-owned `0600` `/etc/june/deploy.json`:
+Add this required object to root-owned `0600` `/etc/june/deploy.json`:
 
 ```json
 "githubApp": {
@@ -313,12 +311,14 @@ App ID, not its OAuth client ID, and the installation ID for `lordbagel42`.
 The key path must be absolute. No additional fields or configurable repository
 are accepted. The controller verifies that the App's installation for the fixed
 repository matches the configured installation and owner before minting a token
-restricted to **only `agent`, `checks:write`, and `statuses:write`** (plus GitHub's
-implicit metadata read permission). It rejects broader returned grants. Tokens
+restricted to **only `agent`** (plus GitHub's implicit metadata read permission).
+Reporting requests `checks:write` and `statuses:write`; Git fetch separately
+requests `contents:read`, and Actions separately requests `actions:read`.
+It rejects broader returned grants. Tokens
 are cached only in memory and refreshed 60 seconds before expiry. Publication
 failure discards the cache and uses the normal retry backoff. A configured App
-failure never falls back to the legacy PAT. App configuration does not override
-`githubChecks:false`.
+failure never falls back to a PAT. The former `githubChecks` switch is removed;
+native check reporting is always used.
 
 One App registration does not mean shared credentials: June retains her user
 OAuth client/refresh credentials; the signing key and installation tokens stay
@@ -326,24 +326,26 @@ outside June's runtime, MCP, model, and build environments. The App key can mint
 broader tokens than this controller requests, so root-only custody is essential.
 Neither credentials nor JWTs are written to controller SQLite, feeds or logs.
 
-Without `githubApp` (or with null), legacy `/etc/june/github-status-token` remains
-supported for classic statuses. Keep it root-owned `0600` and use
-`"githubChecks": false` with the status-only PAT. This preserves `june/deploy`
-statuses without Checks calls, but provides no native Details report. Pending
-stages share one deduplicated status; superseded revisions report error/not
-deployed, never success. Missing legacy credentials leave reporting disabled.
-The read-only SSH deploy key and lifecycle token cannot authenticate GitHub API
-writes; do not reuse a coding-worker or personal CLI credential.
+Missing/invalid App configuration fails closed. The controller no longer reads
+`github-status-token`, `github-actions-token`, or the SSH deploy key. Remove the
+obsolete `githubChecks` setting during the coordinated cutover. Revoke obsolete
+credentials only after verifying migration and identifying any other consumers.
 
-Keep `githubChecks:false` until the App installation/permissions and controller
-upgrade are ready. Enabling it (`true`, or omitted) and restarting the controller
-require a separately authorized, coordinated operator handoff after recovery and
-existing deployment operations settle. A main push does not install this code,
+Installing this controller and its App configuration requires an authorized,
+coordinated operator handoff after existing deployment operations settle.
+A main push does not install this code,
 clear a block, or authorize resuming a disabled controller. After activation,
 verify the native check and the existing status's Details URL on an actual commit;
 local tests do not attest GitHub permission or delivery.
 
-Reporting happens after recording preparation and after the deployment attempt, never
+Every native check explicitly points Details to its own GitHub report, including
+stage timestamps, fixed reasons and outcomes. Creation temporarily points to the
+commit's Checks page until GitHub returns the check's own URL. Cached/recovered
+runs are scoped to the configured App, not merely their name. Retained legacy
+statuses receive an App-authenticated update linking to that report; new commits
+have only the native check.
+
+Reporting happens immediately after durable queue admission, after recording preparation and after the deployment attempt, never
 inside drain/activation/rollback. API failures do not fail deployments: they log
 only `github_status_publish_failed: will retry` and back off for 60 seconds.
 SQLite retains check IDs and successful report acknowledgements across restarts.
@@ -358,6 +360,62 @@ June can inspect the same underlying evidence for the verified owner through her
 `release: {"action":"inspect","revision":"<SHA>"}` directive described below.
 The local feed does not attest GitHub delivery; if the two disagree, use the
 controller evidence and inspect the operator log for publication failures.
+
+### GitHub webhook intake
+
+Install `github_intake.py` at `/usr/local/lib/june-github-intake/github_intake.py`
+and `june-github-intake.service` independently of app releases. Provision root
+`0600` `/etc/june/github-intake.json` through the private secret mechanism:
+`port` (for example 3084), `installationId`, `secret` (the same webhook signing
+secret as the App and June, at least 32 characters), and `forwardOrigin`.
+Use `"active-slot"` for blue/green: replay requires a ready loopback slot whose
+exact revision matches `/opt/june/current`. For a single-slot installation use
+`"http://127.0.0.1:3080"`. Never point forwarding back at public ingress or intake.
+Keep the port private to the reverse proxy; route only POST `/webhooks/github`
+to it. Its private state is `/var/lib/june-github-intake/inbox.sqlite`.
+
+Subscribe the existing App to **push** and **workflow_run**, preserving its other
+subscriptions. Set `githubEvents:true` in the controller configuration. Signed
+events for the configured installation and `lordbagel42/agent` main wake the
+controller through its root-only Unix datagram socket. Wakes received during
+preparation wait for that attempt to settle; they never interrupt activation.
+The controller fetches trusted main and applies its usual ancestry/admission
+checks, invalidates cached Actions waiting evidence, and retains five-second
+polling if a wake is lost. Intake suppresses wakes when the controller database
+is unavailable or has a recovery, operator hold or deployment block. It never
+starts the controller. The controller rechecks fences; events cannot clear them.
+
+The intake verifies HMAC before parsing, persists before returning 202, and
+forwards all authenticated event families to June under their original delivery
+IDs and signatures. A 202 receipt explicitly does **not** claim controller
+admission. The queued `june/deploy` check is published only after durable
+controller admission, before preparation. A stopped/fenced controller cannot
+truthfully publish new queue acceptance; intake still retains events.
+
+Limits: 25 MiB per body, 100 MiB pending bodies, 100,000 retained deliveries.
+At most eight requests run concurrently, with a ten-second absolute connection
+deadline covering headers and body; a trickling unsigned upload cannot hold the
+listener indefinitely. Full capacity closes new connections without an ACK.
+Pending deliveries do not expire. Identical IDs/digests deduplicate; conflicting
+reuse returns 409. Completed bodies are removed, with secure deletion enabled
+(not a storage-level erasure guarantee); replay receipts expire after seven
+days. Capacity/storage failure returns 503, never a false durable receipt.
+Forwarding retries after five seconds, retaining the original identity on an
+unknown outcome. A permanently rejected oldest event blocks forwarding for
+operator diagnosis; do not delete the queue as a recovery shortcut. GitHub does
+not automatically redeliver failed webhooks: inspect and redeliver failed
+provider deliveries after repairing ingress. June still needs her separate
+GitHub configuration and active wakeup system to accept forwarded events.
+
+For an authorized reporting cutover while recovery remains fenced, invoke
+`deploy.py --report-only` under the operator window. It takes `deploy.lock` and
+performs one bounded reporting flush, without constructing Host/Deployer,
+exporting feeds, admitting revisions, dispatching recovery or changing lifecycle
+state. Existing tables and lifecycle rows are required; incomplete state is
+rejected rather than initialized. Only reporting acknowledgements are written. Repeat to backfill older
+reports, inspecting API outcomes; it never resumes a stopped poller. Install and
+attest exact reviewed controller bytes, and coordinate the next app/config
+binding with the recovery owner rather than changing an immutable release.
 
 ## Main arrival and activation are separate facts
 
@@ -871,9 +929,10 @@ On the **June host only**, an authorized operator must:
    (`0711` traversal only), its `records` (`0700`) and `public` (root:june `0750`).
    No coding/build UID may replace their ancestors, manipulate service-manager
    jobs, or edit `/opt/june`, `/etc/june`, or the controller.
-4. Enroll the dedicated **read-only**, repo-specific SSH deploy key at
-   `/etc/june/deploy-key` (root `0600`) and independently verify GitHub's host key
-   into `/etc/june/deploy-known-hosts`. Supply `/etc/june/deploy-token` (root
+4. Provision the GitHub App configuration and root-only signing key described
+   above. Git fetch uses a Contents-read installation token through an anonymous
+   Git config descriptor, not a credential URL, environment variable or saved
+   repository config. Supply `/etc/june/deploy-token` (root
    `0600`) through the existing secret mechanism; it must authenticate only the
    required private lifecycle access, and is never given to the builder/model.
 5. Write root `0600` `/etc/june/deploy.json`:

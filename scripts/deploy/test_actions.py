@@ -140,7 +140,7 @@ class ActionsPreparation(unittest.TestCase):
 
         client.opener = Storage()
         with (
-            patch.object(deploy, "private_file", return_value="fixture-secret"),
+            patch.object(deploy.GitHubApp, "token", return_value="fixture-secret"),
             patch.object(deploy.urllib.request, "build_opener", return_value=API()),
         ):
             output = io.BytesIO()
@@ -265,7 +265,7 @@ class ActionsPreparation(unittest.TestCase):
                 return response
 
         with (
-            patch.object(deploy, "private_file", return_value="fixture-secret"),
+            patch.object(deploy.GitHubApp, "token", return_value="fixture-secret"),
             patch.object(deploy.urllib.request, "build_opener", return_value=API()),
         ):
             self.assertEqual(deploy.ActionsBuild().artifact(sha), artifact)

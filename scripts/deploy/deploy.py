@@ -20,6 +20,7 @@ import select
 import shlex
 import shutil
 import signal
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -36,7 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import ClassVar
 
-REPOSITORY = "git@github.com:lordbagel42/agent.git"
+REPOSITORY = "https://github.com/lordbagel42/agent.git"
 SOURCE = (
     "src",
     "tests",
@@ -85,6 +86,27 @@ def deployment_lock(path):
         os.close(fd)
 
 
+@contextmanager
+def github_wake(enabled):
+    # Called only while holding deploy.lock; never unlink another live owner's socket.
+    if not enabled:
+        yield None
+        return
+    path = Path("/var/lib/june-deploy/github-wake.sock")
+    if path.exists():
+        meta = path.lstat()
+        if not stat.S_ISSOCK(meta.st_mode) or meta.st_uid != 0:
+            raise ValueError("unsafe_github_wake_socket")
+        path.unlink()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as wake:
+        wake.bind(str(path))
+        wake.setblocking(False)
+        try:
+            yield wake
+        finally:
+            path.unlink(missing_ok=True)
+
+
 def sync_directory(path):
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -122,6 +144,7 @@ class Store:
         repository_metadata_feed=False,
         slack_responder_feed=False,
         publish_feed=True,
+        existing_only=False,
     ):
         self.feed, self.feed_gid = feed, feed_gid
         self.staging_recovery_feed = staging_recovery_feed
@@ -132,6 +155,21 @@ class Store:
         self.controller_revision = (
             revision(controller_revision) if controller_revision is not None else None
         )
+        if existing_only:
+            self.db = sqlite3.connect(
+                (root / "deploy.sqlite").as_uri() + "?mode=rw", uri=True
+            )
+            self.db.row_factory = sqlite3.Row
+            try:
+                revision(self.get("active"))
+                revision(self.get("observed"))
+                self.db.execute(
+                    "SELECT sequence,revision,status,at,committedAt,reason,elapsedMs FROM events LIMIT 1"
+                )
+            except Exception:
+                self.db.close()
+                raise
+            return
         root.mkdir(mode=0o700, exist_ok=True)
         self.db = sqlite3.connect(root / "deploy.sqlite")
         self.db.row_factory = sqlite3.Row
@@ -451,6 +489,10 @@ class Deployer:
         except Exception:  # noqa: BLE001 - never log SSH/credential-helper errors
             s.event(s.get("observed"), "fetch_failed", "fetch_failed")
             return
+        # Admission is durable before the receipt. Publish it before waiting for
+        # builds or starting preparation, not just after a whole tick completes.
+        if self.statuses:
+            self.statuses.flush()
         if s.get("blocked") or s.get("recovery") or s.get("operatorHold"):
             return
         queued = json.loads(s.get("queue"))["pending"]
@@ -848,11 +890,132 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValueError("redirect_denied")
 
 
-class GitHubStatuses:
+class GitHubApp:
+    """Repository-scoped installation credentials; never use a person's token."""
+
+    def __init__(self, app, permissions):
+        self.app = app
+        self.permissions = permissions
+        self.app_token = None
+        self.app_token_expiry = 0
+        self.opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), NoRedirect()
+        )
+
+    def token(self):
+        app = self.app
+        if (
+            not isinstance(app, dict)
+            or set(app) != {"appId", "installationId", "privateKeyFile"}
+            or any(
+                type(app[key]) is not int or app[key] <= 0
+                for key in ("appId", "installationId")
+            )
+            or not isinstance(app["privateKeyFile"], str)
+            or not Path(app["privateKeyFile"]).is_absolute()
+        ):
+            raise ValueError("invalid_github_app")
+        if self.app_token and time.time() < self.app_token_expiry - 60:
+            return self.app_token
+        self.app_token = None
+
+        def encode(value):
+            return base64.urlsafe_b64encode(value).rstrip(b"=")
+
+        now = int(time.time())
+        message = b".".join(
+            encode(json.dumps(value).encode())
+            for value in (
+                {"alg": "RS256", "typ": "JWT"},
+                {"iss": str(app["appId"]), "iat": now - 60, "exp": now + 540},
+            )
+        )
+        pem = private_file(Path(app["privateKeyFile"]))
+        with tempfile.TemporaryFile() as key:
+            key.write(pem.encode())
+            key.flush()
+            signature = subprocess.run(
+                [
+                    "/usr/bin/openssl",
+                    "dgst",
+                    "-sha256",
+                    "-sign",
+                    f"/proc/self/fd/{key.fileno()}",
+                ],
+                input=message,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                pass_fds=(key.fileno(),),
+                timeout=5,
+                check=True,
+            ).stdout
+        jwt = (message + b"." + encode(signature)).decode()
+        installation = self.request(jwt, "GET", "repos/lordbagel42/agent/installation")
+        if (
+            installation["id"] != app["installationId"]
+            or installation["app_id"] != app["appId"]
+            or installation["account"]["login"] != "lordbagel42"
+        ):
+            raise ValueError("wrong_github_installation")
+        grant = self.request(
+            jwt,
+            "POST",
+            f"app/installations/{app['installationId']}/access_tokens",
+            {"repositories": ["agent"], "permissions": self.permissions},
+        )
+        permissions = dict(grant["permissions"])
+        if permissions.get("metadata") == "read":
+            del permissions["metadata"]
+        expires = datetime.fromisoformat(grant["expires_at"].replace("Z", "+00:00"))
+        if (
+            permissions != self.permissions
+            or [repo["full_name"] for repo in grant["repositories"]]
+            != ["lordbagel42/agent"]
+            or expires.tzinfo is None
+            or expires.timestamp() <= time.time() + 60
+            or not isinstance(grant["token"], str)
+            or not re.fullmatch(r"[\x21-\x7e]+", grant["token"])
+        ):
+            raise ValueError("invalid_github_grant")
+        self.app_token, self.app_token_expiry = grant["token"], expires.timestamp()
+        return self.app_token
+
+    def request(self, token, method, path, body=None):
+        request = urllib.request.Request(
+            "https://api.github.com/" + path,
+            data=json.dumps(body).encode() if body is not None else None,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+                "User-Agent": "june-deploy",
+                "X-GitHub-Api-Version": "2026-03-10",
+            },
+        )
+        try:
+            with self.opener.open(request, timeout=5) as response:
+                if response.status != (201 if method == "POST" else 200):
+                    raise ValueError("github_status_failed")
+                data = response.read(1024 * 1024 + 1)
+                if len(data) > 1024 * 1024:
+                    raise ValueError("github_response_too_large")
+                return json.loads(data)
+        except urllib.error.HTTPError as error:
+            error.close()
+            self.app_token = None
+            raise ValueError("github_status_failed") from None
+
+
+class GitHubStatuses(GitHubApp):
     """Best-effort mirror of durable evidence, never inside activation/rollback."""
 
     STAGES: ClassVar = {
-        "received": ("queued", None, "Deployment queued"),
+        "received": (
+            "queued",
+            None,
+            "Queued — controller accepted this revision; deployment has not started",
+        ),
         "preparing": ("in_progress", None, "Preparing and checking release"),
         "activating": ("in_progress", None, "Activating release"),
         "deferred": ("queued", None, "Deployment deferred"),
@@ -891,105 +1054,11 @@ class GitHubStatuses:
         "github_status_publish_failed": "GitHub deployment reporting failed. Inspect credentials and API access without exposing tokens.",
     }
 
-    def __init__(self, store, *, checks=True, app=None, recovery=None):
+    def __init__(self, store, *, app=None, recovery=None):
+        super().__init__(app, {"checks": "write", "statuses": "write"})
         self.store = store
-        self.checks = checks
-        self.app = app
         self.recovery = recovery
-        self.app_token = None
-        self.app_token_expiry = 0
         self.retry_at = 0
-        self.opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}), NoRedirect()
-        )
-
-    def token(self):
-        if self.app is None:
-            try:
-                return private_file(Path("/etc/june/github-status-token")).strip()
-            except FileNotFoundError:
-                return None  # Legacy reporting is opt-in.
-        app = self.app
-        if (
-            not isinstance(app, dict)
-            or set(app) != {"appId", "installationId", "privateKeyFile"}
-            or any(
-                type(app[key]) is not int or app[key] <= 0
-                for key in ("appId", "installationId")
-            )
-            or not isinstance(app["privateKeyFile"], str)
-            or not Path(app["privateKeyFile"]).is_absolute()
-        ):
-            raise ValueError("invalid_github_app")
-        if self.app_token and time.time() < self.app_token_expiry - 60:
-            return self.app_token
-        self.app_token = None
-
-        def encode(value):
-            return base64.urlsafe_b64encode(value).rstrip(b"=")
-
-        now = int(time.time())
-        message = b".".join(
-            encode(json.dumps(value).encode())
-            for value in (
-                {"alg": "RS256", "typ": "JWT"},
-                {"iss": str(app["appId"]), "iat": now - 60, "exp": now + 540},
-            )
-        )
-        # Validate and read once without following a symlink. OpenSSL sees only
-        # an anonymous private descriptor, not credentials in argv/environment.
-        pem = private_file(Path(app["privateKeyFile"]))
-        with tempfile.TemporaryFile() as key:
-            key.write(pem.encode())
-            key.flush()
-            signature = subprocess.run(
-                [
-                    "/usr/bin/openssl",
-                    "dgst",
-                    "-sha256",
-                    "-sign",
-                    f"/proc/self/fd/{key.fileno()}",
-                ],
-                input=message,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                pass_fds=(key.fileno(),),
-                timeout=5,
-                check=True,
-            ).stdout
-        jwt = (message + b"." + encode(signature)).decode()
-        installation = self.request(jwt, "GET", "repos/lordbagel42/agent/installation")
-        if (
-            installation["id"] != app["installationId"]
-            or installation["app_id"] != app["appId"]
-            or installation["account"]["login"] != "lordbagel42"
-        ):
-            raise ValueError("wrong_github_installation")
-        grant = self.request(
-            jwt,
-            "POST",
-            f"app/installations/{app['installationId']}/access_tokens",
-            {
-                "repositories": ["agent"],
-                "permissions": {"checks": "write", "statuses": "write"},
-            },
-        )
-        permissions = dict(grant["permissions"])
-        if permissions.get("metadata") == "read":
-            del permissions["metadata"]
-        expires = datetime.fromisoformat(grant["expires_at"].replace("Z", "+00:00"))
-        if (
-            permissions != {"checks": "write", "statuses": "write"}
-            or [repo["full_name"] for repo in grant["repositories"]]
-            != ["lordbagel42/agent"]
-            or expires.tzinfo is None
-            or expires.timestamp() <= time.time() + 60
-            or not isinstance(grant["token"], str)
-            or not re.fullmatch(r"[\x21-\x7e]+", grant["token"])
-        ):
-            raise ValueError("invalid_github_grant")
-        self.app_token, self.app_token_expiry = grant["token"], expires.timestamp()
-        return self.app_token
 
     def report(self, commit):
         first = self.store.db.execute(
@@ -1073,31 +1142,6 @@ class GitHubStatuses:
             payload.update(conclusion=conclusion, completed_at=timestamp(latest["at"]))
         return payload
 
-    def request(self, token, method, path, body=None):
-        request = urllib.request.Request(
-            "https://api.github.com/" + path,
-            data=json.dumps(body).encode() if body is not None else None,
-            method=method,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-                "Content-Type": "application/json",
-                "User-Agent": "june-deploy",
-                "X-GitHub-Api-Version": "2026-03-10",
-            },
-        )
-        try:
-            with self.opener.open(request, timeout=5) as response:
-                if response.status != (201 if method == "POST" else 200):
-                    raise ValueError("github_status_failed")
-                data = response.read(1024 * 1024 + 1)
-                if len(data) > 1024 * 1024:
-                    raise ValueError("github_response_too_large")
-                return json.loads(data)
-        except urllib.error.HTTPError as error:
-            error.close()
-            raise ValueError("github_status_failed") from None
-
     def flush(self):
         if time.monotonic() < self.retry_at:
             return
@@ -1130,43 +1174,20 @@ class GitHubStatuses:
                         "action_required": "error",
                     }[payload["conclusion"]]
                 )
-                if not self.checks:
-                    # Explicit compatibility mode for the installed status-only
-                    # credential. Never probe or silently require broader access.
-                    classic = {
-                        "state": state,
-                        "context": "june/deploy",
-                        "description": "Deployment queued or in progress"
-                        if state == "pending"
-                        else payload["output"]["title"],
-                    }
-                    key = "github-status:" + commit
-                    if self.store.get(key) != json.dumps(classic):
-                        self.request(
-                            token,
-                            "POST",
-                            f"repos/lordbagel42/agent/statuses/{commit}",
-                            classic,
-                        )
-                        self.store.set(key, json.dumps(classic))
-                        sent += 1
-                    if sent >= 10:
-                        break
-                    continue
                 fingerprint = hashlib.sha256(json.dumps(payload).encode()).hexdigest()
-                run_key = "github-check:" + commit
-                output_key = "github-check-output:" + commit
+                identity = str(self.app["appId"]) + ":" + commit
+                run_key = "github-check:" + identity
+                output_key = "github-check-output:" + identity
                 cached = self.store.get(run_key)
                 run = json.loads(cached) if cached else None
                 if not run or self.store.get(output_key) != fingerprint:
-                    created = False
                     if not run:
                         # Recover an accepted create whose response/SQLite acknowledgement
                         # was lost instead of creating another check on every retry.
                         found = self.request(
                             token,
                             "GET",
-                            f"repos/lordbagel42/agent/commits/{commit}/check-runs?check_name=june%2Fdeploy&filter=latest&per_page=100",
+                            f"repos/lordbagel42/agent/commits/{commit}/check-runs?check_name=june%2Fdeploy&filter=latest&per_page=100&app_id={self.app['appId']}",
                         )
                         run = next(
                             (
@@ -1174,6 +1195,7 @@ class GitHubStatuses:
                                 for item in found["check_runs"]
                                 if item["head_sha"] == commit
                                 and item["external_id"] == "june/deploy:" + commit
+                                and item["app"]["id"] == self.app["appId"]
                             ),
                             None,
                         )
@@ -1186,27 +1208,29 @@ class GitHubStatuses:
                                     **payload,
                                     "head_sha": commit,
                                     "external_id": "june/deploy:" + commit,
+                                    "details_url": f"https://github.com/lordbagel42/agent/commit/{commit}/checks",
                                 },
                             )
-                            created = True
                         if (
                             type(run["id"]) is not int
                             or run["id"] <= 0
+                            or run["app"]["id"] != self.app["appId"]
                             or not re.fullmatch(
-                                r"https://github\.com/lordbagel42/agent/runs/[0-9]+(?:\?check_suite_focus=true)?",
+                                rf"https://github\.com/lordbagel42/agent/runs/{run['id']}(?:\?check_suite_focus=true)?",
                                 run["html_url"],
                             )
                         ):
                             raise ValueError("invalid_github_check")
                         run = {"id": run["id"], "html_url": run["html_url"]}
                         self.store.set(run_key, json.dumps(run))
-                    if not created:
-                        self.request(
-                            token,
-                            "PATCH",
-                            f"repos/lordbagel42/agent/check-runs/{run['id']}",
-                            payload,
-                        )
+                    # GitHub otherwise defaults Details to the App homepage.
+                    # Patch even newly created runs, after their native URL is known.
+                    self.request(
+                        token,
+                        "PATCH",
+                        f"repos/lordbagel42/agent/check-runs/{run['id']}",
+                        {**payload, "details_url": run["html_url"]},
+                    )
                     self.store.set(output_key, fingerprint)
                     sent += 1
                     if sent >= 10:
@@ -1215,13 +1239,16 @@ class GitHubStatuses:
                 # native check, avoiding two parallel entries for every deployment.
                 key = "github-status:" + commit
                 if self.store.get(key):
+                    # A PAT may have sent identical content. A separate App
+                    # acknowledgement guarantees this attribution migration runs.
+                    app_key = "github-status-app:" + identity
                     legacy = {
                         "state": state,
                         "context": "june/deploy",
                         "description": f"Deployment {state}; open Details",
                         "target_url": run["html_url"],
                     }
-                    if self.store.get(key) != json.dumps(legacy):
+                    if self.store.get(app_key) != json.dumps(legacy):
                         self.request(
                             token,
                             "POST",
@@ -1229,6 +1256,7 @@ class GitHubStatuses:
                             legacy,
                         )
                         self.store.set(key, json.dumps(legacy))
+                        self.store.set(app_key, json.dumps(legacy))
                         sent += 1
                 if sent >= 10:
                     break  # Bound backfill work; newer evidence is sent first.
@@ -1249,16 +1277,16 @@ class ArtifactRedirect(urllib.request.HTTPRedirectHandler):
 class ActionsBuild:
     """Read-only trusted-main build evidence. No dispatch, rerun or host effects."""
 
-    def __init__(self):
+    def __init__(self, app=None):
+        self.auth = GitHubApp(app, {"actions": "read"})
         self.opener = urllib.request.build_opener(NoRedirect())
         self.cached = None
         self.retry_at = 0
 
     def request(self, path):
         try:
-            token = private_file(Path("/etc/june/github-actions-token")).strip()
-            return GitHubStatuses.request(
-                self, token, "GET", "repos/lordbagel42/agent/" + path
+            return self.auth.request(
+                self.auth.token(), "GET", "repos/lordbagel42/agent/" + path
             )
         except Exception:  # noqa: BLE001 - credentials and HTTP errors stay private
             raise ActionsDeferred("actions_unavailable") from None
@@ -1333,7 +1361,7 @@ class ActionsBuild:
 
     def download(self, artifact, output):
         try:
-            token = private_file(Path("/etc/june/github-actions-token")).strip()
+            token = self.auth.token()
             request = urllib.request.Request(
                 f"https://api.github.com/repos/lordbagel42/agent/actions/artifacts/{artifact['id']}/zip",
                 headers={
@@ -1569,6 +1597,7 @@ class Host:
 
     def __init__(self, config):
         self.config = config
+        self.github = GitHubApp(config.get("githubApp"), {"contents": "read"})
         if type(config.get("actionsBuild", False)) is not bool:
             raise ValueError("invalid_actions_build_config")
         if config.get("actionsBuild") is True:
@@ -1579,7 +1608,7 @@ class Host:
                 or system.get("VERSION_ID") != "13"
             ):
                 raise ValueError("unsupported_actions_platform")
-            self.actions = ActionsBuild()
+            self.actions = ActionsBuild(config.get("githubApp"))
         self.root = Path("/opt/june")
         self.releases = self.root / "releases"
         self.current = self.root / "current"
@@ -1622,7 +1651,6 @@ class Host:
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_TERMINAL_PROMPT": "0",
-            "GIT_SSH_COMMAND": "ssh -F /dev/null -i /etc/june/deploy-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/june/deploy-known-hosts",
         }
 
     def slot(self, commit):
@@ -1745,7 +1773,7 @@ class Host:
         ):
             raise ValueError("intake_not_settled")
 
-    def git(self, *args, binary=False):
+    def git(self, *args, binary=False, pass_fds=()):
         result = subprocess.run(
             [
                 "git",
@@ -1763,11 +1791,41 @@ class Host:
             stderr=subprocess.DEVNULL,
             check=True,
             timeout=60,
+            pass_fds=pass_fds,
         )
         return result.stdout if binary else result.stdout.decode().strip()
 
     def fetch(self):
-        self.git("fetch", "--no-tags", REPOSITORY, "+refs/heads/main:refs/heads/main")
+        # Anonymous descriptor keeps credentials out of argv, environment, disk
+        # configuration, logs and the app process. Disable redirects/helpers.
+        token = self.github.token()
+        auth = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        with tempfile.TemporaryFile() as config:
+            config.write(
+                (
+                    "[credential]\nhelper =\n[http]\nfollowRedirects = false\n"
+                    '[http "https://github.com/"]\n'
+                    f"extraHeader = Authorization: Basic {auth}\n"
+                ).encode()
+            )
+            config.flush()
+            try:
+                self.git(
+                    "-c",
+                    f"include.path=/proc/self/fd/{config.fileno()}",
+                    "-c",
+                    "maintenance.auto=false",
+                    "-c",
+                    "gc.auto=0",
+                    "fetch",
+                    "--no-tags",
+                    REPOSITORY,
+                    "+refs/heads/main:refs/heads/main",
+                    pass_fds=(config.fileno(),),
+                )
+            except Exception:
+                self.github.app_token = None
+                raise
         return self.git("rev-parse", "refs/heads/main^{commit}")
 
     def committed_at(self, commit):
@@ -2653,6 +2711,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true")
+    mode.add_argument("--report-only", action="store_true")
     mode.add_argument("--prepare", metavar="REVISION")
     mode.add_argument("--bootstrap", action="store_true")
     mode.add_argument("--reconcile", metavar="REVISION")
@@ -2706,7 +2765,8 @@ def main():
         # Ownership/incident operations must work when app credentials,
         # manifests or public-feed writes are the fault being repaired.
         state_only = bool(
-            args.controller_failed
+            args.report_only
+            or args.controller_failed
             or args.claim_recovery
             or args.operator_hold
             or args.release_operator_hold
@@ -2737,6 +2797,7 @@ def main():
             repository_metadata_feed=config.get("repositoryMetadataFeed") is True,
             slack_responder_feed=config.get("slackResponderFeed") is True,
             publish_feed=not state_only,
+            existing_only=args.report_only,
         )
         recovery = Recovery(store)
         if args.controller_failed:
@@ -2749,11 +2810,19 @@ def main():
             return
         statuses = GitHubStatuses(
             store,
-            checks=config.get("githubChecks") is not False,
             app=config.get("githubApp"),
-            recovery=recovery if config.get("ampRecovery") else None,
+            recovery=recovery
+            if config.get("ampRecovery") and not args.report_only
+            else None,
         )
         try:
+            if args.report_only:
+                # No Host/Deployer, feed export, observation, incident dispatch,
+                # queue admission or lifecycle effects. Only reporting acks change.
+                statuses.flush()
+                if statuses.retry_at:
+                    raise ValueError("github_reporting_incomplete")
+                return
             if args.operator_hold:
                 current = store.get("operatorHold")
                 if current and current != args.operator_hold:
@@ -2779,11 +2848,25 @@ def main():
             if args.reconcile:
                 loop.reconcile(args.reconcile, args.recovery_thread)
                 return
-            while True:
-                loop.tick()
-                if args.once:
-                    break
-                time.sleep(5)
+            with github_wake(
+                config.get("githubEvents") is True and not args.once
+            ) as wake:
+                while True:
+                    loop.tick()
+                    if args.once:
+                        break
+                    if wake is None:
+                        time.sleep(5)
+                    elif select.select([wake], [], [], 5)[0]:
+                        # Coalesce buffered notifications, including ones received
+                        # during preparation. No event supplies a deployable SHA.
+                        for _ in range(256):
+                            try:
+                                wake.recv(256)
+                            except BlockingIOError:
+                                break
+                        if host.actions:
+                            host.actions.cached = None
         finally:
             if not state_only:
                 statuses.flush()

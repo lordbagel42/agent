@@ -11,7 +11,9 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location(
@@ -221,6 +223,7 @@ class GitHubFixture:
             result = {
                 **body,
                 "id": run_id,
+                "app": {"id": 123},
                 "html_url": f"https://github.com/lordbagel42/agent/runs/{run_id}",
             }
             self.runs[run_id] = result
@@ -369,6 +372,90 @@ class GitHubAppAuthentication(unittest.TestCase):
             str([tuple(row) for row in self.store.db.execute("SELECT * FROM state")]),
         )
 
+    def test_report_only_preserves_fenced_lifecycle_and_rejects_incomplete_state(self):
+        self.store.set("recovery", '{"incident":738,"phase":"claimed"}')
+        self.store.set("operatorHold", "fixture-owner")
+        self.store.set("queue", '{"tip":"' + "a" * 40 + '","pending":[]}')
+        baseline = list(
+            self.store.db.execute(
+                "SELECT * FROM state WHERE key NOT LIKE 'github-%' ORDER BY key"
+            )
+        )
+        events = list(self.store.db.execute("SELECT * FROM events"))
+        feed = self.store.feed.read_bytes()
+        config = {
+            "origin": "http://127.0.0.1:3080",
+            "healthSeconds": 15,
+            "initialRevision": "a" * 40,
+            "githubApp": self.app,
+            "ampRecovery": True,
+        }
+        paths = {
+            "/var/lib/june-deploy/records": self.root / "records",
+            "/var/lib/june-deploy/public/events.json": self.store.feed,
+        }
+        real_lstat = Path.lstat
+
+        def root_stat(path, *args, **kwargs):
+            values = list(real_lstat(path, *args, **kwargs))
+            values[4] = 0
+            return os.stat_result(values)
+
+        with (
+            patch.object(sys, "argv", ["deploy.py", "--report-only"]),
+            patch.object(deploy.os, "geteuid", return_value=0),
+            patch.object(deploy, "private_file", return_value=json.dumps(config)),
+            patch.object(
+                deploy, "Path", side_effect=lambda value: paths.get(value, self.root)
+            ),
+            patch.object(Path, "lstat", root_stat),
+            patch.object(
+                deploy.pwd, "getpwnam", return_value=SimpleNamespace(pw_gid=os.getgid())
+            ),
+            patch.object(deploy, "deployment_lock", return_value=nullcontext()),
+            patch.object(
+                deploy, "Host", side_effect=AssertionError("no host operations")
+            ),
+            patch.object(
+                deploy,
+                "Deployer",
+                side_effect=AssertionError("no deployment operations"),
+            ),
+            patch.object(
+                deploy.Store, "publish", side_effect=AssertionError("no feed writes")
+            ),
+            patch.object(
+                deploy.Recovery,
+                "record",
+                side_effect=AssertionError("no recovery writes"),
+            ),
+            patch.object(
+                deploy.GitHubApp, "token", return_value=self.api.token
+            ) as token,
+            patch.object(deploy.urllib.request, "build_opener", return_value=self.api),
+        ):
+            deploy.main()
+            token.side_effect = ValueError("unavailable")
+            with self.assertRaisesRegex(ValueError, "github_reporting_incomplete"):
+                deploy.main()
+            self.assertEqual(
+                list(
+                    self.store.db.execute(
+                        "SELECT * FROM state WHERE key NOT LIKE 'github-%' ORDER BY key"
+                    )
+                ),
+                baseline,
+            )
+            self.assertEqual(
+                list(self.store.db.execute("SELECT * FROM events")), events
+            )
+            self.assertEqual(self.store.feed.read_bytes(), feed)
+            with self.store.db:
+                self.store.db.execute("DELETE FROM state WHERE key='observed'")
+            with self.assertRaisesRegex(ValueError, "invalid_revision"):
+                deploy.main()
+            self.assertEqual(self.store.get("observed"), "")
+
     def test_wrong_installation_or_broader_grant_never_publishes_or_falls_back(self):
         for wrong in (
             "account",
@@ -422,6 +509,7 @@ class GitHubAppAuthentication(unittest.TestCase):
 
     def test_invalid_config_and_revoked_token_fail_closed_then_retry(self):
         for app in (
+            None,
             {},
             False,
             {**self.app, "appId": True},
@@ -445,7 +533,7 @@ class GitHubAppAuthentication(unittest.TestCase):
                 self.assertEqual(
                     output.getvalue(), "github_status_publish_failed: will retry\n"
                 )
-        reporter = deploy.GitHubStatuses(self.store, app=self.app, checks=False)
+        reporter = deploy.GitHubStatuses(self.store, app=self.app)
         with (
             patch.object(deploy, "private_file", return_value=self.key.read_text()),
             patch.object(reporter.opener, "open", side_effect=self.open) as transport,
@@ -454,8 +542,7 @@ class GitHubAppAuthentication(unittest.TestCase):
             patch("sys.stdout", new_callable=io.StringIO) as output,
         ):
             reporter.flush()
-            self.assertEqual(self.api.runs, {})
-            self.assertEqual(self.api.statuses[-1]["state"], "success")
+            self.assertEqual(self.api.runs[41]["conclusion"], "success")
             self.store.event("a" * 40, "failed")
             transport.side_effect = deploy.urllib.error.HTTPError(
                 "https://api.github.com/",
@@ -475,7 +562,7 @@ class GitHubAppAuthentication(unittest.TestCase):
             clock.return_value = 160
             reporter.flush()
             self.assertEqual(self.mints, 2)
-            self.assertEqual(self.api.statuses[-1]["state"], "failure")
+            self.assertEqual(self.api.runs[41]["conclusion"], "failure")
 
 
 class ControllerProvenance(unittest.TestCase):
@@ -1076,7 +1163,7 @@ class DeploymentSafety(unittest.TestCase):
             self.loop.tick()
         self.assertFalse((self.host.releases / target).exists())
         self.assertEqual(self.host.process.pid, pid)
-        self.assertEqual(self.store.status(target), "preparing")
+        self.assertEqual(self.store.status(target), "received")
         self.assertEqual(self.store.get("intent"), "")
         self.assertEqual(
             json.loads(self.store.get("recovery"))["reason"],
@@ -1412,38 +1499,12 @@ class DeploymentSafety(unittest.TestCase):
                         not change or change.get("ActiveState") == "failed",
                     )
 
-    def test_status_only_credential_never_calls_checks_or_repeats_pending_writes(self):
-        api = GitHubFixture()
-        reporter = deploy.GitHubStatuses(self.store, checks=False)
-
-        def status_only(request, timeout):
-            self.assertIn("/statuses/", request.full_url)
-            return api.open(request, timeout)
-
-        with (
-            patch.object(deploy, "private_file", return_value="fixture-token"),
-            patch.object(reporter.opener, "open", side_effect=status_only),
-        ):
-            for status in ("received", "preparing", "deferred", "preparing"):
-                self.store.event(self.first, status)
-                reporter.flush()
-            self.assertEqual([item["state"] for item in api.statuses], ["pending"])
-            for status in ("superseded", "failed", "healthy"):
-                self.store.event(self.first, status)
-                reporter.flush()
-                reporter.flush()
-            self.assertEqual(
-                [item["state"] for item in api.statuses],
-                ["pending", "error", "failure", "success"],
-            )
-            self.assertEqual(api.runs, {})
-
     def test_github_details_update_one_run_and_link_existing_commit_statuses(self):
         api = GitHubFixture()
-        reporter = deploy.GitHubStatuses(self.store)
+        reporter = deploy.GitHubStatuses(self.store, app={"appId": 123})
         self.loop = deploy.Deployer(self.host, self.store, reporter)
         with (
-            patch.object(deploy, "private_file", return_value="fixture-token\n"),
+            patch.object(reporter, "token", return_value="fixture-token"),
             patch.object(reporter.opener, "open", side_effect=api.open),
         ):
             target = self.host.commit("src/console/view.ts", "two")
@@ -1461,6 +1522,9 @@ class DeploymentSafety(unittest.TestCase):
             self.assertEqual(len(api.writes), writes)
             self.assertEqual(api.runs[41]["conclusion"], "success")
             self.assertEqual(api.runs[41]["head_sha"], target)
+            self.assertEqual(api.runs[41]["details_url"], api.runs[41]["html_url"])
+            self.assertEqual(api.writes[0][1]["status"], "queued")
+            self.assertIn("controller accepted", api.writes[0][1]["output"]["title"])
             self.assertIn("activating", api.runs[41]["output"]["text"])
             self.assertEqual(
                 api.statuses[-1]["target_url"],
@@ -1492,10 +1556,10 @@ class DeploymentSafety(unittest.TestCase):
         api = GitHubFixture()
         api.lose_create_response = True
         target = self.host.commit("src/console/view.ts", "two")
-        reporter = deploy.GitHubStatuses(self.store)
+        reporter = deploy.GitHubStatuses(self.store, app={"appId": 123})
         self.loop = deploy.Deployer(self.host, self.store, reporter)
         with (
-            patch.object(deploy, "private_file", return_value="fixture-token"),
+            patch.object(reporter, "token", return_value="fixture-token"),
             patch.object(reporter.opener, "open", side_effect=api.open),
         ):
             self.loop.tick()
@@ -1507,10 +1571,10 @@ class DeploymentSafety(unittest.TestCase):
         self.store = deploy.Store(
             self.host.root / "records", self.host.root / "feed.json", self.first
         )
-        reporter = deploy.GitHubStatuses(self.store)
+        reporter = deploy.GitHubStatuses(self.store, app={"appId": 123})
         self.loop = deploy.Deployer(self.host, self.store, reporter)
         with (
-            patch.object(deploy, "private_file", return_value="fixture-token"),
+            patch.object(reporter, "token", return_value="fixture-token"),
             patch.object(reporter.opener, "open", side_effect=api.open),
         ):
             self.loop.tick()

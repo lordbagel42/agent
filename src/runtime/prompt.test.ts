@@ -93,6 +93,12 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain("no automatic local-build fallback");
     expect(request.system).toContain("a green build do not prove");
     expect(request.system).toContain(
+      "Webhook receipt alone is not deployment admission",
+    );
+    expect(request.system).toContain(
+      "report-only backfill does not resume deployment",
+    );
+    expect(request.system).toContain(
       "Separately configured blue/green deployment",
     );
     expect(request.system).toContain("Only one runtime may own live state");

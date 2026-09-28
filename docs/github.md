@@ -35,19 +35,20 @@ links. Install it on `lordbagel42/agent`. Generate a private signing key for the
 controller, but provision it root-owned, mode `0600`, outside June's app runtime.
 June must never receive that key through environment variables, MCP or prompts.
 The controller uses short-lived installation tokens restricted to that one
-repository with only `checks:write` and `statuses:write`; June uses her separate
+repository: reporting uses `checks:write` and `statuses:write`, Git fetch uses
+`contents:read`, and Actions downloads use `actions:read`; June uses her separate
 OAuth user token. App permissions do not replace June's per-tool grants.
 Controller configuration and activation are documented in
-[deployment.md](deployment.md). Keep existing `githubChecks:false` until the
-recovery owner authorizes the coordinated live cutover. App registration,
+[deployment.md](deployment.md). The App-only controller no longer supports
+PAT reporting or the `githubChecks:false` switch. App registration,
 controller credentials, user consent and webhook routing are distinct gates.
 
-The controller's separate `/etc/june/deploy.json` accepts an optional
+The controller's separate `/etc/june/deploy.json` requires a
 `githubApp` object (illustrative IDs below):
 
 ```json
 {
-  "githubChecks": false,
+  "githubEvents": true,
   "githubApp": {
     "appId": 123,
     "installationId": 456,
@@ -59,8 +60,8 @@ The controller's separate `/etc/june/deploy.json` accepts an optional
 Both IDs are positive JSON integers; `privateKeyFile` is an absolute root-only
 PEM path. The controller validates the installation's app, account and fixed
 repository and refreshes narrowly scoped tokens in memory. A configured App
-failure must not fall back to a PAT. With no `githubApp`, existing PAT behavior
-is preserved. This schema belongs to the controller implementation, not June's
+failure must not fall back to a PAT; absent configuration fails closed.
+This schema belongs to the controller implementation, not June's
 `config.json`; do not put signing-key configuration inside `mcp.github`.
 
 Provision client ID, client secret and a distinct random webhook secret of at
@@ -128,6 +129,18 @@ webhook in GitHub and disable host enrollment to stop events. Revoke the GitHub
 authorization separately to revoke the provider grant.
 
 ## Event adapter contract and recovery
+
+For deployment wakeups, route the App's existing webhook URL to the independent
+`june-github-intake.service` described in [deployment.md](deployment.md#github-webhook-intake).
+It durably accepts signed events while June is down, wakes the controller for
+`push`/`workflow_run` on trusted main, and forwards original deliveries to this
+adapter. Subscribe to both events; keep other desired subscriptions. The
+controller still fetches main independently and polls every five seconds.
+Intake `202` means **received**, not controller admission or processing. Only a
+controller-owned queued check establishes deployment admission. Replay to June
+requires her GitHub configuration and a ready active runtime; it retains the
+original delivery ID/signature, so uncertain acknowledgements do not create new
+event identities. App-side deduplication remains bounded, not eternal exactly-once.
 
 GitHub signs raw request bytes using `X-Hub-Signature-256` (HMAC-SHA256). The adapter
 verifies before JSON parsing. `X-GitHub-Event` and `X-GitHub-Delivery` are validated
