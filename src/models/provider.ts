@@ -8,6 +8,7 @@ import type {
   ModelRequest,
   ModelSettlement,
 } from "../core/contracts.js";
+import { sendMessagesSchema } from "../core/messaging.js";
 import { questionSchema } from "../core/question.js";
 import { reflectionReviewSchema } from "../core/reflection-review.js";
 import {
@@ -121,6 +122,7 @@ const recallTimestampSchema = z
 
 const companionReplySchema = z.strictObject({
   text: z.string().refine((text) => Array.from(text).length <= 3_500),
+  sendMessages: sendMessagesSchema.optional(),
   question: questionSchema.optional(),
   messages: z
     .array(
@@ -443,6 +445,7 @@ export type ReplyCapabilities = Pick<
   | "replyPlacementAvailable"
   | "turnTakingAvailable"
   | "typingControlAvailable"
+  | "messagingAvailable"
   | "socialAvailable"
   | "executionAvailable"
   | "workflowAvailable"
@@ -485,6 +488,7 @@ function rolePermitsField(
     return [
       "text",
       "messages",
+      "sendMessages",
       "question",
       "interrupt",
       "reaction",
@@ -497,6 +501,7 @@ function rolePermitsField(
     return ![
       "execution",
       "messages",
+      "sendMessages",
       "question",
       "interrupt",
       "reaction",
@@ -638,6 +643,37 @@ function legacyReplyJsonSchema(
         type: "string",
         description: "Must be no more than 3500 Unicode characters.",
       },
+      ...(replyCapabilities(capabilities).messagingAvailable
+        ? {
+            sendMessages: {
+              type: ["array", "null"],
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  conversationId: {
+                    type: "string",
+                    description:
+                      '"owner" for the owner DM, or a known Slack channel/DM/user ID.',
+                  },
+                  threadId: {
+                    type: ["string", "null"],
+                    description:
+                      "Exact destination thread timestamp, or null. Never inherit the incoming thread for a different destination.",
+                  },
+                  text: {
+                    type: "string",
+                    description:
+                      "Nonempty message, at most 3500 Unicode characters.",
+                  },
+                },
+                required: ["conversationId", "threadId", "text"],
+              },
+              description:
+                "Ordered messages to independently chosen destinations. May accompany text, messages, reactions or execution dispatch. Use null when unused, not an empty array. No extra approval or worker required; privacy applies per recipient.",
+            },
+          }
+        : {}),
       ...(typingControlAvailable
         ? {
             typingEnabled: {
@@ -1730,6 +1766,9 @@ function legacyReplyJsonSchema(
       "text",
       "coding",
       "reaction",
+      ...(replyCapabilities(capabilities).messagingAvailable
+        ? ["sendMessages"]
+        : []),
       ...(turnTakingAvailable ? ["messages", "interrupt", "question"] : []),
       ...(typingControlAvailable ? ["typingEnabled"] : []),
       ...(codingJobsAvailable ? ["codingJob"] : []),
@@ -2006,6 +2045,7 @@ export function parseReply(
   const normalized = { ...value };
   for (const key of [
     "messages",
+    "sendMessages",
     "question",
     "interrupt",
     "typingEnabled",
@@ -2137,6 +2177,8 @@ export function parseReply(
       reply.question !== undefined) &&
       !turnTakingAvailable) ||
     (reply.typingEnabled !== undefined && !typingControlAvailable) ||
+    (reply.sendMessages !== undefined &&
+      !replyCapabilities(capabilities).messagingAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);
@@ -2185,6 +2227,10 @@ export function parseReply(
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
   if (
+    (reply.sendMessages !== undefined &&
+      (reply.question !== undefined ||
+        reply.coding !== undefined ||
+        directiveCount > Number(reply.execution !== undefined))) ||
     (reply.question !== undefined &&
       (reply.text.trim().length > 0 ||
         reply.messages !== undefined ||

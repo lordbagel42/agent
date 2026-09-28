@@ -523,12 +523,14 @@ export function createSessionCatalog(
         },
         capabilities: decision
           ? {
+              messagingAvailable: !!deps.channels.slack,
               mcpAvailable: deps.mcpAvailable === true,
               webSearchAvailable: deps.webSearch?.available === true,
               webSearchProvider: deps.webSearch?.description,
             }
           : {
               ...turn.capabilities,
+              messagingAvailable: !!deps.channels.slack,
               executionAvailable: input?.type === "event" && !!deps.execution,
               turnTakingAvailable: input?.type === "event",
               typingControlAvailable:
@@ -678,6 +680,7 @@ export function createSessionCatalog(
       input?.type === "job_result" &&
       !reply.text.trim() &&
       !reply.question &&
+      !reply.sendMessages?.length &&
       !reply.messages?.some((text) => text.trim());
     let output = {
       text: codingFallback ? input.text : reply.text,
@@ -685,6 +688,7 @@ export function createSessionCatalog(
       ...(reply.messages && !codingFallback
         ? { messages: reply.messages }
         : {}),
+      ...(reply.sendMessages ? { sendMessages: reply.sendMessages } : {}),
       ...(reply.reaction ? { reaction: reply.reaction } : {}),
     };
     if (reply.execution && assignment.kind === "message") {
@@ -718,6 +722,7 @@ export function createSessionCatalog(
         reply.execution,
       );
       output = {
+        ...(reply.sendMessages ? { sendMessages: reply.sendMessages } : {}),
         text:
           outcomes.length === reply.execution.length &&
           outcomes.every((value) => value.endsWith(": queued"))
@@ -801,6 +806,7 @@ export function createSessionCatalog(
       deps.continuity?.remember(
         input.event,
         outcome.deliveries.flatMap((delivery) =>
+          !delivery.ephemeral &&
           delivery.result?.status === "sent" &&
           delivery.message.content.type === "text"
             ? [

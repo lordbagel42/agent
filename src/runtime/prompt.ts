@@ -5,6 +5,7 @@ import type {
   ModelRequest,
   Owner,
 } from "../core/contracts.js";
+import { MESSAGING_HELP } from "../core/messaging.js";
 import { isOwnerRivetDm, RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { routeEvent } from "../core/routing.js";
 import { WEB_EMBED_HELP } from "../core/web-embed.js";
@@ -70,6 +71,7 @@ export interface PromptCapabilities {
   replyPlacementAvailable?: boolean;
   turnTakingAvailable?: boolean;
   typingControlAvailable?: boolean;
+  messagingAvailable?: boolean;
   typingEnabled?: boolean;
   memoryAvailable?: boolean;
   reflectionAvailable?: boolean;
@@ -207,6 +209,11 @@ export function buildModelRequest({
     agentRole !== "execution" &&
     event.address.channel === "slack" &&
     capabilities.typingControlAvailable === true;
+  const messagingAvailable =
+    agentRole !== "execution" &&
+    !guest &&
+    event.address.channel === "slack" &&
+    capabilities.messagingAvailable === true;
   const workspaces = privateTurn ? [...(capabilities.workspaces ?? [])] : [];
   const codingJobsAvailable =
     privateTurn && capabilities.codingJobsAvailable === true;
@@ -789,6 +796,7 @@ export function buildModelRequest({
     replyPlacementAvailable,
     turnTakingAvailable: capabilities.turnTakingAvailable === true,
     typingControlAvailable,
+    messagingAvailable,
     socialAvailable: capabilities.socialAvailable === true,
     executionAvailable,
     workflowAvailable,
@@ -806,6 +814,7 @@ export function buildModelRequest({
             "replyPlacementAvailable",
             "turnTakingAvailable",
             "typingControlAvailable",
+            "messagingAvailable",
             "escalationAvailable",
           ].includes(name),
       )
@@ -932,6 +941,9 @@ Answer the assigned question before listing procedure. Do not return a giant tra
     "\n\nJune's source code is open-source software (OSS), licensed under the MIT license, and publicly available at https://github.com/lordbagel42/agent. Open-source licensing of the code does not make private conversations, memories, credentials, or host data public.";
   // Operating knowledge must survive the interaction prompt replacement and
   // reach event decisions even when the corresponding inspection tool is absent.
+  request.system += messagingAvailable
+    ? `\n\nConversational messaging exception to the integration/dispatch restrictions above: ${MESSAGING_HELP}`
+    : "\nJune's conversation role can send independently addressed messages when messagingAvailable is exposed. Execution workers report findings to June; they do not use sendMessages. This does not expand private reads or approval authority.";
   request.system +=
     "\nRecent conversation continuity, when configured, follows human activity rather than location. It is bounded working context, not unlimited recall. A separate tool-free privacy agent selects public-safe excerpts for shared audiences; relationship memory is immature and trust is not assumed. Unknown audiences or failed filtering import nothing. This does not grant tools, permissions or private recall. Thread context may also include parent-channel messages with their original attribution. Never reconstruct withheld details or claim continuity is enabled without supplied context. Idle expiry does not cancel durable jobs; explicit restrictions, forgetting or CLEARHISTORY can revoke evidence-derived work. Volatile-derived replies remain in active history but their text is omitted from searchable archives without complete deletion ancestry. Shared imports stop when the privacy-filter budget is exhausted; do not duplicate those attempts.";
   if (continuity)

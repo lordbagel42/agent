@@ -75,6 +75,287 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("keeps directed activity bodies out of later continuity prompts", async (t) => {
+    const sent: OutboundMessage[] = [];
+    const requests: ModelRequest[] = [];
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    const continuity = new ConversationContinuity({
+      file: ":memory:",
+      key: randomBytes(32),
+      owner,
+      idleMs: 100000,
+      revision: () => store.deletionRevision(),
+      filter: async () => ({ excerpts: [] }),
+    });
+    t.onTestFinished(() => {
+      continuity.close();
+      store.close();
+    });
+    const slack = transport("slack", sent);
+    slack.audience = async () => ({ kind: "owner" });
+    const registry = createJuneRegistry({
+      owner,
+      continuity,
+      sessions: { idleMs: 100000 },
+      memory: { store, source: () => undefined },
+      channels: { slack },
+      model: {
+        beginReply(request) {
+          return {
+            answer: this.reply(request),
+            settlement: Promise.resolve("confirmed_stopped" as const),
+          };
+        },
+        async reply(request) {
+          requests.push(request);
+          return requests.length === 1
+            ? {
+                text: "",
+                sendMessages: [
+                  {
+                    conversationId: "owner",
+                    threadId: null,
+                    text: "DIRECTED_PRIVATE_SENTINEL",
+                  },
+                ],
+              }
+            : { text: "Next turn" };
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    await june.receive(message);
+    await expect
+      .poll(
+        async () =>
+          Object.values(
+            (await june.snapshot()).sessions?.directory.receipts ?? {},
+          ).filter((entry) => entry.status === "settled").length,
+        { timeout: 15000 },
+      )
+      .toBe(1);
+    await june.receive({
+      ...message,
+      id: "followup",
+      messageId: "124.000",
+      text: "continue",
+    });
+    await expect.poll(() => requests.length).toBe(2);
+    expect(JSON.stringify(requests[1])).not.toContain(
+      "DIRECTED_PRIVATE_SENTINEL",
+    );
+    expect(JSON.stringify(requests[1])).toContain(
+      "Directed message delivery sent",
+    );
+  });
+
+  it("sends alongside worker dispatch and sends the completion to the owner's DM", async (t) => {
+    const sent: OutboundMessage[] = [];
+    let work = 0;
+    const source = {
+      ...message,
+      direct: false,
+      address: {
+        ...message.address,
+        conversationId: "CPUBLIC",
+        threadId: "123.456",
+      },
+    };
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack: transport("slack", sent) },
+      execution: {
+        model: {
+          async reply() {
+            work++;
+            return { text: "Finding" };
+          },
+        },
+      },
+      model: {
+        async reply(request) {
+          return request.system.includes("Execution completion")
+            ? {
+                text: "",
+                sendMessages: [
+                  {
+                    conversationId: "owner",
+                    threadId: null,
+                    text: "Private result",
+                  },
+                ],
+              }
+            : {
+                text: "",
+                sendMessages: [
+                  {
+                    conversationId: "owner",
+                    threadId: null,
+                    text: "Starting privately",
+                  },
+                ],
+                execution: [
+                  {
+                    agent: "investigate",
+                    action: "run" as const,
+                    task: "Analyze the request",
+                  },
+                ],
+              };
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate([
+      "slack",
+      "T1",
+      "CPUBLIC",
+      "123.456",
+    ]);
+    await june.send("inbox", { type: "event", event: source });
+    await expect
+      .poll(
+        () => sent.filter((out) => out.address.conversationId === "U1").length,
+        { timeout: 15000 },
+      )
+      .toBe(2);
+    expect(work).toBe(1);
+    expect(
+      sent
+        .filter((out) => out.address.conversationId === "U1")
+        .map((out) => out.content),
+    ).toEqual([
+      { type: "text", text: "Starting privately" },
+      { type: "text", text: "Private result" },
+    ]);
+  });
+
+  it("lets June DM the owner and send to multiple destinations from a public turn without leaking bodies or replaying sends", async (t) => {
+    const sent: OutboundMessage[] = [];
+    const requests: ModelRequest[] = [];
+    const source = {
+      ...message,
+      direct: false,
+      address: {
+        ...message.address,
+        conversationId: "CPUBLIC",
+        threadId: "123.456",
+      },
+    };
+    const registry = createJuneRegistry({
+      owner,
+      channels: {
+        slack: transport("slack", sent, () =>
+          sent.length === 4
+            ? { status: "unknown", code: "timeout" }
+            : { status: "sent", messageId: `out-${sent.length}` },
+        ),
+      },
+      execution: {
+        model: {
+          async reply() {
+            throw new Error("Sending must not need a worker");
+          },
+        },
+      },
+      model: {
+        async reply(request) {
+          requests.push(request);
+          expect(request.agentRole).toBe("interaction");
+          expect(request.system).toContain("sendMessages:");
+          expect(replyJsonSchema([], request).properties).toHaveProperty(
+            "sendMessages",
+          );
+          if (requests.length > 1) return { text: "" };
+          return parseReply(
+            JSON.stringify({
+              text: "",
+              sendMessages: [
+                {
+                  conversationId: "owner",
+                  threadId: null,
+                  text: "PRIVATE metadata part 1",
+                },
+                {
+                  conversationId: "owner",
+                  threadId: null,
+                  text: "PRIVATE metadata part 2",
+                },
+                {
+                  conversationId: "COTHER",
+                  threadId: "999.123",
+                  text: "Public update",
+                },
+                {
+                  conversationId: "UOTHER",
+                  threadId: null,
+                  text: "Uncertain DM",
+                },
+                {
+                  conversationId: "CPUBLIC",
+                  threadId: null,
+                  text: "Must not follow uncertain send",
+                },
+              ],
+            }),
+            [],
+            request,
+          );
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate([
+      "slack",
+      "T1",
+      "CPUBLIC",
+      "123.456",
+    ]);
+    await june.send("inbox", { type: "event", event: source });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).filter(
+            (entry) => entry.done,
+          ).length,
+      )
+      .toBe(1);
+    expect(sent.map((entry) => entry.address)).toEqual([
+      { channel: "slack", accountId: "T1", conversationId: "U1" },
+      { channel: "slack", accountId: "T1", conversationId: "U1" },
+      {
+        channel: "slack",
+        accountId: "T1",
+        conversationId: "COTHER",
+        threadId: "999.123",
+      },
+      { channel: "slack", accountId: "T1", conversationId: "UOTHER" },
+    ]);
+    expect(new Set(sent.map((entry) => entry.id)).size).toBe(4);
+    const state = await june.snapshot();
+    expect(
+      Object.values(state.deliveries).map((entry) => entry.result?.status),
+    ).toEqual(["sent", "sent", "sent", "unknown", "rejected"]);
+    expect(JSON.stringify(state.history)).not.toContain("PRIVATE metadata");
+    expect(state.history.at(-1)?.content).toContain("unknown");
+    await june.send("inbox", { type: "event", event: source });
+    await june.send("inbox", {
+      type: "event",
+      event: {
+        ...source,
+        id: "next",
+        messageId: "124.000",
+        text: "what happened?",
+      },
+    });
+    await expect.poll(() => requests.length).toBe(2);
+    expect(JSON.stringify(requests[1]?.messages)).not.toContain(
+      "PRIVATE metadata",
+    );
+    expect(sent).toHaveLength(4);
+  });
+
   it("projects continuity through real ingress without putting private text in a public prompt", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];

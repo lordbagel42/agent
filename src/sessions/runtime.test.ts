@@ -107,12 +107,14 @@ async function fixture(t: TestContext) {
           workspaces: [],
           searchAvailable: false,
           turnTakingAvailable: true,
+          messagingAvailable: true,
         },
       };
     }),
     apply: vi.fn(async (_input, reply) => ({
       text: reply.text,
       messages: reply.messages,
+      sendMessages: reply.sendMessages,
     })),
     acknowledge: vi.fn(async () => {}),
   };
@@ -153,6 +155,51 @@ async function fixture(t: TestContext) {
       client.activity.getOrCreate(sessionActorKey(scopeKey, input.sessionId)),
   };
 }
+
+it("delivers independently addressed activity replies once and archives receipts without their bodies", async (t) => {
+  const f = await fixture(t);
+  f.model.beginReply.mockReturnValue({
+    answer: Promise.resolve({
+      text: "",
+      sendMessages: [
+        { conversationId: "owner", threadId: null, text: "DM detail" },
+        {
+          conversationId: "COTHER",
+          threadId: "456.789",
+          text: "Channel update",
+        },
+      ],
+    }),
+    settlement: Promise.resolve("confirmed_stopped"),
+  });
+  const first = assignment();
+  const activity = f.activity(first);
+  await activity.receive(first);
+  await vi.waitFor(async () =>
+    expect((await activity.status()).acknowledgedThrough).toBe(1),
+  );
+  expect(f.send.mock.calls.map(([message]) => message.address)).toEqual([
+    { channel: "slack", accountId: "T1", conversationId: "U1" },
+    {
+      channel: "slack",
+      accountId: "T1",
+      conversationId: "COTHER",
+      threadId: "456.789",
+    },
+  ]);
+  const archive = f.store.retrieveSession(audience, first.sessionId);
+  expect(JSON.stringify(archive)).not.toContain("DM detail");
+  expect(
+    archive.turns[0]?.data?.entries
+      .filter((entry) => entry.role === "assistant")
+      .map((entry) => entry.content),
+  ).toEqual([
+    { retention: "omitted", reason: "retention_excluded" },
+    { retention: "omitted", reason: "retention_excluded" },
+  ]);
+  await activity.receive(first);
+  expect(f.send).toHaveBeenCalledTimes(2);
+});
 
 it("keeps volatile-derived speech in active history but out of the searchable archive", async (t) => {
   const f = await fixture(t);

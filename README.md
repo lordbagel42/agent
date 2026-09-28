@@ -19,6 +19,11 @@ support for a feature does not mean it is enabled, live-tested, or safe to expos
 - **Conversation that continues.** Slack DMs, mentions, threaded follow-ups,
   reactions, multipart replies, and intentional silence. Owner and guest context
   have separate privacy and permission boundaries.
+  June can send an ordered list of independently addressed messages directly
+  with `sendMessages`, including an owner DM requested from a public channel or
+  a worker-completion reply. No worker or separate approval is needed to send;
+  private reads and recipient privacy still have their own restrictions. Each
+  message has a durable receipt, and uncertain sends are not automatically retried.
 - **Work in the background.** Persistent execution agents handle substantive
   tasks while June keeps chatting. Native coding jobs can use Amp, Codex, Claude,
   or Pi, with explicit approval, worktrees, cancellation, and recovery records.

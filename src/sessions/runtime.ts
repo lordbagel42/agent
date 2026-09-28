@@ -12,6 +12,7 @@ import type {
   ModelSettlement,
   Owner,
 } from "../core/contracts.js";
+import { messageDestinations } from "../core/messaging.js";
 import { questionText } from "../core/question.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
@@ -90,6 +91,7 @@ export interface ActivityCatalog {
   ): Promise<{
     text: string;
     messages?: string[];
+    sendMessages?: CompanionReply["sendMessages"];
     reaction?: string;
     question?: CompanionReply["question"];
   }>;
@@ -782,6 +784,15 @@ export function createActivityActor(deps: ActivityDependencies) {
                       ),
                     });
                   }
+                  for (const delivery of turn.deliveries) {
+                    if (!delivery.ephemeral) continue;
+                    step.state.history.push({
+                      role: "assistant",
+                      content: `[Directed message delivery ${delivery.result?.status ?? "pending"} to ${JSON.stringify(delivery.message.address)}; body not retained here. Do not repeat an uncertain send.]`,
+                      eventId: assignment.eventId,
+                      context: JSON.parse(JSON.stringify(context)),
+                    });
+                  }
                   // Archive omission is not omission from the active conversation.
                   // Volatile-derived speech stays bounded by this activity and is
                   // checked through its complete reference before every reuse.
@@ -929,6 +940,22 @@ export function createActivityActor(deps: ActivityDependencies) {
                           },
                         },
                       }));
+                    for (const message of messageDestinations(
+                      output.sendMessages,
+                      context.source,
+                      deps.owner,
+                    ))
+                      turn.deliveries.push({
+                        phase: "ready",
+                        attempts: 0,
+                        ephemeral: true,
+                        message: {
+                          id: randomUUID(),
+                          address: message.address,
+                          lastInboundAt: context.source.occurredAt,
+                          content: { type: "text", text: message.text },
+                        },
+                      });
                     if (output.reaction)
                       turn.deliveries.push({
                         phase: "ready",

@@ -212,6 +212,8 @@ export interface CompanionReply {
   text: string;
   /** Alternative to text: ordered conversational messages, not tool actions. */
   messages?: string[];
+  /** Independently addressed Slack messages; owner-authorized conversational output. */
+  sendMessages?: import("./messaging.js").DirectedMessage[];
   /** Native conversational choices, not authorization for a protected action. */
   question?: import("./question.js").Question;
   /** Exceptional conversational interruption; never bypasses action permissions. */
@@ -438,6 +440,7 @@ export interface ModelRequest {
   replyPlacementAvailable?: boolean;
   turnTakingAvailable?: boolean;
   typingControlAvailable?: boolean;
+  messagingAvailable?: boolean;
   socialAvailable?: boolean;
   executionAvailable?: boolean;
   workflowAvailable?: boolean;

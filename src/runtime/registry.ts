@@ -16,6 +16,7 @@ import type {
   Owner,
   SendResult,
 } from "../core/contracts.js";
+import { messageDestinations } from "../core/messaging.js";
 import { questionText } from "../core/question.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { isOwnerRivetDm, RIVET_REPLY_PREFIX } from "../core/rivet.js";
@@ -3315,6 +3316,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                   : {}),
                               },
                               capabilities: {
+                                messagingAvailable:
+                                  ownerTurn &&
+                                  event.address.channel === "slack" &&
+                                  !!deps.channels.slack,
                                 turnTakingAvailable:
                                   turnVersion >= 2 && body.type === "event",
                                 javascriptAvailable:
@@ -3841,6 +3846,7 @@ export function createJuneRegistry(deps: Dependencies) {
                               generated.slackHistory !== undefined ||
                               generated.reflectionReview !== undefined ||
                               generated.messages !== undefined ||
+                              generated.sendMessages !== undefined ||
                               generated.question !== undefined ||
                               generated.interrupt !== undefined ||
                               generated.typingEnabled !== undefined ||
@@ -4291,6 +4297,9 @@ export function createJuneRegistry(deps: Dependencies) {
                       text: reply.text,
                       ...(reply.question ? { question: reply.question } : {}),
                       ...(reply.messages ? { messages: reply.messages } : {}),
+                      ...(reply.sendMessages
+                        ? { sendMessages: reply.sendMessages }
+                        : {}),
                       ...(reply.interrupt ? { interrupt: true } : {}),
                       ...(reply.reaction ? { reaction: reply.reaction } : {}),
                     };
@@ -4490,7 +4499,12 @@ export function createJuneRegistry(deps: Dependencies) {
                 });
               }
               if (version >= 7 && body.type !== "event") {
-                reply = { text: reply.text };
+                reply = {
+                  text: reply.text,
+                  ...(reply.sendMessages
+                    ? { sendMessages: reply.sendMessages }
+                    : {}),
+                };
                 if (body.type === "execution_result") {
                   const proposal = await loop.step(
                     "worker-proposal",
@@ -4735,6 +4749,10 @@ export function createJuneRegistry(deps: Dependencies) {
                     JSON.stringify({ ...reply, replyInThread: undefined }),
                     [],
                     {
+                      messagingAvailable:
+                        ownerTurn &&
+                        event.address.channel === "slack" &&
+                        !!deps.channels.slack,
                       executionAvailable:
                         body.type === "event" && !!plan.execution,
                       turnTakingAvailable:
@@ -4767,6 +4785,9 @@ export function createJuneRegistry(deps: Dependencies) {
                     ),
                 );
                 reply = {
+                  ...(reply.sendMessages
+                    ? { sendMessages: reply.sendMessages }
+                    : {}),
                   text:
                     outcomes.length === commands.length &&
                     outcomes.every((outcome) => outcome.endsWith(": queued"))
@@ -5123,7 +5144,18 @@ export function createJuneRegistry(deps: Dependencies) {
                       : []),
                   ];
                   const reactionId = `${eventId}:reaction`;
-                  const ids = [...textIds, reactionId];
+                  const directed = valid(step.state)
+                    ? messageDestinations(reply.sendMessages, event, deps.owner)
+                    : [];
+                  const directedIds = [
+                    ...new Set([
+                      ...directed.map((_, index) => `${eventId}:send:${index}`),
+                      ...Object.keys(step.state.deliveries).filter((id) =>
+                        id.startsWith(`${eventId}:send:`),
+                      ),
+                    ]),
+                  ];
+                  const ids = [...textIds, ...directedIds, reactionId];
                   // Preserve already-persisted intents after an interrupted step;
                   // deliver will settle them without dispatch when invalidated.
                   if (!valid(step.state))
@@ -5133,7 +5165,9 @@ export function createJuneRegistry(deps: Dependencies) {
                   // host report, with its unknown/verification caveats intact.
                   const text = reply.question
                     ? questionText(reply.question)
-                    : body.type === "job_result" && !reply.text.trim()
+                    : body.type === "job_result" &&
+                        !reply.text.trim() &&
+                        !reply.sendMessages?.length
                       ? body.text
                       : reply.text;
                   const texts =
@@ -5171,6 +5205,23 @@ export function createJuneRegistry(deps: Dependencies) {
                             ? { question: reply.question }
                             : {}),
                         },
+                      },
+                    };
+                  }
+                  for (const [index, message] of directed.entries()) {
+                    const id = `${eventId}:send:${index}`;
+                    if (step.state.deliveries[id]) continue;
+                    step.state.deliveries[id] = {
+                      phase: "ready",
+                      attempts: 0,
+                      // The source conversation must not retain a DM body as
+                      // public assistant history or export it in its archive.
+                      ephemeral: true,
+                      message: {
+                        id: randomUUID(),
+                        address: message.address,
+                        lastInboundAt: event.occurredAt,
+                        content: { type: "text", text: message.text },
                       },
                     };
                   }
@@ -5221,7 +5272,8 @@ export function createJuneRegistry(deps: Dependencies) {
                           const previous =
                             deliveryIds[deliveryIds.indexOf(id) - 1];
                           if (
-                            turnVersion >= 2 &&
+                            (turnVersion >= 2 ||
+                              id.startsWith(`${eventId}:send:`)) &&
                             outbound.content.type === "text" &&
                             previous &&
                             step.state.deliveries[previous]?.result?.status !==
@@ -5542,6 +5594,20 @@ export function createJuneRegistry(deps: Dependencies) {
                   for (const [index, text] of texts.entries()) {
                     if (text?.message.content.type !== "text") continue;
                     const status = text.result?.status;
+                    if (
+                      text.ephemeral &&
+                      deliveryIds.some(
+                        (id) =>
+                          id.startsWith(`${eventId}:send:`) &&
+                          step.state.deliveries[id]?.message.id ===
+                            text.message.id,
+                      )
+                    ) {
+                      content.push(
+                        `[Directed message delivery ${status ?? "pending"} to ${JSON.stringify(text.message.address)}; body not retained here. Do not repeat an uncertain send.]`,
+                      );
+                      continue;
+                    }
                     const epoch =
                       step.state.memoryContexts?.[eventId]?.continuityEpoch;
                     if (

@@ -1023,6 +1023,9 @@ export class McpConnections {
             ? {
                 text: answer.text,
                 ...(answer.messages ? { messages: answer.messages } : {}),
+                ...(answer.sendMessages
+                  ? { sendMessages: answer.sendMessages }
+                  : {}),
                 ...(answer.interrupt !== undefined
                   ? { interrupt: answer.interrupt }
                   : {}),
@@ -1154,6 +1157,7 @@ export class McpConnections {
           if (
             request.agentRole ||
             reply.messages !== undefined ||
+            reply.sendMessages !== undefined ||
             reply.interrupt !== undefined
           )
             reply = parseReply(
@@ -1206,6 +1210,7 @@ export class McpConnections {
             if (
               request.agentRole ||
               reply.messages !== undefined ||
+              reply.sendMessages !== undefined ||
               reply.interrupt !== undefined
             )
               reply = parseReply(
