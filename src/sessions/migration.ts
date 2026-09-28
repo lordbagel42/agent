@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
+import type { ChannelEvent } from "../core/contracts.js";
+import type { EvidenceStore } from "../memory/store.js";
 import type { Delivery } from "../runtime/delivery.js";
+import type { ConversationIngress } from "../runtime/inbox.js";
+import type { SessionArchiveInput } from "./archive.js";
+import { produceSessionArchiveTurn } from "./producer.js";
 
 /** Creation-only lineage, never backfilled from empty state or old journals. */
 export interface LegacyCoverage {
@@ -20,11 +25,15 @@ export interface SessionMigration {
   legacyInputs: string[];
   barrierObserved?: true;
   archivedInputs: string[];
+  /** Immutable projection survives a ledger-write/catalog-ACK gap. */
+  archivePending?: { input: SessionArchiveInput; deletionRevision: number };
 }
 
 export interface LegacyDrainState {
   legacyCoverage?: LegacyCoverage;
   migration?: SessionMigration;
+  /** Lane ownership only, including direct queue inputs; not effect coverage. */
+  legacyAdmissions?: string[];
   events: Record<string, { done: boolean }>;
   pendingInputs?: Record<string, unknown>;
   pendingNotifications?: Record<string, unknown>;
@@ -42,6 +51,7 @@ const inputIds = (state: LegacyDrainState) =>
       ...Object.keys(state.pendingNotifications ?? {}),
       ...Object.keys(state.ingress?.receipts ?? {}),
       ...Object.keys(state.legacyCoverage?.turns ?? {}),
+      ...(state.legacyAdmissions ?? []),
     ]),
   ].sort();
 
@@ -80,6 +90,130 @@ export function observeLegacyBarrier(
   migration.barrierObserved = true;
 }
 
+/** Archive only the frozen, finished inventory, in original admission order.
+ * Legacy turns lack a durable retention classification. Preserve attributed
+ * receipts, but omit their payloads rather than copying credentials, previews or
+ * control text. Missing host receipt times cannot be reconstructed from age.
+ * This is archival coverage only; inspectLegacyDrain still checks every effect.
+ */
+export async function archiveLegacyInputs(
+  state: LegacyDrainState & {
+    events: Record<string, { event: ChannelEvent; done: boolean }>;
+    ingress?: ConversationIngress;
+  },
+  scopeKey: readonly string[],
+  store: Pick<EvidenceStore, "archiveSessionTurn" | "deletionRevision">,
+  persist: () => Promise<void>,
+): Promise<void> {
+  const migration = state.migration;
+  if (
+    migration?.phase !== "draining" ||
+    migration.scope !== JSON.stringify(scopeKey)
+  )
+    return;
+  const receipts = state.ingress?.receipts;
+  if (
+    migration.legacyInputs.some((id) => {
+      const receipt = receipts?.[id];
+      return (
+        !receipt ||
+        receipt.lane === "session" ||
+        !Number.isSafeInteger(receipt.receivedAt) ||
+        receipt.receivedAt < 0
+      );
+    })
+  )
+    return;
+  const ordered = [...migration.legacyInputs].sort(
+    (a, b) => (receipts?.[a]?.sequence ?? 0) - (receipts?.[b]?.sequence ?? 0),
+  );
+  const first = ordered[0];
+  if (!first || !receipts?.[first]) return;
+  const openedAt = receipts[first].receivedAt;
+  const sessionId = createHash("sha256")
+    .update(JSON.stringify([scopeKey, migration.epoch, "legacy-archive"]))
+    .digest("hex");
+  for (const [index, id] of ordered.entries()) {
+    if (migration.archivedInputs.includes(id)) continue;
+    const receipt = receipts[id];
+    const record = state.events[id];
+    if (
+      !receipt ||
+      !record?.done ||
+      !state.legacyCoverage?.turns[id]?.finished ||
+      Object.hasOwn(state.pendingInputs ?? {}, id) ||
+      Object.hasOwn(state.pendingNotifications ?? {}, id)
+    )
+      return;
+    const deliveries = Object.entries(state.deliveries)
+      .filter(([key]) => key.startsWith(`${id}:`))
+      .map(([, delivery]) => ({ delivery }));
+    if (
+      deliveries.some(
+        ({ delivery }) =>
+          delivery.phase !== "settled" ||
+          !delivery.result ||
+          (delivery.result.status === "rejected" && delivery.result.retryable),
+      )
+    )
+      return;
+    if (!migration.archivePending) {
+      const input = produceSessionArchiveTurn(
+        {
+          sessionId,
+          audience: migration.scope,
+          openedAt,
+          eventId: id,
+          sequence: index + 1,
+          receivedAt: receipt.receivedAt,
+          ...(receipt.kind === "message" && record.event.type === "message"
+            ? { inbound: { event: record.event } }
+            : {}),
+          deliveries,
+          retentionExcluded: true,
+        },
+        // No legacy payload has a complete retained-context certificate here.
+        {
+          source: () => undefined,
+          isDeleted: () => true,
+          contextAvailable: () => false,
+        },
+      );
+      input.turn.data.incomplete = true;
+      migration.archivePending = {
+        input,
+        deletionRevision: store.deletionRevision(),
+      };
+      await persist();
+    }
+    if (migration.archivePending.input.turn.eventId !== id)
+      throw new Error("Legacy archive assignment conflict");
+    const pending = migration.archivePending;
+    const revision = store.deletionRevision();
+    if (pending.deletionRevision !== revision) {
+      const data = pending.input.turn.data;
+      if (
+        data.sourceIds.length ||
+        data.contextSourceIds.length ||
+        data.entries.some(
+          (entry) =>
+            entry.content.retention !== "omitted" ||
+            (entry.role === "user" && entry.sourceId !== undefined),
+        )
+      )
+        throw new Error("Cannot renew a retained legacy archive projection");
+      // Only this dependency-free, omitted-content receipt can cross deletion.
+      // Do not regenerate its times or outcomes, or relax the ledger's fence.
+      // No await may separate this check from the synchronous ledger write.
+      pending.deletionRevision = revision;
+    }
+    store.archiveSessionTurn(pending.input, pending.deletionRevision);
+    migration.archivedInputs.push(id);
+    delete migration.archivePending;
+    await persist();
+  }
+}
+
 /** Read-only, content-free reasons. Not an operator reconciliation API.
  * Existing invocation markers have no provider settlement contract: even
  * `settled` can mean a local HTTP timeout or a hot answer before retirement.
@@ -109,7 +243,12 @@ export function inspectLegacyDrain(
   const ids = migration?.legacyInputs ?? inputIds(state);
   if (migration)
     for (const id of inputIds(state))
-      if (!ids.includes(id) && state.ingress?.receipts[id]?.lane !== "session")
+      if (
+        !ids.includes(id) &&
+        (state.ingress?.receipts[id]?.lane !== "session" ||
+          state.legacyAdmissions?.includes(id) ||
+          Object.hasOwn(coverage?.turns ?? {}, id))
+      )
         counts.unfrozenLegacyInputs++;
   for (const id of ids) {
     const turn = coverage?.turns[id];

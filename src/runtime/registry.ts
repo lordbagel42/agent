@@ -29,8 +29,12 @@ import type { JevObserver, JevQuestion } from "../models/jev.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type { createJuryTool } from "../reflection/jury.js";
 import {
+  archiveLegacyInputs,
+  beginSessionMigration,
+  finishSessionMigration,
   inspectLegacyDrain,
   type LegacyCoverage,
+  observeLegacyBarrier,
   type SessionMigration,
 } from "../sessions/migration.js";
 import type { McpConnections } from "../tools/connections.js";
@@ -105,6 +109,10 @@ import { startTyping, withTyping } from "./typing.js";
 
 export interface Dependencies {
   owner: Owner;
+  /** Host-injected handoff only; not exposed by production config until the
+   * activity catalog/control paths are integrated. Accepted session inputs hold
+   * durably, never silently fall back to legacy when this switch is absent. */
+  sessionHandoff?: boolean;
   social?: SocialPermissions;
   channels: Partial<Record<Channel, ChannelAdapter>>;
   model: ModelProvider;
@@ -224,6 +232,8 @@ export interface ConversationState extends ScopeCatalog {
   /** Prospective host receipts, not proof of legacy effect coverage. */
   ingress?: ConversationIngress;
   legacyCoverage?: LegacyCoverage;
+  /** Durable lane ownership before priority/RPC waits, not effect settlement. */
+  legacyAdmissions?: string[];
   migration?: SessionMigration;
   latestInputs?: Record<string, { id: string; occurredAt: number }>;
   memoryContexts?: Record<string, MemoryReference>;
@@ -293,7 +303,29 @@ function inputSurface(event: MessageEvent): string {
   ]);
 }
 
+type SessionBarrier = {
+  type: "session_barrier";
+  epoch: string;
+  barrier: string;
+};
+
+const ownsLegacyInput = (state: ConversationState, id: string) =>
+  state.ingress?.receipts[id]?.lane !== "session" &&
+  (!state.migration || state.migration.legacyInputs.includes(id));
+
 export function createJuneRegistry(deps: Dependencies) {
+  if (
+    deps.sessionHandoff &&
+    (!deps.memory ||
+      !deps.channels.slack ||
+      (deps.channels.whatsapp &&
+        deps.owner.identities.some(
+          (identity) => identity.channel === "whatsapp",
+        )))
+  )
+    throw new Error(
+      "Session handoff requires memory and a Slack-only owner ingress",
+    );
   const priority = createPriorityAdmission();
   const comparePersonality =
     deps.personalityEvaluation && deps.memory?.personality
@@ -358,6 +390,63 @@ export function createJuneRegistry(deps: Dependencies) {
     current,
     personalityDigest,
   });
+  const prepareHandoff = async (
+    state: ConversationState,
+    key: string[],
+    persist: () => Promise<void>,
+  ) => {
+    if (
+      !deps.sessionHandoff ||
+      state.migration ||
+      JSON.stringify(key) !== JSON.stringify(["private", deps.owner.id])
+    )
+      return;
+    beginSessionMigration(
+      state,
+      key,
+      createHash("sha256").update(randomUUID()).digest("hex"),
+    );
+    // Freeze all old admissions before admitting any new session-lane body.
+    await persist();
+  };
+  const barrierInput = (migration: SessionMigration): SessionBarrier => ({
+    type: "session_barrier",
+    epoch: migration.epoch,
+    barrier: migration.barrier,
+  });
+  const publishHandoff = async (
+    state: ConversationState,
+    publish: (input: ConversationInput | SessionBarrier) => Promise<unknown>,
+  ) => {
+    const migration = state.migration;
+    if (migration?.phase !== "draining") return;
+    // Repair saved legacy admissions whose queue publication never completed.
+    // The barrier is not a substitute for accounting for these frozen bodies.
+    const ids = [...migration.legacyInputs].sort(
+      (a, b) =>
+        (state.ingress?.receipts[a]?.sequence ?? 0) -
+        (state.ingress?.receipts[b]?.sequence ?? 0),
+    );
+    for (const id of ids) {
+      const event = state.pendingInputs?.[id];
+      const notification = state.pendingNotifications?.[id];
+      if (event) await publish({ type: "event", event });
+      else if (notification) await publish(notification);
+    }
+    await publish(barrierInput(migration));
+  };
+  const advanceHandoff = async (
+    state: ConversationState,
+    key: string[],
+    persist: () => Promise<void>,
+  ) => {
+    if (state.migration?.phase !== "draining" || !deps.memory) return;
+    await archiveLegacyInputs(state, key, deps.memory.store, persist);
+    if (inspectLegacyDrain(state, key).ready) {
+      finishSessionMigration(state, key);
+      await persist();
+    }
+  };
   const conversation = actor({
     state: {
       history: [],
@@ -382,7 +471,7 @@ export function createJuneRegistry(deps: Dependencies) {
       persist: () => c.saveState({ immediate: true }),
       receiving: Promise.resolve(),
     }),
-    queues: { inbox: queue<ConversationInput>() },
+    queues: { inbox: queue<ConversationInput | SessionBarrier>() },
     onWake: async (c) => {
       // Runs before workflow replay. Enqueue is durable; duplicates are harmless.
       // Do not await an immediate save here: native startup cannot service it.
@@ -400,6 +489,8 @@ export function createJuneRegistry(deps: Dependencies) {
           (c.state.ingress?.receipts[conversationInputId(b)]?.sequence ?? 0),
       );
       for (const input of pending) await c.queue.send("inbox", input);
+      if (c.state.migration?.phase === "draining")
+        await c.queue.send("inbox", barrierInput(c.state.migration));
     },
     actions: {
       /** Trusted verified ingress. Persist the arrival and its recoverable body
@@ -422,6 +513,10 @@ export function createJuneRegistry(deps: Dependencies) {
             await c.queue.send("inbox", { type: "event", event });
             return;
           }
+          if (c.state.migration && event.address.channel !== "slack")
+            throw new Error(
+              "Session scope cannot admit a linked legacy adapter",
+            );
           if (c.state.events[id] || c.state.forgottenEvents?.includes(id))
             return;
           const source = deps.memory?.source(event, JSON.stringify(c.key));
@@ -445,6 +540,13 @@ export function createJuneRegistry(deps: Dependencies) {
               )
             )
               return;
+            await prepareHandoff(c.state, c.key, c.vars.persist);
+            if (
+              c.state.events[id] ||
+              c.state.forgottenEvents?.includes(id) ||
+              (source && deps.memory?.store.isDeleted(source.id))
+            )
+              return;
             c.state.pendingInputs ??= {};
             c.state.pendingInputs[id] = event;
             c.state.ingress ??= {
@@ -452,7 +554,18 @@ export function createJuneRegistry(deps: Dependencies) {
               receivedThrough: 0,
               receipts: {},
             };
-            recordConversationIngress(c.state.ingress, input, receivedAt);
+            // A repeated webhook cannot manufacture the first receipt time of
+            // an already-owned direct-queue legacy turn.
+            if (
+              !c.state.legacyAdmissions?.includes(id) &&
+              !c.state.migration?.legacyInputs.includes(id)
+            )
+              recordConversationIngress(
+                c.state.ingress,
+                input,
+                receivedAt,
+                c.state.migration ? "session" : "legacy",
+              );
             c.state.latestInputs ??= {};
             const surface = inputSurface(event);
             if (
@@ -466,9 +579,13 @@ export function createJuneRegistry(deps: Dependencies) {
           }
           // A repeated webhook republishes pending input without moving its marker.
           await c.vars.persist();
+          if (!c.state.pendingInputs?.[id]) return;
+          await publishHandoff(c.state, (input) =>
+            c.queue.send("inbox", input),
+          );
           const pending = c.state.pendingInputs?.[id];
-          if (!pending) return; // Forgetting may revoke admission during the save.
-          await c.queue.send("inbox", { type: "event", event: pending });
+          if (pending)
+            await c.queue.send("inbox", { type: "event", event: pending });
         });
         c.vars.receiving = receiving.catch(() => {});
         await receiving;
@@ -496,6 +613,10 @@ export function createJuneRegistry(deps: Dependencies) {
           return;
         const receiving = c.vars.receiving.then(async () => {
           const id = conversationInputId(input);
+          if (c.state.migration && input.source.address.channel !== "slack")
+            throw new Error(
+              "Session scope cannot admit a linked legacy adapter",
+            );
           if (c.state.events[id] || c.state.forgottenEvents?.includes(id))
             return;
           const source = deps.memory?.source(
@@ -532,16 +653,38 @@ export function createJuneRegistry(deps: Dependencies) {
             return;
           c.state.pendingNotifications ??= {};
           if (!c.state.pendingNotifications[id]) {
+            await prepareHandoff(c.state, c.key, c.vars.persist);
+            if (
+              c.state.events[id] ||
+              c.state.forgottenEvents?.includes(id) ||
+              (originId && c.state.forgottenEvents?.includes(originId)) ||
+              (source && deps.memory?.store.isDeleted(source.id)) ||
+              revision !== (deps.memory?.store.deletionRevision() ?? 0) ||
+              (reference && !current(JSON.stringify(c.key), reference))
+            )
+              return;
             c.state.pendingNotifications[id] = input;
             c.state.ingress ??= {
               sequence: 0,
               receivedThrough: 0,
               receipts: {},
             };
-            recordConversationIngress(c.state.ingress, input, receivedAt);
+            if (
+              !c.state.legacyAdmissions?.includes(id) &&
+              !c.state.migration?.legacyInputs.includes(id)
+            )
+              recordConversationIngress(
+                c.state.ingress,
+                input,
+                receivedAt,
+                c.state.migration ? "session" : "legacy",
+              );
           }
           captureNotificationCleanup(c.state, input);
           await c.vars.persist();
+          await publishHandoff(c.state, (input) =>
+            c.queue.send("inbox", input),
+          );
           const pending = c.state.pendingNotifications?.[id];
           if (pending) await c.queue.send("inbox", pending);
         });
@@ -864,7 +1007,21 @@ export function createJuneRegistry(deps: Dependencies) {
             "legacy-effect-coverage",
             2,
           );
+          const handoffVersion = await loop.getVersion("activity-handoff", 2);
           const body = message.body;
+          if (body.type === "session_barrier") {
+            const release = await deps.lifecycle?.enter(ctx.abortSignal);
+            try {
+              await loop.step("observe-session-barrier", async (step) => {
+                observeLegacyBarrier(step.state, body.epoch, body.barrier);
+                await step.vars.persist();
+                await advanceHandoff(step.state, ctx.key, step.vars.persist);
+              });
+            } finally {
+              release?.();
+            }
+            return;
+          }
           // Old actors can be asleep in a pre-v9 queue wait. A wakeup could
           // never have entered those old journals, so its new path is safe.
           const version = body.type === "wakeup" ? 9 : journalVersion;
@@ -886,6 +1043,26 @@ export function createJuneRegistry(deps: Dependencies) {
             if (!scope || JSON.stringify(scope.key) !== JSON.stringify(ctx.key))
               return;
             const ownerTurn = isOwner(event, deps.owner);
+            if (handoffVersion >= 2) {
+              const lane = await loop.step(
+                "session-input-lane",
+                async (step) => {
+                  const id = conversationInputId(body);
+                  const receipt = step.state.ingress?.receipts[id];
+                  if (receipt?.lane === "session") return "session";
+                  // Register ownership before yielding for priority or claiming
+                  // a wakeup. Freeze must see this even before record-event runs.
+                  step.state.legacyAdmissions ??= [];
+                  if (!step.state.legacyAdmissions.includes(id))
+                    step.state.legacyAdmissions.push(id);
+                  await step.vars.persist();
+                  return ownsLegacyInput(step.state, id) ? "legacy" : "held";
+                },
+              );
+              // A future activity dispatcher owns these durably admitted bodies.
+              // Never consume them through the permanent-history workflow.
+              if (lane !== "legacy") return;
+            }
             if (body.type === "wakeup") {
               const eligible =
                 deps.wakeups &&
@@ -893,11 +1070,13 @@ export function createJuneRegistry(deps: Dependencies) {
                 ownerTurn &&
                 event.address.channel === "slack";
               const claimed = eligible
-                ? await loop.step("claim-wakeup", (step) =>
-                    step
-                      .client<JuneClientRegistry>()
-                      .wakeups.getOrCreate([deps.owner.id])
-                      .claim(body.wakeup.runId),
+                ? await loop.step("claim-wakeup", async (step) =>
+                    !ownsLegacyInput(step.state, conversationInputId(body))
+                      ? false
+                      : step
+                          .client<JuneClientRegistry>()
+                          .wakeups.getOrCreate([deps.owner.id])
+                          .claim(body.wakeup.runId),
                   )
                 : false;
               if (!claimed) {
@@ -905,6 +1084,8 @@ export function createJuneRegistry(deps: Dependencies) {
                 // must not retain its unpublished body forever on every restart.
                 if (ingressVersion >= 2)
                   await loop.step("discard-wakeup-input", async (step) => {
+                    if (!ownsLegacyInput(step.state, conversationInputId(body)))
+                      return;
                     delete step.state.pendingNotifications?.[
                       conversationInputId(body)
                     ];
@@ -1060,6 +1241,9 @@ export function createJuneRegistry(deps: Dependencies) {
               event.address.conversationId,
             ]);
             const accepted = await loop.step("record-event", async (step) => {
+              // A cached lane step is not authorization after a concurrent
+              // handoff. In particular, never delete a new session's saved body.
+              if (!ownsLegacyInput(step.state, eventId)) return false;
               // Also retain deletion ownership for legacy direct-queue callbacks.
               if (body.type !== "event")
                 captureNotificationCleanup(step.state, body);
@@ -4716,6 +4900,10 @@ export function createJuneRegistry(deps: Dependencies) {
               if (coverageVersion >= 2 && coverage) coverage.finished = true;
               await step.vars.persist();
             });
+            if (handoffVersion >= 2)
+              await loop.step("advance-session-handoff", (step) =>
+                advanceHandoff(step.state, ctx.key, step.vars.persist),
+              );
             if (body.type === "event" && event.type === "message")
               deps.latency?.mark(event, "finished");
           } finally {

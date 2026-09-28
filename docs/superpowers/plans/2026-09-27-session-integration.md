@@ -58,10 +58,10 @@ legacy -> draining(epoch, barrier, frozen legacy admissions, coverage, holds)
 ```
 
 - [x] Persist prospective canonical identities, recoverable bodies and immutable first host receipt time for owner messages and worker/coding/wakeup notifications. Preserve existing IDs/Slack aliases and reject tombstoned or stale notification provenance before retention. Recover the save/publication gap without refreshing receipts; forgetting removes pending bodies but keeps content-free deduplication.
-- [ ] Assign an immutable legacy/session lane before acknowledging input. Existing direct-queue callbacks and old pending messages without host receipt times remain explicitly legacy; do not manufacture historical receipt or effect coverage.
-- [ ] Fence new legacy admission under the existing receive serializer, repair saved legacy publication gaps, then enqueue one stable barrier. New input waits durably without blocking ingress on the whole drain.
-- [ ] Add a post-receive workflow version branch for routing control. Old iterations retain their original journal path; no retroactive effect invocation or successful receipt is manufactured.
-- [ ] Require the exact barrier, all frozen admissions, complete historical effect coverage, no live/uncertain effects or pending retries, and acknowledged archival coverage before activation. Missing historical coverage remains held. Re-published legacy admissions behind the token still prevent activation.
+- [x] Assign an immutable legacy/session lane before acknowledging input. Existing direct-queue callbacks and old pending messages without host receipt times remain explicitly legacy; do not manufacture historical receipt or effect coverage.
+- [x] Fence new legacy admission under the existing receive serializer, repair saved legacy publication gaps, then enqueue one stable barrier. New input waits durably without blocking ingress on the whole drain.
+- [x] Add a post-receive workflow version branch for routing control. Old iterations retain their original journal path; no retroactive effect invocation or successful receipt is manufactured.
+- [x] Require the exact barrier, all frozen admissions, complete historical effect coverage, no live/uncertain effects or pending retries, and acknowledged archival coverage before declaring handoff drained. Missing historical coverage remains held. Re-published legacy admissions behind the token still prevent activation.
 - [x] Expose bounded hold reasons through owner-private operations inspection. Keep inspection read-only; it cannot clear, retry or reclassify an effect.
 
 Prospective admission alone is not a migration certificate. It does not change
@@ -73,8 +73,10 @@ cleanup matches those callbacks to the frozen jobs/workers/origins, preserving
 unrelated fresh work. Legacy `##` callbacks are acknowledged without retaining or
 publishing the excluded input.
 
-The migration transition module and prospective coverage receipts are prepared;
-the runtime does not yet initiate a handoff or publish/consume its barrier.
+The host-injected `sessionHandoff` path freezes admission, repairs legacy queue
+publication, and consumes the exact durable barrier. It is not exposed by main or
+production config; session-lane bodies remain pending until catalog/actor routing
+is integrated below. Deactivation cannot route those bodies back through legacy.
 Creation-only lineage comes from `onCreate`, never static state defaults or
 `onWake`: Rivet 2.3.21 can reconstruct default state for an existing actor's empty
 snapshot. Missing lineage remains held, including after new turns finish.
@@ -83,8 +85,18 @@ conversation model/web invocations or untracked app/social approvals. All existi
 model/web markers remain held even when labelled settled: HTTP local timeouts and
 hot Codex answers before retirement do not provide a generic provider settlement
 receipt. No reconciliation action or provider contract is invented here. These
-checks are not an activation claim; actor routing and archive acknowledgments
-still need wiring below.
+checks are not an activation claim; activity routing still needs wiring below.
+
+Legacy archival uses saved admission order/time and immutable ledger projections.
+Because old turns lack a retention classification, payloads are omitted and the
+archive marked incomplete; this is not a recovered transcript. Missing first
+receipt times remain held. Only dependency-free omitted-content projections may
+refresh their revision fence after deletion, immediately before the synchronous
+ledger write. Native fixtures reproduce save/publication gaps, lost archive ACKs,
+deletion during projection persistence, and handoff while a direct legacy input
+waits for priority. Lane ownership now precedes that wait, and record-event plus
+wakeup claim/discard revalidate it rather than trusting a cached workflow result.
+Required follow-up review cleared both the lane race and stale-archive fence.
 
 Review found that no-model `!allow` commands can deliver through the independent
 social outbox. They now record a write-ahead coverage hold before dispatch; the
@@ -122,6 +134,37 @@ process, receiving an interrupted status or fulfilling an answer is insufficient
 Fixtures exercise delayed retirement, caught synthesis failures and a completed
 notification whose turn ID disagrees with the start response; the latter was
 reproduced as a false confirmation before adding explicit start correlation.
+
+### Control integration boundary
+
+Keep deterministic command execution and special private send callbacks in the
+stable conversation workflow. Persist the exact activity assignment and control
+classification first. Ordinary inputs branch before legacy history processing;
+assigned controls skip history, automatic ingestion/extraction and reflection
+enqueue, while retaining their original catalog records and intentional changes.
+Do not reclassify an assigned control as legacy or copy the approval catalog.
+
+Add a discriminated receipt-only activity path alongside ordinary interaction.
+Persist control outcomes before publishing that handoff, even after event.done.
+The activity may archive and acknowledge the exact receipts; it cannot repeat a
+command, call inference or send the control output. Include separate social
+outbox uncertainty; a successful owner acknowledgment alone cannot release the
+assignment. Preserve the no-model/private-only rules for worker completions too.
+
+Forget previews wait for their original dispatch turn's durable archive before
+computing and binding the fingerprint. Worker dispatch must not wait for that
+preview result. The presentation and confirmation turns omit payloads and
+dependency edges, and the stable catalog indexes the actual sent preview under
+its existing event:text key before another confirmation can be admitted. Keep
+both fingerprint rechecks and the existing self-deletion receipt exception;
+never infer delivery from a completed job or manufacture a replacement receipt.
+
+Publication, archive-write and catalog-ACK gaps each replay their exact saved
+record. Historical ACK repair precedes current-provenance checks and grants no
+new effect permission. Commit settlement, archive watermark and historical ACK
+without yielding between state transitions, persist, then publish successor work.
+This boundary was checked with Oracle; implementation and runtime evidence remain
+outstanding, not a new human approval gate.
 
 ## Task 5: Integrated evidence and publication
 

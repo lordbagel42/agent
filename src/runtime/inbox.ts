@@ -63,6 +63,7 @@ export function recordConversationIngress(
   state: ConversationIngress,
   input: ConversationInput,
   firstReceivedAt: number,
+  lane: "legacy" | "session" = "legacy",
 ): void {
   const id = conversationInputId(input);
   if (state.receipts[id]) return;
@@ -72,7 +73,7 @@ export function recordConversationIngress(
   state.receipts[id] = {
     sequence: ++state.sequence,
     receivedAt: state.receivedThrough,
-    lane: "legacy",
+    lane,
     kind:
       input.type === "event" && input.event.type === "message"
         ? "message"

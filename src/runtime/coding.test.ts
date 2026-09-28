@@ -1965,6 +1965,15 @@ describe("separate coding supervisor", () => {
       .poll(async () => (await job.snapshot()).status, { timeout: 3000 })
       .toBe("completed");
     expect(threads).toEqual([undefined, "T-saved"]);
+    // Completion precedes notify-companion. Let that exact second-attempt turn
+    // finish before shutdown aborts its receiver while the job awaits its RPC.
+    const completionId = createHash("sha256")
+      .update(JSON.stringify(["job", "job-1", 2]))
+      .digest("hex");
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    await expect
+      .poll(async () => (await june.snapshot()).events[completionId]?.done)
+      .toBe(true);
   });
 
   it("reports occupied admission without disclosing or releasing another job's lease", async (t) => {
