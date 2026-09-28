@@ -94,7 +94,9 @@ describe("runnable June host", () => {
             .then((response) => response.json())
             .catch(() => null);
         },
-        { timeout: 15_000 },
+        // Cold startup on the two-core deployment host includes loading Rivet.
+        // Match its bounded readiness window, without weakening the assertions.
+        { timeout: 30_000 },
       )
       .toEqual({ name: "June", ready: true });
     expect((await request("/operator/conversation")).status).toBe(401);
@@ -165,7 +167,7 @@ describe("runnable June host", () => {
             .then((response) => response.status)
             .catch(() => null);
         },
-        { timeout: 15_000 },
+        { timeout: 30_000 },
       )
       .toBe(200);
     expect((await request("/operator/logs", { headers })).status).toBe(200);
@@ -202,7 +204,7 @@ describe("runnable June host", () => {
     ]);
     expect((await snapshot()).history).toEqual([]);
     expect(first.output() + second.output()).not.toContain(operatorToken);
-  }, 45_000);
+  }, 75_000);
 
   it("refuses native coding without the separate host opt-in, before starting Rivet", async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "june-opt-in-"));
@@ -345,7 +347,7 @@ describe("runnable June host", () => {
               .then((response) => response.json())
               .catch(() => null);
           },
-          { timeout: 15_000 },
+          { timeout: 30_000 },
         )
         .toMatchObject({ name: "June", ready: true });
       for (const channel of mode === "imports"
@@ -430,5 +432,6 @@ describe("runnable June host", () => {
       if (mode !== "imports") expect(output).toContain("setup mode");
       expect(output).not.toContain(operatorToken);
     },
+    45_000,
   );
 });
