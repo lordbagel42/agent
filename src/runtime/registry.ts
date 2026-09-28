@@ -3,6 +3,7 @@ import { actor, type Client, queue, type Registry, setup } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type { createAppsClient } from "../apps/client.js";
 import type {
+  Address,
   Channel,
   ChannelAdapter,
   ChannelEvent,
@@ -118,7 +119,12 @@ import {
   type ScopeCatalog,
 } from "./scope-catalog.js";
 import type { SocialPermissions } from "./social.js";
-import { startTyping, withTyping } from "./typing.js";
+import {
+  createTypingActor,
+  startTyping,
+  typingKey,
+  withTyping,
+} from "./typing.js";
 
 export interface Dependencies {
   owner: Owner;
@@ -468,6 +474,60 @@ export function createJuneRegistry(deps: Dependencies) {
     }
   };
   const sessions = createSessionCatalog(deps, current, personalityDigest);
+  const setTypingPreference = async (
+    client: Client<JuneClientRegistry>,
+    address: Address,
+    enabled: boolean,
+  ) => {
+    try {
+      await client.typing.getOrCreate(typingKey(address)).set(enabled);
+    } catch (error) {
+      // RPC rejection is not proof the status owner's transport has settled.
+      deps.lifecycle?.fail();
+      throw error;
+    }
+  };
+  const typingChannel = (
+    client: Client<JuneClientRegistry>,
+    event: MessageEvent,
+  ) => {
+    if (!deps.channels[event.address.channel]?.setTyping) return undefined;
+    const target = client.typing.getOrCreate(typingKey(event.address));
+    return {
+      setTyping: async (
+        source: MessageEvent,
+        active: boolean,
+        signal?: AbortSignal,
+      ) => {
+        if (signal?.aborted) return;
+        // Only transport metadata crosses into the shared surface actor.
+        let accepted: boolean;
+        try {
+          accepted = await target.pulse(
+            {
+              type: "message",
+              id: source.id,
+              messageId: source.messageId,
+              occurredAt: source.occurredAt,
+              address: source.address,
+              senderId: source.senderId,
+              direct: source.direct,
+              text: "",
+              ...(source.botMentioned ? { botMentioned: true } : {}),
+              ...(source.metadata?.channelType
+                ? { metadata: { channelType: source.metadata.channelType } }
+                : {}),
+            },
+            active,
+          );
+        } catch (error) {
+          deps.lifecycle?.fail();
+          throw error;
+        }
+        if (!accepted) throw new Error("typing_unavailable");
+      },
+    };
+  };
   const sessionHost = (
     c: {
       state: ConversationState;
@@ -488,6 +548,10 @@ export function createJuneRegistry(deps: Dependencies) {
     state: c.state,
     key: c.key,
     persist: c.vars.persist,
+    typing: (address) => ({
+      read: () => client.typing.getOrCreate(typingKey(address)).read(),
+      set: (enabled) => setTypingPreference(client, address, enabled),
+    }),
     worker: (id) => client.execution.getOrCreate(executionKey(c.key, id)),
     personality: () => client.personality.getOrCreate([deps.owner.id]).read(),
     publish: (assignment) =>
@@ -2554,7 +2618,10 @@ export function createJuneRegistry(deps: Dependencies) {
                             return null;
                           }
                           const result = await withTyping(
-                            deps.channels[replyAddress.channel],
+                            typingChannel(
+                              step.client<JuneClientRegistry>(),
+                              event,
+                            ),
                             { ...event, address: replyAddress },
                             step.abortSignal,
                             () => search.search(query, step.abortSignal),
@@ -2693,7 +2760,10 @@ export function createJuneRegistry(deps: Dependencies) {
                             return { reply: { text: "" }, retryable: false };
                           stopTyping = startTyping(
                             version >= 3 && body.type !== "wakeup"
-                              ? deps.channels[replyAddress.channel]
+                              ? typingChannel(
+                                  step.client<JuneClientRegistry>(),
+                                  event,
+                                )
                               : undefined,
                             { ...event, address: replyAddress },
                             signal,
@@ -2960,6 +3030,20 @@ export function createJuneRegistry(deps: Dependencies) {
                                 javascriptAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis",
+                                typingControlAvailable:
+                                  body.type === "event" &&
+                                  event.address.channel === "slack" &&
+                                  !!deps.channels.slack?.setTyping,
+                                typingEnabled: deps.channels[
+                                  event.address.channel
+                                ]?.setTyping
+                                  ? await step
+                                      .client<JuneClientRegistry>()
+                                      .typing.getOrCreate(
+                                        typingKey(event.address),
+                                      )
+                                      .read()
+                                  : false,
                                 workflowAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -3365,12 +3449,40 @@ export function createJuneRegistry(deps: Dependencies) {
                             if (!model)
                               return { reply: { text: "" }, retryable: false };
                             const stage = phase === "reply" ? "fast" : phase;
+                            const applyTypingPreference = async (
+                              enabled: boolean,
+                            ) => {
+                              signal.throwIfAborted();
+                              if (
+                                !modelRequest.typingControlAvailable ||
+                                !canStartAction(step.state)
+                              )
+                                throw new Error("Typing control unavailable");
+                              await setTypingPreference(
+                                step.client<JuneClientRegistry>(),
+                                event.address,
+                                enabled,
+                              );
+                              if (!enabled && stopTyping) {
+                                deferTypingCleanup(stopTyping());
+                                stopTyping = undefined;
+                              }
+                              await typingCleanup;
+                            };
                             deps.latency?.mark(event, `${stage}_started`);
                             try {
                               generated = await model.reply(
                                 {
                                   ...modelRequest,
                                   usageStage: stage,
+                                  ...(modelRequest.typingControlAvailable &&
+                                  modelRequest.mcpAvailable &&
+                                  modelRequest.agentRole !== "interaction"
+                                    ? {
+                                        onTypingPreference:
+                                          applyTypingPreference,
+                                      }
+                                    : {}),
                                   onProviderTiming:
                                     deps.latency?.providerTiming(event, stage),
                                   system:
@@ -3397,6 +3509,7 @@ export function createJuneRegistry(deps: Dependencies) {
                               generated.messages !== undefined ||
                               generated.question !== undefined ||
                               generated.interrupt !== undefined ||
+                              generated.typingEnabled !== undefined ||
                               generated.skillCodingProposal !== undefined
                             )
                               generated = parseReply(
@@ -3423,6 +3536,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                   : {}),
                               };
                               return outcome;
+                            }
+                            if (generated.typingEnabled !== undefined) {
+                              await applyTypingPreference(
+                                generated.typingEnabled,
+                              );
+                              delete generated.typingEnabled;
                             }
                             if (generated.reflectionReview !== undefined) {
                               outcome.reply = parseReply(
@@ -4610,7 +4729,12 @@ export function createJuneRegistry(deps: Dependencies) {
                             retryable: false,
                           };
                         const found = await withTyping(
-                          version >= 3 ? adapter : undefined,
+                          version >= 3
+                            ? typingChannel(
+                                step.client<JuneClientRegistry>(),
+                                event,
+                              )
+                            : undefined,
                           { ...event, address: outbound.address },
                           step.abortSignal,
                           async () =>
@@ -5301,6 +5425,7 @@ export function createJuneRegistry(deps: Dependencies) {
   return setup({
     use: {
       conversation,
+      typing: createTypingActor(deps.channels),
       activity: createActivityActor({
         owner: deps.owner,
         model: deps.model,

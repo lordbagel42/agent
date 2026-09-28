@@ -199,6 +199,8 @@ export interface CompanionReply {
   question?: import("./question.js").Question;
   /** Exceptional conversational interruption; never bypasses action permissions. */
   interrupt?: boolean;
+  /** Persist the current conversation/thread's typing preference; absent leaves it unchanged. */
+  typingEnabled?: boolean;
   execution?: ExecutionCommand[];
   workflow?: import("../workflows/contracts.js").WorkflowCommand;
   /** Capability-free QuickJS computation, separate from privileged workflows. */
@@ -357,6 +359,8 @@ export interface ModelRequest {
   /** Host diagnostics callback only; never serialize into prompts or journals.
    * Retirement may be observed after reply resolves and the turn finishes. */
   onProviderTiming?: (stage: ProviderTimingStage) => void;
+  /** Host-only control for model wrappers before dispatching intermediate tools. */
+  onTypingPreference?: (enabled: boolean) => Promise<void>;
   /** Only these configured workspace names may be delegated. */
   workspaces: string[];
   codingJobsAvailable?: boolean;
@@ -399,6 +403,7 @@ export interface ModelRequest {
   wakeupAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   turnTakingAvailable?: boolean;
+  typingControlAvailable?: boolean;
   socialAvailable?: boolean;
   executionAvailable?: boolean;
   workflowAvailable?: boolean;

@@ -90,6 +90,7 @@ const companionReplySchema = z.strictObject({
     .max(4)
     .optional(),
   interrupt: z.boolean().optional(),
+  typingEnabled: z.boolean().optional(),
   workflow: workflowCommandSchema.optional(),
   javascript: javascriptSchema.optional(),
   execution: z
@@ -393,6 +394,7 @@ export type ReplyCapabilities = Pick<
   | "wakeupAvailable"
   | "replyPlacementAvailable"
   | "turnTakingAvailable"
+  | "typingControlAvailable"
   | "socialAvailable"
   | "executionAvailable"
   | "workflowAvailable"
@@ -437,6 +439,7 @@ function rolePermitsField(
       "interrupt",
       "reaction",
       "replyInThread",
+      "typingEnabled",
       "execution",
     ].includes(key);
   }
@@ -448,6 +451,7 @@ function rolePermitsField(
       "interrupt",
       "reaction",
       "replyInThread",
+      "typingEnabled",
       "escalate",
     ].includes(key);
   }
@@ -496,6 +500,7 @@ function legacyReplyJsonSchema(
     wakeupAvailable,
     replyPlacementAvailable,
     turnTakingAvailable,
+    typingControlAvailable,
     socialAvailable,
     executionAvailable,
     workflowAvailable,
@@ -581,6 +586,15 @@ function legacyReplyJsonSchema(
         type: "string",
         description: "Must be no more than 3500 Unicode characters.",
       },
+      ...(typingControlAvailable
+        ? {
+            typingEnabled: {
+              type: ["boolean", "null"],
+              description:
+                "Set false to clear and disable your typing indicators for this incoming conversation/thread, true to re-enable, or null to keep the current preference. Persists across turns. May accompany a reply, silence, or another directive.",
+            },
+          }
+        : {}),
       ...(turnTakingAvailable
         ? {
             question: {
@@ -1620,6 +1634,7 @@ function legacyReplyJsonSchema(
       "coding",
       "reaction",
       ...(turnTakingAvailable ? ["messages", "interrupt", "question"] : []),
+      ...(typingControlAvailable ? ["typingEnabled"] : []),
       ...(codingJobsAvailable ? ["codingJob"] : []),
       ...(workflowAvailable ? ["workflow"] : []),
       ...(javascriptAvailable ? ["javascript"] : []),
@@ -1864,6 +1879,7 @@ export function parseReply(
     wakeupAvailable,
     replyPlacementAvailable,
     turnTakingAvailable,
+    typingControlAvailable,
     socialAvailable,
     executionAvailable,
     workflowAvailable,
@@ -1891,6 +1907,7 @@ export function parseReply(
     "messages",
     "question",
     "interrupt",
+    "typingEnabled",
     "workflow",
     "javascript",
     "execution",
@@ -2009,6 +2026,7 @@ export function parseReply(
       reply.interrupt !== undefined ||
       reply.question !== undefined) &&
       !turnTakingAvailable) ||
+    (reply.typingEnabled !== undefined && !typingControlAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
     throw new ModelError("invalid_response", false);

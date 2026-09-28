@@ -1,5 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
-import type { CompanionReply, ConversationMessage } from "../core/contracts.js";
+import type {
+  Address,
+  CompanionReply,
+  ConversationMessage,
+} from "../core/contracts.js";
 import { isMemoryCorrectionCommand } from "../memory/correction.js";
 import type { ExecutionRequest } from "../runtime/execution.js";
 import { executionCapabilities } from "../runtime/execution-context.js";
@@ -80,6 +84,10 @@ export interface SessionHost {
   state: ConversationState;
   key: string[];
   persist(): Promise<void>;
+  typing?(address: Address): {
+    read(): Promise<boolean>;
+    set(enabled: boolean): Promise<void>;
+  };
   worker(id: string): Worker;
   personality(): Promise<GlobalPersonality>;
   publish(assignment: ActivityAssignment): Promise<unknown>;
@@ -430,6 +438,12 @@ export function createSessionCatalog(
               ...turn.capabilities,
               executionAvailable: input?.type === "event" && !!deps.execution,
               turnTakingAvailable: input?.type === "event",
+              typingControlAvailable:
+                input.type === "event" &&
+                source.address.channel === "slack" &&
+                !!host.typing &&
+                !!deps.channels.slack?.setTyping,
+              typingEnabled: await host.typing?.(source.address).read(),
               memoryAvailable: true,
             },
         history: [
@@ -544,6 +558,18 @@ export function createSessionCatalog(
     turn.applying ??= reply;
     await host.persist();
     const input = savedInput(host.state, assignment.eventId);
+    if (reply.typingEnabled !== undefined) {
+      if (
+        typeof reply.typingEnabled !== "boolean" ||
+        input?.type !== "event" ||
+        context.source.address.channel !== "slack" ||
+        !deps.channels.slack?.setTyping ||
+        !host.typing ||
+        !valid(host, assignment, context.reference, context.deletionRevision)
+      )
+        throw new Error("Typing control unavailable");
+      await host.typing(context.source.address).set(reply.typingEnabled);
+    }
     const codingFallback =
       input?.type === "job_result" &&
       !reply.text.trim() &&

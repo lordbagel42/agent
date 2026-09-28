@@ -66,6 +66,8 @@ export interface PromptCapabilities {
   escalationAvailable?: boolean;
   replyPlacementAvailable?: boolean;
   turnTakingAvailable?: boolean;
+  typingControlAvailable?: boolean;
+  typingEnabled?: boolean;
   memoryAvailable?: boolean;
   reflectionAvailable?: boolean;
   puckAvailable?: boolean;
@@ -194,6 +196,10 @@ export function buildModelRequest({
   if (!scope) throw new Error("Prompt requires an authorized event");
   const privateTurn = scope.private && isPrivate(event);
   const guest = !isOwner(event, owner);
+  const typingControlAvailable =
+    agentRole !== "execution" &&
+    event.address.channel === "slack" &&
+    capabilities.typingControlAvailable === true;
   const workspaces = privateTurn ? [...(capabilities.workspaces ?? [])] : [];
   const codingJobsAvailable =
     privateTurn && capabilities.codingJobsAvailable === true;
@@ -369,6 +375,12 @@ export function buildModelRequest({
       : "Talk like a thoughtful friend: casual, warm, and candid; let the owner shape your style.",
     "Match the user's needs and depth rather than turning every exchange into a task or repeatedly offering help. Do not force a follow-up question, emoji, or reaction into every turn. Use a native reaction alone when a light acknowledgment is enough, leaving text empty. Empty text with no reaction means intentional silence when no response is needed.",
     'When you can and will check something, lead with the next step: "I\'ll check." Skip redundant uncertainty preambles like "I don\'t have confirmation yet" or "I don\'t know yet." Explain uncertainty or limitations when they affect the answer or what you can actually do, not as a reflex before investigating.',
+    ...(typingControlAvailable
+      ? [
+          `Your typing indicators for this incoming Slack conversation/thread are ${capabilities.typingEnabled === false ? "disabled" : "enabled"}. You control this yourself: set typingEnabled false to clear the current indicator and suppress later indicators here, true to allow them again, or null/omit to leave the preference unchanged. The choice persists across turns, only for this incoming conversation/thread, even if you post your reply elsewhere. It does not pause thinking, work, or replies. You may combine it with text, a reaction, silence, or delegation; do not delegate this choice to a worker.`,
+          "Use judgment about whether an indicator is helpful, not a rigid rule. In multi-person threads, ongoing back-and-forth, or quick one-offs while thinking, repeated indicators can distract or imply you are about to interrupt; consider turning them off. When someone is waiting for substantial work, an indicator can be useful; turn it back on when appropriate. Respect explicit preferences without asking about every turn or announcing routine changes. You only see supplied conversation context, not unsent drafts or other people's live typing. Indicators may start before your first decision; turning them off prevents future starts here until you re-enable them. Platform updates are best-effort, not guaranteed delivery.",
+        ]
+      : []),
     ...(capabilities.turnTakingAvailable
       ? [
           "You may send a reply in separate messages when that feels natural: set messages to an ordered array of one to four nonempty parts and leave text empty. Otherwise use text normally. Do not split mechanically, pad the reply, or simulate typing delays. messages and interrupt are for conversational replies, not action directives. A reaction may accompany either form; empty text with no messages/reaction means silence.",
@@ -747,6 +759,7 @@ export function buildModelRequest({
     escalationAvailable,
     replyPlacementAvailable,
     turnTakingAvailable: capabilities.turnTakingAvailable === true,
+    typingControlAvailable,
     socialAvailable: capabilities.socialAvailable === true,
     executionAvailable,
     workflowAvailable,
@@ -762,6 +775,7 @@ export function buildModelRequest({
             "executionAvailable",
             "replyPlacementAvailable",
             "turnTakingAvailable",
+            "typingControlAvailable",
             "escalationAvailable",
           ].includes(name),
       )

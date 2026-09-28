@@ -2011,7 +2011,7 @@ describe("Rivet conversation workflow", () => {
     const started = Promise.withResolvers<void>();
     const cleared = Promise.withResolvers<void>();
     const typing: boolean[] = [];
-    let typingDuringContext: boolean[] = [];
+    let contextLoaded = false;
     const sent: OutboundMessage[] = [];
     const registry = createJuneRegistry({
       owner,
@@ -2025,8 +2025,8 @@ describe("Rivet conversation workflow", () => {
         slack: {
           ...transport("slack", sent),
           async context() {
-            // Status must already be in flight while Slack context is loading.
-            typingDuringContext = [...typing];
+            // Loading context must not wait for the shared status RPC to settle.
+            contextLoaded = true;
             return [];
           },
           async setTyping(_event, active) {
@@ -2046,8 +2046,8 @@ describe("Rivet conversation workflow", () => {
         text: "The answer is ready.",
       });
       expect(sent[0]?.address.threadId).toBeUndefined();
-      expect(typingDuringContext).toEqual([true]);
-      expect(typing).toEqual([true]);
+      expect(contextLoaded).toBe(true);
+      await expect.poll(() => typing).toEqual([true]);
       let drained = false;
       const drain = lifecycle.drain().then((value) => {
         drained = value;

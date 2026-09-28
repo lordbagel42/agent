@@ -67,6 +67,7 @@ it("enforces explicit agent roles independently of capability flags and workspac
     executionAvailable: true,
     replyPlacementAvailable: true,
     turnTakingAvailable: true,
+    typingControlAvailable: true,
     escalationAvailable: true,
   };
   const directives = {
@@ -78,6 +79,7 @@ it("enforces explicit agent roles independently of capability flags and workspac
     replyInThread: true,
     messages: ["First thought", "A correction"],
     interrupt: false,
+    typingEnabled: false,
     escalate: true,
   };
   for (const agentRole of ["interaction", "execution"] as const) {
@@ -93,6 +95,7 @@ it("enforces explicit agent roles independently of capability flags and workspac
               "replyInThread",
               "messages",
               "interrupt",
+              "typingEnabled",
             ].includes(key)
           : ["mcp", "coding", "latency"].includes(key);
       // Undefined remains the legacy mixed-role contract.
