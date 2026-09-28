@@ -101,27 +101,33 @@ export async function runExecutionCapability(
     );
   }
   if (reply.dashboardLogin) {
-    return receipt(
-      await deliverPrivate(async (outbound) => {
-        if (!current())
-          return {
-            status: "rejected",
-            code: "execution_invalidated",
-            retryable: false,
-          };
-        const result = await runCapability(reply, input, context);
-        if (!current())
-          return {
-            status: "rejected",
-            code: "execution_invalidated",
-            retryable: false,
-          };
-        return context.ports.send(
-          { ...outbound, content: { type: "text", text: result.text } },
-          "text",
-        );
-      }),
-    );
+    const result = await deliverPrivate(async (outbound) => {
+      if (!current())
+        return {
+          status: "rejected",
+          code: "execution_invalidated",
+          retryable: false,
+        };
+      const response = await runCapability(reply, input, context);
+      if (!current())
+        return {
+          status: "rejected",
+          code: "execution_invalidated",
+          retryable: false,
+        };
+      return context.ports.send(
+        { ...outbound, content: { type: "text", text: response.text } },
+        "text",
+      );
+    });
+    return {
+      ...receipt(result),
+      ...(result.status === "sent"
+        ? {
+            text: "The host already delivered the dashboard response directly to the user: a sign-in link or an actionable explanation if issuance was unavailable. This is not proof that a link was issued or tested. Do not repeat the response or add a delivery confirmation. Report only separate findings or unresolved work that still needs attention; otherwise return empty text. The private response content is unavailable to this worker.",
+          }
+        : {}),
+    };
   }
   if (reply.wakeup) {
     if (!input.wakeupAvailable || !deps.wakeups)

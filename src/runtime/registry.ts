@@ -3259,6 +3259,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 if (
                                   !result ||
                                   result.status === "cancelled" ||
+                                  result.silent ||
                                   !valid(step.state)
                                 )
                                   return {

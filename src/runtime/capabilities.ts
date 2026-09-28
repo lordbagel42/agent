@@ -1403,7 +1403,7 @@ export async function runCapability(
       parseReply(JSON.stringify(generated), workspaces, modelRequest);
       const link = deps.dashboardLogin.issue();
       text = link
-        ? `Sign in to your dashboard: ${link.url}\nSingle use; expires at ${link.expiresAt} (10 minutes), or when June restarts. Open it and click Sign in for a 15-minute session. Keep this link private; Cloudflare Access still applies.`
+        ? `Here's your sign-in link: ${link.url}\nIt expires in 10 minutes.`
         : "Too many unused dashboard sign-in links. Wait for an existing link to expire, then ask again.";
     }
     generated = {

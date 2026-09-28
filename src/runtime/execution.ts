@@ -169,9 +169,25 @@ export function createExecutionActor(
       },
       result: (c, id: string) => {
         const request = c.state.requests[id];
+        const deliveries = Object.values(request?.deliveries ?? {});
         return !current(c.state) || !request
           ? null
-          : { ...request, evidenceIds: [...c.state.evidenceIds] };
+          : {
+              ...request,
+              evidenceIds: [...c.state.evidenceIds],
+              // Silence needs host delivery evidence, not a worker's claim.
+              silent:
+                request.status === "completed" &&
+                request.report?.trim() === "" &&
+                !request.coding &&
+                !request.skillCodingProposal &&
+                deliveries.length > 0 &&
+                deliveries.every(
+                  (delivery) =>
+                    delivery.phase === "settled" &&
+                    delivery.result?.status === "sent",
+                ),
+            };
       },
       recordCodingResult: async (
         c,

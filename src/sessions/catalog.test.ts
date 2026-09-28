@@ -15,11 +15,17 @@ it.for([
   "job_result",
   "wakeup",
   "execution_result",
+  "silent_execution_result",
   "untracked_job_result",
 ] as const)(
   "retains %s origin dependencies and suppresses revoked preparation",
   async (scenario, t) => {
-    const kind = scenario === "untracked_job_result" ? "job_result" : scenario;
+    const kind =
+      scenario === "untracked_job_result"
+        ? "job_result"
+        : scenario === "silent_execution_result"
+          ? "execution_result"
+          : scenario;
     const store = new EvidenceStore(":memory:", randomBytes(32));
     t.onTestFinished(() => store.close());
     const key = ["private", "owner"];
@@ -92,7 +98,7 @@ it.for([
           personality: "test",
         },
       },
-      controlCompletions: kind === "execution_result" ? [id] : [],
+      controlCompletions: scenario === "execution_result" ? [id] : [],
       pendingNotifications: { [id]: input },
       ingress: {
         sequence: 1,
@@ -122,7 +128,9 @@ it.for([
         status: "completed",
         task: "preview",
         evidenceIds: [],
-        report: "OBSOLETE PREVIEW",
+        report:
+          scenario === "silent_execution_result" ? "" : "OBSOLETE PREVIEW",
+        silent: scenario === "silent_execution_result",
       }),
       submit: async () => true,
       cancel: async () => {},
@@ -181,7 +189,7 @@ it.for([
       expect(turn.context).toBeUndefined();
       return;
     }
-    if (kind === "execution_result") {
+    if (scenario === "execution_result") {
       // Token A was replaced, but its host-only classification is immutable.
       expect(state.forgetConfirmations).toBeUndefined();
       expect(turn.mode).toBe("control");
@@ -195,6 +203,37 @@ it.for([
       return;
     }
     const prepared = await catalog.prepare(host, turn.assignment, []);
+    if (scenario === "silent_execution_result") {
+      if (!("control" in prepared)) throw new Error("Expected silent receipt");
+      expect(host.publishNative).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "worker:task", source: "execution" }),
+        [],
+      );
+      expect(prepared.control.input.turn.eventId).toBe(id);
+      expect(prepared.control.input.turn.data.entries).toEqual([]);
+      await expect(
+        catalog.acknowledge(host, turn.assignment, {
+          control: true,
+          archivedThrough: turn.assignment.sequence,
+        }),
+      ).rejects.toThrow("Activity archive not acknowledged");
+      const archivedThrough = store.archiveSessionTurn(
+        prepared.control.input,
+        0,
+      );
+      expect(await catalog.prepare(host, turn.assignment, [])).toEqual(
+        prepared,
+      );
+      expect(host.publishNative).toHaveBeenCalledTimes(1);
+      await catalog.acknowledge(host, turn.assignment, {
+        control: true,
+        archivedThrough,
+      });
+      expect(catalog.status(host, turn.assignment)).toBe("acknowledged");
+      expect(state.events[id]?.done).toBe(true);
+      expect(state.pendingNotifications?.[id]).toBeUndefined();
+      return;
+    }
     if ("control" in prepared) throw new Error("Unexpected suppression");
     expect([
       ...prepared.reference.sourceIds,

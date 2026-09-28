@@ -63,6 +63,8 @@ interface Worker {
     task: string;
     report?: string;
     evidenceIds: string[];
+    /** Host-computed: an empty report after confirmed direct delivery. */
+    silent?: boolean;
     coding?: CompanionReply["coding"];
     skillCodingProposal?: CompanionReply["skillCodingProposal"];
   } | null>;
@@ -496,6 +498,9 @@ export function createSessionCatalog(
       ]);
     }
     if (!valid(host, assignment, reference, revision)) return suppress();
+    // Preserve native publication and the exact archive/ACK control receipt,
+    // without asking another model to narrate a response already delivered.
+    if (result?.silent) return suppress();
     return context;
   }
   async function apply(

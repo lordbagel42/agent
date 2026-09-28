@@ -9,6 +9,7 @@ import type {
 } from "../src/core/contracts.js";
 import { EvidenceStore } from "../src/memory/store.js";
 import { executionKey } from "../src/runtime/execution.js";
+import { conversationInputId } from "../src/runtime/inbox.js";
 import { createLatencyDiagnostics } from "../src/runtime/latency.js";
 import { createJuneRegistry } from "../src/runtime/registry.js";
 import { setupTest } from "./rivet.js";
@@ -21,6 +22,7 @@ test("delegated tools are read before reporting and private credentials never en
   const sent: OutboundMessage[] = [];
   const turns: ModelRequest[] = [];
   const work: ModelRequest[] = [];
+  let unknownLinkDelivery = false;
   const logs = vi.fn(() => "RAW_TRACE provider_ms=9700 typing_ms=80");
   const issue = vi.fn(() => ({
     url: "https://june.example/PRIVATE_SINGLE_USE_TOKEN",
@@ -39,6 +41,12 @@ test("delegated tools are read before reporting and private credentials never en
         },
         async send(message) {
           sent.push(JSON.parse(JSON.stringify(message)));
+          if (
+            unknownLinkDelivery &&
+            message.content.type === "text" &&
+            message.content.text.includes("PRIVATE_SINGLE_USE_TOKEN")
+          )
+            return { status: "unknown", code: "lost_response" };
           return { status: "sent", messageId: `sent-${sent.length}` };
         },
       },
@@ -49,11 +57,12 @@ test("delegated tools are read before reporting and private credentials never en
         turns.push({ ...request, onProviderTiming: undefined });
         if (request.system.includes("Execution completion"))
           return {
-            text:
-              request.system.includes('"task":"logs"') &&
-              request.system.includes("Inference took 9.7 seconds")
+            text: request.system.includes('"task":"login-unknown"')
+              ? "I couldn't confirm that the sign-in link reached you."
+              : request.system.includes('"task":"logs"') &&
+                  request.system.includes("Inference took 9.7 seconds")
                 ? "The provider took 9.7 seconds; typing started promptly."
-                : "Your private sign-in link was delivered.",
+                : "Redundant delivery confirmation must not be generated.",
           };
         const text = JSON.parse(request.messages.at(-1)?.content ?? "{}").text;
         if (text === "inline") return { text: "", latency: "logs" };
@@ -69,15 +78,15 @@ test("delegated tools are read before reporting and private credentials never en
           work.push(structuredClone(request));
           const last = request.messages.at(-1)?.content;
           if (last === "logs") return { text: "", latency: "logs" };
-          if (last === "login") return { text: "", dashboardLogin: true };
+          if (last === "login" || last === "login-unknown")
+            return { text: "", dashboardLogin: true };
           if (last?.includes("RAW_TRACE"))
             return {
               text: "Inference took 9.7 seconds; typing took 80ms.",
               dashboardLogin: false,
             };
-          return {
-            text: "The host reports private delivery sent; no link is in my context.",
-          };
+          // Even a worker returning silence cannot attest an unknown send.
+          return { text: "" };
         },
       },
     },
@@ -114,12 +123,18 @@ test("delegated tools are read before reporting and private credentials never en
   await june.send("inbox", { type: "event", event: loginEvent });
   await expect
     .poll(texts, { timeout: 15000 })
-    .toContain("Your private sign-in link was delivered.");
+    .toContain(
+      "Here's your sign-in link: https://june.example/PRIVATE_SINGLE_USE_TOKEN\nIt expires in 10 minutes.",
+    );
+  await expect.poll(() => work.length, { timeout: 15000 }).toBe(4);
   expect(issue).toHaveBeenCalledTimes(1);
   expect(
     texts().filter((text) => text.includes("PRIVATE_SINGLE_USE_TOKEN")),
   ).toHaveLength(1);
   expect(work.at(-1)?.dashboardLoginAvailable).toBe(false);
+  expect(work.at(-1)?.messages.at(-1)?.content).toContain(
+    "host already delivered the dashboard response",
+  );
   expect(JSON.stringify([...turns, ...work])).not.toContain(
     "PRIVATE_SINGLE_USE_TOKEN",
   );
@@ -135,6 +150,22 @@ test("delegated tools are read before reporting and private credentials never en
   expect(JSON.stringify(await worker.result(requestId ?? ""))).not.toContain(
     "PRIVATE_SINGLE_USE_TOKEN",
   );
+  const completionId = conversationInputId({
+    type: "execution_result",
+    agentId: state.agents?.login ?? "",
+    requestId: requestId ?? "",
+    source: loginEvent,
+  });
+  await expect
+    .poll(async () => (await june.snapshot()).events[completionId]?.done, {
+      timeout: 15000,
+    })
+    .toBe(true);
+  expect((await worker.result(requestId ?? ""))?.silent).toBe(true);
+  expect(
+    turns.filter((request) => request.system.includes("Execution completion")),
+  ).toHaveLength(1); // Logs were synthesized; the empty login report was not.
+  expect(texts().join(" ")).not.toContain("Redundant delivery confirmation");
 
   // Replay and an invalid interaction-model directive cannot repeat either tool.
   await june.send("inbox", { type: "event", event: logsEvent });
@@ -155,6 +186,32 @@ test("delegated tools are read before reporting and private credentials never en
     true,
   );
   expect(work.every((request) => request.agentRole === "execution")).toBe(true);
+
+  // An unconfirmed private send still needs an answer, never silence or retry.
+  unknownLinkDelivery = true;
+  await june.send("inbox", { type: "event", event: source("login-unknown") });
+  await expect
+    .poll(texts, { timeout: 15000 })
+    .toContain("I couldn't confirm that the sign-in link reached you.");
+  expect(work.at(-1)?.messages.at(-1)?.content).toContain(
+    "Delivery was not confirmed; do not repeat this operation.",
+  );
+  expect(work.at(-1)?.messages.at(-1)?.content).not.toContain(
+    "host already delivered",
+  );
+  expect(issue).toHaveBeenCalledTimes(2);
+  expect(JSON.stringify([...turns, ...work])).not.toContain(
+    "PRIVATE_SINGLE_USE_TOKEN",
+  );
+  await expect
+    .poll(
+      async () =>
+        Object.values((await june.snapshot()).events).every(
+          (entry) => entry.done,
+        ),
+      { timeout: 15000 },
+    )
+    .toBe(true);
 });
 
 test("delegated forget confirmation requires the token-bearing completion to have been sent", async (t) => {
