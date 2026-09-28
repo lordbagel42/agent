@@ -68,6 +68,10 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain(
       "Idle expiry does not cancel durable jobs",
     );
+    expect(request.system).toContain(
+      "Slow notification RPCs retain deployment admission until they settle",
+    );
+    expect(request.system).toContain("Do not rerun the task");
     expect(request.system).toContain("CLEARHISTORY");
     expect(request.system).toContain("DEBUGSHARE");
     expect(request.system).toContain('inspection:"debug-shares"');

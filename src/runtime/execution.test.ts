@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { Client } from "rivetkit/client";
 import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
@@ -17,8 +18,12 @@ import { parseReply } from "../models/provider.js";
 import { ConversationContinuity } from "./continuity.js";
 import { executionKey } from "./execution.js";
 import type { ExecutionContext } from "./execution-context.js";
+import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
+const notification = vi.hoisted(() => ({
+  before: undefined as undefined | (() => Promise<void>),
+}));
 // Pause a real worker save, not a replacement workflow or production test hook.
 const persistence = vi.hoisted(() => ({
   afterSave: undefined as undefined | (() => Promise<void>),
@@ -29,6 +34,19 @@ vi.mock("rivetkit", async (importOriginal) => {
   return {
     ...real,
     actor: (config: Parameters<typeof real.actor>[0]) => {
+      if (typeof config.actions?.notify === "function") {
+        const notify = config.actions.notify;
+        return real.actor({
+          ...config,
+          actions: {
+            ...config.actions,
+            notify: async (...args: Parameters<typeof notify>) => {
+              await notification.before?.();
+              return notify(...args);
+            },
+          },
+        });
+      }
       if (
         !("state" in config) ||
         !config.state ||
@@ -88,6 +106,80 @@ const event = (id: string, text: string): MessageEvent => ({
   text,
 });
 
+it("keeps a slow execution notification owned until its real RPC settles", async (t) => {
+  const lifecycle = createLifecycle();
+  const arrived = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  let notifications = 0;
+  let executions = 0;
+  const sent: string[] = [];
+  notification.before = async () => {
+    notifications++;
+    arrived.resolve();
+    await gate.promise;
+  };
+  t.onTestFinished(() => {
+    notification.before = undefined;
+    gate.resolve();
+  });
+  const registry = createJuneRegistry({
+    owner,
+    lifecycle,
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        receive: async () => ({ response: new Response(), events: [] }),
+        send: async (message) => {
+          if (message.content.type === "text") sent.push(message.content.text);
+          return { status: "sent", messageId: "result" };
+        },
+      },
+    },
+    model: {
+      reply: async (request): Promise<CompanionReply> =>
+        request.system.includes("Execution completion")
+          ? { text: "Execution result received." }
+          : {
+              text: "",
+              execution: [
+                { agent: "slow", action: "run", task: "Do one task" },
+              ],
+            },
+    },
+    execution: {
+      model: {
+        reply: async () => {
+          executions++;
+          return { text: "Completed once." };
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const conversation = client.conversation.getOrCreate(["private", owner.id]);
+  await conversation.send("inbox", {
+    type: "event",
+    event: event("slow", "Do one task"),
+  });
+  await arrived.promise;
+  // Exercise the real engine's default 30-second deadline, not a fake step.
+  await delay(31_000);
+  expect(lifecycle.ready).toBe(true);
+  expect(lifecycle.active).toBeGreaterThan(0);
+  expect(await lifecycle.drain(20)).toBe(false);
+  expect(sent).toEqual([]);
+  gate.resolve();
+  await expect
+    .poll(() => sent, { timeout: 15000 })
+    .toEqual(["Execution result received."]);
+  await expect.poll(() => lifecycle.active, { timeout: 15000 }).toBe(0);
+  expect(await lifecycle.drain()).toBe(true);
+  lifecycle.resume();
+  expect(notifications).toBe(1);
+  expect(executions).toBe(1);
+}, 60_000);
+
 it("revokes continuity-derived worker output on restriction but not on idle expiry", async (t) => {
   const store = new EvidenceStore(":memory:", randomBytes(32));
   let now = 1000;
@@ -108,6 +200,7 @@ it("revokes continuity-derived worker output on restriction but not on idle expi
   continuity.receive(input);
   const projection = await continuity.project(input, { kind: "owner" });
   const resume = Promise.withResolvers<CompanionReply>();
+  let workerPrompt = "";
   let started = false;
   const registry = createJuneRegistry({
     owner,
@@ -117,7 +210,8 @@ it("revokes continuity-derived worker output on restriction but not on idle expi
     model: { reply: async () => ({ text: "" }) },
     execution: {
       model: {
-        reply: async () => {
+        reply: async (request) => {
+          workerPrompt = request.system;
           started = true;
           return resume.promise;
         },
@@ -148,6 +242,7 @@ it("revokes continuity-derived worker output on restriction but not on idle expi
     .poll(async () => (await worker.summary()).status)
     .toBe("revoked");
   expect((await worker.summary()).report).not.toContain("Must be suppressed");
+  expect(workerPrompt).toContain("Do not rerun the task");
 });
 
 it("accepts bounded execution only when granted and excludes every other directive", () => {

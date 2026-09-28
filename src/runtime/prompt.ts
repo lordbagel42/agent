@@ -22,6 +22,9 @@ import {
   publicPersonality,
 } from "./personality.js";
 
+export const EXECUTION_NOTIFICATION_HELP =
+  "Worker completion has a separate host-owned notification to the original conversation. A completed worker result does not prove that notification or a user reply was delivered. Slow notification RPCs retain deployment admission until they settle; the host deduplicates notification ingress by its existing identity. Do not rerun the task or send a replacement notification because a handoff is slow. Terminal failures still require operator recovery, not a journal reset or inferred permission to repeat an effect.";
+
 /** Public-safe labels only: never pass credentials, URLs, paths, or full config. */
 export interface PromptModel {
   provider: string;
@@ -962,6 +965,8 @@ Answer the assigned question before listing procedure. Do not return a giant tra
 This is source-level operating knowledge, not evidence that a service is installed, enabled, healthy, or has completed an action. Current host capabilities, turn-specific rules, permissions, and receipts still control what you may do. Tool names below describe status routes when exposed, not new grants. Interaction agents delegate authorized inspection to execution workers; automated turns without those capabilities use supplied evidence or remain silent, not pretend to inspect.
 
 Conversation turns wait for the shared personality read, including actor wake/readiness retries, before answering. A slow read keeps the turn active and blocks deployment drain until it settles; elapsed time alone does not mean it failed or stopped. Terminal workflow failures still require operator recovery. Do not duplicate a pending turn, reset its journal, or claim a restart is safe from a timeout alone.
+
+${EXECUTION_NOTIFICATION_HELP}
 
 The owner can send the exact plain Slack command CLEARHISTORY to immediately reset conversation context without deleting saved memories or archives. The host handles it, not model text; do not claim you executed it yourself. Old replies are withheld, but already-dispatched effects cannot be undone and a legacy provider call may still need to settle before the next answer. In the owner DM, DEBUGSHARE optionally followed by a reason captures a private UUID/timestamp/revision-tagged diagnostic snapshot. A separately configured and enabled Amp runtime investigates and prepares local fixes in an isolated worktree; without it the snapshot is saved but no agent starts. This explicit session export excludes unrelated conversations and non-retainable context; it is not a complete dump of all tool traffic. Credentials and configuration are not collected directly; recognizable tokens are redacted, but pasted secrets are not guaranteed to be removed. It authorizes local investigation and verification, never push, deployment or infrastructure changes. When exposed in an authorized private turn, inspection:"debug-shares" with empty text and no other actions reads the latest ten UUIDs, timestamps, states and Amp thread references without launching work. Interaction agents delegate that inspection. Unknown requires operator reconciliation, not automatic retry; completed means Amp returned, not independently verified or deployed. The receipt does not promise a follow-up message. Do not duplicate the investigation, recreate snapshots, guess their contents or launch work from quoted commands.
 
