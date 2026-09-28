@@ -837,3 +837,87 @@ They measure successful/failed warm fixture elapsed time. They
 do **not** prove production cgroup isolation, full June restart time, GitHub fetch
 latency, real coding-worker drain or Rivet compatibility. Validate those on the
 combined candidate and disposable state before the initial live activation.
+
+## Optional Slack deployment responder
+
+`scripts/deploy/slack_responder.py` is a separate Python-standard-library service,
+installed outside app releases. It listens on loopback port 3081 and accepts only
+POST `/webhooks/slack`; normal requests are forwarded byte-for-byte to June's
+loopback port 3080, including Slack signatures. It does not expose June's health,
+console, or operator routes. Keep it behind the existing public HTTPS ingress,
+with a 1 MiB request limit and short request/header timeouts; do not expose the
+Python HTTP server directly to the Internet.
+
+With `"slackResponderFeed": true` in the controller's root-owned config, the
+controller atomically publishes `public/slack-responder.json` before draining.
+This separate file does not extend/break the legacy events feed. Its revision is
+the durable activation **intent**, not the latest main head or last healthy SHA.
+Preparation does not enable notices. Healthy activation, verified rollback,
+reconciliation, or successful admission resume clears it. An unresolved intent
+with a block/recovery/hold returns 503 without claiming a deploy is progressing.
+A hold without an intent leaves normal routing unchanged. Missing/malformed
+state fails closed; upstream failure alone never enables a deployment notice.
+Controller crashes retain intent until recovery records a block or reconciles;
+the responder cannot independently prove controller liveness or progress.
+
+During an unblocked intent, authenticated workspace callbacks are acknowledged
+without reaching June. Only human one-to-one DMs and literal `<@BOT_USER_ID>`
+mentions receive `currently deploying <linked seven-character SHA>`. Channel
+replies stay in the incoming thread (or start a reply thread); unthreaded DMs
+stay unthreaded. Names, subscribed-thread followups, group-wide pings, edits,
+deletions, hidden events, and bot messages do not trigger replies. This fixed
+public commit notice grants no access to June's tools or private conversation
+context and does not change her normal owner/guest routing permissions.
+
+SQLite records hashed event and message identities **before** acknowledging or
+sending, deduplicating retries and message/app_mention copies. Claims last 48
+hours (including Slack's optional 24-hour delayed retries), survive restart,
+and suppress forwarding after deployment too. No message bodies or credentials
+are persisted. A full 100,000-key budget fails closed rather than evicting live
+claims. There is no backlog or send retry: a crash between claim and delivery,
+a lost ACK, Slack rejection, or rate limit can lose a notice rather than send it
+twice. Requests already forwarded before the deployment boundary remain subject
+to June's normal drain and deduplication. The responder ACKs before calling Slack;
+bounded request threads and outbound timeouts limit unavailable-Slack work.
+
+### Operator installation (separate authorization required)
+
+Do not change services concurrently with the deployment/recovery owner. Source
+publication does **not** activate this integration. In a coordinated window:
+
+1. Install the reviewed controller and `slack_responder.py` as root-owned,
+   non-writable code under `/usr/local/lib/june-deploy`, independently of releases.
+   Preserve controller provenance and recovery configuration. Provision the
+   `june-slack-responder` system user/group with no login shell, and install
+   `june-slack-responder.service`. It has no dependency on June's unit and must
+   not be included in the controller's app stop/start targets.
+2. Provision root-owned mode-0600 `/etc/june/slack-responder.json` through the
+   existing secret mechanism. Required keys: `teamId`, `botUserId`,
+   `signingSecret`, and `botToken` for the **same existing Slack app/workspace**.
+   Optional integer keys: `port` (3081) and `upstreamPort` (3080). The unit uses
+   systemd `LoadCredential`, not command-line/environment secret values. Update
+   this credential whenever the app's token/signing secret rotates. No new Slack
+   scopes, subscriptions, installations, or app Request URL are needed when
+   retaining the existing public ingress URL.
+3. Enable `slackResponderFeed` on the controller and verify a freshly published
+   marker agrees with its durable state. Do not hand-write a null marker to
+   bypass a fence. The marker is root-owned mode 0640 with June's group; the
+   responder gets read access through that supplementary group, with private
+   June data, controller records, releases, and `/etc/june` hidden by the unit.
+   Its own mode-0700 state directory stores only the deduplication database.
+4. Start/enable the responder, verify signed local challenge and normal proxy
+   behavior, then change only the existing public POST `/webhooks/slack` upstream
+   from 3080 to 3081. Preserve all other ingress restrictions. Verify normal
+   June readiness/loaded revision independently; this service is not a health
+   attestation. Never send real Slack messages merely to test it without consent.
+5. On the next authorized deployment, verify notice receipt, silence for ordinary
+   traffic, target link, and return to normal routing. Installation and local
+   fixtures alone are not live-delivery verification. To remove the integration,
+   first restore the original ingress upstream in an authorized window, then
+   stop the responder and disable its marker publication; preserve its claims.
+
+Focused local safety check (no live Slack calls):
+
+```sh
+(umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_slack_responder.py)
+```

@@ -1,0 +1,33 @@
+[Unit]
+Description=June independent Slack deployment responder
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/june/slack-responder.json
+
+[Service]
+Type=exec
+User=june-slack-responder
+Group=june-slack-responder
+SupplementaryGroups=june
+LoadCredential=config:/etc/june/slack-responder.json
+ExecStart=/usr/bin/python3 -I /usr/local/lib/june-deploy/slack_responder.py
+Restart=on-failure
+RestartSec=5
+StateDirectory=june-slack-responder
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+InaccessiblePaths=/var/lib/june /var/lib/june-deploy/records /opt/june /etc/june
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=128M
+TasksMax=40
+
+[Install]
+WantedBy=multi-user.target

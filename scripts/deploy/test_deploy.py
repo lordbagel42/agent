@@ -974,6 +974,7 @@ class RecoverySafety(unittest.TestCase):
                 self.root / "records",
                 self.root / "feed.json",
                 self.revision,
+                slack_responder_feed=True,
                 publish_feed=False,
             )
             self.addCleanup(reopened.close)

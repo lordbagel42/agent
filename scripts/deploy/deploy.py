@@ -106,11 +106,13 @@ class Store:
         *,
         staging_recovery_feed=False,
         repository_metadata_feed=False,
+        slack_responder_feed=False,
         publish_feed=True,
     ):
         self.feed, self.feed_gid = feed, feed_gid
         self.staging_recovery_feed = staging_recovery_feed
         self.repository_metadata_feed = repository_metadata_feed
+        self.slack_responder_feed = slack_responder_feed
         self.repository_snapshot = None
         self.initial = revision(initial)
         self.controller_revision = (
@@ -145,6 +147,23 @@ class Store:
     def set(self, key, value):
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO state VALUES (?,?)", (key, value))
+
+    def publish_responder(self):
+        if self.slack_responder_feed:
+            atomic_json(
+                self.feed.with_name("slack-responder.json"),
+                {
+                    "version": 1,
+                    "revision": self.get("intent") or None,
+                    "blocked": bool(
+                        self.get("blocked")
+                        or self.get("recovery")
+                        or self.get("operatorHold")
+                    ),
+                },
+                0o640,
+                self.feed_gid,
+            )
 
     def status(self, commit):
         row = self.db.execute(
@@ -224,6 +243,7 @@ class Store:
         self.publish()
 
     def publish(self):
+        self.publish_responder()
         events = [
             dict(row)
             for row in self.db.execute(
@@ -367,6 +387,7 @@ class Deployer:
             if not self.host.resume(self.store.get("active")):
                 raise ValueError("not_resumed")
             self.store.set("intent", "")
+            self.store.publish_responder()
         except Exception:  # noqa: BLE001 - external errors must become secret-free records
             self.store.block(target, "resume_failed")
 
@@ -480,6 +501,8 @@ class Deployer:
         # Drain changes admission too. A crash must not silently leave the old
         # service fenced without a durable record and explicit reconciliation.
         s.set("intent", target)
+        # Unlike best-effort recovery reporting, this must succeed before drain.
+        s.publish_responder()
         try:
             if not h.drain(previous):
                 s.event(target, "deferred", "drain_busy")
@@ -2064,6 +2087,7 @@ def main():
             controller_revision=installed_controller_revision(config.get("controller")),
             staging_recovery_feed=config.get("stagingRecoveryFeed") is True,
             repository_metadata_feed=config.get("repositoryMetadataFeed") is True,
+            slack_responder_feed=config.get("slackResponderFeed") is True,
             publish_feed=not state_only,
         )
         recovery = Recovery(store)
