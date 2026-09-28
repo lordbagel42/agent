@@ -36,7 +36,18 @@ export async function runIndexer(
   let rampCompleted = 0;
   let blocked: string | null = null;
   const completions: number[] = [];
-  const terminalFailures: number[] = [];
+  const terminalGenerations: { at: number; failed: boolean }[] = [];
+  function recordGeneration(failed: boolean) {
+    const now = Date.now();
+    while ((terminalGenerations[0]?.at ?? Infinity) <= now - 60_000)
+      terminalGenerations.shift();
+    terminalGenerations.push({ at: now, failed });
+    if (failed) {
+      const failures = terminalGenerations.filter((item) => item.failed).length;
+      if (failures >= 5 && failures * 10 >= terminalGenerations.length)
+        blocked ??= "repeated_generation_failures";
+    }
+  }
   const active = new Set<Promise<void>>();
   const analyses = new Map<string, Promise<EmojiResult>>();
   const controller = new AbortController();
@@ -127,19 +138,23 @@ export async function runIndexer(
                   inferenceStarted = true;
                   analysis = describer
                     .describe(source, input.media, input.imagePaths, signal)
-                    .then((value) => ({
-                      schemaVersion: SCHEMA_VERSION,
-                      source,
-                      media: input.media,
-                      analysis: value,
-                      provenance: {
-                        provider: "codex" as const,
-                        model: options.model,
-                        promptVersion: PROMPT_VERSION,
-                        indexedAt: new Date().toISOString(),
-                        durationMs: Date.now() - started,
-                      },
-                    }));
+                    .then((value) => {
+                      // Count model calls, not cached images or shared waiters.
+                      recordGeneration(false);
+                      return {
+                        schemaVersion: SCHEMA_VERSION,
+                        source,
+                        media: input.media,
+                        analysis: value,
+                        provenance: {
+                          provider: "codex" as const,
+                          model: options.model,
+                          promptVersion: PROMPT_VERSION,
+                          indexedAt: new Date().toISOString(),
+                          durationMs: Date.now() - started,
+                        },
+                      };
+                    });
                   analyses.set(key, analysis);
                 }
                 result = await analysis;
@@ -183,14 +198,7 @@ export async function runIndexer(
                 ].includes(code)
               ) {
                 // Duplicate images share one promise, including its failure.
-                if (inferenceStarted) {
-                  const now = Date.now();
-                  while ((terminalFailures[0] ?? Infinity) <= now - 60_000)
-                    terminalFailures.shift();
-                  terminalFailures.push(now);
-                  if (terminalFailures.length >= 5)
-                    blocked ??= "repeated_generation_failures";
-                }
+                if (inferenceStarted) recordGeneration(true);
               } else if (!(error instanceof MediaError)) {
                 blocked ??= describer.failure ?? code;
               }

@@ -44,12 +44,15 @@ The bulk scheduler starts at four simultaneous descriptions and doubles no
 faster than every 30 seconds after enough completions. It retains at least
 4096 MiB host available memory and 1 GiB disk space by default, limits native
 image preparation to two operations, and skips isolated, confirmed generation
-failures without retrying them. Five such failures within a minute pause the
-batch. Authentication, quota, protocol, provider-health and uncertain failures
-still stop new admission immediately and drain already-claimed work. Duplicate
+failures without retrying them. On each distinct terminal generation failure,
+the batch pauses if the last minute contains at least five such failures and
+they make up 10% or more of terminal model calls. Cached results and
+duplicate-image waiters do not inflate that count. Authentication, quota,
+protocol, provider-health and uncertain failures still stop new admission
+immediately and drain already-claimed work. Duplicate
 images sharing one failed generation count once toward the failure threshold.
-Resuming processes only pending rows. `--initial-concurrency 100 --max-concurrency 100`
-starts and stays at up to 100 descriptions instead of the default ramp.
+Resuming processes only pending rows. `--initial-concurrency 500 --max-concurrency 500`
+starts and stays at up to 500 descriptions instead of the default ramp.
 The cap is 1,000 fresh ephemeral Codex threads in one pinned app-server, **not
 1,000 resident CLI processes**. Account limits and measured resource pressure
 may keep actual concurrency below that cap. There is no automatic durable job
