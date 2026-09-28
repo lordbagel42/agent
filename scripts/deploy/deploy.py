@@ -1135,6 +1135,16 @@ class Host:
                 "-p",
                 "RuntimeMaxSec=180",
                 "-p",
+                # Reserve half of June's 2 GiB container for the live app and OS.
+                # Bound all build children, not just the compiler's JS heap.
+                "MemoryHigh=768M",
+                "-p",
+                "MemoryMax=1G",
+                "-p",
+                "MemorySwapMax=0",
+                "-p",
+                "OOMPolicy=kill",
+                "-p",
                 "NoNewPrivileges=yes",
                 "-p",
                 "ProtectSystem=strict",

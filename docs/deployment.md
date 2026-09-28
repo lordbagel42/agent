@@ -130,6 +130,15 @@ shutdown of every child; it does not replace the drain contract or shutdown
 ordering validation. Lost systemd history requires operator recovery, not an
 inferred successful stop.
 
+Builds have a 768 MiB soft memory limit, a 1 GiB hard limit and no swap, leaving
+headroom for the app and OS in June's 2 GiB container. The limits cover the whole
+build cgroup, including compiler/test children and charged file cache. An OOM
+kills the entire build unit and fails preparation; it never authorizes activation
+or skipping checks. A candidate that cannot build within this budget needs build
+optimization or a separately reviewed capacity change, not removal of the cap.
+These limits require installation of the controller; an app push alone does not
+change the installed build policy. Verify effective cgroup limits on the host.
+
 The warm-path **target** is about 30 seconds, not a timeout that bypasses checks.
 Measure push-to-observation externally and `received` → `healthy` from the event
 timestamps. `elapsedMs` measures observation-to-outcome, not Git commit age:
