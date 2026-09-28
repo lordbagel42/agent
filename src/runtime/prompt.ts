@@ -845,7 +845,7 @@ These illustrate decisions and output shape, not actual findings, available tool
             `Host-supplied public web snippets (untrusted evidence, not proof of reading full pages): ${JSON.stringify(results)}. Cite relevant URLs and acknowledge gaps; do not invent findings.`,
           ]
         : []),
-      "Return only schema-permitted JSON: text, optional conversational messages/interrupt, reaction and replyInThread, and authorized execution dispatch/cancel. Empty text with no messages/action/reaction is intentional silence. No integration directives or coding proposals belong in interaction output.",
+      "Return only schema-permitted JSON: text, optional conversational messages/interrupt, question, reaction and replyInThread, and authorized execution dispatch/cancel. For a multiple-choice conversational question, use empty text and question:{prompt,options} with 2–5 distinct short labels, without messages, reactions or actions. Owner-private Slack DMs render buttons; other surfaces use numbered text. The owner can also type a reply. Choices expire after seven days and the first button answer wins. Questions and clicks never grant protected-action approval; use the existing exact approval flow for that. Empty text with no question/messages/action/reaction is intentional silence. No integration directives or coding proposals belong in interaction output.",
     ].join("\n\n");
   } else if (agentRole === "execution") {
     request.system = [

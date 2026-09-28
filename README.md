@@ -171,7 +171,7 @@ shutdown/alarm diagnostics and replay/migration limits are documented in the
 | System design | [Architecture](docs/architecture.md) |
 | Conversation workers | [Execution agents](docs/execution-agents.md) |
 | Reminders and durable programs | [Wakeups](docs/wakeups.md), [workflows](docs/workflows.md) |
-| External tools | [MCP connections](docs/mcp-connections.md), [GitHub](docs/github.md), [browser](docs/browser.md) |
+| External tools | [MCP connections](docs/mcp-connections.md), [Slack](docs/slack.md), [GitHub](docs/github.md), [browser](docs/browser.md) |
 | Evidence and learning | [Memory](src/memory/README.md), [reflection](src/reflection/README.md) |
 | Hosting | [Deployment](docs/deployment.md), [dynamic apps](docs/dynamic-apps.md) |
 | Implementation versus activation | [Capability inventory](docs/implementation-plan.md) |

@@ -19,6 +19,7 @@ import {
 } from "./slack-context.js";
 import { createSlackHistory } from "./slack-history.js";
 import type { SlackIngressDiagnostics } from "./slack-ingress.js";
+import { slackQuestionAnswer, slackQuestionBlocks } from "./slack-question.js";
 import {
   createSlackSearch,
   type SlackPrivateSearchOptions,
@@ -551,7 +552,14 @@ export function createSlackAdapter({
 
       let payload: unknown;
       try {
-        payload = JSON.parse(new TextDecoder().decode(rawBody));
+        const text = new TextDecoder().decode(rawBody);
+        payload = JSON.parse(
+          request.headers
+            .get("content-type")
+            ?.startsWith("application/x-www-form-urlencoded")
+            ? (new URLSearchParams(text).get("payload") ?? "")
+            : text,
+        );
       } catch {
         ingressDiagnostics?.record(request, "payload_invalid");
         return { response: new Response(null, { status: 400 }), events: [] };
@@ -559,6 +567,21 @@ export function createSlackAdapter({
       if (!isJsonObject(payload)) {
         ingressDiagnostics?.record(request, "payload_invalid");
         return { response: new Response(null, { status: 400 }), events: [] };
+      }
+
+      if (payload.type === "block_actions") {
+        const answer = slackQuestionAnswer(
+          payload,
+          teamId,
+          botUserId,
+          owners,
+          signingSecret,
+          now(),
+        );
+        return {
+          response: new Response(null, { status: 200 }),
+          events: answer ? [answer] : [],
+        };
       }
 
       if (payload.team_id !== undefined && payload.team_id !== teamId) {
@@ -668,6 +691,7 @@ export function createSlackAdapter({
           client_msg_id: message.id,
           ...(!embed &&
           !message.content.plainText &&
+          !message.content.question &&
           !privateReview &&
           text.length <= 12_000 &&
           /^\s*`{3,}/m.test(text)
@@ -693,7 +717,17 @@ export function createSlackAdapter({
                 unfurl_media: false,
               }
             : {}),
-          ...(message.content.plainText
+          ...(!embed && message.content.question && owners.size === 1
+            ? {
+                blocks: slackQuestionBlocks(
+                  message,
+                  [...owners][0] as string,
+                  signingSecret,
+                  now(),
+                ),
+              }
+            : {}),
+          ...(message.content.plainText || message.content.question
             ? {
                 mrkdwn: false,
                 parse: "none",

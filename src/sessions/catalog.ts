@@ -547,9 +547,11 @@ export function createSessionCatalog(
     const codingFallback =
       input?.type === "job_result" &&
       !reply.text.trim() &&
+      !reply.question &&
       !reply.messages?.some((text) => text.trim());
     let output = {
       text: codingFallback ? input.text : reply.text,
+      ...(reply.question ? { question: reply.question } : {}),
       ...(reply.messages && !codingFallback
         ? { messages: reply.messages }
         : {}),

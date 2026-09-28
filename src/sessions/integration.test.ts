@@ -29,6 +29,74 @@ import {
 import { SocialPermissions } from "../runtime/social.js";
 import { sessionActorKey } from "./state.js";
 
+it("delivers a conversational question through the activity session lane", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const sent: OutboundMessage[] = [];
+  const question = { prompt: "Which day?", options: ["Tuesday", "Thursday"] };
+  const registry = createJuneRegistry({
+    owner: {
+      id: "owner",
+      identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
+    },
+    sessions: { idleMs: 60000 },
+    model: {
+      beginReply() {
+        return {
+          answer: Promise.resolve({ text: "", question }),
+          settlement: Promise.resolve("confirmed_stopped" as const),
+        };
+      },
+      async reply() {
+        throw new Error("Use invocation handle");
+      },
+    },
+    memory: {
+      store,
+      source: (event, audience) =>
+        slackSource({
+          workspace: event.address.accountId,
+          channel: event.address.conversationId,
+          ts: event.messageId,
+          author: event.senderId,
+          text: event.text,
+          audiences: [audience],
+          workspaceUrl: "https://fixture.slack.com/",
+        }),
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, threads: true, reactions: true },
+        receive: async () => ({ events: [], response: new Response() }),
+        async send(message) {
+          sent.push(JSON.parse(JSON.stringify(message)));
+          return { status: "sent", messageId: "1800000001.000001" };
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", "owner"]);
+  await june.receive({
+    id: "question",
+    type: "message",
+    messageId: "1800000000.000001",
+    occurredAt: Date.now(),
+    address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+    direct: true,
+    metadata: { channelType: "im" },
+    senderId: "U1",
+    text: "Ask me which day",
+  });
+  await expect.poll(() => sent.length, { timeout: 15000 }).toBe(1);
+  expect(sent[0]?.content).toEqual({
+    type: "text",
+    text: "Which day?\n1. Tuesday\n2. Thursday\nChoose an option or reply in your own words.",
+    question,
+  });
+});
+
 it.for([false, true])(
   "handles event decisions in activities and holds unknown effects (%s)",
   async (unknown, t) => {

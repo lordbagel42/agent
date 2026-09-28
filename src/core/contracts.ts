@@ -91,6 +91,7 @@ export interface OutboundMessage {
         replyTo?: string;
         plainText?: true;
         webEmbed?: import("./web-embed.js").WebEmbed;
+        question?: import("./question.js").Question;
       }
     | { type: "reaction"; messageId: string; emoji: string; remove?: boolean };
 }
@@ -194,6 +195,8 @@ export interface CompanionReply {
   text: string;
   /** Alternative to text: ordered conversational messages, not tool actions. */
   messages?: string[];
+  /** Native conversational choices, not authorization for a protected action. */
+  question?: import("./question.js").Question;
   /** Exceptional conversational interruption; never bypasses action permissions. */
   interrupt?: boolean;
   execution?: ExecutionCommand[];

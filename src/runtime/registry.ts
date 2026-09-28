@@ -15,6 +15,7 @@ import type {
   Owner,
   SendResult,
 } from "../core/contracts.js";
+import { questionText } from "../core/question.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { isOwnerRivetDm, RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { routeEvent } from "../core/routing.js";
@@ -1085,7 +1086,7 @@ export function createJuneRegistry(deps: Dependencies) {
         for (const id of cleanup.deliveryIds) {
           const delivery = c.state.deliveries[id];
           if (delivery?.message.content.type === "text")
-            delivery.message.content.text = "";
+            delivery.message.content = { type: "text", text: "" };
         }
         for (const id of cleanup.jobIds) {
           const job = c.state.jobs[id];
@@ -3394,6 +3395,7 @@ export function createJuneRegistry(deps: Dependencies) {
                               generated.slackHistory !== undefined ||
                               generated.reflectionReview !== undefined ||
                               generated.messages !== undefined ||
+                              generated.question !== undefined ||
                               generated.interrupt !== undefined ||
                               generated.skillCodingProposal !== undefined
                             )
@@ -3413,6 +3415,9 @@ export function createJuneRegistry(deps: Dependencies) {
                               await step.vars.persist();
                               outcome.reply = {
                                 text: generated.text,
+                                ...(generated.question
+                                  ? { question: generated.question }
+                                  : {}),
                                 ...(generated.messages
                                   ? { messages: generated.messages }
                                   : {}),
@@ -3831,6 +3836,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   if (phase === "synthesis")
                     reply = {
                       text: reply.text,
+                      ...(reply.question ? { question: reply.question } : {}),
                       ...(reply.messages ? { messages: reply.messages } : {}),
                       ...(reply.interrupt ? { interrupt: true } : {}),
                       ...(reply.reaction ? { reaction: reply.reaction } : {}),
@@ -4668,8 +4674,9 @@ export function createJuneRegistry(deps: Dependencies) {
                   // Settlement must not disappear when synthesis is silent or
                   // interrupted. Reuse the same per-attempt outbox identity and
                   // host report, with its unknown/verification caveats intact.
-                  const text =
-                    body.type === "job_result" && !reply.text.trim()
+                  const text = reply.question
+                    ? questionText(reply.question)
+                    : body.type === "job_result" && !reply.text.trim()
                       ? body.text
                       : reply.text;
                   const texts =
@@ -4698,6 +4705,13 @@ export function createJuneRegistry(deps: Dependencies) {
                           text,
                           ...(reply.webEmbed
                             ? { webEmbed: reply.webEmbed }
+                            : {}),
+                          ...(reply.question &&
+                          scope.private &&
+                          isOwner(event, deps.owner) &&
+                          replyAddress.channel === "slack" &&
+                          replyAddress.conversationId.startsWith("D")
+                            ? { question: reply.question }
                             : {}),
                         },
                       },
@@ -4740,7 +4754,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             // Ledger deletion may outlive interrupted cleanup.
                             // Retain the receipt/identity, not forgotten content.
                             if (outbound.content.type === "text")
-                              outbound.content.text = "";
+                              outbound.content = { type: "text", text: "" };
                             return {
                               status: "rejected",
                               code: "memory_invalidated",

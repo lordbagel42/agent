@@ -226,6 +226,7 @@ export async function runCapability(
   if (!canStartAction())
     return {
       text: generated.text,
+      ...(generated.question ? { question: generated.question } : {}),
       ...(generated.messages ? { messages: generated.messages } : {}),
       ...(generated.interrupt ? { interrupt: true } : {}),
       ...(generated.reaction ? { reaction: generated.reaction } : {}),

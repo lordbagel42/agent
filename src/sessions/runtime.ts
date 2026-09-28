@@ -12,6 +12,7 @@ import type {
   ModelSettlement,
   Owner,
 } from "../core/contracts.js";
+import { questionText } from "../core/question.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import type { EvidenceStore } from "../memory/store.js";
@@ -82,7 +83,12 @@ export interface ActivityCatalog {
   apply(
     assignment: ActivityAssignment,
     reply: CompanionReply,
-  ): Promise<{ text: string; messages?: string[]; reaction?: string }>;
+  ): Promise<{
+    text: string;
+    messages?: string[];
+    reaction?: string;
+    question?: CompanionReply["question"];
+  }>;
   acknowledge(
     assignment: ActivityAssignment,
     outcome:
@@ -260,7 +266,7 @@ export function createActivityActor(deps: ActivityDependencies) {
           delete turn.reply;
           for (const delivery of turn.deliveries ?? [])
             if (delivery.message.content.type === "text")
-              delivery.message.content.text = "";
+              delivery.message.content = { type: "text", text: "" };
           if (turn.archive) {
             turn.archive.input.turn.data = {
               sourceIds: [],
@@ -551,6 +557,8 @@ export function createActivityActor(deps: ActivityDependencies) {
                     // upgrade a sending/unknown outbox or invent stoppage.
                     turn.deliveries ??= [];
                     for (const delivery of turn.deliveries) {
+                      if (delivery.message.content.type === "text")
+                        delivery.message.content = { type: "text", text: "" };
                       if (delivery.phase === "sending") {
                         delivery.result = {
                           status: "unknown",
@@ -799,7 +807,13 @@ export function createActivityActor(deps: ActivityDependencies) {
                     const output = await catalog.apply(assignment, turn.reply);
                     if (!current(assignment, turn.context)) return;
                     const context = turn.context;
-                    turn.deliveries = (output.messages ?? [output.text])
+                    turn.deliveries = (
+                      output.messages ?? [
+                        output.question
+                          ? questionText(output.question)
+                          : output.text,
+                      ]
+                    )
                       .filter((text) => text.trim())
                       .map((text) => ({
                         phase: "ready",
@@ -808,7 +822,19 @@ export function createActivityActor(deps: ActivityDependencies) {
                           id: randomUUID(),
                           address: { ...context.replyAddress },
                           lastInboundAt: context.source.occurredAt,
-                          content: { type: "text", text },
+                          content: {
+                            type: "text",
+                            text,
+                            ...(output.question &&
+                            context.replyAddress.channel === "slack" &&
+                            context.replyAddress.conversationId.startsWith(
+                              "D",
+                            ) &&
+                            isOwner(context.source, deps.owner) &&
+                            routeEvent(context.source, deps.owner)?.private
+                              ? { question: output.question }
+                              : {}),
+                          },
                         },
                       }));
                     if (output.reaction)
@@ -839,12 +865,15 @@ export function createActivityActor(deps: ActivityDependencies) {
                             "active" ||
                           step.abortSignal.aborted ||
                           !current(assignment, turn.context)
-                        )
+                        ) {
+                          if (outbound.content.type === "text")
+                            outbound.content = { type: "text", text: "" };
                           return {
                             status: "rejected",
                             code: "activity_invalidated",
                             retryable: false,
                           };
+                        }
                         return deps.channel.send(outbound);
                       },
                     );

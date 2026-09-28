@@ -19,6 +19,12 @@ import {
   mcpToolContractDigest,
 } from "./mcp.js";
 import { PUCK_MCP_URL } from "./puck.js";
+import {
+  SLACK_BOT_URL,
+  SlackBotAdapter,
+  type SlackBotCredential,
+  slackBotTools,
+} from "./slack-bot.js";
 import { SLACK_MCP_URL } from "./slack-mcp-oauth.js";
 
 export type ToolPermission = "disabled" | "read" | "approval";
@@ -59,6 +65,7 @@ interface StoredConnection {
   token?: string;
   expiresAt?: number;
   credentialRevision?: string;
+  botIdentity?: { teamId: string; botUserId: string };
   refreshToken?: string;
   refreshExpiresAt?: number;
   account?: string;
@@ -88,7 +95,7 @@ export class McpConnections {
   readonly #db: DatabaseSync;
   readonly #key: Buffer;
   readonly #broker: CapabilityBroker;
-  readonly #active = new Set<McpToolAdapter>();
+  readonly #active = new Set<McpToolAdapter | SlackBotAdapter>();
   readonly #busy = new Set<string>();
   readonly #refreshing = new Map<string, Promise<void>>();
   constructor(
@@ -101,6 +108,7 @@ export class McpConnections {
     private readonly dependencies: {
       fetch?: typeof fetch;
       refreshGitHub?(token: string): Promise<GitHubAuthorization>;
+      slackBot?: SlackBotCredential;
     } = {},
   ) {
     if (options.key.length !== 32) throw new Error("invalid_mcp_key");
@@ -150,6 +158,54 @@ export class McpConnections {
           throw new Error("origin_changed");
         return this.#credential(connection);
       },
+    });
+    if (dependencies.slackBot) this.#enrollSlackBot();
+  }
+  #enrollSlackBot(reconnect = false) {
+    const id = "slack-bot";
+    const exists = this.list().find((entry) => entry.id === id);
+    // A durable generation with no record means the owner disconnected it.
+    if (!exists && this.generation(id) !== "absent" && !reconnect) return;
+    const previous = exists ? this.#get(id) : undefined;
+    if (previous && previous.url !== SLACK_BOT_URL)
+      throw new Error("slack_bot_reserved");
+    const credential = this.dependencies.slackBot;
+    if (!credential) throw new Error("slack_bot_unavailable");
+    const botIdentity = {
+      teamId: credential.teamId,
+      botUserId: credential.botUserId,
+    };
+    const identityChanged =
+      !!previous &&
+      JSON.stringify(previous.botIdentity) !== JSON.stringify(botIdentity);
+    const tools = slackBotTools.map((contract) => ({
+      contract,
+      permission: identityChanged
+        ? ("disabled" as const)
+        : previous
+          ? (previous.tools.find(
+              (entry) =>
+                mcpToolContractDigest(entry.contract) ===
+                mcpToolContractDigest(contract),
+            )?.permission ?? ("disabled" as const))
+          : contract.annotations?.readOnlyHint
+            ? ("read" as const)
+            : ("approval" as const),
+    }));
+    if (
+      previous &&
+      !identityChanged &&
+      JSON.stringify(previous.tools) === JSON.stringify(tools)
+    )
+      return;
+    this.#save({
+      id,
+      name: "Slack bot (June)",
+      url: SLACK_BOT_URL,
+      botIdentity,
+      revision: randomUUID(),
+      tools,
+      status: "connected",
     });
   }
   #seal(id: string, value: unknown): string {
@@ -220,7 +276,9 @@ export class McpConnections {
         } = this.#open<StoredConnection>(String(row.id), String(row.value));
         return {
           ...value,
-          authenticated: !!token,
+          authenticated:
+            !!token ||
+            (value.id === "slack-bot" && !!this.dependencies.slackBot),
           refreshable: this.#canRefreshGitHub({
             ...value,
             refreshToken: _refreshToken,
@@ -251,21 +309,28 @@ export class McpConnections {
           // labels only, not catalog IDs or authorization to execute a tool.
           ref: `mcp-${createHmac("sha256", this.#key).update(`inventory:${connection.id}`).digest("hex").slice(0, 24)}`,
           kind:
-            connection.id === "slack" && connection.url === SLACK_MCP_URL
-              ? "slack"
-              : "remote",
+            connection.id === "slack-bot"
+              ? "slack-bot"
+              : connection.id === "slack" && connection.url === SLACK_MCP_URL
+                ? "slack"
+                : "remote",
           lastDiscovery:
-            connection.status === "connected"
-              ? "succeeded"
-              : connection.status === "unavailable"
-                ? "failed"
-                : "not_tested",
+            connection.id === "slack-bot"
+              ? "host_catalog"
+              : connection.status === "connected"
+                ? "succeeded"
+                : connection.status === "unavailable"
+                  ? "failed"
+                  : "not_tested",
           credential:
-            connection.expiresAt !== undefined && connection.expiresAt <= now
-              ? "expired"
-              : connection.token
-                ? "saved"
-                : "absent",
+            connection.id === "slack-bot" && this.dependencies.slackBot
+              ? "host"
+              : connection.expiresAt !== undefined &&
+                  connection.expiresAt <= now
+                ? "expired"
+                : connection.token
+                  ? "saved"
+                  : "absent",
           tools,
         };
       });
@@ -281,13 +346,29 @@ export class McpConnections {
     input: { name: string; url: string; token?: string; expiresAt?: number },
     id: string = randomUUID(),
   ): string {
+    if (id === "slack-bot") throw new Error("slack_bot_reserved");
+    // Existing owner-authenticated Add form also reconnects the host adapter.
+    // Never store a supplied token or reinterpret a custom endpoint as the bot.
+    const bot = input.url === SLACK_BOT_URL && !!this.dependencies.slackBot;
+    if (bot && input.token)
+      throw new ConnectionInputError(
+        "token",
+        "June's bot uses its host credential; leave Bearer token empty.",
+      );
     // Generations are durable creation receipts, including after disconnect.
     // Replaying an Add command must never replace newer owner decisions.
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      if (this.generation(id) === "absent") this.#replace(input, id);
+      if (this.generation(id) === "absent") {
+        if (bot) {
+          this.#enrollSlackBot(true);
+          this.#db
+            .prepare("INSERT INTO generations VALUES(?,?)")
+            .run(id, randomUUID());
+        } else this.#replace(input, id);
+      }
       this.#db.exec("COMMIT");
-      return id;
+      return bot ? "slack-bot" : id;
     } catch (error) {
       this.#db.exec("ROLLBACK");
       throw error;
@@ -412,6 +493,8 @@ export class McpConnections {
     let current = this.#get(connection.id);
     if (current.revision !== connection.revision)
       throw new Error("connection_changed");
+    // Bot credentials stay in the host, never the connection database or OAuth path.
+    if (current.id === "slack-bot") return undefined;
     if (
       current.id === "github" &&
       current.url === GITHUB_MCP_URL &&
@@ -481,6 +564,16 @@ export class McpConnections {
     );
   }
   #adapter(connection: StoredConnection, contract?: Tool) {
+    if (connection.id === "slack-bot") {
+      if (connection.url !== SLACK_BOT_URL || !this.dependencies.slackBot)
+        throw new Error("slack_bot_unavailable");
+      return new SlackBotAdapter(
+        `${connection.id}:${connection.revision}`,
+        contract,
+        this.dependencies.slackBot,
+        this.dependencies.fetch,
+      );
+    }
     return new McpToolAdapter(
       {
         id: connection.id,
@@ -563,6 +656,13 @@ export class McpConnections {
       throw new Error("connection_changed");
     const tool = connection.tools.find((entry) => entry.contract.name === name);
     if (!tool) throw new Error("tool_unavailable");
+    if (
+      id === "slack-bot" &&
+      permission === "read" &&
+      !slackBotTools.find((entry) => entry.name === name)?.annotations
+        ?.readOnlyHint
+    )
+      throw new Error("slack_bot_mutation_requires_approval");
     tool.permission = permission;
     connection.revision = randomUUID();
     this.#save(connection);
@@ -835,6 +935,7 @@ export class McpConnections {
           mcpProposalAvailable: true,
           system:
             request.system +
+            '\nConnection "slack-bot" is the host-owned Slack Web API catalog acting as June, not the owner. Use slack.capabilities to verify bot identity and inspect current scope grants. Ask for exact tool schemas through mcpCatalog before proposing pins, canvas edits, lists, channel management, files or other actions. Slack resource membership, bot restrictions and workspace policies still apply. Do not bypass thread-stop or group-ping rules. Connection "slack" is the separate official Slack MCP acting as the consenting owner; never silently fall back to it for a denied bot action. Enroll it with Connect Slack in Connections; OAuth consent does not enable tools.\n' +
             `\nYour MCP connection inventory (owner-private host data): ${JSON.stringify(this.inventory())}. Configuration and past discovery are not live health or verified authorization. Inventory refs are private-safe display labels, not catalog connection IDs. Recent approval receipts (historical, not actions in this turn): ${JSON.stringify(
               this.proposals()
                 .slice(0, 10)

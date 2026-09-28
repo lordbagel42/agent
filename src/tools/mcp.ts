@@ -104,6 +104,16 @@ function readText(text: string, token: string): McpReadResult {
   };
 }
 
+/** Shared privacy boundary for structured results from host-owned adapters. */
+export function safeToolReadResult(
+  value: unknown,
+  token: string,
+): McpReadResult {
+  if (containsPrivateInspection(value))
+    return { text: RIVET_REPLY_PREFIX, truncated: false };
+  return readText(JSON.stringify(value), token);
+}
+
 export class McpAdapterError extends Error {
   constructor(readonly outcome: "not_started" | "unknown") {
     super(`mcp_${outcome}`);

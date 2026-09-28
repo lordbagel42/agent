@@ -7,6 +7,11 @@ with its official hosted MCP; see [GitHub account and events](github.md) for app
 setup, token refresh, repository installation and shared event ingress.
 Other OAuth providers, stdio commands and legacy SSE are not supported.
 
+With Slack configured, the separate host-owned `slack-bot` catalog acts as June,
+not the consenting owner. See [Slack capabilities](slack.md) for bot scopes,
+approval rules and official MCP enrollment. Its initial read/approval policy is
+host-defined; the disabled-by-default discovery rules below apply to remote tools.
+
 1. Add a connection, then **Test & discover tools**. Discovery runs no tools.
 2. Review each complete tool contract. Every tool starts **Disabled**.
 3. Grant read-only use only to tools you trust to be read-only. This is your

@@ -457,6 +457,13 @@ async function main() {
         origin: config.console.origin,
       },
       {
+        slackBot: config.slack
+          ? {
+              token: secret(config.slack.botTokenEnv),
+              teamId: config.slack.teamId,
+              botUserId: config.slack.botUserId,
+            }
+          : undefined,
         refreshGitHub: config.mcp.github
           ? (token) => {
               if (!githubMcp) throw new Error("github_unavailable");

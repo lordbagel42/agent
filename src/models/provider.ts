@@ -7,6 +7,7 @@ import type {
   ModelRequest,
   ModelSettlement,
 } from "../core/contracts.js";
+import { questionSchema } from "../core/question.js";
 import { reflectionReviewSchema } from "../core/reflection-review.js";
 import {
   rivetActorNames,
@@ -76,6 +77,7 @@ const recallTimestampSchema = z
 
 const companionReplySchema = z.strictObject({
   text: z.string().refine((text) => Array.from(text).length <= 3_500),
+  question: questionSchema.optional(),
   messages: z
     .array(
       z
@@ -431,6 +433,7 @@ function rolePermitsField(
     return [
       "text",
       "messages",
+      "question",
       "interrupt",
       "reaction",
       "replyInThread",
@@ -441,6 +444,7 @@ function rolePermitsField(
     return ![
       "execution",
       "messages",
+      "question",
       "interrupt",
       "reaction",
       "replyInThread",
@@ -579,6 +583,25 @@ function legacyReplyJsonSchema(
       },
       ...(turnTakingAvailable
         ? {
+            question: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                prompt: {
+                  type: "string",
+                  description: "Nonempty, at most 300 characters.",
+                },
+                options: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "Two to five distinct nonempty labels, each at most 75 characters.",
+                },
+              },
+              required: ["prompt", "options"],
+              description:
+                "Ask a conversational multiple-choice question. Owner Slack DMs render buttons; other surfaces use numbered text. Leave text empty and do not combine with messages, reactions or actions. A choice is not approval of a protected action; the owner may instead type a reply.",
+            },
             messages: {
               type: ["array", "null"],
               items: { type: "string" },
@@ -1596,7 +1619,7 @@ function legacyReplyJsonSchema(
       "text",
       "coding",
       "reaction",
-      ...(turnTakingAvailable ? ["messages", "interrupt"] : []),
+      ...(turnTakingAvailable ? ["messages", "interrupt", "question"] : []),
       ...(codingJobsAvailable ? ["codingJob"] : []),
       ...(workflowAvailable ? ["workflow"] : []),
       ...(javascriptAvailable ? ["javascript"] : []),
@@ -1866,6 +1889,7 @@ export function parseReply(
   const normalized = { ...value };
   for (const key of [
     "messages",
+    "question",
     "interrupt",
     "workflow",
     "javascript",
@@ -1981,7 +2005,9 @@ export function parseReply(
     (reply.wakeup !== undefined && !wakeupAvailable) ||
     (reply.workflow !== undefined && !workflowAvailable) ||
     (reply.javascript !== undefined && !javascriptAvailable) ||
-    ((reply.messages !== undefined || reply.interrupt !== undefined) &&
+    ((reply.messages !== undefined ||
+      reply.interrupt !== undefined ||
+      reply.question !== undefined) &&
       !turnTakingAvailable) ||
     (reply.replyInThread !== undefined && !replyPlacementAvailable)
   ) {
@@ -2029,6 +2055,12 @@ export function parseReply(
     Number(reply.wakeup !== undefined) +
     Number(reply.escalate === true);
   if (
+    (reply.question !== undefined &&
+      (reply.text.trim().length > 0 ||
+        reply.messages !== undefined ||
+        reply.reaction !== undefined ||
+        directiveCount > 0 ||
+        reply.coding !== undefined)) ||
     (reply.messages !== undefined && reply.text.trim().length > 0) ||
     ((reply.messages !== undefined || reply.interrupt === true) &&
       (directiveCount > 0 || reply.coding !== undefined)) ||

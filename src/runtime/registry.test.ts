@@ -74,6 +74,69 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("persists conversational questions in the outbox with numbered fallback text", async (t) => {
+    const sent: OutboundMessage[] = [];
+    const question = { prompt: "Which day?", options: ["Tuesday", "Thursday"] };
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    store.appendSource({
+      id: "question-source",
+      audiences: [JSON.stringify(["private", owner.id])],
+      platform: "slack",
+      account: "T1",
+      conversation: "D1",
+      author: "U1",
+      observedAt: 1,
+      sourceUrl: "https://example.com/fixture",
+      text: "question source",
+    });
+    t.onTestFinished(() => store.close());
+    const registry = createJuneRegistry({
+      owner,
+      memory: { store, source: () => undefined },
+      channels: { slack: transport("slack", sent) },
+      model: {
+        async reply(request) {
+          return parseReply(
+            JSON.stringify({ text: "", question }),
+            [],
+            request,
+          );
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    await june.send("inbox", { type: "event", event: message });
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).filter(
+            (entry) => entry.done,
+          ).length,
+      )
+      .toBe(1);
+    const expected = {
+      type: "text",
+      text: "Which day?\n1. Tuesday\n2. Thursday\nChoose an option or reply in your own words.",
+      question,
+    };
+    expect(sent.map((entry) => entry.content)).toEqual([expected]);
+    const snapshot = await june.snapshot();
+    expect(Object.values(snapshot.deliveries)[0]?.message.content).toEqual(
+      expected,
+    );
+    await june.send("inbox", { type: "event", event: message });
+    expect(sent).toHaveLength(1);
+    store.deleteSource("question-source");
+    await june.forget("question-source");
+    expect(JSON.stringify((await june.snapshot()).deliveries)).not.toContain(
+      "Tuesday",
+    );
+    expect(JSON.stringify((await june.snapshot()).deliveries)).not.toContain(
+      "Which day?",
+    );
+  });
+
   it("tracks multipart sends separately and stops after an ambiguous part without replaying it", async (t) => {
     const sent: OutboundMessage[] = [];
     const registry = createJuneRegistry({
