@@ -930,8 +930,13 @@ the June-to-runner SSH identity and independently pinned its host key:
 OpenSSH executable/options/destination argv; the dispatcher shell-quotes the
 complete remote command, preserving argument boundaries. Omit `ssh` only when
 an authenticated CLI is installed locally. The controller supplies
-`--mode high --executor runner:homelab-amp --runner-dir ...
+`--mode high --features fast --executor runner:homelab-amp --runner-dir ...
 --stream-json --no-archive-after-execute --title TITLE --execute PROMPT`.
+Fast is mandatory for recovery and ordinary Amp jobs, including the transport
+self-test; it does not change `high` reasoning mode. Install the matching
+`deploy.py` on the controller and `runner.py`/`deploy.py` on the SSH host under
+the normal authorized operator workflow. Mixed versions fail the strict command
+check; do not relax validation or retry an uncertain dispatch to work around it.
 The secret-free prompt must immediately follow `--execute`; a trailing positional
 argument elsewhere is not accepted by Amp. The directory must be served by that runner. Verify the actual checkout
 there; a directory name does not establish its branch or source provenance.

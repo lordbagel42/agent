@@ -39,6 +39,8 @@ def command(original, config):
         *cli,
         "--mode",
         "high",
+        "--features",
+        "fast",
         "--executor",
         "runner:homelab-amp",
         "--runner-dir",

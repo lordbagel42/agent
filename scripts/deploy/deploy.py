@@ -733,7 +733,9 @@ def recovery_prompt(number, commit, reason):
         "Do not clear the incident merely because the old app is healthy: fix and verify "
         "the triggering fault first. Require an Oracle review before publishing code. "
         "If blocked, report the blocker and retain ownership; never clear the fence "
-        "just because this turn ends. Do not spawn another recovery thread."
+        "just because this turn ends. Do not spawn another recovery thread. "
+        "June launches Amp workers with the mandatory Fast thread feature, without "
+        "changing reasoning mode. Preserve this policy in any launcher repairs."
     )
 
 
@@ -743,6 +745,8 @@ def amp_job_argv(command, directory, title, prompt):
         *command,
         "--mode",
         "high",
+        "--features",
+        "fast",
         "--executor",
         "runner:homelab-amp",
         "--runner-dir",

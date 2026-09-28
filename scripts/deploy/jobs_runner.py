@@ -56,6 +56,7 @@ def command(original, config):
         raise ValueError("invalid_job_policy")
     prompt = (
         "You are executing one owner-approved ordinary June Amp job, NOT deployment recovery. "
+        "June requires the Fast thread feature without changing reasoning mode. "
         "Only perform this task in the configured workspace. Follow repository guidance, "
         "preserve others' changes, use an isolated worktree for edits, and run relevant checks. "
         "Do not push, publish, deploy, alter shared infrastructure, read credentials, or create "

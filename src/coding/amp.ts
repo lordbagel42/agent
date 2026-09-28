@@ -58,6 +58,8 @@ export function createAmpRuntime({
 
       let threadId = input.threadId;
       let report: string | undefined;
+      // The pinned SDK patch forces --features fast on every execution.
+      // Its public options schema does not yet expose thread features.
       const options: ExecuteOptions["options"] = { cwd: input.cwd };
       if (threadId !== undefined) {
         options.continue = threadId;

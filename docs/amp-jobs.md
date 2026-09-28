@@ -7,6 +7,14 @@ the deployment controller's shared CLI argv builder and sanitized runner exec.
 There is no new Amp API, copied token, or MCP dependency. Puck remains the
 separate OAuth MCP conversational path. Deployment recovery remains incident-only.
 
+All native Amp launch paths require `--features fast`, including automatic
+deployment recovery. Reasoning modes remain unchanged; Fast is premium faster
+serving, not a lighter model. The pinned SDK uses a pnpm patch because its public
+options do not expose features yet. Revisit that patch on SDK upgrades. It also
+forwards the flag for continuations, but does not certify that previously created
+threads change their stored feature state. No live agent was launched to verify
+provider serving, and publication alone does not activate the updated host scripts.
+
 `codingJob list/inspect/report/cancel` exposes saved job receipts privately.
 The host records `system/init.session_id`, a bounded final result, and sends the
 existing completion notification (including the associated execution worker).

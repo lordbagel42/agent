@@ -1,0 +1,13 @@
+diff --git a/dist/index.js b/dist/index.js
+index e9a6427b05ac77db42ffdea0fd3e0afb71b2b3fd..b2cc932d468c40dc348c62ebd33753100a2e98cd 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -4418,7 +4418,7 @@ function isRemoteExecutor(options) {
+   return options.executor === "orb" || options.executor === "runner";
+ }
+ function buildCliArgs(options) {
+-  const args = [];
++  const args = ["--features", "fast"];
+   if (typeof options.continue === "string") {
+     args.push("threads", "continue", options.continue);
+   } else if (options.continue === true) {
