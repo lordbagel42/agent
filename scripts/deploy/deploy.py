@@ -648,7 +648,6 @@ def dispatch_recovery(
         prompt = recovery_prompt(number, incident["revision"], incident["reason"])
         argv = [
             *command,
-            "--execute",
             "--mode",
             "high",
             "--executor",
@@ -659,6 +658,7 @@ def dispatch_recovery(
             "--no-archive-after-execute",
             "--title",
             f"Recover June deployment incident {number}",
+            "--execute",
             prompt,
         ]
         # OpenSSH's remote command is shell text: quote the complete argv once,

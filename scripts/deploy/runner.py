@@ -37,7 +37,6 @@ def command(original, config):
         raise ValueError("invalid_runner_command")
     prefix = [
         *cli,
-        "--execute",
         "--mode",
         "high",
         "--executor",
@@ -49,9 +48,13 @@ def command(original, config):
         "--title",
     ]
     if original == "june-recovery-self-test":
-        return [*prefix, "June recovery transport self-test", PROBE]
+        return [*prefix, "June recovery transport self-test", "--execute", PROBE]
     argv = shlex.split(original)
-    if len(argv) != len(prefix) + 2 or argv[: len(prefix)] != prefix:
+    if (
+        len(argv) != len(prefix) + 3
+        or argv[: len(prefix)] != prefix
+        or argv[-2] != "--execute"
+    ):
         raise ValueError("invalid_runner_command")
     match = re.match(
         r"June deployment failed\. Incident ([1-9][0-9]{0,18}), "
@@ -63,7 +66,7 @@ def command(original, config):
     number, commit, reason = match.groups()
     if reason != "None" and reason not in deploy.GitHubStatuses.REASONS:
         raise ValueError("invalid_runner_reason")
-    if argv[-2] != f"Recover June deployment incident {number}" or argv[
+    if argv[-3] != f"Recover June deployment incident {number}" or argv[
         -1
     ] != deploy.recovery_prompt(int(number), commit, reason):
         raise ValueError("invalid_runner_prompt")

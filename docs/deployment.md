@@ -688,9 +688,10 @@ the June-to-runner SSH identity and independently pinned its host key:
 OpenSSH executable/options/destination argv; the dispatcher shell-quotes the
 complete remote command, preserving argument boundaries. Omit `ssh` only when
 an authenticated CLI is installed locally. The controller supplies
-`--execute --mode high --executor runner:homelab-amp --runner-dir ...
---stream-json --no-archive-after-execute`, a title, and a secret-free investigation
-prompt. The directory must be served by that runner. Verify the actual checkout
+`--mode high --executor runner:homelab-amp --runner-dir ...
+--stream-json --no-archive-after-execute --title TITLE --execute PROMPT`.
+The secret-free prompt must immediately follow `--execute`; a trailing positional
+argument elsewhere is not accepted by Amp. The directory must be served by that runner. Verify the actual checkout
 there; a directory name does not establish its branch or source provenance.
 Do not put SSH inside `command`. The root-owned SSH configuration must select the
 approved destination/user and key, `BatchMode yes`, `StrictHostKeyChecking yes`,

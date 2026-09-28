@@ -24,7 +24,6 @@ class RunnerCommand(unittest.TestCase):
         prompt = self.runner.deploy.recovery_prompt(17, "b" * 40, "health_failed")
         argv = [
             "/home/amp/.amp/bin/amp",
-            "--execute",
             "--mode",
             "high",
             "--executor",
@@ -35,15 +34,17 @@ class RunnerCommand(unittest.TestCase):
             "--no-archive-after-execute",
             "--title",
             "Recover June deployment incident 17",
+            "--execute",
             prompt,
         ]
         self.assertEqual(self.runner.command(shlex.join(argv), self.config), argv)
         for index, replacement in (
             (0, "/bin/sh"),
-            (3, "ultra"),
-            (5, "runner:other"),
-            (7, "/tmp"),
-            (11, "Recover June deployment incident 18"),
+            (2, "ultra"),
+            (4, "runner:other"),
+            (6, "/tmp"),
+            (10, "Recover June deployment incident 18"),
+            (11, "--continue"),
             (12, prompt + " Also restart everything."),
         ):
             with self.subTest(index=index), self.assertRaises(ValueError):
@@ -62,7 +63,7 @@ class RunnerCommand(unittest.TestCase):
     def test_probe_has_no_incident_or_mutation_authority(self):
         argv = self.runner.command("june-recovery-self-test", self.config)
         self.assertEqual(
-            argv[2:8],
+            argv[1:7],
             [
                 "--mode",
                 "high",
@@ -72,6 +73,7 @@ class RunnerCommand(unittest.TestCase):
                 "/home/amp/workspaces/june-recovery",
             ],
         )
+        self.assertEqual(argv[-2], "--execute")
         self.assertIn("No production incident exists", argv[-1])
         self.assertIn("Do not use tools", argv[-1])
         self.assertIn("JUNE_RECOVERY_TRANSPORT_OK", argv[-1])

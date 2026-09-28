@@ -819,6 +819,8 @@ class RecoverySafety(unittest.TestCase):
             args = deploy.shlex.split(invocation[2])
             self.assertEqual(args[args.index("--mode") + 1], "high")
             self.assertEqual(args[args.index("--executor") + 1], "runner:homelab-amp")
+            self.assertEqual(args[-2], "--execute")
+            self.assertTrue(args[-1].startswith("June deployment failed."))
             self.assertEqual(
                 args[args.index("--runner-dir") + 1], "/workspace/it's June; $HOME"
             )
