@@ -2006,6 +2006,78 @@ describe("Rivet conversation workflow", () => {
     },
   );
 
+  it("keeps ownership of a slow personality read until its actual result settles", async (t) => {
+    const lifecycle = createLifecycle();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const returned = Promise.withResolvers<void>();
+    const requests: ModelRequest[] = [];
+    const sent: OutboundMessage[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      lifecycle,
+      channels: { slack: transport("slack", sent) },
+      model: {
+        async reply(request) {
+          requests.push(request);
+          return { text: "Profile loaded." };
+        },
+      },
+    });
+    const actions = registry.config.use.personality.config.actions;
+    if (!actions) throw new Error("Missing personality actions");
+    const read = actions.read;
+    actions.read = async (c) => {
+      entered.resolve();
+      await release.promise;
+      try {
+        return await read(c);
+      } finally {
+        returned.resolve();
+      }
+    };
+    let sleeps = 0;
+    registry.config.use.conversation.config.onSleep = () => {
+      sleeps++;
+    };
+    const { client } = await setupTest(t, registry);
+    const profile = client.personality.getOrCreate([owner.id]);
+    await profile.command({
+      ...message,
+      metadata: { channelType: "im" },
+      personalityCommandEligible: true,
+      text: '!personality revise {"expectedVersion":0,"changes":{"tone":"dry"},"explanation":"fixture","publish":true}',
+    });
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    try {
+      await june.send("inbox", { type: "event", event: message });
+      await entered.promise;
+      // Cross the SDK's default workflow deadline without waking the caller.
+      await new Promise((resolve) => setTimeout(resolve, 32_000));
+      expect(lifecycle.ready).toBe(true);
+      expect(lifecycle.active).toBe(1);
+      expect(sleeps).toBe(0);
+      expect(requests).toEqual([]);
+      expect(sent).toEqual([]);
+      expect(await lifecycle.drain(10)).toBe(false);
+      expect(lifecycle.ready).toBe(true);
+      release.resolve();
+      await expect.poll(() => lifecycle.active).toBe(0);
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.system).toContain('"tone":"dry"');
+      expect(sent.map((entry) => entry.content)).toEqual([
+        { type: "text", text: "Profile loaded." },
+      ]);
+      expect(Object.values((await june.snapshot()).events)[0]?.done).toBe(true);
+      await june.send("inbox", { type: "event", event: message });
+      expect(sent).toHaveLength(1);
+    } finally {
+      release.resolve();
+      await returned.promise;
+      lifecycle.resume();
+    }
+  }, 60_000);
+
   it("delivers before a late status settles but holds deployment admission until it is cleared", async (t) => {
     const lifecycle = createLifecycle();
     const started = Promise.withResolvers<void>();

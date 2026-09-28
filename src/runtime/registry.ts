@@ -2072,12 +2072,18 @@ export function createJuneRegistry(deps: Dependencies) {
             if (event.type === "message") {
               const globalPersonality =
                 personalityVersion >= 2
-                  ? await loop.step("read-global-personality", async (step) =>
-                      step
-                        .client<JuneRegistry>()
-                        .personality.getOrCreate([deps.owner.id])
-                        .read(),
-                    )
+                  ? await loop.step({
+                      name: "read-global-personality",
+                      // Actor wake/readiness retries can exceed 30 seconds.
+                      // A workflow timeout would abandon the live RPC and
+                      // release admission before it actually settles.
+                      timeout: 0,
+                      run: async (step) =>
+                        step
+                          .client<JuneRegistry>()
+                          .personality.getOrCreate([deps.owner.id])
+                          .read(),
+                    })
                   : undefined;
               // Observe only dispatches made by deliver's existing no-resend guard.
               const send = async (
