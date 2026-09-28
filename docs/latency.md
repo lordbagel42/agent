@@ -79,7 +79,7 @@ The CLI runs from a source checkout; it is not installed in production releases.
 Set `REVISION` to the full verified running SHA, not the checkout's HEAD.
 
 ```sh
-JUNE_URL=http://192.168.0.215:3080 \
+JUNE_URL=http://127.0.0.1:3080 \
   JUNE_LATENCY_OUTPUT=.amp/in/artifacts/human-ping.json \
   pnpm exec tsx scripts/latency.ts watch --revision "$REVISION"
 ```

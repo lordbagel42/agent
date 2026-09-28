@@ -1,20 +1,20 @@
 # Activity Session Integration Plan
 
-> **For agentic workers:** Use superpowers:executing-plans in the existing isolated session worktree. Bounded producer and catalog refactoring can run concurrently with disjoint write ownership; routing integration remains with the session owner.
+Historical integration design and checklist; not a current activation attestation.
 
-**Goal:** Complete the approved owner-DM activity actors without transferring approval authority or replaying uncertain legacy effects.
+**Goal:** Complete owner-DM activity actors without transferring approval authority or replaying uncertain legacy effects.
 
 **Architecture:** Keep `conversation(scopeKey)` as the durable scope coordinator and catalog. New activity actors own their transcripts, model receipts and outboxes; narrow coordinator actions own workers, proposals, original-event authorization and approval lookup. Drain and archive the legacy lane before assigning an activity turn.
 
 **Tech Stack:** Existing TypeScript, Rivet 2.3.21 workflows, encrypted EvidenceStore, Biome and disposable Vitest/native-engine fixtures.
 
-**Spec:** `docs/superpowers/specs/2026-09-27-activity-sessions-design.md`
+**Spec:** [Activity sessions](../specs/2026-09-27-activity-sessions-design.md)
 
 ## Global constraints
 
 - Three hours is the configurable initial inactivity default. Platform reply placement does not select the activity actor or privacy audience.
 - Public and guest behavior is unchanged. Reject enabling the owner-private experiment if another linked adapter can bypass its coordinator.
-- No live config, service or data changes. Publish tested, stronger-reviewed increments against fresh main without freezing concurrent publishers.
+- This plan grants no permission for live configuration, service or data changes.
 - Preserve legacy actor keys, journal step ordering, task/proposal identities, exact approval receipts, deletion fences and late callbacks.
 - Unknown sends and incomplete historical effect coverage hold migration. A FIFO token, workflow completion, age, empty marker scan or restart is not enough. No new reconciliation endpoint.
 - Keep tests focused on privacy, authority and duplicate effects. Use existing native-engine workflows for ordinary behavior.
@@ -40,10 +40,8 @@
 
 The producer is not wired into runtime yet. Its `ArchiveEvidence.contextAvailable`
 port must prove audience access and complete transitive deletion validity, not
-merely absence of a tombstone. Oracle's initial review found a canonical Slack
-identity/time mismatch and a captured replacement-store reference in the catalog
-refactor. Both were reproduced in focused regressions, fixed and cleared by the
-follow-up review. Slack source time is message `ts`, not envelope `event_time`;
+merely absence of a tombstone. Catalog callbacks must use the current store,
+not a captured replacement-store reference. Slack source time is message `ts`, not envelope `event_time`;
 same-thread messages in one millisecond cannot substitute for each other.
 
 ## Task 3: Durable admission and legacy handoff
@@ -96,10 +94,9 @@ ledger write. Native fixtures reproduce save/publication gaps, lost archive ACKs
 deletion during projection persistence, and handoff while a direct legacy input
 waits for priority. Lane ownership now precedes that wait, and record-event plus
 wakeup claim/discard revalidate it rather than trusting a cached workflow result.
-Required follow-up review cleared both the lane race and stale-archive fence.
 
-Review found that no-model `!allow` commands can deliver through the independent
-social outbox. They now record a write-ahead coverage hold before dispatch; the
+No-model `!allow` commands can deliver through the independent social outbox.
+They record a write-ahead coverage hold before dispatch; the
 existing interruption fixture reproduces an unknown recipient send alongside a
 successful owner acknowledgment and requires the hold to survive serialization.
 
@@ -122,8 +119,7 @@ assignment, dispatch authority and acknowledgment on the stable coordinator.
 Native-engine fixtures cover early delivery before retirement, immutable archive
 replay, catalog commit/lost-ACK repair, deletion during inference and multipart
 unknown/rejected prefixes. Untouched multipart tails are withheld without a send;
-unknown inference or delivery still blocks release. Required review cleared these
-recovery fixes. Cold-process recovery and the real catalog/control integration
+unknown inference or delivery still blocks release. Cold-process recovery and the real catalog/control integration
 remain unverified; this increment is not session activation.
 
 `ModelProvider.beginReply` prepares settlement evidence for the activity actor;
@@ -168,13 +164,13 @@ the full archive identity and omitted-content/dependency fence before persistenc
 replays immutable receipts across deletion and lost ACKs, and holds unknown
 effects, unknown sends or incomplete coverage. It never infers, applies worker
 actions, sends, or adds these receipts to model history. Native-engine fixtures
-cover these boundaries; Oracle cleared the increment. Stable catalog publication,
+cover these boundaries. Stable catalog publication,
 control execution routing, exact delivery indexing and cold-process recovery are
 still outstanding, not a new human approval gate or an activation claim.
 
-## Task 5: Integrated evidence and publication
+## Task 5: Integrated evidence
 
 - [ ] Exercise actual provider requests across the three-hour boundary, old-thread placement, backlog/clock rollback, duplicate/lost-ACK recovery, archive/seal interruption and held legacy effects.
 - [ ] Verify a worker outlives its activity actor, one late completion is routed, and a new-session approval resolves the old exact proposal. Exercise deletion during recall/delivery plus authenticated restore.
-- [ ] Run formatter, lint, typecheck, relevant existing suites and required stronger review. Reconcile fresh main and push normally.
+- [ ] Run formatter, lint, typecheck, relevant existing suites and review the exact diff.
 - [ ] Report published revision, held limitations and deployment/activation evidence separately. Do not call prerequisites alone a completed session rollout.

@@ -9,8 +9,6 @@ WhatsApp is shelved and the Linq spike is not a production integration.
 
 This source audit was made on September 27, 2026 against fetched GitHub `main` at
 [`6d6164cb`](https://github.com/lordbagel42/agent/commit/6d6164cbff88d387bfeec5c866fe4d37d44032dd).
-It replaces the September 26 worktree ownership/completion board. Assigned work,
-worker reports, local branches, and unmerged changes are not landed evidence.
 The source table describes that revision, not a continuously updated deployment report.
 
 Each field is independently **yes / no / unknown**:
@@ -72,29 +70,7 @@ inventory, not a claim that every planned rollout task is represented.
 | Public Slack real-time search | yes | yes | yes | unknown | unknown | [Search transport](../src/channels/slack-search.ts), [registry](../src/runtime/registry.ts), [config](../src/config.ts): `search` requires `slack.searchEnabled`, actual platform authorization and a fresh message action token. Private/DM search is not this capability; manifest scopes are not grants. |
 | Deployment evidence inspection | yes | yes | yes | unknown | unknown | [Feed and release tool](../src/deployment/feed.ts), [host](../src/main.ts): `release: {"action":"inspect","revision":null}` reads controller evidence. It cannot deploy or attest the installed controller version from application source. |
 
-The initial audit baseline
-[`50d27fe`](https://github.com/lordbagel42/agent/commit/50d27fe20b495c7f3058a015e69a0bb72948fdcb)
-already contained storage, automatic scoped retrieval, private curation and
-inspection. Explicit recall landed in
-[`692b1e0`](https://github.com/lordbagel42/agent/commit/692b1e0), and authenticated
-correction provenance in
-[`64298b3`](https://github.com/lordbagel42/agent/commit/64298b3). Global personality
-landed in [`30077f1`](https://github.com/lordbagel42/agent/commit/30077f185fa332de164864b7dfa158b7be2c002f),
-and pending-claim inspection in
-[`ddd20aa`](https://github.com/lordbagel42/agent/commit/ddd20aaab3adf8a0cbf24084d70dacad01b4ffc6).
-Generic broker routes landed in
-[`3918a3d`](https://github.com/lordbagel42/agent/commit/3918a3d62c92273abdebeeb7440e36b1e9120920),
-and opt-in anonymous browser reads in
-[`4340ce3`](https://github.com/lordbagel42/agent/commit/4340ce37f1045bcf8e21d3a051e603a4168dc9b6).
-Later landed paths include [action links](https://github.com/lordbagel42/agent/commit/19725beaffcfa4f6e2a37c16303ce0d03f55647c),
-[Jev observations](https://github.com/lordbagel42/agent/commit/a9c4c2f85accf2aaec666515d67b297672b08058),
-[owner claim acceptance](https://github.com/lordbagel42/agent/commit/e3f98d47a3d4b6f8768cb312ef8314cf2588aae9)
-and [reflection requests](https://github.com/lordbagel42/agent/commit/29c4bdcdf14bbcfbcf201d58fc8fb6b171fe19b5).
-The refreshed audit also includes landed
-[browser mutation proposals](https://github.com/lordbagel42/agent/commit/ca5c0cc)
-and [private jury requests](https://github.com/lordbagel42/agent/commit/93dc746),
-then [approved vault-backed browser execution](https://github.com/lordbagel42/agent/commit/69f99557).
-These are source changes, not evidence of activation or live exercise.
+Source support is not evidence of activation or live exercise.
 
 ## June can inspect the responding runtime
 
@@ -182,7 +158,6 @@ synthetic Slack send does not prove human-origin ingress or a later deployment.
 
 Further reviewed learning actions, optional host mounts and independently
 verified activation must each earn their own capability-local state changes.
-Do not interpret this list as proof that another worker's in-flight change landed.
 Preserve journal compatibility, audience filtering before retrieval, deletion
 revalidation before projection/delivery, and held uncertain external outcomes.
 Extended recovery, retention/restore and resource/isolation checks remain

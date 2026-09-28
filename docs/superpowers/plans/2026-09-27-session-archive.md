@@ -1,6 +1,6 @@
 # Session Archive Implementation Plan
 
-> **For agentic workers:** Use superpowers:executing-plans to implement this plan inline. Runtime capability integration remains owned by the delegation thread.
+Historical storage design and implementation checklist; not a runtime activation claim.
 
 **Goal:** Retain attributed activity transcripts in the encrypted evidence ledger without making June's replies original human evidence or weakening forgetting.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Existing TypeScript, Zod, encrypted SQLite snapshot, Vitest and Biome; no new dependency or encryption format.
 
-**Spec:** `docs/superpowers/specs/2026-09-27-activity-sessions-design.md`
+**Spec:** [Activity sessions](../specs/2026-09-27-activity-sessions-design.md)
 
 ## Global constraints
 
@@ -58,12 +58,9 @@ searchSessions(audience: string, query: string, options?: {
 - [x] Return complete entries within the requested character budget; report whole-record omissions and a sequence continuation instead of clipping a purported quotation. Session metadata includes archived-through coverage even after payload deletion.
 - [x] Verify private/public isolation, assistant non-corroboration, transitive deletion, exact-preview invalidation and tombstone replay through an actual encrypted snapshot restore. Verify omitted-content entries cannot contain text.
 
-## Task 3: Review and publish the storage slice
+## Verification boundary
 
-- [x] Run focused archive tests, existing store/restore/forgetting tests, formatter, repository lint and full typecheck. Read all formatter changes.
-- [x] Obtain the required stronger review, address concrete findings and rerun affected checks. Oracle's follow-up cleared foreign pending/rejected proposal dependencies and remaining-budget pagination; both regressions failed before the fixes and passed afterward.
-
-Publication follow-through is reported in the session thread after remote verification:
-
-- Fetch/reconcile current GitHub main, rerun affected checks, commit the related slice using Conventional Commits and push normally under repository authority.
-- Report the verified main revision and the still-required runner, archive producer, migration and actor-routing integration. No deployment or live activation claim.
+Use focused archive checks and existing store/restore/forgetting tests to verify
+foreign proposal dependencies and remaining-budget pagination. Run formatter,
+lint and typecheck for code changes and review the exact diff. Storage checks
+alone do not establish archive production, migration or actor-routing activation.

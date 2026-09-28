@@ -1,21 +1,24 @@
 # June's trusted-main deployment loop
 
-The owner-authorized delivery policy is direct, trusted pushes to
-`lordbagel42/agent:main`. `scripts/deploy/deploy.py` is a June-only host poller,
+The deployment controller follows trusted updates to the configured repository's
+`main` branch. `scripts/deploy/deploy.py` is a June-only host poller,
 not a CI platform or a model tool. No release proposal, PR gate, GitHub Actions
-runner, inbound webhook, or whole-homelab Pulumi update is required. **This code
+runner, inbound webhook, or infrastructure-wide update is required. **This code
 does not provision or activate itself.** The operator integrates and bootstraps it.
 
-The repository is **private**. The poller uses a dedicated **read-only GitHub
+For a private repository, use a dedicated **read-only GitHub
 deploy key** and pinned GitHub host keys, not a person's `gh` login or the coding
 worker's write credential. Coding agents need separately scoped write access to
 this one repository; they cannot write the installed deployment controller.
+
+Paths below describe an example service layout, not a published deployment.
+Provision access and obtain operator authorization for your own environment.
 
 ## GitHub deployment details
 
 With a dedicated API credential installed, the controller mirrors deployment
 evidence to a native **`june/deploy`** check on the exact commit in
-`lordbagel42/agent`. GitHub's **Details** button opens that check's report:
+the configured repository. GitHub's **Details** button opens that check's report:
 
 | Controller evidence | GitHub check |
 | --- | --- |
@@ -38,7 +41,8 @@ URLs are published.
 
 Existing classic commit statuses receive a Details link to the native check
 and continue updating. New commits receive only the native check, avoiding two
-parallel entries. Reports remain within the private GitHub repository.
+parallel entries. Reports have the repository's visibility; keep private
+deployment details out of reports published to a public repository.
 
 Use the same private June GitHub App as [June's GitHub connection](github.md),
 with **Checks: read and write** and **Commit statuses: read and write** added
@@ -207,8 +211,8 @@ Measure push-to-observation externally and `received` → `healthy` from the eve
 timestamps. `elapsedMs` measures observation-to-outcome, not Git commit age:
 commit timestamps can be older or supplied by a different clock. Cold dependency
 downloads, large installs, busy workers and compatibility recovery can exceed
-the target. The current development dependency tree is approximately 2.3 GiB per
-release; the first verified automatic rollouts took about four minutes each.
+the target. Measure dependency storage and rollout duration on the intended host
+rather than treating the target as a deployment guarantee.
 
 Before building, the controller prunes only obsolete releases recorded in its
 own SQLite history. It retains the bootstrap revision, the two most recently
@@ -267,8 +271,7 @@ verifier success do not clear those durable blockers, including after restart.
 An unreadable settlement check, timeout, or workflow fault cannot certify drain.
 The coding gate remains because legacy sessions and roots removed from config
 are not covered by current-root accounting. Reflection and WhatsApp also still
-lack a proven lifecycle fence. These paths are disabled in the current live
-configuration. Rivet shutdown is not drain evidence: its bounded race can swallow
+lack a proven lifecycle fence. Rivet shutdown is not drain evidence: its bounded race can swallow
 errors. A drain timeout resumes admission without cancelling effects.
 
 June's owner-authenticated release inspection reports controller evidence; it cannot
@@ -306,14 +309,13 @@ root-only `transitions` list, never in a candidate or model request:
 ```
 
 Keep the corresponding disposable replay evidence with the operator's release
-records. Do not infer permission from equal labels. The live
-[`9294216` release](https://github.com/lordbagel42/agent/commit/9294216368d722d4377aea146a4a59136a31ba9e),
+records. Do not infer permission from equal labels. Workflow versions such as
 `memory-dispatch` v2 and `june-conversation-memory-dispatch-v3` are distinct
-compatibility epochs. Real-engine probes found that v2 → live and v3 → v2 can
-repeat effects **before** failing journal replay. Even an idle/drained actor can
-already have a newer marker. Initial live → integrated migration must also drain
-old paid/native calls; legacy in-flight model replay can repeat a call. Never use
-old database snapshots to make a downgrade appear healthy.
+compatibility epochs. An incompatible downgrade can repeat effects **before**
+failing journal replay. Even an idle/drained actor can already have a newer
+marker. Migration must also drain old paid/native calls; legacy in-flight model
+replay can repeat a call. Never use old database snapshots to make a downgrade
+appear healthy.
 
 ## Application lifecycle and private status
 
@@ -442,9 +444,8 @@ use it in DMs or channels; non-owner senders cannot invoke it. The bounded recei
 goes to the requesting conversation. June's instructions treat disclosure as an
 audience-sensitive judgment, not a blanket ban on deployment facts outside DMs:
 commit hashes and ordinary status are not inherently secret. For genuinely
-sensitive details, prefer Raygen's DM; consider a narrow public disclosure only
-if verified Raygen is extremely persistent and explicit after hearing the concern,
-and still prefer a DM. This does not open private history or memory to channel
+sensitive details, prefer the authenticated owner's DM and require explicit
+authorization for any broader disclosure. This does not open private history or memory to channel
 turns, expose credentials/access links, or change action approvals.
 
 Receipts report stage outcomes, fixed failure reasons and next steps; individual
@@ -555,11 +556,10 @@ inspection nor an ordinary app release installs/configures the controller.
 
 ## One-time bootstrap and access checklist
 
-The existing homelab provisioner remains the source for June's Node installation,
-base service protections and persistent paths. Do **not** run its old automatic
-rollback path across the compatibility epochs above. `main` is the repository's
-default and only remote branch. Publish release-ready changes directly there;
-never push a worker's partial clone over combined work.
+Provision the Node installation, base service protections and persistent paths
+for the intended host. Do **not** use a legacy automatic rollback path across
+the compatibility epochs above. Configure trusted publication to `main` under
+your repository's review policy; this guide grants no publication authority.
 
 On the **June host only**, an authorized operator must:
 
@@ -593,7 +593,7 @@ On the **June host only**, an authorized operator must:
 
    ```json
    {
-     "origin": "http://192.168.0.215:3080",
+     "origin": "http://127.0.0.1:3080",
      "healthSeconds": 15,
      "initialRevision": "<exact combined main source SHA>",
      "transitions": []
@@ -610,7 +610,7 @@ On the **June host only**, an authorized operator must:
    `--once` performs one poll under the same lock. Missing records refuse normal
    startup; do not recreate them after data loss to bypass duplicate protection.
 
-The host's existing public ingress remains **Slack POST only**. Do not expose
+Keep public webhook ingress **Slack POST only**. Do not expose
 health, events, drain, Rivet ports, Git credentials or the service manager publicly.
 No code here provisions access or runs Pulumi. The optional GitHub status publisher
 makes only the commit-status writes described above.

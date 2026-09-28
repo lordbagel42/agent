@@ -10,3 +10,20 @@ dist/
 *.log
 .slack/*
 !.slack/hooks.json
+
+# Private development artifacts and runtime/authentication state.
+/.amp/in/
+.codex/
+.auth/
+auth.json
+credentials.json
+*.local.json
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.jsonl
+*.pem
+*.key
+*.p12
+*.pfx

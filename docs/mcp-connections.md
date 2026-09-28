@@ -134,19 +134,20 @@ cannot invoke the checklist.
 ## Host configuration
 
 Enable the existing private console and add this optional configuration. The
-`slack` block is needed only for Slack, not for Amp:
+`slack` block is needed only for Slack, not for Amp. Replace the example origin
+and placeholder Slack IDs with your own verified deployment values:
 
 ```json
 {
-  "console": { "origin": "https://june.raygen.dev" },
+  "console": { "origin": "https://june.example.com" },
   "mcp": {
     "directory": "/var/lib/june/mcp",
     "keyEnv": "JUNE_MCP_KEY",
     "slack": {
       "clientIdEnv": "JUNE_SLACK_CLIENT_ID",
       "clientSecretEnv": "JUNE_SLACK_CLIENT_SECRET",
-      "teamId": "T0266FRGM",
-      "userId": "U08R4KDL6UF",
+      "teamId": "T0000000000",
+      "userId": "U0000000000",
       "scopes": ["search:read.public", "search:read.private", "search:read.im"]
     }
   }
@@ -160,9 +161,9 @@ The directory must be private, canonical, outside any Git repository, and writab
 by June. Preserve the key and SQLite files together. Run **one active June process
 per directory**; the approval coordinator is not a distributed service.
 
-Slack uses app `A0C4749KM3R` and `https://mcp.slack.com/mcp`. Enable the app's MCP
+Slack uses your configured app and `https://mcp.slack.com/mcp`. Enable the app's MCP
 setting and register exactly
-`https://june.raygen.dev/console/connections/slack/callback`. This confidential
+`https://june.example.com/console/connections/slack/callback` for the example origin. This confidential
 OAuth flow does not require enabling irreversible PKCE or token rotation. It
 requires the configured owner's separate **user** consent; bot and management
 tokens do not qualify. Only configured user scopes are requested. Other Slack
@@ -207,7 +208,7 @@ Keep these gates separate:
    not just the standalone Puck connector. MCP needs its existing private store
    and encryption key. A source push or health response alone proves no Amp access.
 2. **Ingress:** Amp must fetch exactly
-   `https://june.raygen.dev/console/connections/amp/client.json` without an owner
+   `https://june.example.com/console/connections/amp/client.json` for the example origin without an owner
    session or Cloudflare Access challenge. This static document contains only
    application metadata. Exempt only that exact path; keep the console private.
    The browser returns to `/console/connections/amp/callback` on the same configured

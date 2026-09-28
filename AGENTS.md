@@ -6,15 +6,12 @@
 
 ## Slack app configuration
 
-- Additive June Slack app changes managed through the Slack CLI (or equivalent
-  Slack app-management APIs) are pre-authorized: add features, scopes, event
-  subscriptions, and the installation updates needed to enable them without
-  asking Raygen again.
-- Ask Raygen before removing or disabling existing Slack app features,
-  permissions, subscriptions, or installations. Start from a fresh live manifest
-  and preserve unrelated settings, including OAuth redirects and MCP settings.
-- This permission concerns Slack app configuration, not unrelated infrastructure,
-  private credential disclosure, or bypassing June's runtime permission checks.
+- Obtain the deployment owner's authorization before changing Slack app features,
+  permissions, subscriptions, or installations. This file grants no standing
+  permission to change a live app or infrastructure.
+- Start from a fresh live manifest and preserve unrelated settings, including
+  OAuth redirects and MCP settings. Never disclose private credentials or bypass
+  June's runtime permission checks.
 
 ## June-facing capabilities
 
@@ -26,13 +23,15 @@
   analytics. Apply the same requirement to every other capability.
 - Verify the June-facing workflow before considering a feature complete.
 
-## Deployed June
+## Deployment safety
 
-- June runs in LXC 215 at `192.168.0.215`. Health: `curl -fsS http://192.168.0.215:3080/health`.
-- On `homelab-amp`, run `bash .amp/in/june-ops/ssh-june '<command>'` from `/home/amp/workspaces/pulumi-homelab-june`. It uses existing private credentials and pinned host verification; do not copy keys or weaken SSH checks.
-- App logs: `journalctl -u june.service -n 100 --no-pager`. Status: `systemctl status june.service june-deploy.service --no-pager`.
-- Deployment logs: `journalctl -u june-deploy.service -n 100 --no-pager`. Safe deployment feed: `/var/lib/june-deploy/public/events.json`.
-- Verify the running revision using health and `readlink /proc/$(systemctl show june.service -p MainPID --value)/cwd`, not just GitHub or the `current` symlink.
-- Config is `/etc/june/config.json`; persistent data is `/var/lib/june/rivet`. Never print credentials, Codex auth, or private message bodies, and never restore old conversation data to roll back code.
-- Rivet UI is `http://127.0.0.1:6420/ui/` on June. Use an authorized SSH tunnel for access; it has administrative controls, so do not expose it publicly or assume browsing is read-only.
-- Main pushes deploy automatically. Follow `docs/deployment.md` for recovery and coordinated config changes; config is bound to immutable releases. Do not run the old provisioner or change config/services concurrently with deployment.
+- Obtain operator authorization for live deployment, service, or configuration
+  changes. Repository publication is not evidence of runtime activation.
+- Verify the loaded process revision and readiness, not just Git or a release
+  symlink. Follow `docs/deployment.md` for recovery and coordinated config changes.
+- Never print credentials, provider authentication, or private message bodies,
+  and never restore old conversation data to roll back code.
+- Keep administrative interfaces private. Use authorized access with pinned host
+  verification; do not copy keys or weaken SSH checks. Administrative browsing
+  is not necessarily read-only.
+- Do not change configuration or services concurrently with deployment.

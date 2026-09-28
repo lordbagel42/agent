@@ -5,7 +5,7 @@ prepare verified source, and inspect deployment receipts in an owner-private DM.
 The app host is a **separate process with a dedicated Rivet engine**, not another
 route in June's service. No live installation or activation is included.
 
-**Fetch/HTTP deployment is verified on a disposable LEGION engine**, including
+**Fetch/HTTP deployment was checked on a disposable development engine**, including
 authenticated POST requests, updating a running app to a different release,
 duplicate approvals, and credential stripping. June's approval workflow is also
 tested with real Rivet conversations and a fake SDK deployer. Neither check

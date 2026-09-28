@@ -1,6 +1,6 @@
 # Activity-period conversation actors
 
-Status: approved architectural direction. Session-directory control state,
+Historical architectural design. Session-directory control state,
 encrypted archive storage/lookup, June-facing typed archive recall and
 archive-aware forgetting are implemented. The conservative archive projection
 and catalog-validation extraction are prepared; runtime archive production,
@@ -23,8 +23,8 @@ into competing legacy and session lanes. Unaffected scopes retain their behavior
 The initial idle threshold is three hours, configurable independently
 of reflection timing. A gap at or above the threshold starts a new session.
 Replies to an old Slack thread keep their placement but use a new activity actor
-after the gap. These are reversible implementation defaults under the approved
-direction, not additional owner requirements or a new design approval gate.
+after the gap. These are reversible implementation defaults, not permission
+boundaries or authorization to change a deployment.
 
 ## Ownership
 
@@ -131,7 +131,7 @@ episodes by text/time and expand a selected episode into bounded message ranges.
 Filter authorization and deletion before ranking. Return source references,
 attribution, original times, delivery status, truncation and continuation metadata.
 Use bounded results rather than returning an entire actor snapshot or journal.
-Use the delegation thread's shared host-capability runner from the persistent
+Use the shared host-capability runner from the persistent
 execution actor's durable callback. Workers perform recall and return scoped
 findings; tools do not run on completion inside the conversation inbox. Do not
 role-switch a conversation actor into an execution worker.
@@ -261,7 +261,7 @@ locks. Report source publication separately from running-revision/readiness
 evidence. No manual service restart or configuration mutation is authorized by
 this design.
 
-## Verification and coordination
+## Verification
 
 Use controlled providers and disposable Rivet/evidence state. Keep durable tests
 focused on privacy and duplicate effects; use focused runtime fixtures for the
@@ -282,13 +282,3 @@ remaining behavior. Verify:
   recall or delivery suppresses all affected derivatives, including after restore.
 - Legacy in-flight/uncertain turns and delayed callbacks survive cutover without
   relaunching work. Notification-only activity does not prevent human idle expiry.
-
-Delegation thread T-01a0e445-d70b-7275-9281-836ec96e1186 owns its dispatcher,
-including registry.ts capability extraction/guards, execution.ts, prompt.ts,
-provider/contracts capability schemas, main.ts provider wiring and new shared
-capability-runner modules. Session thread
-T-01a0e42f-e6cd-745e-bea6-6cdb53ea2e25 owns this design and session-specific work.
-Session integration into those shared files follows the landed runner boundary.
-Agree on any additional shared config/memory edits before writing them; consume
-landed changes and reconcile normally, without publication freezes.
-The cross-June orchestrator is T-01a0e44c-df6d-7492-a778-831613ce0284.

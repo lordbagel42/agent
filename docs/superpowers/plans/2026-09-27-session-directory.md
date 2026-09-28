@@ -1,6 +1,6 @@
 # Session Directory Implementation Plan
 
-> **For agentic workers:** Use superpowers:executing-plans to implement this plan inline. No new threads or parallel shared-file edits are needed.
+Historical routing-state design and implementation checklist; not an activation claim.
 
 **Goal:** Build the durable control-state transitions that assign each incoming event to exactly one activity session, without changing live routing yet.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript, Node 24, existing Vitest and Biome; no new dependency.
 
-**Spec:** `docs/superpowers/specs/2026-09-27-activity-sessions-design.md`
+**Spec:** [Activity sessions](../specs/2026-09-27-activity-sessions-design.md)
 
 ## Global Constraints
 
@@ -94,17 +94,11 @@ sessionActorKey(scopeKey: readonly string[], sessionId: string): string[];
 - [x] Exercise just-below/exact idle gaps, unarchived retirement, stale timers with queued human messages, notifications across the human idle boundary and clock rollback. Keep ordinary clock/budget cases in one focused invariant test rather than a large suite.
 - [x] Verify stable scope/key identity and distinct safe actor keys across rotation. Do not add owner authorization to these functions; the authenticated runtime owns that check.
 
-## Task 2: Validate, review and publish the inactive prerequisite
+## Verification boundary
 
-- [x] Install the locked dependencies locally with hooks disabled; do not mutate another worktree's dependency links.
-- [x] Run `pnpm exec vitest run src/sessions/state.test.ts`, then relevant existing execution/routing checks if the branch diff reaches their contracts. No shared-file changes are planned here.
-- [x] Run the formatter on the new TypeScript files, re-read them, then lint and typecheck. The temporary Biome traversal override was removed after the checks passed.
-- [x] Self-review every state mutation for duplicate assignment, partial mutation on rejected input, persisted-before-dispatch requirements and unsafe session-ID-as-authority assumptions.
-- [x] Obtain the repository-required stronger review on the exact diff and address findings. Oracle's follow-up found no blockers after the notification-before-human retirement regression was fixed. This review does not approve the still-unwired runtime design.
-- [x] Fetch current main, reconcile without changing siblings' checkouts, rerun checks affected by the rebase, and create one small Conventional Commit for related plan/module/tests.
-
-Publication follow-through is reported in the session thread rather than marked
-complete before the commit exists remotely:
-
-- Push normally to main under standing repository authority; on rejection, fetch/reconcile/recheck rather than force-pushing or freezing others.
-- Report exact verified main ancestry to the orchestrator and delegation owner, naming the runtime integration still required. Do not claim the owner DM behavior is live or change services/configuration.
+Run `pnpm exec vitest run src/sessions/state.test.ts` and relevant existing
+execution/routing checks, plus formatter, lint and typecheck for code changes.
+Review state mutations for duplicate assignment, rejected-input atomicity,
+persisted-before-dispatch requirements and notification-before-human retirement.
+A session ID must never substitute for authenticated authority. Passing directory
+checks does not establish runtime integration or authorize service changes.

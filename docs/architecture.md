@@ -1,6 +1,6 @@
 # June
 
-The approved direction is one conversational identity across messaging platforms,
+The design is one conversational identity across messaging platforms,
 with independent execution workers, replaceable models and tools, and durable
 work rather than a new bot/session for each channel. June uses she/her pronouns.
 Her owner will develop her personality with her rather than receiving a fixed
@@ -81,8 +81,8 @@ Sources (reviewed 2026-09-26):
 
 ## First increment
 
-Start the live rollout with Slack Events API. On September 26, the owner shelved
-WhatsApp and requested a Linq integration spike for their Android/RCS phone.
+Start with Slack Events API. WhatsApp remains dormant; Linq is an experimental
+alternative transport.
 Linq Partner API V3 documents RCS with SMS fallback; the offline text/webhook
 prototype is not wired into June. Real account/carrier validation and durable
 integration are still required, and conflicting RCS reaction documentation must
@@ -99,10 +99,10 @@ account/region must qualify under the linked
 [AI-provider policy](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing/ai-providers)
 before activating June's WhatsApp adapter.
 
-The cross-channel design links verified owner identities. In the audited source,
-[config parsing](../src/config.ts) pins Slack ownership to `RAYGEN_SLACK_ID` in
-the configured workspace, replacing configured Slack owner mappings. Other
-channel identities remain configured mappings. Owner DMs share one conversation;
+The cross-channel design links verified owner identities. Bind the Slack owner
+to an explicit user ID in the configured workspace through
+[configuration](../src/config.ts), not a display name. Other channel identities
+use configured mappings. Owner DMs share one conversation;
 Slack channel threads never inherit private DM history or coding authority.
 The [routing policy](../src/core/routing.ts) also supports separately scoped
 Slack guest/channel conversations when configured. A known Slack sender or a
@@ -214,9 +214,9 @@ completed commitments, and useful questions may earn an interruption.
 
 ## First-deployment history import
 
-The owner has authorized historical Slack and email reading to bootstrap June's
-graph at first deployment. This does not authorize importing accounts during
-local development, sending messages to contacts, or widening platform access.
+Historical Slack and email imports require the account owner's explicit
+authorization for the selected coverage. This document grants no account access,
+permission to send messages to contacts, or authority to widen platform access.
 
 At onboarding, bind the actual accounts and show the exact read scopes and
 source/date coverage. Use resumable paginated imports and platform rate limits;

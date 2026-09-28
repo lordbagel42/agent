@@ -1,6 +1,6 @@
 # Durable wakeups
 
-June can save one-time timers, cron schedules, and event watches from Raygen's
+June can save one-time timers, cron schedules, and event watches from the owner's
 private Slack DM. A match queues a new model turn and a reply to that same DM,
 even after a restart. No human message is needed to restart the timer loop.
 This is a notification capability, not arbitrary shell cron or unattended tool
@@ -29,7 +29,7 @@ machine payloads are untrusted evidence, never fresh owner authorization.
   "wakeup": {
     "action": "create",
     "name": "Next successful deploy",
-    "instruction": "Tell Raygen which revision the controller verified healthy.",
+    "instruction": "Tell me which revision the controller verified healthy.",
     "once": true,
     "trigger": {"kind": "event", "source": "deployment", "type": "healthy", "filters": []}
   }
