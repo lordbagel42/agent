@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { Hono } from "hono";
+import { type Handler, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import type { SlackIngressDiagnostics } from "../channels/slack-ingress.js";
@@ -53,6 +53,7 @@ export interface HttpDependencies {
   lifecycle?: Lifecycle;
   deployment?: {
     token: string;
+    intakeToken?: string;
     supported: boolean;
     read?: ReturnType<typeof createDeploymentReader>;
   };
@@ -67,7 +68,7 @@ export interface HttpDependencies {
     usage?: ConsoleDependencies["usage"];
     connections?: ConnectionDependencies;
   };
-  submit(scope: Scope, event: ChannelEvent): Promise<void>;
+  submit(scope: Scope, event: ChannelEvent, receivedAt?: number): Promise<void>;
   ready(): Promise<boolean>;
   inspectConversation(): Promise<unknown>;
   inspectJob(id: string): Promise<unknown | undefined>;
@@ -75,6 +76,14 @@ export interface HttpDependencies {
   resumeJob(id: string, commandId: string): Promise<boolean>;
   cancelJob?(id: string): Promise<boolean>;
 }
+
+type HttpEnvironment = {
+  Variables: {
+    slackRequest?: Request;
+    intake?: { receivedAt: number };
+    arrival: { at: number; monotonic: number };
+  };
+};
 
 export function createHttpApp(deps: HttpDependencies) {
   if (deps.operatorToken.length < 32)
@@ -87,6 +96,13 @@ export function createHttpApp(deps: HttpDependencies) {
       deps.deployment.token === deps.operatorToken)
   )
     throw new Error("Deployment requires a distinct credential and release");
+  if (
+    deps.deployment?.intakeToken !== undefined &&
+    (deps.deployment.intakeToken.length < 32 ||
+      deps.deployment.intakeToken === deps.deployment.token ||
+      deps.deployment.intakeToken === deps.operatorToken)
+  )
+    throw new Error("Intake requires a separate credential");
   if (
     Object.values(deps.wakeups?.sources ?? {}).some(
       (key) => key === deps.operatorToken || key === deps.deployment?.token,
@@ -102,12 +118,7 @@ export function createHttpApp(deps: HttpDependencies) {
     ].includes(deps.github.secret)
   )
     throw new Error("GitHub requires a separate signing credential");
-  const app = new Hono<{
-    Variables: {
-      slackRequest?: Request;
-      arrival: { at: number; monotonic: number };
-    };
-  }>();
+  const app = new Hono<HttpEnvironment>();
   app.onError((_error, c) => c.json({ error: "request_failed" }, 500));
   app.use("/webhooks/*", async (c, next) => {
     c.set("arrival", { at: Date.now(), monotonic: performance.now() });
@@ -292,48 +303,80 @@ export function createHttpApp(deps: HttpDependencies) {
   if (deps.wakeups)
     app.route("/webhooks/events", createWakeupWebhooks(deps.wakeups));
   for (const [channel, adapter] of Object.entries(deps.channels)) {
+    const receive: Handler<HttpEnvironment> = async (c) => {
+      const diagnostics =
+        channel === "slack" ? deps.slackIngressDiagnostics : undefined;
+      const original = c.get("slackRequest");
+      // Hono replaces raw for a lengthless body. Preserve correlation across
+      // that replacement without retaining any body, headers or platform IDs.
+      if (diagnostics && original) diagnostics.associate(original, c.req.raw);
+      const intake = c.get("intake");
+      const { response, events } = await adapter.receive(c.req.raw, intake);
+      if (!response.ok) return response;
+      try {
+        for (const event of events) {
+          const scope = routeEvent(event, deps.owner);
+          diagnostics?.record(
+            c.req.raw,
+            scope ? "owner_accepted" : "owner_filtered",
+          );
+          if (!scope) continue;
+          if (event.type === "message") {
+            deps.latency?.begin(event, c.get("arrival"));
+            deps.latency?.mark(event, "submission_started");
+          }
+          diagnostics?.record(c.req.raw, "submission_started");
+          if (intake) await deps.submit(scope, event, intake.receivedAt);
+          else await deps.submit(scope, event);
+          diagnostics?.record(c.req.raw, "submission_succeeded");
+          if (event.type === "message") deps.latency?.mark(event, "submitted");
+        }
+      } catch {
+        diagnostics?.record(c.req.raw, "submission_failed");
+        for (const event of events)
+          if (event.type === "message")
+            deps.latency?.mark(event, "submission_failed");
+        return c.json({ error: "storage_unavailable" }, 503);
+      }
+      for (const event of events)
+        if (event.type === "message") deps.latency?.mark(event, "http_ack");
+      return response;
+    };
     app.on(
       channel === "whatsapp" ? ["GET", "POST"] : ["POST"],
       `/webhooks/${channel}`,
-      async (c) => {
-        const diagnostics =
-          channel === "slack" ? deps.slackIngressDiagnostics : undefined;
-        const original = c.get("slackRequest");
-        // Hono replaces raw for a lengthless body. Preserve correlation across
-        // that replacement without retaining any body, headers or platform IDs.
-        if (diagnostics && original) diagnostics.associate(original, c.req.raw);
-        const { response, events } = await adapter.receive(c.req.raw);
-        if (!response.ok) return response;
-        try {
-          for (const event of events) {
-            const scope = routeEvent(event, deps.owner);
-            diagnostics?.record(
-              c.req.raw,
-              scope ? "owner_accepted" : "owner_filtered",
-            );
-            if (!scope) continue;
-            if (event.type === "message") {
-              deps.latency?.begin(event, c.get("arrival"));
-              deps.latency?.mark(event, "submission_started");
-            }
-            diagnostics?.record(c.req.raw, "submission_started");
-            await deps.submit(scope, event);
-            diagnostics?.record(c.req.raw, "submission_succeeded");
-            if (event.type === "message")
-              deps.latency?.mark(event, "submitted");
-          }
-        } catch {
-          diagnostics?.record(c.req.raw, "submission_failed");
-          for (const event of events)
-            if (event.type === "message")
-              deps.latency?.mark(event, "submission_failed");
-          return c.json({ error: "storage_unavailable" }, 503);
-        }
-        for (const event of events)
-          if (event.type === "message") deps.latency?.mark(event, "http_ack");
-        return response;
-      },
+      receive,
     );
+    if (channel === "slack" && deps.deployment?.intakeToken) {
+      const credential = Buffer.from(deps.deployment.intakeToken);
+      // Private replay is behind lifecycle/body limits but before operator auth.
+      // The shared adapter still requires a fresh Slack HMAC. This header never
+      // authenticates the public webhook or bypasses its timestamp validation.
+      app.post("/operator/deployment/slack", async (c, next) => {
+        c.header("Cache-Control", "no-store");
+        const supplied = Buffer.from(c.req.header("x-june-intake-token") ?? "");
+        if (
+          supplied.length !== credential.length ||
+          !timingSafeEqual(supplied, credential)
+        )
+          return c.json({ error: "unauthorized" }, 401);
+        if (c.req.header("x-june-revision") !== deps.revision)
+          return c.json({ error: "revision_mismatch" }, 409);
+        const received = c.req.header("x-june-received-at") ?? "";
+        const at = Number(received);
+        if (
+          !/^\d+$/.test(received) ||
+          !Number.isSafeInteger(at) ||
+          at > Date.now() + 60_000
+        )
+          return c.json({ error: "invalid_received_at" }, 400);
+        c.set("intake", { receivedAt: at });
+        c.set("arrival", { at, monotonic: performance.now() });
+        c.set("slackRequest", c.req.raw);
+        deps.slackIngressDiagnostics?.record(c.req.raw, "arrival");
+        return receive(c, next);
+      });
+    }
   }
   app.use("/operator/*", async (c, next) => {
     c.header("cache-control", "no-store");

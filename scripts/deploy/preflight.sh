@@ -18,4 +18,8 @@ echo 'june_preflight: typecheck'
 corepack pnpm exec tsc --noEmit
 echo 'june_preflight: safety_tests'
 corepack pnpm exec vitest run src/core/routing.test.ts src/runtime/delivery.test.ts
+echo 'june_preflight: isolated_startup'
+# Disposable fixtures use synthetic credentials/state and no production providers.
+# Run serially within the existing build cgroup; never against /var/lib/june.
+corepack pnpm exec vitest run tests/startup.test.ts --maxWorkers=1
 echo 'june_preflight: complete'

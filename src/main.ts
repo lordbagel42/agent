@@ -33,6 +33,10 @@ import {
   createDeploymentReader,
   createReleaseTool,
 } from "./deployment/feed.js";
+import {
+  awaitSlotActivation,
+  validateSlotLauncher,
+} from "./deployment/standby.js";
 import { createHttpApp } from "./http/app.js";
 import { createImportRoutes } from "./http/imports.js";
 import { createMemoryRoutes } from "./http/memory.js";
@@ -87,6 +91,14 @@ import { createWorkflowTools } from "./workflows/tools.js";
 
 let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
 const hotProviders: ReturnType<typeof createHotCodexProvider>[] = [];
+let slotActivated = false;
+
+function exitOrRetainOwnership(code: number) {
+  if (slotActivated && code !== 0) {
+    process.exitCode = code;
+    setInterval(() => {}, 60_000);
+  } else process.exit(code);
+}
 
 function within(parent: string, child: string) {
   const path = relative(parent, child);
@@ -158,6 +170,33 @@ async function main() {
             artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
           })
           .parse(JSON.parse(marker));
+  startupStage = "slot launcher and standby barrier";
+  const slot = validateSlotLauncher({
+    enabled: config.deployment?.blueGreen ?? false,
+    revision: release?.revision,
+    releaseRoot,
+  });
+  if (slot && config.deployment && release) {
+    const token = secret(config.deployment.tokenEnv);
+    const operator = secret(config.operatorTokenEnv);
+    const intake = config.deployment.intakeTokenEnv
+      ? secret(config.deployment.intakeTokenEnv)
+      : undefined;
+    if (
+      token.length < 32 ||
+      operator.length < 32 ||
+      token === operator ||
+      intake === undefined ||
+      intake.length < 32 ||
+      intake === token ||
+      intake === operator
+    )
+      throw new Error("Deployment requires separate credentials");
+    config.host = slot.host;
+    config.port = slot.port;
+    await awaitSlotActivation({ ...slot, revision: release.revision, token });
+    slotActivated = true;
+  }
   const readDeployment = config.deployment
     ? createDeploymentReader({
         file: config.deployment.eventsFile,
@@ -1218,6 +1257,9 @@ async function main() {
     deployment: config.deployment
       ? {
           token: secret(config.deployment.tokenEnv),
+          intakeToken: config.deployment.intakeTokenEnv
+            ? secret(config.deployment.intakeTokenEnv)
+            : undefined,
           read: readDeployment,
           // Coding now fences launches and checks current-root leases, but
           // legacy sessions/removed roots still need independent reconciliation.
@@ -1361,7 +1403,7 @@ async function main() {
           },
         }
       : undefined,
-    async submit(scope, event) {
+    async submit(scope, event, receivedAt) {
       if (memory && event.type === "message") {
         const source = memory.source(event, JSON.stringify(scope.key));
         if (source) {
@@ -1378,7 +1420,9 @@ async function main() {
             memory.store.appendSource(source);
         }
       }
-      await client.conversation.getOrCreate(scope.key).receive(event);
+      await client.conversation
+        .getOrCreate(scope.key)
+        .receive(event, receivedAt);
     },
     async ready() {
       return (await registry.routes.health()).ok;
@@ -1559,12 +1603,12 @@ async function main() {
       () => {
         diagnosticLog?.lifecycle("process_stopped");
         diagnosticLog?.close();
-        process.exit(process.exitCode ?? 0);
+        exitOrRetainOwnership(Number(process.exitCode ?? 0));
       },
       () => {
         diagnosticLog?.lifecycle("shutdown_failed");
         console.error("June could not finish a graceful shutdown.");
-        process.exit(1);
+        exitOrRetainOwnership(1);
       },
     ));
   for (const signal of ["SIGINT", "SIGTERM"] as const)
@@ -1580,6 +1624,9 @@ async function main() {
 }
 
 await main().catch(async () => {
+  // Fail closed: startup may already have spawned children. Keep the ownership
+  // descriptor and MainPID alive until the controller stops the entire cgroup.
+  if (slotActivated) setInterval(() => {}, 60_000);
   await Promise.allSettled(hotProviders.map((provider) => provider.close()));
   // Provider/transport exceptions can contain credentials or message bodies.
   console.error(`June startup failed at ${startupStage}.`);

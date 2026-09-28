@@ -104,6 +104,8 @@ const schema = z
     deployment: z
       .strictObject({
         tokenEnv: envName.default("JUNE_DEPLOY_TOKEN"),
+        intakeTokenEnv: envName.optional(),
+        blueGreen: z.boolean().default(false),
         eventsFile: absolutePath.default(
           "/var/lib/june-deploy/public/events.json",
         ),

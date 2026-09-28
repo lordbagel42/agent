@@ -67,6 +67,11 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain("actionsBuild enabled");
     expect(request.system).toContain("no automatic local-build fallback");
     expect(request.system).toContain("a green build do not prove");
+    expect(request.system).toContain(
+      "Separately configured blue/green deployment",
+    );
+    expect(request.system).toContain("Only one runtime may own live state");
+    expect(request.system).toContain("do not activate a slot");
   },
 );
 

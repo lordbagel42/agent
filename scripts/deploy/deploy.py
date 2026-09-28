@@ -317,6 +317,8 @@ class Deployer:
         self.host.manifest(revision(commit))
         if not self.host.settled() or not self.host.healthy(commit):
             raise ValueError("reconciliation_not_ready")
+        if self.host.blue_green:
+            self.host.intake(commit, paused=False)
         self.store.event(commit, "reconciled")
         if incident:
             self.store.set("recovery", "")
@@ -459,6 +461,9 @@ class Deployer:
         if not h.running(previous) or not h.settled():
             s.block(target, "current_unhealthy")
             return
+        if h.blue_green and h.current.resolve() != h.releases / previous:
+            s.block(target, "current_unhealthy")
+            return
         # Coalesce only before preparation, never during an in-flight attempt.
         # Bookkeeping failures must abort, not terminally fail the newest head
         # and accidentally allow an older pending revision to deploy next time.
@@ -524,7 +529,17 @@ class Deployer:
         s.set("intent", target)
         # Unlike best-effort recovery reporting, this must succeed before drain.
         s.publish_responder()
+        if h.blue_green:
+            try:
+                # No live-state initialization yet. An unknown launch is retained
+                # for recovery, but never stops or fences the healthy old app.
+                h.prepare_standby(target, previous)
+            except Exception:  # noqa: BLE001 - retain unknown candidate identity
+                s.block(target, "preflight_failed")
+                return
         try:
+            if h.blue_green:
+                h.intake(previous, paused=True)
             if not h.drain(previous):
                 s.event(target, "deferred", "drain_busy")
                 self.resume(target)
@@ -536,6 +551,12 @@ class Deployer:
                 s.block(target, s.get("blocked"))
                 self.resume(target)
                 return
+            if h.blue_green:
+                # Last check while old June can still resume unchanged. Standby
+                # may have died during a long drain, or installation may drift.
+                if not h.standby(target):
+                    raise ValueError("candidate_not_standby")
+                h.rollback_safe(h.manifest(previous), h.manifest(target))
         except Exception:  # noqa: BLE001 - resume even after an ambiguous HTTP error
             s.event(target, "deferred", "drain_busy")
             self.resume(target)
@@ -546,8 +567,13 @@ class Deployer:
         try:
             h.service("stop")
             h.switch(target)
-            h.service("start")
+            if h.blue_green:
+                h.activate(target)
+            else:
+                h.service("start")
             if h.healthy(target):
+                if h.blue_green:
+                    h.intake(target, paused=False)
                 s.event(target, "healthy")
                 return
             s.event(target, "failed", "health_failed")
@@ -562,9 +588,14 @@ class Deployer:
                 return
             h.switch(previous)
             h.service("start")
+            if h.blue_green:
+                h.wait_standby(previous)
+                h.activate(previous)
             if not h.healthy(previous):
                 s.block(target, "rollback_unhealthy")
                 return
+            if h.blue_green:
+                h.intake(previous, paused=False)
             s.event(target, "rolled_back", "health_failed")
         except Exception:  # noqa: BLE001 - every unknown effect blocks; no error payload
             s.block(target, "activation_unknown")
@@ -1521,6 +1552,10 @@ def extract_dependencies(archive, stage, commit, source_digest):
 class Host:
     actions = None
 
+    @property
+    def blue_green(self):
+        return bool(getattr(self, "config", {}).get("blueGreen"))
+
     def __init__(self, config):
         self.config = config
         if type(config.get("actionsBuild", False)) is not bool:
@@ -1542,6 +1577,34 @@ class Host:
         self.token = private_file(Path("/etc/june/deploy-token")).strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", self.token):
             raise ValueError("invalid_token")
+        if "blueGreen" in config:
+            settings = config["blueGreen"]
+            if (
+                not isinstance(settings, dict)
+                or set(settings) != {"intakeOrigin"}
+                or not re.fullmatch(
+                    r"http://(?:127\.0\.0\.1|192\.168\.0\.215):[0-9]{4,5}",
+                    settings["intakeOrigin"],
+                )
+                or not 1024 <= int(settings["intakeOrigin"].rsplit(":", 1)[1]) <= 65535
+                or int(settings["intakeOrigin"].rsplit(":", 1)[1]) in (3081, 3082)
+            ):
+                raise ValueError("invalid_blue_green_config")
+            self.intake_token = private_file(Path("/etc/june/intake-token")).strip()
+            if (
+                not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", self.intake_token)
+                or self.intake_token == self.token
+            ):
+                raise ValueError("invalid_intake_token")
+            slots = self.root / "slots"
+            meta = slots.lstat()
+            if (
+                slots.resolve() != slots
+                or not stat.S_ISDIR(meta.st_mode)
+                or meta.st_uid != 0
+                or meta.st_mode & 0o022
+            ):
+                raise ValueError("unsafe_slot_directory")
         self.env = {
             "PATH": "/usr/bin:/bin",
             "HOME": "/var/lib/june-deploy",
@@ -1550,6 +1613,126 @@ class Host:
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_SSH_COMMAND": "ssh -F /dev/null -i /etc/june/deploy-key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/june/deploy-known-hosts",
         }
+
+    def slot(self, commit):
+        release = self.releases / revision(commit)
+        matches = [
+            name
+            for name in ("blue", "green")
+            if (self.root / "slots" / name).resolve() == release
+        ]
+        if len(matches) != 1:
+            raise ValueError("slot_identity_unknown")
+        return matches[0]
+
+    def unit(self, commit=None):
+        if not self.blue_green:
+            return "june.service"
+        return f"june-slot@{self.slot(commit or self.current.resolve().name)}.service"
+
+    def origin(self, commit):
+        if not self.blue_green:
+            return self.config["origin"]
+        return "http://127.0.0.1:" + ("3081" if self.slot(commit) == "blue" else "3082")
+
+    def unit_empty(self, unit):
+        output = subprocess.check_output(
+            [
+                "systemctl",
+                "show",
+                unit,
+                "--property=ActiveState,SubState,MainPID,ControlPID,Job,ControlGroup",
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).decode()
+        state = dict(line.split("=", 1) for line in output.splitlines())
+        return (
+            (state.get("ActiveState"), state.get("SubState"))
+            in (("inactive", "dead"), ("failed", "failed"))
+            and state.get("MainPID") == "0"
+            and state.get("ControlPID") == "0"
+            and state.get("Job") == ""
+            and state.get("ControlGroup") == ""
+        )
+
+    def standby(self, commit):
+        body = self.request(
+            "/operator/deployment/standby",
+            origin=self.origin(commit),
+            credential=self.token,
+        )
+        return body == {"revision": commit, "standby": True} and self.running(commit)
+
+    def wait_standby(self, commit):
+        end = time.monotonic() + self.config["healthSeconds"]
+        while time.monotonic() < end:
+            try:
+                if self.standby(commit):
+                    return
+            except Exception:  # noqa: BLE001,S110 - bounded identity observation only
+                pass
+            time.sleep(0.1)
+        raise ValueError("standby_unavailable")
+
+    def prepare_standby(self, commit, previous):
+        name = "green" if self.slot(previous) == "blue" else "blue"
+        unit = f"june-slot@{name}.service"
+        link = self.root / "slots" / name
+        if not self.unit_empty(unit):
+            # A prior deferred attempt may have left a known standby. Only
+            # authenticated standby plus exact PID identity allows its retirement.
+            retained = revision(link.resolve().name)
+            if retained == previous or not self.standby(retained):
+                raise ValueError("inactive_slot_not_standby")
+            if retained == commit:
+                return
+            self.service("stop", unit=unit)
+        temporary = link.with_name(f".{name}-deploy")
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(self.releases / revision(commit))
+        os.replace(temporary, link)
+        sync_directory(link.parent)
+        self.service("start", unit=unit)
+        self.wait_standby(commit)
+
+    def activate(self, commit):
+        # Even a dead MainPID may have live children. Verify the other cgroup
+        # and the legacy unit are empty before sending the irreversible request.
+        other = "green" if self.slot(commit) == "blue" else "blue"
+        if not all(
+            self.unit_empty(unit)
+            for unit in (f"june-slot@{other}.service", "june.service")
+        ):
+            raise ValueError("runtime_not_exclusive")
+        if not self.standby(commit):
+            raise ValueError("candidate_not_standby")
+        body = self.request(
+            "/operator/deployment/activate",
+            "POST",
+            origin=self.origin(commit),
+            data={"revision": commit},
+        )
+        if body != {"revision": commit, "activated": True}:
+            raise ValueError("activation_unknown")
+
+    def intake(self, commit, *, paused):
+        expected = {
+            "revision": revision(commit),
+            "port": 3081 if self.slot(commit) == "blue" else 3082,
+            "paused": paused,
+        }
+        body = self.request(
+            "/operator/deployment/intake",
+            "POST",
+            origin=self.config["blueGreen"]["intakeOrigin"],
+            credential=self.intake_token,
+            data=expected,
+        )
+        if any(body.get(key) != value for key, value in expected.items()) or (
+            paused and body.get("settled") is not True
+        ):
+            raise ValueError("intake_not_settled")
 
     def git(self, *args, binary=False):
         result = subprocess.run(
@@ -1743,6 +1926,11 @@ class Host:
             release = self.releases / revision(commit)
             trash = self.releases / f".prune-{commit}"
             if self.current.resolve() in (release, trash):
+                continue
+            if self.blue_green and any(
+                (self.root / "slots" / name).resolve() in (release, trash)
+                for name in ("blue", "green")
+            ):
                 continue
             for path in (trash, release):
                 try:
@@ -2047,14 +2235,27 @@ class Host:
             "/opt/node-v24.21.0/.june-node-sha256",
         ):
             digest.update(Path(name).read_bytes())
-        # Include drop-ins; hashing only the original unit misses state/env changes.
-        digest.update(
-            subprocess.check_output(
-                ["systemctl", "cat", "june.service"],
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
+        # Include both slot units/drop-ins: switching slots must not change binding.
+        units = (
+            ("june-slot@blue.service", "june-slot@green.service")
+            if self.blue_green
+            else ("june.service",)
         )
+        for unit in units:
+            digest.update(
+                subprocess.check_output(
+                    ["systemctl", "cat", unit],
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+            )
+        if self.blue_green:
+            digest.update(Path("/usr/local/lib/june-deploy/slot.py").read_bytes())
+            # The effective engine/state identity is provisioned here, not in
+            # unit text. A path/namespace or credential change needs migration,
+            # never an apparently compatible rollout into a fresh dedup store.
+            digest.update(private_file(Path("/etc/june/slot.env")).encode())
+            digest.update(json.dumps(self.config["blueGreen"], sort_keys=True).encode())
         return digest.hexdigest()
 
     def manifest(self, commit):
@@ -2089,15 +2290,21 @@ class Host:
             for item in self.config["transitions"]
         )
 
-    def request(self, path, method="GET"):
+    def request(self, path, method="GET", *, origin=None, credential=None, data=None):
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect()
         )
-        headers = {"Authorization": f"Bearer {self.token}"} if method != "GET" else {}
+        credential = credential or (self.token if method != "GET" else None)
+        headers = {"Authorization": f"Bearer {credential}"} if credential else {}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
         try:
             with opener.open(
                 urllib.request.Request(
-                    self.config["origin"] + path, method=method, headers=headers
+                    (origin or self.config["origin"]) + path,
+                    method=method,
+                    headers=headers,
+                    data=json.dumps(data).encode() if data is not None else None,
                 ),
                 timeout=5,
             ) as response:
@@ -2110,7 +2317,7 @@ class Host:
         end = time.monotonic() + self.config["healthSeconds"]
         while time.monotonic() < end:
             try:
-                body = self.request("/health")
+                body = self.request("/health", origin=self.origin(commit))
                 if (
                     body.get("name") == "June"
                     and body.get("ready") is True
@@ -2124,7 +2331,9 @@ class Host:
         return False
 
     def drain(self, commit):
-        body = self.request("/operator/deployment/drain", "POST")
+        body = self.request(
+            "/operator/deployment/drain", "POST", origin=self.origin(commit)
+        )
         return (
             body.get("revision") == commit
             and body.get("drained") is True
@@ -2132,13 +2341,26 @@ class Host:
         )
 
     def resume(self, commit):
-        body = self.request("/operator/deployment/drain", "DELETE")
-        return body.get("revision") == commit and body.get("drained") is False
+        body = self.request(
+            "/operator/deployment/drain", "DELETE", origin=self.origin(commit)
+        )
+        resumed = body.get("revision") == commit and body.get("drained") is False
+        if resumed and self.blue_green:
+            if not self.healthy(commit):
+                return False
+            self.intake(commit, paused=False)
+        return resumed
 
     def running(self, commit):
         pid = (
             subprocess.check_output(
-                ["systemctl", "show", "--property=MainPID", "--value", "june.service"],
+                [
+                    "systemctl",
+                    "show",
+                    "--property=MainPID",
+                    "--value",
+                    self.unit(commit),
+                ],
                 stderr=subprocess.DEVNULL,
                 timeout=5,
             )
@@ -2157,11 +2379,23 @@ class Host:
             stderr=subprocess.DEVNULL,
             timeout=5,
         ).decode()
-        return not any("june.service" in row.split() for row in jobs.splitlines())
+        units = (
+            {"june.service", "june-slot@blue.service", "june-slot@green.service"}
+            if self.blue_green
+            else {"june.service"}
+        )
+        return not any(units.intersection(row.split()) for row in jobs.splitlines())
 
-    def service(self, action):
+    def service(self, action, *, unit=None):
         if action not in ("stop", "start"):
             raise ValueError("invalid_action")
+        unit = unit or self.unit()
+        if unit not in (
+            "june.service",
+            "june-slot@blue.service",
+            "june-slot@green.service",
+        ):
+            raise ValueError("invalid_service")
         if action == "stop":
             properties = (
                 "LoadState",
@@ -2184,7 +2418,7 @@ class Host:
                     [
                         "systemctl",
                         "show",
-                        "june.service",
+                        unit,
                         "--property=" + ",".join(properties),
                     ],
                     stderr=subprocess.DEVNULL,
@@ -2221,7 +2455,7 @@ class Host:
         # No subprocess timeout: systemd owns stop timeout/cgroup settlement.
         # A failed/unknown manager operation blocks, never invokes another one.
         subprocess.run(
-            ["systemctl", action, "june.service"],
+            ["systemctl", action, unit],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -2257,6 +2491,8 @@ class Host:
                 raise ValueError("stop_outcome_unknown")
             # This proves only main-process exit, not native persistence or
             # graceful settlement of every child. The drain contract still applies.
+            if self.blue_green and not self.unit_empty(unit):
+                raise ValueError("runtime_cgroup_not_empty")
 
     def switch(self, commit):
         link = self.current.with_name(".current-deploy")
@@ -2331,6 +2567,10 @@ def private_file(path):
 
 def stop_app():
     """ExecStop ordering only; the controller still proves clean exit separately."""
+    slot = os.environ.get("JUNE_SLOT")
+    if slot is not None and slot not in ("blue", "green"):
+        raise ValueError("invalid_stop_slot")
+    unit = f"june-slot@{slot}.service" if slot else "june.service"
     deadline = time.monotonic() + 45
     properties = (
         "MainPID,ExecMainPID,ControlPID,InvocationID,ActiveState,SubState,"
@@ -2339,7 +2579,7 @@ def stop_app():
 
     def state():
         output = subprocess.check_output(
-            ["systemctl", "show", "june.service", "--property=" + properties],
+            ["systemctl", "show", unit, "--property=" + properties],
             stderr=subprocess.DEVNULL,
             timeout=5,
         ).decode()

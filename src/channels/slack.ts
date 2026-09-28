@@ -547,7 +547,7 @@ export function createSlackAdapter({
         await response?.body?.cancel().catch(() => {});
       }
     },
-    async receive(request: Request) {
+    async receive(request: Request, intake?: { receivedAt: number }) {
       ingressDiagnostics?.record(request, "adapter_received");
       let rawBody: Uint8Array;
       try {
@@ -597,7 +597,7 @@ export function createSlackAdapter({
           botUserId,
           owners,
           signingSecret,
-          now(),
+          intake?.receivedAt ?? now(),
         );
         return {
           response: new Response(null, { status: 200 }),

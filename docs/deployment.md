@@ -21,8 +21,9 @@ Provision access and obtain operator authorization for your own environment.
 `.github/workflows/june-build.yml` runs on every push to `main`, preparing the
 exact pushed SHA in Debian 13/x86-64 with Node 24.21.0 and pnpm 10.33.0. It runs
 the same `preflight.sh`: frozen install with hooks disabled, formatting, types
-and routing/delivery safety tests. It has read-only repository permission, no
-deployment/configuration secrets, no LAN connection and no service-control step.
+and routing/delivery safety tests plus disposable startup checks. It has read-only
+repository permission, no deployment/configuration secrets, no LAN connection
+and no service-control step.
 `june/build` success is **not** `june/deploy` success. In-flight builds are not
 cancelled by newer pushes; the local pending queue still coalesces independently.
 
@@ -114,6 +115,140 @@ The initial local producer probe measured 1.48 GB compressed and 4.15 GB expande
 dependencies (43,903 archive entries). These are decimal byte sizes, not a future
 size guarantee; they supersede the older 2.3 GiB local-install estimate below for
 artifact-transfer planning.
+
+## Opt-in warm standby and durable Slack intake
+
+The default remains the single `june.service` rollout described below. An
+operator can instead install **blue/green slots** with independent durable Slack
+intake. Source support is not live enablement. This keeps old June serving during
+build, isolated startup checks and candidate standby, and accepts Slack events
+during cutover. Replies can wait while the runtime transfers; console/operator
+requests are not buffered. It does not prove arbitrary candidate code correct.
+
+The candidate loads code/configuration and its immutable identity on the inactive
+loopback slot (blue 3081, green 3082). A barrier precedes opening live stores,
+recovering actors, providers and schedulers. Standby is **not active readiness**.
+The installed launcher `slot.py` directly execs pinned Node and passes FD9 for a
+pre-provisioned kernel lock. Private activation acquires that same open file
+description before live initialization. The descriptor stays held until process
+exit; it is not an expiring lease. An initialization/shutdown failure retains the
+MainPID/lock rather than releasing ownership while children might remain.
+
+The controller durably records intent before launching standby, verifies it while
+old June remains healthy, pauses only intake **forwarding**, and then drains old
+June. A busy drain resumes the old app and forwarding. Before activation it
+requires the existing strict normal-exit evidence **and an empty old cgroup**;
+the legacy unit must also be empty. After private activation, exact candidate
+health and MainPID identity must pass before forwarding switches and success is
+recorded. A standby failure blocks recovery without stopping or draining old
+June. A lost activation acknowledgment blocks rather than activating twice.
+
+The existing independent `slack_responder.py` has an opt-in `durableQueue` mode.
+Unlike legacy notices, this mode verifies and stores events before ACK, sends no
+"currently deploying" messages, and replays accepted traffic after handoff. It
+starts paused without a destination. Its private SQLite database contains message
+bodies until application acceptance; protect it as private conversation data.
+Queue defaults are 10,000 events and 64 MiB of raw bodies/content types, not a
+filesystem quota. Capacity/storage failures return 503, never a false ACK.
+Pending events do not expire; completed hash receipts retain at most 48 hours and
+100,000 entries. Secure deletion is enabled, but is not storage-level erasure.
+
+Delivery is at least once, with original event IDs and application deduplication.
+The intake re-signs the unchanged body at delivery time and authenticates to
+`/operator/deployment/slack` with a distinct token. Public Slack signature age
+checks are unchanged. The authenticated original receipt timestamp is retained
+in durable admission and conversational button-expiry checks, not only diagnostics.
+A lost app ACK retries the same event, not a new identity or receipt time.
+Before unpausing, the responder verifies a revision-bound, content-free signed
+challenge through the actual private replay endpoint using its own credentials.
+A healthy app with broken replay credentials cannot produce deployment success.
+A permanently rejected first envelope blocks FIFO delivery for operator diagnosis;
+it is not silently discarded. Never delete the queue to repair deployment.
+
+### Installation prerequisites and one-time migration
+
+Under the existing coordinated operator/recovery ownership and deployment locks:
+
+1. Install reviewed `deploy.py`, `preflight.sh`, `slot.py`, `slack_responder.py`
+   and `june-slot@.service` outside releases. Preserve the responder's existing
+   separate UID and private state directory. Keep **public routing restricted to
+   POST `/webhooks/slack`**, not either slot, health or control endpoints.
+   If Actions preparation is enabled, review and update its pinned preflight blob
+   for the added startup checks; the previous pin intentionally blocks fresh
+   preparation with `actions_policy_changed`, before standby or drain.
+2. Provision root-owned `/opt/june/slots` mode 0755. Create `/run/june-runtime`
+   root:root 0755 and `owner.lock` root:june 0660 once, including boot provisioning
+   (for example tmpfiles `d /run/june-runtime 0755 root root -` and
+   `f /run/june-runtime/owner.lock 0660 root june -`). Never unlink/replace the lock
+   during operation. Keep both slot units unenabled with `Restart=no`.
+3. Provision root-only `/etc/june/slot.env` with the existing application's exact
+   credential bindings, `RIVETKIT_STORAGE_PATH`, namespace, engine configuration
+   and host feature gates. Preserve its sandbox-required paths in reviewed unit
+   drop-ins. Do not override `JUNE_SLOT`, `JUNE_RUNTIME_LOCK_FD`, `JUNE_CONFIG`,
+   `NODE_OPTIONS` or `NODE_PATH`; do not invent a new state directory. Verify the
+   combined RAM budget for build, old app, standby and intake on the target host.
+   The entire root-only `slot.env` is included in release compatibility binding;
+   changing it requires a coordinated migration, even for credential rotation.
+4. Create a distinct intake token through the existing private secret mechanism.
+   Store the controller copy in root-only `/etc/june/intake-token`; bind the same
+   value into the app's `JUNE_INTAKE_TOKEN` and responder's `durableQueue.token`.
+   Do not reuse deployment, operator, Slack or provider credentials.
+5. Add `blueGreen: true` and `intakeTokenEnv: "JUNE_INTAKE_TOKEN"` to the app's
+   existing `deployment` object. Add this to controller configuration:
+
+   ```json
+   "blueGreen": { "intakeOrigin": "http://127.0.0.1:3083" }
+   ```
+
+   Preserve responder configuration, set `port: 3083`, and add:
+
+   ```json
+   "durableQueue": { "token": "<privately provisioned token>", "maxBytes": 67108864, "maxEvents": 10000 }
+   ```
+
+   Match `intakeOrigin` to the responder's listener address. For the existing
+   remote private ingress, preserve `host: "192.168.0.215"` and use
+   `http://192.168.0.215:3083`; the controller permits only loopback or this
+   existing host address. Public ingress must still route only POST
+   `/webhooks/slack`, never the intake control routes. Queue replay always goes
+   to loopback slots, regardless of the responder listener's address.
+
+   Queue mode ignores the legacy intent-marker notice policy and `upstreamPort`.
+   The controller's configured legacy `origin` is retained for compatibility but
+   slot health/drain use fixed 3081/3082. Neither slot port may be the intake port.
+6. Verify with disposable **real systemd units** that Node is MainPID, FD9 survives
+   exec/flock, standby touches no live state, a second runtime cannot acquire it,
+   stop ordering preserves the engine, and cgroups are empty after clean stop.
+   The repository's process/HTTP fixtures do not replace this host verification.
+7. Prepare a new forward release under the new config/unit binding; old release
+   markers must not be rewritten. Quiesce and strictly stop legacy June, verify
+   its cgroup empty, set one slot symlink and `current` to the new immutable
+   release, and start that slot in standby. Authenticate private activation for
+   that exact revision, then verify actual readiness and process identity. This
+   initial infrastructure migration is not an automatic zero-downtime rollout.
+8. Reconcile the actually healthy slot under existing ownership rules. In
+   blue/green mode reconciliation also restores the intake destination before
+   recording success; for a fresh controller bootstrap, reconcile after bootstrap.
+   Verify signed disposable intake/replay and routing before resuming the poller.
+   Subsequent ordinary updates use the inactive slot automatically.
+
+Private intake control is bearer-authenticated `GET/POST
+/operator/deployment/intake`. POST accepts exactly `{revision, port, paused}`;
+revision is a full SHA, port is 3081 or 3082. A pause persists before responding;
+`settled:false` means a request remains in flight, not permission to drain/stop.
+Standby status and activation use the separate deployment bearer credential at
+`GET /operator/deployment/standby` and `POST /operator/deployment/activate` with
+`{revision}`. They are controller interfaces, not June/model capabilities.
+
+After candidate activation may have accessed state, unchanged rollback rules
+still apply. An incompatible or unquiescent failed runtime requires forward
+recovery while intake retains messages, not an unsafe restart of old code.
+Unknown launches/stops/activations remain blocked across controller restarts.
+Never clear intent, recreate lock files, or restore old conversation snapshots to
+force progress. Existing coding/reflection/WhatsApp drain gates remain in place.
+`release.inspect` continues to expose existing bounded preparation, activation,
+health and failure evidence; it does not attest queue health, slot enablement or
+individual queued messages. No new public feed fields are required.
 
 ## GitHub deployment details
 
@@ -428,7 +563,11 @@ is a conservative unchanged-contract check, not a proof of arbitrary code safety
 Treat the excluded view as presentation only; adding persistence there violates
 the contract. No concurrent config, namespace, state-path, unit, credential-scope
 or out-of-band service change is permitted while the poller owns activation.
-Environment files must not override runtime/namespace configuration.
+Legacy environment files must not override runtime/namespace configuration.
+Blue/green's explicitly provisioned `slot.env` is the exception: its complete
+bytes are bound along with both effective slot units and the installed launcher.
+Additional unbound environment files or unit overrides must not select runtime
+state; any binding change requires coordinated operator migration.
 
 If the candidate fails, the controller first requires its drain fence. It then
 stops it and restores retained last-known-good code **only if** rollback is safe.

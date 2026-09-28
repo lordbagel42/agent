@@ -2039,5 +2039,150 @@ class DeploymentSafety(unittest.TestCase):
         self.assertIsNone(self.host.process)
 
 
+class WarmStandbySafety(unittest.TestCase):
+    # Real disposable Git/releases/SQLite/HTTP app. Only the second-slot manager
+    # is simulated here; TS standby tests exercise the real process/kernel lock.
+    setUp = DeploymentSafety.setUp
+    tearDown = DeploymentSafety.tearDown
+
+    def enable_slots(self):
+        host = self.host
+        host.config["blueGreen"] = {"intakeOrigin": "http://127.0.0.1:3083"}
+        host.origin = lambda commit: host.config["origin"]
+        self.trace = []
+
+        def prepare(commit, previous):
+            self.assertTrue(host.healthy(previous))
+            self.assertEqual(self.store.get("intent"), commit)
+            self.trace.append("standby")
+
+        def intake(commit, *, paused):
+            self.trace.append("pause" if paused else "forward")
+            if not paused:
+                self.assertTrue(host.healthy(commit))
+
+        def activate(commit):
+            self.assertEqual(self.store.get("intent"), commit)
+            self.assertIsNone(host.process)
+            self.trace.append("activate")
+            host.service("start")
+
+        host.prepare_standby = prepare
+        host.intake = intake
+        host.activate = activate
+        host.standby = lambda commit: True
+        host.wait_standby = lambda commit: None
+
+    def test_failed_standby_keeps_old_process_and_never_pauses_intake(self):
+        self.enable_slots()
+        pid = self.host.process.pid
+        target = self.host.commit("src/console/view.ts", "two")
+        with patch.object(
+            self.host, "prepare_standby", side_effect=ValueError("bad startup")
+        ):
+            self.loop.tick()
+        self.assertEqual(self.host.process.pid, pid)
+        self.assertTrue(self.host.healthy(self.first))
+        self.assertEqual(self.trace, [])
+        self.assertEqual(self.store.get("blocked"), "preflight_failed")
+        # Reopen never retries an unknown launch or stops the old runtime.
+        deploy.Deployer(self.host, self.store).tick()
+        self.assertEqual(self.host.process.pid, pid)
+        self.assertEqual(self.store.get("intent"), target)
+
+    def test_busy_drain_resumes_old_then_cutover_forwards_only_after_health(self):
+        self.enable_slots()
+        target = self.host.commit("src/console/view.ts", "two")
+        pid = self.host.process.pid
+        (self.host.data / "busy").touch()
+        self.loop.tick()
+        self.assertEqual(self.trace, ["standby", "pause", "forward"])
+        self.assertEqual(self.host.process.pid, pid)
+        self.assertEqual(self.store.get("intent"), "")
+        (self.host.data / "busy").unlink()
+        self.trace.clear()
+        self.loop.tick()
+        self.assertEqual(self.trace, ["standby", "pause", "activate", "forward"])
+        self.assertTrue(self.host.healthy(target))
+        self.assertEqual(self.store.get("active"), target)
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(), [self.first, target]
+        )
+
+    def test_slot_environment_change_blocks_before_drain(self):
+        self.enable_slots()
+        with (
+            patch.object(Path, "read_bytes", return_value=b"unchanged config/runtime"),
+            patch.object(
+                deploy.subprocess, "check_output", return_value=b"unchanged units"
+            ),
+            patch.object(
+                deploy, "private_file", return_value="RIVETKIT_STORAGE_PATH=/old"
+            ) as environment,
+        ):
+            before = deploy.Host.binding(self.host)
+            environment.return_value = "RIVETKIT_STORAGE_PATH=/new"
+            after = deploy.Host.binding(self.host)
+        self.assertNotEqual(before, after)
+        # Bind the already-running fixture to 'before', then prepare a candidate
+        # under the changed environment. No source-contract change is necessary.
+        marker = self.host.releases / self.first / ".june-release.json"
+        saved = json.loads(marker.read_text())
+        saved["binding"] = before
+        marker.write_text(json.dumps(saved))
+        self.host.binding = lambda: after
+        target = self.host.commit("src/console/view.ts", "presentation only")
+        pid = self.host.process.pid
+        self.loop.tick()
+        self.assertEqual(self.store.status(target), "failed")
+        self.assertEqual(self.trace, [])
+        self.assertEqual(self.host.process.pid, pid)
+        self.assertTrue(self.host.healthy(self.first))
+
+    def test_unknown_stop_or_activation_never_retries_or_forwards_candidate(self):
+        for boundary in ("service", "activate"):
+            with self.subTest(boundary=boundary):
+                self.enable_slots()
+                target = self.host.commit("src/console/view.ts", boundary)
+                self.store.set("blocked", "")
+                self.store.set("intent", "")
+                self.loop = deploy.Deployer(self.host, self.store)
+                with patch.object(
+                    self.host, boundary, side_effect=ValueError("uncertain")
+                ):
+                    self.loop.tick()
+                self.assertEqual(self.store.get("blocked"), "activation_unknown")
+                self.assertEqual(self.trace, ["standby", "pause"])
+                before = (self.host.data / "starts").read_text()
+                deploy.Deployer(self.host, self.store).tick()
+                self.assertEqual((self.host.data / "starts").read_text(), before)
+                self.assertEqual(self.store.get("intent"), target)
+
+    def test_missing_cgroup_evidence_blocks_activation_before_http(self):
+        host = object.__new__(deploy.Host)
+        host.config = {"blueGreen": {"intakeOrigin": "http://127.0.0.1:3083"}}
+        host.slot = lambda commit: "green"
+        for empty in (False, True):
+            with (
+                self.subTest(empty=empty),
+                patch.object(host, "unit_empty", return_value=empty),
+                patch.object(host, "standby", return_value=True),
+                patch.object(
+                    host,
+                    "request",
+                    return_value={"revision": self.first, "activated": True},
+                ) as request,
+            ):
+                if empty:
+                    host.activate(self.first)
+                    self.assertEqual(
+                        request.call_args.kwargs["data"], {"revision": self.first}
+                    )
+                else:
+                    with self.assertRaisesRegex(ValueError, "runtime_not_exclusive"):
+                        host.activate(self.first)
+                    request.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

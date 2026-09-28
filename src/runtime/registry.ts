@@ -756,8 +756,14 @@ export function createJuneRegistry(deps: Dependencies) {
       },
       /** Trusted verified ingress. Persist the arrival and its recoverable body
        * together, before queue publication or any stale reply can resume. */
-      receive: async (c, event: ChannelEvent) => {
-        const receivedAt = Date.now();
+      receive: async (c, event: ChannelEvent, intakeReceivedAt?: number) => {
+        const receivedAt = intakeReceivedAt ?? Date.now();
+        if (
+          !Number.isSafeInteger(receivedAt) ||
+          receivedAt < 0 ||
+          receivedAt > Date.now() + 60_000
+        )
+          throw new Error("Invalid verified ingress time");
         const scope = routeEvent(event, deps.owner, true);
         if (!scope || JSON.stringify(scope.key) !== JSON.stringify(c.key))
           throw new Error("Conversation scope mismatch");

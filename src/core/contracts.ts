@@ -129,6 +129,8 @@ export interface ChannelAdapter {
   /** Verify raw bytes before decoding. Never enqueue an unauthenticated event. */
   receive(
     request: Request,
+    /** Set only by authenticated durable intake, never from public headers. */
+    intake?: { receivedAt: number },
   ): Promise<{ response: Response; events: ChannelEvent[] }>;
   send(message: OutboundMessage): Promise<SendResult>;
   /** Use only for the initiating message. Credentials and results stay volatile. */

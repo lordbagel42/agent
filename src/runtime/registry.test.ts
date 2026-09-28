@@ -106,7 +106,8 @@ describe("Rivet conversation workflow", () => {
     });
     const { client } = await setupTest(t, registry);
     const june = client.conversation.getOrCreate(["private", owner.id]);
-    await june.send("inbox", { type: "event", event: message });
+    const receivedAt = Date.now() - 86_400_000;
+    await june.receive(message, receivedAt);
     await expect
       .poll(
         async () =>
@@ -125,8 +126,11 @@ describe("Rivet conversation workflow", () => {
     expect(Object.values(snapshot.deliveries)[0]?.message.content).toEqual(
       expected,
     );
-    await june.send("inbox", { type: "event", event: message });
+    await june.receive(message, Date.now());
     expect(sent).toHaveLength(1);
+    expect(
+      Object.values((await june.snapshot()).ingress?.receipts ?? {}),
+    ).toEqual([expect.objectContaining({ receivedAt })]);
     store.deleteSource("question-source");
     await june.forget("question-source");
     expect(JSON.stringify((await june.snapshot()).deliveries)).not.toContain(

@@ -76,6 +76,157 @@ function dependencies(
 }
 
 describe("webhook and operator HTTP boundary", () => {
+  it("authenticates private intake separately without bypassing Slack signatures, routing or durable ACK", async () => {
+    const intakeToken = "separate-intake-token-32-characters-long";
+    const deployment = {
+      token: "deploy-token-32-characters-long-12345",
+      intakeToken,
+      supported: true,
+    };
+    const lifecycle = createLifecycle();
+    const submit = vi.fn(async () => {});
+    const deps = dependencies({
+      deployment,
+      lifecycle,
+      revision: "a".repeat(40),
+      submit,
+    });
+    const app = createHttpApp(deps);
+    const receivedAt = Date.now() - 86_400_000;
+    const replay = (credential = intakeToken, body?: string) => {
+      const request = new Request(
+        "http://localhost/operator/deployment/slack",
+        signed(body),
+      );
+      request.headers.set("x-june-intake-token", credential);
+      request.headers.set("x-june-revision", "a".repeat(40));
+      request.headers.set("x-june-received-at", String(receivedAt));
+      return request;
+    };
+    for (const credential of ["", token, deployment.token])
+      expect((await app.request(replay(credential))).status).toBe(401);
+    expect(submit).not.toHaveBeenCalled();
+    const wrongRevision = replay();
+    wrongRevision.headers.set("x-june-revision", "b".repeat(40));
+    expect((await app.request(wrongRevision)).status).toBe(409);
+    const probe = await app.request(
+      replay(
+        intakeToken,
+        JSON.stringify({
+          type: "url_verification",
+          team_id: "T1",
+          challenge: "private-probe",
+        }),
+      ),
+    );
+    expect(await probe.text()).toBe("private-probe");
+    expect(submit).not.toHaveBeenCalled();
+    const unsigned = replay();
+    unsigned.headers.delete("x-slack-signature");
+    expect((await app.request(unsigned)).status).toBe(401);
+    const stale = replay();
+    const staleTimestamp = String(now / 1000 - 1000);
+    stale.headers.set("x-slack-request-timestamp", staleTimestamp);
+    stale.headers.set(
+      "x-slack-signature",
+      `v0=${createHmac("sha256", "test-secret")
+        .update(`v0:${staleTimestamp}:${JSON.stringify(payload)}`)
+        .digest("hex")}`,
+    );
+    const publicRequest = new Request(
+      "http://localhost/webhooks/slack",
+      stale.clone(),
+    );
+    expect((await app.request(stale)).status).toBe(401);
+    expect((await app.request(publicRequest)).status).toBe(401);
+    expect(
+      (
+        await app.request(
+          replay(
+            intakeToken,
+            JSON.stringify({
+              ...payload,
+              event: { ...payload.event, user: "other" },
+            }),
+          ),
+        )
+      ).status,
+    ).toBe(200);
+    expect(submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        private: false,
+        key: ["guest", "slack", "T1", "D1", "", "other"],
+      }),
+      expect.objectContaining({ senderId: "other" }),
+      receivedAt,
+    );
+    submit.mockClear();
+    // Click accepted before expiry, delivered afterward: only authenticated
+    // intake may supply the earlier time. Public header spoofing cannot do so.
+    const choice = Buffer.from(
+      JSON.stringify({
+        id: "question-1",
+        team: "T1",
+        channel: "D1",
+        user: "U1",
+        expires: now - 1000,
+        prompt: "Which?",
+        option: "First",
+        index: 0,
+      }),
+    ).toString("base64url");
+    const choiceSignature = createHmac("sha256", "test-secret")
+      .update(`june-question-v1:${choice}`)
+      .digest("base64url");
+    const click = replay(
+      intakeToken,
+      JSON.stringify({
+        type: "block_actions",
+        team: { id: "T1" },
+        user: { id: "U1" },
+        channel: { id: "D1" },
+        message: { user: "B1", ts: "123.45" },
+        actions: [
+          {
+            type: "button",
+            action_id: "june.question.0",
+            value: `${choice}.${choiceSignature}`,
+          },
+        ],
+      }),
+    );
+    click.headers.set("x-june-received-at", String(now - 2000));
+    const publicClick = new Request(
+      "http://localhost/webhooks/slack",
+      click.clone(),
+    );
+    expect((await app.request(publicClick)).status).toBe(200);
+    expect(submit).not.toHaveBeenCalled();
+    expect((await app.request(click)).status).toBe(200);
+    expect(submit).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        id: "slack-question:T1:question-1:U1",
+        occurredAt: now - 2000,
+      }),
+      now - 2000,
+    );
+    submit.mockClear();
+    expect((await app.request(replay())).status).toBe(200);
+    expect(submit).toHaveBeenCalledTimes(1);
+    submit.mockRejectedValueOnce(new Error("storage offline"));
+    expect((await app.request(replay())).status).toBe(503);
+    await lifecycle.drain();
+    expect((await app.request(replay())).status).toBe(503);
+    for (const duplicate of [token, deployment.token])
+      expect(() =>
+        createHttpApp({
+          ...deps,
+          deployment: { ...deployment, intakeToken: duplicate },
+        }),
+      ).toThrow(/separate/);
+  });
+
   it("mounts opt-in capabilities without weakening bearer, scope, or single-use enforcement", async (t) => {
     const headers = { authorization: `Bearer ${token}` };
     const base = "/operator/capabilities";
