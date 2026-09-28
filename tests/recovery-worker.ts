@@ -5,6 +5,8 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { createWorktreeManager } from "../src/coding/worktree.js";
+import { slackSource } from "../src/imports/identity.js";
+import { EvidenceStore } from "../src/memory/store.js";
 import { createJevObserver } from "../src/models/jev.js";
 import type { CodingDependencies } from "../src/runtime/coding.js";
 import { createJuneRegistry } from "../src/runtime/registry.js";
@@ -51,11 +53,46 @@ const coding: CodingDependencies = {
 };
 
 const registry = createJuneRegistry({
+  ...(process.env.FIXTURE_ACTIVITY
+    ? {
+        sessions: { idleMs: 1000 },
+        memory: {
+          store: new EvidenceStore(
+            join(storage, "activity-memory.db"),
+            Buffer.alloc(32, 1),
+          ),
+          source: (
+            event: import("../src/core/contracts.js").MessageEvent,
+            audience: string,
+          ) =>
+            slackSource({
+              audiences: [audience],
+              workspace: "T1",
+              channel: "D1",
+              ts: event.messageId,
+              author: "U1",
+              text: event.text,
+              workspaceUrl: "https://example.slack.com/",
+            }),
+        },
+      }
+    : {}),
   owner: {
     id: "fixture",
     identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
   },
   model: {
+    ...(process.env.FIXTURE_ACTIVITY
+      ? {
+          beginReply: () => {
+            process.send?.({ kind: "activity-model" });
+            return {
+              answer: Promise.resolve({ text: "Activity reply" }),
+              settlement: Promise.resolve("confirmed_stopped" as const),
+            };
+          },
+        }
+      : {}),
     async reply(request) {
       if (request.system.includes("Coding completion")) {
         process.send?.({ kind: "coding-report", text: request.system });
@@ -132,7 +169,8 @@ const registry = createJuneRegistry({
           id: message.id,
         });
         if (
-          process.env.FIXTURE_PHASE === "interrupt" ||
+          (process.env.FIXTURE_PHASE === "interrupt" &&
+            process.env.FIXTURE_ACTIVITY !== "ack") ||
           (notification &&
             process.env.FIXTURE_PHASE === "interrupt-notification")
         )
@@ -162,6 +200,16 @@ conversationConfig.createVars = async (c, input) => {
     ...vars,
     persist: async () => {
       await vars.persist();
+      if (
+        process.env.FIXTURE_ACTIVITY === "ack" &&
+        process.env.FIXTURE_PHASE === "interrupt" &&
+        Object.values(c.state.sessions?.directory.receipts ?? {}).some(
+          (receipt) => receipt.status === "settled",
+        )
+      ) {
+        process.send?.({ kind: "activity-ack" });
+        await new Promise<never>(() => {});
+      }
       if (
         process.env.FIXTURE_PHASE === "interrupt" &&
         (Object.values(c.state.pendingInputs ?? {}).some(

@@ -19,7 +19,10 @@ import { beginModelReply } from "../models/invocation.js";
 import { parseReply } from "../models/provider.js";
 import { type Delivery, deliver } from "../runtime/delivery.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
-import type { MemoryReference } from "../runtime/registry.js";
+import type {
+  JuneClientRegistry,
+  MemoryReference,
+} from "../runtime/registry.js";
 import {
   isReceiptOnlyArchive,
   type SessionArchiveInput,
@@ -76,7 +79,7 @@ export interface ActivityCatalog {
   apply(
     assignment: ActivityAssignment,
     reply: CompanionReply,
-  ): Promise<{ text: string; messages?: string[] }>;
+  ): Promise<{ text: string; messages?: string[]; reaction?: string }>;
   acknowledge(
     assignment: ActivityAssignment,
     outcome:
@@ -114,10 +117,23 @@ export interface ActivityDependencies {
   owner: Owner;
   model: ModelProvider;
   channel: Pick<ChannelAdapter, "send">;
-  lifecycle?: Lifecycle;
-  catalog(scopeKey: string[]): ActivityCatalog;
+  lifecycle?: Pick<Lifecycle, "enter" | "fail">;
+  catalog(
+    scopeKey: string[],
+    client: {
+      conversation: {
+        getOrCreate(key: string[]): {
+          activityStatus: ActivityCatalog["assignmentStatus"];
+          activityPrepare: ActivityCatalog["prepare"];
+          activityApply: ActivityCatalog["apply"];
+          activityAcknowledge: ActivityCatalog["acknowledge"];
+        };
+      };
+    },
+  ): ActivityCatalog;
   memory: {
-    store: Pick<EvidenceStore, "archiveSessionTurn" | "deletionRevision">;
+    store: Pick<EvidenceStore, "archiveSessionTurn" | "deletionRevision"> &
+      Partial<Pick<EvidenceStore, "sessionArchiveReceipt">>;
     evidence: ArchiveEvidence;
     current(audience: string, reference: MemoryReference): boolean;
   };
@@ -170,7 +186,7 @@ export function createActivityActor(deps: ActivityDependencies) {
         const receive = c.vars.receiving.then(async () => {
           if (
             (await deps
-              .catalog(assignment.scopeKey)
+              .catalog(assignment.scopeKey, c.client<JuneClientRegistry>())
               .assignmentStatus(assignment)) === "unavailable"
           )
             throw new Error("Unassigned activity input");
@@ -186,6 +202,23 @@ export function createActivityActor(deps: ActivityDependencies) {
             if (!isDeepStrictEqual(previous.assignment, assignment))
               throw new Error("Activity assignment conflict");
           } else {
+            // The catalog may publish a successor before the preceding ACK RPC
+            // returns. Repair only its exact historical receipt, never effects.
+            for (const turn of Object.values(c.state.turns)) {
+              if (turn.acknowledged) continue;
+              if (
+                (await deps
+                  .catalog(assignment.scopeKey, c.client<JuneClientRegistry>())
+                  .assignmentStatus(turn.assignment)) !== "acknowledged"
+              )
+                continue;
+              turn.acknowledged = true;
+              delete turn.hold;
+              c.state.acknowledgedThrough = Math.max(
+                c.state.acknowledgedThrough,
+                turn.assignment.sequence,
+              );
+            }
             if (
               assignment.sequence !== c.state.acknowledgedThrough + 1 ||
               Object.values(c.state.turns).some((turn) => !turn.acknowledged)
@@ -200,15 +233,48 @@ export function createActivityActor(deps: ActivityDependencies) {
         c.vars.receiving = receive.catch(() => {});
         await receive;
       },
+      forget: async (c, eventIds: string[]) => {
+        for (const [index, entry] of [...c.state.history.entries()].reverse()) {
+          const assignment = c.state.turns[entry.eventId]?.assignment;
+          if (
+            eventIds.includes(entry.eventId) ||
+            !assignment ||
+            !current(assignment, entry.context)
+          )
+            c.state.history.splice(index, 1);
+        }
+        for (const id of eventIds) {
+          const turn = c.state.turns[id];
+          if (!turn) continue;
+          if (turn.context) turn.context.source.text = "";
+          delete turn.reply;
+          for (const delivery of turn.deliveries ?? [])
+            if (delivery.message.content.type === "text")
+              delivery.message.content.text = "";
+          if (turn.archive) {
+            turn.archive.input.turn.data = {
+              sourceIds: [],
+              contextSourceIds: [],
+              entries: [],
+            };
+          }
+        }
+        await c.vars.persist();
+        for (const id of eventIds)
+          if (c.state.turns[id] && !c.state.turns[id]?.acknowledged)
+            await c.queue.send("turns", { eventId: id });
+      },
       status: (c) => ({
         acknowledgedThrough: c.state.acknowledgedThrough,
-        turns: Object.values(c.state.turns).map((turn) => ({
-          sequence: turn.assignment.sequence,
-          inference: turn.inference ?? "not_started",
-          archivedThrough: turn.archivedThrough ?? 0,
-          acknowledged: turn.acknowledged === true,
-          hold: turn.hold ?? null,
-        })),
+        turns: Object.values(c.state.turns)
+          .slice(-5)
+          .map((turn) => ({
+            sequence: turn.assignment.sequence,
+            inference: turn.inference ?? "not_started",
+            archivedThrough: turn.archivedThrough ?? 0,
+            acknowledged: turn.acknowledged === true,
+            hold: turn.hold ?? null,
+          })),
       }),
     },
     run: workflow(
@@ -229,7 +295,10 @@ export function createActivityActor(deps: ActivityDependencies) {
                 if (!turn || turn.acknowledged) return;
                 const assignment = turn.assignment;
                 const audience = JSON.stringify(assignment.scopeKey);
-                const catalog = deps.catalog(assignment.scopeKey);
+                const catalog = deps.catalog(
+                  assignment.scopeKey,
+                  step.client<JuneClientRegistry>(),
+                );
                 const status = await catalog.assignmentStatus(assignment);
                 if (status === "acknowledged") {
                   // The catalog can commit and release before its RPC response
@@ -384,6 +453,74 @@ export function createActivityActor(deps: ActivityDependencies) {
                 }
                 const context = turn.context;
                 if (!context || !current(assignment, context)) {
+                  if (context && turn.inference !== "unknown") {
+                    // Revocation prevents new effects, but a prospective known
+                    // settlement can still account for omitted receipts. Never
+                    // upgrade a sending/unknown outbox or invent stoppage.
+                    turn.deliveries ??= [];
+                    for (const delivery of turn.deliveries) {
+                      if (delivery.phase === "sending") {
+                        delivery.result = {
+                          status: "unknown",
+                          code: "interrupted_send",
+                        };
+                        delivery.outcomeObservedAt = Date.now();
+                        delivery.phase = "settled";
+                      } else if (
+                        !delivery.result ||
+                        (delivery.result.status === "rejected" &&
+                          delivery.result.retryable)
+                      ) {
+                        delivery.result = {
+                          status: "rejected",
+                          code: "activity_invalidated",
+                          retryable: false,
+                        };
+                        delivery.outcomeObservedAt = Date.now();
+                        delivery.phase = "settled";
+                      }
+                    }
+                    const archived = deps.memory.store.sessionArchiveReceipt?.(
+                      audience,
+                      assignment.sessionId,
+                      assignment.eventId,
+                    );
+                    if (archived?.sequence === assignment.sequence)
+                      turn.archivedThrough = archived.sequence;
+                    else
+                      turn.archivedThrough =
+                        deps.memory.store.archiveSessionTurn(
+                          produceSessionArchiveTurn(
+                            {
+                              ...assignment,
+                              audience,
+                              retentionExcluded: true,
+                              deliveries: turn.deliveries.map((delivery) => ({
+                                delivery,
+                              })),
+                            },
+                            deps.memory.evidence,
+                          ),
+                          deps.memory.store.deletionRevision(),
+                        );
+                    await step.vars.persist();
+                    if (
+                      turn.deliveries.every(
+                        (delivery) => delivery.result?.status !== "unknown",
+                      )
+                    ) {
+                      await catalog.acknowledge(assignment, {
+                        inference: turn.inference,
+                        deliveries: turn.deliveries,
+                        archivedThrough: turn.archivedThrough,
+                      });
+                      turn.acknowledged = true;
+                      step.state.acknowledgedThrough = assignment.sequence;
+                      delete turn.hold;
+                      await step.vars.persist();
+                      return;
+                    }
+                  }
                   turn.hold = "provenance";
                   await step.vars.persist();
                   return;
@@ -561,6 +698,21 @@ export function createActivityActor(deps: ActivityDependencies) {
                           content: { type: "text", text },
                         },
                       }));
+                    if (output.reaction)
+                      turn.deliveries.push({
+                        phase: "ready",
+                        attempts: 0,
+                        message: {
+                          id: randomUUID(),
+                          address: { ...context.source.address },
+                          lastInboundAt: context.source.occurredAt,
+                          content: {
+                            type: "reaction",
+                            messageId: context.source.messageId,
+                            emoji: output.reaction,
+                          },
+                        },
+                      });
                     await step.vars.persist();
                   }
                   for (const [index, delivery] of turn.deliveries.entries()) {

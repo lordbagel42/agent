@@ -928,6 +928,9 @@ async function main() {
       : undefined;
   const dependencies: Dependencies = {
     owner: config.owner,
+    sessions: config.activitySessions.enabled
+      ? { idleMs: config.activitySessions.idleMs }
+      : undefined,
     social,
     channels,
     model: connections ? connections.wrap(model) : model,

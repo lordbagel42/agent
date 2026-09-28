@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout } from "node:timers/promises";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type {
@@ -591,6 +592,18 @@ export function createExecutionActor(
                           deps,
                           ports: {
                             comparePersonality,
+                            beforeForgetPreview: async () => {
+                              const deadline = Date.now() + 60_000;
+                              while (
+                                !(await conversation.executionArchiveReady(
+                                  request.id,
+                                ))
+                              ) {
+                                if (!usable() || Date.now() >= deadline)
+                                  throw new Error("Origin archive not ready");
+                                await setTimeout(100, undefined, { signal });
+                              }
+                            },
                             inspectForgetting: () =>
                               conversation.executionForgetting(request.id),
                             inspectionCapacity: () =>

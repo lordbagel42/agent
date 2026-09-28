@@ -60,6 +60,17 @@ const schema = z
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    activitySessions: z
+      .strictObject({
+        enabled: z.boolean().default(false),
+        idleMs: z
+          .number()
+          .int()
+          .min(1000)
+          .max(7 * 24 * 60 * 60 * 1000)
+          .default(3 * 60 * 60 * 1000),
+      })
+      .default({ enabled: false, idleMs: 3 * 60 * 60 * 1000 }),
     dynamicApps: z
       .strictObject({
         endpoint: baseUrl.refine(
@@ -446,6 +457,21 @@ const schema = z
         (!config.reflection && !Object.keys(config.imports).length)) &&
       (!config.memory || !config.slack || !!config.slack.workspaceUrl),
     "Memory is required for reflection/imports; live Slack memory requires its verified workspace URL",
+  )
+  .refine(
+    (config) =>
+      !config.activitySessions.enabled ||
+      (!config.setupMode &&
+        !!config.memory &&
+        !!config.slack &&
+        config.executionEnabled &&
+        !(
+          config.whatsapp &&
+          config.owner.identities.some(
+            (identity) => identity.channel === "whatsapp",
+          )
+        )),
+    "Activity sessions require retained memory, execution workers and Slack-only owner ingress",
   )
   .refine(
     (config) =>

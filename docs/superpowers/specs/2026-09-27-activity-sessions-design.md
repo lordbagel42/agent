@@ -1,10 +1,11 @@
 # Activity-period conversation actors
 
-Historical architectural design. Session-directory control state,
-encrypted archive storage/lookup, June-facing typed archive recall and
-archive-aware forgetting are implemented. The conservative archive projection
-and catalog-validation extraction are prepared; runtime archive production,
-live session routing and migration are not activated by these prerequisites.
+Status: owner-Slack runtime integration is implemented behind the default-off
+`activitySessions` setting. Distinct activity actors, stable-catalog dispatch,
+archive production, typed recall, archive-aware forgetting and conservative
+legacy handoff are wired. The initial configurable idle interval is three hours.
+No live activation is claimed. Unknown legacy effects remain blocked; separate
+conversation-reconciliation authority is still required to resolve them.
 
 ## Outcome and scope
 

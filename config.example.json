@@ -17,6 +17,10 @@
     "apiKeyEnv": "MODEL_API_KEY"
   },
   "executionEnabled": true,
+  "activitySessions": {
+    "enabled": false,
+    "idleMs": 10800000
+  },
   "slack": {
     "teamId": "T_REPLACE_ME",
     "botUserId": "U_BOT_REPLACE_ME",

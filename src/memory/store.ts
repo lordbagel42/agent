@@ -974,6 +974,38 @@ export class EvidenceStore {
     this.transaction((state) => insertSource(state, source));
   }
 
+  /** Host-only complete retained-context check, not independent evidence. */
+  sessionContextAvailable(audience: string, reference: string): boolean {
+    const state = this.read();
+    if (archiveExclusions(state, audience).has(reference)) return false;
+    return (
+      state.sources.some((source) => source.id === reference) ||
+      state.claims.some((claim) => claim.id === reference) ||
+      state.proposals.some((proposal) => proposal.id === reference) ||
+      state.sessionArchives.some(
+        (archive) =>
+          archive.audience === audience &&
+          archive.turns.some((turn) => turn.id === reference),
+      )
+    );
+  }
+
+  /** Immutable content-free coverage survives logical deletion. No effect or
+   * delivery outcome is inferred from an archival receipt. */
+  sessionArchiveReceipt(audience: string, sessionId: string, eventId: string) {
+    const archive = this.read().sessionArchives.find(
+      (item) => item.id === sessionId && item.audience === audience,
+    );
+    const turn = archive?.turns.find((item) => item.eventId === eventId);
+    return archive && turn
+      ? {
+          sequence: turn.sequence,
+          receivedAt: turn.receivedAt,
+          openedAt: archive.openedAt,
+        }
+      : undefined;
+  }
+
   /** Trusted host only. The producer removes volatile content before calling;
    * the transaction fences new retention against concurrent logical deletion.
    * The returned sequence proves archival coverage, not turn settlement. */

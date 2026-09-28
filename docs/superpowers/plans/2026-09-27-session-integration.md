@@ -10,6 +10,15 @@ Historical integration design and checklist; not a current activation attestatio
 
 **Spec:** [Activity sessions](../specs/2026-09-27-activity-sessions-design.md)
 
+**2026-09-28 integration status:** The activity actor is registered and routed
+behind default-off `activitySessions`. Native checks cover fresh provider input,
+late worker placement, exact forgetting preview/confirmation and real cleanup,
+June-facing inspection, event subscriptions, command outbox uncertainty, and
+hard-kill recovery of unknown sends and lost catalog acknowledgments. Exact
+three-hour/backlog/clock boundaries remain in the state-machine tests; native
+idle checks use shorter configured intervals. No live activation is claimed.
+Historical increment notes below describe the earlier prerequisite publications.
+
 ## Global constraints
 
 - Three hours is the configurable initial inactivity default. Platform reply placement does not select the activity actor or privacy audience.
@@ -26,7 +35,7 @@ Historical integration design and checklist; not a current activation attestatio
 - [x] Move the stable catalog types and delegated-authority/visible-job validation into a focused scope-catalog module without changing persisted field names, validation or RPC behavior. `ConversationState` continues to contain the same records; this is not a state migration or a copied catalog.
 - [x] Extract worker dispatch into the same catalog module, retaining the `dispatch-execution` journal step, original task IDs, deletion checks, roster limits and write-before-submit ordering. Activity forwarding will call this on the stable catalog, not copy its state.
 - [x] Run existing execution, coding approval, forgetting and deletion tests before adding activity forwarding.
-- [ ] Preserve `ExecutionContext.conversationKey` as the stable origin metadata destination. Record new activity origin/assignment separately in coordinator-owned metadata; do not let the worker choose its return session.
+- [x] Preserve `ExecutionContext.conversationKey` as the stable origin metadata destination. Record new activity origin/assignment separately in coordinator-owned metadata; do not let the worker choose its return session.
 
 ## Task 2: Produce conservative attributed archive turns
 
@@ -38,7 +47,7 @@ Historical integration design and checklist; not a current activation attestatio
 - [x] Build immutable deterministic `SessionArchiveInput` values for the existing deletion-fenced `archiveSessionTurn(input, revision)`. Never treat that acknowledgment as settlement.
 - [x] Verify exact replay, missing/foreign/deleted provenance, volatile-output exclusion and unknown delivery attribution. Do not widen the archive's evidence/corroboration role.
 
-The producer is not wired into runtime yet. Its `ArchiveEvidence.contextAvailable`
+At the foundation publication, the producer was not wired into runtime. Its `ArchiveEvidence.contextAvailable`
 port must prove audience access and complete transitive deletion validity, not
 merely absence of a tombstone. Catalog callbacks must use the current store,
 not a captured replacement-store reference. Slack source time is message `ts`, not envelope `event_time`;
@@ -105,25 +114,27 @@ successful owner acknowledgment and requires the hold to survive serialization.
 **Files:** `src/sessions/runtime.ts`, `src/runtime/registry.ts`, `src/runtime/prompt.ts`, `src/main.ts`, `src/config.ts`, `src/channels/slack-context.ts`.
 
 - [x] Add prospective per-call model handles with independent answer and settlement promises. Preserve early replies and compose all native calls through the login/MCP wrappers. Timeouts, unsupported providers and uncorrelated/interrupted Codex calls remain unknown; these receipts never certify historical invocations or tool/delivery outcomes.
-- [ ] Drive the existing `receiveSessionInput`, `nextSessionInput`, `settleSessionInput`, `acknowledgeSessionArchive` and `sealIdleSession` transitions. Save assignment before enqueue and deduplicate in both actors.
-- [ ] Activity actors perform interaction, clarification, delegation and synthesis only. Use the shared worker runner and narrow stable-catalog actions rather than copying jobs or approvals into activity state.
-- [ ] Persist admitted original-event provenance and exact delivery references in the catalog for worker authority and future approvals. An activity acknowledgment must match its assigned event/session/sequence.
-- [ ] Archive each completed turn and repair write/save gaps idempotently. Delay exact forgetting preview issuance until its origin archive is stable; exclude the preview/control turn payload itself so presentation cannot silently expand the preview's deletion set. Never weaken fingerprint comparison.
-- [ ] Keep fresh provider input free of old raw history, including same-surface Slack loading. Selective typed recall remains available. Omit a continuity note unless its current provenance-backed open commitments can be established within 1,000 characters.
-- [ ] Route stable notifications once through the coordinator, retaining original worker/task and permitted reply address. Notification-only sessions seal after archive/settlement and do not reset human inactivity.
-- [ ] Schedule durable idle sealing. Archive failure keeps input held; summary failure does not block searchable transcript or a new reply. Deactivation preserves established routing and historical lookup.
+- [x] Drive the existing `receiveSessionInput`, `nextSessionInput`, `settleSessionInput`, `acknowledgeSessionArchive` and `sealIdleSession` transitions. Save assignment before enqueue and deduplicate in both actors.
+- [x] Activity actors perform interaction, clarification, delegation and synthesis only. Use the shared worker runner and narrow stable-catalog actions rather than copying jobs or approvals into activity state.
+- [x] Persist admitted original-event provenance and exact delivery references in the catalog for worker authority and future approvals. An activity acknowledgment must match its assigned event/session/sequence.
+- [x] Archive each completed turn and repair write/save gaps idempotently. Delay exact forgetting preview issuance until its origin archive is stable; exclude the preview/control turn payload itself so presentation cannot silently expand the preview's deletion set. Never weaken fingerprint comparison.
+- [x] Keep fresh provider input free of old raw history, including same-surface Slack loading. Selective typed recall remains available. Omit a continuity note unless its current provenance-backed open commitments can be established within 1,000 characters.
+- [x] Route stable notifications once through the coordinator, retaining original worker/task and permitted reply address. Notification-only sessions seal after archive/settlement and do not reset human inactivity.
+- [x] Schedule durable idle sealing. Archive failure keeps input held; summary failure does not block searchable transcript or a new reply. Deactivation preserves established routing and historical lookup.
 
-The new activity actor is implemented but not registered or routed in production.
+The foundation activity actor was initially unregistered; the current integration
+registers and routes it only for explicitly enabled, provably drained scopes.
 It owns local history, inference receipts and the outbox; its catalog port keeps
 assignment, dispatch authority and acknowledgment on the stable coordinator.
 Native-engine fixtures cover early delivery before retirement, immutable archive
 replay, catalog commit/lost-ACK repair, deletion during inference and multipart
 unknown/rejected prefixes. Untouched multipart tails are withheld without a send;
-unknown inference or delivery still blocks release. Cold-process recovery and the real catalog/control integration
-remain unverified; this increment is not session activation.
+unknown inference or delivery still blocks release. Cold-process recovery now
+checks a hard kill during send and after catalog ACK commit. Neither permits
+effect replay. These disposable-state checks are not live session activation.
 
 `ModelProvider.beginReply` prepares settlement evidence for the activity actor;
-only the unregistered activity actor consumes it to release turns yet. Terminal
+the registered activity actor consumes it to release turns. Terminal
 protocol envelopes confirm HTTP inference stopped. Hot Codex also requires a correlated successful
 terminal turn and local retirement/process closure. Killing an unresolved local
 process, receiving an interrupted status or fulfilling an answer is insufficient.
@@ -159,18 +170,34 @@ Publication, archive-write and catalog-ACK gaps each replay their exact saved
 record. Historical ACK repair precedes current-provenance checks and grants no
 new effect permission. Commit settlement, archive watermark and historical ACK
 without yielding between state transitions, persist, then publish successor work.
-The unregistered activity actor now has the receipt-only variant. It validates
+The activity actor has the receipt-only variant. It validates
 the full archive identity and omitted-content/dependency fence before persistence,
 replays immutable receipts across deletion and lost ACKs, and holds unknown
 effects, unknown sends or incomplete coverage. It never infers, applies worker
 actions, sends, or adds these receipts to model history. Native-engine fixtures
-cover these boundaries. Stable catalog publication,
-control execution routing, exact delivery indexing and cold-process recovery are
-still outstanding, not a new human approval gate or an activation claim.
+cover these boundaries. The current
+integration wires stable-catalog publication, control execution, exact delivery
+indexing and cold-process recovery. Historical ACK repair precedes the next turn;
+cleanup retries preserve fresh history. Notification provenance includes worker
+recall and scheduler trigger dependencies, not merely the original dispatch
+context. Untracked trigger payloads omit retained archive/history content.
+Ledger-first deletion suppresses unstarted untracked coding results; blank coding
+synthesis preserves the recorded report. Forget-preview classification remains
+content-free and immutable after its token expires or is replaced.
 
 ## Task 5: Integrated evidence
 
-- [ ] Exercise actual provider requests across the three-hour boundary, old-thread placement, backlog/clock rollback, duplicate/lost-ACK recovery, archive/seal interruption and held legacy effects.
-- [ ] Verify a worker outlives its activity actor, one late completion is routed, and a new-session approval resolves the old exact proposal. Exercise deletion during recall/delivery plus authenticated restore.
-- [ ] Run formatter, lint, typecheck, relevant existing suites and review the exact diff.
-- [ ] Report published revision, held limitations and deployment/activation evidence separately. Do not call prerequisites alone a completed session rollout.
+- [x] Inspect fixture provider requests across activity rotation and old-thread placement. Exercise exact three-hour/backlog/clock boundaries in the state machine, duplicate/lost-ACK recovery, archive/seal interruption and held legacy effects in disposable native engines.
+- [x] Verify a worker outlives its activity actor, one late completion reaches current activity, and delivered forgetting confirmation invokes real local cleanup. Existing suites exercise approval authority, deletion during recall/delivery and authenticated restore.
+- [x] Run formatter, lint, typecheck, relevant existing suites and review the exact diff.
+
+Formatter, lint, typecheck and final-base integration checks passed. The broad
+rerun had one loopback socket disconnection in the existing reflection journal
+inspection fixture; that unchanged file passed both in isolation and in the
+final-base integration run. The broad rerun was not wholly green.
+
+Live model/Slack behavior, production backup recovery and old-proposal approval
+after a real three-hour cutover remain rollout checks under separate operator
+authorization. Local native timing fixtures use shorter configured idle periods.
+Report source publication and verified runtime activation separately; local
+integration checks do not establish a completed live rollout.

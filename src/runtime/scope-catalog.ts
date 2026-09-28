@@ -26,6 +26,8 @@ export interface ScopeCatalog {
   agents?: Record<string, string>;
   jobAgents?: Record<string, { agentId: string; requestId: string }>;
   delegations?: Record<string, ExecutionContext>;
+  /** Immutable content-free retention classification, not confirmation authority. */
+  controlCompletions?: string[];
   forgetConfirmations?: Record<
     string,
     {

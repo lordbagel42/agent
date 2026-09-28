@@ -8,7 +8,9 @@ import { createClient } from "rivetkit/client";
 import { expect, it } from "vitest";
 import type { MessageEvent } from "../src/core/contracts.js";
 import { executionKey } from "../src/runtime/execution.js";
+import { conversationInputId } from "../src/runtime/inbox.js";
 import type { JuneRegistry } from "../src/runtime/registry.js";
+import { sessionActorKey } from "../src/sessions/state.js";
 import { freeEnginePort, stopTestEngine } from "./rivet.js";
 
 it.for(["before-session", "after-session"])(
@@ -486,5 +488,140 @@ it.for(["before-session", "after-session"])(
     expect(
       messages.filter((message) => message.kind === "coding"),
     ).toHaveLength(1);
+  },
+);
+
+it.for(["send", "ack"])(
+  "recovers activity %s interruption without replay or invented settlement",
+  { timeout: 90000 },
+  async (boundary, t) => {
+    const directory = await mkdtemp(join(tmpdir(), "june-activity-crash-"));
+    const port = await freeEnginePort();
+    const children: ChildProcess[] = [];
+    const messages: { kind: string }[] = [];
+    let output = "";
+    const client = createClient<JuneRegistry>({
+      endpoint: `http://127.0.0.1:${port}`,
+      token: "default",
+      namespace: "default",
+    });
+    t.onTestFinished(async () => {
+      if (t.task.result?.state === "fail") console.error(output);
+      await client.dispose();
+      for (const child of children) {
+        if (child.exitCode !== null || child.signalCode !== null) continue;
+        const exited = once(child, "exit");
+        child.kill("SIGTERM");
+        await exited;
+      }
+      await stopTestEngine(directory, port);
+      await rm(directory, { recursive: true, force: true });
+    });
+    function start(phase: string) {
+      const child = spawn(
+        process.execPath,
+        ["--import", "tsx", "tests/recovery-worker.ts"],
+        {
+          env: {
+            PATH: process.env.PATH,
+            HOME: directory,
+            RIVETKIT_STORAGE_PATH: directory,
+            RIVET_RUN_ENGINE_PORT: String(port),
+            FIXTURE_PHASE: phase,
+            FIXTURE_ACTIVITY: boundary,
+          },
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        },
+      );
+      children.push(child);
+      child.on("message", (message) =>
+        messages.push(message as { kind: string }),
+      );
+      child.stdout?.on("data", (chunk) => {
+        output += String(chunk);
+      });
+      child.stderr?.on("data", (chunk) => {
+        output += String(chunk);
+      });
+      return child;
+    }
+    const first = start("interrupt");
+    await expect
+      .poll(() => messages.filter((m) => m.kind === "ready").length, {
+        timeout: 15000,
+      })
+      .toBe(1);
+    const source: MessageEvent = {
+      id: "activity-crash",
+      type: "message",
+      messageId: "1800000000.000001",
+      occurredAt: Date.now(),
+      address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+      senderId: "U1",
+      direct: true,
+      text: "Remember the activity.",
+    };
+    const key = ["private", "fixture"];
+    const june = client.conversation.getOrCreate(key);
+    const inputId = conversationInputId({ type: "event", event: source });
+    await june.receive(source);
+    await expect
+      .poll(
+        () =>
+          messages.some(
+            (m) => m.kind === (boundary === "ack" ? "activity-ack" : "send"),
+          ),
+        { timeout: 15000 },
+      )
+      .toBe(true);
+    const before = await june.snapshot();
+    const assignment = before.sessions?.turns[inputId]?.assignment;
+    if (!assignment) throw new Error("Activity assignment missing");
+    const exited = once(first, "exit");
+    first.kill("SIGKILL");
+    await exited;
+    start("recover");
+    await expect
+      .poll(() => messages.filter((m) => m.kind === "ready").length, {
+        timeout: 15000,
+      })
+      .toBe(2);
+    // Host health precedes native-engine reassignment after SIGKILL.
+    await expect.poll(() => june.wake(), { timeout: 30000 }).toBe(true);
+    const activity = client.activity.getOrCreate(
+      sessionActorKey(key, assignment.sessionId),
+    );
+    await expect
+      .poll(async () => (await activity.status()).turns[0], { timeout: 20000 })
+      .toMatchObject(
+        boundary === "ack"
+          ? { acknowledged: true }
+          : { inference: "unknown", hold: "inference", acknowledged: false },
+      );
+    await june.receive(source);
+    expect(messages.filter((m) => m.kind === "activity-model")).toHaveLength(1);
+    expect(messages.filter((m) => m.kind === "send")).toHaveLength(1);
+    expect(
+      (await june.snapshot()).sessions?.directory.receipts[inputId]?.status,
+    ).toBe(boundary === "ack" ? "settled" : "assigned");
+    if (boundary === "ack") {
+      const next = {
+        ...source,
+        id: "activity-next",
+        messageId: "1800000000.000002",
+        text: "Fresh after recovery",
+      };
+      await june.receive(next);
+      await expect
+        .poll(
+          async () =>
+            (await june.snapshot()).sessions?.directory.receipts[
+              conversationInputId({ type: "event", event: next })
+            ]?.status,
+          { timeout: 15000 },
+        )
+        .toBe("settled");
+      expect(messages.filter((m) => m.kind === "send")).toHaveLength(2);
+    }
   },
 );

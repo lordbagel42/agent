@@ -145,6 +145,8 @@ export interface CapabilityPorts {
   inspectForgetting?(): string | Promise<string>;
   inspectionCapacity?(): CapacityContext | Promise<CapacityContext>;
   comparePersonality?: ReturnType<typeof createPersonalityComparison>;
+  /** Activity dispatch must be archived before freezing its deletion footprint. */
+  beforeForgetPreview?(): Promise<void>;
   /** Origin conversation owns the token, never the worker's event/operation ID. */
   confirmForget?(preview: {
     sourceId: string;
@@ -1191,6 +1193,8 @@ export async function runCapability(
     ) {
       text = "Forgetting impact preview is unavailable. Nothing was deleted.";
       try {
+        await ports.beforeForgetPreview?.();
+        if (!valid() || signal.aborted) throw new Error("Preview revoked");
         const checked = parseReply(
           JSON.stringify(generated),
           modelRequest.workspaces,

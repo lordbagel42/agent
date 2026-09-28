@@ -69,6 +69,16 @@ export function createWakeupActor(
         .filter((job) => !authorized(job.source, job.evidenceIds))
         .map((job) => job.id),
     );
+    for (const run of Object.values(state.runs)) {
+      if (
+        run.contextSourceIds?.some(
+          (id) => !deps.memory || deps.memory.store.isDeleted(id),
+        )
+      ) {
+        if (pending(run)) run.status = "cancelled";
+        run.event.data = {};
+      }
+    }
   };
   return actor({
     state: initialState(),
@@ -144,15 +154,49 @@ export function createWakeupActor(
         );
         await c.vars.persist();
       },
-      async publish(c, event: WakeupEvent) {
+      async publish(c, event: WakeupEvent, contextSourceIds?: string[]) {
         guard(c.key);
         if (!deps.sources.includes(event.source))
           throw new Error("unknown_event_source");
         invalidate(c.state);
-        const result = acceptEvent(c.state, event, Date.now());
+        const result = acceptEvent(
+          c.state,
+          event,
+          Date.now(),
+          contextSourceIds,
+        );
         await c.vars.persist();
         await c.queue.send("wake", { wake: true });
         return result;
+      },
+      /** Authoritative run ancestry, separate from the untrusted trigger data. */
+      async runContext(c, id: string) {
+        guard(c.key);
+        invalidate(c.state);
+        await c.vars.persist();
+        const run = c.state.runs[id];
+        const job = run && c.state.jobs[run.jobId];
+        if (
+          !run ||
+          !job?.instruction ||
+          !pending(run) ||
+          ["paused", "cancelled"].includes(job.status)
+        )
+          return null;
+        const source = deps.memory?.source(
+          job.source,
+          JSON.stringify(["private", deps.owner.id]),
+        );
+        return {
+          evidenceIds: [
+            ...new Set([
+              ...job.evidenceIds,
+              ...(source ? [source.id] : []),
+              ...(run.contextSourceIds ?? []),
+            ]),
+          ],
+          retentionTracked: run.contextSourceIds !== undefined,
+        };
       },
       async claim(c, id: string) {
         guard(c.key);

@@ -433,6 +433,30 @@ inaccessible recipient. Permission records, previews and receipts live in
 Like Rivet conversation history, this ledger is not encrypted at rest; include it
 in the same private storage/backup policy.
 
+Owner Slack DMs can opt into activity sessions with
+`activitySessions: { "enabled": true, "idleMs": 10800000 }`. The default is off;
+three hours is the default idle interval. Enabling requires retained memory,
+execution workers, and no linked WhatsApp owner ingress. This configuration
+change requires the normal coordinated deployment procedure; publishing source
+does not activate it.
+
+Each activity owns its transcript and ordinary replies. Jobs, approvals and
+worker identities stay in the stable private catalog. A late worker result uses
+the current activity but retains its originally authorized Slack reply placement.
+New activities do not reload the previous transcript or Slack context; June can
+delegate typed archive recall when needed. Commands and private previews retain
+their existing execution paths and contribute only omitted-content receipts.
+Forgetting includes dependent archive payloads without deleting deduplication
+or delivery receipts. No generated continuity summary is added.
+
+Cutover and rotation require recorded settlement and archival coverage. Unknown
+model/send outcomes, incomplete legacy coverage, and approvals whose external
+effects have no settlement receipt (including Dynamic Apps deployments) remain
+held. June's `inspection: "operations"` returns bounded session and migration
+metadata, including active holds; it cannot clear or replay them. Disabling the
+option stops further idle rotation for established session scopes, not their
+routing or historical lookup. Public and guest conversations are unchanged.
+
 Adapters can implement optional `setTyping` for ephemeral activity during new
 context loading, model and lookup calls. Updates run alongside work, refresh
 without overlapping, and attempt to clear on success, failure or cancellation;

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { actor, queue, type Registry, setup } from "rivetkit";
+import { actor, type Client, queue, type Registry, setup } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type { createAppsClient } from "../apps/client.js";
 import type {
@@ -29,6 +29,11 @@ import type { JevObserver, JevQuestion } from "../models/jev.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type { createJuryTool } from "../reflection/jury.js";
 import {
+  createSessionCatalog,
+  type SessionCatalogState,
+  type SessionHost,
+} from "../sessions/catalog.js";
+import {
   archiveLegacyInputs,
   beginSessionMigration,
   finishSessionMigration,
@@ -37,6 +42,12 @@ import {
   observeLegacyBarrier,
   type SessionMigration,
 } from "../sessions/migration.js";
+import {
+  type ActivityAssignment,
+  type ActivityCatalog,
+  createActivityActor,
+} from "../sessions/runtime.js";
+import { sessionActorKey } from "../sessions/state.js";
 import type { McpConnections } from "../tools/connections.js";
 import type {
   WebSearchCitation,
@@ -113,6 +124,8 @@ export interface Dependencies {
    * activity catalog/control paths are integrated. Accepted session inputs hold
    * durably, never silently fall back to legacy when this switch is absent. */
   sessionHandoff?: boolean;
+  /** Opt-in owner Slack activity routing. Absence never restores the legacy lane. */
+  sessions?: { idleMs: number };
   social?: SocialPermissions;
   channels: Partial<Record<Channel, ChannelAdapter>>;
   model: ModelProvider;
@@ -235,6 +248,7 @@ export interface ConversationState extends ScopeCatalog {
   /** Durable lane ownership before priority/RPC waits, not effect settlement. */
   legacyAdmissions?: string[];
   migration?: SessionMigration;
+  sessions?: SessionCatalogState;
   latestInputs?: Record<string, { id: string; occurredAt: number }>;
   memoryContexts?: Record<string, MemoryReference>;
   forgottenEvents?: string[];
@@ -315,7 +329,7 @@ const ownsLegacyInput = (state: ConversationState, id: string) =>
 
 export function createJuneRegistry(deps: Dependencies) {
   if (
-    deps.sessionHandoff &&
+    (deps.sessionHandoff || deps.sessions) &&
     (!deps.memory ||
       !deps.channels.slack ||
       (deps.channels.whatsapp &&
@@ -396,7 +410,7 @@ export function createJuneRegistry(deps: Dependencies) {
     persist: () => Promise<void>,
   ) => {
     if (
-      !deps.sessionHandoff ||
+      (!deps.sessionHandoff && !deps.sessions) ||
       state.migration ||
       JSON.stringify(key) !== JSON.stringify(["private", deps.owner.id])
     )
@@ -447,6 +461,53 @@ export function createJuneRegistry(deps: Dependencies) {
       await persist();
     }
   };
+  const sessions = createSessionCatalog(deps, current, personalityDigest);
+  const sessionHost = (
+    c: {
+      state: ConversationState;
+      key: string[];
+      vars: {
+        persist(): Promise<void>;
+        schedule(at: number): Promise<unknown>;
+      };
+      queue: {
+        send(
+          name: "inbox",
+          input: ConversationInput | SessionBarrier | { type: "session_tick" },
+        ): Promise<unknown>;
+      };
+    },
+    client: Client<JuneClientRegistry>,
+  ): SessionHost => ({
+    state: c.state,
+    key: c.key,
+    persist: c.vars.persist,
+    worker: (id) => client.execution.getOrCreate(executionKey(c.key, id)),
+    personality: () => client.personality.getOrCreate([deps.owner.id]).read(),
+    publish: (assignment) =>
+      client.activity
+        .getOrCreate(sessionActorKey(c.key, assignment.sessionId))
+        .receive(assignment),
+    enqueue: (input) => c.queue.send("inbox", input),
+    schedule: c.vars.schedule,
+    wakeupContext: async (id) =>
+      deps.wakeups
+        ? client.wakeups.getOrCreate([deps.owner.id]).runContext(id)
+        : null,
+    claimWakeup: async (id) =>
+      !!deps.wakeups &&
+      (await client.wakeups.getOrCreate([deps.owner.id]).claim(id)),
+    completeWakeup: async (id, status) => {
+      if (deps.wakeups)
+        await client.wakeups.getOrCreate([deps.owner.id]).complete(id, status);
+    },
+    publishNative: async (event, contextSourceIds) => {
+      if (deps.wakeups?.sources.includes(event.source))
+        await client.wakeups
+          .getOrCreate([deps.owner.id])
+          .publish(event, contextSourceIds);
+    },
+  });
   const conversation = actor({
     state: {
       history: [],
@@ -467,11 +528,20 @@ export function createJuneRegistry(deps: Dependencies) {
     },
     createVars: (
       c,
-    ): { persist: () => Promise<void>; receiving: Promise<void> } => ({
+    ): {
+      persist: () => Promise<void>;
+      receiving: Promise<void>;
+      schedule(at: number): Promise<unknown>;
+    } => ({
       persist: () => c.saveState({ immediate: true }),
       receiving: Promise.resolve(),
+      schedule: (at) => c.schedule.at(at, "sessionIdle"),
     }),
-    queues: { inbox: queue<ConversationInput | SessionBarrier>() },
+    queues: {
+      inbox: queue<
+        ConversationInput | SessionBarrier | { type: "session_tick" }
+      >(),
+    },
     onWake: async (c) => {
       // Runs before workflow replay. Enqueue is durable; duplicates are harmless.
       // Do not await an immediate save here: native startup cannot service it.
@@ -491,8 +561,53 @@ export function createJuneRegistry(deps: Dependencies) {
       for (const input of pending) await c.queue.send("inbox", input);
       if (c.state.migration?.phase === "draining")
         await c.queue.send("inbox", barrierInput(c.state.migration));
+      if (c.state.sessions)
+        await c.queue.send("inbox", { type: "session_tick" });
     },
     actions: {
+      sessionIdle: async (c) => {
+        await c.queue.send("inbox", { type: "session_tick" });
+      },
+      activityStatus: (
+        c,
+        assignment: ActivityAssignment,
+      ): Awaited<ReturnType<ActivityCatalog["assignmentStatus"]>> =>
+        sessions.status(
+          sessionHost(c, c.client<JuneClientRegistry>()),
+          assignment,
+        ),
+      activityPrepare: (
+        c,
+        assignment: ActivityAssignment,
+        history: Parameters<ActivityCatalog["prepare"]>[1],
+      ): ReturnType<ActivityCatalog["prepare"]> =>
+        sessions.prepare(
+          sessionHost(c, c.client<JuneClientRegistry>()),
+          assignment,
+          history,
+        ),
+      activityApply: (
+        c,
+        assignment: ActivityAssignment,
+        reply: CompanionReply,
+      ): ReturnType<ActivityCatalog["apply"]> =>
+        sessions.apply(
+          sessionHost(c, c.client<JuneClientRegistry>()),
+          assignment,
+          reply,
+        ),
+      activityAcknowledge: async (
+        c,
+        assignment: ActivityAssignment,
+        outcome: Parameters<ActivityCatalog["acknowledge"]>[1],
+      ): Promise<void> => {
+        await sessions.acknowledge(
+          sessionHost(c, c.client<JuneClientRegistry>()),
+          assignment,
+          outcome,
+        );
+        await c.queue.send("inbox", { type: "session_tick" });
+      },
       /** Trusted verified ingress. Persist the arrival and its recoverable body
        * together, before queue publication or any stale reply can resume. */
       receive: async (c, event: ChannelEvent) => {
@@ -698,7 +813,14 @@ export function createJuneRegistry(deps: Dependencies) {
         prune(c.state, JSON.stringify(c.key));
         return c.state;
       },
-      outstandingOperations: (c) => {
+      outstandingOperations: async (
+        c,
+      ): Promise<
+        ReturnType<typeof outstandingOperationMetadata> & {
+          migration: ReturnType<typeof inspectLegacyDrain>;
+          sessions: unknown;
+        }
+      > => {
         if (
           JSON.stringify(c.key) !== JSON.stringify(["private", deps.owner.id])
         )
@@ -708,6 +830,31 @@ export function createJuneRegistry(deps: Dependencies) {
         return {
           ...outstandingOperationMetadata(c.state),
           migration: inspectLegacyDrain(c.state, c.key),
+          sessions: c.state.sessions
+            ? {
+                active: c.state.sessions.directory.activeSessionId ?? null,
+                pending: c.state.sessions.directory.pending.length,
+                inFlight: c.state.sessions.directory.inFlight ?? null,
+                activity: c.state.sessions.directory.activeSessionId
+                  ? await c
+                      .client<JuneClientRegistry>()
+                      .activity.getOrCreate(
+                        sessionActorKey(
+                          c.key,
+                          c.state.sessions.directory.activeSessionId,
+                        ),
+                      )
+                      .status()
+                  : null,
+                recent: Object.values(
+                  c.state.sessions.directory.sessions,
+                ).slice(-5),
+                omitted: Math.max(
+                  0,
+                  Object.keys(c.state.sessions.directory.sessions).length - 5,
+                ),
+              }
+            : null,
         };
       },
       canResumeJob: (c, id: string) => {
@@ -806,6 +953,12 @@ export function createJuneRegistry(deps: Dependencies) {
           },
         };
       },
+      executionArchiveReady: (c, requestId: string): boolean => {
+        const context = delegatedScope(c.state, c.key, requestId);
+        const receipt =
+          c.state.sessions?.directory.receipts[context.originEventId];
+        return !receipt || receipt.status === "settled";
+      },
       executionForgetConfirmation: async (
         c,
         requestId: string,
@@ -842,6 +995,12 @@ export function createJuneRegistry(deps: Dependencies) {
         const agentId = c.state.agents?.[name];
         if (!agentId) throw new Error("Execution worker unavailable");
         const token = randomUUID().replaceAll("-", "");
+        const previewEventId = createHash("sha256")
+          .update(JSON.stringify(["execution", agentId, requestId]))
+          .digest("hex");
+        c.state.controlCompletions ??= [];
+        if (!c.state.controlCompletions.includes(previewEventId))
+          c.state.controlCompletions.push(previewEventId);
         c.state.forgetConfirmations ??= {};
         for (const [oldToken, entry] of Object.entries(
           c.state.forgetConfirmations,
@@ -860,9 +1019,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // Bind the actual completion reply, not the original acknowledgment.
           // The existing confirmation guard still requires a sent delivery
           // containing this exact token; omitted/failed previews cannot confirm.
-          previewEventId: createHash("sha256")
-            .update(JSON.stringify(["execution", agentId, requestId]))
-            .digest("hex"),
+          previewEventId,
           expiresAt: Date.now() + 600_000,
           status: "pending",
         };
@@ -906,6 +1063,19 @@ export function createJuneRegistry(deps: Dependencies) {
           delete c.state.pendingNotifications?.[id];
           const record = c.state.events[id];
           if (record?.event.type === "message") record.event.text = "";
+          const turn = c.state.sessions?.turns[id];
+          if (turn) {
+            turn.revoked = true;
+            if (turn.context) turn.context.source.text = "";
+            delete turn.applied;
+            delete turn.applying;
+          }
+        }
+        if (c.state.sessions) {
+          c.state.sessions.directory.pending =
+            c.state.sessions.directory.pending.filter(
+              (id) => !cleanup.eventIds.includes(id),
+            );
         }
         for (const id of cleanup.deliveryIds) {
           const delivery = c.state.deliveries[id];
@@ -920,6 +1090,17 @@ export function createJuneRegistry(deps: Dependencies) {
           }
         }
         await c.vars.persist();
+        for (const sessionId of new Set(
+          cleanup.eventIds.flatMap((id) => {
+            const turn = c.state.sessions?.turns[id];
+            return turn ? [turn.assignment.sessionId] : [];
+          }),
+        )) {
+          await c
+            .client<JuneClientRegistry>()
+            .activity.getOrCreate(sessionActorKey(c.key, sessionId))
+            .forget(cleanup.eventIds);
+        }
         if (
           deps.wakeups &&
           JSON.stringify(c.key) === JSON.stringify(["private", deps.owner.id])
@@ -1008,7 +1189,16 @@ export function createJuneRegistry(deps: Dependencies) {
             2,
           );
           const handoffVersion = await loop.getVersion("activity-handoff", 2);
+          const activityVersion = await loop.getVersion("activity-routing", 2);
           const body = message.body;
+          if (body.type === "session_tick") {
+            await loop.step("pump-activity", (step) =>
+              sessions.pump(
+                sessionHost(step, step.client<JuneClientRegistry>()),
+              ),
+            );
+            return;
+          }
           if (body.type === "session_barrier") {
             const release = await deps.lifecycle?.enter(ctx.abortSignal);
             try {
@@ -1016,6 +1206,10 @@ export function createJuneRegistry(deps: Dependencies) {
                 observeLegacyBarrier(step.state, body.epoch, body.barrier);
                 await step.vars.persist();
                 await advanceHandoff(step.state, ctx.key, step.vars.persist);
+                if (activityVersion >= 2)
+                  await sessions.pump(
+                    sessionHost(step, step.client<JuneClientRegistry>()),
+                  );
               });
             } finally {
               release?.();
@@ -1043,6 +1237,7 @@ export function createJuneRegistry(deps: Dependencies) {
             if (!scope || JSON.stringify(scope.key) !== JSON.stringify(ctx.key))
               return;
             const ownerTurn = isOwner(event, deps.owner);
+            let sessionControl = false;
             if (handoffVersion >= 2) {
               const lane = await loop.step(
                 "session-input-lane",
@@ -1059,9 +1254,28 @@ export function createJuneRegistry(deps: Dependencies) {
                   return ownsLegacyInput(step.state, id) ? "legacy" : "held";
                 },
               );
-              // A future activity dispatcher owns these durably admitted bodies.
-              // Never consume them through the permanent-history workflow.
-              if (lane !== "legacy") return;
+              if (lane === "session" && activityVersion >= 2) {
+                sessionControl = await loop.step(
+                  "dispatch-activity",
+                  async (step) => {
+                    await sessions.pump(
+                      sessionHost(step, step.client<JuneClientRegistry>()),
+                    );
+                    const turn =
+                      step.state.sessions?.turns[conversationInputId(body)];
+                    return (
+                      !!turn &&
+                      turn.mode === "control" &&
+                      !turn.control &&
+                      sessions.status(
+                        sessionHost(step, step.client<JuneClientRegistry>()),
+                        turn.assignment,
+                      ) === "active"
+                    );
+                  },
+                );
+                if (!sessionControl) return;
+              } else if (lane !== "legacy") return;
             }
             if (body.type === "wakeup") {
               const eligible =
@@ -1243,7 +1457,8 @@ export function createJuneRegistry(deps: Dependencies) {
             const accepted = await loop.step("record-event", async (step) => {
               // A cached lane step is not authorization after a concurrent
               // handoff. In particular, never delete a new session's saved body.
-              if (!ownsLegacyInput(step.state, eventId)) return false;
+              if (!ownsLegacyInput(step.state, eventId) && !sessionControl)
+                return false;
               // Also retain deletion ownership for legacy direct-queue callbacks.
               if (body.type !== "event")
                 captureNotificationCleanup(step.state, body);
@@ -1251,8 +1466,10 @@ export function createJuneRegistry(deps: Dependencies) {
                 step.state.events[eventId]?.done ||
                 step.state.forgottenEvents?.includes(eventId)
               ) {
-                delete step.state.pendingInputs?.[eventId];
-                delete step.state.pendingNotifications?.[eventId];
+                if (!sessionControl) {
+                  delete step.state.pendingInputs?.[eventId];
+                  delete step.state.pendingNotifications?.[eventId];
+                }
                 await step.vars.persist();
                 return false;
               }
@@ -1281,9 +1498,14 @@ export function createJuneRegistry(deps: Dependencies) {
                   return false;
                 }
                 step.state.events[eventId] = { event, done: false };
-                if (coverageVersion >= 2 && step.state.legacyCoverage)
+                if (
+                  !sessionControl &&
+                  coverageVersion >= 2 &&
+                  step.state.legacyCoverage
+                )
                   step.state.legacyCoverage.turns[eventId] = {};
                 if (
+                  !sessionControl &&
                   event.type === "message" &&
                   body.type === "event" &&
                   valid(step.state)
@@ -1310,12 +1532,23 @@ export function createJuneRegistry(deps: Dependencies) {
               }
               // Keep admission identity until the history/event record exists;
               // otherwise a queued duplicate could move the latest marker back.
-              delete step.state.pendingInputs?.[eventId];
-              delete step.state.pendingNotifications?.[eventId];
+              if (!sessionControl) {
+                delete step.state.pendingInputs?.[eventId];
+                delete step.state.pendingNotifications?.[eventId];
+              }
               await step.vars.persist();
               return true;
             });
-            if (!accepted) return;
+            if (!accepted) {
+              if (sessionControl)
+                await loop.step("repair-control-receipt", (step) =>
+                  sessions.controlFinished(
+                    sessionHost(step, step.client<JuneClientRegistry>()),
+                    body,
+                  ),
+                );
+              return;
+            }
             if (version >= 9 && body.type !== "wakeup") {
               await loop.step("publish-native-event", async (step) => {
                 if (
@@ -1543,6 +1776,7 @@ export function createJuneRegistry(deps: Dependencies) {
             if (version >= 2) {
               await loop.step("memory-ingest", async (step) => {
                 if (
+                  sessionControl ||
                   !plan.memory ||
                   reflectionReview ||
                   forgetCommand ||
@@ -1863,6 +2097,11 @@ export function createJuneRegistry(deps: Dependencies) {
                     coverage.untrackedEffect = true;
                     await step.vars.persist();
                   }
+                  const activity = step.state.sessions?.turns[eventId];
+                  if (activity) {
+                    activity.untrackedEffect = true;
+                    await step.vars.persist();
+                  }
                   return {
                     text:
                       plan.apps &&
@@ -2062,22 +2301,37 @@ export function createJuneRegistry(deps: Dependencies) {
                     coverage.untrackedEffect = true;
                     await step.vars.persist();
                   }
-                  return {
-                    text: await social.decide(
-                      event,
-                      interruptionReview && deps.reflection && valid(step.state)
-                        ? (proposalId, reference, commandId) =>
-                            step
-                              .client<JuneClientRegistry>()
-                              .reflection.getOrCreate([deps.owner.id])
-                              .deliverInterruption(
-                                proposalId,
-                                reference,
-                                commandId,
-                              )
-                        : undefined,
-                    ),
-                  };
+                  const activity = step.state.sessions?.turns[eventId];
+                  if (activity && social.command(event)?.[1] === "allow") {
+                    activity.untrackedEffect = true;
+                    await step.vars.persist();
+                  }
+                  let uncertain = false;
+                  const text = await social.decide(
+                    event,
+                    interruptionReview && deps.reflection && valid(step.state)
+                      ? (proposalId, reference, commandId) =>
+                          step
+                            .client<JuneClientRegistry>()
+                            .reflection.getOrCreate([deps.owner.id])
+                            .deliverInterruption(
+                              proposalId,
+                              reference,
+                              commandId,
+                            )
+                      : undefined,
+                    (result) => {
+                      uncertain ||= !(
+                        result.status === "sent" ||
+                        (result.status === "rejected" && !result.retryable)
+                      );
+                    },
+                  );
+                  if (activity && !uncertain) {
+                    delete activity.untrackedEffect;
+                    await step.vars.persist();
+                  }
+                  return { text };
                 });
               } else if (command) {
                 reply = await loop.step(
@@ -2121,6 +2375,23 @@ export function createJuneRegistry(deps: Dependencies) {
                       );
                     return {
                       text: `Sent ${command[1]} to coding job ${id.slice(0, 12)}. I'll report its result here.`,
+                    };
+                  },
+                );
+              } else if (sessionControl) {
+                reply = await loop.step(
+                  "activity-control-output",
+                  async (step) => {
+                    if (body.type !== "execution_result" || !valid(step.state))
+                      return { text: "" };
+                    const result = await step
+                      .client<JuneClientRegistry>()
+                      .execution.getOrCreate(
+                        executionKey(scope.key, body.agentId),
+                      )
+                      .result(body.requestId);
+                    return {
+                      text: valid(step.state) ? (result?.report ?? "") : "",
                     };
                   },
                 );
@@ -4674,6 +4945,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 }
               }
               await loop.step("record-reply", async (step) => {
+                if (sessionControl) return;
                 if (!valid(step.state)) return;
                 if (
                   !step.state.history.some(
@@ -4793,6 +5065,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       (entry) => entry.id === eventId,
                     )?.sourceId;
                     if (
+                      sessionControl ||
                       !plan.extraction ||
                       correctionCommand ||
                       reflectionReview ||
@@ -4846,6 +5119,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     (entry) => entry.id === eventId,
                   )?.sourceId;
                   if (
+                    sessionControl ||
                     !plan.reflection ||
                     reflectionReview ||
                     modelReview ||
@@ -4900,6 +5174,13 @@ export function createJuneRegistry(deps: Dependencies) {
               if (coverageVersion >= 2 && coverage) coverage.finished = true;
               await step.vars.persist();
             });
+            if (sessionControl)
+              await loop.step("publish-control-receipt", (step) =>
+                sessions.controlFinished(
+                  sessionHost(step, step.client<JuneClientRegistry>()),
+                  body,
+                ),
+              );
             if (handoffVersion >= 2)
               await loop.step("advance-session-handoff", (step) =>
                 advanceHandoff(step.state, ctx.key, step.vars.persist),
@@ -4933,6 +5214,49 @@ export function createJuneRegistry(deps: Dependencies) {
   return setup({
     use: {
       conversation,
+      activity: createActivityActor({
+        owner: deps.owner,
+        model: deps.model,
+        lifecycle: deps.lifecycle,
+        channel: {
+          send: async (outbound) =>
+            deps.channels[outbound.address.channel]?.send(outbound) ?? {
+              status: "rejected",
+              code: "channel_disabled",
+              retryable: false,
+            },
+        },
+        catalog: (key, client) => {
+          const catalog = client.conversation.getOrCreate(key);
+          return {
+            assignmentStatus: (assignment) =>
+              catalog.activityStatus(assignment),
+            prepare: (assignment, history) =>
+              catalog.activityPrepare(assignment, history),
+            apply: (assignment, reply) =>
+              catalog.activityApply(assignment, reply),
+            acknowledge: (assignment, outcome) =>
+              catalog.activityAcknowledge(assignment, outcome),
+          };
+        },
+        memory: {
+          store: {
+            deletionRevision: () => deps.memory?.store.deletionRevision() ?? 0,
+            sessionArchiveReceipt: (audience, sessionId, eventId) =>
+              deps.memory?.store.sessionArchiveReceipt(
+                audience,
+                sessionId,
+                eventId,
+              ),
+            archiveSessionTurn: (input, revision) => {
+              if (!deps.memory) throw new Error("Activity archive unavailable");
+              return deps.memory.store.archiveSessionTurn(input, revision);
+            },
+          },
+          current,
+          evidence: sessions.evidence,
+        },
+      }),
       personality: createPersonalityActor(deps.owner, deps.memory?.personality),
       job: createCodingActor(
         deps.coding,

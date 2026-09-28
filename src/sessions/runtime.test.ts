@@ -286,13 +286,25 @@ it("holds unknown inference and suppresses output invalidated while inference is
   f.store.deleteSource("slack:T1:D1:1800000000.000002");
   answer.resolve({ text: "Must not be sent or archived" });
   await vi.waitFor(async () =>
-    expect((await f.activity(second).status()).turns[0]?.hold).toBe(
-      "provenance",
+    expect((await f.activity(second).status()).turns[0]?.acknowledged).toBe(
+      true,
     ),
   );
   expect(f.send).toHaveBeenCalledTimes(1);
-  expect(f.catalog.acknowledge).not.toHaveBeenCalled();
-  expect(f.store.retrieveSession(audience, second.sessionId).turns).toEqual([]);
+  expect(f.catalog.acknowledge).toHaveBeenCalledExactlyOnceWith(second, {
+    inference: "confirmed_stopped",
+    deliveries: [],
+    archivedThrough: 1,
+  });
+  const archived = f.store.retrieveSession(audience, second.sessionId);
+  expect(archived.turns[0]?.data).toEqual({
+    sourceIds: [],
+    contextSourceIds: [],
+    entries: [],
+  });
+  expect(JSON.stringify(archived)).not.toContain(
+    "Must not be sent or archived",
+  );
 });
 
 it.for(["unknown", "rejected"] as const)(
@@ -495,3 +507,43 @@ it.for(["effect", "delivery", "retained", "assignment"] as const)(
     ).rejects.toThrow();
   },
 );
+
+it("accepts a successor using the exact committed receipt while its ACK response is delayed", async (t) => {
+  const f = await fixture(t);
+  const first = assignment();
+  const second = {
+    ...first,
+    eventId: "c".repeat(64),
+    sequence: 2,
+    receivedAt: first.receivedAt + 1,
+  };
+  const gate = Promise.withResolvers<void>();
+  t.onTestFinished(() => gate.resolve());
+  const acknowledged = new Set<string>();
+  vi.mocked(f.catalog.assignmentStatus).mockImplementation(async (input) =>
+    acknowledged.has(input.eventId) ? "acknowledged" : "active",
+  );
+  vi.mocked(f.catalog.acknowledge).mockImplementation(async (input) => {
+    acknowledged.add(input.eventId);
+    if (input.eventId === first.eventId) await gate.promise;
+  });
+  const prepare = vi.mocked(f.catalog.prepare).getMockImplementation();
+  if (!prepare) throw new Error("Missing fixture preparation");
+  vi.mocked(f.catalog.prepare).mockImplementation(async (input, history) => {
+    const prepared = await prepare(input, history);
+    if (!("control" in prepared))
+      prepared.reference.sourceIds.push(
+        ...history.flatMap((entry) => entry.reference.sourceIds),
+      );
+    return prepared;
+  });
+  await f.activity(first).receive(first);
+  await vi.waitFor(() => expect(acknowledged.has(first.eventId)).toBe(true));
+  await expect(f.activity(second).receive(second)).resolves.toBeUndefined();
+  gate.resolve();
+  await vi.waitFor(async () =>
+    expect((await f.activity(second).status()).acknowledgedThrough).toBe(2),
+  );
+  expect(f.send).toHaveBeenCalledTimes(2);
+  expect(f.model.beginReply).toHaveBeenCalledTimes(2);
+});

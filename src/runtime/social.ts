@@ -349,6 +349,9 @@ export class SocialPermissions {
       reference: InterruptionReference,
       commandId: string,
     ) => Promise<SendResult>,
+    observeDelivery?: (
+      result: SendResult | { status: "started" | "dispatching" },
+    ) => void,
   ): Promise<string> {
     const command = this.command(event);
     if (!command) return "Only Raygen can decide permissions.";
@@ -416,6 +419,7 @@ export class SocialPermissions {
           this.save(current);
         }
       }
+      observeDelivery?.(result);
       if (result.status === "started" || result.status === "dispatching")
         return `That approval command started previously and its outcome is unresolved. It was not replayed. Send a new !allow ${proposal.id} to recheck the existing outbox, or !revoke ${proposal.id}. Uncertain delivery is never resent.`;
       if (
@@ -435,6 +439,7 @@ export class SocialPermissions {
         },
         proposal.action.text,
       );
+      observeDelivery?.(result);
       return `Approved outreach: delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived; I will not automatically resend an uncertain delivery."}`;
     }
     return `Approved access ${proposal.id} for 30 days, only for the named person in the named conversation. Revoke with !revoke ${proposal.id}.`;

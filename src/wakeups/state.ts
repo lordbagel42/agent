@@ -79,6 +79,8 @@ export interface WakeupRun {
   id: string;
   jobId: string;
   event: WakeupEvent;
+  /** Host-only trigger ancestry. Absent means payload retention is untracked. */
+  contextSourceIds?: string[];
   createdAt: number;
   status:
     | "pending"
@@ -246,6 +248,7 @@ function enqueue(
   job: WakeupJob,
   event: WakeupEvent,
   now: number,
+  contextSourceIds?: string[],
 ) {
   const id = createHash("sha256")
     .update(JSON.stringify([job.id, event.source, event.id]))
@@ -263,6 +266,9 @@ function enqueue(
     id,
     jobId: job.id,
     event,
+    ...(contextSourceIds
+      ? { contextSourceIds: [...new Set(contextSourceIds)] }
+      : {}),
     createdAt: now,
     status: "pending",
   };
@@ -273,7 +279,12 @@ function enqueue(
 }
 
 /** Durable acceptance and dispatch intent are saved together by the actor. */
-export function acceptEvent(state: WakeupState, input: unknown, now: number) {
+export function acceptEvent(
+  state: WakeupState,
+  input: unknown,
+  now: number,
+  contextSourceIds?: string[],
+) {
   const event = eventSchema.parse(input);
   const key = createHash("sha256")
     .update(JSON.stringify([event.source, event.id]))
@@ -306,7 +317,7 @@ export function acceptEvent(state: WakeupState, input: unknown, now: number) {
       }
       return found === value;
     });
-    if (matches) enqueue(state, job, event, now);
+    if (matches) enqueue(state, job, event, now, contextSourceIds);
   }
   return { accepted: true, duplicate: false };
 }
@@ -333,6 +344,7 @@ export function tick(state: WakeupState, now: number) {
         data: { scheduledAt, observedAt: now },
       },
       now,
+      [], // Intrinsic clock metadata has no retained-content dependencies.
     );
     if (job.trigger.kind === "cron" && !job.once)
       job.nextAt = nextCron(job.trigger, now);
