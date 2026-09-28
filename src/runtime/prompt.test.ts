@@ -34,7 +34,7 @@ const input: PromptInput = {
 };
 
 it.for(["interaction", "execution", "decision"] as const)(
-  "keeps session-control knowledge in the %s prompt without inspection enabled",
+  "keeps automation knowledge in the %s prompt without inspection enabled",
   (role) => {
     const request = buildModelRequest({
       ...input,
@@ -64,6 +64,9 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain(
       "never push, deployment or infrastructure changes",
     );
+    expect(request.system).toContain("actionsBuild enabled");
+    expect(request.system).toContain("no automatic local-build fallback");
+    expect(request.system).toContain("a green build do not prove");
   },
 );
 

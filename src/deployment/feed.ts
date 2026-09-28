@@ -57,6 +57,12 @@ const feedSchema = z.strictObject({
         reason: z
           .enum([
             "preflight_failed",
+            "actions_pending",
+            "actions_unavailable",
+            "actions_build_failed",
+            "actions_artifact_invalid",
+            "actions_policy_changed",
+            "actions_build_ready",
             "health_failed",
             "drain_busy",
             "insufficient_disk",
@@ -83,6 +89,18 @@ const reasons: Record<
 > = {
   preflight_failed:
     "Preparation/preflight failed; the feed does not identify the failing operation. Owner/operator diagnosis required; this tool cannot retry.",
+  actions_pending:
+    "Waiting for the exact main revision's GitHub Actions build. June remains on the current release.",
+  actions_unavailable:
+    "Actions evidence or artifact download is unavailable. The controller will retry; no local-build fallback.",
+  actions_build_failed:
+    "The exact main revision's Actions build did not succeed. Publish a forward fix; this tool cannot retry it.",
+  actions_artifact_invalid:
+    "Actions provenance, artifact integrity or archive validation failed. Operator diagnosis required; not activated.",
+  actions_policy_changed:
+    "Actions build policy differs from the operator-reviewed versions. Review and update the protected policy pins, then publish a forward commit; not activated.",
+  actions_build_ready:
+    "The exact main revision's Actions build succeeded. Local artifact verification and activation gates are still required; this is not deployment success.",
   health_failed:
     "Candidate failed readiness/identity checks. Inspect later rollback/block events; do not claim it is live.",
   drain_busy:
@@ -234,7 +252,7 @@ export function createReleaseTool(options: {
         : "Candidate lifecycle status unknown in the last 100 controller events. Not known queued, checked, or authorized; owner must verify the exact revision was published to trusted main. Old evidence may have aged out; fetch failures are controller observations only.",
       phaseLatency(events, request.revision ?? latest?.revision),
       "Superseded means skipped before activation in that attempt, not a deployment failure or proof of the active release or stage cleanup.",
-      "Checks: controller runs frozen install, formatting, types, routing/delivery tests, immutable artifact verification, drain, and readiness/process identity gates. This feed exposes stage outcomes only, not individual check logs; missing results are unknown, never passed.",
+      "Checks: frozen install, formatting, types and routing/delivery tests run locally or in the configured Actions build. The host verifies artifacts, drain and readiness/process identity. Build success is not deployment success. Stage outcomes only, not individual check logs; missing results are unknown. Actions logs: https://github.com/lordbagel42/agent/actions/workflows/june-build.yml (repository access required).",
       ...events
         .slice(-3)
         .map(

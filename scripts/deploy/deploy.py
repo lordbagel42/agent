@@ -7,10 +7,13 @@ host commands. Errors are fixed codes: subprocess/HTTP output never enters June.
 import argparse
 import base64
 import fcntl
+import gzip
 import hashlib
 import io
 import json
 import os
+import platform
+import posixpath
 import pwd
 import re
 import select
@@ -25,7 +28,9 @@ import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -49,9 +54,18 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 HASH = re.compile(r"^[0-9a-f]{64}$")
 STAGE = re.compile(r"^stage-[a-z0-9_]{8}$")
 THREAD = re.compile(r"^T-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
+ARTIFACT_LIMIT = 2 * 1024**3
 
 
 class InsufficientDisk(Exception):
+    pass
+
+
+class ActionsDeferred(Exception):
+    pass
+
+
+class ActionsFailure(Exception):
     pass
 
 
@@ -476,8 +490,9 @@ class Deployer:
             h.prune(s.obsolete({previous, target}))
             # Check before recording preparation so capacity deferrals do not
             # spam the feed or latch a terminal failed revision.
+            preparation = h.preparation_ready(target)
             h.require_space(target)
-            s.event(target, "preparing")
+            s.event(target, "preparing", preparation)
             if self.statuses:
                 self.statuses.flush()
             if s.get("recovery"):
@@ -494,6 +509,12 @@ class Deployer:
                 return
         except InsufficientDisk:
             s.event(target, "deferred", "insufficient_disk")
+            return
+        except ActionsDeferred as error:
+            s.event(target, "deferred", str(error))
+            return
+        except ActionsFailure as error:
+            s.event(target, "failed", str(error))
             return
         except Exception:  # noqa: BLE001 - candidate/build output is private
             s.event(target, "failed", "preflight_failed")
@@ -591,6 +612,7 @@ class Recovery:
             # process holds the lock. Explicitly hand it off before adoption.
             legacy = s.db.execute(
                 "SELECT 1 FROM events WHERE status IN ('failed','rolled_back','blocked','fetch_failed','deferred') "
+                "AND NOT (status = 'deferred' AND COALESCE(reason,'') IN ('actions_pending','actions_unavailable')) "
                 "AND sequence > COALESCE((SELECT MAX(sequence) FROM events "
                 "WHERE status IN ('healthy','reconciled')),0) LIMIT 1"
             ).fetchone()
@@ -604,6 +626,7 @@ class Recovery:
         if not raw:
             event = s.db.execute(
                 "SELECT * FROM events WHERE status IN ('failed','rolled_back','blocked','fetch_failed','deferred') "
+                "AND NOT (status = 'deferred' AND COALESCE(reason,'') IN ('actions_pending','actions_unavailable')) "
                 "AND sequence > COALESCE((SELECT MAX(sequence) FROM events "
                 "WHERE status IN ('healthy','reconciled')),0) ORDER BY sequence DESC LIMIT 1"
             ).fetchone()
@@ -804,6 +827,12 @@ class GitHubStatuses:
     }
     REASONS: ClassVar = {
         "preflight_failed": "Source preparation or preflight failed; individual command results are not recorded. Operator diagnosis required.",
+        "actions_pending": "Waiting for the exact main revision's GitHub Actions build. June remains on the current release.",
+        "actions_unavailable": "Actions evidence or artifact download is unavailable. The controller will retry; no local-build fallback.",
+        "actions_build_failed": "The exact main revision's Actions build did not succeed. Publish a forward fix; this tool cannot retry it.",
+        "actions_artifact_invalid": "Actions provenance, artifact integrity or archive validation failed. Operator diagnosis required; not activated.",
+        "actions_policy_changed": "Actions build policy differs from the operator-reviewed versions. Review and update the protected policy pins, then publish a forward commit; not activated.",
+        "actions_build_ready": "The exact main revision's Actions build succeeded. Local artifact verification and activation gates are still required; this is not deployment success.",
         "health_failed": "Candidate failed readiness or process-identity checks. Inspect later rollback/block events.",
         "drain_busy": "In-flight work could not be safely drained. The controller will retry without cancelling work.",
         "insufficient_disk": "Insufficient disk capacity. Operator must restore capacity; the controller will retry.",
@@ -986,7 +1015,7 @@ class GitHubStatuses:
                 "\nShowing the latest 25 lifecycle events; earlier stages are omitted."
             )
         timeline.append(
-            "\nPreparation runs frozen dependency installation, formatting, type checking, safety tests and immutable artifact verification. Activation requires drain, readiness and process-identity checks. This report contains stage outcomes, not individual command results or raw logs; missing evidence is not a passed check."
+            "\nPreparation requires frozen dependency installation, formatting, type checking and safety tests, either locally or in the configured GitHub Actions build. The host verifies immutable artifacts. Activation requires drain, readiness and process-identity checks. Build success is not deployment success. This report contains stage outcomes, not individual command results or raw logs; missing evidence is not a passed check."
         )
         payload = {
             "name": "june/deploy",
@@ -1169,9 +1198,342 @@ class GitHubStatuses:
                 self.recovery.record("github_status_publish_failed")
 
 
+class ArtifactRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        # Inspect the signed URL ourselves; never forward the API bearer token.
+        return None
+
+
+class ActionsBuild:
+    """Read-only trusted-main build evidence. No dispatch, rerun or host effects."""
+
+    def __init__(self):
+        self.opener = urllib.request.build_opener(NoRedirect())
+        self.cached = None
+        self.retry_at = 0
+
+    def request(self, path):
+        try:
+            token = private_file(Path("/etc/june/github-actions-token")).strip()
+            return GitHubStatuses.request(
+                self, token, "GET", "repos/lordbagel42/agent/" + path
+            )
+        except Exception:  # noqa: BLE001 - credentials and HTTP errors stay private
+            raise ActionsDeferred("actions_unavailable") from None
+
+    def artifact(self, commit):
+        commit = revision(commit)
+        if (
+            self.cached
+            and self.cached[0] == commit
+            and time.monotonic() < self.retry_at
+        ):
+            result = self.cached[1]
+            if isinstance(result, Exception):
+                raise result
+            return result
+        try:
+            workflow = self.request("actions/workflows/june-build.yml")
+            if workflow["path"] != ".github/workflows/june-build.yml":
+                raise ValueError()
+            workflow_id = workflow["id"]
+            if type(workflow_id) is not int or workflow_id <= 0:
+                raise ValueError()
+            runs = self.request(
+                f"actions/workflows/{workflow_id}/runs?head_sha={commit}&branch=main&event=push&per_page=1"
+            )["workflow_runs"]
+            if not runs:
+                raise ActionsDeferred("actions_pending")
+            run = runs[0]
+            if (
+                run["workflow_id"] != workflow_id
+                or run["path"] != workflow["path"]
+                or run["event"] != "push"
+                or run["head_branch"] != "main"
+                or run["head_sha"] != commit
+                or run["head_repository"]["full_name"] != "lordbagel42/agent"
+                or type(run["id"]) is not int
+                or run["id"] <= 0
+            ):
+                raise ValueError()
+            if run["status"] != "completed":
+                raise ActionsDeferred("actions_pending")
+            if run["conclusion"] != "success":
+                raise ActionsFailure("actions_build_failed")
+            result = self.request(f"actions/runs/{run['id']}/artifacts?per_page=100")
+            artifacts = result["artifacts"]
+            if result["total_count"] != len(artifacts):
+                raise ValueError()
+            matches = [a for a in artifacts if a["name"] == f"june-{commit}"]
+            if len(matches) != 1:
+                raise ValueError()
+            artifact = matches[0]
+            if (
+                artifact["expired"] is not False
+                or type(artifact["id"]) is not int
+                or artifact["id"] <= 0
+                or not 0 < artifact["size_in_bytes"] <= ARTIFACT_LIMIT
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["digest"] or "")
+                or artifact["workflow_run"]["id"] != run["id"]
+                or artifact["workflow_run"]["head_sha"] != commit
+                or artifact["workflow_run"]["head_branch"] != "main"
+            ):
+                raise ValueError()
+        except ActionsDeferred as error:
+            self.cached, self.retry_at = (commit, error), time.monotonic() + 60
+            raise
+        except ActionsFailure:
+            raise
+        except Exception:  # noqa: BLE001 - malformed API evidence fails closed
+            raise ActionsFailure("actions_artifact_invalid") from None
+        self.cached, self.retry_at = (commit, artifact), time.monotonic() + 60
+        return artifact
+
+    def download(self, artifact, output):
+        try:
+            token = private_file(Path("/etc/june/github-actions-token")).strip()
+            request = urllib.request.Request(
+                f"https://api.github.com/repos/lordbagel42/agent/actions/artifacts/{artifact['id']}/zip",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": "june-deploy",
+                    "X-GitHub-Api-Version": "2026-03-10",
+                },
+            )
+            opener = urllib.request.build_opener(ArtifactRedirect())
+            try:
+                response = opener.open(request, timeout=15)
+            except urllib.error.HTTPError as error:
+                try:
+                    if error.code != 302:
+                        raise ActionsDeferred("actions_unavailable") from None
+                    url = error.headers["Location"]
+                finally:
+                    error.close()
+            else:
+                response.close()
+                raise ActionsFailure("actions_artifact_invalid")
+            parsed = urllib.parse.urlsplit(url)
+            hostname = parsed.hostname or ""
+            if (
+                parsed.scheme != "https"
+                or parsed.username
+                or parsed.password
+                or parsed.port not in (None, 443)
+                or not (
+                    hostname.endswith(
+                        (".blob.core.windows.net", ".actions.githubusercontent.com")
+                    )
+                )
+            ):
+                raise ActionsFailure("actions_artifact_invalid")
+            # Separate unauthenticated request, with no further redirects.
+            digest, size, deadline = hashlib.sha256(), 0, time.monotonic() + 600
+            with self.opener.open(urllib.request.Request(url), timeout=15) as response:
+                if response.status != 200:
+                    raise ActionsDeferred("actions_unavailable")
+                while chunk := response.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > artifact["size_in_bytes"] or size > ARTIFACT_LIMIT:
+                        raise ActionsFailure("actions_artifact_invalid")
+                    if time.monotonic() > deadline:
+                        raise ActionsDeferred("actions_unavailable")
+                    digest.update(chunk)
+                    output.write(chunk)
+            if (
+                size != artifact["size_in_bytes"]
+                or "sha256:" + digest.hexdigest() != artifact["digest"]
+            ):
+                raise ActionsFailure("actions_artifact_invalid")
+            output.seek(0)
+        except (ActionsDeferred, ActionsFailure):
+            raise
+        except Exception:  # noqa: BLE001 - never expose signed URLs or credentials
+            raise ActionsDeferred("actions_unavailable") from None
+
+    def install(self, commit, source_digest, stage):
+        artifact = self.artifact(commit)
+        # TemporaryFile lives on the budgeted staging filesystem, not /tmp.
+        with tempfile.TemporaryFile(dir=stage.parent) as downloaded:
+            try:
+                self.download(artifact, downloaded)
+            except ActionsDeferred as error:
+                self.cached, self.retry_at = (commit, error), time.monotonic() + 60
+                raise
+            try:
+                # CPython's end-record reader uses bounded reads, including
+                # ZIP64. Bound the effective directory before ZipFile eagerly
+                # allocates its bytes and ZipInfo objects; count alone is not enough.
+                end = zipfile._EndRecData(downloaded)
+                if (
+                    end is None
+                    or end[zipfile._ECD_ENTRIES_TOTAL] != 1
+                    or end[zipfile._ECD_ENTRIES_THIS_DISK] != 1
+                    or end[zipfile._ECD_DISK_NUMBER] != 0
+                    or end[zipfile._ECD_DISK_START] != 0
+                    or not 0 < end[zipfile._ECD_SIZE] <= 64 * 1024
+                ):
+                    raise ValueError()
+                with zipfile.ZipFile(downloaded) as bundle:
+                    files = bundle.infolist()
+                    if (
+                        len(files) != 1
+                        or files[0].filename != "release.tar.gz"
+                        or files[0].file_size > ARTIFACT_LIMIT
+                    ):
+                        raise ValueError()
+                    with bundle.open(files[0]) as archive:
+                        extract_dependencies(archive, stage, commit, source_digest)
+            except Exception:  # noqa: BLE001 - fixed archive-validation receipt
+                raise ActionsFailure("actions_artifact_invalid") from None
+
+
+class DependencyHeaders(tarfile.TarInfo):
+    """Bound extension headers before tarfile reads/parses their payloads."""
+
+    def _proc_member(self, source):
+        # tarfile processes these before yielding a member to the extractor.
+        if self.type in (
+            tarfile.XHDTYPE,
+            tarfile.SOLARIS_XHDTYPE,
+            tarfile.GNUTYPE_LONGNAME,
+            tarfile.GNUTYPE_LONGLINK,
+        ):
+            total = getattr(source, "dependency_metadata_bytes", 0) + self.size
+            if self.size < 0 or self.size > 1024**2 or total > 16 * 1024**2:
+                raise ValueError("dependency_metadata_limit")
+            source.dependency_metadata_bytes = total
+        elif (
+            not (self.isfile() or self.isdir() or self.issym())
+            or self.type == tarfile.GNUTYPE_SPARSE
+        ):
+            raise ValueError("unsupported_dependency_header")
+        return super()._proc_member(source)
+
+    # PAX sparse maps are parsed after the next regular header, before yielding
+    # it. Reject there too: checking GNUTYPE_SPARSE alone misses these formats.
+    def _proc_gnusparse_00(self, *_args):
+        raise ValueError("unsupported_dependency_sparse")
+
+    _proc_gnusparse_01 = _proc_gnusparse_00
+    _proc_gnusparse_10 = _proc_gnusparse_00
+
+
+class DependencyStream:
+    """Bound all decompressed bytes, including metadata, before tar parsing."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.remaining = 6 * 1024**3
+
+    def read(self, size):
+        data = self.stream.read(min(size, 64 * 1024, self.remaining + 1))
+        self.remaining -= len(data)
+        if self.remaining < 0:
+            raise ValueError("dependency_stream_limit")
+        return data
+
+
+def extract_dependencies(archive, stage, commit, source_digest):
+    """Bounded streaming extraction; write files first and internal links last."""
+    expected = {
+        "version": 1,
+        "revision": commit,
+        "sourceSha256": source_digest,
+        "platform": "debian13-x64",
+        "node": "24.21.0",
+        "pnpm": "10.33.0",
+    }
+    seen, links, size = set(), [], 0
+    try:
+        with (
+            gzip.GzipFile(fileobj=archive) as uncompressed,
+            tarfile.open(
+                fileobj=DependencyStream(uncompressed),
+                mode="r|",
+                tarinfo=DependencyHeaders,
+            ) as source,
+        ):
+            first = source.next()
+            if (
+                first is None
+                or first.name != "build.json"
+                or not first.isfile()
+                or first.size > 4096
+            ):
+                raise ValueError()
+            if json.load(source.extractfile(first)) != expected:
+                raise ValueError()
+            for member in source:
+                if member is first:
+                    continue
+                name = member.name
+                parts = PurePosixPath(name).parts
+                size += member.size
+                if (
+                    not parts
+                    or parts[0] != "node_modules"
+                    or ".." in parts
+                    or name != str(PurePosixPath(name))
+                    or "\\" in name
+                    or name in seen
+                    or len(seen) >= 200_000
+                    or size > 5 * 1024**3
+                    or not (member.isfile() or member.isdir() or member.issym())
+                    or (name == "node_modules" and not member.isdir())
+                ):
+                    raise ValueError()
+                seen.add(name)
+                if member.issym():
+                    target = posixpath.normpath(
+                        posixpath.join(posixpath.dirname(name), member.linkname)
+                    )
+                    if (
+                        not target.startswith("node_modules/")
+                        or member.linkname.startswith("/")
+                        or "\\" in member.linkname
+                    ):
+                        raise ValueError()
+                    links.append(member)
+                else:
+                    source.extract(member, stage, filter="data")
+            for member in links:
+                # A file beneath a declared symlink would already have created
+                # its directory; never replace that directory with a link.
+                path = stage / member.name
+                path.parent.mkdir(parents=True, exist_ok=True)
+            for member in links:
+                path = stage / member.name
+                if not path.parent.resolve().is_relative_to(stage / "node_modules"):
+                    raise ValueError()
+                path.symlink_to(member.linkname)
+            for member in links:
+                if (
+                    not (stage / member.name)
+                    .resolve()
+                    .is_relative_to(stage / "node_modules")
+                ):
+                    raise ValueError()
+    except Exception:  # noqa: BLE001 - no archive-controlled text in receipts
+        raise ValueError("invalid_dependency_artifact") from None
+
+
 class Host:
+    actions = None
+
     def __init__(self, config):
         self.config = config
+        if type(config.get("actionsBuild", False)) is not bool:
+            raise ValueError("invalid_actions_build_config")
+        if config.get("actionsBuild") is True:
+            system = platform.freedesktop_os_release()
+            if (
+                platform.machine() != "x86_64"
+                or system.get("ID") != "debian"
+                or system.get("VERSION_ID") != "13"
+            ):
+                raise ValueError("unsupported_actions_platform")
+            self.actions = ActionsBuild()
         self.root = Path("/opt/june")
         self.releases = self.root / "releases"
         self.current = self.root / "current"
@@ -1418,10 +1780,38 @@ class Host:
                 shutil.rmtree(trash)
                 sync_directory(self.releases)
 
+    def preparation_ready(self, commit):
+        if self.actions and not (self.releases / revision(commit)).exists():
+            paths = (
+                ".github/workflows/june-build.yml",
+                "scripts/deploy/build_release.py",
+                "scripts/deploy/preflight.sh",
+            )
+            policy = self.config.get("actionsPolicy", {})
+            for path in paths:
+                if not isinstance(policy.get(path), str) or not SHA.fullmatch(
+                    policy[path]
+                ):
+                    raise ActionsFailure("actions_policy_changed")
+                try:
+                    actual = self.git("rev-parse", f"{commit}:{path}")
+                except subprocess.CalledProcessError:
+                    raise ActionsFailure("actions_policy_changed") from None
+                if actual != policy[path]:
+                    raise ActionsFailure("actions_policy_changed")
+            self.actions.artifact(commit)
+            return "actions_build_ready"
+        return None
+
     def require_space(self, commit):
-        # Current pinned dependencies occupy about 2.3 GiB. Admission leaves
-        # margin for source/cache growth; check the reserve again after building.
-        minimum = (1 if (self.releases / revision(commit)).exists() else 4) * 1024**3
+        # Preserve local-build admission. Actions permits a 2 GiB download plus
+        # 5 GiB expanded dependencies, source and a 1 GiB reserve (rounded up).
+        # Check the reserve again before sealing in either mode.
+        minimum = (
+            1
+            if (self.releases / revision(commit)).exists()
+            else (9 if self.actions else 4)
+        ) * 1024**3
         if shutil.disk_usage(self.stage_root).free < minimum:
             raise InsufficientDisk()
 
@@ -1430,6 +1820,7 @@ class Host:
         self.require_space(commit)
         if release.exists():
             return self.manifest(commit)
+        self.preparation_ready(commit)
         # All non-test source except the pure HTML view is conservatively bound.
         entries = self.git(
             "ls-tree", "-r", "-z", commit, "--", *SOURCE, binary=True
@@ -1501,7 +1892,13 @@ class Host:
                 != "pnpm@10.33.0"
             ):
                 raise ValueError("unexpected_package_manager")
-            self.build(stage)
+            if self.actions:
+                self.actions.install(commit, hashlib.sha256(archive).hexdigest(), stage)
+                for name in ("tsx", "codex"):
+                    if not os.access(stage / "node_modules/.bin" / name, os.X_OK):
+                        raise ActionsFailure("actions_artifact_invalid")
+            else:
+                self.build(stage)
             if shutil.disk_usage(self.stage_root).free < 1024**3:
                 raise InsufficientDisk()
             self.seal(stage)

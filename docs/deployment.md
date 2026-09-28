@@ -2,9 +2,11 @@
 
 The deployment controller follows trusted updates to the configured repository's
 `main` branch. `scripts/deploy/deploy.py` is a June-only host poller,
-not a CI platform or a model tool. No release proposal, PR gate, GitHub Actions
-runner, inbound webhook, or infrastructure-wide update is required. **This code
-does not provision or activate itself.** The operator integrates and bootstraps it.
+not a CI platform or a model tool. Preparation may run locally (the default) or
+in GitHub Actions (operator opt-in). Activation always stays on June's host.
+No release proposal, PR gate, inbound webhook or whole-homelab update is needed.
+**This code does not provision or activate itself.** The operator integrates and
+bootstraps it.
 
 For a private repository, use a dedicated **read-only GitHub
 deploy key** and pinned GitHub host keys, not a person's `gh` login or the coding
@@ -13,6 +15,105 @@ this one repository; they cannot write the installed deployment controller.
 
 Paths below describe an example service layout, not a published deployment.
 Provision access and obtain operator authorization for your own environment.
+
+## GitHub Actions preparation
+
+`.github/workflows/june-build.yml` runs on every push to `main`, preparing the
+exact pushed SHA in Debian 13/x86-64 with Node 24.21.0 and pnpm 10.33.0. It runs
+the same `preflight.sh`: frozen install with hooks disabled, formatting, types
+and routing/delivery safety tests. It has read-only repository permission, no
+deployment/configuration secrets, no LAN connection and no service-control step.
+`june/build` success is **not** `june/deploy` success. In-flight builds are not
+cancelled by newer pushes; the local pending queue still coalesces independently.
+
+The producer exports source from Git, never the working tree. It uploads a
+seven-day `june-<SHA>` artifact containing only `release.tar.gz`: prepared
+`node_modules` plus a small manifest binding the exact source archive digest,
+revision and runtime platform. Tar preserves executable bits and internal pnpm
+links; hardlinks become independent files. Private/generated source paths and
+runtime config are never packaged. There is no cross-run dependency cache.
+
+When enabled, the controller verifies the expected workflow, push event, main
+branch, repository, exact SHA and successful run before selecting an artifact
+from that run. It validates the API-provided SHA-256 digest of the downloaded
+ZIP, not a checksum supplied alongside arbitrary bytes. The API credential is
+never forwarded to the signed storage URL. Downloads allow only HTTPS GitHub
+Actions/Azure Blob storage locations, with no subsequent redirects. Neither
+artifacts from PRs nor an artifact name alone establish provenance.
+
+The host exports source independently and matches the producer's source digest.
+Extraction is limited to dependencies: no source replacement, release marker,
+absolute/traversing paths, external links, hardlinks or special files. Limits
+are 2 GiB downloaded ZIP, 2 GiB inner archive, 5 GiB expanded dependency bytes
+and 200,000 entries. Before tar parsing, the consumer also bounds all
+decompressed bytes to 6 GiB and extension metadata to 1 MiB per header and
+16 MiB total; global PAX headers and sparse formats are rejected. The ZIP
+central directory, including effective ZIP64 values, is limited to 64 KiB
+before parsing. A new Actions preparation requires 9 GiB free disk for
+download, extraction, source and reserve; retained candidates still require
+1 GiB. The host seals and hashes the result and creates `.june-release.json`
+with its own config/Node/service binding. Existing drain, stop-evidence,
+readiness, identity, compatibility, rollback and staging-recovery rules remain.
+
+Missing/running builds produce `deferred/actions_pending`. API or download
+availability failures produce `deferred/actions_unavailable`; metadata is
+polled at most once a minute per unchanged candidate. The current service stays
+untouched and there is **no automatic local-build fallback**. These two expected
+wait reasons do not launch autonomous recovery or create legacy operator holds;
+terminal Actions failures still follow the configured recovery policy. Unsuccessful
+completed builds, expired/missing/invalid artifacts and changed build policy
+terminally fail that candidate with a fixed reason. Publish a forward commit
+after resolving the cause; rerunning an already failed SHA does not re-admit it.
+
+June can inspect these outcomes through her existing owner-authenticated
+`release: {"action":"inspect","revision":"<SHA>"}` directive. The receipt
+distinguishes Actions waiting/unavailability, build success, validation/policy
+failure and actual deployment evidence, and links to the private workflow logs.
+It cannot dispatch/rerun Actions, change policy pins, drain or activate. Build
+timings and raw logs are not in the controller feed; missing evidence is unknown.
+
+### Operator activation (separate from publishing code)
+
+1. Deploy the compatible app reader first using local preparation. Older
+   readers reject the new reason codes; do not enable Actions mode first.
+2. Review the workflow, `build_release.py` and `preflight.sh` at an exact commit.
+   Record their Git **blob IDs**, not the app commit ID, in root-owned
+   `/etc/june/deploy.json`:
+
+   ```json
+   "actionsBuild": true,
+   "actionsPolicy": {
+     ".github/workflows/june-build.yml": "<reviewed 40-character blob ID>",
+     "scripts/deploy/build_release.py": "<reviewed 40-character blob ID>",
+     "scripts/deploy/preflight.sh": "<reviewed 40-character blob ID>"
+   }
+   ```
+
+   Obtain each with `git rev-parse <reviewed-commit>:<path>`. This preserves the
+   independently installed preflight boundary: an app commit cannot silently
+   remove the required checks. Policy changes require a fresh operator review
+   and pin update before a new forward candidate is admitted.
+3. Provision a separate root-owned `0600` `/etc/june/github-actions-token`
+   through the existing secret mechanism. Restrict its fine-grained GitHub
+   permission to **Actions: read** on this repository. Do not reuse the coding
+   worker credential, SSH deploy key or model environment. The existing status
+   token's permissions do not automatically grant artifact access.
+4. With explicit installation authorization, settle controller operations and
+   install the reviewed `deploy.py` under the normal operator lock. Do not
+   install the producer/workflow on June or change configuration concurrently
+   with activation. Refresh controller provenance as usual. Verify a real
+   hosted build and artifact transfer before considering the cutover proven.
+
+Omitting `actionsBuild` keeps existing local preparation unchanged. Switching
+back is an operator policy change, not automatic outage recovery; keep the
+compatible reader while historical Actions reasons remain in the bounded feed.
+Already sealed releases remain immutable and usable without GitHub artifacts.
+GitHub queues, transfer time, storage usage and private-repository Actions
+billing remain operational considerations; this is not a 30-second guarantee.
+The initial local producer probe measured 1.48 GB compressed and 4.15 GB expanded
+dependencies (43,903 archive entries). These are decimal byte sizes, not a future
+size guarantee; they supersede the older 2.3 GiB local-install estimate below for
+artifact-transfer planning.
 
 ## GitHub deployment details
 
@@ -158,9 +259,11 @@ For each candidate it:
 
 1. Exports only the public source layout from the exact Git revision; rejects
    links, special files, private/generated paths and oversized archives.
-2. Installs the frozen lockfile with package hooks disabled, checks formatting,
-   types and the existing routing/delivery safety tests. This runs as `june-build`
-   in a separate bounded systemd cgroup without June data or credentials.
+2. In local mode, installs the frozen lockfile with package hooks disabled,
+   checks formatting, types and the routing/delivery safety tests as `june-build`
+   in a bounded systemd cgroup without June data or credentials. In Actions mode,
+   verifies and imports the exact revision's remotely prepared dependencies as
+   described above instead of running a local install or preflight.
 3. Seals a root-owned release at `/opt/june/releases/<40-character-SHA>`.
    `.june-release.json` binds the source revision, complete installed-file digest,
    compatibility fingerprint and runtime binding. The controller verifies retained
@@ -183,7 +286,7 @@ shutdown of every child; it does not replace the drain contract or shutdown
 ordering validation. Lost systemd history requires operator recovery, not an
 inferred successful stop.
 
-Builds have a 2 GiB hard memory limit, no swap and a ten-minute runtime deadline,
+Local builds have a 2 GiB hard memory limit, no swap and a ten-minute runtime deadline,
 leaving headroom for the app and OS in June's 4 GiB container. Provision that
 container capacity before installing this controller; the 1 GiB build budget in
 the former 2 GiB container could not complete the pinned dependency install.
@@ -246,7 +349,7 @@ before registration can leave an empty unregistered directory. This recovery
 needs a separately authorized controller installation; pushing main does not
 upgrade the installed script.
 
-A new build requires at least 4 GiB available; a prepared candidate requires
+A new local build requires at least 4 GiB available; a prepared candidate requires
 1 GiB. The 1 GiB reserve is checked again after building, before promotion.
 Insufficient capacity records `deferred/insufficient_disk`, leaves June serving,
 and retries after space is available without requiring another commit. These
@@ -822,7 +925,15 @@ uv tool run ruff format --check scripts/deploy
 uv tool run ruff check scripts/deploy
 (umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_deploy.py)
 (umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_runner.py)
+(umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_actions.py)
+actionlint .github/workflows/june-build.yml
 ```
+
+Use a disposable `TMPDIR` on a filesystem with sufficient free space if `/tmp`
+is a small tmpfs; the existing controller fixtures enforce real disk admission.
+The Actions fixtures cover provenance, policy pins, digest verification,
+credential stripping, hostile archives, deferral and the unchanged local
+activation path. They do not contact GitHub or prove a hosted workflow run.
 
 The core fixtures use real disposable Git commits, SQLite, HTTP subprocesses,
 release directories and persistent messages. They cover duplicate activation,

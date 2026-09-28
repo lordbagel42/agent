@@ -9,6 +9,70 @@ import {
   type DeploymentFeed,
 } from "./feed.js";
 
+test("June can inspect Actions waits, build success and failures without claiming deployment", async () => {
+  const root = await mkdtemp(join(tmpdir(), "june-actions-feed-"));
+  const file = join(root, "events.json");
+  const revision = "b".repeat(40);
+  const feed = {
+    version: 1,
+    repository: "lordbagel42/agent",
+    branch: "main",
+    lastHealthyRevision: "a".repeat(40),
+    blocked: false,
+    events: [
+      {
+        sequence: 1,
+        revision,
+        status: "deferred",
+        reason: "actions_pending",
+        at: 2000,
+        committedAt: 1000,
+        elapsedMs: 1000,
+      },
+    ],
+  };
+  const read = createDeploymentReader({
+    file,
+    ownerId: "owner",
+    trustedUid: process.getuid?.(),
+  });
+  const inspect = createReleaseTool({
+    read: () => read("owner"),
+    runningRevision: "a".repeat(40),
+  });
+  try {
+    for (const [status, reason, explanation] of [
+      ["deferred", "actions_pending", "Waiting for"],
+      ["deferred", "actions_unavailable", "retry"],
+      ["preparing", "actions_build_ready", "not deployment success"],
+      ["failed", "actions_build_failed", "forward fix"],
+      ["failed", "actions_artifact_invalid", "not activated"],
+      ["failed", "actions_policy_changed", "operator-reviewed"],
+    ] as const) {
+      feed.events = [
+        {
+          sequence: 1,
+          revision,
+          status,
+          reason,
+          at: 2000,
+          committedAt: 1000,
+          elapsedMs: 1000,
+        },
+      ];
+      await writeFile(file, JSON.stringify(feed), { mode: 0o640 });
+      const receipt = await inspect({ action: "inspect", revision });
+      expect(receipt).toContain(reason);
+      expect(receipt).toContain(explanation);
+      expect(receipt).toContain("Exact revision matches running process: no");
+      expect(receipt).toContain("No healthy/reconciled observation");
+      await expect(read("guest")).rejects.toThrow("deployment_denied");
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("release inspection preserves global blocks and unknown candidate/identity evidence", async () => {
   const feed: DeploymentFeed = {
     version: 1,

@@ -1,0 +1,40 @@
+name: June release build
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Do not cancel an in-flight revision the host may already be preparing.
+# The host coalesces its own pending queue; Actions ordering is not deployment order.
+concurrency:
+  group: june-build-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: june/build
+    runs-on: ubuntu-24.04
+    container: node:24.21.0-trixie@sha256:be40f6a87b9b22215ddb20da0a2320a5c6d583fe3ee3b0024d9fa4f05b40c8fd
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Pin package manager
+        run: corepack prepare pnpm@10.33.0 --activate
+      - name: Prepare exact revision
+        env:
+          REVISION: ${{ github.sha }}
+        run: python3 -I scripts/deploy/build_release.py "$REVISION" release.tar.gz
+      - name: Publish prepared dependencies
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: june-${{ github.sha }}
+          path: release.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
