@@ -40,25 +40,61 @@ Existing classic commit statuses receive a Details link to the native check
 and continue updating. New commits receive only the native check, avoiding two
 parallel entries. Reports remain within the private GitHub repository.
 
-An authorized operator enables reporting by installing the updated controller
-and a root-owned `0600` `/etc/june/github-status-token` through the existing secret
-mechanism. Use a fine-grained GitHub token restricted to `lordbagel42/agent` with
-**Checks: read and write**, plus **Commit statuses: read and write** for existing
-status links. When upgrading from status-only reporting, add Checks permission
-to the existing token before installing this controller; otherwise publication
-fails and the old statuses stop updating. If the installed credential has only
-Commit statuses permission, set `"githubChecks": false` in the protected
-`/etc/june/deploy.json` during installation. This preserves classic `june/deploy`
-statuses without making any Checks calls or requiring broader credentials. It
-does not provide the native Details report. Pending stages share one deduplicated
-status; superseded revisions report error/not deployed, never success. Omit the
-setting (or set it to true) only after provisioning Checks permissions.
-The read-only SSH deploy key and
-lifecycle token cannot authenticate GitHub API writes; do not reuse a coding-worker
-or personal CLI credential. Missing status credentials leave reporting disabled.
-Keep the token out of June's model/build environments; rotate it before expiry.
-Controller installation/restart still requires operator authorization and must
-wait for existing deployment operations to settle.
+Use the same private June GitHub App as [June's GitHub connection](github.md),
+with **Checks: read and write** and **Commit statuses: read and write** added
+to its repository permissions. Install it on `lordbagel42/agent`. Native Checks
+reporting uses App installation authentication, not June's user OAuth token or
+a personal access token. The former instructions to add Checks to a PAT were
+incorrect.
+
+An authorized operator installs the updated controller, `/usr/bin/openssl`,
+and the App's RSA PEM private key through the existing private secret mechanism.
+The key must be a root-owned regular file, mode `0600`, without symlinks or hard
+links, under root-controlled directories; suggested path `/etc/june/github-app.pem`.
+Add this optional object to root-owned `0600` `/etc/june/deploy.json`:
+
+```json
+"githubApp": {
+  "appId": 123456,
+  "installationId": 789012,
+  "privateKeyFile": "/etc/june/github-app.pem"
+}
+```
+
+Replace the example IDs with positive JSON integers (not strings): the numeric
+App ID, not its OAuth client ID, and the installation ID for `lordbagel42`.
+The key path must be absolute. No additional fields or configurable repository
+are accepted. The controller verifies that the App's installation for the fixed
+repository matches the configured installation and owner before minting a token
+restricted to **only `agent`, `checks:write`, and `statuses:write`** (plus GitHub's
+implicit metadata read permission). It rejects broader returned grants. Tokens
+are cached only in memory and refreshed 60 seconds before expiry. Publication
+failure discards the cache and uses the normal retry backoff. A configured App
+failure never falls back to the legacy PAT. App configuration does not override
+`githubChecks:false`.
+
+One App registration does not mean shared credentials: June retains her user
+OAuth client/refresh credentials; the signing key and installation tokens stay
+outside June's runtime, MCP, model, and build environments. The App key can mint
+broader tokens than this controller requests, so root-only custody is essential.
+Neither credentials nor JWTs are written to controller SQLite, feeds or logs.
+
+Without `githubApp` (or with null), legacy `/etc/june/github-status-token` remains
+supported for classic statuses. Keep it root-owned `0600` and use
+`"githubChecks": false` with the status-only PAT. This preserves `june/deploy`
+statuses without Checks calls, but provides no native Details report. Pending
+stages share one deduplicated status; superseded revisions report error/not
+deployed, never success. Missing legacy credentials leave reporting disabled.
+The read-only SSH deploy key and lifecycle token cannot authenticate GitHub API
+writes; do not reuse a coding-worker or personal CLI credential.
+
+Keep `githubChecks:false` until the App installation/permissions and controller
+upgrade are ready. Enabling it (`true`, or omitted) and restarting the controller
+require a separately authorized, coordinated operator handoff after recovery and
+existing deployment operations settle. A main push does not install this code,
+clear a block, or authorize resuming a disabled controller. After activation,
+verify the native check and the existing status's Details URL on an actual commit;
+local tests do not attest GitHub permission or delivery.
 
 Reporting happens after recording preparation and after the deployment attempt, never
 inside drain/activation/rollback. API failures do not fail deployments: they log

@@ -5,6 +5,7 @@ host commands. Errors are fixed codes: subprocess/HTTP output never enters June.
 """
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import io
@@ -521,13 +522,104 @@ class GitHubStatuses:
         "non_fast_forward": "Main moved backwards or diverged. Owner must resolve trusted branch history.",
     }
 
-    def __init__(self, store, *, checks=True):
+    def __init__(self, store, *, checks=True, app=None):
         self.store = store
         self.checks = checks
+        self.app = app
+        self.app_token = None
+        self.app_token_expiry = 0
         self.retry_at = 0
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect()
         )
+
+    def token(self):
+        if self.app is None:
+            try:
+                return private_file(Path("/etc/june/github-status-token")).strip()
+            except FileNotFoundError:
+                return None  # Legacy reporting is opt-in.
+        app = self.app
+        if (
+            not isinstance(app, dict)
+            or set(app) != {"appId", "installationId", "privateKeyFile"}
+            or any(
+                type(app[key]) is not int or app[key] <= 0
+                for key in ("appId", "installationId")
+            )
+            or not isinstance(app["privateKeyFile"], str)
+            or not Path(app["privateKeyFile"]).is_absolute()
+        ):
+            raise ValueError("invalid_github_app")
+        if self.app_token and time.time() < self.app_token_expiry - 60:
+            return self.app_token
+        self.app_token = None
+
+        def encode(value):
+            return base64.urlsafe_b64encode(value).rstrip(b"=")
+
+        now = int(time.time())
+        message = b".".join(
+            encode(json.dumps(value).encode())
+            for value in (
+                {"alg": "RS256", "typ": "JWT"},
+                {"iss": str(app["appId"]), "iat": now - 60, "exp": now + 540},
+            )
+        )
+        # Validate and read once without following a symlink. OpenSSL sees only
+        # an anonymous private descriptor, not credentials in argv/environment.
+        pem = private_file(Path(app["privateKeyFile"]))
+        with tempfile.TemporaryFile() as key:
+            key.write(pem.encode())
+            key.flush()
+            signature = subprocess.run(
+                [
+                    "/usr/bin/openssl",
+                    "dgst",
+                    "-sha256",
+                    "-sign",
+                    f"/proc/self/fd/{key.fileno()}",
+                ],
+                input=message,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                pass_fds=(key.fileno(),),
+                timeout=5,
+                check=True,
+            ).stdout
+        jwt = (message + b"." + encode(signature)).decode()
+        installation = self.request(jwt, "GET", "repos/lordbagel42/agent/installation")
+        if (
+            installation["id"] != app["installationId"]
+            or installation["app_id"] != app["appId"]
+            or installation["account"]["login"] != "lordbagel42"
+        ):
+            raise ValueError("wrong_github_installation")
+        grant = self.request(
+            jwt,
+            "POST",
+            f"app/installations/{app['installationId']}/access_tokens",
+            {
+                "repositories": ["agent"],
+                "permissions": {"checks": "write", "statuses": "write"},
+            },
+        )
+        permissions = dict(grant["permissions"])
+        if permissions.get("metadata") == "read":
+            del permissions["metadata"]
+        expires = datetime.fromisoformat(grant["expires_at"].replace("Z", "+00:00"))
+        if (
+            permissions != {"checks": "write", "statuses": "write"}
+            or [repo["full_name"] for repo in grant["repositories"]]
+            != ["lordbagel42/agent"]
+            or expires.tzinfo is None
+            or expires.timestamp() <= time.time() + 60
+            or not isinstance(grant["token"], str)
+            or not re.fullmatch(r"[\x21-\x7e]+", grant["token"])
+        ):
+            raise ValueError("invalid_github_grant")
+        self.app_token, self.app_token_expiry = grant["token"], expires.timestamp()
+        return self.app_token
 
     def report(self, commit):
         first = self.store.db.execute(
@@ -603,7 +695,7 @@ class GitHubStatuses:
 
     def request(self, token, method, path, body=None):
         request = urllib.request.Request(
-            "https://api.github.com/repos/lordbagel42/agent/" + path,
+            "https://api.github.com/" + path,
             data=json.dumps(body).encode() if body is not None else None,
             method=method,
             headers={
@@ -630,11 +722,11 @@ class GitHubStatuses:
         if time.monotonic() < self.retry_at:
             return
         try:
-            try:
-                token = private_file(Path("/etc/june/github-status-token")).strip()
-            except FileNotFoundError:
-                return  # Opt-in; the SSH fetch key cannot write API statuses.
-            if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", token):
+            token = self.token()
+            if token is None:
+                return
+            # Installation tokens are opaque, including long dotted formats.
+            if not re.fullmatch(r"[\x21-\x7e]+", token):
                 raise ValueError("invalid_github_token")
             # Coalesce outages to the latest lifecycle evidence per SHA. A
             # fetch failure must not overwrite a candidate's deployment result.
@@ -670,7 +762,12 @@ class GitHubStatuses:
                     }
                     key = "github-status:" + commit
                     if self.store.get(key) != json.dumps(classic):
-                        self.request(token, "POST", f"statuses/{commit}", classic)
+                        self.request(
+                            token,
+                            "POST",
+                            f"repos/lordbagel42/agent/statuses/{commit}",
+                            classic,
+                        )
                         self.store.set(key, json.dumps(classic))
                         sent += 1
                     if sent >= 10:
@@ -689,7 +786,7 @@ class GitHubStatuses:
                         found = self.request(
                             token,
                             "GET",
-                            f"commits/{commit}/check-runs?check_name=june%2Fdeploy&filter=latest&per_page=100",
+                            f"repos/lordbagel42/agent/commits/{commit}/check-runs?check_name=june%2Fdeploy&filter=latest&per_page=100",
                         )
                         run = next(
                             (
@@ -704,7 +801,7 @@ class GitHubStatuses:
                             run = self.request(
                                 token,
                                 "POST",
-                                "check-runs",
+                                "repos/lordbagel42/agent/check-runs",
                                 {
                                     **payload,
                                     "head_sha": commit,
@@ -724,7 +821,12 @@ class GitHubStatuses:
                         run = {"id": run["id"], "html_url": run["html_url"]}
                         self.store.set(run_key, json.dumps(run))
                     if not created:
-                        self.request(token, "PATCH", f"check-runs/{run['id']}", payload)
+                        self.request(
+                            token,
+                            "PATCH",
+                            f"repos/lordbagel42/agent/check-runs/{run['id']}",
+                            payload,
+                        )
                     self.store.set(output_key, fingerprint)
                     sent += 1
                     if sent >= 10:
@@ -740,12 +842,18 @@ class GitHubStatuses:
                         "target_url": run["html_url"],
                     }
                     if self.store.get(key) != json.dumps(legacy):
-                        self.request(token, "POST", f"statuses/{commit}", legacy)
+                        self.request(
+                            token,
+                            "POST",
+                            f"repos/lordbagel42/agent/statuses/{commit}",
+                            legacy,
+                        )
                         self.store.set(key, json.dumps(legacy))
                         sent += 1
                 if sent >= 10:
                     break  # Bound backfill work; newer evidence is sent first.
         except Exception:  # noqa: BLE001 - API bodies/credentials never reach logs or June
+            self.app_token = None  # Revoked/failed credentials must be minted anew.
             self.retry_at = time.monotonic() + 60
             print("github_status_publish_failed: will retry", flush=True)
 
@@ -1576,7 +1684,11 @@ def main():
             staging_recovery_feed=config.get("stagingRecoveryFeed") is True,
             repository_metadata_feed=config.get("repositoryMetadataFeed") is True,
         )
-        statuses = GitHubStatuses(store, checks=config.get("githubChecks") is not False)
+        statuses = GitHubStatuses(
+            store,
+            checks=config.get("githubChecks") is not False,
+            app=config.get("githubApp"),
+        )
         loop = Deployer(host, store, statuses)
         try:
             store.stage_recovery(recovered)

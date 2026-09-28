@@ -1,5 +1,6 @@
 """Core safety checks. All Git, HTTP service and durable data are disposable."""
 
+import base64
 import importlib.util
 import io
 import json
@@ -192,7 +193,8 @@ class FixtureHost(deploy.Host):
 
 
 class GitHubFixture:
-    def __init__(self):
+    def __init__(self, token="fixture-token"):
+        self.token = token
         self.runs = {}
         self.statuses = []
         self.writes = []
@@ -200,7 +202,7 @@ class GitHubFixture:
 
     def open(self, request, timeout):
         assert timeout == 5
-        assert request.get_header("Authorization") == "Bearer fixture-token"
+        assert request.get_header("Authorization") == "Bearer " + self.token
         assert request.get_header("Accept") == "application/vnd.github+json"
         prefix = "https://api.github.com/repos/lordbagel42/agent/"
         assert request.full_url.startswith(prefix)
@@ -237,6 +239,243 @@ class GitHubFixture:
         response = io.BytesIO(json.dumps(result).encode())
         response.status = 201 if method == "POST" else 200
         return response
+
+
+class GitHubAppAuthentication(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.key = self.root / "app.pem"
+        subprocess.run(
+            ["openssl", "genrsa", "-out", str(self.key), "2048"],
+            check=True,
+            capture_output=True,
+        )
+        self.app = {
+            "appId": 123,
+            "installationId": 456,
+            "privateKeyFile": str(self.key),
+        }
+        self.store = deploy.Store(self.root / "records", self.root / "feed", "a" * 40)
+        self.addCleanup(self.store.close)
+        self.store.event("a" * 40, "healthy")
+        self.api = GitHubFixture("ghs_" + "a" * 180 + "." + "b" * 180 + "." + "c" * 180)
+        self.installation = {
+            "id": 456,
+            "app_id": 123,
+            "account": {"login": "lordbagel42"},
+        }
+        self.grant = {
+            "token": self.api.token,
+            "expires_at": "2030-01-01T01:00:00Z",
+            "permissions": {"checks": "write", "statuses": "write", "metadata": "read"},
+            "repositories": [{"full_name": "lordbagel42/agent"}],
+        }
+        self.mints = 0
+
+    def open(self, request, timeout):
+        url = request.full_url
+        if url.endswith(("/installation", "/access_tokens")):
+            jwt = request.get_header("Authorization").removeprefix("Bearer ")
+            header, claims, signature = jwt.split(".")
+            decode = lambda part: base64.urlsafe_b64decode(
+                part + "=" * (-len(part) % 4)
+            )
+            self.assertEqual(json.loads(decode(header)), {"alg": "RS256", "typ": "JWT"})
+            claims = json.loads(decode(claims))
+            self.assertEqual(claims["iss"], "123")
+            self.assertEqual(claims["iat"], int(deploy.time.time()) - 60)
+            self.assertEqual(claims["exp"], int(deploy.time.time()) + 540)
+            public = self.root / "public.pem"
+            subprocess.run(
+                [
+                    "openssl",
+                    "rsa",
+                    "-in",
+                    str(self.key),
+                    "-pubout",
+                    "-out",
+                    str(public),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            signed = self.root / "signature"
+            signed.write_bytes(decode(signature))
+            subprocess.run(
+                [
+                    "openssl",
+                    "dgst",
+                    "-sha256",
+                    "-verify",
+                    str(public),
+                    "-signature",
+                    str(signed),
+                ],
+                input=jwt.rsplit(".", 1)[0].encode(),
+                check=True,
+                capture_output=True,
+            )
+            if url.endswith("/installation"):
+                self.assertEqual(
+                    url, "https://api.github.com/repos/lordbagel42/agent/installation"
+                )
+                self.assertEqual(request.get_method(), "GET")
+                result = self.installation
+            else:
+                self.assertEqual(
+                    url, "https://api.github.com/app/installations/456/access_tokens"
+                )
+                self.assertEqual(request.get_method(), "POST")
+                self.assertEqual(
+                    json.loads(request.data),
+                    {
+                        "repositories": ["agent"],
+                        "permissions": {"checks": "write", "statuses": "write"},
+                    },
+                )
+                self.mints += 1
+                result = self.grant
+            response = io.BytesIO(json.dumps(result).encode())
+            response.status = 201 if request.get_method() == "POST" else 200
+            return response
+        return self.api.open(request, timeout)
+
+    def test_scoped_app_token_signs_refreshes_and_publishes_details(self):
+        reporter = deploy.GitHubStatuses(self.store, app=self.app)
+        self.store.set("github-status:" + "a" * 40, '{"state":"pending"}')
+        with (
+            patch.object(deploy, "private_file", return_value=self.key.read_text()),
+            patch.object(reporter.opener, "open", side_effect=self.open),
+            patch.object(deploy.time, "time", return_value=1893456000) as clock,
+        ):
+            reporter.flush()
+            self.assertEqual(self.api.runs[41]["conclusion"], "success")
+            self.assertEqual(
+                self.api.statuses[-1]["target_url"],
+                "https://github.com/lordbagel42/agent/runs/41",
+            )
+            clock.return_value += 3539
+            reporter.flush()
+            self.assertEqual(self.mints, 1)
+            clock.return_value += 1
+            self.grant["expires_at"] = "2030-01-01T02:00:00Z"
+            reporter.flush()
+            self.assertEqual(self.mints, 2)
+        self.assertNotIn(self.api.token, self.store.feed.read_text())
+        self.assertNotIn(
+            self.api.token,
+            str([tuple(row) for row in self.store.db.execute("SELECT * FROM state")]),
+        )
+
+    def test_wrong_installation_or_broader_grant_never_publishes_or_falls_back(self):
+        for wrong in (
+            "account",
+            "installation",
+            "repository",
+            "permission",
+            "expiry",
+            "unsafe_token",
+            "missing_key",
+        ):
+            with self.subTest(wrong=wrong):
+                reporter = deploy.GitHubStatuses(self.store, app=self.app)
+                installation = json.loads(json.dumps(self.installation))
+                grant = json.loads(json.dumps(self.grant))
+                if wrong == "account":
+                    self.installation["account"]["login"] = "someone-else"
+                if wrong == "installation":
+                    self.installation["id"] = 789
+                if wrong == "repository":
+                    self.grant["repositories"].append(
+                        {"full_name": "lordbagel42/other"}
+                    )
+                if wrong == "permission":
+                    self.grant["permissions"]["contents"] = "write"
+                if wrong == "expiry":
+                    self.grant["expires_at"] = "2029-12-31T23:00:00Z"
+                if wrong == "unsafe_token":
+                    self.grant["token"] = "unsafe\r\nHeader: value"
+                paths = []
+
+                def private(path, paths=paths, wrong=wrong):
+                    paths.append(path)
+                    if wrong == "missing_key":
+                        raise FileNotFoundError()
+                    return self.key.read_text()
+
+                with (
+                    patch.object(deploy, "private_file", side_effect=private),
+                    patch.object(reporter.opener, "open", side_effect=self.open),
+                    patch.object(deploy.time, "time", return_value=1893456000),
+                    patch("sys.stdout", new_callable=io.StringIO) as output,
+                ):
+                    reporter.flush()
+                self.assertEqual(
+                    output.getvalue(), "github_status_publish_failed: will retry\n"
+                )
+                self.assertEqual(self.api.runs, {})
+                self.assertEqual(self.api.statuses, [])
+                self.assertEqual(paths, [self.key])
+                self.installation, self.grant = installation, grant
+
+    def test_invalid_config_and_revoked_token_fail_closed_then_retry(self):
+        for app in (
+            {},
+            False,
+            {**self.app, "appId": True},
+            {**self.app, "installationId": "456"},
+            {**self.app, "privateKeyFile": "relative.pem"},
+        ):
+            with (
+                self.subTest(app=app),
+                patch.object(
+                    deploy,
+                    "private_file",
+                    side_effect=AssertionError("must not read PAT"),
+                ) as private,
+                patch("sys.stdout", new_callable=io.StringIO) as output,
+            ):
+                reporter = deploy.GitHubStatuses(self.store, app=app)
+                with patch.object(reporter.opener, "open") as network:
+                    reporter.flush()
+                private.assert_not_called()
+                network.assert_not_called()
+                self.assertEqual(
+                    output.getvalue(), "github_status_publish_failed: will retry\n"
+                )
+        reporter = deploy.GitHubStatuses(self.store, app=self.app, checks=False)
+        with (
+            patch.object(deploy, "private_file", return_value=self.key.read_text()),
+            patch.object(reporter.opener, "open", side_effect=self.open) as transport,
+            patch.object(deploy.time, "time", return_value=1893456000),
+            patch.object(deploy.time, "monotonic", return_value=100) as clock,
+            patch("sys.stdout", new_callable=io.StringIO) as output,
+        ):
+            reporter.flush()
+            self.assertEqual(self.api.runs, {})
+            self.assertEqual(self.api.statuses[-1]["state"], "success")
+            self.store.event("a" * 40, "failed")
+            transport.side_effect = deploy.urllib.error.HTTPError(
+                "https://api.github.com/",
+                401,
+                "private error",
+                {},
+                io.BytesIO(b"SECRET"),
+            )
+            reporter.flush()
+            self.assertEqual(
+                output.getvalue(), "github_status_publish_failed: will retry\n"
+            )
+            transport.side_effect = self.open
+            clock.return_value = 159
+            reporter.flush()
+            self.assertEqual(self.mints, 1)
+            clock.return_value = 160
+            reporter.flush()
+            self.assertEqual(self.mints, 2)
+            self.assertEqual(self.api.statuses[-1]["state"], "failure")
 
 
 class ControllerProvenance(unittest.TestCase):
