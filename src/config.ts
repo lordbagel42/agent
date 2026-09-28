@@ -262,6 +262,9 @@ const schema = z
         timeoutMs: z.number().int().min(1000).max(15000).default(10000),
       })
       .optional(),
+    e2b: z
+      .strictObject({ apiKeyEnv: envName.default("E2B_API_KEY") })
+      .optional(),
     slack: z
       .strictObject({
         teamId: nonempty,

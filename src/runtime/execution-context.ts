@@ -70,6 +70,7 @@ export function executionCapabilities(
     skillCodingProposalAvailable:
       privateTurn && !!deps.memory && !!deps.reflection && !!deps.coding,
     juryAvailable: privateTurn && !!deps.memory && !!deps.jury,
+    e2bAvailable: privateTurn && deps.e2b?.available === true,
     rivetAvailable: isOwnerRivetDm(event, deps.owner) && !!deps.rivet,
     browserProposalAvailable: privateTurn && !!deps.browserProposal,
     personalityPreviewAvailable: privateTurn,

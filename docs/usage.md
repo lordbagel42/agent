@@ -53,6 +53,53 @@ into June or tested with a real account.
 - Optional owner-private, read-only browser console using the existing operator
   credential. It cannot approve actions or change configuration.
 
+## Optional E2B execution
+
+Prefer June's local QuickJS `javascript` sandbox for calculations and data
+processing whenever it can do the job: it is cheaper and keeps the computation
+local. E2B is an alternative for Python, Node.js, Bash, preinstalled libraries,
+or disposable files, not an automatic retry after QuickJS fails or a way around
+permissions. It is available only for current owner-private requests, including
+authorized execution workers; guests, channels, wakeups and synthesis turns
+cannot start it.
+
+After operator cost/privacy review, add `"e2b": {"apiKeyEnv":"E2B_API_KEY"}`
+to the private configuration and supply `E2B_API_KEY` through the normal secret
+mechanism with `JUNE_ALLOW_E2B=1`. It is off by default; absent credentials keep
+the capability unavailable. Configuration does not verify provider health.
+Activation is a separate operator-authorized configuration/deployment change.
+This integration is E2B Cloud-only: ambient `E2B_DEBUG`, `E2B_API_URL`,
+`E2B_SANDBOX_URL` or `E2B_DOMAIN` overrides make it unavailable rather than
+silently redirecting execution or credentials.
+
+June discovers the `e2b` action through her prompt and structured tool schema.
+For example, `{"text":"","e2b":{"language":"python","code":"print(sum([2, 7, 11]))"}}`
+requests a complete program, not a QuickJS async function body. With execution
+workers enabled, the interaction agent delegates and the worker uses the action.
+Only necessary, authorized code/data may leave June; never send credentials,
+retained private context, or unrelated message history.
+
+Each call creates a fresh sandbox with outbound internet and unauthenticated
+public traffic disabled, no host mounts and no forwarded host environment.
+No session reuse, downloads, file delivery or rich-media results are supported.
+Limits: 24 KB UTF-8 code, 30-second execution timeout, 45-second local deadline,
+60-second remote lifetime, and 8 KB/100 entries of returned text. Cleanup has a
+separate five-second request timeout. The SDK buffers messages before callbacks,
+so the text limit is not a hard transport-memory bound. One call is admitted per
+June process; uncertain cleanup retains that local slot until the lifetime
+backstop. This is not a provider-account quota or a distributed budget.
+
+The host returns stdout, stderr, textual results, execution status and cleanup
+status. A confirmed kill (or sandbox already absent) is distinct from unknown
+cleanup. Code errors, output-limit failures and transport failures must not be
+reported as success. Interrupted external actions are not automatically retried;
+the remote lifetime is the backstop if creation/cleanup cannot be confirmed or
+June exits. Output is untrusted data, never new instructions or permission.
+Chat receipts are escaped and limited to 3,000 serialized characters; larger
+output is explicitly omitted while preserving execution and cleanup status.
+
+## Conversation behavior
+
 June can reply with text, a native reaction, both, or intentional silence. A light
 acknowledgment no longer forces an extra text message. Delivery history records
 what the platform accepted, including uncertain or rejected reactions.

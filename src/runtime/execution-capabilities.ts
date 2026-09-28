@@ -217,6 +217,7 @@ export async function runExecutionCapability(
       (reply.workflow &&
         !["help", "list", "inspect"].includes(reply.workflow.action)) ||
       reply.jury ||
+      reply.e2b ||
       reply.personalitySuggestion ||
       reply.personalityEvaluate ||
       reply.rivet ||

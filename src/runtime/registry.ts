@@ -49,6 +49,7 @@ import {
 } from "../sessions/runtime.js";
 import { sessionActorKey } from "../sessions/state.js";
 import type { McpConnections } from "../tools/connections.js";
+import type { E2BProvider } from "../tools/e2b.js";
 import type {
   WebSearchCitation,
   WebSearchProvider,
@@ -135,6 +136,7 @@ export interface Dependencies {
   workflows?: WorkflowDependencies;
   models?: PromptInput["models"];
   webSearch?: WebSearchProvider;
+  e2b?: E2BProvider;
   jev?: { observe: JevObserver; question: JevQuestion };
   mcpAvailable?: boolean;
   mcpCommands?: Pick<McpConnections, "cancel" | "reconcile">;
@@ -1174,6 +1176,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // A parked inbox can use the jury on its first new turn; journals
           // already processing a turn retain the original capability plan.
           const juryVersion = await loop.getVersion("jury-request", 2);
+          const e2bVersion = await loop.getVersion("e2b-request", 2);
           const reflectionPersonalityVersion = await loop.getVersion(
             "reflection-personality",
             2,
@@ -1650,6 +1653,7 @@ export function createJuneRegistry(deps: Dependencies) {
               jev?: boolean;
               workflow?: boolean;
               jury?: boolean;
+              e2b?: boolean;
             } =
               version >= 2
                 ? await loop.step("turn-plan", async () => ({
@@ -1687,6 +1691,15 @@ export function createJuneRegistry(deps: Dependencies) {
                         }
                       : {}),
                     jev: ownerTurn && scope.private && !!deps.jev,
+                    ...(e2bVersion >= 2
+                      ? {
+                          e2b:
+                            body.type === "event" &&
+                            ownerTurn &&
+                            scope.private &&
+                            deps.e2b?.available === true,
+                        }
+                      : {}),
                     ...(juryVersion >= 2
                       ? {
                           jury:
@@ -3084,6 +3097,13 @@ export function createJuneRegistry(deps: Dependencies) {
                                   scope.private &&
                                   !!plan.jury &&
                                   !!deps.jury,
+                                e2bAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  ownerTurn &&
+                                  scope.private &&
+                                  !!plan.e2b &&
+                                  deps.e2b?.available === true,
                                 reflectionMemoryAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&

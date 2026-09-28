@@ -26,6 +26,7 @@ import {
 } from "../runtime/personality.js";
 import { personalityEvaluateSchema } from "../runtime/personality-evaluation-preview.js";
 import { javascriptSchema } from "../tools/javascript.js";
+import { E2B_HELP, e2bRequestSchema } from "../tools/e2b.js";
 import { wakeupActionSchema } from "../wakeups/state.js";
 import { workflowCommandSchema } from "../workflows/contracts.js";
 import {
@@ -300,6 +301,7 @@ const companionReplySchema = z.strictObject({
     })
     .optional(),
   jury: juryRequestSchema.optional(),
+  e2b: e2bRequestSchema.optional(),
   skillCodingProposal: z
     .strictObject({
       candidateId: z.string().regex(/^[a-f0-9]{64}$/),
@@ -372,6 +374,7 @@ export type ReplyCapabilities = Pick<
   | "reflectionReviewAvailable"
   | "reflectionRequestAvailable"
   | "juryAvailable"
+  | "e2bAvailable"
   | "skillCodingProposalAvailable"
   | "reflectionMemoryAvailable"
   | "rivetAvailable"
@@ -471,6 +474,7 @@ function legacyReplyJsonSchema(
     reflectionReviewAvailable,
     reflectionRequestAvailable,
     juryAvailable,
+    e2bAvailable,
     skillCodingProposalAvailable,
     reflectionMemoryAvailable,
     rivetAvailable,
@@ -1393,6 +1397,26 @@ function legacyReplyJsonSchema(
             },
           }
         : {}),
+      ...(e2bAvailable
+        ? {
+            e2b: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                language: {
+                  type: "string",
+                  enum: ["python", "javascript", "bash"],
+                },
+                code: {
+                  type: "string",
+                  description: "Complete program, 1–24000 UTF-8 bytes.",
+                },
+              },
+              required: ["language", "code"],
+              description: E2B_HELP,
+            },
+          }
+        : {}),
       ...(dashboardLoginAvailable
         ? {
             dashboardLogin: {
@@ -1581,6 +1605,7 @@ function legacyReplyJsonSchema(
       ...(reflectionReviewAvailable ? ["reflectionReview"] : []),
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
       ...(juryAvailable ? ["jury"] : []),
+      ...(e2bAvailable ? ["e2b"] : []),
       ...(skillCodingProposalAvailable && permittedWorkspaces.length > 0
         ? ["skillCodingProposal"]
         : []),
@@ -1781,6 +1806,7 @@ export function parseReply(
     reflectionReviewAvailable,
     reflectionRequestAvailable,
     juryAvailable,
+    e2bAvailable,
     skillCodingProposalAvailable,
     reflectionMemoryAvailable,
     rivetAvailable,
@@ -1848,6 +1874,7 @@ export function parseReply(
     "reflectionReview",
     "reflectionRequest",
     "jury",
+    "e2b",
     "skillCodingProposal",
     "reflectionMemory",
     "rivet",
@@ -1913,6 +1940,7 @@ export function parseReply(
     (reply.reflectionReview !== undefined && !reflectionReviewAvailable) ||
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
     (reply.jury !== undefined && !juryAvailable) ||
+    (reply.e2b !== undefined && !e2bAvailable) ||
     (reply.skillCodingProposal !== undefined &&
       !skillCodingProposalAvailable) ||
     (reply.reflectionMemory !== undefined && !reflectionMemoryAvailable) ||
@@ -1963,6 +1991,7 @@ export function parseReply(
     Number(reply.reflectionReview !== undefined) +
     Number(reply.reflectionRequest !== undefined) +
     Number(reply.jury !== undefined) +
+    Number(reply.e2b !== undefined) +
     Number(reply.skillCodingProposal !== undefined) +
     Number(reply.reflectionMemory !== undefined) +
     Number(reply.rivet !== undefined) +
@@ -2006,6 +2035,7 @@ export function parseReply(
       reply.reflectionReview !== undefined ||
       reply.reflectionRequest !== undefined ||
       reply.jury !== undefined ||
+      reply.e2b !== undefined ||
       reply.skillCodingProposal !== undefined ||
       reply.reflectionMemory !== undefined ||
       reply.rivet !== undefined ||

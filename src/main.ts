@@ -77,6 +77,7 @@ import { CapabilityBroker } from "./tools/broker.js";
 import { BrowserAdapter, browserOperationDigest } from "./tools/browser.js";
 import { createBrowserProposal } from "./tools/browser-proposals.js";
 import { McpConnections } from "./tools/connections.js";
+import { createE2BProvider } from "./tools/e2b.js";
 import { createGitHubOAuth } from "./tools/github-oauth.js";
 import { createPuckConsoleOAuth } from "./tools/puck-oauth.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
@@ -536,6 +537,12 @@ async function main() {
       apiKey: process.env[config.webSearch.apiKeyEnv],
       timeoutMs: config.webSearch.timeoutMs,
     });
+  let e2b: Dependencies["e2b"];
+  if (config.e2b && !config.setupMode) {
+    startupStage = "E2B: requires JUNE_ALLOW_E2B=1 after cost/privacy review";
+    if (process.env.JUNE_ALLOW_E2B !== "1") throw new Error("E2B not allowed");
+    e2b = createE2BProvider({ apiKey: process.env[config.e2b.apiKeyEnv] });
+  }
   let jev: Dependencies["jev"];
   if (config.jev && !config.setupMode) {
     startupStage =
@@ -1137,6 +1144,7 @@ async function main() {
     memory,
     reflection,
     jury,
+    e2b,
     coding,
   };
   const registry = createJuneRegistry(dependencies);

@@ -209,6 +209,8 @@ export interface CompanionReply {
   escalate?: boolean;
   /** One public web query; never a request to search private Slack history. */
   webSearch?: string;
+  /** Opt-in owner-private disposable external code execution. */
+  e2b?: import("../tools/e2b.js").E2BRequest;
   /** Owner-authenticated release tracking; never activation or approval authority. */
   release?: { action: "inspect"; revision: string | null };
   /** Owner-private read-only inspection of model runtime health. */
@@ -370,6 +372,7 @@ export interface ModelRequest {
   reflectionReviewAvailable?: boolean;
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;
+  e2bAvailable?: boolean;
   skillCodingProposalAvailable?: boolean;
   reflectionMemoryAvailable?: boolean;
   rivetAvailable?: boolean;
