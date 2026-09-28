@@ -3177,3 +3177,114 @@ test("Amp consent saves once behind owner confirmation; June needs tool consent 
   );
   expect(f.calls).toHaveLength(1);
 });
+
+test("execution MCP observations retain structured IDs but revoke the whole sequence on permission change", async () => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "read");
+  f.result("Found conversation private-token", {
+    conversationId: "conversation-47",
+  });
+  let inference = 0;
+  const reply = await f.store
+    .wrap({
+      reply: async (request) => {
+        inference++;
+        if (inference === 2) {
+          expect(request.system).toContain("conversation-47");
+          expect(request.system).toContain("Found conversation");
+          expect(request.system).not.toContain("private-token");
+          f.duringCall(() =>
+            f.store.permit(f.id, f.connection().revision, "lookup", "disabled"),
+          );
+        }
+        return {
+          text: "",
+          mcp: {
+            connection: f.id,
+            tool: "lookup",
+            argumentsJson: JSON.stringify({
+              id: inference === 1 ? "first" : "conversation-47",
+            }),
+          },
+        };
+      },
+    })
+    .reply({ ...f.request, agentRole: "execution" });
+  expect(f.calls).toEqual([
+    { name: "lookup", arguments: { id: "first" } },
+    { name: "lookup", arguments: { id: "conversation-47" } },
+  ]);
+  expect(inference).toBe(2);
+  expect(reply).toEqual({ text: "" });
+});
+
+test("approved Puck replies are private, transient and one-use without replaying effects", async () => {
+  const f = await fixture();
+  f.store.disconnect(f.id, f.connection().revision);
+  f.store.connectAmp({
+    accessToken: "private-token",
+    expiresAt: Date.now() + 3600_000,
+    account: "fixture-owner",
+  });
+  await f.store.discover("amp", f.connection().revision);
+  f.store.permit("amp", f.connection().revision, "lookup", "approval");
+  f.result(`Puck fixture reply private-token ${"x".repeat(13_000)}`, {
+    conversationId: "puck-29",
+  });
+  await f.invoke("amp");
+  const proposal = f.store.proposals()[0];
+  assert(proposal);
+  expect(f.calls).toHaveLength(0);
+  expect(await f.store.confirm(proposal.id)).toBe("succeeded");
+  expect(await f.store.confirm(proposal.id)).toBe("succeeded");
+  expect(f.calls).toHaveLength(1);
+  let synthesized = 0;
+  const read = (available = true) =>
+    f.store
+      .wrap({
+        reply: async (request) => {
+          if (request.usageStage === "synthesis") {
+            synthesized++;
+            expect(request.system).toContain("Puck fixture reply");
+            expect(request.system).toContain("puck-29");
+            expect(request.system).not.toContain("private-token");
+            const result = JSON.parse(
+              request.system.split("Result (JSON): ")[1] ?? "null",
+            );
+            expect(result.truncated).toBe(true);
+            expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(12_000);
+            return { text: "Puck replied in puck-29." };
+          }
+          return request.mcpProposalAvailable
+            ? { text: "", mcpProposal: { action: "result", id: proposal.id } }
+            : { text: "Not available" };
+        },
+      })
+      .reply({ ...f.request, mcpAvailable: available });
+  expect((await read(false)).text).toBe("Not available");
+  expect((await read()).text).toBe("Puck replied in puck-29.");
+  expect((await read()).text).toContain("No transient Puck reply");
+  expect(synthesized).toBe(1);
+  expect(await f.store.confirm(proposal.id)).toBe("succeeded");
+  expect((await read()).text).toContain("No transient Puck reply");
+  expect(f.calls).toHaveLength(1);
+
+  await f.invoke("amp");
+  const revoked = f.store.proposals()[0];
+  assert(revoked);
+  f.duringCall(() => f.store.cancel("owner", revoked.id));
+  await f.store.confirm(revoked.id);
+  expect(
+    (
+      await f.store
+        .wrap({
+          reply: async () => ({
+            text: "",
+            mcpProposal: { action: "result", id: revoked.id },
+          }),
+        })
+        .reply(f.request)
+    ).text,
+  ).toContain("No transient Puck reply");
+  expect(f.calls).toHaveLength(2);
+});

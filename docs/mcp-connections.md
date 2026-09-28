@@ -24,10 +24,30 @@ June sees enabled tools, connection status and recent approval receipts in her
 owner-private conversations. Ask her to use a named tool, or ask which connections
 are available. She can call reads and propose effects, but cannot authorize tools
 or obtain credentials herself. Channels and group DMs receive no private catalog.
-Each turn performs at most one MCP call and one answer synthesis. Tool results
+An execution-worker invocation can perform up to three separately authorized
+reads before answering; other invocations retain one call plus synthesis.
+Approval proposals and uncertain outcomes stop the sequence. Tool results
 are untrusted evidence, not instructions. Raw results are not journaled, but the
 synthesized answer becomes normal conversation history. The configured model
 provider receives the transient result to produce that answer.
+
+Amp's MCP is the Puck conversation interface, not a direct thread API. June uses
+the actual discovered tool contracts and returned conversation IDs; no assumed
+`create_thread`/`read_thread` mapping is installed. Sending Puck a message can
+cause work, so keep it approval-required. Text and structured reply fields are
+both preserved within one redacted 12 KB result budget.
+
+After approving an Amp proposal, ask June to retrieve its reply. Her
+`mcpProposal: {action: "result", id: "<proposal UUID>"}` consumes the response
+once and synthesizes it privately, without invoking the tool again. Up to 50
+sanitized responses are held in memory for at most ten minutes (or token expiry),
+never SQLite/journals. Restart, cancellation, disconnect or permission changes
+discard them. Missing/consumed replies and failed synthesis never permit replay;
+the durable receipt remains separate. This does not automatically notify June
+after dashboard approval, and other effect tools remain receipt-only.
+Ordinary [Amp jobs](amp-jobs.md) are a separate approved SSH path, independent of
+Puck/MCP connectivity. Live Puck contracts and account access still need operator
+verification; local fixtures are not live interoperability evidence.
 
 Ask June privately, “What permission does this tool have, and what does that
 actually guarantee?” She can select the exact connection ID and tool name with

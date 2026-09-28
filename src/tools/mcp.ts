@@ -259,6 +259,16 @@ export class McpToolAdapter implements ToolAdapter {
     await this.#invoke(action, credential, undefined, authorized);
   }
 
+  /** Exact owner-approved effect through the broker, with a transient sanitized
+   * reply. This is NOT a read grant and never retries or bypasses authorization. */
+  async executeWithResult(
+    action: ToolAction,
+    credential: unknown,
+    authorized: () => boolean,
+  ): Promise<McpReadResult | undefined> {
+    return this.#invoke(action, credential, undefined, authorized, true);
+  }
+
   /** Only for operator-reviewed reads. This does not grant authorization and
    * must not wrap mutations. Rechecks current authority after async discovery.
    * No automatic OAuth, retry, or second tool call. */
@@ -279,6 +289,7 @@ export class McpToolAdapter implements ToolAdapter {
     credential: unknown,
     read?: () => boolean,
     authorized?: () => boolean,
+    captureResult = false,
   ): Promise<McpReadResult | undefined> {
     const config = this.#config;
     if (
@@ -300,7 +311,14 @@ export class McpToolAdapter implements ToolAdapter {
     } catch {
       throw new McpAdapterError("not_started");
     }
-    return this.#run(credential, args, read, undefined, authorized);
+    return this.#run(
+      credential,
+      args,
+      read,
+      undefined,
+      authorized,
+      captureResult,
+    );
   }
 
   /** Stops local work; cancellation is NOT proof that a remote effect stopped. */
@@ -316,6 +334,7 @@ export class McpToolAdapter implements ToolAdapter {
     read?: () => boolean,
     discovered?: (tools: Tool[]) => void,
     authorized?: () => boolean,
+    captureResult = false,
   ): Promise<McpReadResult | undefined> {
     if (this.#closed) throw new McpAdapterError("not_started");
     let token = "";
@@ -537,7 +556,7 @@ export class McpToolAdapter implements ToolAdapter {
           (validateOutput && !validateOutput(result.structuredContent))
         )
           throw new Error();
-        if (read) {
+        if (read || captureResult) {
           // Return only the marker so the caller can explain why this copy was
           // withheld without ever passing its body to ordinary synthesis.
           if (containsPrivateInspection(result))
@@ -551,11 +570,15 @@ export class McpToolAdapter implements ToolAdapter {
                 block.type === "text" && typeof block.text === "string",
             )
             .map((block) => block.text);
-          const text = texts.length
-            ? texts.join("\n")
-            : result.structuredContent === undefined
-              ? ""
-              : JSON.stringify(result.structuredContent);
+          // Some servers put the reply in text and conversation IDs only in
+          // structuredContent. Preserve both, within one shared privacy budget.
+          const text =
+            result.structuredContent === undefined
+              ? texts.join("\n")
+              : JSON.stringify({
+                  structuredContent: result.structuredContent,
+                  text: texts.join("\n"),
+                });
           return readText(text, token);
         }
       }

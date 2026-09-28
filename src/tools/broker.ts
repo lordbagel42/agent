@@ -356,6 +356,9 @@ export class CapabilityBroker {
     grantId: string,
     input: unknown,
     linkToken?: string,
+    /** Trusted host-only sink for a fresh successful result. Never persisted or
+     * called for receipt replay; current grant authority must still hold. */
+    onResult?: (result: unknown) => void,
   ): Promise<Receipt> {
     const action = this.propose(input);
     const adapter = this.#options.tools[action.tool];
@@ -431,8 +434,9 @@ export class CapabilityBroker {
         });
         return credential;
       };
+      let result: unknown;
       if (adapter.executeWithCredentialResolver)
-        await adapter.executeWithCredentialResolver(
+        result = await adapter.executeWithCredentialResolver(
           action,
           resolveCredential,
           controller.signal,
@@ -440,15 +444,17 @@ export class CapabilityBroker {
       else {
         const credential = await resolveCredential();
         if (adapter.executeAuthorized)
-          await adapter.executeAuthorized(
+          result = await adapter.executeAuthorized(
             action,
             credential,
             authorized,
             controller.signal,
           );
-        else await adapter.execute(action, credential, controller.signal);
+        else
+          result = await adapter.execute(action, credential, controller.signal);
       }
       if (!admitted) deny();
+      const releaseResult = authorized();
       // Await without a race. The adapter owns confirmation: a cancellation
       // request cannot erase an independently confirmed external outcome.
       this.#transaction(() => {
@@ -460,6 +466,7 @@ export class CapabilityBroker {
         this.#event(grantId, "adapter_succeeded");
       });
       receipt.status = "succeeded";
+      if (releaseResult) onResult?.(result);
     } catch {
       /* Never expose errors, credentials, or ambiguous transport payloads. */
     } finally {

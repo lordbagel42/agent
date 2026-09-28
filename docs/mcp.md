@@ -1,7 +1,9 @@
 # MCP adapter
 
 `src/tools/mcp.ts` uses the pinned official MCP TypeScript SDK (`1.30.1`) and
-Ajv (`8.20.0`). Effect execution remains receipt-only. With MCP configured,
+Ajv (`8.20.0`). Effect execution defaults to receipt-only; the mounted Amp
+connection additionally captures a bounded transient Puck reply after exact
+owner approval (see [reply retrieval](mcp-connections.md)). With MCP configured,
 `main.ts` mounts the owner-reviewed [Connections](mcp-connections.md) interface,
 including dedicated Amp consent on an HTTPS console. Its generic MCP boundary
 provides June's enabled catalog, private reads and approval-required proposals.

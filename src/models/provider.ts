@@ -212,7 +212,7 @@ const companionReplySchema = z.strictObject({
     .optional(),
   mcpProposal: z
     .strictObject({
-      action: z.literal("inspect"),
+      action: z.enum(["inspect", "result"]),
       id: z.uuid({ version: "v4" }).transform((value) => value.toLowerCase()),
     })
     .optional(),
@@ -1628,12 +1628,12 @@ function legacyReplyJsonSchema(
               type: ["object", "null"],
               additionalProperties: false,
               properties: {
-                action: { type: "string", enum: ["inspect"] },
+                action: { type: "string", enum: ["inspect", "result"] },
                 id: { type: "string", description: "Exact proposal UUIDv4." },
               },
               required: ["action", "id"],
               description:
-                "Inspect one recorded MCP proposal and receipt privately. Metadata only; never runs, approves or retries a tool. Leave text empty and other actions unset.",
+                "Inspect one recorded MCP proposal/receipt, or consume its transient approved Puck reply with result. Result is one-use, expires after ten minutes and is lost on restart/revocation; absence never permits retry. Neither action runs or approves a tool. Leave text empty and other actions unset.",
             },
           }
         : {}),
