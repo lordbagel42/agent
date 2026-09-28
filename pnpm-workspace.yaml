@@ -2,3 +2,4 @@ onlyBuiltDependencies:
   - esbuild
 patchedDependencies:
   '@rivet-dev/dynamic-apps-core@0.3.1': src/apps/dynamic-apps-core.patch
+  '@rivet-dev/dynamic-apps@0.3.1': src/apps/@rivet-dev__dynamic-apps@0.3.1.patch

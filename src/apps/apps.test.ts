@@ -27,6 +27,75 @@ const artifact = {
 const controlToken = "control-fixture-".repeat(3);
 const viewerToken = "viewer-fixture-".repeat(3);
 
+it("serializes builds without consuming a waiting approval or logging private request data", async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), "june-app-serial-"));
+  t.onTestFinished(() => rm(cwd, { recursive: true, force: true }));
+  const events: Record<string, string | number>[] = [];
+  const first = Promise.withResolvers<{ release: string }>();
+  let deployments = 0;
+  const host = createAppsHost({
+    database: join(cwd, "apps.sqlite"),
+    controlToken,
+    viewerToken,
+    origin: "https://apps.example.invalid",
+    binding: "fixture",
+    deploy: () => {
+      deployments++;
+      return deployments === 1
+        ? first.promise
+        : Promise.resolve({ release: "second-release" });
+    },
+    serve: async () => new Response(),
+    log: (event) => events.push(event),
+  });
+  t.onTestFinished(async () => {
+    first.resolve({ release: "first-release" });
+    await host.close();
+  });
+  const post = (path: string, body: unknown) =>
+    host.app.request(path, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${controlToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  const receipts = [];
+  for (const appId of ["first", "second"])
+    receipts.push(
+      appReceiptSchema.parse(
+        await (
+          await post("/control/prepare", {
+            artifact: { ...artifact, appId },
+            jobId: "a".repeat(64),
+            requestId: "b".repeat(64),
+          })
+        ).json(),
+      ),
+    );
+  const [a, b] = receipts;
+  if (!a || !b) throw new Error("missing fixtures");
+  expect((await post(`/control/deploy/${a.id}`, {})).status).toBe(202);
+  expect((await post(`/control/deploy/${b.id}`, {})).status).toBe(409);
+  expect(deployments).toBe(1);
+  first.resolve({ release: "first-release" });
+  await expect
+    .poll(async () => (await post(`/control/deploy/${b.id}`, {})).status)
+    .toBe(202);
+  expect(deployments).toBe(2);
+  await post(`/control/receipts/private-path?token=private-query`, {});
+  const logged = JSON.stringify(events);
+  for (const value of [
+    controlToken,
+    artifact.files["index.js"],
+    "private-path",
+    "private-query",
+  ])
+    expect(logged).not.toContain(value);
+  expect(events).toContainEqual({ event: "deploy_started", receiptId: b.id });
+});
+
 it("keeps source ingestion bounded and rejects paths/symlinks that could export host files", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "june-artifact-"));
   t.onTestFinished(() => rm(cwd, { recursive: true, force: true }));

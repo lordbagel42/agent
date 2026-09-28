@@ -143,4 +143,47 @@ Cancellation/forgetting prevents new preparation/approval but cannot undo an
 already dispatched deployment or erase source already retained by the app host.
 Host artifact retention and deployed-resource deletion require separate handling.
 
+## Container pilot and operational logs
+
+`src/apps/host.Dockerfile` packages the pinned Node, SDK and engine versions.
+The native ARM64 image workflow verifies a disposable real deployment, credential
+stripping and restart recovery before publishing. Image publication does not
+activate June; the cluster's Flux configuration pins a reviewed image digest.
+
+The host allows one build at a time. A different build receives 409 without
+consuming its approval. `/health/live` reports process liveness;
+`/health/ready` requires a reachable engine listener and writable audit log.
+Readiness is not a deployed-app health check. On SIGTERM the host rejects new
+control requests, finishes in-flight receipts and lets RivetKit drain. Allow
+at least 90 seconds before killing the pod; interrupted work remains unknown.
+
+The container runs `supervisor.mjs`, which sends a private IPC drain request
+before signaling the SDK. Running `main.ts` directly is unsupported. The engine
+must remain alive until that host exits (a Kubernetes native sidecar provides
+this ordering).
+
+The pinned Dynamic Apps connection patch bounds initial subscription setup to
+45 seconds and retries only `guard.actor_ready_timeout` once with a fresh
+subscription. RivetKit otherwise leaves `connection.ready` pending after this
+terminal error, poisoning the cached app subscription. No deployment or action
+call is replayed. Cold recovery can take over 30 seconds; liveness/listener
+readiness does not guarantee instant app serving. Revalidate both dependency
+patches when upgrading the SDK.
+
+Structured stdout and private `audit.ndjson` record startup, readiness-related
+lifecycle, bounded request categories/status/duration, and deployment receipt
+IDs/results. Rotation retains two approximately 5 MiB files. SDK logs retain
+only classifications and release digests, never raw generated console output,
+source, URLs, request headers/bodies or raw exceptions. These are operational
+logs, not a persisted application console. The host becomes unready if audit
+writes fail. Container/engine logs still need normal platform log rotation.
+
+The initial Kubernetes pilot is single-writer with retained node-local storage.
+That survives pod replacement, **not node/disk loss**, and a PVC request is not
+a filesystem quota. Monitor actual disk usage and take consistent off-node
+backups before retaining important app state. Existing Alloy metrics collection
+does not imply centralized log collection. Do not set three replicas against
+this SQLite/engine state: HA needs distributed deployment fencing, an explicit
+engine/state ownership design, replicated durable storage and tested failover.
+
 API reference: [Rivet Dynamic Apps](https://github.com/rivet-dev/dynamic-apps/tree/v0.3.1/packages/dynamic-apps).

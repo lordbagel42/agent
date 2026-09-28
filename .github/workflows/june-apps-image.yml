@@ -1,0 +1,40 @@
+name: June Dynamic Apps image
+on:
+  push:
+    branches: [main]
+    paths:
+      - src/apps/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/june-apps-image.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      IMAGE: ghcr.io/lordbagel42/june-apps:sha-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native ARM64 image
+        run: docker build -f src/apps/host.Dockerfile -t "$IMAGE" .
+      - name: Verify bounded nonroot deployment, restart and credential boundaries
+        run: |
+          docker run --rm --network none --memory 1408m --memory-swap 1408m --cpus 2 \
+            --cap-drop ALL --security-opt no-new-privileges --read-only \
+            --tmpfs /tmp:rw,nosuid,size=128m \
+            --tmpfs /data:rw,nosuid,size=128m,uid=10001,gid=10001 \
+            "$IMAGE" node src/apps/host-smoke.mjs
+      - name: Publish verified image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE"
+          docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}' \
+            >> "$GITHUB_STEP_SUMMARY"

@@ -25,6 +25,9 @@ export function createAppsHost(options: {
   binding: string;
   deploy(artifact: AppArtifact): Promise<{ release: string }>;
   serve(request: Request): Promise<Response>;
+  /** Receives only bounded operational metadata, never source or credentials. */
+  log?(event: Record<string, string | number>): void;
+  ready?(): Promise<boolean>;
 }) {
   if (
     options.controlToken.length < 32 ||
@@ -38,6 +41,8 @@ export function createAppsHost(options: {
     UPDATE apps SET receipt=json_set(receipt, '$.status', 'unknown') WHERE json_extract(receipt, '$.status')='deploying';`);
   const app = new Hono();
   const running = new Set<Promise<void>>();
+  let draining = false;
+  const log = options.log ?? (() => {});
   const authorized = (request: Request, token: string) => {
     const expected = Buffer.from(`Bearer ${token}`);
     const actual = Buffer.from(request.headers.get("authorization") ?? "");
@@ -60,10 +65,32 @@ export function createAppsHost(options: {
   app.onError(() =>
     Response.json({ error: "apps_request_failed" }, { status: 400 }),
   );
+  app.get("/health/live", (c) => c.json({ live: true }));
+  app.get("/health/ready", async (c) => {
+    const ready = !draining && (await options.ready?.()) !== false;
+    return c.json({ ready }, ready ? 200 : 503);
+  });
+  app.use("*", async (c, next) => {
+    const started = performance.now();
+    await next();
+    // URLs, headers, bodies and raw errors may contain private source or keys.
+    // Keep paths to three fixed categories, including for malformed requests.
+    log({
+      event: "request",
+      route: c.req.path.startsWith("/control/")
+        ? "control"
+        : c.req.path.startsWith("/apps/")
+          ? "viewer"
+          : "other",
+      status: c.res.status,
+      durationMs: Math.round(performance.now() - started),
+    });
+  });
   app.use("/control/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
     if (!authorized(c.req.raw, options.controlToken))
       return c.json({ error: "unauthorized" }, 401);
+    if (draining) return c.json({ error: "host_draining" }, 503);
     await next();
   });
   app.use("/control/*", bodyLimit({ maxSize: MAX_ARTIFACT_BYTES + 1024 }));
@@ -98,6 +125,7 @@ export function createAppsHost(options: {
       JSON.stringify(artifact),
       JSON.stringify(receipt),
     );
+    log({ event: "prepared", receiptId: id });
     return c.json(receipt);
   });
   app.get("/control/receipts/:id", (c) =>
@@ -122,6 +150,9 @@ export function createAppsHost(options: {
     if (receipt.status !== "prepared") return c.json(receipt);
     if (receipt.expiresAt <= Date.now())
       return c.json({ error: "approval_expired" }, 409);
+    // One build at a time bounds the small pilot's subprocess/memory footprint.
+    // A rejected request does not consume its prepared approval.
+    if (running.size) return c.json({ error: "build_in_progress" }, 409);
     const uncertain = db
       .prepare(
         "SELECT 1 FROM apps WHERE app_id=? AND json_extract(receipt, '$.status') IN ('deploying','unknown') LIMIT 1",
@@ -136,6 +167,7 @@ export function createAppsHost(options: {
       throw new Error("artifact_changed");
     receipt.status = "deploying";
     save(receipt);
+    log({ event: "deploy_started", receiptId: receipt.id });
     const operation = Promise.resolve().then(async () => {
       try {
         const result = await options.deploy(artifact);
@@ -153,6 +185,12 @@ export function createAppsHost(options: {
         if (code.success && code.data) receipt.failureCode = code.data;
       }
       save(receipt);
+      log({
+        event: "deploy_finished",
+        receiptId: receipt.id,
+        status: receipt.status,
+        ...(receipt.failureCode ? { failureCode: receipt.failureCode } : {}),
+      });
     });
     running.add(operation);
     void operation.finally(() => running.delete(operation)).catch(() => {});
@@ -186,6 +224,7 @@ export function createAppsHost(options: {
   return {
     app,
     async close() {
+      draining = true;
       await Promise.allSettled(running);
       db.close();
     },
