@@ -191,6 +191,8 @@ export interface CompanionReply {
   interrupt?: boolean;
   execution?: ExecutionCommand[];
   workflow?: import("../workflows/contracts.js").WorkflowCommand;
+  /** Capability-free QuickJS computation, separate from privileged workflows. */
+  javascript?: { source: string; inputJson: string };
   social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
   /** Owner-private reports, metadata/diff or cancellation; never approval. */
@@ -384,6 +386,7 @@ export interface ModelRequest {
   socialAvailable?: boolean;
   executionAvailable?: boolean;
   workflowAvailable?: boolean;
+  javascriptAvailable?: boolean;
 }
 
 /** Prospective inference liveness only, never proof of delivery/tool outcome or

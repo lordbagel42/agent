@@ -17,6 +17,7 @@ import { ModelError, parseReply } from "../models/provider.js";
 import type { ReflectionProposalBinding } from "../reflection/global-proposal.js";
 import { formatJuryResult } from "../reflection/jury.js";
 import { recallSessions } from "../sessions/recall.js";
+import { runJavaScript } from "../tools/javascript.js";
 import {
   type CodingState,
   codingJobMetadata,
@@ -511,6 +512,37 @@ export async function runCapability(
       return unavailable;
     });
     generated = { text: "" };
+  } else if (generated.javascript !== undefined) {
+    let text =
+      "JavaScript sandbox execution is unavailable in this invocation.";
+    if (
+      modelRequest.javascriptAvailable &&
+      origin === "event" &&
+      phase !== "synthesis"
+    ) {
+      const checked = parseReply(
+        JSON.stringify(generated),
+        workspaces,
+        modelRequest,
+      );
+      if (checked.javascript) {
+        const result = await runJavaScript(checked.javascript, signal);
+        if (!canStartAction()) return { text: "" };
+        // Escape fence delimiters; output must never become message markup or
+        // tool instructions. Bound the rendered report after JSON escaping too.
+        const report = JSON.stringify(result, null, 2).replaceAll(
+          "`",
+          "\\u0060",
+        );
+        text = `QuickJS sandbox result (untrusted program output):\n\`\`\`json\n${report.length > 9500 ? `${report.slice(0, 9500)}\n… report truncated` : report}\n\`\`\``;
+      }
+    }
+    generated = {
+      text,
+      ...(generated.replyInThread !== undefined
+        ? { replyInThread: generated.replyInThread }
+        : {}),
+    };
   } else if (generated.workflow !== undefined) {
     let text =
       "Workflows require an owner-private turn and the workflow integration.";

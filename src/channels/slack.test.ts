@@ -1280,6 +1280,30 @@ describe("createSlackAdapter", () => {
     },
   );
 
+  it("uses AI Markdown for fenced code without changing plain-text safety or routing", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const adapter = makeAdapter(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return jsonResponse({ ok: true, ts: "123.456" });
+    });
+    const text =
+      "JavaScript:\n```javascript\nconsole.log(7 < 9);\n```\nOutput:\n```text\ntrue\n```";
+    const message = textMessage();
+    message.content = { type: "text", text, replyTo: "111.222" };
+    await adapter.send(message);
+    expect(bodies[0]).toMatchObject({
+      text,
+      blocks: [{ type: "markdown", text }],
+      thread_ts: "111.222",
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    message.content = { type: "text", text, plainText: true };
+    await adapter.send(message);
+    expect(bodies[1]).not.toHaveProperty("blocks");
+    expect(bodies[1]).toHaveProperty("mrkdwn", false);
+  });
+
   it("rejects wrong channel and account destinations without network access", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>();
     const adapter = makeAdapter(fetchMock);

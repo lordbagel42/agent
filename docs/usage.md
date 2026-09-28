@@ -34,6 +34,10 @@ into June or tested with a real account.
 - [Authored Rivet workflows](workflows.md): June writes isolated JavaScript
   with durable tool steps, parallel calls, delays and signals, and manages runs
   directly from owner-private chat.
+- [JavaScript sandbox](workflows.md#running-ordinary-javascript-instead): anyone
+  admitted to a conversation can ask June to run arbitrary JavaScript in a fresh,
+  resource-limited QuickJS VM without host capabilities. Console output, return
+  values and errors are reported; Slack code blocks use native syntax highlighting.
 - OpenAI **Responses API** and Anthropic **Messages API**, including explicit
   custom base URLs. The provider must support the adapter's structured JSON
   output format. Arbitrary chat-completions endpoints are not interchangeable.

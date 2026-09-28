@@ -2918,6 +2918,9 @@ export function createJuneRegistry(deps: Dependencies) {
                               capabilities: {
                                 turnTakingAvailable:
                                   turnVersion >= 2 && body.type === "event",
+                                javascriptAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis",
                                 workflowAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&

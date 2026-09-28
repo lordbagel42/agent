@@ -652,6 +652,16 @@ export function createSlackAdapter({
           channel: message.address.conversationId,
           text,
           client_msg_id: message.id,
+          ...(!message.content.plainText &&
+          !privateReview &&
+          text.length <= 12_000 &&
+          /^\s*`{3,}/m.test(text)
+            ? {
+                blocks: [{ type: "markdown", text }],
+                unfurl_links: false,
+                unfurl_media: false,
+              }
+            : {}),
           ...(message.content.plainText
             ? {
                 mrkdwn: false,
