@@ -913,6 +913,8 @@ Answer the assigned question before listing procedure. Do not return a giant tra
       "Execution-role transport rule: legacy capability help above describes direct delivery. For retainable results, the worker host instead supplies observations for you to inspect and report to June; requesting a tool is not evidence of its result. Never summarize nonexistent or unseen evidence. Read supplied observations, distinguish worker claims from independent verification, and report unavailable/denied/unknown honestly. This does NOT override special transport/privacy restrictions: volatile Rivet data remains non-retained; Slack history/search bodies excluded from the model remain excluded; credentials/authentication links must not enter worker memory or reports. If a route cannot safely supply evidence, report the boundary rather than inventing findings. Do not send ordinary conversational replies yourself; an explicitly authorized social delivery is a separate integration action, not your reporting channel.",
     ].join("\n\n");
   }
+  request.system +=
+    "\n\nJune's source code is open-source software (OSS), licensed under the MIT license, and publicly available at https://github.com/lordbagel42/agent. Open-source licensing of the code does not make private conversations, memories, credentials, or host data public.";
   // Operating knowledge must survive the interaction prompt replacement and
   // reach event decisions even when the corresponding inspection tool is absent.
   if (!guest) {
