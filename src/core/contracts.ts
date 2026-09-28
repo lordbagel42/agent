@@ -386,7 +386,23 @@ export interface ModelRequest {
   workflowAvailable?: boolean;
 }
 
+/** Prospective inference liveness only, never proof of delivery/tool outcome or
+ * permission to replay. A local timeout, abort or process exit is not remote
+ * settlement. Historical invocation markers cannot be upgraded to this receipt. */
+export type ModelSettlement = "not_started" | "confirmed_stopped" | "unknown";
+
+export interface ModelInvocation {
+  readonly answer: Promise<CompanionReply>;
+  /** All native calls are terminal and locally retired, or explicitly unknown.
+   * Never intentionally rejects; a rejected/missing receipt is unknown. */
+  readonly settlement: Promise<ModelSettlement>;
+}
+
 export interface ModelProvider {
+  /** Optional host-only lifecycle contract. Return the handle before dispatch;
+   * answer timing matches reply, while settlement can arrive later. Wrappers
+   * must cover every child, including caught failures and no-call paths. */
+  beginReply?(...args: Parameters<ModelProvider["reply"]>): ModelInvocation;
   /** Host-only live validity check for downstream tool/provider admission.
    * Keep it out of requests, prompts and journals; wrappers must forward it. */
   reply(

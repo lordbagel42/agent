@@ -16,6 +16,7 @@ import type {
   MessageEvent,
   ModelProvider,
   ModelRequest,
+  ModelSettlement,
   OutboundMessage,
   Owner,
 } from "../src/core/contracts.js";
@@ -25,6 +26,7 @@ import { routeEvent } from "../src/core/routing.js";
 import { createHttpApp } from "../src/http/app.js";
 import { slackSource } from "../src/imports/index.js";
 import { EvidenceStore } from "../src/memory/store.js";
+import { beginModelReply } from "../src/models/invocation.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
 import { createInspectionReader } from "../src/runtime/inspection.js";
 import { buildModelRequest } from "../src/runtime/prompt.js";
@@ -617,27 +619,110 @@ test("dashboard credentials from MCP results never reach the synthesis provider"
   );
   f.store.permit(f.id, f.connection().revision, "lookup", "read");
   const requests: ModelRequest[] = [];
+  const first = Promise.withResolvers<ModelSettlement>();
+  const synthesis = Promise.withResolvers<ModelSettlement>();
   const model = links.wrapModel({
-    async reply(request) {
+    reply: vi.fn(() => {
+      throw new Error("Must not dispatch twice");
+    }),
+    beginReply(request) {
       requests.push(request);
-      return request.mcpAvailable
-        ? {
-            text: "",
-            mcp: {
-              connection: f.id,
-              tool: "lookup",
-              argumentsJson: '{"id":"record-9"}',
-            },
-          }
-        : { text: "A sign-in link was found; ask for a fresh one." };
+      return {
+        answer: Promise.resolve(
+          request.mcpAvailable
+            ? {
+                text: "",
+                mcp: {
+                  connection: f.id,
+                  tool: "lookup",
+                  argumentsJson: '{"id":"record-9"}',
+                },
+              }
+            : { text: "A sign-in link was found; ask for a fresh one." },
+        ),
+        settlement: (request.mcpAvailable ? first : synthesis).promise,
+      };
     },
   });
-  const answer = await f.store.wrap(model).reply(f.request);
+  const invocation = beginModelReply(f.store.wrap(model), f.request);
+  const receipts: string[] = [];
+  void invocation.settlement.then((status) => receipts.push(status));
+  const answer = await invocation.answer;
   expect(answer.text).toContain("ask for a fresh one");
   expect(requests).toHaveLength(2);
   expect(requests[1]?.system).toContain("credential omitted");
   expect(JSON.stringify(requests)).not.toContain(id);
   expect(links.has(id)).toBe(true);
+  synthesis.resolve("confirmed_stopped");
+  await new Promise(setImmediate);
+  expect(receipts).toEqual([]);
+  first.resolve("confirmed_stopped");
+  expect(await invocation.settlement).toBe("confirmed_stopped");
+  expect(f.calls).toHaveLength(1);
+});
+
+test("MCP settlement retains caught inference uncertainty and distinguishes no call from unsupported", async () => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "read");
+  let calls = 0;
+  const native: ModelProvider = {
+    reply: vi.fn(() => {
+      throw new Error("Must not replay a tracked call");
+    }),
+    beginReply() {
+      calls++;
+      return calls === 1
+        ? {
+            answer: Promise.resolve({
+              text: "",
+              mcp: {
+                connection: f.id,
+                tool: "lookup",
+                argumentsJson: '{"id":"record-9"}',
+              },
+            }),
+            settlement: Promise.resolve("confirmed_stopped"),
+          }
+        : {
+            answer: Promise.reject(new Error("failed synthesis")),
+            settlement: Promise.reject(new Error("unavailable receipt")),
+          };
+    },
+  };
+  const invocation = beginModelReply(f.store.wrap(native), f.request);
+  expect((await invocation.answer).text).toContain("MCP request failed");
+  expect(await invocation.settlement).toBe("unknown");
+  expect(calls).toBe(2);
+  expect(f.calls).toHaveLength(1);
+
+  const legacy = { reply: vi.fn(async () => ({ text: "hello" })) };
+  const wrapped = f.store.wrap(legacy);
+  const prevented = beginModelReply(wrapped, f.request, AbortSignal.abort());
+  expect(await prevented.answer).toEqual({ text: "" });
+  expect(await prevented.settlement).toBe("not_started");
+  expect(legacy.reply).not.toHaveBeenCalled();
+  const unsupported = beginModelReply(wrapped, {
+    ...f.request,
+    agentRole: "interaction",
+  });
+  expect(await unsupported.answer).toEqual({ text: "hello" });
+  expect(await unsupported.settlement).toBe("unknown");
+  expect(legacy.reply).toHaveBeenCalledTimes(1);
+
+  const broken = {
+    reply: vi.fn(async () => ({ text: "must not replay" })),
+    beginReply: vi.fn(() => ({
+      answer: Promise.resolve({ text: "independent answer" }),
+      get settlement(): Promise<ModelSettlement> {
+        throw new Error("broken receipt");
+      },
+    })),
+  };
+  const independent = beginModelReply(broken, f.request);
+  expect(await independent.answer).toEqual({ text: "independent answer" });
+  expect(await independent.settlement).toBe("unknown");
+  expect(broken.beginReply).toHaveBeenCalledTimes(1);
+  expect(broken.reply).not.toHaveBeenCalled();
 });
 
 test("mixed host recall/browser/preview directives cannot dispatch MCP calls, proposals or extra catalog rounds", async () => {

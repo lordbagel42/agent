@@ -95,6 +95,7 @@ successful owner acknowledgment and requires the hold to survive serialization.
 
 **Files:** `src/sessions/runtime.ts`, `src/runtime/registry.ts`, `src/runtime/prompt.ts`, `src/main.ts`, `src/config.ts`, `src/channels/slack-context.ts`.
 
+- [x] Add prospective per-call model handles with independent answer and settlement promises. Preserve early replies and compose all native calls through the login/MCP wrappers. Timeouts, unsupported providers and uncorrelated/interrupted Codex calls remain unknown; these receipts never certify historical invocations or tool/delivery outcomes.
 - [ ] Drive the existing `receiveSessionInput`, `nextSessionInput`, `settleSessionInput`, `acknowledgeSessionArchive` and `sealIdleSession` transitions. Save assignment before enqueue and deduplicate in both actors.
 - [ ] Activity actors perform interaction, clarification, delegation and synthesis only. Use the shared worker runner and narrow stable-catalog actions rather than copying jobs or approvals into activity state.
 - [ ] Persist admitted original-event provenance and exact delivery references in the catalog for worker authority and future approvals. An activity acknowledgment must match its assigned event/session/sequence.
@@ -102,6 +103,15 @@ successful owner acknowledgment and requires the hold to survive serialization.
 - [ ] Keep fresh provider input free of old raw history, including same-surface Slack loading. Selective typed recall remains available. Omit a continuity note unless its current provenance-backed open commitments can be established within 1,000 characters.
 - [ ] Route stable notifications once through the coordinator, retaining original worker/task and permitted reply address. Notification-only sessions seal after archive/settlement and do not reset human inactivity.
 - [ ] Schedule durable idle sealing. Archive failure keeps input held; summary failure does not block searchable transcript or a new reply. Deactivation preserves established routing and historical lookup.
+
+`ModelProvider.beginReply` prepares settlement evidence for the activity actor;
+no runtime consumes it to release turns yet. Only terminal protocol envelopes
+confirm HTTP inference stopped. Hot Codex also requires a correlated successful
+terminal turn and local retirement/process closure. Killing an unresolved local
+process, receiving an interrupted status or fulfilling an answer is insufficient.
+Fixtures exercise delayed retirement, caught synthesis failures and a completed
+notification whose turn ID disagrees with the start response; the latter was
+reproduced as a false confirmation before adding explicit start correlation.
 
 ## Task 5: Integrated evidence and publication
 

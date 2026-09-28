@@ -186,6 +186,67 @@ function openAIProviderReturning(value: unknown) {
   });
 }
 
+it("requires prospective terminal evidence, not merely an answer or HTTP failure", async () => {
+  for (const [protocol, response, settlement] of [
+    ["openai", openAIResponseText('{"text":"hello"}'), "confirmed_stopped"],
+    [
+      "openai",
+      openAIResponseText("invalid companion JSON"),
+      "confirmed_stopped",
+    ],
+    [
+      "openai",
+      jsonResponse({ object: "response", id: "r1", status: "in_progress" }),
+      "unknown",
+    ],
+    ["openai", jsonResponse({ error: "upstream timeout" }, 504), "unknown"],
+    [
+      "openai",
+      jsonResponse({ object: "response", id: "r1", status: ["completed"] }),
+      "unknown",
+    ],
+    [
+      "anthropic",
+      jsonResponse({
+        type: "message",
+        role: "assistant",
+        id: "m1",
+        stop_reason: ["end_turn"],
+      }),
+      "unknown",
+    ],
+    [
+      "anthropic",
+      anthropicResponseText('{"text":"hello"}'),
+      "confirmed_stopped",
+    ],
+    [
+      "anthropic",
+      anthropicResponseText("truncated", "max_tokens"),
+      "confirmed_stopped",
+    ],
+    ["anthropic", anthropicResponseText("paused", "pause_turn"), "unknown"],
+  ] as const) {
+    const fetch = mockFetch(async () => response);
+    const provider = createModelProvider({
+      protocol,
+      model: "test",
+      apiKey: "test",
+      fetch,
+    });
+    const invocation = provider.beginReply(request);
+    expect(fetch).not.toHaveBeenCalled();
+    await invocation.answer.catch(() => undefined);
+    expect(await invocation.settlement).toBe(settlement);
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    const prevented = provider.beginReply(request, AbortSignal.abort());
+    await expect(prevented.answer).rejects.toThrow();
+    expect(await prevented.settlement).toBe("not_started");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  }
+});
+
 async function caughtModelError(
   promise: Promise<unknown>,
 ): Promise<ModelError> {
@@ -624,10 +685,13 @@ describe("createModelProvider", () => {
       fetch,
     });
 
-    const errorPromise = caughtModelError(provider.reply(request));
+    const invocation = provider.beginReply(request);
+    const errorPromise = caughtModelError(invocation.answer);
     await vi.advanceTimersByTimeAsync(30_000);
     const error = await errorPromise;
 
+    expect(await invocation.settlement).toBe("unknown");
+    expect(fetch).toHaveBeenCalledTimes(1);
     expect(error).toMatchObject({ code: "timeout", retryable: true });
     expect(error.message).not.toContain("private abort detail");
   });

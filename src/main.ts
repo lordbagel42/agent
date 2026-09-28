@@ -414,12 +414,13 @@ async function main() {
   );
   startupStage = "model credentials";
   const provider = (selection: typeof config.model): ModelProvider => {
-    if (config.setupMode)
-      return {
-        reply: async () => {
-          throw new Error("Inference disabled in setup mode");
-        },
-      };
+    if (config.setupMode) {
+      const beginReply = () => ({
+        answer: Promise.reject(new Error("Inference disabled in setup mode")),
+        settlement: Promise.resolve("not_started" as const),
+      });
+      return { beginReply, reply: () => beginReply().answer };
+    }
     let model: ModelProvider;
     if (selection.protocol === "codex") {
       const hot = createHotCodexProvider({ ...selection, usage });

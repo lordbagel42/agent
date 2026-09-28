@@ -1,7 +1,12 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdtemp, rm, statfs } from "node:fs/promises";
 import { join } from "node:path";
-import type { CompanionReply, ModelRequest } from "../core/contracts.js";
+import type {
+  CompanionReply,
+  ModelInvocation,
+  ModelRequest,
+  ModelSettlement,
+} from "../core/contracts.js";
 import {
   type CodexProviderOptions,
   codexEnvironment,
@@ -82,6 +87,7 @@ interface ActiveTurn {
   usage?: TokenUsage;
   bytes: number;
   terminal: boolean;
+  completed?: true;
   timing?: ModelRequest["onProviderTiming"];
   ended: PromiseWithResolvers<void>;
   resolve(): void;
@@ -194,8 +200,13 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
     if (!a) return;
     a.bytes += bytes;
     if (a.bytes > MAX_BYTES) return fail("response_too_large");
-    if (typeof params.turnId === "string") {
-      if (a.turn && a.turn !== params.turnId) return fail("malformed_response");
+    if (params.turnId !== undefined) {
+      if (
+        typeof params.turnId !== "string" ||
+        !params.turnId ||
+        (a.turn !== undefined && a.turn !== params.turnId)
+      )
+        return fail("malformed_response");
       a.turn = params.turnId;
     }
     if (msg.method === "item/started" || msg.method === "item/completed") {
@@ -233,16 +244,20 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
       const turn = object(params.turn);
       if (
         typeof turn.id !== "string" ||
-        (a.turn && a.turn !== turn.id) ||
-        !["completed", "failed", "interrupted"].includes(String(turn.status))
+        !turn.id ||
+        (a.turn !== undefined && a.turn !== turn.id) ||
+        typeof turn.status !== "string" ||
+        !["completed", "failed", "interrupted"].includes(turn.status)
       )
         return fail("malformed_response");
       a.turn = turn.id;
       a.terminal = true;
       a.timing?.("terminal");
       a.ended.resolve();
-      if (turn.status === "completed") a.resolve();
-      else a.reject(failure());
+      if (turn.status === "completed") {
+        a.completed = true;
+        a.resolve();
+      } else a.reject(failure());
     }
   }
 
@@ -380,7 +395,7 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
     }
   })();
 
-  return {
+  const provider = {
     async ready() {
       await startup;
       if (errorCode || stopping)
@@ -407,130 +422,165 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
         ...(errorCode ? { error: errorCode } : {}),
       };
     },
-    async reply(request: ModelRequest, signal?: AbortSignal) {
-      signal?.throwIfAborted();
-      await startup;
-      signal?.throwIfAborted();
-      if (stopping || errorCode)
-        throw failure(errorCode ?? "provider_unavailable");
+    reply(
+      request: ModelRequest,
+      signal?: AbortSignal,
+    ): Promise<CompanionReply> {
+      return provider.beginReply(request, signal).answer;
+    },
+    beginReply(request: ModelRequest, signal?: AbortSignal): ModelInvocation {
       const answer = Promise.withResolvers<CompanionReply>();
-      // Telemetry must never change inference or retirement behavior.
-      const timing: NonNullable<ModelRequest["onProviderTiming"]> = (stage) => {
-        try {
-          request.onProviderTiming?.(stage);
-        } catch {
-          /* observational only */
-        }
-      };
-      const operation = observeUsage(
-        options.usage,
-        { provider: "codex", model, stage: request.usageStage ?? "fast" },
-        async (report) => {
-          const slot = idle.shift();
-          if (!slot) throw new ModelError("provider_busy", true); // No inference submitted.
-          consumed++;
-          const done = Promise.withResolvers<void>();
-          // Notifications may precede the turn/start response. Install first.
-          const a: ActiveTurn = {
-            ...done,
-            bytes: 0,
-            terminal: false,
-            timing,
-            ended: Promise.withResolvers<void>(),
-          };
-          active.set(slot.id, a);
-          void done.promise.catch(() => {});
-          void a.ended.promise.catch(() => {});
-          const cancel = () =>
-            a.reject(failure(signal?.aborted ? "cancelled" : "timeout"));
-          const timer = setTimeout(cancel, timeoutMs);
-          signal?.addEventListener("abort", cancel, { once: true });
-          let reply: CompanionReply | undefined;
-          let requestError: unknown;
+      let status: ModelSettlement = "not_started";
+      const operation = (async () => {
+        signal?.throwIfAborted();
+        await startup;
+        signal?.throwIfAborted();
+        if (stopping || errorCode)
+          throw failure(errorCode ?? "provider_unavailable");
+        // Telemetry must never change inference or retirement behavior.
+        const timing: NonNullable<ModelRequest["onProviderTiming"]> = (
+          stage,
+        ) => {
           try {
-            // Never race/drop this RPC: without its ID, cancellation would orphan a turn.
-            timing("submitted");
-            const result = object(
-              await rpc("turn/start", {
-                threadId: slot.id,
-                input: [
-                  {
-                    type: "text",
-                    text: codexPrompt(request),
-                    textElements: [],
-                  },
-                ],
-                outputSchema: replyJsonSchema(request.workspaces, request),
-              }),
-            );
-            const id = object(result.turn).id;
-            if (typeof id !== "string" || (a.turn && a.turn !== id))
-              throw failure("malformed_response");
-            a.turn = id;
-            if (signal?.aborted) cancel();
-            await done.promise;
-            signal?.throwIfAborted();
-            if (stopping || errorCode)
-              throw failure(errorCode ?? "provider_closed");
-            if (!a.answer) throw failure("malformed_response");
-            reply = parseReply(a.answer, request.workspaces, request);
-            timing("validated");
-            // A completed, validated answer no longer depends on session disposal.
-            // Keep the operation/slot tracked until cleanup and usage recording finish.
-            answer.resolve(reply);
-          } catch (error) {
-            requestError = error;
-          } finally {
-            clearTimeout(timer);
-            signal?.removeEventListener("abort", cancel);
+            request.onProviderTiming?.(stage);
+          } catch {
+            /* observational only */
+          }
+        };
+        return observeUsage(
+          options.usage,
+          { provider: "codex", model, stage: request.usageStage ?? "fast" },
+          async (report) => {
+            const slot = idle.shift();
+            if (!slot) throw new ModelError("provider_busy", true); // No inference submitted.
+            consumed++;
+            const done = Promise.withResolvers<void>();
+            // Notifications may precede the turn/start response. Install first.
+            const a: ActiveTurn = {
+              ...done,
+              bytes: 0,
+              terminal: false,
+              timing,
+              ended: Promise.withResolvers<void>(),
+            };
+            active.set(slot.id, a);
+            void done.promise.catch(() => {});
+            void a.ended.promise.catch(() => {});
+            const cancel = () =>
+              a.reject(failure(signal?.aborted ? "cancelled" : "timeout"));
+            const timer = setTimeout(cancel, timeoutMs);
+            signal?.addEventListener("abort", cancel, { once: true });
+            let reply: CompanionReply | undefined;
+            let requestError: unknown;
+            let startConfirmed = false;
             try {
-              if (!errorCode) {
-                if (!a.terminal && a.turn) {
-                  try {
-                    await rpc("turn/interrupt", {
-                      threadId: slot.id,
-                      turnId: a.turn,
-                    });
-                  } catch {
-                    // An interrupt can lose the race with completion. Only a
-                    // matching validated terminal event proves it is safe to retire.
-                    const cleanupTimer = setTimeout(
-                      () => fail("cleanup_failed"),
-                      Math.min(timeoutMs, 15_000),
-                    );
+              // Never race/drop this RPC: without its ID, cancellation would orphan a turn.
+              status = "unknown";
+              timing("submitted");
+              const result = object(
+                await rpc("turn/start", {
+                  threadId: slot.id,
+                  input: [
+                    {
+                      type: "text",
+                      text: codexPrompt(request),
+                      textElements: [],
+                    },
+                  ],
+                  outputSchema: replyJsonSchema(request.workspaces, request),
+                }),
+              );
+              const id = object(result.turn).id;
+              if (
+                typeof id !== "string" ||
+                !id ||
+                (a.turn !== undefined && a.turn !== id)
+              )
+                throw failure("malformed_response");
+              a.turn = id;
+              startConfirmed = true;
+              if (signal?.aborted) cancel();
+              await done.promise;
+              signal?.throwIfAborted();
+              if (stopping || errorCode)
+                throw failure(errorCode ?? "provider_closed");
+              if (!a.answer) throw failure("malformed_response");
+              reply = parseReply(a.answer, request.workspaces, request);
+              timing("validated");
+              // A completed, validated answer no longer depends on session disposal.
+              // Keep the operation/slot tracked until cleanup and usage recording finish.
+              answer.resolve(reply);
+            } catch (error) {
+              requestError = error;
+            } finally {
+              clearTimeout(timer);
+              signal?.removeEventListener("abort", cancel);
+              try {
+                if (!errorCode) {
+                  if (!a.terminal && a.turn) {
                     try {
-                      await a.ended.promise;
-                    } finally {
-                      clearTimeout(cleanupTimer);
+                      await rpc("turn/interrupt", {
+                        threadId: slot.id,
+                        turnId: a.turn,
+                      });
+                    } catch {
+                      // An interrupt can lose the race with completion. Only a
+                      // matching validated terminal event proves it is safe to retire.
+                      const cleanupTimer = setTimeout(
+                        () => fail("cleanup_failed"),
+                        Math.min(timeoutMs, 15_000),
+                      );
+                      try {
+                        await a.ended.promise;
+                      } finally {
+                        clearTimeout(cleanupTimer);
+                      }
                     }
                   }
+                  if (!a.turn) fail("generation_failed");
+                  else {
+                    await retire(slot.id);
+                    timing("retired");
+                  }
                 }
-                if (!a.turn) fail("generation_failed");
-                else {
-                  await retire(slot.id);
-                  timing("retired");
-                }
+              } catch {
+                fail("cleanup_failed");
               }
-            } catch {
-              fail("cleanup_failed");
+              if (errorCode) await processClosed;
+              // Local interruption/exit alone cannot prove remote inference ended.
+              // Require successful terminal correlation and local retirement. A
+              // protocol/policy failure still withholds settlement authority.
+              if (
+                startConfirmed &&
+                a.completed &&
+                (!errorCode ||
+                  errorCode === "cleanup_failed" ||
+                  errorCode === "provider_closed")
+              )
+                status = "confirmed_stopped";
+              if (a.usage) report(a.usage);
+              active.delete(slot.id);
+              if (!stopping && !errorCode) void replenish();
             }
-            if (errorCode) await processClosed;
-            if (a.usage) report(a.usage);
-            active.delete(slot.id);
-            if (!stopping && !errorCode) void replenish();
-          }
-          // Disposal failure disables future calls, not an answer already delivered.
-          if (reply) return reply;
-          if (errorCode) throw failure(errorCode);
-          if (requestError) throw requestError;
-          throw failure("malformed_response");
-        },
-      );
+            // Disposal failure disables future calls, not an answer already delivered.
+            if (reply) return reply;
+            if (errorCode) throw failure(errorCode);
+            if (requestError) throw requestError;
+            throw failure("malformed_response");
+          },
+        );
+      })();
       operations.add(operation);
       void operation
         .then(answer.resolve, answer.reject)
         .finally(() => operations.delete(operation));
-      return answer.promise;
+      return {
+        answer: answer.promise,
+        settlement: operation.then(
+          () => status,
+          () => status,
+        ),
+      };
     },
     close(): Promise<void> {
       closed ??= (async () => {
@@ -546,4 +596,5 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
       return closed;
     },
   };
+  return provider;
 }

@@ -97,6 +97,21 @@ for await (const line of createInterface({ input: process.stdin })) {
       setTimeout(()=>emit({id:r.id,result:{turn:{id:'turn-'+threadId}}}),250);
       continue;
     }
+    if (${JSON.stringify(mode)} === 'mismatched-start') {
+      finish(threadId);
+      setTimeout(()=>emit({id:r.id,result:{turn:{id:'other-turn'}}}),20);
+      continue;
+    }
+    if (${JSON.stringify(mode)} === 'empty-completion') {
+      emit({method:'turn/completed',params:{threadId,turn:{id:'',status:'completed'}}});
+      setTimeout(()=>emit({id:r.id,result:{turn:{id:'turn-'+threadId}}}),20);
+      continue;
+    }
+    if (${JSON.stringify(mode)} === 'empty-start') {
+      emit({id:r.id,result:{turn:{id:''}}});
+      setTimeout(()=>finish(threadId),20);
+      continue;
+    }
     if (${JSON.stringify(mode)} === 'approval') { emit({id:700,method:'item/commandExecution/requestApproval',params:{threadId}}); continue; }
     if (${JSON.stringify(mode)} === 'late') await new Promise(r=>setTimeout(r,150));
     emit({id:r.id,result});
@@ -185,13 +200,25 @@ it("consumes pristine bounded threads once with no MCP tools", async (t) => {
   });
 });
 
-for (const mode of ["lost", "tool", "approval", "schema"]) {
+for (const mode of [
+  "lost",
+  "tool",
+  "approval",
+  "schema",
+  "mismatched-start",
+  "empty-completion",
+  "empty-start",
+]) {
   it(`fails closed without replay after ${mode}`, async (t) => {
     const { provider, calls } = await fixture(t, mode);
     await provider.ready();
-    await expect(provider.reply(request)).rejects.toMatchObject({
+    const invocation = provider.beginReply(request);
+    await expect(invocation.answer).rejects.toMatchObject({
       retryable: false,
     });
+    expect(await invocation.settlement).toBe(
+      mode === "schema" ? "confirmed_stopped" : "unknown",
+    );
     expect(
       (await calls()).filter((x) => x.method === "turn/start"),
     ).toHaveLength(1);
@@ -202,13 +229,14 @@ it("waits for the start response before cancelling, then retires the session", a
   const { provider, calls } = await fixture(t, "late");
   await provider.ready();
   const controller = new AbortController();
-  const result = provider.reply(request, controller.signal);
-  const rejected = expect(result).rejects.toThrow();
+  const invocation = provider.beginReply(request, controller.signal);
+  const rejected = expect(invocation.answer).rejects.toThrow();
   await expect
     .poll(async () => (await calls()).some((x) => x.method === "turn/start"))
     .toBe(true);
   controller.abort();
   await rejected;
+  expect(await invocation.settlement).toBe("unknown");
   expect((await calls()).some((x) => x.method === "turn/interrupt")).toBe(true);
   await expect.poll(() => provider.inspect().idle).toBe(3);
 });
@@ -216,13 +244,17 @@ it("waits for the start response before cancelling, then retires the session", a
 it("bounds admission and closes in-flight calls without replenishing or replay", async (t) => {
   const { provider, calls } = await fixture(t, "hang");
   await provider.ready();
-  const results = Array.from({ length: 3 }, () => provider.reply(request));
-  const settled = Promise.allSettled(results);
+  const invocations = Array.from({ length: 3 }, () =>
+    provider.beginReply(request),
+  );
+  const settled = Promise.allSettled(invocations.map((call) => call.answer));
   await expect.poll(() => provider.inspect().active).toBe(3);
-  await expect(provider.reply(request)).rejects.toMatchObject({
+  const busy = provider.beginReply(request);
+  await expect(busy.answer).rejects.toMatchObject({
     code: "provider_busy",
     retryable: true,
   });
+  expect(await busy.settlement).toBe("not_started");
   await expect
     .poll(
       async () =>
@@ -235,6 +267,9 @@ it("bounds admission and closes in-flight calls without replenishing or replay",
     "rejected",
     "rejected",
   ]);
+  expect(await Promise.all(invocations.map((call) => call.settlement))).toEqual(
+    ["unknown", "unknown", "unknown"],
+  );
   const log = await calls();
   expect(log.filter((x) => x.method === "thread/start")).toHaveLength(3);
   expect(log.filter((x) => x.method === "turn/start")).toHaveLength(3);
@@ -326,17 +361,20 @@ it("returns validated answers before retirement without freeing occupied slots",
   const { provider, calls, ledger } = await fixture(t, "slow-close");
   await provider.ready();
   const stages: string[] = [];
-  const replies = await Promise.all(
-    Array.from({ length: 3 }, () =>
-      provider.reply({
-        ...request,
-        onProviderTiming: (stage) => stages.push(stage),
-      }),
-    ),
+  const invocations = Array.from({ length: 3 }, () =>
+    provider.beginReply({
+      ...request,
+      onProviderTiming: (stage) => stages.push(stage),
+    }),
   );
+  const receipts: string[] = [];
+  for (const invocation of invocations)
+    void invocation.settlement.then((value) => receipts.push(value));
+  const replies = await Promise.all(invocations.map((call) => call.answer));
   expect(replies.map((x) => x.text)).toEqual(["hello", "hello", "hello"]);
   expect(stages.filter((x) => x === "validated")).toHaveLength(3);
   expect(stages).not.toContain("retired");
+  expect(receipts).toEqual([]);
   expect(provider.inspect()).toMatchObject({ idle: 0, active: 3 });
   await expect(provider.reply(request)).rejects.toMatchObject({
     code: "provider_busy",
@@ -345,6 +383,9 @@ it("returns validated answers before retirement without freeing occupied slots",
     (await calls()).filter((x) => x.method === "thread/start"),
   ).toHaveLength(3);
   await expect.poll(() => stages.filter((x) => x === "retired").length).toBe(3);
+  expect(await Promise.all(invocations.map((call) => call.settlement))).toEqual(
+    ["confirmed_stopped", "confirmed_stopped", "confirmed_stopped"],
+  );
   await expect.poll(() => provider.inspect().idle).toBe(3);
   expect(
     ledger.snapshot().recent.filter((x) => x.status === "completed"),
@@ -374,14 +415,16 @@ it("fails closed on missing retirement without retracting or replaying the answe
 it("close settles pending retirement and telemetry without replacing its slot", async (t) => {
   const { provider, calls, ledger } = await fixture(t, "no-close");
   await provider.ready();
-  await provider.reply({
+  const invocation = provider.beginReply({
     ...request,
     onProviderTiming: () => {
       throw new Error("observer failure");
     },
   });
+  await invocation.answer;
   expect(provider.inspect().active).toBe(1);
   await provider.close();
+  expect(await invocation.settlement).toBe("confirmed_stopped");
   expect(provider.inspect().active).toBe(0);
   expect(ledger.snapshot().recent[0]?.status).toBe("completed");
   expect(

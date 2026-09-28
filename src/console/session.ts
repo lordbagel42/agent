@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { html } from "hono/html";
 import type { ModelProvider } from "../core/contracts.js";
+import { wrapModelProvider } from "../models/invocation.js";
 import {
   confirmations,
   type PrivateEnv,
@@ -31,8 +32,9 @@ export function createConsoleLoginLinks(origin: string) {
     redact,
     // Install inside any tool wrapper so later MCP synthesis is protected too.
     wrapModel(model: ModelProvider): ModelProvider {
-      return {
-        reply: (request, signal, isCurrent, canStartAction) =>
+      return wrapModelProvider(
+        model,
+        (model) => (request, signal, isCurrent, canStartAction) =>
           model.reply(
             {
               ...request,
@@ -46,7 +48,7 @@ export function createConsoleLoginLinks(origin: string) {
             isCurrent,
             canStartAction,
           ),
-      };
+      );
     },
     issue() {
       prune();

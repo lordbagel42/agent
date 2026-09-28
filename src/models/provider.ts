@@ -2,8 +2,10 @@ import { z } from "zod";
 import { appsRequestSchema } from "../apps/client.js";
 import type {
   CompanionReply,
+  ModelInvocation,
   ModelProvider,
   ModelRequest,
+  ModelSettlement,
 } from "../core/contracts.js";
 import { reflectionReviewSchema } from "../core/reflection-review.js";
 import {
@@ -2039,6 +2041,7 @@ export function createJsonProvider({
       parse: (text: string) => T;
     },
     signal?: AbortSignal,
+    lifecycle?: { dispatched(): void; terminal(): void },
   ): Promise<T> => {
     signal?.throwIfAborted();
     return observeUsage(
@@ -2108,7 +2111,32 @@ export function createJsonProvider({
               : controller.signal,
           };
           init.signal?.throwIfAborted();
+          lifecycle?.dispatched();
           const payload = await fetchJson(fetchImpl, url, init, controller);
+          // Only an explicit terminal envelope from the configured protocol is
+          // proof. HTTP errors/disconnects alone do not establish remote stop.
+          if (
+            isJsonObject(payload) &&
+            typeof payload.id === "string" &&
+            payload.id.length > 0 &&
+            (isOpenAI
+              ? payload.object === "response" &&
+                typeof payload.status === "string" &&
+                ["completed", "failed", "incomplete", "cancelled"].includes(
+                  payload.status,
+                )
+              : payload.type === "message" &&
+                payload.role === "assistant" &&
+                typeof payload.stop_reason === "string" &&
+                [
+                  "end_turn",
+                  "stop_sequence",
+                  "max_tokens",
+                  "refusal",
+                  "model_context_window_exceeded",
+                ].includes(payload.stop_reason))
+          )
+            lifecycle?.terminal();
           report(
             tokenUsage(
               protocol,
@@ -2127,13 +2155,15 @@ export function createJsonProvider({
   };
 }
 
-export function createModelProvider(
-  options: JsonProviderOptions,
-): ModelProvider {
+export function createModelProvider(options: JsonProviderOptions) {
   const generate = createJsonProvider(options);
-  return {
-    async reply(request, signal) {
-      return generate(
+  const beginReply = (
+    request: ModelRequest,
+    signal?: AbortSignal,
+  ): ModelInvocation => {
+    let status: ModelSettlement = "not_started";
+    const answer = Promise.resolve().then(() =>
+      generate(
         {
           ...request,
           schema: replyJsonSchema(request.workspaces, request),
@@ -2141,7 +2171,27 @@ export function createModelProvider(
           parse: (text) => parseReply(text, request.workspaces, request),
         },
         signal,
-      );
-    },
+        {
+          dispatched: () => {
+            status = "unknown";
+          },
+          terminal: () => {
+            status = "confirmed_stopped";
+          },
+        },
+      ),
+    );
+    return {
+      answer,
+      settlement: answer.then(
+        () => status,
+        () => status,
+      ),
+    };
   };
+  return {
+    beginReply,
+    reply: (request: ModelRequest, signal?: AbortSignal) =>
+      beginReply(request, signal).answer,
+  } satisfies ModelProvider;
 }

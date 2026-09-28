@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CompanionReply, ModelProvider } from "../core/contracts.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
+import { wrapModelProvider } from "../models/invocation.js";
 import { parseReply } from "../models/provider.js";
 import { CapabilityBroker, type Json, type ToolAction } from "./broker.js";
 import {
@@ -619,8 +620,9 @@ export class McpConnections {
     ].join("\n\n");
   }
   wrap(model: ModelProvider): ModelProvider {
-    return {
-      reply: async (request, signal, isCurrent, canStartAction) => {
+    return wrapModelProvider(
+      model,
+      (model) => async (request, signal, isCurrent, canStartAction) => {
         const current = () => !signal?.aborted && (isCurrent?.() ?? true);
         if (!current()) return { text: "" };
         if (!request.mcpAvailable || request.agentRole === "interaction") {
@@ -994,7 +996,7 @@ export class McpConnections {
           );
         }
       },
-    };
+    );
   }
   async close() {
     await Promise.all([...this.#active].map((adapter) => adapter.close()));
