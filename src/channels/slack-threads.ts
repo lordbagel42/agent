@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-/** Delivery-confirmed participation only; stores IDs, never message contents. */
+/** Thread subscriptions from direct owner contact or confirmed posts; IDs only. */
 export class SlackThreads {
   private db: DatabaseSync;
 

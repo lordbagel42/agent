@@ -246,15 +246,17 @@ async function normalizeEvent(
       return [];
     if (event.type === "app_mention" && channelType === "im") return [];
 
+    const named = owner && /\bjune\b/i.test(event.text);
     const participatingThread =
       channelType !== "im" &&
       !mentioned &&
+      !named &&
       owner &&
       nonEmptyString(event.thread_ts) &&
       event.thread_ts !== event.ts &&
       (event.parent_user_id === botUserId ||
         threads?.has(teamId, botUserId, event.channel, event.thread_ts));
-    if (channelType !== "im" && !mentioned && !participatingThread) {
+    if (channelType !== "im" && !mentioned && !named && !participatingThread) {
       if (!owner || !participateInOwnerChannels) return [];
       // Never authorize by an ID, event-supplied name, text, or stale name cache.
       const info = await context.conversation(
@@ -276,6 +278,20 @@ async function normalizeEvent(
     const threadId = nonEmptyString(event.thread_ts)
       ? event.thread_ts
       : undefined;
+    // Subscribe on contact, not on a reply: June may intentionally stay silent.
+    // Keep guest admission and direct-ping policy separate from name matching.
+    if (
+      channelType !== "im" &&
+      owner &&
+      (mentioned || named || participatingThread)
+    ) {
+      try {
+        threads?.record(teamId, botUserId, event.channel, threadId ?? event.ts);
+      } catch {
+        // A failed subscription must not discard already-authorized contact.
+        console.warn("Could not save Slack thread subscription");
+      }
+    }
     return [
       {
         id: slackMessageId(teamId, event.channel, event.ts),

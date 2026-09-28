@@ -12,6 +12,19 @@ Both use the existing owner-private tool catalog and approval receipts. Public
 channels and group conversations do not receive these catalogs. June's ordinary
 channel replies and reactions remain separate and unchanged.
 
+## Thread subscriptions
+
+Owner channel messages containing the whole word “June” (case-insensitive) or a
+direct @mention subscribe June to that thread, even when she chooses silence.
+Threads she starts or posts in are also subscribed. Subscriptions persist across
+restarts and let the owner follow up without another ping. Guest access, `##`
+opt-outs, direct-mention requirements for group pings, and privacy boundaries
+remain unchanged. A name reference does not count as a direct @mention.
+
+June is instructed that subscribing, being named, or being pinged never obligates
+her to reply. This uses the existing `message.channels` / `message.groups`
+subscriptions and channel-history scopes; it adds no Slack permissions.
+
 ## Bot tools
 
 When Slack and private MCP storage are configured, startup enrolls the fixed

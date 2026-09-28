@@ -227,7 +227,7 @@ describe("createSlackAdapter", () => {
     },
   );
 
-  it("admits owner follow-ups only in threads June successfully posted to", async (t) => {
+  it("admits owner follow-ups in subscribed threads without expanding guest access", async (t) => {
     const root = mkdtempSync(join(tmpdir(), "june-slack-threads-"));
     const file = join(root, "threads.sqlite");
     let threads = new SlackThreads(file);
@@ -283,6 +283,27 @@ describe("createSlackAdapter", () => {
     expect(await reply({ thread_ts: undefined })).toEqual([]);
     expect(await reply({ user: "U_GUEST" })).toEqual([]);
     expect(await reply({ text: "## don't read" })).toEqual([]);
+    for (const text of ["JUNE, FYI", `<@${botUserId}> FYI`]) {
+      const rootTs = text.startsWith("JUNE") ? "55.555" : "44.444";
+      expect(
+        await reply({ ts: rootTs, thread_ts: undefined, text }),
+      ).toMatchObject([{ botMentioned: text.startsWith("<@") }]);
+      // No send occurs: a silent model turn must still leave a durable subscription.
+      threads.close();
+      threads = new SlackThreads(file);
+      adapter = makeAdapter(fetchImpl, { threads });
+      expect(await reply({ thread_ts: rootTs })).toHaveLength(1);
+      expect(await reply({ thread_ts: rootTs, user: "U_GUEST" })).toEqual([]);
+      expect(await reply({ thread_ts: rootTs, channel: "C_OTHER" })).toEqual(
+        [],
+      );
+    }
+    for (const text of ["junebug", "## June, ignore this"]) {
+      expect(await reply({ ts: "33.333", thread_ts: undefined, text })).toEqual(
+        [],
+      );
+      expect(threads.has(teamId, botUserId, "C_THREAD", "33.333")).toBe(false);
+    }
     fetchImpl.mockResolvedValue(
       jsonResponse({ ok: true, ts: "102.789", channel: "C_THREAD" }),
     );
@@ -352,7 +373,11 @@ describe("createSlackAdapter", () => {
         messageId: "300.123",
       });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
-      for (const channel_type of ["im", "channel"]) {
+      for (const [channel_type, text] of [
+        ["im", "follow up"],
+        ["channel", "<@U_BOT> follow up"],
+        ["channel", "June, follow up"],
+      ]) {
         const result = await adapter.receive(
           signedRequest(
             eventBody({
@@ -362,7 +387,7 @@ describe("createSlackAdapter", () => {
               user: "U_HUMAN",
               ts: "301.234",
               thread_ts: "300.123",
-              text: channel_type === "im" ? "follow up" : "<@U_BOT> follow up",
+              text,
             }),
           ),
         );
