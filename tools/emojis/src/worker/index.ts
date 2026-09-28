@@ -613,8 +613,36 @@ export default {
     ctx.waitUntil(
       (async () => {
         await expire(env);
-        await reconcile(env).catch(() => {});
-        await drainEmbeddings(env).catch(() => {});
+        for (const [stage, operation] of [
+          ["reconcile", reconcile],
+          ["embeddings", drainEmbeddings],
+        ] as const) {
+          try {
+            await operation(env);
+          } catch (error) {
+            // Never log provider payloads, SQL, catalogue content or credentials.
+            const message = error instanceof Error ? error.message : "";
+            const code = /^slack_http_\d{3}$/.test(message)
+              ? message
+              : [
+                    "slack_missing_scope",
+                    "slack_invalid_auth",
+                    "slack_token_expired",
+                    "slack_ratelimited",
+                    "slack_request_failed",
+                    "slack_workspace_mismatch",
+                    "embedding_unavailable",
+                    "response_too_large",
+                  ].includes(message)
+                ? message
+                : error instanceof z.ZodError
+                  ? "invalid_schema"
+                  : message.startsWith("D1_")
+                    ? "database_error"
+                    : "operation_failed";
+            console.error(JSON.stringify({ stage, code }));
+          }
+        }
       })(),
     );
   },
