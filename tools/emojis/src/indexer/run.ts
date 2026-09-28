@@ -36,6 +36,7 @@ export async function runIndexer(
   let rampCompleted = 0;
   let blocked: string | null = null;
   const completions: number[] = [];
+  const terminalFailures: number[] = [];
   const active = new Set<Promise<void>>();
   const analyses = new Map<string, Promise<EmojiResult>>();
   const controller = new AbortController();
@@ -78,6 +79,7 @@ export async function runIndexer(
     while (!signal.aborted && !blocked) {
       memory = await availableMemoryMb();
       const disk = await statfs(store.directory);
+      if (signal.aborted || blocked) break;
       if (disk.bavail * disk.bsize < 1024 * 1024 * 1024) {
         blocked = "disk_reserve_reached";
         break;
@@ -168,8 +170,30 @@ export async function runIndexer(
                   ? error.uncertain
                   : inferenceStarted,
               );
-              // Invalid images fail individually; provider/auth/quota ambiguity stops admission.
-              if (!(error instanceof MediaError)) blocked = code;
+              // A confirmed terminal failure is not a replay: leave it failed and
+              // move to an untouched emoji. Never continue an unhealthy provider.
+              if (
+                error instanceof ModelError &&
+                !error.uncertain &&
+                !describer.failure &&
+                [
+                  "generation_failed",
+                  "invalid_analysis",
+                  "policy_blocked",
+                ].includes(code)
+              ) {
+                // Duplicate images share one promise, including its failure.
+                if (inferenceStarted) {
+                  const now = Date.now();
+                  while ((terminalFailures[0] ?? Infinity) <= now - 60_000)
+                    terminalFailures.shift();
+                  terminalFailures.push(now);
+                  if (terminalFailures.length >= 5)
+                    blocked ??= "repeated_generation_failures";
+                }
+              } else if (!(error instanceof MediaError)) {
+                blocked ??= describer.failure ?? code;
+              }
             } finally {
               if (!prepared) preparing--;
             }
