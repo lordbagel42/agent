@@ -72,6 +72,7 @@ export function executionCapabilities(
       privateTurn && !!deps.memory && !!deps.reflection && !!deps.coding,
     juryAvailable: privateTurn && !!deps.memory && !!deps.jury,
     e2bAvailable: privateTurn && deps.e2b?.available === true,
+    browserTaskAvailable: privateTurn && !!deps.browserCompanion,
     webEmbedAvailable:
       privateTurn &&
       event.address.channel === "slack" &&

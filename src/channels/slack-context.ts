@@ -4,6 +4,7 @@ import type {
   MessageEvent,
   MessageMetadata,
 } from "../core/contracts.js";
+import { redactBrowserPin } from "../core/private-input.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
@@ -291,7 +292,7 @@ export function createSlackContext({
           role: sender === botUserId ? "assistant" : "user",
           content:
             typeof message.text === "string"
-              ? message.text.slice(0, TEXT_LIMIT)
+              ? redactBrowserPin(message.text).slice(0, TEXT_LIMIT)
               : "",
           source: {
             id: slackMessageId(teamId, channel, message.ts),
@@ -315,7 +316,7 @@ export function createSlackContext({
     const { type: _type, text, ...source } = event;
     messages.set(event.messageId, {
       role: "user",
-      content: text,
+      content: redactBrowserPin(text),
       source: {
         ...source,
         metadata: {

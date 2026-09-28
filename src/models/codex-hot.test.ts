@@ -10,6 +10,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import type { ModelImageInput } from "../core/contracts.js";
+import { codexPrompt } from "./codex.js";
 import { createHotCodexProvider } from "./codex-hot.js";
 import { UsageLedger } from "./usage.js";
 
@@ -115,6 +117,9 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (${JSON.stringify(mode)} === 'approval') { emit({id:700,method:'item/commandExecution/requestApproval',params:{threadId}}); continue; }
     if (${JSON.stringify(mode)} === 'late') await new Promise(r=>setTimeout(r,150));
     emit({id:r.id,result});
+    if (${JSON.stringify(mode)} === 'image-echo') {
+      for (const method of ['item/started','item/completed']) emit({method,params:{threadId,turnId:result.turn.id,item:{type:'userMessage',id:'user',content:r.params.input}}});
+    }
     if (first && ${JSON.stringify(mode)} === 'failed-first') {usage(threadId);finish(threadId,'failed');continue;}
     if (first && ['interrupt-race','interrupt-usage','interrupt-unconfirmed'].includes(${JSON.stringify(mode)})) continue;
     if (['hang','late'].includes(${JSON.stringify(mode)})) continue;
@@ -170,6 +175,59 @@ const request = {
   messages: [{ role: "user" as const, content: "hello" }],
   workspaces: [],
 };
+
+it("sends host image bytes in native turn inputs without text serialization or policy changes", async (t) => {
+  const { provider, calls } = await fixture(t, "image-echo");
+  await provider.ready();
+  // Native userMessage notifications echo inline inputs, exceeding the normal
+  // text-only response cap even for a modest screenshot.
+  const png = new Uint8Array(900_000);
+  png.set([137, 80, 78, 71, 13, 10, 26, 10, 1]);
+  const images: [ModelImageInput, ModelImageInput] = [
+    {
+      evidenceId: "frame-a",
+      mimeType: "image/png" as const,
+      data: png,
+      mediaTimeSeconds: 0,
+    },
+    {
+      evidenceId: "frame-b",
+      mimeType: "image/jpeg" as const,
+      data: Uint8Array.from([255, 216, 255, 2]),
+      mediaTimeSeconds: 3,
+    },
+  ];
+  const invalid = provider.beginReply({
+    ...request,
+    images: [{ ...images[0], data: new Uint8Array() }],
+  });
+  await expect(invalid.answer).rejects.toMatchObject({
+    code: "invalid_images",
+  });
+  await expect(invalid.settlement).resolves.toBe("not_started");
+  await provider.reply({ ...request, images });
+  await provider.reply(request);
+  const turns = (await calls()).filter((call) => call.method === "turn/start");
+  expect(turns).toHaveLength(2);
+  expect(turns[0].params.input.slice(1)).toEqual(
+    images.map((image) => ({
+      type: "image",
+      url: `data:${image.mimeType};base64,${Buffer.from(image.data).toString("base64")}`,
+    })),
+  );
+  const prompt = turns[0].params.input[0].text;
+  expect(prompt).toBe(codexPrompt({ ...request, images }));
+  expect(prompt).toContain("Do not use shell");
+  for (const image of images) {
+    expect(prompt).toContain(image.evidenceId);
+    expect(prompt).not.toContain(Buffer.from(image.data).toString("base64"));
+    expect(prompt).not.toContain(JSON.stringify(image.data));
+  }
+  expect(turns[1].params.input).toEqual([
+    { type: "text", text: codexPrompt(request), textElements: [] },
+  ]);
+  expect(codexPrompt({ ...request, images: [] })).toBe(codexPrompt(request));
+});
 
 it("consumes pristine bounded threads once with no MCP tools", async (t) => {
   const { provider, calls } = await fixture(t);

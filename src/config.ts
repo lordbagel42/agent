@@ -189,6 +189,37 @@ const schema = z
           .optional(),
       })
       .optional(),
+    browserCompanion: z
+      .strictObject({
+        enabled: z.boolean().default(false),
+        directory: absolutePath,
+        home: absolutePath,
+        tempDirectory: absolutePath,
+        codexHome: absolutePath,
+        navigationOrigins: z
+          .array(
+            baseUrl.refine(
+              (value) =>
+                new URL(value).origin === value && value.startsWith("https:"),
+            ),
+          )
+          .min(1)
+          .max(32),
+        resourceOrigins: z
+          .array(
+            baseUrl.refine(
+              (value) =>
+                new URL(value).origin === value && value.startsWith("https:"),
+            ),
+          )
+          .min(1)
+          .max(64),
+        processIsolationAcknowledged: z.literal(true),
+        networkIsolationAcknowledged: z.literal(true),
+        ephemeralStorageAcknowledged: z.literal(true),
+        resourceLimitsAcknowledged: z.literal(true),
+      })
+      .optional(),
     browser: z
       .strictObject({
         enabled: z.boolean().default(false),
@@ -529,6 +560,11 @@ const schema = z
   .refine(
     (config) => !config.browser.enabled || !!config.capabilities,
     "Enabled browsing requires the generic capability broker",
+  )
+  .refine(
+    (config) =>
+      !config.browserCompanion?.enabled || !config.deployment?.blueGreen,
+    "Browser PIN input cannot pass through the durable blue-green Slack intake queue",
   )
   .refine(
     (config) =>

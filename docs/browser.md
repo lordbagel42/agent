@@ -1,5 +1,95 @@
 # Capability-bound browser worker
 
+## Codex browser companion (separate opt-in)
+
+`browserCompanion` is a separate visual-review capability, not a change to the
+receipt-only recipe broker below. June's interaction agent delegates to an
+existing durable execution worker. That worker calls
+`browserTask: { action: "start", url, goal }`, then `status` or `cancel` with the
+returned `taskId`. Only a current owner-private request can use this capability;
+guest, public, automated-event and synthesis turns cannot start it.
+
+The companion owns one fresh sandboxed Chromium session and a restricted Codex
+0.157.1 thread. Codex gets host-defined navigation, observation, scroll, native
+PIN-request, video-discovery and timestamped-frame tools—not a shell, filesystem,
+MCP, arbitrary JavaScript, desktop profile or public CDP endpoint. Start/status
+results include the ordinary authenticated `/console/browser/<taskId>` HTML URL.
+It streams **the same browser** at up to two frames per second, without audio,
+recording or remote controls. June's runtime instructions explain this link;
+Slack HTML embedding is not implemented here.
+
+For a supported PIN form, June relays the returned question including
+`!browser-pin <taskId> <challengeId> <PIN>`. Send that as a plain reply in the same
+owner DM/thread. The verified host consumes the challenge/message once, removes
+the command before ordinary history/memory ingestion, and buffers the PIN only
+in memory. June then resumes the existing task using `status`. A wrong PIN needs
+a new challenge and fresh message; redelivery cannot submit again. Quoted,
+malformed and historical PIN commands are redacted rather than accepted. Slack
+itself may retain the original message; do not promise its deletion.
+
+Observations and the live view are blanked during PIN entry. The approved site
+necessarily receives the PIN and may reflect it; allow only trusted destinations.
+Native same-origin POST forms are supported. Ordinary redirects are denied; a
+validated same-origin 303 after submission permits one exact host-issued GET.
+307/308 replay, arbitrary clicks, uploads, purchases, SSO and child-frame video
+players are not supported. Missing resources or unsupported media must be
+reported, not bypassed.
+
+June's tool-free visual review receives actual bounded image inputs, including
+video timestamps, through the OpenAI, Anthropic or native Codex image path.
+Sampling frames is not watching every moment; there is no audio transcription.
+Both Codex and June are instructed to distinguish observed visuals from inference
+and treat page content as untrusted data, never permission.
+
+### Provisioning and retention
+
+The optional configuration is disabled by default. Enabling requires
+`JUNE_ALLOW_BROWSER_COMPANION=1`, execution workers, private-console hosting,
+four disjoint private absolute directories (`directory`, browser `home`,
+`tempDirectory`, dedicated `codexHome`), configured HTTPS `navigationOrigins` and
+`resourceOrigins`, and the four isolation acknowledgements shown in the example
+configuration. `TMPDIR` must equal `tempDirectory`. The process must be
+unprivileged and diagnostic/remote-browser overrides disabled. Install the pinned
+Playwright Chromium beforehand. Provision Codex authentication deliberately in
+its dedicated home; never copy June's existing credentials or another session's
+login as a shortcut.
+
+These gates **do not provision isolation**. The external process, egress,
+ephemeral-storage and resource controls described below remain mandatory for
+both Chromium and its host networking. Playwright buffers HTTP responses; external
+memory/response limits are necessary. Private observations are sent to the selected
+model providers, whose retention policies are independent of local cleanup.
+
+The current `deployment.blueGreen` durable Slack intake persists raw envelopes
+before June receives them. Enabling the companion together with that mode is
+therefore rejected: an upstream secret-input path that bypasses durable queuing
+is required first. Other proxies must also avoid storing/logging request bodies.
+Do not turn off deployed intake or switch routing merely to enable this feature.
+
+Tasks expire after at most one hour, or thirty minutes waiting for input.
+Cancellation joins Codex/review work before deleting the local Codex transcript
+using `thread/delete`. Images and PIN buffers are volatile; goals/URLs are scrubbed
+on termination, and retained reports expire at the task deadline. A memory-deletion
+revision immediately fences evidence access and triggers cleanup on the next
+one-second maintenance tick. Nonsecret task/operation/challenge receipts remain
+to prevent replay. Crash-orphaned transcripts require operator reconciliation;
+do not claim they were deleted merely because the UI is unavailable.
+
+Restart or uncertain cleanup produces `needs_review` and blocks replacement.
+After independently confirming the old Chromium/Codex processes have stopped,
+the authenticated operator may POST `{ "confirmedStopped": true }` to
+`/operator/browser/<taskId>/reconcile`. This deletes remaining local transcript
+data and clears the launch fence without replaying a task. June can inspect the
+status and ask for this intervention; she cannot assert operator confirmation.
+If the browser's original close promise failed, restart the host under the normal
+deployment recovery procedure before reconciliation. Never delete the Codex auth
+home or restore old conversation data to recover a task.
+
+Local verification: `pnpm exec vitest run src/browser
+src/runtime/browser-capability.test.ts`. The browser tests use real sandboxed
+Chromium and disposable PIN/video fixtures; protocol tests use controlled Codex
+messages. These are not proof of authenticated inference or the owner's real URL.
+
 `BrowserAdapter` implements `ToolAdapter.execute(action, credential)`. Register it
 under the tool name `browser`. June's host requires arguments
 `{ "operation": "operator-configured-name", "recipeDigest": "sha256" }`.

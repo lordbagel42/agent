@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { redactBrowserPin } from "../core/private-input.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
@@ -137,7 +138,7 @@ export function createSlackHistoryFetcher(
           ts: message.ts,
           threadTs: message.thread_ts,
           author: message.user ?? message.bot_id ?? "unknown",
-          text: message.text ?? "",
+          text: redactBrowserPin(message.text ?? ""),
           workspaceUrl: identity.url,
           audiences: coverage.audiences,
         });

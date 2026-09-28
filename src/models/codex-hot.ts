@@ -18,7 +18,12 @@ import {
   assertHotCodexFiles,
   assertHotCodexPolicy,
 } from "./codex-hot-policy.js";
-import { ModelError, parseReply, replyJsonSchema } from "./provider.js";
+import {
+  encodeModelImages,
+  ModelError,
+  parseReply,
+  replyJsonSchema,
+} from "./provider.js";
 import { observeUsage, type TokenUsage, tokenUsage } from "./usage.js";
 
 // Pinned official temporary_structured_request.rs, plus exec's disabled features.
@@ -86,6 +91,7 @@ interface ActiveTurn {
   answer?: string;
   usage?: TokenUsage;
   bytes: number;
+  responseByteLimit: number;
   terminal: boolean;
   completed?: true;
   timing?: ModelRequest["onProviderTiming"];
@@ -199,7 +205,7 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
         : undefined;
     if (!a) return;
     a.bytes += bytes;
-    if (a.bytes > MAX_BYTES) return fail("response_too_large");
+    if (a.bytes > a.responseByteLimit) return fail("response_too_large");
     if (params.turnId !== undefined) {
       if (
         typeof params.turnId !== "string" ||
@@ -357,7 +363,11 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
       child.stderr.on("data", () => {});
       child.stdout.on("data", (chunk: Buffer) => {
         buffer = Buffer.concat([buffer, chunk]);
-        if (buffer.length > MAX_BYTES) return fail("response_too_large");
+        const limit = Math.max(
+          MAX_BYTES,
+          ...Array.from(active.values(), (a) => a.responseByteLimit),
+        );
+        if (buffer.length > limit) return fail("response_too_large");
         while (buffer.includes(10)) {
           const end = buffer.indexOf(10);
           const line = buffer.subarray(0, end);
@@ -433,6 +443,8 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
       let status: ModelSettlement = "not_started";
       const operation = (async () => {
         signal?.throwIfAborted();
+        const images = encodeModelImages(request.images);
+        const prompt = codexPrompt(request);
         await startup;
         signal?.throwIfAborted();
         if (stopping || errorCode)
@@ -459,6 +471,12 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
             const a: ActiveTurn = {
               ...done,
               bytes: 0,
+              // User-message start/completion and a turn snapshot can echo
+              // native inline inputs. Bound that allowance to this request;
+              // text-only turns and the 64 KiB answer cap remain unchanged.
+              responseByteLimit:
+                MAX_BYTES +
+                3 * images.reduce((sum, image) => sum + image.data.length, 0),
               terminal: false,
               timing,
               ended: Promise.withResolvers<void>(),
@@ -483,9 +501,15 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
                   input: [
                     {
                       type: "text",
-                      text: codexPrompt(request),
+                      text: prompt,
                       textElements: [],
                     },
+                    // Codex 0.157.1 v2 UserInput::Image / ImageReference::Inline.
+                    // Native turn input, not a dynamic-tool inputImage block.
+                    ...images.map(({ mimeType, data }) => ({
+                      type: "image",
+                      url: `data:${mimeType};base64,${data}`,
+                    })),
                   ],
                   outputSchema: replyJsonSchema(request.workspaces, request),
                 }),

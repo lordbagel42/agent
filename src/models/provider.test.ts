@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ModelRequest } from "../core/contracts.js";
+import type { ModelImageInput, ModelRequest } from "../core/contracts.js";
 import {
   createModelProvider,
   ModelError,
@@ -59,6 +59,130 @@ const request: ModelRequest = {
   ],
   workspaces: ["garden", "notes"],
 };
+
+for (const protocol of ["openai", "anthropic"] as const) {
+  it(`${protocol} sends bounded host images as native image parts, never text bytes`, async () => {
+    const bodies: Record<
+      string,
+      { content: string | Record<string, unknown>[] }[]
+    >[] = [];
+    const provider = createModelProvider({
+      protocol,
+      model: "test",
+      apiKey: "test",
+      fetch: mockFetch(async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return jsonResponse(
+          protocol === "openai"
+            ? {
+                status: "completed",
+                output: [
+                  {
+                    type: "message",
+                    role: "assistant",
+                    status: "completed",
+                    content: [{ type: "output_text", text: '{"text":"ok"}' }],
+                  },
+                ],
+              }
+            : {
+                type: "message",
+                role: "assistant",
+                stop_reason: "end_turn",
+                content: [{ type: "text", text: '{"text":"ok"}' }],
+              },
+        );
+      }),
+    });
+    const images: [ModelImageInput, ModelImageInput] = [
+      {
+        evidenceId: "frame-a",
+        mimeType: "image/png" as const,
+        data: Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 1]),
+        mediaTimeSeconds: 0,
+      },
+      {
+        evidenceId: "frame-b",
+        mimeType: "image/jpeg" as const,
+        data: Uint8Array.from([255, 216, 255, 2]),
+        mediaTimeSeconds: 3,
+      },
+    ];
+    await provider.reply({ ...request, images });
+    const messages = bodies[0]?.[protocol === "openai" ? "input" : "messages"];
+    if (!messages) throw new Error("Missing request messages");
+    expect(messages.slice(0, -1)).toEqual(request.messages);
+    const parts = messages.at(-1)?.content;
+    if (!Array.isArray(parts)) throw new Error("Missing native image content");
+    const nativeImages = parts.filter(
+      (part) => part.type === (protocol === "openai" ? "input_image" : "image"),
+    );
+    expect(nativeImages).toEqual(
+      images.map((image) =>
+        protocol === "openai"
+          ? {
+              type: "input_image",
+              image_url: `data:${image.mimeType};base64,${Buffer.from(image.data).toString("base64")}`,
+            }
+          : {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: image.mimeType,
+                data: Buffer.from(image.data).toString("base64"),
+              },
+            },
+      ),
+    );
+    const text = JSON.stringify(parts.filter((part) => part.text));
+    for (const image of images) {
+      expect(text).toContain(image.evidenceId);
+      expect(text).not.toContain(Buffer.from(image.data).toString("base64"));
+    }
+    await provider.reply(request);
+    await provider.reply({ ...request, images: [] });
+    expect(bodies[1]).toEqual(bodies[2]);
+    expect(bodies[1]?.[protocol === "openai" ? "input" : "messages"]).toEqual(
+      request.messages,
+    );
+    const largeImage = new Uint8Array(5 * 1024 * 1024);
+    largeImage.set(images[0].data);
+    for (const invalid of [
+      Array.from({ length: 9 }, (_, i) => ({
+        ...images[0],
+        evidenceId: `frame-${i}`,
+      })),
+      Array.from({ length: 5 }, (_, i) => ({
+        ...images[0],
+        evidenceId: `frame-${i}`,
+        data: largeImage,
+      })),
+      [images[0], images[0]],
+      null,
+      {},
+      [null],
+      [{ ...images[0], data: "not-bytes" }],
+      [{ ...images[0], data: new Uint8Array() }],
+      [{ ...images[0], data: new Uint8Array(5 * 1024 * 1024 + 1) }],
+      [{ ...images[0], mimeType: "image/gif" }],
+      [{ ...images[0], data: Uint8Array.from([1, 2, 3]) }],
+      [{ ...images[0], evidenceId: "" }],
+      [{ ...images[0], mediaTimeSeconds: -1 }],
+      [{ ...images[0], mediaTimeSeconds: Number.NaN }],
+    ]) {
+      const invocation = provider.beginReply({
+        ...request,
+        images: invalid as ModelImageInput[],
+      });
+      await expect(invocation.answer).rejects.toMatchObject({
+        code: "invalid_images",
+        retryable: false,
+      });
+      await expect(invocation.settlement).resolves.toBe("not_started");
+    }
+    expect(bodies).toHaveLength(3);
+  });
+}
 
 it("enforces explicit agent roles independently of capability flags and workspaces", () => {
   const capabilities = {

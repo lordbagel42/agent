@@ -9,6 +9,7 @@ import { serve } from "@hono/node-server";
 import { createClient } from "rivetkit/client";
 import { z } from "zod";
 import { createAppsClient } from "./apps/client.js";
+import { BrowserCompanion } from "./browser/companion.js";
 import { createSlackAdapter } from "./channels/slack.js";
 import { createSlackIngressDiagnostics } from "./channels/slack-ingress.js";
 import { SlackThreads } from "./channels/slack-threads.js";
@@ -349,7 +350,9 @@ async function main() {
         .digest("hex"),
     };
   }
+  let browserCompanion: BrowserCompanion | undefined;
   const lifecycle = createLifecycle(async () => {
+    if (browserCompanion && !browserCompanion.isSettled()) return false;
     for (const manager of Object.values(isolation)) {
       if (!(await manager.isSettled())) return false;
     }
@@ -368,6 +371,48 @@ async function main() {
   if (appToken && (appToken.length < 32 || appToken === operatorToken))
     throw new Error("Separate app-host credential required");
   startupStage = "isolated browser execution prerequisites";
+  if (
+    config.browserCompanion?.enabled &&
+    !config.setupMode &&
+    process.env.JUNE_ALLOW_BROWSER_COMPANION === "1"
+  ) {
+    const options = config.browserCompanion;
+    if (
+      !config.executionEnabled ||
+      !config.console ||
+      !process.getuid?.() ||
+      options.home === process.env.HOME ||
+      process.env.TMPDIR !== options.tempDirectory ||
+      tmpdir() !== options.tempDirectory ||
+      [
+        "DEBUG",
+        "PWDEBUG",
+        "NODE_DEBUG",
+        "NODE_DEBUG_NATIVE",
+        "SELENIUM_REMOTE_URL",
+        "SELENIUM_REMOTE_HEADERS",
+        "SELENIUM_REMOTE_CAPABILITIES",
+      ].some((key) => process.env[key])
+    )
+      throw new Error("Browser companion isolation prerequisites not met");
+    const paths = [
+      options.directory,
+      options.home,
+      options.tempDirectory,
+      options.codexHome,
+    ];
+    for (const path of paths) await privateDirectory(path);
+    const canonical = await Promise.all(paths.map((path) => realpath(path)));
+    if (
+      canonical.some((path, i) =>
+        canonical.some(
+          (other, j) =>
+            i !== j && (path === other || path.startsWith(`${other}/`)),
+        ),
+      )
+    )
+      throw new Error("Browser companion directories must be disjoint");
+  }
   const browserHostGate = process.env.JUNE_ALLOW_ISOLATED_BROWSER === "1";
   const browserOperations = [
     ...config.browser.readOperations,
@@ -929,6 +974,19 @@ async function main() {
       accessToken: secret(config.whatsapp.accessTokenEnv),
     });
   }
+  // Start retention/expiry only after the durable memory revision is available.
+  if (
+    config.browserCompanion?.enabled &&
+    !config.setupMode &&
+    process.env.JUNE_ALLOW_BROWSER_COMPANION === "1"
+  ) {
+    browserCompanion = new BrowserCompanion({
+      ...config.browserCompanion,
+      owner: config.owner,
+      origin: config.console?.origin,
+      revision: () => memory?.store.deletionRevision() ?? 0,
+    });
+  }
   startupStage = "Rivet configuration/startup";
   const social =
     config.slack && channels.slack
@@ -1071,6 +1129,7 @@ async function main() {
       : undefined,
     models,
     webSearch,
+    browserCompanion,
     emojiSearch: config.emojiSearch
       ? createEmojiSearch({
           baseUrl: config.emojiSearch.baseUrl,
@@ -1273,11 +1332,14 @@ async function main() {
   const wakeups = wakeupOptions
     ? client.wakeups.getOrCreate([config.owner.id])
     : undefined;
+  const browserViewShutdown = new AbortController();
   const app = createHttpApp({
     owner: config.owner,
     channels,
     operatorToken,
     capabilities,
+    browserCompanion,
+    browserViewShutdown: browserViewShutdown.signal,
     revision: release?.revision,
     lifecycle,
     deployment: config.deployment
@@ -1430,6 +1492,16 @@ async function main() {
         }
       : undefined,
     async submit(scope, event, receivedAt) {
+      // Secret replies must never reach memory.source, actor admission, or model
+      // history. Even stale/duplicate owner PIN commands become safe receipts.
+      if (event.type === "message") {
+        event = browserCompanion?.consumePin(event) ?? event;
+        if (/!browser-pin\b/i.test(event.text))
+          event = {
+            ...event,
+            text: "Browser PIN input is unavailable. The command contents were removed before history.",
+          };
+      }
       if (memory && event.type === "message") {
         const source = memory.source(event, JSON.stringify(scope.key));
         if (source) {
@@ -1601,6 +1673,7 @@ async function main() {
       diagnosticLog?.lifecycle("process_stopping");
       try {
         diagnosticLog?.lifecycle("shutdown_http_close_started");
+        browserViewShutdown.abort();
         await new Promise<void>((done) => server.close(() => done()));
         diagnosticLog?.lifecycle("shutdown_http_close_returned");
         diagnosticLog?.lifecycle("shutdown_client_dispose_started");
@@ -1615,6 +1688,7 @@ async function main() {
         diagnosticLog?.lifecycle("shutdown_providers_close_returned");
       }
       diagnosticLog?.lifecycle("shutdown_resources_close_started");
+      await browserCompanion?.close();
       await browser?.close();
       await connections?.close();
       capabilities?.close();

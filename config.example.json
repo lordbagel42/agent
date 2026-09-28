@@ -17,6 +17,19 @@
     "apiKeyEnv": "MODEL_API_KEY"
   },
   "executionEnabled": true,
+  "browserCompanion": {
+    "enabled": false,
+    "directory": "/var/lib/june-browser/ledger",
+    "home": "/var/lib/june-browser/browser-home",
+    "tempDirectory": "/var/lib/june-browser/tmp",
+    "codexHome": "/var/lib/june-browser/codex",
+    "navigationOrigins": ["https://example.com"],
+    "resourceOrigins": ["https://example.com"],
+    "processIsolationAcknowledged": true,
+    "networkIsolationAcknowledged": true,
+    "ephemeralStorageAcknowledged": true,
+    "resourceLimitsAcknowledged": true
+  },
   "emojiSearch": {
     "baseUrl": "https://emojis.raygen.dev",
     "readTokenEnv": "EMOJI_SEARCH_READ_TOKEN",

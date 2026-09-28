@@ -20,6 +20,38 @@ const input = {
 };
 
 describe("configuration boundary", () => {
+  it("refuses browser PIN intake through the durable blue-green Slack queue", () => {
+    const browserCompanion = {
+      enabled: true,
+      directory: "/browser/ledger",
+      home: "/browser/home",
+      tempDirectory: "/browser/tmp",
+      codexHome: "/browser/codex",
+      navigationOrigins: ["https://example.com"],
+      resourceOrigins: ["https://example.com"],
+      processIsolationAcknowledged: true,
+      networkIsolationAcknowledged: true,
+      ephemeralStorageAcknowledged: true,
+      resourceLimitsAcknowledged: true,
+    };
+    expect(
+      parseConfig({ ...input, browserCompanion }).browserCompanion?.enabled,
+    ).toBe(true);
+    expect(() =>
+      parseConfig({
+        ...input,
+        browserCompanion,
+        deployment: { blueGreen: true },
+      }),
+    ).toThrow();
+    expect(
+      parseConfig({
+        ...input,
+        browserCompanion: { ...browserCompanion, enabled: false },
+        deployment: { blueGreen: true },
+      }).browserCompanion?.enabled,
+    ).toBe(false);
+  });
   it("defaults to loopback and disables native coding", () => {
     const config = parseConfig(input);
     expect(config.host).toBe("127.0.0.1");

@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
+import { redactBrowserPin } from "../core/private-input.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import type { ToolAction, ToolAdapter } from "./broker.js";
@@ -81,6 +82,7 @@ function containsPrivateInspection(value: unknown, depth = 0): boolean {
 }
 
 function readText(text: string, token: string): McpReadResult {
+  text = redactBrowserPin(text);
   // Remove the released credential before truncating, including common wire
   // encodings. A trusted remote server can encode secrets arbitrarily; this is
   // not a DLP sandbox and does not make a malicious server safe.

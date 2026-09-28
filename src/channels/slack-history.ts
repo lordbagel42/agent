@@ -1,4 +1,5 @@
 import type { ChannelAdapter, SendResult } from "../core/contracts.js";
+import { redactBrowserPin } from "../core/private-input.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import {
   PRIVATE_SLACK_HISTORY_PREFIX,
@@ -320,7 +321,7 @@ export function createSlackHistory({
               : "unknown";
         const text =
           typeof message.text === "string"
-            ? message.text
+            ? redactBrowserPin(message.text)
             : "[No plain text; attachments are not downloaded.]";
         const escaped = escapeText(text);
         const excerpt = Array.from(escaped).slice(0, 1800).join("");

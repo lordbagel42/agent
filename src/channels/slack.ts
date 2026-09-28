@@ -336,6 +336,9 @@ async function normalizeEvent(
         /^!mcp-(cancel|reconcile)(?:\s|$)/.test(event.text.trim())
           ? { mcpCommandEligible: isPlainSlackCommand(event) }
           : {}),
+        ...(owner && channelType === "im" && /^!browser-pin\b/.test(event.text)
+          ? { browserPinEligible: isPlainSlackCommand(event) }
+          : {}),
         ...(owner && channelType === "im" && event.text === "!memory-backup"
           ? { memoryBackupEligible: isPlainSlackCommand(event) }
           : {}),

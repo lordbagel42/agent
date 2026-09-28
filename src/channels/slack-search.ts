@@ -1,4 +1,5 @@
 import type { ChannelSearchResult, MessageEvent } from "../core/contracts.js";
+import { redactBrowserPin } from "../core/private-input.js";
 
 // Conservative local policy, not a statement about Slack's action-token expiry.
 const GRANT_TTL_MS = 5 * 60_000;
@@ -154,7 +155,9 @@ function formatResults(
       Math.floor(RESULT_TEXT_LIMIT / RESULT_LIMIT) -
       2 -
       Array.from(citation).length;
-    snippets.push(`${citation}${escapeText(message.content, snippetBudget)}`);
+    snippets.push(
+      `${citation}${escapeText(redactBrowserPin(message.content), snippetBudget)}`,
+    );
   }
   return {
     status: "ready",

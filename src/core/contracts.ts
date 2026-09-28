@@ -61,6 +61,8 @@ export interface MessageEvent extends EventBase {
   appDeploymentEligible?: boolean;
   /** Fresh, plain owner-private Slack command; absent on quotes and old inboxes. */
   forgetCommandEligible?: boolean;
+  /** Fresh plain owner-DM PIN reply; never imported history or quoted text. */
+  browserPinEligible?: boolean;
   metadata?: MessageMetadata;
 }
 
@@ -239,6 +241,8 @@ export interface CompanionReply {
   webSearch?: string;
   /** Opt-in owner-private disposable external code execution. */
   e2b?: import("../tools/e2b.js").E2BRequest;
+  /** Owner-private browser work, owned by the durable execution worker. */
+  browserTask?: import("../browser/contracts.js").BrowserCommand;
   webEmbed?: import("./web-embed.js").WebEmbed;
   /** Owner-authenticated release tracking; never activation or approval authority. */
   release?: { action: "inspect"; revision: string | null };
@@ -366,11 +370,23 @@ export type ProviderTimingStage =
   | "validated"
   | "retired";
 
+/** Host-authorized evidence only, never a model-authored action or remote URL. */
+export interface ModelImageInput {
+  evidenceId: string;
+  mimeType: "image/jpeg" | "image/png";
+  data: Uint8Array;
+  mediaTimeSeconds?: number;
+}
+
 export interface ModelRequest {
   /** Host-enforced action boundary; omitted preserves legacy mixed-role turns. */
   agentRole?: "interaction" | "execution";
   system: string;
   messages: ConversationMessage[];
+  /** Host-only scoped images: at most 8, 5 MiB each and 20 MiB total.
+   * The caller authorizes evidence access; providers reject invalid inputs.
+   * Never serialize bytes into text prompts, history, or journals. */
+  images?: ModelImageInput[];
   /** Host-only accounting label, never part of a provider prompt. */
   usageStage?: "fast" | "deep" | "synthesis" | "execution";
   /** Host diagnostics callback only; never serialize into prompts or journals.
@@ -405,6 +421,7 @@ export interface ModelRequest {
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;
   e2bAvailable?: boolean;
+  browserTaskAvailable?: boolean;
   webEmbedAvailable?: boolean;
   webEmbedOrigins?: readonly string[];
   skillCodingProposalAvailable?: boolean;

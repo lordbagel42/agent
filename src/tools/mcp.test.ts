@@ -3,7 +3,31 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, expect, test } from "vitest";
 import { CapabilityBroker, type ToolAction } from "./broker.js";
-import { McpToolAdapter, type McpToolConfig } from "./mcp.js";
+import {
+  McpToolAdapter,
+  type McpToolConfig,
+  safeToolReadResult,
+} from "./mcp.js";
+
+test("historical nested browser PIN replies cannot reenter tool results", () => {
+  const result = safeToolReadResult(
+    {
+      items: [
+        {
+          message: {
+            text: "  > !browser-pin stale-task stale-challenge 746291",
+          },
+        },
+      ],
+    },
+    "",
+  );
+  expect(result.text).toContain("removed");
+  expect(result.text).not.toContain("746291");
+  expect(safeToolReadResult({ text: "ordinary message" }, "").text).toContain(
+    "ordinary message",
+  );
+});
 
 const config: McpToolConfig = {
   id: "fixture",

@@ -2,6 +2,8 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { type Handler, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import type { BrowserCompanion } from "../browser/companion.js";
+import { createBrowserLiveView } from "../browser/live-view.js";
 import type { SlackIngressDiagnostics } from "../channels/slack-ingress.js";
 import type { WorktreeDiffSummary } from "../coding/worktree.js";
 import {
@@ -49,6 +51,8 @@ export interface HttpDependencies {
   owner: Owner;
   operatorToken: string;
   capabilities?: CapabilityBroker;
+  browserCompanion?: BrowserCompanion;
+  browserViewShutdown?: AbortSignal;
   revision?: string;
   lifecycle?: Lifecycle;
   deployment?: {
@@ -235,6 +239,15 @@ export function createHttpApp(deps: HttpDependencies) {
     // Session routes must precede console authentication. Cookies never authorize
     // Bearer-only operator endpoints; action forms additionally require a proof.
     app.route("/console/session", sessions.routes);
+    if (deps.browserCompanion)
+      app.route(
+        "/console/browser",
+        createBrowserLiveView(
+          { ...security, authenticate: sessions.authenticate },
+          deps.browserCompanion,
+          deps.browserViewShutdown,
+        ),
+      );
     if (actionLinks)
       app.route(
         "/console/action-links",
@@ -385,6 +398,20 @@ export function createHttpApp(deps: HttpDependencies) {
     }
     await next();
   });
+  if (deps.browserCompanion) {
+    const browser = deps.browserCompanion;
+    app.post("/operator/browser/:id/reconcile", async (c) => {
+      const id = z.uuid().safeParse(c.req.param("id"));
+      const body = z
+        .strictObject({ confirmedStopped: z.literal(true) })
+        .safeParse(await c.req.json().catch(() => null));
+      if (!id.success || !body.success)
+        return c.json({ error: "confirm_browser_and_codex_stopped" }, 400);
+      return (await browser.reconcile(id.data, true))
+        ? c.json({ reconciled: true, replayed: false })
+        : c.json({ error: "browser_not_reconcilable" }, 409);
+    });
+  }
   if (deps.capabilities) {
     app.route(
       "/operator/capabilities",
