@@ -699,10 +699,46 @@ The runner's existing Amp authentication stays on the runner. Local transport
 must work inside the recovery unit's sandbox (`ProtectHome=true`, read-only
 system, writable controller records only). Provision the dedicated transport
 identity using approved secret mechanisms, not June's application credentials
-or a developer home-directory copy. No June-to-runner authentication has yet
-been established; the existing runner-to-June operator SSH helper does not
-provide the reverse path. Transport provisioning is an explicit installation
+or a developer home-directory copy. The existing runner-to-June operator SSH
+helper does not provide the reverse path. Transport provisioning is an explicit installation
 prerequisite, not something this controller silently creates.
+
+#### Restricted runner SSH endpoint
+
+Install reviewed `scripts/deploy/runner.py` and its matching `deploy.py` as
+root-owned, non-writable files in `/usr/local/lib/june-recovery/` on the runner.
+The forced command imports only that installed sibling, never checkout code.
+Create root-owned, non-writable `/etc/june-recovery/runner.json`, readable by the
+Amp account, with the same `command` (one absolute Amp executable) and
+`runnerDirectory` as June's `ampRecovery` configuration. Verify the checkout's
+remote and that `homelab-amp` serves that exact directory.
+
+Generate a dedicated Ed25519 key on June under `/etc/june/`, root-only mode 0600.
+Keep its private half on June. Append its public half to the runner Amp account's
+authorized keys without replacing existing keys. Restrict it to June's source
+address and this forced command:
+
+```text
+restrict,from="192.168.0.215",command="/usr/bin/python3 -I /usr/local/lib/june-recovery/runner.py" ssh-ed25519 PUBLIC_KEY june-recovery
+```
+
+The endpoint rejects shell commands, changed modes/runners/directories, extra
+arguments, unknown reason codes, and noncanonical investigation prompts. It
+discards SSH stdin and clears the SSH-supplied environment before executing Amp,
+whose credentials remain in its own home.
+Install matching prompt versions on both hosts; version mismatch fails closed.
+Use an independently verified runner host key in June's root-owned known-hosts
+file. Disable agent/password authentication, forwarding and host-key updates in
+the dedicated SSH config. Do not grant this key general SSH or sudo access.
+
+The only alternate command is `june-recovery-self-test`. It launches a real
+`high`/`homelab-amp` thread with a fixed no-tools/no-mutations prompt and returns
+the normal JSON stream. Run it only for an authorized transport check, through
+the same SSH config and service sandbox; verify the init thread ID, executor and
+mode, then zero tool calls, `JUNE_RECOVERY_TRANSPORT_OK`, and successful completion.
+The prompt requests no tools; it is not a capability-enforced sandbox. The probe
+does not create a production incident, claim ownership, or change controller records.
+Retain only a bounded identity/result receipt, not the conversation stream.
 
 After a failed preflight, failed readiness/rollback, or controller block, the
 poller records one private SQLite `recovery` incident and fences further work.
@@ -761,6 +797,7 @@ pnpm exec vitest run src/deployment src/core/routing.test.ts src/runtime/deliver
 uv tool run ruff format --check scripts/deploy
 uv tool run ruff check scripts/deploy
 (umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_deploy.py)
+(umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_runner.py)
 ```
 
 The core fixtures use real disposable Git commits, SQLite, HTTP subprocesses,
