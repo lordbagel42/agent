@@ -6,6 +6,7 @@
   "compatibility_date": "2026-09-28",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
+  "limits": { "cpu_ms": 30000 },
   "routes": [{ "pattern": "emojis.raygen.dev", "custom_domain": true }],
   "assets": {
     "directory": "./public",

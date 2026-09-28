@@ -7,6 +7,15 @@ tokens. Put them in secret storage, never query strings, browser persistence,
 Git, or model-visible tool arguments. The dashboard holds its read token in
 memory. No MCP server is required.
 
+## Runtime requirements
+
+Full Hack Club catalogue reconciliation requires **Workers Paid**. The Free
+plan's 10 ms CPU limit terminates the 62,013-entry sync before publication;
+network waiting is not the issue. `wrangler.jsonc` explicitly requests a 30-second
+CPU budget so deployment fails clearly on Free instead of silently starving the
+catalogue. Enabling Paid changes account billing and requires owner approval.
+See [Cloudflare pricing](https://developers.cloudflare.com/workers/platform/pricing/).
+
 ## API
 
 All API responses use `Cache-Control: no-store`. Send JSON for POST bodies and
@@ -139,7 +148,8 @@ cloud credentials to a model subprocess.
 ## Operator deployment checklist (not executed by this implementation)
 
 1. Obtain explicit authorization for Cloudflare provisioning/deployment and Slack
-   app installation/configuration. Verify the target account and DNS zone.
+   app installation/configuration. Verify the target account, Workers Paid plan
+   and DNS zone; provisioning permission alone does not authorize a plan upgrade.
 2. Provision a dedicated D1 database and replace the all-zero placeholder ID in
    `wrangler.jsonc`. Provision a dedicated Vectorize index named `raygen-emojis`
    with 384 dimensions and cosine distance; no metadata indexes are required.
