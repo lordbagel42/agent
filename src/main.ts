@@ -77,6 +77,7 @@ import { CapabilityBroker } from "./tools/broker.js";
 import { BrowserAdapter, browserOperationDigest } from "./tools/browser.js";
 import { createBrowserProposal } from "./tools/browser-proposals.js";
 import { McpConnections } from "./tools/connections.js";
+import { createGitHubOAuth } from "./tools/github-oauth.js";
 import { createPuckConsoleOAuth } from "./tools/puck-oauth.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
 import { createTavilyWebSearchProvider } from "./tools/web-search.js";
@@ -443,16 +444,39 @@ async function main() {
   let connections: McpConnections | undefined;
   let slackMcp: ReturnType<typeof createSlackMcpOAuth> | undefined;
   let ampMcp: ReturnType<typeof createPuckConsoleOAuth> | undefined;
+  let githubMcp: ReturnType<typeof createGitHubOAuth> | undefined;
   if (config.mcp) {
     if (!config.console) throw new Error("MCP requires the private console");
     await privateDirectory(config.mcp.directory);
-    connections = new McpConnections({
-      directory: config.mcp.directory,
-      key: memoryKey(config.mcp.keyEnv),
-      owner: config.owner.id,
-      origin: config.console.origin,
-    });
+    connections = new McpConnections(
+      {
+        directory: config.mcp.directory,
+        key: memoryKey(config.mcp.keyEnv),
+        owner: config.owner.id,
+        origin: config.console.origin,
+      },
+      {
+        refreshGitHub: config.mcp.github
+          ? (token) => {
+              if (!githubMcp) throw new Error("github_unavailable");
+              return githubMcp.refresh(token);
+            }
+          : undefined,
+      },
+    );
     const store = connections;
+    if (config.mcp.github) {
+      githubMcp = createGitHubOAuth({
+        clientId: secret(config.mcp.github.clientIdEnv),
+        clientSecret: secret(config.mcp.github.clientSecretEnv),
+        redirectUrl: `${config.console.origin}/console/connections/github/callback`,
+        userId: config.mcp.github.userId,
+        generation: () => store.generation("github"),
+        async saveAuthorization(value) {
+          store.connectGitHub(value);
+        },
+      });
+    }
     if (config.console.origin.startsWith("https:")) {
       ampMcp = createPuckConsoleOAuth({
         origin: config.console.origin,
@@ -882,6 +906,9 @@ async function main() {
       secret(value.secretEnv),
     ]),
   );
+  const githubWebhookSecret = config.mcp?.github
+    ? secret(config.mcp.github.webhookSecretEnv)
+    : undefined;
   const wakeupOptions =
     !config.setupMode && channels.slack
       ? {
@@ -890,8 +917,10 @@ async function main() {
             ...(coding ? ["coding"] : []),
             ...(config.executionEnabled ? ["execution"] : []),
             ...(readDeployment ? ["deployment"] : []),
+            ...(githubWebhookSecret ? ["github"] : []),
             ...Object.keys(webhookSecrets).map((name) => `webhook.${name}`),
           ],
+          decisionSources: githubWebhookSecret ? ["github"] : [],
           readDeployment: readDeployment
             ? () => readDeployment(config.owner.id)
             : undefined,
@@ -1144,6 +1173,13 @@ async function main() {
       : undefined,
     slackIngressDiagnostics,
     latency,
+    github:
+      wakeups && githubWebhookSecret
+        ? {
+            secret: githubWebhookSecret,
+            publish: (event) => wakeups.publish(event),
+          }
+        : undefined,
     wakeups: wakeups
       ? {
           sources: webhookSecrets,
@@ -1156,7 +1192,13 @@ async function main() {
           origin: config.console.origin,
           loginLinks,
           connections: connections
-            ? { store: connections, slack: slackMcp, amp: ampMcp }
+            ? {
+                store: connections,
+                slack: slackMcp,
+                amp: ampMcp,
+                github: githubMcp,
+                githubAppSlug: config.mcp?.github?.appSlug,
+              }
             : undefined,
           async usage(_principal, days, model) {
             return usage.snapshot(days, model);

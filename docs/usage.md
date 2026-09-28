@@ -1395,9 +1395,11 @@ than restoring an old data snapshot blindly.
 ## MCP connections
 
 The private dashboard's **Connections** page adds remote MCP servers and native
-Slack OAuth. June can use explicitly enabled tools in owner-private conversations;
+Slack, Amp and GitHub authorization. June can use explicitly enabled tools in owner-private conversations;
 effects require exact, single-use dashboard approvals. See
 [MCP setup and permissions](mcp-connections.md) for configuration and limits.
+GitHub also feeds signed events into shared decision turns; see
+[GitHub account and events](github.md) for installation and live verification.
 
 ## Development checks and limitations
 

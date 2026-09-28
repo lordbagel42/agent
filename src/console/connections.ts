@@ -6,6 +6,7 @@ import {
   type McpConnections,
   type ToolPermission,
 } from "../tools/connections.js";
+import type { createGitHubOAuth } from "../tools/github-oauth.js";
 import type { createPuckConsoleOAuth } from "../tools/puck-oauth.js";
 import type { createSlackMcpOAuth } from "../tools/slack-mcp-oauth.js";
 import { SLACK_APP_ID } from "../tools/slack-mcp-oauth.js";
@@ -22,6 +23,8 @@ export interface ConnectionDependencies {
   store: McpConnections;
   slack?: ReturnType<typeof createSlackMcpOAuth>;
   amp?: ReturnType<typeof createPuckConsoleOAuth>;
+  github?: ReturnType<typeof createGitHubOAuth>;
+  githubAppSlug?: string;
 }
 
 export function createConnectionRoutes(
@@ -68,6 +71,12 @@ export function createConnectionRoutes(
     flow: deps.amp,
   });
   root.route("/amp", ampOAuth.routes);
+  const githubOAuth = createConnectionOAuthRoutes(security, {
+    id: "github",
+    name: "GitHub",
+    flow: deps.github,
+  });
+  root.route("/github", githubOAuth.routes);
   const app = privateRoutes(security);
   const field = (value: unknown) => (typeof value === "string" ? value : "");
   app.get("/", (c) => {
@@ -78,12 +87,26 @@ export function createConnectionRoutes(
     const amp = connections.find((connection) => connection.id === "amp");
     const ampExpired = !!amp?.expiresAt && amp.expiresAt <= Date.now();
     const ampPending = ampOAuth.hasPending(getCookie(c, ampOAuth.cookie));
+    const github = connections.find((connection) => connection.id === "github");
+    const githubExpired =
+      !!github?.expiresAt &&
+      github.expiresAt <= Date.now() &&
+      !github.refreshable;
+    const githubPending = githubOAuth.hasPending(
+      getCookie(c, githubOAuth.cookie),
+    );
     return c.html(
       page(
         "Connections",
         c.get("nonce"),
         html`
+    <div class="stack">
+    <section class="panel"><div class="panel-heading"><h2>GitHub</h2>${badge(githubPending ? "Save confirmation needed" : githubExpired ? "Reconnect required" : github?.authenticated ? "Authorization saved" : deps.github ? "Not connected" : "Setup required")}</div><div class="panel-body">
+    <p>Let June inspect commits, work with repositories and issues, and receive GitHub events. Account authorization, repository installation and tool permissions are separate steps.</p>
+    ${githubPending ? html`<a class="button" href="${base}/github/finish">Resume GitHub setup →</a>` : html`<div class="actions">${deps.github ? html`<form method="post" action="${base}/github/connect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/github/connect`, "github")}"><button type="submit">${github ? "Reconnect GitHub →" : "Connect GitHub →"}</button></form>` : html`<p>The host must register a GitHub App and configure its client credentials, owner account ID and webhook secret.</p>`}${github ? html`<a class="button" href="${base}/github">Manage GitHub tools →</a>` : ""}${deps.githubAppSlug ? html`<a class="button" href="${`https://github.com/apps/${encodeURIComponent(deps.githubAppSlug)}/installations/new`}">Choose GitHub repositories →</a>` : ""}</div>`}
+    <p class="small muted">Tools start disabled. Enable trusted reads; other actions require approval. Tokens refresh privately when possible; failed or uncertain refresh requires reconnecting. Reconnecting resets tool permissions. Events wake June only when the host's shared event ingress is enabled; receiving an event does not grant permissions.</p></div></section>
     <div class="summary-bar"><div><span class="eyebrow">MCP servers</span><p>${deps.store.list().length} connected configurations</p></div><div><span class="eyebrow">Audience</span><p>Owner-private conversations only</p></div><div><span class="eyebrow">Default permission</span><p>All tools disabled</p></div></div>
+    </div>
     <section class="panel"><div class="panel-heading"><h2>Amp</h2>${badge(ampPending ? "Save confirmation needed" : ampExpired ? "Authorization expired" : amp?.authenticated ? "Authorization saved" : deps.amp ? "Not connected" : "Setup required")}</div><div class="panel-body">${ampPending ? html`<p>Your Amp sign-in is waiting for confirmation. Resume to verify the account and save its authorization.</p><a class="button" href="${base}/amp/finish">Resume Amp setup →</a>` : html`<p>${ampExpired ? "Your Amp authorization has expired. Reconnect to use Amp tools again." : amp?.authenticated ? "Your Amp authorization is saved. Discover tools, then choose what June may read or propose from your private conversations." : "Let June use Amp through your account. Sign in directly with Amp; no copied CLI login or API key is needed."}</p><div class="actions">${amp ? html`<a class="button" href="${base}/amp">Manage Amp tools →</a>` : ""}${deps.amp ? html`<form method="post" action="${base}/amp/connect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/amp/connect`, "amp")}"><button type="submit">${amp ? "Reconnect Amp →" : "Connect Amp →"}</button></form>` : html`<p>A public HTTPS console origin is required for Amp sign-in.</p>`}</div>`}<p class="small muted">Saving authorization does not enable tools. Reads need your permission; actions need approval. Expired grants require reconnecting.</p></div></section>
     <div class="grid"><section class="panel"><div class="panel-heading"><h2>Slack</h2>${badge(resumable ? "Save confirmation needed" : expired ? "Authorization expired" : slack?.authenticated ? "Authorization saved" : deps.slack ? "Not connected" : "Setup required")}</div><div class="panel-body">${resumable ? html`<p>Your Slack return is waiting for confirmation. Resume to save this authorization; do not start another Slack sign-in.</p><div class="actions"><a class="button" href="${base}/slack/finish">Resume Slack setup →</a></div>` : html`<p>${slack?.authenticated ? (expired ? "Your saved Slack authorization has expired. Reconnect to use Slack tools again." : "June has saved your Slack authorization. Manage the connection to discover tools and review their permissions.") : "Connect Slack's official MCP with your own Slack account. This is separate from June's bot login."}</p>${slack ? html`<div class="actions"><a class="button" href="${base}/slack">Manage Slack tools →</a></div>` : ""}${deps.slack ? html`<form method="post" action="${base}/slack/connect"><input type="hidden" name="proof" value="${proof.issue(c.get("principal"), `${base}/slack/connect`, "slack")}"><button type="submit">${slack ? "Reconnect Slack →" : "Connect Slack →"}</button></form>` : html`<div class="callout">The host must configure the Slack app client credentials and register this dashboard's callback before OAuth is available.</div>`}`}<p class="small muted">App ${SLACK_APP_ID} · Saving authorization does not enable tools. Reconnecting resets tool permissions.</p></div></section>
     ${addForm(c.get("principal"))}</div>
@@ -198,7 +221,9 @@ export function createConnectionRoutes(
     if (!connection) return c.notFound();
     const path = `${base}/${connection.id}`;
     const expired =
-      !!connection.expiresAt && connection.expiresAt <= Date.now();
+      !!connection.expiresAt &&
+      connection.expiresAt <= Date.now() &&
+      !connection.refreshable;
     return c.html(
       page(
         connection.name,

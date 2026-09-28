@@ -36,6 +36,10 @@ import type { Lifecycle } from "../runtime/lifecycle.js";
 import type { CapabilityBroker } from "../tools/broker.js";
 import { createCapabilityRoutes } from "../tools/routes.js";
 import {
+  createGitHubWebhooks,
+  type GitHubWebhooks,
+} from "../wakeups/github.js";
+import {
   createWakeupWebhooks,
   type WakeupWebhooks,
 } from "../wakeups/webhooks.js";
@@ -55,6 +59,7 @@ export interface HttpDependencies {
   slackIngressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
   wakeups?: WakeupWebhooks & { inspect(): Promise<unknown> };
+  github?: GitHubWebhooks;
   console?: {
     origin: string;
     loginLinks?: ReturnType<typeof createConsoleLoginLinks>;
@@ -88,6 +93,15 @@ export function createHttpApp(deps: HttpDependencies) {
     )
   )
     throw new Error("Event webhooks require separate signing credentials");
+  if (
+    deps.github &&
+    [
+      deps.operatorToken,
+      deps.deployment?.token,
+      ...Object.values(deps.wakeups?.sources ?? {}),
+    ].includes(deps.github.secret)
+  )
+    throw new Error("GitHub requires a separate signing credential");
   const app = new Hono<{
     Variables: {
       slackRequest?: Request;
@@ -246,6 +260,10 @@ export function createHttpApp(deps: HttpDependencies) {
     }
     await next();
   });
+  // GitHub has its own bounded raw-body limit. Keep it behind lifecycle
+  // admission but ahead of the smaller generic request limit.
+  if (deps.github)
+    app.route("/webhooks/github", createGitHubWebhooks(deps.github));
   app.use(
     "*",
     bodyLimit({

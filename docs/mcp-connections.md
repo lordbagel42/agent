@@ -2,8 +2,10 @@
 
 Open **Connections** in June's private dashboard. Add a trusted HTTPS Streamable
 HTTP endpoint with an optional bearer token, or use **Connect Amp** or **Connect
-Slack** for their official MCP servers. Other OAuth providers, stdio commands and
-legacy SSE are not supported.
+Slack** for their official MCP servers. **Connect GitHub** uses GitHub App OAuth
+with its official hosted MCP; see [GitHub account and events](github.md) for app
+setup, token refresh, repository installation and shared event ingress.
+Other OAuth providers, stdio commands and legacy SSE are not supported.
 
 1. Add a connection, then **Test & discover tools**. Discovery runs no tools.
 2. Review each complete tool contract. Every tool starts **Disabled**.

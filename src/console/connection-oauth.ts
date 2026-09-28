@@ -16,7 +16,7 @@ import { confirmForm, consoleNavigation, messagePage, page } from "./view.js";
 export function createConnectionOAuthRoutes(
   security: PrivateRouteSecurity,
   provider: {
-    id: "slack" | "amp";
+    id: "slack" | "amp" | "github";
     name: string;
     flow?: {
       begin(principal: string): string | Promise<string>;

@@ -133,6 +133,15 @@ const schema = z
       .strictObject({
         directory: absolutePath,
         keyEnv: envName.default("JUNE_MCP_KEY"),
+        github: z
+          .strictObject({
+            clientIdEnv: envName.default("JUNE_GITHUB_CLIENT_ID"),
+            clientSecretEnv: envName.default("JUNE_GITHUB_CLIENT_SECRET"),
+            webhookSecretEnv: envName.default("JUNE_GITHUB_WEBHOOK_SECRET"),
+            userId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+            appSlug: z.string().regex(/^[a-z0-9][a-z0-9-]{0,99}$/),
+          })
+          .optional(),
         slack: z
           .strictObject({
             clientIdEnv: envName.default("JUNE_SLACK_CLIENT_ID"),
