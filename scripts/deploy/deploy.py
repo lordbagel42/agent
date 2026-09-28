@@ -378,12 +378,23 @@ class Deployer:
         queued = json.loads(s.get("queue"))["pending"]
         if not queued:
             return
-        target = queued[0]
+        target = queued[-1]
         previous = s.get("active")
-        try:
-            if not h.running(previous) or not h.settled():
-                s.block(target, "current_unhealthy")
+        if not h.running(previous) or not h.settled():
+            s.block(target, "current_unhealthy")
+            return
+        # Coalesce only before preparation, never during an in-flight attempt.
+        # Bookkeeping failures must abort, not terminally fail the newest head
+        # and accidentally allow an older pending revision to deploy next time.
+        for older in queued[:-1]:
+            try:
+                h.git("merge-base", "--is-ancestor", older, target)
+            except subprocess.CalledProcessError:
+                s.block(target, "non_fast_forward")
                 return
+        for older in queued[:-1]:
+            s.event(older, "superseded")
+        try:
             if target == previous:
                 s.event(target, "superseded")
                 return
@@ -431,7 +442,7 @@ class Deployer:
                 s.event(target, "deferred", "drain_busy")
                 self.resume(target)
                 return
-            # Refresh ancestry after drain. Descendant arrivals wait for the
+            # Refresh ancestry after drain. Coalesce descendant arrivals on the
             # next tick; a rewrite still blocks activation and resumes admission.
             self.observe()
             if s.get("blocked"):
@@ -510,8 +521,9 @@ class GitHubStatuses:
         "non_fast_forward": "Main moved backwards or diverged. Owner must resolve trusted branch history.",
     }
 
-    def __init__(self, store):
+    def __init__(self, store, *, checks=True):
         self.store = store
+        self.checks = checks
         self.retry_at = 0
         self.opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect()
@@ -636,6 +648,34 @@ class GitHubStatuses:
             for event in events:
                 commit = revision(event["revision"])
                 payload = self.report(commit)
+                state = (
+                    "pending"
+                    if payload["status"] != "completed"
+                    else {
+                        "success": "success",
+                        "failure": "failure",
+                        "skipped": "error",
+                        "action_required": "error",
+                    }[payload["conclusion"]]
+                )
+                if not self.checks:
+                    # Explicit compatibility mode for the installed status-only
+                    # credential. Never probe or silently require broader access.
+                    classic = {
+                        "state": state,
+                        "context": "june/deploy",
+                        "description": "Deployment queued or in progress"
+                        if state == "pending"
+                        else payload["output"]["title"],
+                    }
+                    key = "github-status:" + commit
+                    if self.store.get(key) != json.dumps(classic):
+                        self.request(token, "POST", f"statuses/{commit}", classic)
+                        self.store.set(key, json.dumps(classic))
+                        sent += 1
+                    if sent >= 10:
+                        break
+                    continue
                 fingerprint = hashlib.sha256(json.dumps(payload).encode()).hexdigest()
                 run_key = "github-check:" + commit
                 output_key = "github-check-output:" + commit
@@ -693,16 +733,6 @@ class GitHubStatuses:
                 # native check, avoiding two parallel entries for every deployment.
                 key = "github-status:" + commit
                 if self.store.get(key):
-                    state = (
-                        "pending"
-                        if payload["status"] != "completed"
-                        else {
-                            "success": "success",
-                            "failure": "failure",
-                            "skipped": "error",
-                            "action_required": "error",
-                        }[payload["conclusion"]]
-                    )
                     legacy = {
                         "state": state,
                         "context": "june/deploy",
@@ -1120,10 +1150,13 @@ class Host:
                 "systemd-run",
                 "--quiet",
                 "--wait",
-                "--pipe",
                 "--collect",
                 f"--unit={unit}",
                 "--service-type=exec",
+                "-p",
+                "StandardOutput=journal",
+                "-p",
+                "StandardError=journal",
                 "-p",
                 "User=june-build",
                 "-p",
@@ -1133,13 +1166,14 @@ class Host:
                 "-p",
                 "KillMode=control-group",
                 "-p",
-                "RuntimeMaxSec=180",
+                "RuntimeMaxSec=600",
                 "-p",
-                # Reserve half of June's 2 GiB container for the live app and OS.
-                # Bound all build children, not just the compiler's JS heap.
-                "MemoryHigh=768M",
+                # Reserve half of June's 4 GiB container for the live app and OS.
+                # A soft limit below pnpm's working set stalls in reclaim;
+                # retain the hard boundary instead of throttling indefinitely.
+                "MemoryHigh=infinity",
                 "-p",
-                "MemoryMax=1G",
+                "MemoryMax=2G",
                 "-p",
                 "MemorySwapMax=0",
                 "-p",
@@ -1542,7 +1576,7 @@ def main():
             staging_recovery_feed=config.get("stagingRecoveryFeed") is True,
             repository_metadata_feed=config.get("repositoryMetadataFeed") is True,
         )
-        statuses = GitHubStatuses(store)
+        statuses = GitHubStatuses(store, checks=config.get("githubChecks") is not False)
         loop = Deployer(host, store, statuses)
         try:
             store.stage_recovery(recovered)

@@ -752,6 +752,32 @@ class DeploymentSafety(unittest.TestCase):
                         not change or change.get("ActiveState") == "failed",
                     )
 
+    def test_status_only_credential_never_calls_checks_or_repeats_pending_writes(self):
+        api = GitHubFixture()
+        reporter = deploy.GitHubStatuses(self.store, checks=False)
+
+        def status_only(request, timeout):
+            self.assertIn("/statuses/", request.full_url)
+            return api.open(request, timeout)
+
+        with (
+            patch.object(deploy, "private_file", return_value="fixture-token"),
+            patch.object(reporter.opener, "open", side_effect=status_only),
+        ):
+            for status in ("received", "preparing", "deferred", "preparing"):
+                self.store.event(self.first, status)
+                reporter.flush()
+            self.assertEqual([item["state"] for item in api.statuses], ["pending"])
+            for status in ("superseded", "failed", "healthy"):
+                self.store.event(self.first, status)
+                reporter.flush()
+                reporter.flush()
+            self.assertEqual(
+                [item["state"] for item in api.statuses],
+                ["pending", "error", "failure", "success"],
+            )
+            self.assertEqual(api.runs, {})
+
     def test_github_details_update_one_run_and_link_existing_commit_statuses(self):
         api = GitHubFixture()
         reporter = deploy.GitHubStatuses(self.store)
@@ -865,8 +891,8 @@ class DeploymentSafety(unittest.TestCase):
             self.loop.tick()
             newer = self.host.commit("src/console/view.ts", "queued during low disk")
             self.loop.tick()
-        self.assertEqual(self.store.status(target), "deferred")
-        self.assertEqual(self.store.status(newer), "received")
+        self.assertEqual(self.store.status(target), "superseded")
+        self.assertEqual(self.store.status(newer), "deferred")
         self.assertEqual(self.store.get("active"), self.first)
         self.assertFalse(self.store.get("intent"))
         self.assertFalse((self.host.releases / target).exists())
@@ -876,7 +902,8 @@ class DeploymentSafety(unittest.TestCase):
         )
         events = json.loads(self.store.feed.read_text())["events"]
         self.assertEqual(
-            [event["status"] for event in events], ["received", "deferred", "received"]
+            [event["status"] for event in events],
+            ["received", "deferred", "received", "superseded", "deferred"],
         )
         self.assertEqual(events[1]["reason"], "insufficient_disk")
 
@@ -897,20 +924,20 @@ class DeploymentSafety(unittest.TestCase):
             patch.object(self.host, "build", growing_build),
         ):
             self.loop.tick()
-        self.assertEqual(self.store.status(target), "deferred")
-        self.assertFalse((self.host.releases / target).exists())
+        self.assertEqual(self.store.status(newer), "deferred")
+        self.assertFalse((self.host.releases / newer).exists())
         self.assertEqual(list(self.host.stage_root.glob("stage-*")), [])
         self.assertFalse((self.host.data / "drains").exists())
         with patch.object(
             deploy.shutil, "disk_usage", return_value=disk._replace(free=4 * 1024**3)
         ):
             self.loop.tick()
-        self.assertEqual(self.store.get("active"), target)
+        self.assertEqual(self.store.get("active"), newer)
         self.loop.tick()
         self.assertEqual(self.store.get("active"), newer)
         self.assertEqual(
             (self.host.data / "starts").read_text().splitlines(),
-            [self.first, target, newer],
+            [self.first, newer],
         )
         self.assertEqual(
             (self.host.data / "messages").read_text(), "new messages must survive\n"
@@ -1043,7 +1070,7 @@ class DeploymentSafety(unittest.TestCase):
         started = [self.first]
         drain = self.host.drain
         for attempt in range(3):
-            target = queued[attempt]
+            target = queued[-1]
             arrivals = []
             self.host.after_prepare = lambda arrivals=arrivals, attempt=attempt: (
                 arrivals.append(
@@ -1077,11 +1104,14 @@ class DeploymentSafety(unittest.TestCase):
             started.append(target)
             queued.extend(arrivals)
 
-        # Once pushes stop, finish every admitted head in FIFO order.
-        for target in queued[3:]:
-            self.loop.tick()
-            self.assertEqual(self.store.get("active"), target)
-            started.append(target)
+        # Finish the newest head, not every historical restart in the backlog.
+        target = queued[-1]
+        self.loop.tick()
+        self.assertEqual(self.store.get("active"), target)
+        started.append(target)
+        for skipped in queued:
+            if skipped not in started:
+                self.assertEqual(self.store.status(skipped), "superseded")
         self.loop.tick()
         self.host.git("reset", "--hard", started[1])
         self.loop.tick()
@@ -1161,19 +1191,48 @@ class DeploymentSafety(unittest.TestCase):
         self.loop.tick()
         self.assertFalse(self.store.get("blocked"))
         self.assertEqual(self.store.status(target), "superseded")
-        self.assertTrue(self.host.running(running))
-        self.assertEqual(self.store.get("active"), running)
-        self.assertFalse((self.host.data / "drains").exists())
-        self.assertEqual(
-            (self.host.data / "starts").read_text().splitlines(), [self.first, running]
-        )
+        self.assertTrue(self.host.running(newest))
+        self.assertEqual(self.store.get("active"), newest)
         self.assertEqual(self.store.status(unconfirmed), "superseded")
-        for candidate in (received, preparing, newest):
-            self.loop.tick()
-            self.assertTrue(self.host.running(candidate))
+        for candidate in (received, preparing):
+            self.assertEqual(self.store.status(candidate), "superseded")
         self.assertEqual(
             (self.host.data / "starts").read_text().splitlines(),
-            [self.first, running, received, preparing, newest],
+            [self.first, running, newest],
+        )
+
+    def test_supersession_publication_failure_never_falls_back_to_older_work(self):
+        pending = []
+        for index in range(3):
+            pending.append(self.host.commit("src/console/view.ts", f"pending {index}"))
+            self.loop.observe()
+        publish = self.store.publish
+
+        def fail_after_first_supersession():
+            if self.store.status(pending[0]) == "superseded":
+                raise OSError("fixture feed publication failure")
+            publish()
+
+        with (
+            patch.object(
+                self.store, "publish", side_effect=fail_after_first_supersession
+            ),
+            self.assertRaises(OSError),
+        ):
+            self.loop.tick()
+        self.assertEqual(self.store.status(pending[-1]), "received")
+        self.assertFalse((self.host.data / "drains").exists())
+        feed = self.store.feed
+        self.store.close()
+        self.store = deploy.Store(self.host.root / "records", feed, self.first)
+        self.loop = deploy.Deployer(self.host, self.store)
+        self.loop.tick()
+        self.loop.tick()
+        self.assertEqual(self.store.status(pending[1]), "superseded")
+        self.assertEqual(self.store.status(pending[-1]), "healthy")
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(),
+            [self.first, pending[-1]],
         )
 
     def test_admission_survives_observer_crash_without_admitting_intermediates(self):
@@ -1196,14 +1255,14 @@ class DeploymentSafety(unittest.TestCase):
         self.loop = deploy.Deployer(self.host, self.store)
         newest = self.host.commit("src/console/view.ts", "newer after restart")
         self.loop.tick()
-        self.assertEqual(self.store.get("active"), picked)
-        self.assertEqual(self.store.status(newest), "received")
+        self.assertEqual(self.store.get("active"), newest)
+        self.assertEqual(self.store.status(picked), "superseded")
         self.loop.tick()
         self.assertEqual(self.store.get("active"), newest)
         self.assertEqual(self.store.status(skipped), "superseded")
         self.assertEqual(
             (self.host.data / "starts").read_text().splitlines(),
-            [self.first, picked, newest],
+            [self.first, newest],
         )
 
         for boundary in ("cursor", "receipt"):
@@ -1262,15 +1321,12 @@ class DeploymentSafety(unittest.TestCase):
         self.loop = deploy.Deployer(self.host, self.store)
         (self.host.data / "busy").unlink()
         self.loop.tick()
-        self.assertEqual(self.store.get("active"), target)
-        self.assertEqual(self.store.status(target), "healthy")
-        self.loop.tick()
-        self.assertEqual(self.store.get("active"), newer[0])
-        self.loop.tick()
         self.assertEqual(self.store.get("active"), third)
+        self.assertEqual(self.store.status(target), "superseded")
+        self.assertEqual(self.store.status(newer[0]), "superseded")
         self.assertEqual(
             (self.host.data / "starts").read_text().splitlines(),
-            [self.first, target, newer[0], third],
+            [self.first, third],
         )
         bad = self.host.commit("src/broken", "SECRET_FROM_BUILD")
         self.loop.tick()

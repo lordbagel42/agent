@@ -46,7 +46,14 @@ mechanism. Use a fine-grained GitHub token restricted to `lordbagel42/agent` wit
 **Checks: read and write**, plus **Commit statuses: read and write** for existing
 status links. When upgrading from status-only reporting, add Checks permission
 to the existing token before installing this controller; otherwise publication
-fails and the old statuses stop updating. The read-only SSH deploy key and
+fails and the old statuses stop updating. If the installed credential has only
+Commit statuses permission, set `"githubChecks": false` in the protected
+`/etc/june/deploy.json` during installation. This preserves classic `june/deploy`
+statuses without making any Checks calls or requiring broader credentials. It
+does not provide the native Details report. Pending stages share one deduplicated
+status; superseded revisions report error/not deployed, never success. Omit the
+setting (or set it to true) only after provisioning Checks permissions.
+The read-only SSH deploy key and
 lifecycle token cannot authenticate GitHub API writes; do not reuse a coding-worker
 or personal CLI credential. Missing status credentials leave reporting disabled.
 Keep the token out of June's model/build environments; rotate it before expiry.
@@ -74,13 +81,16 @@ controller evidence and inspect the operator log for publication failures.
 One process holds a nonblocking filesystem lock for its lifetime. Every five
 seconds it fetches the fixed main ref, checks fast-forward ancestry, and durably
 records newly observed commits. Each observed main head is admitted to a durable
-FIFO in the existing SQLite state before its receipt or observation cursor is
+pending list in the existing SQLite state before its receipt or observation cursor is
 written. The same atomic state write retains the newest admitted head as an
 ancestry boundary, even after its queue entry completes; a crash before the
 cursor update must not allow a later rewind. Historical intermediate commits first discovered within a single fetch
-are recorded as `superseded` without admission. An admitted received, preparing
-or deferred head keeps its place across newer pushes, busy drains, low capacity,
-and controller restarts. Only an intentional terminal outcome removes it; an
+are recorded as `superseded` without admission. Before starting each attempt, the
+controller selects the newest pending head and records its pending ancestors as
+`superseded`. Their commits remain in the descendant's history, but those exact
+revisions are never falsely reported as deployed. Busy drains, low capacity and
+controller restarts preserve pending work until it completes or is superseded.
+Only an intentional terminal outcome removes it; an
 ambiguous activation or blocked controller still requires operator recovery.
 
 Each selected candidate must descend from the identified running release.
@@ -88,9 +98,12 @@ Refreshes after preflight and drain still require fast-forward observed history;
 a rewind/divergence blocks activation, and a post-drain block resumes admission
 on the current service. New descendant arrivals do not discard completed work.
 Config/artifact binding, rollback compatibility, readiness and drain checks are
-unchanged. The next tick takes the next admitted head, not whichever head is
-newest then. Sustained arrivals faster than deployment can grow the queue; this
-policy preserves accepted work rather than promising bounded deployment lag.
+unchanged. An attempt keeps its selected revision through preparation and drain,
+even if new descendants arrive, so continuous pushes cannot starve activation.
+The next tick coalesces the backlog again instead of building and restarting for
+every historical head. This reduces lag without skipping validation or promising
+a fixed deployment time. A failed latest head does not cause an automatic retry
+or fallback to a superseded revision; a new forward fix is required.
 
 On upgrade, unfinished preparing/deferred work and received history covered by
 the old durable observation cursor are adopted in receipt order. An interrupted
@@ -130,14 +143,28 @@ shutdown of every child; it does not replace the drain contract or shutdown
 ordering validation. Lost systemd history requires operator recovery, not an
 inferred successful stop.
 
-Builds have a 768 MiB soft memory limit, a 1 GiB hard limit and no swap, leaving
-headroom for the app and OS in June's 2 GiB container. The limits cover the whole
-build cgroup, including compiler/test children and charged file cache. An OOM
-kills the entire build unit and fails preparation; it never authorizes activation
-or skipping checks. A candidate that cannot build within this budget needs build
-optimization or a separately reviewed capacity change, not removal of the cap.
-These limits require installation of the controller; an app push alone does not
-change the installed build policy. Verify effective cgroup limits on the host.
+Builds have a 2 GiB hard memory limit, no swap and a ten-minute runtime deadline,
+leaving headroom for the app and OS in June's 4 GiB container. Provision that
+container capacity before installing this controller; the 1 GiB build budget in
+the former 2 GiB container could not complete the pinned dependency install.
+There is no soft
+memory throttle: the former 768 MiB threshold trapped pnpm in reclaim below its
+working set. The hard limit still covers the whole build cgroup, including
+compiler/test children and charged file cache. An OOM kills the entire build
+unit and fails preparation; it never authorizes activation or skipping checks.
+Installation explicitly uses one pnpm worker, one concurrent network request and
+a 384 MiB V8 old-space limit per isolate; this is not a total RSS cap and applies
+only to installation, not later compilation. A candidate that cannot build within
+the cgroup budget needs optimization or a separately reviewed capacity change,
+not removal of the hard cap. These limits require installation of the controller;
+an app push alone does not change the installed build policy. Verify effective
+cgroup limits on the host.
+
+Build output and fixed `june_preflight` phase markers are retained in the private
+system journal under `june-build-stage-<id>.service`, instead of discarded. Use
+`journalctl -u <exact-build-unit>` for operator diagnosis and phase timestamps;
+raw output never enters the public feed or GitHub statuses. Retention follows the
+host's journal policy, not release or conversation-data retention.
 
 The warm-path **target** is about 30 seconds, not a timeout that bypasses checks.
 Measure push-to-observation externally and `received` → `healthy` from the event
@@ -500,7 +527,9 @@ never push a worker's partial clone over combined work.
 
 On the **June host only**, an authorized operator must:
 
-1. Install Python ≥3.12, Git, systemd, pinned Node 24.21.0 and pnpm 10.33.0. The
+1. Provision at least 4 GiB container RAM with adequate physical host headroom;
+   builds are capped at 2 GiB and must not share a 2 GiB parent with live June.
+   Install Python ≥3.12, Git, systemd, pinned Node 24.21.0 and pnpm 10.33.0. The
    existing `/opt/june/corepack` cache must contain that pnpm version and be
    root-owned/readable; builds set `COREPACK_ENABLE_NETWORK=0` for the launcher.
    Registry package downloads still use pnpm normally.
