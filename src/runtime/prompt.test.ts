@@ -74,6 +74,10 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain("Do not rerun the task");
     expect(request.system).toContain("CLEARHISTORY");
     expect(request.system).toContain("DEBUGSHARE");
+    expect(request.system).toContain("PING sends PONG without inference");
+    expect(request.system).toContain(
+      "PINGMODEL first invokes the configured model",
+    );
     expect(request.system).toContain('inspection:"debug-shares"');
     expect(request.system).toContain("no agent starts");
     expect(request.system).toContain(

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
-import type { MessageEvent } from "../core/contracts.js";
+import type { MessageEvent, ModelSettlement } from "../core/contracts.js";
+import { beginModelReply } from "../models/invocation.js";
 import { type Delivery, deliver } from "./delivery.js";
 import { conversationInputId } from "./inbox.js";
 import type { ConversationState, Dependencies } from "./registry.js";
@@ -29,6 +30,13 @@ export interface SessionCommandReceipt {
   snapshot?: DebugSnapshot;
   delivery: Delivery;
   published?: boolean;
+  ping?: {
+    receivedAt: number;
+    messageAt?: number;
+    model?: "ready" | "started" | "completed" | "failed" | "unknown";
+    modelMs?: number;
+    timing?: Delivery;
+  };
 }
 
 /** Only authenticated live ingress may set eligibility. Quoted instructions,
@@ -37,6 +45,8 @@ export function sessionCommand(event: MessageEvent) {
   if (event.address.channel !== "slack" || !event.sessionCommandEligible)
     return;
   if (event.text === "CLEARHISTORY") return { kind: "clear" as const };
+  if (event.text === "PING" || event.text === "PINGMODEL")
+    return { kind: "ping" as const, model: event.text === "PINGMODEL" };
   const match = /^DEBUGSHARE(?: ([^\r\n]*))?$/.exec(event.text);
   if (match) return { kind: "debug" as const, reason: match[1] ?? "" };
 }
@@ -248,25 +258,154 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
   });
 }
 
+export function createPingActor(deps: Dependencies) {
+  return actor({
+    state: {} as { receipt?: SessionCommandReceipt; done?: boolean },
+    createVars: (c) => ({ persist: () => c.saveState({ immediate: true }) }),
+    queues: { work: queue<{ start: true }>() },
+    onWake: async (c) => {
+      if (c.state.receipt && !c.state.done)
+        await c.queue.send("work", { start: true });
+    },
+    actions: {
+      start: async (c, receipt: SessionCommandReceipt) => {
+        if (
+          !receipt.ping ||
+          receipt.snapshot ||
+          c.key[0] !== receipt.delivery.message.id
+        )
+          throw new Error("Ping receipt identity mismatch");
+        if (!c.state.receipt) {
+          c.state.receipt = receipt;
+          await c.vars.persist();
+        }
+        if (!c.state.done) await c.queue.send("work", { start: true });
+      },
+    },
+    run: workflow(async (ctx) => {
+      await ctx.loop("probes", async (loop) => {
+        await loop.queue.nextBatch("work", { names: ["work"], count: 1 });
+        await loop.step({
+          name: "publish",
+          timeout: 0,
+          run: async (step) => {
+            if (!step.state.receipt || step.state.done) return;
+            await publishSessionCommand(
+              step.state.receipt,
+              deps,
+              step.vars.persist,
+              async () => {
+                throw new Error("Ping cannot publish a debug snapshot");
+              },
+              step.abortSignal,
+            );
+            step.state.done = ![
+              step.state.receipt.delivery,
+              step.state.receipt.ping?.timing,
+            ].some(
+              (delivery) =>
+                delivery?.result?.status === "rejected" &&
+                delivery.result.retryable &&
+                delivery.attempts < 3,
+            );
+            await step.vars.persist();
+          },
+        });
+      });
+    }),
+  });
+}
+
 export async function publishSessionCommand(
   receipt: SessionCommandReceipt,
   deps: Dependencies,
   persist: () => Promise<void>,
   publish: (snapshot: DebugSnapshot) => Promise<void>,
+  signal: AbortSignal,
 ) {
-  if (receipt.snapshot && !receipt.published) {
-    await publish(receipt.snapshot);
-    receipt.published = true;
-    await persist();
-  }
-  await deliver(
-    receipt.delivery,
-    persist,
-    async (message) =>
-      deps.channels[message.address.channel]?.send(message) ?? {
-        status: "rejected",
+  const release = await deps.lifecycle?.enter(signal);
+  let settlement: Promise<ModelSettlement> | undefined;
+  try {
+    if (receipt.snapshot && !receipt.published) {
+      await publish(receipt.snapshot);
+      receipt.published = true;
+      await persist();
+    }
+    const ping = receipt.ping;
+    if (ping?.model === "started") {
+      // A recovered intent cannot prove whether the provider ran. Never replay it.
+      ping.model = "unknown";
+      await persist();
+    }
+    if (ping?.model === "ready") {
+      ping.model = "started";
+      await persist();
+      signal.throwIfAborted();
+      const started = performance.now();
+      const invocation = beginModelReply(
+        deps.model,
+        {
+          system:
+            'This is a latency probe. Reply only with {"text":"PONG"}. Do not request tools or actions.',
+          messages: [{ role: "user", content: "PING" }],
+          workspaces: [],
+        },
+        signal,
+        () => !signal.aborted,
+        () => false,
+      );
+      settlement = invocation.settlement;
+      try {
+        await invocation.answer;
+        ping.model = "completed";
+      } catch {
+        ping.model = "failed";
+      }
+      ping.modelMs = Math.round(performance.now() - started);
+      await persist();
+    }
+    if (
+      ping &&
+      (ping.model === "failed" || ping.model === "unknown") &&
+      receipt.delivery.phase === "ready"
+    ) {
+      receipt.delivery.message.content = {
+        type: "text",
+        text: `PINGMODEL ${ping.model === "failed" ? "failed" : "was interrupted; model outcome is unknown"}. No model retry was made.`,
+      };
+    }
+    const send = (message: Delivery["message"]) =>
+      deps.channels[message.address.channel]?.send(message) ??
+      Promise.resolve({
+        status: "rejected" as const,
         code: "channel_disabled",
         retryable: false,
-      },
-  );
+      });
+    const result = await deliver(receipt.delivery, persist, send);
+    if (!ping || result.status !== "sent") return;
+    if (!ping.timing) {
+      const sentAt = receipt.delivery.outcomeObservedAt;
+      if (sentAt === undefined) return;
+      const outbound = receipt.delivery.message;
+      ping.timing = {
+        phase: "ready",
+        attempts: 0,
+        message: {
+          ...outbound,
+          id: randomUUID(),
+          content: {
+            type: "text",
+            text: `${ping.model ? "PINGMODEL" : "PING"} timing: ${sentAt - ping.receivedAt} ms from verified ingress to reply accepted; ${ping.messageAt === undefined ? "unavailable" : `${Math.round(sentAt - ping.messageAt)} ms`} from Slack message timestamp.${ping.model ? ` Model: ${ping.modelMs === undefined ? "unavailable" : `${ping.modelMs} ms`} (${ping.model}).` : " No model call."} These are host observations, not client display latency.`,
+          },
+        },
+      };
+      await persist();
+    }
+    await deliver(ping.timing, persist, send);
+  } finally {
+    // PONG is already sent. Keep this workflow and its lease alive until the
+    // native invocation retires; idle actor sleep must not interrupt retirement.
+    if (settlement && (await settlement) === "unknown") deps.lifecycle?.fail();
+    release?.();
+  }
 }

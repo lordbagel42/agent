@@ -42,7 +42,9 @@ const restricted =
 export function continuityEligible(event: MessageEvent, owner: Owner) {
   return (
     isOwner(event, owner) &&
-    !/^(?:##|!|CLEARHISTORY\b|DEBUGSHARE\b)/.test(event.text) &&
+    !/^(?:##|!|PING(?:MODEL)?\b|CLEARHISTORY\b|DEBUGSHARE\b)/.test(
+      event.text,
+    ) &&
     !restricted.test(event.text)
   );
 }
@@ -253,7 +255,9 @@ export class ConversationContinuity {
         !source ||
         !message.content ||
         restricted.test(message.content) ||
-        /^(?:##|!|DEBUGSHARE\b|CLEARHISTORY\b)/.test(message.content)
+        /^(?:##|!|PING(?:MODEL)?\b|DEBUGSHARE\b|CLEARHISTORY\b)/.test(
+          message.content,
+        )
       )
         continue;
       const id = createHash("sha256")

@@ -97,6 +97,12 @@ function jsonResponse(
 
 describe("createSlackAdapter", () => {
   it.each([
+    { kind: "ping", text: "PING", field: "sessionCommandEligible" as const },
+    {
+      kind: "model ping",
+      text: "PINGMODEL",
+      field: "sessionCommandEligible" as const,
+    },
     {
       kind: "personality",
       text: '!personality revise {"expectedVersion":0,"changes":{"tone":"dry"},"explanation":"Try it","publish":true}',

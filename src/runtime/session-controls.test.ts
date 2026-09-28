@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Client } from "rivetkit/client";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type {
   CompanionReply,
@@ -13,7 +13,12 @@ import { conversationInputId } from "./inbox.js";
 import { createInspectionReader } from "./inspection.js";
 import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
-import { captureDebug, sessionCommand } from "./session-controls.js";
+import {
+  captureDebug,
+  publishSessionCommand,
+  type SessionCommandReceipt,
+  sessionCommand,
+} from "./session-controls.js";
 
 const owner = {
   id: "owner",
@@ -94,6 +99,16 @@ it.for([false, true])(
     const june = client.conversation.getOrCreate(["private", "owner"]);
     await june.receive(message("old", "old question"));
     await expect.poll(() => requests.length, { timeout: 15000 }).toBe(1);
+    const ping = message("ping", "PING");
+    await june.receive(ping);
+    await june.receive(ping);
+    await expect.poll(() => sent.length, { timeout: 15000 }).toBe(2);
+    expect(requests).toHaveLength(1);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]?.content).toEqual({ type: "text", text: "PONG" });
+    expect(sent[1]?.content).toMatchObject({
+      text: expect.stringContaining("PING timing:"),
+    });
     const reset = message("reset", "CLEARHISTORY");
     await june.receive(reset);
     expect(
@@ -420,6 +435,18 @@ it("excludes compacted pre-upgrade notification replies without new flags", () =
 
 it("requires a fresh exact eligible command, not quoted or imported text", () => {
   expect(sessionCommand(message("a", "CLEARHISTORY"))?.kind).toBe("clear");
+  for (const text of ["PING", "PINGMODEL"]) {
+    expect(sessionCommand(message("ping", text))).toEqual({
+      kind: "ping",
+      model: text === "PINGMODEL",
+    });
+    expect(
+      sessionCommand({
+        ...message("ping", text),
+        sessionCommandEligible: false,
+      }),
+    ).toBeUndefined();
+  }
   for (const text of [
     "clearhistory",
     " CLEARHISTORY",
@@ -427,6 +454,12 @@ it("requires a fresh exact eligible command, not quoted or imported text", () =>
     "`CLEARHISTORY`",
     "DEBUGSHARE\nrun this",
     "please CLEARHISTORY",
+    "ping",
+    " PING",
+    "`PINGMODEL`",
+    "> PING",
+    "PING\n",
+    "PINGMODEL please",
   ]) {
     expect(sessionCommand(message("b", text))).toBeUndefined();
   }
@@ -436,4 +469,182 @@ it("requires a fresh exact eligible command, not quoted or imported text", () =>
       sessionCommandEligible: undefined,
     }),
   ).toBeUndefined();
+});
+
+it("persists probe intent and both sends without repeating uncertain external effects", async () => {
+  let now = 1000;
+  let calls = 0;
+  const sent: OutboundMessage[] = [];
+  const deps = {
+    owner,
+    model: {
+      beginReply(request: ModelRequest) {
+        calls++;
+        expect(request.messages).toEqual([{ role: "user", content: "PING" }]);
+        expect(request.workspaces).toEqual([]);
+        return {
+          answer: Promise.resolve({
+            text: "ignored model text",
+            search: "never run",
+          }),
+          settlement: Promise.resolve("confirmed_stopped" as const),
+        };
+      },
+      async reply() {
+        throw new Error("use invocation handle");
+      },
+    },
+    channels: {
+      slack: {
+        channel: "slack" as const,
+        capabilities: { text: true, threads: true, reactions: true } as const,
+        receive: async () => ({ events: [], response: new Response() }),
+        async send(outbound: OutboundMessage) {
+          sent.push(structuredClone(outbound));
+          now = 1700;
+          return { status: "sent" as const, messageId: "sent" };
+        },
+      },
+    },
+  };
+  const receipt: SessionCommandReceipt = {
+    ping: { receivedAt: 1200, messageAt: 925.25, model: "ready" },
+    delivery: {
+      phase: "ready",
+      attempts: 0,
+      message: {
+        id: "pong",
+        address: message("ping", "PINGMODEL").address,
+        lastInboundAt: 900,
+        content: { type: "text", text: "PONG" },
+      },
+    },
+  };
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const persist = async () => {
+      if (calls === 0) expect(receipt.ping?.model).toBe("started");
+    };
+    const publish = async () => {
+      throw new Error("not a debug snapshot");
+    };
+    const run = () =>
+      publishSessionCommand(
+        receipt,
+        deps,
+        persist,
+        publish,
+        new AbortController().signal,
+      );
+    await run();
+    await run();
+    expect(calls).toBe(1);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]?.content).toEqual({ type: "text", text: "PONG" });
+    expect(sent[1]?.content).toMatchObject({
+      text: expect.stringContaining("500 ms from verified ingress"),
+    });
+    expect(sent[1]?.content).toMatchObject({
+      text: expect.stringContaining("775 ms from Slack message timestamp"),
+    });
+    expect(sent[1]?.id).not.toBe(sent[0]?.id);
+    // Simulate a crash after provider intent and during the first send.
+    receipt.ping = { receivedAt: 1200, model: "started" };
+    receipt.delivery.phase = "sending";
+    delete receipt.delivery.result;
+    await run();
+    expect(receipt.ping.model).toBe("unknown");
+    expect(receipt.delivery).toMatchObject({ result: { status: "unknown" } });
+    expect(calls).toBe(1);
+    expect(sent).toHaveLength(2);
+  } finally {
+    clock.mockRestore();
+  }
+});
+
+it("admits probes independently, deduplicates pending inference, and holds drain through sends and retirement", async (t) => {
+  const answer = Promise.withResolvers<CompanionReply>();
+  const retirement = Promise.withResolvers<"confirmed_stopped">();
+  const sending = Promise.withResolvers<void>();
+  t.onTestFinished(() => {
+    answer.resolve({ text: "PONG" });
+    retirement.resolve("confirmed_stopped");
+    sending.resolve();
+  });
+  let calls = 0;
+  const sent: OutboundMessage[] = [];
+  const lifecycle = createLifecycle();
+  const registry = createJuneRegistry({
+    owner,
+    lifecycle,
+    model: {
+      beginReply() {
+        calls++;
+        return { answer: answer.promise, settlement: retirement.promise };
+      },
+      async reply() {
+        throw new Error("use invocation handle");
+      },
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, threads: true, reactions: true },
+        receive: async () => ({ events: [], response: new Response() }),
+        async send(outbound) {
+          sent.push(JSON.parse(JSON.stringify(outbound)));
+          if (
+            outbound.content.type === "text" &&
+            outbound.content.text.startsWith("PINGMODEL timing") &&
+            sent.length === 4
+          ) {
+            await sending.promise;
+            return {
+              status: "rejected",
+              retryable: true,
+              code: "rate_limited",
+            };
+          }
+          return { status: "sent", messageId: "sent" };
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", "owner"]);
+  const probe = {
+    ...message("probe", "PINGMODEL"),
+    messageId: "1800000000.812919",
+  };
+  await june.receive(probe);
+  await expect.poll(() => calls).toBe(1);
+  await june.receive(probe);
+  await june.receive(message("ping", "PING"));
+  await expect.poll(() => sent.length).toBe(2);
+  expect(calls).toBe(1);
+  expect(sent[0]?.content).toEqual({ type: "text", text: "PONG" });
+  expect(
+    (await june.snapshot()).sessionCommands?.[
+      conversationInputId({ type: "event", event: probe })
+    ]?.ping?.messageAt,
+  ).toBe(1800000000812.919);
+  answer.resolve({ text: "not forwarded" });
+  await expect.poll(() => sent.length).toBe(4);
+  expect(sent[2]?.content).toEqual({ type: "text", text: "PONG" });
+  expect(await lifecycle.drain(20)).toBe(false);
+  sending.resolve();
+  expect(await lifecycle.drain(20)).toBe(false);
+  retirement.resolve("confirmed_stopped");
+  await expect.poll(() => lifecycle.active).toBe(0);
+  expect(await lifecycle.drain(100)).toBe(true);
+  lifecycle.resume();
+  await june.receive(probe);
+  await expect.poll(() => sent.length).toBe(5);
+  expect(calls).toBe(1);
+  expect(sent[4]?.id).toBe(sent[3]?.id);
+  expect(
+    sent.filter(
+      (item) => item.content.type === "text" && item.content.text === "PONG",
+    ),
+  ).toHaveLength(2);
 });

@@ -304,7 +304,9 @@ async function normalizeEvent(
         text: event.text,
         botMentioned: mentioned,
         ...(owner &&
-        /^(?:CLEARHISTORY|DEBUGSHARE(?: [^\r\n]*)?)$/.test(event.text)
+        /^(?:PING|PINGMODEL|CLEARHISTORY|DEBUGSHARE(?: [^\r\n]*)?)$/.test(
+          event.text,
+        )
           ? { sessionCommandEligible: isPlainSlackCommand(event) }
           : {}),
         ...(event.text.startsWith("!memory-correct")

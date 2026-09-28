@@ -35,6 +35,7 @@ import { OpaqueActionLinks } from "../links/opaque.js";
 import { createActionLinkRoutes } from "../links/routes.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
+import { sessionCommand } from "../runtime/session-controls.js";
 import type { CapabilityBroker } from "../tools/broker.js";
 import { createCapabilityRoutes } from "../tools/routes.js";
 import {
@@ -340,6 +341,11 @@ export function createHttpApp(deps: HttpDependencies) {
           }
           diagnostics?.record(c.req.raw, "submission_started");
           if (intake) await deps.submit(scope, event, intake.receivedAt);
+          else if (
+            event.type === "message" &&
+            sessionCommand(event)?.kind === "ping"
+          )
+            await deps.submit(scope, event, c.get("arrival").at);
           else await deps.submit(scope, event);
           diagnostics?.record(c.req.raw, "submission_succeeded");
           if (event.type === "message") deps.latency?.mark(event, "submitted");

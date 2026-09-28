@@ -124,6 +124,7 @@ import {
 import {
   captureDebug,
   createDebugShareActor,
+  createPingActor,
   type DebugInvestigator,
   publishSessionCommand,
   redactDebug,
@@ -698,7 +699,14 @@ export function createJuneRegistry(deps: Dependencies) {
       },
       resumeSessionCommands: async (c): Promise<void> => {
         const publishing = c.vars.publishing.then(async () => {
-          for (const receipt of Object.values(c.state.sessionCommands ?? {}))
+          for (const receipt of Object.values(c.state.sessionCommands ?? {})) {
+            if (receipt.ping) {
+              await c
+                .client<JuneClientRegistry>()
+                .ping.getOrCreate([receipt.delivery.message.id])
+                .start(receipt);
+              continue;
+            }
             await publishSessionCommand(
               receipt,
               deps,
@@ -708,7 +716,9 @@ export function createJuneRegistry(deps: Dependencies) {
                   .client<JuneClientRegistry>()
                   .debugShare.getOrCreate([snapshot.id])
                   .start(snapshot),
+              c.abortSignal,
             );
+          }
         });
         c.vars.publishing = publishing.catch(() => {});
         await publishing;
@@ -837,6 +847,18 @@ export function createJuneRegistry(deps: Dependencies) {
                 }
                 c.state.sessionCommands[id] = {
                   ...(snapshot ? { snapshot } : {}),
+                  ...(command.kind === "ping"
+                    ? {
+                        ping: {
+                          receivedAt,
+                          ...(/^\d+\.\d+$/.test(event.messageId) &&
+                          Number.isFinite(Number(event.messageId) * 1000)
+                            ? { messageAt: Number(event.messageId) * 1000 }
+                            : {}),
+                          ...(command.model ? { model: "ready" as const } : {}),
+                        },
+                      }
+                    : {}),
                   delivery: {
                     phase: "ready",
                     attempts: 0,
@@ -847,11 +869,13 @@ export function createJuneRegistry(deps: Dependencies) {
                       content: {
                         type: "text",
                         text:
-                          command.kind === "clear"
-                            ? "Started a new session. Saved memories and archives are unchanged."
-                            : snapshot
-                              ? `DEBUGSHARE ${snapshot.id}\n${snapshot.capturedAt}\n${deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}`
-                              : "Send DEBUGSHARE in your private DM with me so the diagnostic snapshot stays private.",
+                          command.kind === "ping"
+                            ? "PONG"
+                            : command.kind === "clear"
+                              ? "Started a new session. Saved memories and archives are unchanged."
+                              : snapshot
+                                ? `DEBUGSHARE ${snapshot.id}\n${snapshot.capturedAt}\n${deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}`
+                                : "Send DEBUGSHARE in your private DM with me so the diagnostic snapshot stays private.",
                       },
                     },
                   },
@@ -954,11 +978,21 @@ export function createJuneRegistry(deps: Dependencies) {
           event.type === "message" &&
           sessionCommand(event) &&
           isOwner(event, deps.owner)
-        )
-          await c
-            .client<JuneClientRegistry>()
-            .conversation.getOrCreate(c.key)
-            .resumeSessionCommands();
+        ) {
+          if (sessionCommand(event)?.kind === "ping") {
+            const id = conversationInputId({ type: "event", event });
+            const receipt = c.state.sessionCommands?.[id];
+            if (receipt)
+              await c
+                .client<JuneClientRegistry>()
+                .ping.getOrCreate([receipt.delivery.message.id])
+                .start(receipt);
+          } else
+            await c
+              .client<JuneClientRegistry>()
+              .conversation.getOrCreate(c.key)
+              .resumeSessionCommands();
+        }
       },
       /** Trusted worker/scheduler ingress. Uses the same admission serializer as
        * human messages; a lost ACK never renews the receipt or replaces its body. */
@@ -5909,6 +5943,7 @@ export function createJuneRegistry(deps: Dependencies) {
       }),
       personality: createPersonalityActor(deps.owner, deps.memory?.personality),
       debugShare: createDebugShareActor(deps),
+      ping: createPingActor(deps),
       job: createCodingActor(
         deps.coding,
         deps.lifecycle,
