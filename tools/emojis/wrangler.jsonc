@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "raygen-emojis",
+  "account_id": "2fa4104b17af8808577f12883fa657b1",
   "main": "src/worker/index.ts",
   "compatibility_date": "2026-09-28",
   "compatibility_flags": ["nodejs_compat"],
@@ -15,7 +16,7 @@
     {
       "binding": "DB",
       "database_name": "raygen-emojis",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "d8935106-98f0-48ac-b7e1-24bb6509a912",
       "migrations_dir": "migrations"
     }
   ],
