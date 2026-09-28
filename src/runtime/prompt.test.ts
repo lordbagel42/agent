@@ -74,6 +74,12 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain("Do not rerun the task");
     expect(request.system).toContain("CLEARHISTORY");
     expect(request.system).toContain("DEBUGSHARE");
+    expect(request.system).toContain(
+      "interrupted transfers resume the same snapshot",
+    );
+    expect(request.system).toContain(
+      "Transfer completion is not investigation completion",
+    );
     expect(request.system).toContain("PING sends PONG without inference");
     expect(request.system).toContain(
       "PINGMODEL first invokes the configured model",

@@ -126,6 +126,7 @@ import {
   createDebugShareActor,
   createPingActor,
   type DebugInvestigator,
+  publishDebugSnapshot,
   publishSessionCommand,
   redactDebug,
   resetConversation,
@@ -712,10 +713,12 @@ export function createJuneRegistry(deps: Dependencies) {
               deps,
               c.vars.persist,
               (snapshot) =>
-                c
-                  .client<JuneClientRegistry>()
-                  .debugShare.getOrCreate([snapshot.id])
-                  .start(snapshot),
+                publishDebugSnapshot(snapshot, (chunk) =>
+                  c
+                    .client<JuneClientRegistry>()
+                    .debugShare.getOrCreate([snapshot.id])
+                    .startChunk(chunk),
+                ),
               c.abortSignal,
             );
           }

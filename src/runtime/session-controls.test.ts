@@ -15,6 +15,9 @@ import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 import {
   captureDebug,
+  type DebugSnapshot,
+  type DebugSnapshotChunk,
+  publishDebugSnapshot,
   publishSessionCommand,
   type SessionCommandReceipt,
   sessionCommand,
@@ -34,6 +37,91 @@ const message = (id: string, text: string): MessageEvent => ({
   senderId: "U1",
   direct: true,
   sessionCommandEligible: true,
+});
+
+it("resumes large debug transfers after lost acknowledgments without replacing or reinvestigating snapshots", async (t) => {
+  const snapshots: DebugSnapshot[] = [];
+  const registry = createJuneRegistry({
+    owner,
+    model: {
+      async reply() {
+        return { text: "unused" };
+      },
+    },
+    channels: {},
+    debugShare: {
+      async run(snapshot) {
+        snapshots.push(snapshot);
+        return { threadId: "T-fixture", report: "checked" };
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const snapshot: DebugSnapshot = {
+    id: "large-snapshot",
+    sessionId: "session",
+    capturedAt: "2026-09-28T00:00:00Z",
+    revision: "fixture",
+    scope: ["private", "owner"],
+    reason: "fixture",
+    data: { text: '🌻"\\\n'.repeat(140000) },
+    exclusions: [],
+  };
+  expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeGreaterThan(1048576);
+  const target = client.debugShare.getOrCreate([snapshot.id]);
+  let first: DebugSnapshotChunk | undefined;
+  await expect(
+    publishDebugSnapshot(snapshot, async (chunk) => {
+      first ??= chunk;
+      expect(Buffer.byteLength(JSON.stringify(chunk))).toBeLessThan(65536);
+      const result = await target.startChunk(chunk);
+      if (chunk.index === 2) throw new Error("lost chunk acknowledgment");
+      return result;
+    }),
+  ).rejects.toThrow("lost chunk acknowledgment");
+  expect(snapshots).toHaveLength(0);
+  if (!first) throw new Error("Missing first chunk");
+  for (const invalid of [
+    { ...first, id: "different" },
+    { ...first, index: 4 },
+    { ...first, totalBytes: -1 },
+    { ...first, sha256: "0".repeat(64) },
+    { ...first, data: "!invalid-base64" },
+    { ...first, data: Buffer.alloc(32768, 42).toString("base64") },
+  ])
+    await expect(target.startChunk(invalid)).rejects.toThrow();
+  expect(snapshots).toHaveLength(0);
+  const resumed: number[] = [];
+  await expect(
+    publishDebugSnapshot(snapshot, async (chunk) => {
+      resumed.push(chunk.index);
+      const result = await target.startChunk(chunk);
+      if (result.complete) throw new Error("lost final acknowledgment");
+      return result;
+    }),
+  ).rejects.toThrow("lost final acknowledgment");
+  expect(resumed.slice(0, 2)).toEqual([0, 3]);
+  await expect.poll(() => snapshots.length, { timeout: 15000 }).toBe(1);
+  await Promise.all([
+    publishDebugSnapshot(snapshot, (chunk) => target.startChunk(chunk)),
+    publishDebugSnapshot(snapshot, (chunk) => target.startChunk(chunk)),
+  ]);
+  expect(snapshots).toEqual([snapshot]);
+  await expect
+    .poll(async () => (await target.inspect()).status)
+    .toBe("completed");
+  await expect(
+    target.startChunk({ ...first, sha256: "0".repeat(64) }),
+  ).rejects.toThrow();
+  expect(snapshots).toHaveLength(1);
+
+  const legacy = { ...snapshot, id: "legacy", data: { text: "small" } };
+  const old = client.debugShare.getOrCreate([legacy.id]);
+  await old.start(legacy);
+  await expect.poll(() => snapshots.length, { timeout: 15000 }).toBe(2);
+  await publishDebugSnapshot(legacy, (chunk) => old.startChunk(chunk));
+  await old.start(legacy);
+  expect(snapshots).toEqual([snapshot, legacy]);
 });
 
 it.for([false, true])(
@@ -156,7 +244,7 @@ it.for([false, true])(
 );
 
 it.for([false, true])(
-  "captures DEBUGSHARE once and allows reset during a blocked acknowledgment (activity sessions: %s)",
+  "transfers large DEBUGSHARE snapshots once and allows reset during a blocked acknowledgment (activity sessions: %s)",
   async (activities, t) => {
     const store = new EvidenceStore(":memory:", randomBytes(32));
     t.onTestFinished(() => store.close());
@@ -164,6 +252,9 @@ it.for([false, true])(
     t.onTestFinished(() => ack.resolve());
     const snapshots: unknown[] = [];
     const sent: OutboundMessage[] = [];
+    const answer = activities
+      ? "ordinary answer"
+      : `ordinary answer ${'☃"\\\n'.repeat(12000)}`;
     const registry = createJuneRegistry({
       owner,
       runningRevision: "fixture-revision",
@@ -195,7 +286,7 @@ it.for([false, true])(
       },
       model: {
         async reply() {
-          return { text: "ordinary answer" };
+          return { text: answer };
         },
       },
       channels: {
@@ -228,6 +319,8 @@ it.for([false, true])(
     expect(captured).toContain("Why did that happen?");
     expect(captured).toContain("incorrect answer");
     expect(captured).toContain("ordinary answer");
+    if (!activities) expect(Buffer.byteLength(captured)).toBeGreaterThan(65536);
+    expect(captured).toContain(JSON.stringify(answer).slice(1, -1));
     const resetting = june.receive(message("reset", "CLEARHISTORY"));
     await expect
       .poll(async () => (await june.snapshot()).session?.id, { timeout: 15000 })

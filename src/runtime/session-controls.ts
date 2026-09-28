@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type { MessageEvent, ModelSettlement } from "../core/contracts.js";
@@ -184,15 +184,84 @@ export function resetConversation(state: ConversationState, at: number) {
   }
 }
 
+// Base64 plus RPC framing stays below Rivet's 64 KiB incoming-message limit.
+const DEBUG_CHUNK_BYTES = 32 * 1024;
+
+export interface DebugSnapshotChunk {
+  id: string;
+  sha256: string;
+  totalBytes: number;
+  index: number;
+  data: string;
+}
+
+export async function publishDebugSnapshot(
+  snapshot: DebugSnapshot,
+  send: (
+    chunk: DebugSnapshotChunk,
+  ) => Promise<{ nextIndex: number; complete: boolean }>,
+) {
+  const bytes = Buffer.from(JSON.stringify(snapshot));
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const count = Math.ceil(bytes.length / DEBUG_CHUNK_BYTES);
+  for (let index = 0; index < count; ) {
+    const result = await send({
+      id: snapshot.id,
+      sha256,
+      totalBytes: bytes.length,
+      index,
+      data: bytes
+        .subarray(index * DEBUG_CHUNK_BYTES, (index + 1) * DEBUG_CHUNK_BYTES)
+        .toString("base64"),
+    });
+    if (
+      !Number.isSafeInteger(result.nextIndex) ||
+      result.nextIndex <= index ||
+      result.nextIndex > count ||
+      result.complete !== (result.nextIndex === count)
+    )
+      throw new Error("Invalid debug snapshot acknowledgment");
+    if (result.complete) return;
+    index = result.nextIndex;
+  }
+}
+
 export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
   return actor({
     state: {} as {
       snapshot?: DebugSnapshot;
+      upload?: { sha256: string; totalBytes: number; parts: string[] };
       status?: "queued" | "running" | "completed" | "unavailable" | "unknown";
       threadId?: string;
       report?: string;
     },
-    createVars: (c) => ({ persist: () => c.saveState({ immediate: true }) }),
+    createVars: (c) => ({
+      persist: () => c.saveState({ immediate: true }),
+      receiving: Promise.resolve(),
+      finish: async (snapshot: DebugSnapshot) => {
+        if (c.key[0] !== snapshot.id)
+          throw new Error("Debug snapshot identity mismatch");
+        const bytes = Buffer.from(JSON.stringify(snapshot));
+        if (
+          (c.state.snapshot &&
+            JSON.stringify(c.state.snapshot) !== bytes.toString()) ||
+          (c.state.upload &&
+            (c.state.upload.totalBytes !== bytes.length ||
+              c.state.upload.sha256 !==
+                createHash("sha256").update(bytes).digest("hex")))
+        )
+          throw new Error("Debug snapshot conflict");
+        if (!c.state.snapshot) {
+          c.state.snapshot = snapshot;
+          c.state.status = deps.debugShare ? "queued" : "unavailable";
+        }
+        delete c.state.upload;
+        // Even a duplicate after a lost save acknowledgment needs a barrier.
+        await c.saveState({ immediate: true });
+        if (c.state.status === "queued")
+          await c.queue.send("work", { start: true });
+      },
+    }),
     queues: { work: queue<{ start: true }>() },
     onWake: async (c) => {
       if (c.state.status === "queued")
@@ -200,15 +269,95 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
     },
     actions: {
       start: async (c, snapshot: DebugSnapshot) => {
-        if (c.key[0] !== snapshot.id)
-          throw new Error("Debug snapshot identity mismatch");
-        if (!c.state.snapshot) {
-          c.state.snapshot = snapshot;
-          c.state.status = deps.debugShare ? "queued" : "unavailable";
-          await c.saveState({ immediate: true });
-        }
-        if (c.state.status === "queued")
-          await c.queue.send("work", { start: true });
+        const receiving = c.vars.receiving.then(() => c.vars.finish(snapshot));
+        c.vars.receiving = receiving.catch(() => {});
+        await receiving;
+      },
+      startChunk: async (c, chunk: DebugSnapshotChunk) => {
+        const receiving = c.vars.receiving.then(async () => {
+          if (
+            !chunk ||
+            chunk.id !== c.key[0] ||
+            typeof chunk.sha256 !== "string" ||
+            !/^[0-9a-f]{64}$/.test(chunk.sha256) ||
+            !Number.isSafeInteger(chunk.totalBytes) ||
+            chunk.totalBytes <= 0 ||
+            !Number.isSafeInteger(chunk.index) ||
+            chunk.index < 0 ||
+            chunk.index >= Math.ceil(chunk.totalBytes / DEBUG_CHUNK_BYTES) ||
+            typeof chunk.data !== "string" ||
+            chunk.data.length > 43692
+          )
+            throw new Error("Invalid debug snapshot chunk");
+          const part = Buffer.from(chunk.data, "base64");
+          if (
+            part.toString("base64") !== chunk.data ||
+            part.length !==
+              Math.min(
+                DEBUG_CHUNK_BYTES,
+                chunk.totalBytes - chunk.index * DEBUG_CHUNK_BYTES,
+              )
+          )
+            throw new Error("Invalid debug snapshot chunk");
+          const count = Math.ceil(chunk.totalBytes / DEBUG_CHUNK_BYTES);
+          if (c.state.snapshot) {
+            const bytes = Buffer.from(JSON.stringify(c.state.snapshot));
+            if (
+              bytes.length !== chunk.totalBytes ||
+              createHash("sha256").update(bytes).digest("hex") !==
+                chunk.sha256 ||
+              !bytes
+                .subarray(
+                  chunk.index * DEBUG_CHUNK_BYTES,
+                  (chunk.index + 1) * DEBUG_CHUNK_BYTES,
+                )
+                .equals(part)
+            )
+              throw new Error("Debug snapshot conflict");
+            await c.vars.finish(c.state.snapshot);
+            return { nextIndex: count, complete: true };
+          }
+          const upload = c.state.upload ?? {
+            sha256: chunk.sha256,
+            totalBytes: chunk.totalBytes,
+            parts: [],
+          };
+          if (
+            upload.sha256 !== chunk.sha256 ||
+            upload.totalBytes !== chunk.totalBytes ||
+            chunk.index > upload.parts.length ||
+            (chunk.index < upload.parts.length &&
+              upload.parts[chunk.index] !== chunk.data)
+          )
+            throw new Error("Debug snapshot conflict");
+          const parts =
+            chunk.index === upload.parts.length
+              ? [...upload.parts, chunk.data]
+              : upload.parts;
+          if (parts.length === count) {
+            const bytes = Buffer.concat(
+              parts.map((part) => Buffer.from(part, "base64")),
+            );
+            if (
+              bytes.length !== upload.totalBytes ||
+              createHash("sha256").update(bytes).digest("hex") !== upload.sha256
+            )
+              throw new Error("Debug snapshot digest mismatch");
+            const snapshot = JSON.parse(
+              new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+            );
+            await c.vars.finish(snapshot);
+            return { nextIndex: count, complete: true };
+          }
+          c.state.upload = { ...upload, parts };
+          await c.vars.persist();
+          return { nextIndex: parts.length, complete: false };
+        });
+        c.vars.receiving = receiving.then(
+          () => {},
+          () => {},
+        );
+        return receiving;
       },
       inspect: (c) => ({
         id: c.state.snapshot?.id,
