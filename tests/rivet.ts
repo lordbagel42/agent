@@ -68,7 +68,10 @@ export async function stopTestEngine(directory: string, port: number) {
 }
 
 /** Real engine, disposable disk and loopback ports; never reuse a developer's engine. */
-export async function setupTest(t: TestContext, registry: JuneRegistry) {
+export async function setupTest<R extends JuneRegistry>(
+  t: TestContext,
+  registry: R,
+) {
   const directory = await mkdtemp(join(tmpdir(), "june-rivet-"));
   const previousStorage = process.env.RIVETKIT_STORAGE_PATH;
   process.env.RIVETKIT_STORAGE_PATH = directory;

@@ -104,9 +104,19 @@ successful owner acknowledgment and requires the hold to survive serialization.
 - [ ] Route stable notifications once through the coordinator, retaining original worker/task and permitted reply address. Notification-only sessions seal after archive/settlement and do not reset human inactivity.
 - [ ] Schedule durable idle sealing. Archive failure keeps input held; summary failure does not block searchable transcript or a new reply. Deactivation preserves established routing and historical lookup.
 
+The new activity actor is implemented but not registered or routed in production.
+It owns local history, inference receipts and the outbox; its catalog port keeps
+assignment, dispatch authority and acknowledgment on the stable coordinator.
+Native-engine fixtures cover early delivery before retirement, immutable archive
+replay, catalog commit/lost-ACK repair, deletion during inference and multipart
+unknown/rejected prefixes. Untouched multipart tails are withheld without a send;
+unknown inference or delivery still blocks release. Required review cleared these
+recovery fixes. Cold-process recovery and the real catalog/control integration
+remain unverified; this increment is not session activation.
+
 `ModelProvider.beginReply` prepares settlement evidence for the activity actor;
-no runtime consumes it to release turns yet. Only terminal protocol envelopes
-confirm HTTP inference stopped. Hot Codex also requires a correlated successful
+only the unregistered activity actor consumes it to release turns yet. Terminal
+protocol envelopes confirm HTTP inference stopped. Hot Codex also requires a correlated successful
 terminal turn and local retirement/process closure. Killing an unresolved local
 process, receiving an interrupted status or fulfilling an answer is insufficient.
 Fixtures exercise delayed retirement, caught synthesis failures and a completed
