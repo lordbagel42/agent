@@ -53,6 +53,57 @@ into June or tested with a real account.
 - Optional owner-private, read-only browser console using the existing operator
   credential. It cannot approve actions or change configuration.
 
+## Session controls
+
+Send `CLEARHISTORY` as a fresh, plain owner Slack message. The host creates a
+new session UUID and resets conversation context immediately, without waiting for
+inference. Old queued turns and late replies are withheld. Saved memory,
+archived transcripts, event/delivery records and external work are not erased.
+An already-dispatched send or tool action cannot be undone. The legacy serial
+workflow may still wait for its current provider call to settle before answering
+the next message. Linked owner DMs share one conversation; channel threads are
+separate. Quoted commands, attachments, edited messages and guests cannot reset it.
+
+In the owner DM, send `DEBUGSHARE` or `DEBUGSHARE a short explanation`. June
+captures a private UUID-tagged snapshot before queuing investigation: UTC timestamp,
+session ID, running revision, retained conversation, pending input, delivery and
+model/tool invocation receipts, and the latest ordinary model request when still
+available in the current process. It is not a dump of provider internals or all
+tool traffic. Volatile tool results, raw logs, configuration, environment and
+unrelated conversations are excluded; common credentials and URL queries are
+redacted. Coordinator notification content is excluded, and a model request that
+may contain it is omitted rather than exporting non-retainable context. Redaction
+is not perfect DLP: do not put secrets in conversation text.
+Snapshots are explicit private diagnostic exports to Amp and survive resets;
+ordinary memory forgetting does not erase already-exported Amp conversations.
+
+Automatic Amp investigation requires operator configuration:
+
+```json
+"debugShare": {
+  "repositoryRoot": "/private/checkouts/agent",
+  "worktreeRoot": "/private/debug-worktrees",
+  "timeoutMs": 900000
+}
+```
+
+Both directories must already exist, be canonical and non-overlapping; the
+worktree root must be owner-private and outside a Git repository. Set
+`JUNE_ALLOW_DEBUGSHARE=1` only after reviewing the execution environment and
+providing Amp authentication through its existing private mechanism. Amp gets
+an isolated Git worktree, **not a security sandbox**, and can inherit service
+credentials and host access. Do not enable this on a privileged service account
+without the corresponding operator review. Configuration/service changes require
+deployment-owner authorization. This feature does not enable ordinary coding jobs.
+
+The command authorizes investigating and verifying local fixes, not pushing,
+deploying, infrastructure changes or destructive operations. If no runtime is
+configured, the snapshot is saved and June explicitly says no agent was started.
+A persisted launch intent is never retried automatically after interruption.
+June can inspect recent UUIDs, timestamps, states and thread IDs with
+`inspection: "debug-shares"`; ask her for investigation status. Completed means
+Amp returned, not that its fix was independently verified or deployed.
+
 ## Optional E2B execution
 
 Prefer June's local QuickJS `javascript` sandbox for calculations and data

@@ -121,6 +121,37 @@ function fixture(
   };
 }
 
+it("withholds approval notices and posts when the originating session is cleared", async (t) => {
+  const { social, sent } = fixture(t);
+  const gate = Promise.withResolvers<boolean>();
+  const pending = social.propose(
+    raygen,
+    access,
+    () => true,
+    "cleared-notice",
+    () => true,
+    () => gate.promise,
+  );
+  gate.resolve(false);
+  expect(await pending).toContain("notification rejected");
+  expect(
+    await social.propose(
+      raygen,
+      {
+        kind: "post",
+        conversationId: "C1",
+        threadId: null,
+        text: "stale post",
+      },
+      () => true,
+      "cleared-post",
+      () => true,
+      async () => false,
+    ),
+  ).toContain("delivery rejected");
+  expect(sent).toHaveLength(0);
+});
+
 it("stages one private candidate-bound preview without granting or sending, and rechecks deletion", async (t) => {
   const { social, sent, options } = fixture(t);
   const candidate: ReflectionCandidate & { evidenceIds: string[] } = {

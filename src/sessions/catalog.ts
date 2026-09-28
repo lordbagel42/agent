@@ -84,6 +84,7 @@ export interface SessionHost {
   state: ConversationState;
   key: string[];
   persist(): Promise<void>;
+  rememberRequest?(request: Interaction["request"]): void;
   typing?(address: Address): {
     read(): Promise<boolean>;
     set(enabled: boolean): Promise<void>;
@@ -157,6 +158,7 @@ export function createSessionCatalog(
       return "unavailable";
     const receipt = session?.directory.receipts[assignment.eventId];
     if (receipt?.status === "settled") return "acknowledged";
+    if (host.state.clearedInputs?.[assignment.eventId]) return "cleared";
     return session?.directory.inFlight === assignment.eventId
       ? "active"
       : "unavailable";
@@ -203,7 +205,12 @@ export function createSessionCatalog(
     for (const [id, receipt] of Object.entries(
       host.state.ingress?.receipts ?? {},
     ).sort(([, a], [, b]) => a.sequence - b.sequence)) {
-      if (receipt.lane !== "session" || !savedInput(host.state, id)) continue;
+      if (
+        host.state.clearedInputs?.[id] ||
+        receipt.lane !== "session" ||
+        !savedInput(host.state, id)
+      )
+        continue;
       receiveSessionInput(
         sessions.directory,
         id,
@@ -271,11 +278,15 @@ export function createSessionCatalog(
     assignment: ActivityAssignment,
     history: Parameters<ActivityCatalog["prepare"]>[1],
   ): Promise<Preparation> {
-    const turn = active(host, assignment);
+    const turn =
+      status(host, assignment) === "cleared"
+        ? host.state.sessions?.turns[assignment.eventId]
+        : active(host, assignment);
+    if (!turn) throw new Error("Missing activity turn");
     // Only an interaction that never started can be suppressed here. A control
     // may already own an independent effect; only its workflow can attest it.
-    async function suppress(): Promise<Preparation> {
-      if (turn.mode !== "interaction")
+    const suppress = async (): Promise<Preparation> => {
+      if (turn.mode !== "interaction" && status(host, assignment) !== "cleared")
         throw new Error("Control receipt unavailable");
       turn.control = {
         input: {
@@ -289,11 +300,12 @@ export function createSessionCatalog(
             data: { sourceIds: [], contextSourceIds: [], entries: [] },
           },
         },
-        effects: "confirmed",
+        effects: turn.mode === "interaction" ? "confirmed" : "unknown",
       };
       await host.persist();
       return { control: turn.control };
-    }
+    };
+    if (status(host, assignment) === "cleared") return suppress();
     if (turn.control) return { control: turn.control };
     if (turn.mode === "control") {
       if (!turn.control) throw new Error("Control receipt unavailable");
@@ -536,6 +548,8 @@ export function createSessionCatalog(
     // Preserve native publication and the exact archive/ACK control receipt,
     // without asking another model to narrate a response already delivered.
     if (result?.silent) return suppress();
+    if (assignment.kind === "message" && !context.retentionExcluded)
+      host.rememberRequest?.(context.request);
     return context;
   }
   async function apply(
@@ -543,6 +557,7 @@ export function createSessionCatalog(
     assignment: ActivityAssignment,
     reply: CompanionReply,
   ): ReturnType<ActivityCatalog["apply"]> {
+    if (status(host, assignment) === "cleared") return { text: "" };
     const turn = active(host, assignment);
     if (turn.applied) return turn.applied;
     const context = turn.context;
@@ -633,6 +648,9 @@ export function createSessionCatalog(
     outcome: Parameters<ActivityCatalog["acknowledge"]>[1],
   ): Promise<void> {
     if (status(host, assignment) === "acknowledged") return;
+    // A manual reset retires the conversation lane, not the external effects.
+    // Keep original receipts/holds; do not falsely settle the cleared directory.
+    if (status(host, assignment) === "cleared") return;
     const turn = active(host, assignment);
     const archive = deps.memory?.store.sessionArchiveReceipt(
       audience(host),
@@ -685,6 +703,7 @@ export function createSessionCatalog(
       );
     }
     // No yield between settlement, searchable watermark and historical receipt.
+    if (status(host, assignment) === "cleared") return;
     const directory = host.state.sessions?.directory;
     if (!directory) throw new Error("Activity directory unavailable");
     settleSessionInput(directory, assignment.eventId, assignment.sessionId);

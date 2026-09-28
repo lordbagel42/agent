@@ -504,6 +504,10 @@ export function createExecutionActor(
                       const conversation = client.conversation.getOrCreate(
                         context.conversationKey,
                       );
+                      const canDeliver = async () =>
+                        usable() &&
+                        (await conversation.executionCanReply(request.id)) &&
+                        usable();
                       const reflection = deps.reflection
                         ? client.reflection.getOrCreate([deps.owner.id])
                         : undefined;
@@ -540,7 +544,7 @@ export function createExecutionActor(
                       const send = async (
                         outbound: OutboundMessage,
                       ): Promise<SendResult> => {
-                        if (!usable())
+                        if (!(await canDeliver()))
                           return {
                             status: "rejected",
                             code: "execution_invalidated",
@@ -577,7 +581,7 @@ export function createExecutionActor(
                           request.deliveries[operationId],
                           step.vars.persist,
                           async (outbound) =>
-                            usable()
+                            (await canDeliver())
                               ? dispatch(outbound)
                               : {
                                   status: "rejected",
@@ -604,6 +608,7 @@ export function createExecutionActor(
                           signal,
                           valid: usable,
                           canStartAction: usable,
+                          canDeliver,
                           model: deps.execution.model,
                           deps,
                           ports: {

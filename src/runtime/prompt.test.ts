@@ -33,6 +33,40 @@ const input: PromptInput = {
   capabilities: {},
 };
 
+it.for(["interaction", "execution", "decision"] as const)(
+  "keeps session-control knowledge in the %s prompt without inspection enabled",
+  (role) => {
+    const request = buildModelRequest({
+      ...input,
+      ...(role === "decision"
+        ? {
+            wakeup: {
+              mode: "decision" as const,
+              runId: "run",
+              jobId: "job",
+              instruction: "observe",
+              event: {
+                id: "trigger",
+                source: "github",
+                type: "push",
+                occurredAt: 1,
+                data: {},
+              },
+            },
+          }
+        : { agentRole: role }),
+      capabilities: { inspectionAvailable: false },
+    });
+    expect(request.system).toContain("CLEARHISTORY");
+    expect(request.system).toContain("DEBUGSHARE");
+    expect(request.system).toContain('inspection:"debug-shares"');
+    expect(request.system).toContain("no agent starts");
+    expect(request.system).toContain(
+      "never push, deployment or infrastructure changes",
+    );
+  },
+);
+
 it("excludes opted-out Slack history but keeps raw whitespace and other platforms", () => {
   const privateEvent = {
     ...event,

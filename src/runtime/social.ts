@@ -223,6 +223,7 @@ export class SocialPermissions {
     canStartAction?: () => boolean,
     check?: () => Extract<SendResult, { status: "rejected" }> | undefined,
     isCurrent: () => boolean = () => true,
+    canDeliver?: () => Promise<boolean>,
   ): Promise<SendResult> {
     this.forget();
     const revision = this.options.deletionRevision?.() ?? 0;
@@ -251,7 +252,26 @@ export class SocialPermissions {
           .prepare("INSERT OR REPLACE INTO social_deliveries VALUES (?, ?)")
           .run(id, JSON.stringify(delivery));
       },
-      (message) => this.options.slack.send(message),
+      async (message) => {
+        if (canDeliver && !(await canDeliver()))
+          return {
+            status: "rejected",
+            code: "superseded_input",
+            retryable: false,
+          };
+        if (
+          !isCurrent() ||
+          revision !== (this.options.deletionRevision?.() ?? 0)
+        )
+          return { status: "rejected", code: "forgotten", retryable: false };
+        if (canStartAction?.() === false)
+          return {
+            status: "rejected",
+            code: "superseded_input",
+            retryable: false,
+          };
+        return check?.() ?? this.options.slack.send(message);
+      },
       () => {
         // Privacy reads may take time. Run them before the interruption gate's
         // final clock sample, leaving only adapter dispatch after that gate.
@@ -564,6 +584,7 @@ export class SocialPermissions {
     canStartAction?: () => boolean,
     operationId = event.id,
     isCurrent: () => boolean = () => true,
+    canDeliver?: () => Promise<boolean>,
   ): Promise<string> {
     if (!isCurrent() || !this.authorized(event))
       return "This conversation is not authorized.";
@@ -585,6 +606,7 @@ export class SocialPermissions {
         canStartAction,
         undefined,
         isCurrent,
+        canDeliver,
       );
       return `Post delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived or repeat an uncertain send."}`;
     }
@@ -675,6 +697,7 @@ export class SocialPermissions {
       canStartAction,
       undefined,
       isCurrent,
+      canDeliver,
     );
     return `Approval request ${id}: notification ${result.status}. No extra permission is active. ${result.status === "sent" ? "Waiting for Raygen." : "I cannot confirm Raygen received it; ask him directly."}`;
   }

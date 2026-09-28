@@ -61,6 +61,13 @@ const schema = z
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    debugShare: z
+      .strictObject({
+        repositoryRoot: absolutePath,
+        worktreeRoot: absolutePath,
+        timeoutMs: z.number().int().min(1000).max(3_600_000).default(900_000),
+      })
+      .optional(),
     activitySessions: z
       .strictObject({
         enabled: z.boolean().default(false),

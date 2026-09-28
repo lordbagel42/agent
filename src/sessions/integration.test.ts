@@ -104,12 +104,19 @@ it.for([false, true])(
     t.onTestFinished(() => store.close());
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];
+    const snapshots: unknown[] = [];
     const registry = createJuneRegistry({
       owner: {
         id: "owner",
         identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
       },
       sessions: { idleMs: 1000 },
+      debugShare: {
+        async run(snapshot) {
+          snapshots.push(snapshot);
+          return { threadId: "T-fixture", report: "checked" };
+        },
+      },
       wakeups: {
         sources: ["github"],
         decisionSources: ["github"],
@@ -217,6 +224,20 @@ it.for([false, true])(
       )
       .toBe(true);
     expect(await wakeups.publish(event)).toMatchObject({ duplicate: true });
+    await june.receive({
+      id: "debug",
+      type: "message",
+      messageId: "debug",
+      occurredAt: Date.now(),
+      address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+      senderId: "U1",
+      direct: true,
+      sessionCommandEligible: true,
+      text: "DEBUGSHARE",
+    });
+    await expect.poll(() => snapshots.length, { timeout: 15000 }).toBe(1);
+    expect(JSON.stringify(snapshots)).not.toContain("!approve injected");
+    expect(JSON.stringify(snapshots)).not.toContain("A useful change arrived.");
   },
 );
 

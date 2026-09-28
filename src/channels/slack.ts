@@ -303,6 +303,10 @@ async function normalizeEvent(
         direct: channelType === "im",
         text: event.text,
         botMentioned: mentioned,
+        ...(owner &&
+        /^(?:CLEARHISTORY|DEBUGSHARE(?: [^\r\n]*)?)$/.test(event.text)
+          ? { sessionCommandEligible: isPlainSlackCommand(event) }
+          : {}),
         ...(event.text.startsWith("!memory-correct")
           ? { ownerCorrectionEligible: isPlainSlackCommand(event) }
           : {}),

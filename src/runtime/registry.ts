@@ -118,6 +118,16 @@ import {
   dispatchScopeExecution,
   type ScopeCatalog,
 } from "./scope-catalog.js";
+import {
+  captureDebug,
+  createDebugShareActor,
+  type DebugInvestigator,
+  publishSessionCommand,
+  redactDebug,
+  resetConversation,
+  type SessionCommandReceipt,
+  sessionCommand,
+} from "./session-controls.js";
 import type { SocialPermissions } from "./social.js";
 import {
   createTypingActor,
@@ -128,6 +138,7 @@ import {
 
 export interface Dependencies {
   owner: Owner;
+  debugShare?: DebugInvestigator;
   /** Host-injected handoff only; not exposed by production config until the
    * activity catalog/control paths are integrated. Accepted session inputs hold
    * durably, never silently fall back to legacy when this switch is absent. */
@@ -261,6 +272,9 @@ export interface ConversationState extends ScopeCatalog {
   legacyAdmissions?: string[];
   migration?: SessionMigration;
   sessions?: SessionCatalogState;
+  session?: { id: string; startedAt: number };
+  clearedInputs?: Record<string, true>;
+  sessionCommands?: Record<string, SessionCommandReceipt>;
   latestInputs?: Record<string, { id: string; occurredAt: number }>;
   memoryContexts?: Record<string, MemoryReference>;
   forgottenEvents?: string[];
@@ -535,6 +549,7 @@ export function createJuneRegistry(deps: Dependencies) {
       vars: {
         persist(): Promise<void>;
         schedule(at: number): Promise<unknown>;
+        debugRequest?: unknown;
       };
       queue: {
         send(
@@ -548,6 +563,9 @@ export function createJuneRegistry(deps: Dependencies) {
     state: c.state,
     key: c.key,
     persist: c.vars.persist,
+    rememberRequest: (request) => {
+      c.vars.debugRequest = redactDebug(request);
+    },
     typing: (address) => ({
       read: () => client.typing.getOrCreate(typingKey(address)).read(),
       set: (enabled) => setTypingPreference(client, address, enabled),
@@ -601,10 +619,13 @@ export function createJuneRegistry(deps: Dependencies) {
     ): {
       persist: () => Promise<void>;
       receiving: Promise<void>;
+      publishing: Promise<void>;
       schedule(at: number): Promise<unknown>;
+      debugRequest?: unknown;
     } => ({
       persist: () => c.saveState({ immediate: true }),
       receiving: Promise.resolve(),
+      publishing: Promise.resolve(),
       schedule: (at) => c.schedule.at(at, "sessionIdle"),
     }),
     queues: {
@@ -615,6 +636,8 @@ export function createJuneRegistry(deps: Dependencies) {
     onWake: async (c) => {
       // Runs before workflow replay. Enqueue is durable; duplicates are harmless.
       // Do not await an immediate save here: native startup cannot service it.
+      if (Object.keys(c.state.sessionCommands ?? {}).length)
+        await c.schedule.after(1, "resumeSessionCommands");
       const pending: ConversationInput[] = [
         ...Object.values(c.state.pendingInputs ?? {}).map((event) => ({
           type: "event" as const,
@@ -635,6 +658,52 @@ export function createJuneRegistry(deps: Dependencies) {
         await c.queue.send("inbox", { type: "session_tick" });
     },
     actions: {
+      debugShares: async (
+        c,
+      ): Promise<
+        {
+          id?: string;
+          sessionId?: string;
+          capturedAt?: string;
+          status?: string;
+          threadId?: string;
+        }[]
+      > => {
+        if (
+          JSON.stringify(c.key) !== JSON.stringify(["private", deps.owner.id])
+        )
+          return [];
+        return Promise.all(
+          Object.values(c.state.sessionCommands ?? {})
+            .flatMap((receipt) =>
+              receipt.snapshot ? [receipt.snapshot.id] : [],
+            )
+            .slice(-10)
+            .map((id) =>
+              c
+                .client<JuneClientRegistry>()
+                .debugShare.getOrCreate([id])
+                .inspect(),
+            ),
+        );
+      },
+      resumeSessionCommands: async (c): Promise<void> => {
+        const publishing = c.vars.publishing.then(async () => {
+          for (const receipt of Object.values(c.state.sessionCommands ?? {}))
+            await publishSessionCommand(
+              receipt,
+              deps,
+              c.vars.persist,
+              (snapshot) =>
+                c
+                  .client<JuneClientRegistry>()
+                  .debugShare.getOrCreate([snapshot.id])
+                  .start(snapshot),
+            );
+        });
+        c.vars.publishing = publishing.catch(() => {});
+        await publishing;
+      },
       sessionIdle: async (c) => {
         await c.queue.send("inbox", { type: "session_tick" });
       },
@@ -698,6 +767,64 @@ export function createJuneRegistry(deps: Dependencies) {
             await c.queue.send("inbox", { type: "event", event });
             return;
           }
+          c.state.session ??= { id: randomUUID(), startedAt: 0 };
+          const command = sessionCommand(event);
+          if (command) {
+            c.state.sessionCommands ??= {};
+            if (!c.state.sessionCommands[id]) {
+              const snapshot =
+                command.kind === "debug" && scope.private
+                  ? captureDebug(
+                      c.state,
+                      c.key,
+                      command.reason,
+                      deps.runningRevision,
+                      c.vars.debugRequest,
+                    )
+                  : undefined;
+              if (snapshot && c.state.sessions?.directory.activeSessionId) {
+                const activityId = c.state.sessions.directory.activeSessionId;
+                const activity = await c
+                  .client<JuneClientRegistry>()
+                  .activity.getOrCreate(sessionActorKey(c.key, activityId))
+                  .diagnostic(activityId);
+                snapshot.data = {
+                  coordinator: snapshot.data,
+                  activity: redactDebug(activity),
+                  activityCapturedAt: new Date().toISOString(),
+                };
+              }
+              if (command.kind === "clear") {
+                resetConversation(c.state, receivedAt);
+                delete c.vars.debugRequest;
+              }
+              c.state.sessionCommands[id] = {
+                ...(snapshot ? { snapshot } : {}),
+                delivery: {
+                  phase: "ready",
+                  attempts: 0,
+                  message: {
+                    id: randomUUID(),
+                    address: event.address,
+                    lastInboundAt: event.occurredAt,
+                    content: {
+                      type: "text",
+                      text:
+                        command.kind === "clear"
+                          ? "Started a new session. Saved memories and archives are unchanged."
+                          : snapshot
+                            ? `DEBUGSHARE ${snapshot.id}\n${snapshot.capturedAt}\n${deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}`
+                            : "Send DEBUGSHARE in your private DM with me so the diagnostic snapshot stays private.",
+                    },
+                  },
+                },
+              };
+              c.state.events[id] = { event, done: true };
+              await c.vars.persist();
+            }
+            return;
+          }
+          if (c.state.clearedInputs?.[id]) return;
           if (c.state.migration && event.address.channel !== "slack")
             throw new Error(
               "Session scope cannot admit a linked legacy adapter",
@@ -774,6 +901,15 @@ export function createJuneRegistry(deps: Dependencies) {
         });
         c.vars.receiving = receiving.catch(() => {});
         await receiving;
+        if (
+          event.type === "message" &&
+          sessionCommand(event) &&
+          isOwner(event, deps.owner)
+        )
+          await c
+            .client<JuneClientRegistry>()
+            .conversation.getOrCreate(c.key)
+            .resumeSessionCommands();
       },
       /** Trusted worker/scheduler ingress. Uses the same admission serializer as
        * human messages; a lost ACK never renews the receipt or replaces its body. */
@@ -819,6 +955,15 @@ export function createJuneRegistry(deps: Dependencies) {
               : input.type === "wakeup"
                 ? (input.wakeup.originEventId ?? input.wakeup.jobId)
                 : delegation?.originEventId;
+          if (
+            c.state.clearedInputs?.[id] ||
+            (originId && c.state.clearedInputs?.[originId]) ||
+            (input.type !== "wakeup" &&
+              c.state.clearedInputs?.[
+                conversationInputId({ type: "event", event: input.source })
+              ])
+          )
+            return;
           if (originId && c.state.forgottenEvents?.includes(originId)) return;
           const reference = originId
             ? c.state.memoryContexts?.[originId]
@@ -934,6 +1079,10 @@ export function createJuneRegistry(deps: Dependencies) {
           !c.state.forgottenEvents?.includes(id) &&
           (!reference || current(JSON.stringify(c.key), reference))
         );
+      },
+      executionCanReply: (c, requestId: string): boolean => {
+        const context = c.state.delegations?.[requestId];
+        return !!context && !c.state.clearedInputs?.[context.originEventId];
       },
       executionJobs: (c, requestId: string) => {
         const context = delegatedScope(c.state, c.key, requestId);
@@ -1101,6 +1250,7 @@ export function createJuneRegistry(deps: Dependencies) {
       forget: async (c, sourceId: string) => {
         if (!deps.memory?.store.isDeleted(sourceId))
           throw new Error("Source must be tombstoned first");
+        delete c.vars.debugRequest;
         deps.memory.personality?.forgetGlobalProposals();
         c.state.forgetCleanups ??= {};
         const key = JSON.stringify(sourceId);
@@ -1455,6 +1605,7 @@ export function createJuneRegistry(deps: Dependencies) {
               );
             };
             const valid = (state: ConversationState) => {
+              if (state.clearedInputs?.[eventId]) return false;
               if (
                 deletionRevision !==
                 (deps.memory?.store.deletionRevision() ?? 0)
@@ -1932,6 +2083,12 @@ export function createJuneRegistry(deps: Dependencies) {
                 kind: ReplyKind,
                 state: ConversationState,
               ): Promise<SendResult> => {
+                if (state.clearedInputs?.[eventId])
+                  return {
+                    status: "rejected",
+                    code: "session_reset",
+                    retryable: false,
+                  };
                 if (
                   conversationalReply &&
                   !reply.interrupt &&
@@ -2775,6 +2932,9 @@ export function createJuneRegistry(deps: Dependencies) {
                             const retrieved = deps.memory.store.retrieve(
                               audience,
                               event.text,
+                              step.state.session?.startedAt
+                                ? { claimsOnly: true }
+                                : undefined,
                             );
                             // Index only this bounded, scoped recall. Never look up
                             // identities by name or promote dreams to relationships.
@@ -2877,6 +3037,13 @@ export function createJuneRegistry(deps: Dependencies) {
                               ...new Map(
                                 context
                                   .filter(({ source, content }) => {
+                                    if (
+                                      step.state.session?.startedAt &&
+                                      (!source ||
+                                        source.occurredAt <
+                                          step.state.session.startedAt)
+                                    )
+                                      return false;
                                     if (content.includes(RIVET_REPLY_PREFIX))
                                       return false;
                                     // Copies in Slack (approval previews or past
@@ -3432,6 +3599,12 @@ export function createJuneRegistry(deps: Dependencies) {
                           const probe = latencyProbe(event.text);
                           if (probe)
                             modelRequest.system += `\nThis is an owner latency probe. Respond with text exactly "pong ${probe}" and no reaction, search, latency lookup, release action, coding, or escalation.`;
+                          if (
+                            phase === "reply" &&
+                            body.type === "event" &&
+                            valid(step.state)
+                          )
+                            step.vars.debugRequest = redactDebug(modelRequest);
                           deps.latency?.mark(event, "context_ready");
                           if (version >= 2) {
                             step.state.modelInvocations ??= {};
@@ -5471,6 +5644,7 @@ export function createJuneRegistry(deps: Dependencies) {
         },
       }),
       personality: createPersonalityActor(deps.owner, deps.memory?.personality),
+      debugShare: createDebugShareActor(deps),
       job: createCodingActor(
         deps.coding,
         deps.lifecycle,

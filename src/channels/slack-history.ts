@@ -55,16 +55,17 @@ export function createSlackHistory({
     const request = parsed.data;
     const deadline = AbortSignal.timeout(15_000);
     const readSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
-    const check = () => {
+    const check = async () => {
       readSignal.throwIfAborted();
-      if (!ownerUserIds.has(ownerId) || !isCurrent())
+      if (!ownerUserIds.has(ownerId) || !(await isCurrent()))
         throw new HistoryError("history_invalidated");
+      readSignal.throwIfAborted();
     };
     async function read(
       method: string,
       body: JsonObject = {},
     ): Promise<JsonObject> {
-      check();
+      await check();
       // auth.teams.list documents form encoding, unlike the conversation APIs.
       const form = method === "auth.teams.list";
       const response = await fetchImpl(`https://slack.com/api/${method}`, {
@@ -350,7 +351,7 @@ export function createSlackHistory({
         currentDestination.user !== ownerId
       )
         throw new HistoryError("history_owner_dm_unavailable");
-      check();
+      await check();
       const result = await send({
         id: operationId,
         address: {

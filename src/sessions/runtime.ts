@@ -73,7 +73,7 @@ export interface ActivityCatalog {
    * permission. Keep it available after release, revocation and lost RPC ACKs. */
   assignmentStatus(
     assignment: ActivityAssignment,
-  ): Promise<"active" | "acknowledged" | "unavailable">;
+  ): Promise<"active" | "acknowledged" | "cleared" | "unavailable">;
   prepare(
     assignment: ActivityAssignment,
     history: (ConversationMessage & { reference: MemoryReference })[],
@@ -185,6 +185,37 @@ export function createActivityActor(deps: ActivityDependencies) {
           await c.queue.send("turns", { eventId: turn.assignment.eventId });
     },
     actions: {
+      diagnostic: (c, sessionId: string) => {
+        if (c.state.binding?.sessionId !== sessionId) return null;
+        return {
+          sessionId,
+          history: c.state.history.map(({ role, content, eventId }) => ({
+            role,
+            content,
+            eventId,
+          })),
+          turns: Object.values(c.state.turns).map((turn) => ({
+            eventId: turn.assignment.eventId,
+            receivedAt: turn.assignment.receivedAt,
+            inference: turn.inference,
+            effects: turn.effects,
+            hold: turn.hold,
+            // Decision/tool continuations are volatile, not diagnostic text.
+            reply: turn.context?.retentionExcluded
+              ? undefined
+              : turn.reply?.text,
+            deliveries: turn.deliveries
+              ?.filter((delivery) => !delivery.ephemeral)
+              .map((delivery) => ({
+                phase: delivery.phase,
+                result: delivery.result,
+                content: turn.context?.retentionExcluded
+                  ? undefined
+                  : delivery.message.content,
+              })),
+          })),
+        };
+      },
       receive: async (c, assignment: ActivityAssignment) => {
         if (
           !keyMatches(c.key, assignment) ||

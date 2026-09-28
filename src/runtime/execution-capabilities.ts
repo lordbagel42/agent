@@ -94,7 +94,8 @@ export async function runExecutionCapability(
           event,
           request,
           outbound.id,
-          current,
+          async () =>
+            current() && ((await context.canDeliver?.()) ?? true) && current(),
           signal,
         );
       }),
@@ -199,6 +200,7 @@ export async function runExecutionCapability(
         context.canStartAction,
         operationId,
         current,
+        context.canDeliver,
       ),
       terminal: true,
     };

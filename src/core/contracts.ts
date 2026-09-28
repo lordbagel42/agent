@@ -55,6 +55,8 @@ export interface MessageEvent extends EventBase {
   mcpCommandEligible?: boolean;
   /** Verified fresh plain Slack backup command; absent on old/context events. */
   memoryBackupEligible?: boolean;
+  /** Verified fresh plain owner Slack session control, never imported context. */
+  sessionCommandEligible?: boolean;
   /** Fresh, plain owner-DM deployment approval; never set by history/model text. */
   appDeploymentEligible?: boolean;
   /** Fresh, plain owner-private Slack command; absent on quotes and old inboxes. */
@@ -141,7 +143,7 @@ export interface ChannelAdapter {
     event: MessageEvent,
     request: import("./slack-history.js").SlackHistoryRequest,
     operationId: string,
-    isCurrent: () => boolean,
+    isCurrent: () => boolean | Promise<boolean>,
     signal?: AbortSignal,
   ): Promise<SendResult>;
   /** Read-only local public-search token presence, not verified provider access. */
@@ -255,6 +257,7 @@ export interface CompanionReply {
     | "inference"
     | "forgetting"
     | "operations"
+    | "debug-shares"
     | "capacity"
     | "retention"
     | "capabilities"

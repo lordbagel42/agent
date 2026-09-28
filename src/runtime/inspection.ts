@@ -400,6 +400,7 @@ export function createInspectionReader(deps: {
     hasActionToken?: (event: MessageEvent) => boolean;
   };
   operations?: () => Promise<OutstandingOperationSnapshot>;
+  debugShares?: () => Promise<unknown>;
   curiosity?: (audience: string) => Promise<CuriosityProgress>;
   coding?: {
     enabled: boolean;
@@ -441,6 +442,8 @@ export function createInspectionReader(deps: {
     const target = typeof query === "string" ? query : query.target;
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {
+      case "debug-shares":
+        return `${heading}\n${JSON.stringify((await deps.debugShares?.()) ?? { status: "unavailable" })}\nAt most ten private debug-share receipts. Queued/running is not success; completed means the investigator returned, not that a fix was deployed. Unknown requires operator investigation, not automatic retry. Snapshot bodies are excluded. Only a fresh plain owner DEBUGSHARE command starts an investigation; this inspection does not launch one.`;
       case "capability-matrix":
         return deps.capabilityMatrix
           ? `${heading}\n${JSON.stringify(deps.capabilityMatrix())}`

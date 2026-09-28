@@ -190,6 +190,8 @@ export interface CapabilityContext {
   valid(): boolean;
   /** Pre-dispatch admission, separate from validity of settled observations. */
   canStartAction?(): boolean;
+  /** Coordinator fence for worker replies across a conversation reset. */
+  canDeliver?(): Promise<boolean>;
   model: ModelProvider;
   deps: CapabilityDependencies;
   ports: CapabilityPorts;
