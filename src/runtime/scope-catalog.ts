@@ -1,14 +1,16 @@
 import type {
   ChannelEvent,
   CodingRequest,
+  ExecutionCommand,
   MessageEvent,
   Owner,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import type { EvidenceStore } from "../memory/store.js";
+import { type ExecutionRequest, executionLimits } from "./execution.js";
 import type { ExecutionContext } from "./execution-context.js";
-import type { MemoryReference } from "./registry.js";
+import type { ConversationState, MemoryReference } from "./registry.js";
 
 /** Stable catalog records owned by the conversation actor, not its workers. */
 export interface ScopeCatalog {
@@ -106,4 +108,135 @@ export function createScopeCatalogAuthority(
   }
 
   return { delegatedScope, visibleJob };
+}
+
+/** A caller inside the stable catalog's durable callback, not an activity-state
+ * copy. The caller retains its original journal step and live authorization
+ * predicate. RPCs and persistence yield, so authorization is rechecked afterward.
+ */
+interface ScopeExecutionHost {
+  state: Pick<
+    ConversationState,
+    "agents" | "delegations" | "memoryContexts" | "forgetCleanups"
+  >;
+  conversationKey: string[];
+  scopeKey: string[];
+  audience: string;
+  eventId: string;
+  event: MessageEvent;
+  replyAddress: MessageEvent["address"];
+  plan: {
+    workerCapabilities?: ExecutionContext["capabilities"];
+    deletionRevision?: number;
+    workspaces: string[];
+    web?: boolean;
+  };
+  enabled(): boolean;
+  canStartAction(): boolean;
+  personalityDigest(): string;
+  persist(): Promise<void>;
+  worker(id: string): {
+    summary(): Promise<{ pending: number }>;
+    result(requestId: string): Promise<unknown>;
+    cancel(commandId: string): Promise<unknown>;
+    submit(request: ExecutionRequest): Promise<boolean>;
+  };
+}
+
+/** Stable roster, task identity and frozen authority stay together on dispatch.
+ * Work runs in the independent execution actor, never in this catalog callback.
+ */
+export async function dispatchScopeExecution(
+  host: ScopeExecutionHost,
+  commands: readonly ExecutionCommand[],
+): Promise<string[]> {
+  const { state, eventId, plan } = host;
+  const outcomes: string[] = [];
+  for (const command of commands) {
+    if (!host.canStartAction() || !host.enabled()) break;
+    state.agents ??= {};
+    let id = Object.hasOwn(state.agents, command.agent)
+      ? state.agents[command.agent]
+      : undefined;
+    if (command.action === "cancel") {
+      if (id) await host.worker(id).cancel(eventId);
+      outcomes.push(
+        `${command.agent}: ${id ? "cancellation requested" : "not found"}`,
+      );
+      continue;
+    }
+    if (
+      id &&
+      Object.values(state.forgetCleanups ?? {}).some(
+        (cleanup) =>
+          !cleanup.completed &&
+          Object.values(cleanup.agents).some((agent) => agent === id),
+      )
+    ) {
+      outcomes.push(
+        `${command.agent}: forgetting cleanup pending; retry after cleanup or use another worker name`,
+      );
+      continue;
+    }
+    if (!id && Object.keys(state.agents).length >= executionLimits.roster) {
+      outcomes.push(`${command.agent}: roster full; reuse an existing worker`);
+      continue;
+    }
+    const pending = await Promise.all(
+      Object.values(state.agents).map((key) => host.worker(key).summary()),
+    );
+    if (!host.canStartAction()) break;
+    const requestId = `${eventId}:${command.agent}`;
+    const existing = id ? await host.worker(id).result(requestId) : null;
+    if (
+      !existing &&
+      pending.reduce((sum, worker) => sum + worker.pending, 0) >=
+        executionLimits.pending
+    ) {
+      outcomes.push(`${command.agent}: busy; four tasks are already pending`);
+      continue;
+    }
+    if (!host.canStartAction()) break;
+    id ??= `${eventId}:${command.agent}`;
+    state.agents[command.agent] = id;
+    const reference = state.memoryContexts?.[eventId];
+    const context: ExecutionContext | undefined = plan.workerCapabilities
+      ? {
+          version: 1,
+          scopeKey: [...host.scopeKey],
+          audience: host.audience,
+          conversationKey: [...host.conversationKey],
+          originEventId: eventId,
+          deletionRevision: plan.deletionRevision ?? 0,
+          sourceIds: [...(reference?.sourceIds ?? [])],
+          contextSourceIds: [...(reference?.contextSourceIds ?? [])],
+          personality: host.personalityDigest(),
+          capabilities: plan.workerCapabilities,
+        }
+      : undefined;
+    if (context) {
+      state.delegations ??= {};
+      state.delegations[requestId] ??= context;
+    }
+    await host.persist();
+    if (!host.canStartAction()) break;
+    const accepted = await host.worker(id).submit({
+      id: requestId,
+      source: host.event,
+      replyAddress: host.replyAddress,
+      task: command.task,
+      ...(context ? { context: state.delegations?.[requestId] } : {}),
+      workspaces: plan.workspaces,
+      web: !!plan.web,
+      deletionTracked: true,
+      evidenceIds: [
+        ...new Set([
+          ...(state.memoryContexts?.[eventId]?.sourceIds ?? []),
+          ...(state.memoryContexts?.[eventId]?.contextSourceIds ?? []),
+        ]),
+      ],
+    });
+    outcomes.push(`${command.agent}: ${accepted ? "queued" : "unavailable"}`);
+  }
+  return outcomes;
 }

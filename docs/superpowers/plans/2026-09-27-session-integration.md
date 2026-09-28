@@ -24,6 +24,7 @@
 **Files:** `src/runtime/scope-catalog.ts`, `src/runtime/registry.ts`.
 
 - [x] Move the stable catalog types and delegated-authority/visible-job validation into a focused scope-catalog module without changing persisted field names, validation or RPC behavior. `ConversationState` continues to contain the same records; this is not a state migration or a copied catalog.
+- [x] Extract worker dispatch into the same catalog module, retaining the `dispatch-execution` journal step, original task IDs, deletion checks, roster limits and write-before-submit ordering. Activity forwarding will call this on the stable catalog, not copy its state.
 - [x] Run existing execution, coding approval, forgetting and deletion tests before adding activity forwarding.
 - [ ] Preserve `ExecutionContext.conversationKey` as the stable origin metadata destination. Record new activity origin/assignment separately in coordinator-owned metadata; do not let the worker choose its return session.
 

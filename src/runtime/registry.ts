@@ -61,7 +61,6 @@ import {
   createExecutionActor,
   type ExecutionDependencies,
   executionKey,
-  executionLimits,
 } from "./execution.js";
 import {
   type ExecutionContext,
@@ -98,6 +97,7 @@ import {
 import type { RivetReader } from "./rivet-inspection.js";
 import {
   createScopeCatalogAuthority,
+  dispatchScopeExecution,
   type ScopeCatalog,
 } from "./scope-catalog.js";
 import type { SocialPermissions } from "./social.js";
@@ -3762,134 +3762,28 @@ export function createJuneRegistry(deps: Dependencies) {
                   ).execution ?? [];
                 const outcomes = await loop.step(
                   "dispatch-execution",
-                  async (step) => {
-                    const outcomes: string[] = [];
-                    for (const command of commands) {
-                      if (!canStartAction(step.state) || !deps.execution) break;
-                      step.state.agents ??= {};
-                      let id = Object.hasOwn(step.state.agents, command.agent)
-                        ? step.state.agents[command.agent]
-                        : undefined;
-                      if (command.action === "cancel") {
-                        if (id)
-                          await step
-                            .client<JuneClientRegistry>()
-                            .execution.getOrCreate(executionKey(scope.key, id))
-                            .cancel(eventId);
-                        outcomes.push(
-                          `${command.agent}: ${id ? "cancellation requested" : "not found"}`,
-                        );
-                        continue;
-                      }
-                      if (
-                        id &&
-                        Object.values(step.state.forgetCleanups ?? {}).some(
-                          (cleanup) =>
-                            !cleanup.completed &&
-                            Object.values(cleanup.agents).some(
-                              (agent) => agent === id,
-                            ),
-                        )
-                      ) {
-                        outcomes.push(
-                          `${command.agent}: forgetting cleanup pending; retry after cleanup or use another worker name`,
-                        );
-                        continue;
-                      }
-                      if (
-                        !id &&
-                        Object.keys(step.state.agents).length >=
-                          executionLimits.roster
-                      ) {
-                        outcomes.push(
-                          `${command.agent}: roster full; reuse an existing worker`,
-                        );
-                        continue;
-                      }
-                      const pending = await Promise.all(
-                        Object.values(step.state.agents).map((key) =>
+                  async (step) =>
+                    dispatchScopeExecution(
+                      {
+                        state: step.state,
+                        conversationKey: ctx.key,
+                        scopeKey: scope.key,
+                        audience,
+                        eventId,
+                        event,
+                        replyAddress,
+                        plan,
+                        enabled: () => !!deps.execution,
+                        canStartAction: () => canStartAction(step.state),
+                        personalityDigest: () => personalityDigest(audience),
+                        persist: step.vars.persist,
+                        worker: (id) =>
                           step
                             .client<JuneClientRegistry>()
-                            .execution.getOrCreate(executionKey(scope.key, key))
-                            .summary(),
-                        ),
-                      );
-                      if (!canStartAction(step.state)) break;
-                      const requestId = `${eventId}:${command.agent}`;
-                      const existing = id
-                        ? await step
-                            .client<JuneClientRegistry>()
-                            .execution.getOrCreate(executionKey(scope.key, id))
-                            .result(requestId)
-                        : null;
-                      if (
-                        !existing &&
-                        pending.reduce(
-                          (sum, worker) => sum + worker.pending,
-                          0,
-                        ) >= executionLimits.pending
-                      ) {
-                        outcomes.push(
-                          `${command.agent}: busy; four tasks are already pending`,
-                        );
-                        continue;
-                      }
-                      if (!canStartAction(step.state)) break;
-                      id ??= `${eventId}:${command.agent}`;
-                      step.state.agents[command.agent] = id;
-                      const reference = step.state.memoryContexts?.[eventId];
-                      const context: ExecutionContext | undefined =
-                        plan.workerCapabilities
-                          ? {
-                              version: 1,
-                              scopeKey: [...scope.key],
-                              audience,
-                              conversationKey: [...ctx.key],
-                              originEventId: eventId,
-                              deletionRevision: plan.deletionRevision ?? 0,
-                              sourceIds: [...(reference?.sourceIds ?? [])],
-                              contextSourceIds: [
-                                ...(reference?.contextSourceIds ?? []),
-                              ],
-                              personality: personalityDigest(audience),
-                              capabilities: plan.workerCapabilities,
-                            }
-                          : undefined;
-                      if (context) {
-                        step.state.delegations ??= {};
-                        step.state.delegations[requestId] ??= context;
-                      }
-                      await step.vars.persist();
-                      if (!canStartAction(step.state)) break;
-                      const accepted = await step
-                        .client<JuneClientRegistry>()
-                        .execution.getOrCreate(executionKey(scope.key, id))
-                        .submit({
-                          id: requestId,
-                          source: event,
-                          replyAddress,
-                          task: command.task,
-                          ...(context
-                            ? { context: step.state.delegations?.[requestId] }
-                            : {}),
-                          workspaces: plan.workspaces,
-                          web: !!plan.web,
-                          deletionTracked: true,
-                          evidenceIds: [
-                            ...new Set([
-                              ...(step.state.memoryContexts?.[eventId]
-                                ?.sourceIds ?? []),
-                              ...(step.state.memoryContexts?.[eventId]
-                                ?.contextSourceIds ?? []),
-                            ]),
-                          ],
-                        });
-                      outcomes.push(
-                        `${command.agent}: ${accepted ? "queued" : "unavailable"}`,
-                      );
-                    }
-                    return outcomes;
-                  },
+                            .execution.getOrCreate(executionKey(scope.key, id)),
+                      },
+                      commands,
+                    ),
                 );
                 reply = {
                   text:
