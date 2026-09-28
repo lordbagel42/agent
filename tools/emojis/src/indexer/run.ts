@@ -185,17 +185,18 @@ export async function runIndexer(
                   ? error.uncertain
                   : inferenceStarted,
               );
-              // A confirmed terminal failure is not a replay: leave it failed and
-              // move to an untouched emoji. Never continue an unhealthy provider.
+              // A timeout is isolated only after terminal + thread/closed receipts.
+              // Keep it unknown and never replay it. Other uncertain failures stop.
               if (
                 error instanceof ModelError &&
-                !error.uncertain &&
                 !describer.failure &&
-                [
-                  "generation_failed",
-                  "invalid_analysis",
-                  "policy_blocked",
-                ].includes(code)
+                (code === "generation_timeout" ||
+                  (!error.uncertain &&
+                    [
+                      "generation_failed",
+                      "invalid_analysis",
+                      "policy_blocked",
+                    ].includes(code)))
               ) {
                 // Duplicate images share one promise, including its failure.
                 if (inferenceStarted) recordGeneration(true);

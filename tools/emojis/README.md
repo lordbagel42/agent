@@ -47,9 +47,14 @@ image preparation to two operations, and skips isolated, confirmed generation
 failures without retrying them. On each distinct terminal generation failure,
 the batch pauses if the last minute contains at least five such failures and
 they make up 10% or more of terminal model calls. Cached results and
-duplicate-image waiters do not inflate that count. Authentication, quota,
-protocol, provider-health and uncertain failures still stop new admission
-immediately and drain already-claimed work. Duplicate
+duplicate-image waiters do not inflate that count. An overdue turn is interrupted
+individually; its slot is reused only after matching terminal and thread-closed
+receipts. Other calls can continue. That attempt stays `unknown` without replay
+and counts toward the failure cutoff. A valid result that wins the interrupt
+race is preserved.
+Authentication, quota, protocol, provider-health and all other uncertain failures
+still stop new admission immediately and drain already-claimed work. Missing
+interrupt or cleanup receipts stop the whole provider. Duplicate
 images sharing one failed generation count once toward the failure threshold.
 Resuming processes only pending rows. `--initial-concurrency 500 --max-concurrency 500`
 starts and stays at up to 500 descriptions instead of the default ramp.

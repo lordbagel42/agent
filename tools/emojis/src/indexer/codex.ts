@@ -139,6 +139,7 @@ export async function createCodexDescriber(options: {
   const pending = new Map<
     number,
     {
+      method: string;
       resolve(v: unknown): void;
       reject(e: unknown): void;
       timer: NodeJS.Timeout;
@@ -176,10 +177,10 @@ export async function createCodexDescriber(options: {
     return new Promise((resolve, reject) => {
       const id = ++sequence;
       const timer = setTimeout(
-        () => fail("timeout"),
+        () => fail("rpc_timeout"),
         Math.min(timeoutMs, 15_000),
       );
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, { method, resolve, reject, timer });
       child?.stdin.write(
         `${JSON.stringify({ id, method, params })}\n`,
         (error) => {
@@ -197,7 +198,11 @@ export async function createCodexDescriber(options: {
       if (!p) return fail("malformed_response");
       pending.delete(msg.id);
       clearTimeout(p.timer);
-      if (msg.error) {
+      // A terminal turn may win the interrupt race. This response is not a
+      // shutdown receipt: describe still requires turn/completed and thread/closed.
+      const interruptRace =
+        p.method === "turn/interrupt" && object(msg.error).code === -32600;
+      if (msg.error && !interruptRace) {
         p.reject(failure("generation_failed", true));
         fail("generation_failed");
       } else p.resolve(msg.result);
@@ -267,6 +272,8 @@ export async function createCodexDescriber(options: {
         } catch {
           a.done.reject(failure("invalid_analysis"));
         }
+      } else if (turn.status === "interrupted") {
+        a.done.reject(failure("generation_interrupted"));
       } else {
         // Preserve only structured, allowlisted codes, never the provider's prose.
         const info = object(turn.error).codexErrorInfo;
@@ -462,8 +469,21 @@ export async function createCodexDescriber(options: {
           let threadId: string | undefined;
           let submitted = false;
           let a: Active | undefined;
-          const cancel = () => fail(signal?.aborted ? "cancelled" : "timeout");
-          const timer = setTimeout(cancel, timeoutMs);
+          let timedOut = false;
+          let interrupt: Promise<unknown> | undefined;
+          let interruptTimer: NodeJS.Timeout | undefined;
+          const cancel = () => fail("cancelled");
+          const timer = setTimeout(() => {
+            if (a?.terminal) return; // Retirement has its own deadline.
+            if (!threadId || !a?.turn) return fail("generation_timeout");
+            timedOut = true;
+            interruptTimer = setTimeout(
+              () => fail("interrupt_timeout"),
+              15_000,
+            );
+            interrupt = rpc("turn/interrupt", { threadId, turnId: a.turn });
+            void interrupt.catch(() => {}); // RPC failure marks the provider unhealthy.
+          }, timeoutMs);
           signal?.addEventListener("abort", cancel, { once: true });
           try {
             if (
@@ -555,6 +575,7 @@ export async function createCodexDescriber(options: {
             }
             a.turn = turn;
             await a.done.promise;
+            await interrupt;
             const answer = a.analysis;
             if (!answer) throw failure("invalid_analysis");
             if (errorCode) return answer;
@@ -563,7 +584,13 @@ export async function createCodexDescriber(options: {
             return answer;
           } catch (error) {
             const code =
-              error instanceof ModelError ? error.code : "provider_unavailable";
+              timedOut &&
+              error instanceof ModelError &&
+              error.code === "generation_interrupted"
+                ? "generation_timeout"
+                : error instanceof ModelError
+                  ? error.code
+                  : "provider_unavailable";
             // Paid, validated terminal output survives retirement/global provider failure.
             // Callers persist it and stop admission using the failure property.
             if (a?.analysis) {
@@ -572,6 +599,7 @@ export async function createCodexDescriber(options: {
             }
             if (threadId && !errorCode && a?.terminal) {
               try {
+                await interrupt;
                 await retire(threadId);
                 threadId = undefined;
               } catch {
@@ -584,9 +612,14 @@ export async function createCodexDescriber(options: {
               code === "hot_codex_requires_clean_config"
             )
               fail(code);
-            throw failure(errorCode ?? code, submitted && !a?.terminal);
+            // Local shutdown cannot prove the provider did not perform inference.
+            throw failure(
+              errorCode ?? code,
+              timedOut || (submitted && !a?.terminal),
+            );
           } finally {
             clearTimeout(timer);
+            clearTimeout(interruptTimer);
             signal?.removeEventListener("abort", cancel);
             if (errorCode) await processClosed;
             if (a) {
