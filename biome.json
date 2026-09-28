@@ -1,7 +1,9 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.14/schema.json",
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
-  "files": { "includes": ["**", "!!**/.amp", "!!pnpm-lock.yaml"] },
+  "files": {
+    "includes": ["**", "!!**/.amp", "!!pnpm-lock.yaml", "!!tools/emojis"]
+  },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2 },
   "linter": { "enabled": true, "rules": { "preset": "recommended" } },
   "assist": { "actions": { "source": { "organizeImports": "on" } } }

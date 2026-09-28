@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "raygen-emojis",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-09-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "routes": [{ "pattern": "emojis.raygen.dev", "custom_domain": true }],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "raygen-emojis",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vectorize": [{ "binding": "VECTORS", "index_name": "raygen-emojis" }],
+  "ai": { "binding": "AI" },
+  "secrets": {
+    "required": [
+      "READ_TOKEN",
+      "INDEXER_TOKEN",
+      "ADMIN_TOKEN",
+      "SLACK_BOT_TOKEN",
+      "SLACK_SIGNING_SECRET"
+    ]
+  },
+  "triggers": { "crons": ["* * * * *"] },
+  "observability": { "enabled": false }
+}
