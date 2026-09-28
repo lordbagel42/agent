@@ -126,15 +126,13 @@ test("delegated tools are read before reporting and private credentials never en
     .toContain(
       "Here's your sign-in link: https://june.example/PRIVATE_SINGLE_USE_TOKEN\nIt expires in 10 minutes.",
     );
-  await expect.poll(() => work.length, { timeout: 15000 }).toBe(4);
+  await expect.poll(() => work.length, { timeout: 15000 }).toBe(3);
   expect(issue).toHaveBeenCalledTimes(1);
   expect(
     texts().filter((text) => text.includes("PRIVATE_SINGLE_USE_TOKEN")),
   ).toHaveLength(1);
-  expect(work.at(-1)?.dashboardLoginAvailable).toBe(false);
-  expect(work.at(-1)?.messages.at(-1)?.content).toContain(
-    "host already delivered the dashboard response",
-  );
+  expect(work.at(-1)?.dashboardLoginAvailable).toBe(true);
+  expect(work.at(-1)?.messages.at(-1)?.content).toBe("login");
   expect(JSON.stringify([...turns, ...work])).not.toContain(
     "PRIVATE_SINGLE_USE_TOKEN",
   );

@@ -397,6 +397,97 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
   ).toBe(false);
 });
 
+it.for(["sent", "unknown", "rejected"] as const)(
+  "keeps login dispatch quiet and settles a %s delivery without duplicate replies",
+  async (status, t) => {
+    const sent: OutboundMessage[] = [];
+    const issue = vi.fn(() => ({
+      url: "https://example.org/private-login",
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    }));
+    const workerReply = vi.fn(
+      async (): Promise<CompanionReply> =>
+        workerReply.mock.calls.length === 1
+          ? { text: "", dashboardLogin: true }
+          : { text: "Login delivery was not confirmed." },
+    );
+    const modelReply = vi.fn(
+      async (request: ModelRequest): Promise<CompanionReply> =>
+        request.system.includes("Execution completion")
+          ? { text: "Login delivery was not confirmed." }
+          : {
+              text: "",
+              execution: [
+                { agent: "login", action: "run", task: "Send a login link" },
+              ],
+            },
+    );
+    const registry = createJuneRegistry({
+      owner,
+      dashboardLogin: { issue, redact: (text) => text },
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, reactions: true, threads: true },
+          async receive() {
+            return { response: new Response(), events: [] };
+          },
+          async send(message) {
+            sent.push(JSON.parse(JSON.stringify(message)));
+            return status === "sent"
+              ? { status, messageId: "login-sent" }
+              : { status, code: "fixture", retryable: false };
+          },
+        },
+      },
+      model: { reply: modelReply },
+      execution: { model: { reply: workerReply } },
+    });
+    const { client } = await setupTest(t, registry);
+    const conversation = client.conversation.getOrCreate(["private", "raygen"]);
+    await conversation.send("inbox", {
+      type: "event",
+      event: event("login", "Send a login link"),
+    });
+    await expect
+      .poll(async () => (await conversation.snapshot()).agents?.login, {
+        timeout: 15000,
+      })
+      .toBeTruthy();
+    const agentId = (await conversation.snapshot()).agents?.login;
+    if (!agentId) throw new Error("Missing login worker");
+    const worker = client.execution.getOrCreate(
+      executionKey(["private", "raygen"], agentId),
+    );
+    await expect
+      .poll(async () => (await worker.summary()).status, { timeout: 15000 })
+      .toBe("completed");
+    await expect
+      .poll(
+        async () => {
+          const events = Object.values((await conversation.snapshot()).events);
+          return events.length >= 2 && events.every((entry) => entry.done);
+        },
+        { timeout: 15000 },
+      )
+      .toBe(true);
+    expect(issue).toHaveBeenCalledTimes(1);
+    expect(workerReply).toHaveBeenCalledTimes(status === "sent" ? 1 : 2);
+    expect(modelReply).toHaveBeenCalledTimes(status === "sent" ? 1 : 2);
+    const texts = sent.map((message) =>
+      message.content.type === "text" ? message.content.text : "",
+    );
+    expect(texts).not.toContain("login: queued");
+    expect(texts.filter((text) => text.includes("private-login"))).toHaveLength(
+      1,
+    );
+    if (status === "sent")
+      expect(texts).toEqual([
+        "Here's your sign-in link: https://example.org/private-login\nIt expires in 10 minutes.",
+      ]);
+  },
+);
+
 it("bounds research and stops ambiguous or unsent searches without automatic retries", async (t) => {
   let calls = 0;
   let searches = 0;

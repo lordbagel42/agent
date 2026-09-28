@@ -4740,8 +4740,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 reply = {
                   text:
                     outcomes.length === commands.length &&
-                    outcomes.every((outcome) => outcome.endsWith(": queued")) &&
-                    reply.text.trim()
+                    outcomes.every((outcome) => outcome.endsWith(": queued"))
                       ? reply.text
                       : outcomes.join("\n"),
                 };

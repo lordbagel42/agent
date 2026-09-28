@@ -720,8 +720,7 @@ export function createSessionCatalog(
       output = {
         text:
           outcomes.length === reply.execution.length &&
-          outcomes.every((value) => value.endsWith(": queued")) &&
-          reply.text.trim()
+          outcomes.every((value) => value.endsWith(": queued"))
             ? reply.text
             : outcomes.join("\n"),
       };

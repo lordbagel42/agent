@@ -24,6 +24,7 @@ export async function runExecutionCapability(
 ): Promise<{
   text: string;
   terminal: boolean;
+  responseDelivered?: boolean;
   coding?: CompanionReply["coding"];
 }> {
   const { event, eventId, signal, valid } = context;
@@ -132,7 +133,8 @@ export async function runExecutionCapability(
       ...receipt(result),
       ...(result.status === "sent" && reply.dashboardLogin
         ? {
-            text: "The host already delivered the dashboard response directly to the user: a sign-in link or an actionable explanation if issuance was unavailable. This is not proof that a link was issued or tested. Do not repeat the response or add a delivery confirmation. Report only separate findings or unresolved work that still needs attention; otherwise return empty text. The private response content is unavailable to this worker.",
+            responseDelivered: true,
+            text: "The host delivered the dashboard response directly to the user: a sign-in link or an actionable explanation if issuance was unavailable. This request is complete; no further report is needed. This is not proof that a link was issued or tested. The private response content is unavailable to this worker.",
           }
         : {}),
     };
