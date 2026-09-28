@@ -267,7 +267,29 @@ export async function createCodexDescriber(options: {
         } catch {
           a.done.reject(failure("invalid_analysis"));
         }
-      } else a.done.reject(failure("generation_failed"));
+      } else {
+        // Preserve only structured, allowlisted codes, never the provider's prose.
+        const info = object(turn.error).codexErrorInfo;
+        const codes = new Map([
+          ["usageLimitExceeded", "usage_limit_exceeded"],
+          ["rateLimitExceeded", "rate_limit_exceeded"],
+          ["serverOverloaded", "server_overloaded"],
+          ["unauthorized", "provider_unauthorized"],
+          ["badRequest", "provider_bad_request"],
+          ["internalServerError", "provider_internal_error"],
+          ["contextWindowExceeded", "context_window_exceeded"],
+          ["sessionBudgetExceeded", "session_budget_exceeded"],
+          ["cyberPolicy", "policy_blocked"],
+          ["misalignmentPolicyViolation", "policy_blocked"],
+          ["httpConnectionFailed", "connection_failed"],
+          ["responseStreamConnectionFailed", "stream_connection_failed"],
+          ["responseStreamDisconnected", "stream_disconnected"],
+          ["responseTooManyFailedAttempts", "stream_attempts_exhausted"],
+        ]);
+        const kind =
+          typeof info === "string" ? info : Object.keys(object(info))[0];
+        a.done.reject(failure(codes.get(kind ?? "") ?? "generation_failed"));
+      }
     }
   }
   async function retire(threadId: string) {
