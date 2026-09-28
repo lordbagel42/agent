@@ -717,6 +717,11 @@ export function createJuneRegistry(deps: Dependencies) {
           sessionHost(c, c.client<JuneClientRegistry>()),
           assignment,
         ),
+      activityPingAllowed: (c, assignment: ActivityAssignment): boolean =>
+        sessions.pingAllowed(
+          sessionHost(c, c.client<JuneClientRegistry>()),
+          assignment,
+        ),
       activityPrepare: (
         c,
         assignment: ActivityAssignment,
@@ -774,55 +779,78 @@ export function createJuneRegistry(deps: Dependencies) {
           if (command) {
             c.state.sessionCommands ??= {};
             if (!c.state.sessionCommands[id]) {
-              const snapshot =
-                command.kind === "debug" && scope.private
-                  ? captureDebug(
-                      c.state,
-                      c.key,
-                      command.reason,
-                      deps.runningRevision,
-                      c.vars.debugRequest,
-                    )
-                  : undefined;
-              if (snapshot && c.state.sessions?.directory.activeSessionId) {
-                const activityId = c.state.sessions.directory.activeSessionId;
-                const activity = await c
-                  .client<JuneClientRegistry>()
-                  .activity.getOrCreate(sessionActorKey(c.key, activityId))
-                  .diagnostic(activityId);
-                snapshot.data = {
-                  coordinator: snapshot.data,
-                  activity: redactDebug(activity),
-                  activityCapturedAt: new Date().toISOString(),
-                };
-              }
-              if (command.kind === "clear") {
-                resetConversation(c.state, receivedAt);
-                delete c.vars.debugRequest;
-              }
-              c.state.sessionCommands[id] = {
-                ...(snapshot ? { snapshot } : {}),
-                delivery: {
-                  phase: "ready",
-                  attempts: 0,
-                  message: {
-                    id: randomUUID(),
-                    address: event.address,
-                    lastInboundAt: event.occurredAt,
-                    content: {
-                      type: "text",
-                      text:
-                        command.kind === "clear"
-                          ? "Started a new session. Saved memories and archives are unchanged."
-                          : snapshot
-                            ? `DEBUGSHARE ${snapshot.id}\n${snapshot.capturedAt}\n${deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}`
-                            : "Send DEBUGSHARE in your private DM with me so the diagnostic snapshot stays private.",
+              const release = await deps.lifecycle?.enter(c.abortSignal);
+              let stopPing: (() => Promise<void>) | undefined;
+              try {
+                if (
+                  event.botMentioned &&
+                  !c.state.events[id] &&
+                  !c.state.forgottenEvents?.includes(id)
+                ) {
+                  c.state.events[id] = { event, done: false };
+                  await c.vars.persist();
+                  stopPing = startTyping(
+                    deps.channels[event.address.channel],
+                    event,
+                    c.abortSignal,
+                  );
+                }
+                const snapshot =
+                  command.kind === "debug" && scope.private
+                    ? captureDebug(
+                        c.state,
+                        c.key,
+                        command.reason,
+                        deps.runningRevision,
+                        c.vars.debugRequest,
+                      )
+                    : undefined;
+                if (snapshot && c.state.sessions?.directory.activeSessionId) {
+                  const activityId = c.state.sessions.directory.activeSessionId;
+                  const activity = await c
+                    .client<JuneClientRegistry>()
+                    .activity.getOrCreate(sessionActorKey(c.key, activityId))
+                    .diagnostic(activityId);
+                  snapshot.data = {
+                    coordinator: snapshot.data,
+                    activity: redactDebug(activity),
+                    activityCapturedAt: new Date().toISOString(),
+                  };
+                }
+                if (command.kind === "clear") {
+                  resetConversation(c.state, receivedAt);
+                  delete c.vars.debugRequest;
+                }
+                c.state.sessionCommands[id] = {
+                  ...(snapshot ? { snapshot } : {}),
+                  delivery: {
+                    phase: "ready",
+                    attempts: 0,
+                    message: {
+                      id: randomUUID(),
+                      address: event.address,
+                      lastInboundAt: event.occurredAt,
+                      content: {
+                        type: "text",
+                        text:
+                          command.kind === "clear"
+                            ? "Started a new session. Saved memories and archives are unchanged."
+                            : snapshot
+                              ? `DEBUGSHARE ${snapshot.id}\n${snapshot.capturedAt}\n${deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}`
+                              : "Send DEBUGSHARE in your private DM with me so the diagnostic snapshot stays private.",
+                      },
                     },
                   },
-                },
-              };
-              c.state.events[id] = { event, done: true };
-              await c.vars.persist();
+                };
+                c.state.events[id] = { event, done: true };
+                await c.vars.persist();
+              } finally {
+                try {
+                  await stopPing?.();
+                } finally {
+                  release?.();
+                }
+              }
             }
             return;
           }
@@ -1382,6 +1410,7 @@ export function createJuneRegistry(deps: Dependencies) {
           );
           // An absent version marker resolves to 1 during old-journal replay.
           const backupVersion = await loop.getVersion("memory-backup", 2);
+          const pingVersion = await loop.getVersion("ping-feedback", 2);
           const [message] = await loop.queue.nextBatch("inbox", {
             names: ["inbox"],
             count: 1,
@@ -1452,6 +1481,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // drain waits for whole turns, including receipts and final persistence.
           const release = await deps.lifecycle?.enter(ctx.abortSignal);
           let releasePriority: (() => void) | undefined;
+          let stopPing: (() => Promise<void>) | undefined;
           let typingCleanup = Promise.resolve();
           const deferTypingCleanup = (cleanup: Promise<void>) => {
             typingCleanup = cleanup;
@@ -1780,6 +1810,25 @@ export function createJuneRegistry(deps: Dependencies) {
                 );
               return;
             }
+            const ping =
+              pingVersion >= 2 &&
+              body.type === "event" &&
+              event.type === "message" &&
+              event.address.channel === "slack" &&
+              event.botMentioned === true;
+            if (ping)
+              await loop.step("acknowledge-ping", async (step) => {
+                if (!valid(step.state) || step.state.events[eventId]?.done)
+                  return;
+                // Only a fresh callback starts feedback; journal replay cannot
+                // re-acknowledge an already processed ping. Keep it through all
+                // phases, commands, supersession and intentional silence.
+                stopPing = startTyping(
+                  deps.channels.slack,
+                  event,
+                  step.abortSignal,
+                );
+              });
             if (version >= 9 && body.type !== "wakeup") {
               await loop.step("publish-native-event", async (step) => {
                 if (
@@ -2783,10 +2832,12 @@ export function createJuneRegistry(deps: Dependencies) {
                             return null;
                           }
                           const result = await withTyping(
-                            typingChannel(
-                              step.client<JuneClientRegistry>(),
-                              event,
-                            ),
+                            ping || event.botMentioned
+                              ? undefined
+                              : typingChannel(
+                                  step.client<JuneClientRegistry>(),
+                                  event,
+                                ),
                             { ...event, address: replyAddress },
                             step.abortSignal,
                             () => search.search(query, step.abortSignal),
@@ -2924,7 +2975,9 @@ export function createJuneRegistry(deps: Dependencies) {
                           if (!valid(step.state))
                             return { reply: { text: "" }, retryable: false };
                           stopTyping = startTyping(
-                            version >= 3 && body.type !== "wakeup"
+                            version >= 3 &&
+                              body.type !== "wakeup" &&
+                              !event.botMentioned
                               ? typingChannel(
                                   step.client<JuneClientRegistry>(),
                                   event,
@@ -3650,7 +3703,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                 event.address,
                                 enabled,
                               );
-                              if (!enabled && stopTyping) {
+                              if (
+                                !enabled &&
+                                !event.botMentioned &&
+                                stopTyping
+                              ) {
                                 deferTypingCleanup(stopTyping());
                                 stopTyping = undefined;
                               }
@@ -4916,7 +4973,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             retryable: false,
                           };
                         const found = await withTyping(
-                          version >= 3
+                          version >= 3 && !event.botMentioned
                             ? typingChannel(
                                 step.client<JuneClientRegistry>(),
                                 event,
@@ -5591,10 +5648,14 @@ export function createJuneRegistry(deps: Dependencies) {
               // successful deployment drain. No journal position is added.
               await typingCleanup;
             } finally {
-              releasePriority?.();
-              release?.();
-              if (body.type === "event" && event.type === "message")
-                deps.latency?.mark(event, "released");
+              try {
+                await stopPing?.();
+              } finally {
+                releasePriority?.();
+                release?.();
+                if (body.type === "event" && event.type === "message")
+                  deps.latency?.mark(event, "released");
+              }
             }
           }
         });
@@ -5619,6 +5680,12 @@ export function createJuneRegistry(deps: Dependencies) {
         webSearch: deps.webSearch,
         lifecycle: deps.lifecycle,
         channel: {
+          setTyping: async (event, active, signal) =>
+            deps.channels[event.address.channel]?.setTyping?.(
+              event,
+              active,
+              signal,
+            ),
           send: async (outbound) =>
             deps.channels[outbound.address.channel]?.send(outbound) ?? {
               status: "rejected",
@@ -5631,6 +5698,8 @@ export function createJuneRegistry(deps: Dependencies) {
           return {
             assignmentStatus: (assignment) =>
               catalog.activityStatus(assignment),
+            pingAllowed: (assignment) =>
+              catalog.activityPingAllowed(assignment),
             prepare: (assignment, history) =>
               catalog.activityPrepare(assignment, history),
             apply: (assignment, reply) =>

@@ -170,6 +170,21 @@ export function createSessionCatalog(
     if (!turn) throw new Error("Missing activity turn");
     return turn;
   }
+  function pingAllowed(host: SessionHost, assignment: ActivityAssignment) {
+    if (status(host, assignment) !== "active" || !deps.memory) return false;
+    const turn = host.state.sessions?.turns[assignment.eventId];
+    const input = savedInput(host.state, assignment.eventId);
+    if (
+      turn?.revoked ||
+      host.state.forgottenEvents?.includes(assignment.eventId) ||
+      input?.type !== "event" ||
+      input.event.type !== "message" ||
+      !input.event.botMentioned
+    )
+      return false;
+    const source = deps.memory.source(input.event, audience(host));
+    return !source || !deps.memory.store.isDeleted(source.id);
+  }
   function valid(
     host: SessionHost,
     assignment: ActivityAssignment,
@@ -249,6 +264,24 @@ export function createSessionCatalog(
         receivedAt: receipt.receivedAt,
         openedAt: session.openedAt,
         kind: receipt.kind,
+        ...(input.type === "event" &&
+        input.event.type === "message" &&
+        input.event.botMentioned &&
+        !isControl(input, deps)
+          ? {
+              ping: {
+                type: "message" as const,
+                id: input.event.id,
+                address: input.event.address,
+                occurredAt: input.event.occurredAt,
+                messageId: input.event.messageId,
+                senderId: input.event.senderId,
+                direct: input.event.direct,
+                botMentioned: true,
+                text: "",
+              },
+            }
+          : {}),
       },
     };
     await host.persist();
@@ -763,6 +796,7 @@ export function createSessionCatalog(
   return {
     pump,
     status,
+    pingAllowed,
     prepare,
     apply,
     acknowledge,

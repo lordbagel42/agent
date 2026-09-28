@@ -484,7 +484,7 @@ describe("createSlackAdapter", () => {
     },
   );
 
-  it("admits signed guest mentions and reuses native thread typing without capturing search authority", async () => {
+  it("acknowledges signed guest pings with an hourglass without capturing search authority", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse({ ok: true }));
@@ -514,12 +514,12 @@ describe("createSlackAdapter", () => {
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "https://slack.com/api/assistant.threads.setStatus",
+      "https://slack.com/api/reactions.add",
     );
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
-      channel_id: "C123",
-      thread_ts: event.messageId,
-      status: "is thinking…",
+      channel: "C123",
+      timestamp: event.messageId,
+      name: "hourglass_flowing_sand",
     });
   });
 

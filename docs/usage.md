@@ -573,8 +573,10 @@ The original inbound scope/context is preserved. Existing journaled turns retain
 their earlier placement policy, including an inbox iteration already waiting at
 upgrade; the next fresh iteration enables June's placement choice. Typing is
 best-effort and never dictates where the reply belongs.
-Unthreaded Slack DMs use a temporary `hourglass_flowing_sand` reaction instead of
-the unavailable native typing bubble. It starts alongside context/model work,
+Direct Slack pings use a temporary `hourglass_flowing_sand` reaction in channels,
+threads and DMs, even when optional typing indicators are disabled. Unthreaded
+Slack DMs also use that reaction instead of the unavailable native typing bubble.
+It starts alongside context/model work,
 is not repeatedly added, and is removed on completion/cancellation. An ambiguous
 add, failed cleanup, or process crash can leave it behind; reactions have no Slack-side TTL.
 An existing reaction not added by this activity run is left alone.

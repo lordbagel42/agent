@@ -2078,6 +2078,70 @@ describe("Rivet conversation workflow", () => {
     }
   }, 60_000);
 
+  it("acknowledges each ping once despite disabled typing, silence, commands and duplicate ingress", async (t) => {
+    const updates: { id: string; active: boolean }[] = [];
+    const sent: OutboundMessage[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      model: {
+        async reply() {
+          return { text: "", typingEnabled: false };
+        },
+      },
+      channels: {
+        slack: {
+          ...transport("slack", sent),
+          async setTyping(event, active) {
+            updates.push({ id: event.id, active });
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    await client.typing.getOrCreate(["slack", "T1", "D1", ""]).set(false);
+    const ping = { ...message, botMentioned: true };
+    await june.send("inbox", { type: "event", event: ping });
+    await expect
+      .poll(() => updates)
+      .toEqual([
+        { id: "Ev1", active: true },
+        { id: "Ev1", active: false },
+      ]);
+    await june.send("inbox", { type: "event", event: ping });
+    const command = {
+      ...ping,
+      id: "command",
+      messageId: "123.457",
+      text: "!memory-correct tone concise <@BOT>",
+    };
+    await june.send("inbox", { type: "event", event: command });
+    await expect
+      .poll(() => updates)
+      .toEqual([
+        { id: "Ev1", active: true },
+        { id: "Ev1", active: false },
+        { id: "command", active: true },
+        { id: "command", active: false },
+      ]);
+    const debug = {
+      ...ping,
+      id: "debug",
+      messageId: "123.458",
+      text: "DEBUGSHARE <@BOT>",
+      sessionCommandEligible: true,
+    };
+    await june.receive(debug);
+    await june.receive(debug);
+    expect(updates.slice(4)).toEqual([
+      { id: "debug", active: true },
+      { id: "debug", active: false },
+    ]);
+    expect(
+      await client.typing.getOrCreate(["slack", "T1", "D1", ""]).read(),
+    ).toBe(false);
+  });
+
   it("delivers before a late status settles but holds deployment admission until it is cleared", async (t) => {
     const lifecycle = createLifecycle();
     const started = Promise.withResolvers<void>();

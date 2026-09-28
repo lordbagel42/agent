@@ -24,6 +24,7 @@ import type {
   JuneClientRegistry,
   MemoryReference,
 } from "../runtime/registry.js";
+import { startTyping } from "../runtime/typing.js";
 import type { WebSearchProvider } from "../tools/web-search.js";
 import {
   isReceiptOnlyArchive,
@@ -42,6 +43,8 @@ export interface ActivityAssignment {
   receivedAt: number;
   openedAt: number;
   kind: "message" | "notification";
+  /** Content-free inbound ping metadata, never inherited by notifications. */
+  ping?: MessageEvent;
 }
 
 interface TurnContext {
@@ -74,6 +77,7 @@ export interface ActivityCatalog {
   assignmentStatus(
     assignment: ActivityAssignment,
   ): Promise<"active" | "acknowledged" | "cleared" | "unavailable">;
+  pingAllowed?(assignment: ActivityAssignment): Promise<boolean>;
   prepare(
     assignment: ActivityAssignment,
     history: (ConversationMessage & { reference: MemoryReference })[],
@@ -106,6 +110,7 @@ export interface ActivityCatalog {
 
 interface ActivityTurn {
   assignment: ActivityAssignment;
+  pingStarted?: true;
   context?: TurnContext;
   control?: ControlReceipt;
   inference?: ModelSettlement | "started";
@@ -132,7 +137,7 @@ export interface ActivityDependencies {
   owner: Owner;
   model: ModelProvider;
   webSearch?: WebSearchProvider;
-  channel: Pick<ChannelAdapter, "send">;
+  channel: Pick<ChannelAdapter, "send" | "setTyping">;
   lifecycle?: Pick<Lifecycle, "enter" | "fail">;
   catalog(
     scopeKey: string[],
@@ -140,6 +145,7 @@ export interface ActivityDependencies {
       conversation: {
         getOrCreate(key: string[]): {
           activityStatus: ActivityCatalog["assignmentStatus"];
+          activityPingAllowed: NonNullable<ActivityCatalog["pingAllowed"]>;
           activityPrepare: ActivityCatalog["prepare"];
           activityApply: ActivityCatalog["apply"];
           activityAcknowledge: ActivityCatalog["acknowledge"];
@@ -334,6 +340,7 @@ export function createActivityActor(deps: ActivityDependencies) {
           });
           if (!message) return;
           const release = await deps.lifecycle?.enter(ctx.abortSignal);
+          let stopPing: (() => Promise<void>) | undefined;
           try {
             await loop.step({
               name: "interaction",
@@ -361,6 +368,28 @@ export function createActivityActor(deps: ActivityDependencies) {
                   return;
                 }
                 if (status !== "active") return;
+                const ping = assignment.ping;
+                if (
+                  assignment.kind === "message" &&
+                  ping?.botMentioned &&
+                  ping.address.channel === "slack" &&
+                  isOwner(ping, deps.owner) &&
+                  isDeepStrictEqual(
+                    routeEvent(ping, deps.owner)?.key,
+                    assignment.scopeKey,
+                  ) &&
+                  !turn.pingStarted &&
+                  !turn.inference
+                ) {
+                  turn.pingStarted = true;
+                  await step.vars.persist();
+                  if (await catalog.pingAllowed?.(assignment))
+                    stopPing = startTyping(
+                      deps.channel,
+                      ping,
+                      step.abortSignal,
+                    );
+                }
                 if (turn.control) {
                   await finishControl();
                   return;
@@ -936,7 +965,11 @@ export function createActivityActor(deps: ActivityDependencies) {
               },
             });
           } finally {
-            release?.();
+            try {
+              await stopPing?.();
+            } finally {
+              release?.();
+            }
           }
         });
       },
