@@ -34,6 +34,57 @@ const event = {
 };
 
 describe("durable wakeup state", () => {
+  it("bounds decision backlog without coalescing or remembering rejected events", () => {
+    const state = initialState();
+    applyAction(
+      state,
+      { ...watch, once: false },
+      source,
+      "decision:deployment",
+      now,
+      ["deployment"],
+    );
+    const job = state.jobs["decision:deployment"];
+    if (!job) throw new Error("Missing fixture job");
+    job.mode = "decision";
+    for (let i = 0; i < 100; i++)
+      acceptEvent(state, { ...event, id: String(i) }, now + 10);
+    expect(Object.values(state.runs)).toHaveLength(100);
+    expect(job.coalesced).toBe(0);
+    const full = JSON.stringify(state);
+    expect(() =>
+      acceptEvent(state, { ...event, id: "overflow" }, now + 10),
+    ).toThrow("event_decision_capacity");
+    expect(JSON.stringify(state)).toBe(full);
+    expect(acceptEvent(state, { ...event, id: "0" }, now + 10)).toEqual({
+      accepted: true,
+      duplicate: true,
+    });
+    const first = Object.values(state.runs)[0];
+    if (first) first.status = "completed";
+    expect(acceptEvent(state, { ...event, id: "overflow" }, now + 10)).toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    applyAction(state, watch, source, "explicit", now, ["deployment"]);
+    acceptEvent(state, { ...event, id: "requested" }, now + 10);
+    expect(
+      Object.values(state.runs)
+        .filter((run) => run.event.id === "requested")
+        .map((run) => run.jobId),
+    ).toEqual(["explicit"]);
+    applyAction(
+      state,
+      { action: "cancel", id: job.id },
+      source,
+      "cancel",
+      now,
+      ["deployment"],
+    );
+    tick(state, now + 8 * 86400000);
+    expect(state.jobs[job.id]?.status).toBe("cancelled");
+  });
+
   it("matches exact source/type/filters only after registration and consumes one-shot once", () => {
     const state = initialState();
     applyAction(state, watch, source, "watch-1", now, ["deployment"]);

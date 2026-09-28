@@ -927,7 +927,11 @@ async function main() {
             ...(githubWebhookSecret ? ["github"] : []),
             ...Object.keys(webhookSecrets).map((name) => `webhook.${name}`),
           ],
-          decisionSources: githubWebhookSecret ? ["github"] : [],
+          decisionSources: [
+            ...(readDeployment ? ["deployment"] : []),
+            ...(githubWebhookSecret ? ["github"] : []),
+            ...Object.keys(webhookSecrets).map((name) => `webhook.${name}`),
+          ],
           readDeployment: readDeployment
             ? () => readDeployment(config.owner.id)
             : undefined,

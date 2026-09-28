@@ -744,7 +744,8 @@ export class McpConnections {
   wrap(model: ModelProvider): ModelProvider {
     return wrapModelProvider(
       model,
-      (model) => async (request, signal, isCurrent, canStartAction) => {
+      (model) => async (request, signal, isCurrent, canStartAction, effect) => {
+        const observeEffect = effect;
         const current = () => !signal?.aborted && (isCurrent?.() ?? true);
         if (!current()) return { text: "" };
         if (!request.mcpAvailable || request.agentRole === "interaction") {
@@ -974,6 +975,7 @@ export class McpConnections {
           );
         }
         let resultReceived = false;
+        let effectStarted = false;
         try {
           if (this.generation(call.connection) !== allowed.revision)
             return mcpFailure("denied");
@@ -998,6 +1000,16 @@ export class McpConnections {
           }
           if (allowed.permission === "approval") {
             if (!current()) return { text: "" };
+            await observeEffect?.("mcp", "started");
+            effectStarted = true;
+            if (
+              !current() ||
+              canStartAction?.() === false ||
+              this.generation(connection.id) !== connection.revision
+            ) {
+              await observeEffect?.("mcp", "not_started");
+              return { text: "" };
+            }
             const proposal: McpProposal = {
               id: randomUUID(),
               connection: connection.id,
@@ -1009,6 +1021,8 @@ export class McpConnections {
             this.#db
               .prepare("INSERT INTO proposals VALUES(?,?)")
               .run(proposal.id, this.#seal(proposal.id, proposal));
+            await observeEffect?.("mcp", "confirmed");
+            resultReceived = true;
             return {
               text: `I prepared ${call.tool} for your review. Nothing has run. Approve the exact arguments in ${this.options.origin}/console/connections/approvals/${proposal.id} within 10 minutes.`,
             };
@@ -1030,12 +1044,15 @@ export class McpConnections {
           };
           this.#active.add(adapter);
           try {
+            await observeEffect?.("mcp", "started");
+            effectStarted = true;
             const result = await adapter.read(
               action,
               await this.#credential(connection),
               () => authorized() && canStartAction?.() !== false,
             );
             resultReceived = true;
+            await observeEffect?.("mcp", "confirmed");
             if (!current()) return { text: "" };
             // Supersession is not revocation: preserve an already-started result.
             if (!authorized()) return mcpFailure("denied");
@@ -1112,6 +1129,14 @@ export class McpConnections {
             this.#active.delete(adapter);
           }
         } catch (error) {
+          if (effectStarted && !resultReceived)
+            await observeEffect?.(
+              "mcp",
+              error instanceof McpAdapterError &&
+                error.outcome === "not_started"
+                ? "not_started"
+                : "unknown",
+            );
           // Revocation withholds stale context, not evidence that a dispatched
           // remote effect failed or never happened. Never alter its receipt.
           if (!current()) return { text: "" };

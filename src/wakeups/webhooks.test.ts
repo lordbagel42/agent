@@ -7,12 +7,13 @@ it("authenticates raw bytes, fixes source identity, and ACKs only durable accept
   const key = "a".repeat(48);
   const events: WakeupEvent[] = [];
   let unavailable = false;
+  let accepted = true;
   const app = createWakeupWebhooks({
     sources: { build: key },
     async publish(event) {
       if (unavailable) throw new Error("storage unavailable");
       events.push(event);
-      return { accepted: true, duplicate: false };
+      return { accepted, duplicate: false };
     },
   });
   const body = JSON.stringify({
@@ -78,6 +79,9 @@ it("authenticates raw bytes, fixes source identity, and ACKs only durable accept
     data: { result: "ok" },
   });
   unavailable = true;
+  expect((await request()).status).toBe(503);
+  unavailable = false;
+  accepted = false;
   expect((await request()).status).toBe(503);
   expect(
     (

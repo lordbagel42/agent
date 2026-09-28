@@ -44,7 +44,7 @@ export const wakeupActionSchema = z.union([
   z.strictObject({ action: z.literal("list") }),
   z.strictObject({
     action: z.enum(["inspect", "pause", "resume", "cancel"]),
-    id: name,
+    id: z.string().min(1).max(256),
   }),
 ]);
 export type WakeupAction = z.infer<typeof wakeupActionSchema>;
@@ -60,6 +60,8 @@ export const eventSchema = z
 export type WakeupEvent = z.infer<typeof eventSchema>;
 export interface WakeupJob {
   id: string;
+  /** Only the host can create decision subscriptions. Absent means notification. */
+  mode?: "decision";
   /** Conversation provenance; legacy direct jobs used id for both identities. */
   originEventId?: string;
   name: string;
@@ -101,6 +103,7 @@ export interface WakeupState {
 export interface WakeupContext {
   runId: string;
   jobId: string;
+  mode?: "decision";
   originEventId?: string;
   instruction: string;
   event: WakeupEvent;
@@ -148,9 +151,10 @@ export function applyAction(
       sources,
       deploymentIssue: state.deploymentIssue ?? null,
       jobs: Object.values(state.jobs).map(
-        ({ id, name, status, nextAt, coalesced }) => ({
+        ({ id, name, mode, status, nextAt, coalesced }) => ({
           id,
           name,
+          mode: mode ?? "notification",
           status,
           nextAt,
           coalesced,
@@ -255,6 +259,7 @@ function enqueue(
     .digest("hex");
   if (Object.hasOwn(state.runs, id)) return;
   if (
+    job.mode !== "decision" &&
     Object.values(state.runs).some(
       (run) => run.jobId === job.id && pending(run),
     )
@@ -291,24 +296,18 @@ export function acceptEvent(
     .digest("hex");
   if (Object.hasOwn(state.seen, key))
     return { accepted: true, duplicate: true };
-  prune(state, now);
-  // Bounded replay protection must not let a noisy source stop all timers.
-  if (Object.keys(state.seen).length >= 4096) {
-    const oldest = Object.entries(state.seen).sort((a, b) => a[1] - b[1])[0];
-    if (oldest) delete state.seen[oldest[0]];
-  }
-  state.seen[key] = now;
-  for (const job of Object.values(state.jobs)) {
+  const matches = Object.values(state.jobs).filter((job) => {
     const trigger = job.trigger;
     if (
       job.status !== "active" ||
       trigger.kind !== "event" ||
-      event.occurredAt < job.updatedAt ||
+      ((job.mode !== "decision" || event.source === "deployment") &&
+        event.occurredAt < job.updatedAt) ||
       trigger.source !== event.source ||
       (trigger.type !== "*" && trigger.type !== event.type)
     )
-      continue;
-    const matches = trigger.filters.every(({ path, value }) => {
+      return false;
+    return trigger.filters.every(({ path, value }) => {
       let found: unknown = event.data;
       for (const part of path.split(".")) {
         if (!found || typeof found !== "object" || !Object.hasOwn(found, part))
@@ -317,8 +316,27 @@ export function acceptEvent(
       }
       return found === value;
     });
-    if (matches) enqueue(state, job, event, now, contextSourceIds);
+  });
+  // A requested notification takes precedence over unsolicited commentary.
+  const requested = matches.some((job) => job.mode !== "decision");
+  const admitted = matches.filter(
+    (job) => !requested || job.mode !== "decision",
+  );
+  if (
+    admitted.some((job) => job.mode === "decision") &&
+    Object.values(state.runs).filter(
+      (run) => pending(run) && state.jobs[run.jobId]?.mode === "decision",
+    ).length >= 100
+  )
+    throw new Error("event_decision_capacity");
+  prune(state, now);
+  // Bounded replay protection must not let a noisy source stop all timers.
+  if (Object.keys(state.seen).length >= 4096) {
+    const oldest = Object.entries(state.seen).sort((a, b) => a[1] - b[1])[0];
+    if (oldest) delete state.seen[oldest[0]];
   }
+  state.seen[key] = now;
+  for (const job of admitted) enqueue(state, job, event, now, contextSourceIds);
   return { accepted: true, duplicate: false };
 }
 
@@ -364,6 +382,7 @@ function prune(state: WakeupState, now: number) {
     if (index >= 100 || run.createdAt < cutoff) delete state.runs[run.id];
   for (const job of Object.values(state.jobs))
     if (
+      job.mode !== "decision" &&
       ["cancelled", "completed"].includes(job.status) &&
       job.updatedAt < cutoff &&
       !Object.values(state.runs).some(

@@ -17,6 +17,7 @@ it.for([
   "execution_result",
   "silent_execution_result",
   "untracked_job_result",
+  "decision_mode_mismatch",
 ] as const)(
   "retains %s origin dependencies and suppresses revoked preparation",
   async (scenario, t) => {
@@ -25,7 +26,9 @@ it.for([
         ? "job_result"
         : scenario === "silent_execution_result"
           ? "execution_result"
-          : scenario;
+          : scenario === "decision_mode_mismatch"
+            ? "wakeup"
+            : scenario;
     const store = new EvidenceStore(":memory:", randomBytes(32));
     t.onTestFinished(() => store.close());
     const key = ["private", "owner"];
@@ -67,6 +70,9 @@ it.for([
               wakeup: {
                 runId: "run",
                 jobId: "timer",
+                ...(scenario === "decision_mode_mismatch"
+                  ? { mode: "decision" as const }
+                  : {}),
                 originEventId: "job",
                 instruction: "PRIVATE COMPLETION",
                 event: {
@@ -161,7 +167,16 @@ it.for([
         },
         channels: {},
         model: { reply: async () => ({ text: "" }) },
-        memory: { store, source: () => undefined },
+        memory: {
+          store,
+          source: () => {
+            if (scenario === "decision_mode_mismatch")
+              throw new Error(
+                "Forged placement must not become Slack evidence",
+              );
+            return undefined;
+          },
+        },
         sessions: { idleMs: 1000 },
       },
       (_scope, ref) =>
@@ -173,6 +188,13 @@ it.for([
     await catalog.pump(host);
     const turn = state.sessions?.turns[id];
     if (!turn) throw new Error("Missing assignment");
+    if (scenario === "decision_mode_mismatch") {
+      expect(await catalog.prepare(host, turn.assignment, [])).toMatchObject({
+        control: { effects: "confirmed" },
+      });
+      expect(host.claimWakeup).not.toHaveBeenCalled();
+      return;
+    }
     if (scenario === "untracked_job_result") {
       delete state.memoryContexts?.job;
       // Input was admitted before ledger-first deletion; actor cleanup has not

@@ -169,6 +169,7 @@ export interface Dependencies {
   runningRevision?: string;
   lifecycle?: {
     enter(signal: AbortSignal): Promise<() => void>;
+    tryEnter?(): (() => void) | undefined;
     fail(): void;
   };
   coding?: CodingDependencies;
@@ -219,6 +220,8 @@ export interface ConversationState extends ScopeCatalog {
     string,
     {
       event: ChannelEvent;
+      /** Host-created routing only, never an original Slack message source. */
+      decision?: true;
       /** Workflow completion, not proof that inference or delivery succeeded. */
       done: boolean;
       /** Conversational output yielded to a newer same-surface owner message. */
@@ -496,9 +499,9 @@ export function createJuneRegistry(deps: Dependencies) {
       deps.wakeups
         ? client.wakeups.getOrCreate([deps.owner.id]).runContext(id)
         : null,
-    claimWakeup: async (id) =>
+    claimWakeup: async (id, mode) =>
       !!deps.wakeups &&
-      (await client.wakeups.getOrCreate([deps.owner.id]).claim(id)),
+      (await client.wakeups.getOrCreate([deps.owner.id]).claim(id, mode)),
     completeWakeup: async (id, status) => {
       if (deps.wakeups)
         await client.wakeups.getOrCreate([deps.owner.id]).complete(id, status);
@@ -736,10 +739,10 @@ export function createJuneRegistry(deps: Dependencies) {
             );
           if (c.state.events[id] || c.state.forgottenEvents?.includes(id))
             return;
-          const source = deps.memory?.source(
-            input.source,
-            JSON.stringify(c.key),
-          );
+          const source =
+            input.type === "wakeup" && input.wakeup.mode === "decision"
+              ? undefined
+              : deps.memory?.source(input.source, JSON.stringify(c.key));
           if (source && deps.memory?.store.isDeleted(source.id)) return;
           const delegation =
             input.type === "execution_result"
@@ -891,7 +894,7 @@ export function createJuneRegistry(deps: Dependencies) {
           Object.entries(c.state.events).filter(([id, record]) => {
             const reference = c.state.memoryContexts?.[id];
             const source =
-              record.event.type === "message"
+              record.event.type === "message" && !record.decision
                 ? deps.memory?.source(record.event, context.audience)
                 : undefined;
             return (
@@ -1223,6 +1226,8 @@ export function createJuneRegistry(deps: Dependencies) {
           // Old actors can be asleep in a pre-v9 queue wait. A wakeup could
           // never have entered those old journals, so its new path is safe.
           const version = body.type === "wakeup" ? 9 : journalVersion;
+          const decisionTurn =
+            body.type === "wakeup" && body.wakeup.mode === "decision";
           const event = body.type === "event" ? body.event : body.source;
           if (body.type === "event" && event.type === "message")
             deps.latency?.mark(event, "dequeued");
@@ -1294,7 +1299,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       : step
                           .client<JuneClientRegistry>()
                           .wakeups.getOrCreate([deps.owner.id])
-                          .claim(body.wakeup.runId),
+                          .claim(body.wakeup.runId, body.wakeup.mode),
                   )
                 : false;
               if (!claimed) {
@@ -1418,7 +1423,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   !Object.values(state.agents ?? {}).includes(body.agentId))
               )
                 return false;
-              if (deps.memory && event.type === "message") {
+              if (deps.memory && event.type === "message" && !decisionTurn) {
                 const source = deps.memory.source(event, audience);
                 if (source && deps.memory.store.isDeleted(source.id))
                   return false;
@@ -1501,7 +1506,11 @@ export function createJuneRegistry(deps: Dependencies) {
                   await step.vars.persist();
                   return false;
                 }
-                step.state.events[eventId] = { event, done: false };
+                step.state.events[eventId] = {
+                  event,
+                  done: false,
+                  ...(decisionTurn ? { decision: true as const } : {}),
+                };
                 if (
                   !sessionControl &&
                   coverageVersion >= 2 &&
@@ -2917,7 +2926,7 @@ export function createJuneRegistry(deps: Dependencies) {
                               current: unknownModel,
                             };
                             modelRequest = buildModelRequest({
-                              ...(plan.workerCapabilities
+                              ...(plan.workerCapabilities && !decisionTurn
                                 ? { agentRole: "interaction" as const }
                                 : {}),
                               ...(body.type === "wakeup"
@@ -3009,14 +3018,14 @@ export function createJuneRegistry(deps: Dependencies) {
                                   !!plan.deep &&
                                   !!deps.deepModel,
                                 webSearchAvailable:
-                                  body.type === "event" &&
-                                  !plan.execution &&
+                                  (body.type === "event" || decisionTurn) &&
+                                  (!plan.execution || decisionTurn) &&
                                   phase !== "synthesis" &&
                                   !!plan.web &&
                                   !!deps.webSearch?.available,
                                 webSearchProvider: deps.webSearch?.description,
                                 mcpAvailable:
-                                  body.type === "event" &&
+                                  (body.type === "event" || decisionTurn) &&
                                   phase !== "synthesis" &&
                                   deps.mcpAvailable === true,
                                 latencyAvailable:
@@ -3690,7 +3699,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                           )
                                             return false;
                                           const source =
-                                            record.event.type === "message"
+                                            record.event.type === "message" &&
+                                            !record.decision
                                               ? deps.memory?.source(
                                                   record.event,
                                                   audience,
@@ -5080,7 +5090,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   step.state.history.push({
                     id: `${eventId}:reply`,
                     role: "assistant",
-                    ...(version >= 3
+                    ...(version >= 3 && !decisionTurn
                       ? {
                           source: {
                             id: `${eventId}:reply`,
@@ -5280,6 +5290,7 @@ export function createJuneRegistry(deps: Dependencies) {
       activity: createActivityActor({
         owner: deps.owner,
         model: deps.model,
+        webSearch: deps.webSearch,
         lifecycle: deps.lifecycle,
         channel: {
           send: async (outbound) =>

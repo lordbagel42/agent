@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Hono } from "hono";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import type { Client } from "rivetkit/client";
 import { afterEach, expect, test, vi } from "vitest";
 import { createSlackAdapter } from "../src/channels/slack.js";
 import { createWhatsAppAdapter } from "../src/channels/whatsapp.js";
@@ -30,7 +31,10 @@ import { beginModelReply } from "../src/models/invocation.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
 import { createInspectionReader } from "../src/runtime/inspection.js";
 import { buildModelRequest } from "../src/runtime/prompt.js";
-import { createJuneRegistry } from "../src/runtime/registry.js";
+import {
+  createJuneRegistry,
+  type JuneClientRegistry,
+} from "../src/runtime/registry.js";
 import { McpConnections } from "../src/tools/connections.js";
 import { createPuckConsoleOAuth } from "../src/tools/puck-oauth.js";
 import { createSlackMcpOAuth } from "../src/tools/slack-mcp-oauth.js";
@@ -183,6 +187,130 @@ async function fixture(
     },
   };
 }
+
+test.for([false, true])(
+  "unwatched provider decisions use standing MCP reads but only propose approval tools (sessions=%s)",
+  async (sessions, t) => {
+    const f = await fixture();
+    f.store.permit(f.id, f.connection().revision, "lookup", "read");
+    const sent: OutboundMessage[] = [];
+    const memory = new EvidenceStore(":memory:", Buffer.alloc(32, 4));
+    t.onTestFinished(() => memory.close());
+    const model: ModelProvider = {
+      async reply(request) {
+        return request.mcpAvailable
+          ? {
+              text: "",
+              mcp: {
+                connection: f.id,
+                tool: "lookup",
+                argumentsJson: '{"id":"record-9"}',
+              },
+            }
+          : { text: "I checked the event context." };
+      },
+      beginReply(...args) {
+        return {
+          answer: model.reply(...args),
+          settlement: Promise.resolve("confirmed_stopped"),
+        };
+      },
+    };
+    const registry = createJuneRegistry({
+      owner: {
+        id: "owner",
+        identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
+      },
+      ...(sessions ? { sessions: { idleMs: 1000 } } : {}),
+      memory: {
+        store: memory,
+        source: (event, audience) =>
+          slackSource({
+            workspace: event.address.accountId,
+            channel: event.address.conversationId,
+            ts: event.messageId,
+            author: event.senderId,
+            text: event.text,
+            audiences: [audience],
+            workspaceUrl: "https://fixture.slack.com/",
+          }),
+      },
+      mcpAvailable: true,
+      wakeups: {
+        sources: ["github"],
+        decisionSources: ["github"],
+        pollMs: 100,
+      },
+      model: f.store.wrap(model),
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, reactions: true, threads: true },
+          async receive() {
+            return { response: new Response(), events: [] };
+          },
+          async send(message) {
+            sent.push(message);
+            return { status: "sent", messageId: `reply-${sent.length}` };
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const wakeups = (client as Client<JuneClientRegistry>).wakeups.getOrCreate([
+      "owner",
+    ]);
+    const event = {
+      id: "event-read",
+      source: "github",
+      type: "issues",
+      occurredAt: Date.now(),
+      data: { action: "opened" },
+    };
+    await wakeups.publish(event);
+    await expect.poll(() => sent.length, { timeout: 10000 }).toBe(1);
+    expect(f.calls).toEqual([
+      { name: "lookup", arguments: { id: "record-9" } },
+    ]);
+    expect(sent[0]).toMatchObject({
+      address: { channel: "slack", accountId: "T1", conversationId: "U1" },
+      content: { type: "text", text: "I checked the event context." },
+    });
+    f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+    await wakeups.publish({ ...event, id: "event-approval" });
+    await expect.poll(() => sent.length, { timeout: 10000 }).toBe(2);
+    expect(f.calls).toHaveLength(1);
+    expect(f.store.proposals()).toHaveLength(1);
+    expect(JSON.stringify(sent[1]?.content)).toContain("Nothing has run");
+    f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
+    await wakeups.publish({ ...event, id: "event-disabled" });
+    await expect.poll(() => sent.length, { timeout: 10000 }).toBe(3);
+    expect(f.calls).toHaveLength(1);
+    expect(f.store.proposals()).toHaveLength(1);
+    if (sessions) {
+      f.store.permit(f.id, f.connection().revision, "lookup", "read");
+      f.fail("transport");
+      await wakeups.publish({ ...event, id: "event-unknown" });
+      const june = client.conversation.getOrCreate(["private", "owner"]);
+      await expect
+        .poll(() => june.outstandingOperations(), { timeout: 15000 })
+        .toMatchObject({
+          sessions: {
+            activity: {
+              turns: expect.arrayContaining([
+                expect.objectContaining({
+                  hold: "tools",
+                  effects: { mcp: "unknown" },
+                  acknowledged: false,
+                }),
+              ]),
+            },
+          },
+        });
+      expect(f.calls).toHaveLength(2);
+    }
+  },
+);
 
 test("enrollment inspection reveals no credentials or private configuration and grants nothing", async () => {
   const f = await fixture({

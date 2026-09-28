@@ -69,7 +69,9 @@ export function createWakeupWebhooks(deps: WakeupWebhooks) {
       return c.json({ error: "invalid_event" }, 400);
     }
     try {
-      return c.json(await deps.publish(event), 202);
+      const receipt = await deps.publish(event);
+      if (!receipt.accepted) throw new Error("event_not_accepted");
+      return c.json(receipt, 202);
     } catch {
       c.header("Retry-After", "5");
       return c.json({ error: "storage_unavailable" }, 503);

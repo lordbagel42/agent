@@ -428,6 +428,12 @@ export interface ModelProvider {
     /** Host-only pre-dispatch guard, never serialized. Does not cancel or
      * discard already-started actions; wrappers must retain their evidence. */
     canStartAction?: () => boolean,
+    /** Durable tool accounting, separate from inference settlement. Never sent
+     * to a provider. Dispatch waits for the started receipt to persist. */
+    observeEffect?: (
+      kind: "mcp" | "web",
+      outcome: "started" | "confirmed" | "not_started" | "unknown",
+    ) => Promise<void>,
   ): Promise<CompanionReply>;
 }
 
