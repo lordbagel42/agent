@@ -907,6 +907,107 @@ class RecoverySafety(unittest.TestCase):
         self.assertEqual(self.store.get("operatorHold"), "legacy-recovery")
         self.assertEqual(self.store.get("recovery"), "")
 
+    def test_fetch_and_deferral_errors_create_one_incident_until_reconciled(self):
+        for status, reason in (
+            ("fetch_failed", "fetch_failed"),
+            ("deferred", "insufficient_disk"),
+            ("deferred", "drain_busy"),
+        ):
+            with self.subTest(reason=reason):
+                self.store.event("b" * 40, status, reason)
+                with patch.object(deploy.subprocess, "run"):
+                    self.recovery.flush()
+                self.assertTrue(self.store.get("recovery"))
+                incident = json.loads(self.store.get("recovery"))
+                self.assertEqual(incident["reason"], reason)
+                self.assertEqual(incident["revision"], "b" * 40)
+                self.store.event("c" * 40, "failed", "preflight_failed")
+                with patch.object(deploy.subprocess, "run"):
+                    self.recovery.flush()
+                self.assertEqual(json.loads(self.store.get("recovery")), incident)
+                self.store.event(self.revision, "reconciled")
+                self.store.set("recovery", "")
+
+    def test_unexpected_tick_error_is_private_and_fences_deployment(self):
+        host = Mock()
+        host.recover_stages.side_effect = ValueError("PRIVATE diagnostic")
+        loop = deploy.Deployer(host, self.store, recovery=self.recovery)
+        with patch.object(deploy.subprocess, "run"):
+            loop.tick()
+        self.assertTrue(self.store.get("recovery"))
+        incident = json.loads(self.store.get("recovery"))
+        self.assertEqual(incident["reason"], "controller_failed")
+        self.assertNotIn("PRIVATE", self.store.get("recovery"))
+        self.assertNotIn("PRIVATE", (self.root / "feed.json").read_text())
+        with patch.object(deploy.subprocess, "run"):
+            loop.tick()
+        self.assertEqual(json.loads(self.store.get("recovery")), incident)
+
+    def test_reporting_error_dispatches_without_rewriting_candidate_history(self):
+        self.store.event(self.revision, "healthy")
+        reporter = deploy.GitHubStatuses(self.store, recovery=self.recovery)
+        with patch.object(reporter, "token", side_effect=ValueError("PRIVATE token")):
+            reporter.flush()
+        self.assertTrue(self.store.get("recovery"))
+        self.assertEqual(
+            json.loads(self.store.get("recovery"))["reason"],
+            "github_status_publish_failed",
+        )
+        self.assertEqual(self.store.status(self.revision), "healthy")
+
+    def test_pending_github_status_reports_global_block_not_infinite_progress(self):
+        self.store.event("b" * 40, "received")
+        self.store.block("c" * 40, "activation_unknown")
+        reporter = deploy.GitHubStatuses(self.store)
+        report = reporter.report("b" * 40)
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(report["conclusion"], "action_required")
+        self.assertEqual(self.store.status("b" * 40), "received")
+        self.store.event(self.revision, "reconciled")
+        self.assertEqual(reporter.report("b" * 40)["status"], "queued")
+
+    def test_unavailable_public_feed_does_not_prevent_private_recovery(self):
+        with patch.object(
+            deploy, "atomic_json", side_effect=PermissionError("PRIVATE")
+        ):
+            reopened = deploy.Store(
+                self.root / "records",
+                self.root / "feed.json",
+                self.revision,
+                publish_feed=False,
+            )
+            self.addCleanup(reopened.close)
+            recovery = deploy.Recovery(reopened)
+            recovery.record("controller_failed")
+            with patch.object(deploy.subprocess, "run"):
+                recovery.flush()
+            incident = json.loads(reopened.get("recovery"))
+            self.assertEqual(incident["reason"], "controller_failed")
+            incident.update(phase="spawned", thread=self.thread)
+            reopened.set("recovery", json.dumps(incident))
+            recovery.claim(incident["incident"], self.thread)
+            self.assertEqual(json.loads(reopened.get("recovery"))["owner"], self.thread)
+
+    def test_reporting_failure_does_not_replace_lifecycle_failure(self):
+        host = Mock()
+        reporter = deploy.GitHubStatuses(self.store, recovery=self.recovery)
+        loop = deploy.Deployer(host, self.store, reporter, self.recovery)
+        with (
+            patch.object(
+                loop,
+                "deploy",
+                side_effect=lambda: self.store.event(
+                    "b" * 40, "failed", "preflight_failed"
+                ),
+            ),
+            patch.object(reporter, "token", side_effect=ValueError("PRIVATE")),
+            patch.object(deploy.subprocess, "run"),
+        ):
+            loop.tick()
+        self.assertEqual(
+            json.loads(self.store.get("recovery"))["reason"], "preflight_failed"
+        )
+
 
 class DeploymentSafety(unittest.TestCase):
     def setUp(self):
@@ -951,6 +1052,34 @@ class DeploymentSafety(unittest.TestCase):
             self.loop.tick()
         self.assertEqual(json.loads(self.store.get("recovery")), incident)
         self.assertEqual(self.store.get("active"), self.first)
+        self.assertTrue(self.host.healthy(self.first))
+
+    def test_reporting_failure_before_prepare_fences_the_current_attempt(self):
+        target = self.host.commit("src/console/view.ts", "two")
+        pid = self.host.process.pid
+        self.loop.recovery = deploy.Recovery(self.store)
+        reporter = deploy.GitHubStatuses(self.store, recovery=self.loop.recovery)
+        self.loop.statuses = reporter
+        run = subprocess.run
+        with (
+            patch.object(reporter, "token", side_effect=ValueError("PRIVATE")),
+            patch.object(
+                deploy.subprocess,
+                "run",
+                side_effect=lambda args, **kw: (
+                    None if args[0] == "systemctl" else run(args, **kw)
+                ),
+            ),
+        ):
+            self.loop.tick()
+        self.assertFalse((self.host.releases / target).exists())
+        self.assertEqual(self.host.process.pid, pid)
+        self.assertEqual(self.store.status(target), "preparing")
+        self.assertEqual(self.store.get("intent"), "")
+        self.assertEqual(
+            json.loads(self.store.get("recovery"))["reason"],
+            "github_status_publish_failed",
+        )
         self.assertTrue(self.host.healthy(self.first))
 
     def test_unclean_stop_blocks_activation_and_rollback_without_switch_or_retry(self):

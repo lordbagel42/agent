@@ -41,6 +41,19 @@ test("release inspection preserves global blocks and unknown candidate/identity 
   expect(unknown).toContain("Candidate lifecycle status unknown");
   const event = feed.events[0];
   if (!event) throw new Error("Missing fixture event");
+  feed.events.push({
+    ...event,
+    sequence: 2,
+    status: "reconciled",
+    reason: null,
+    at: 3000,
+  });
+  const laterHold = await release({ action: "inspect", revision: null });
+  expect(laterHold).toContain("Controller blocked: yes. Reason is outside");
+  expect(laterHold).not.toContain(
+    "Controller blocked: yes. activation_unknown",
+  );
+  feed.events.pop();
   event.status = "fetch_failed";
   event.reason = "fetch_failed";
   const fetchOnly = await release({ action: "inspect", revision: null });

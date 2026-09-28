@@ -183,6 +183,7 @@ export function createReleaseTool(options: {
       `Running revision: ${running} (loaded process identity, observed ${observedAt}; not a fresh independent controller health attestation).`,
       "Policy: independent controller follows trusted lordbagel42/agent main. This tool cannot push, approve, deploy, retry, reconcile, or change policy.",
       "Controller installation is separate: main pushes do not install it; app revisions do not identify it.",
+      "With autonomous recovery installed, controller errors hand off to one Amp recovery agent on homelab-amp. A blocked feed can mean an active recovery or operator hold, not a running build. This inspection does not prove an agent launched or finished; missing recovery details remain unknown. Do not start a competing repair.",
     ];
     if (request.revision)
       lines.push(
@@ -214,7 +215,14 @@ export function createReleaseTool(options: {
           : "No healthy/reconciled observation for this revision in the bounded feed; whether it previously became live is unknown, not disproven.",
       );
     }
-    const blocker = bounded.findLast((event) => event.status === "blocked");
+    const reconciled = bounded.findLast(
+      (event) => event.status === "reconciled",
+    );
+    const blocker = bounded.findLast(
+      (event) =>
+        event.status === "blocked" &&
+        event.sequence > (reconciled?.sequence ?? -1),
+    );
     lines.push(
       `Controller blocked: ${feed.blocked ? "yes" : "no (as last published; not a liveness guarantee)"}.${feed.blocked ? ` ${blocker?.reason ? `${blocker.reason}: ${reasons[blocker.reason]}` : "Reason is outside the bounded feed; operator inspection required."}` : ""}`,
       `Historical last healthy revision: ${feed.lastHealthyRevision} (not proof of the current deployment).`,

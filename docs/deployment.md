@@ -741,15 +741,31 @@ The prompt requests no tools; it is not a capability-enforced sandbox. The probe
 does not create a production incident, claim ownership, or change controller records.
 Retain only a bounded identity/result receipt, not the conversation stream.
 
-After a failed preflight, failed readiness/rollback, or controller block, the
-poller records one private SQLite `recovery` incident and fences further work.
+After a failed preflight, failed readiness/rollback, controller block, fetch
+failure, or capacity/drain deferral, the poller records one private SQLite
+`recovery` incident and fences further work. Unexpected polling errors and
+repository/GitHub reporting errors also create an incident without overwriting
+the candidate's lifecycle history. Install `june-deploy-failed.service` alongside
+the poller: systemd's `OnFailure` invokes `--controller-failed` when the controller
+exits unexpectedly, including startup failures. The poller no longer silently
+restart-loops. This handler deliberately bypasses app credentials and release
+verification; it does not bypass trusted installation or durable incident state.
+Missing/corrupt controller configuration, unavailable SQLite/systemd/SSH/Amp, or
+a destroyed installation can still require human recovery. No local controller
+can guarantee launching an agent when its own dispatch infrastructure is broken.
+
 It lets any already-running safe rollback finish first. Old failures before the
 latest healthy/reconciled event are not replayed. A separate systemd worker
 atomically consumes `pending` before creating a thread; repeated polls, restarts,
 or lost systemd responses cannot create a second thread. The worker saves only
 the Amp init `session_id`, never conversation output or logs. The existing
 June-facing deployment feed continues to show the original failure; private
-recovery ownership and thread identifiers are not exposed there.
+recovery ownership and thread identifiers are not exposed there. June can inspect
+the recovery fence with her existing `release.inspect` capability: `blocked`
+also covers recovery incidents and operator holds. A reason outside the lifecycle
+feed remains unknown, not evidence of a healthy controller. GitHub queued checks
+become `action_required` while globally fenced instead of claiming indefinite
+deployment progress; this does not falsely mark queued commits as failed.
 
 An incident left in `dispatching` has an **unknown launch outcome**. Do not reset
 it to `pending` or start another thread. Inspect Amp and the launcher under
@@ -782,11 +798,18 @@ held as `legacy-recovery`; it is not adopted merely because owner metadata is
 absent. Only after the actual existing operator explicitly hands off may an
 operator release that hold (using `--release-operator-hold legacy-recovery`).
 Prefer recording the known operator's hold before enabling the feature.
-Reconciliation does not clear an operator hold. Existing operator authorization
-still governs live actions; the new thread is instructed to coordinate before
-claiming, retain the fence when blocked, and never restore conversation data.
+Reconciliation does not clear an operator hold. With the owner's autonomous
+recovery authorization, a successfully claimed incident authorizes diagnosis,
+reviewed source fixes published to trusted main, controller/stop-hook repair,
+forward deployment, and restarting the poller without another approval round.
+It does not authorize deleting non-disposable data, restoring conversation data,
+force-killing unknown work, expanding permissions, or taking another operator's
+hold. An active human operator still requires a coordinated handoff. The agent
+must fix and verify the triggering fault, not merely reconcile the old healthy
+app to clear the fence. Keep matching canonical prompts installed on both hosts.
 The worker is a separate unit so stopping the poller to claim ownership does not
-terminate the Amp connection. Restart the poller only after the explicit handback.
+terminate the Amp connection. After verified repair/reconciliation, the agent
+enables/starts the poller and checks queue progress and GitHub reporting.
 Install/activate this integration only in a coordinated operator window; source
 publication alone neither installs the unit nor grants new recovery privileges.
 

@@ -2,6 +2,7 @@
 Description=June trusted-main deployment poller
 Wants=network-online.target
 After=network-online.target
+OnFailure=june-deploy-failed.service
 ConditionPathExists=/etc/june/deploy.json
 ConditionPathExists=/var/lib/june-deploy/records/deploy.sqlite
 
@@ -10,8 +11,7 @@ Type=exec
 User=root
 Group=root
 ExecStart=/usr/bin/python3 -I /usr/local/lib/june-deploy/deploy.py
-Restart=on-failure
-RestartSec=5
+Restart=no
 UMask=0077
 KillMode=control-group
 NoNewPrivileges=true
