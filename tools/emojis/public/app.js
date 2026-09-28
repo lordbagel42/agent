@@ -32,6 +32,7 @@ function requireToken() {
   $("login").hidden = false;
   delete $("index-state").dataset.state;
   text("index-state", "Sign-in required");
+  text("eta", "Unavailable");
   message(
     "connection-error",
     "A valid read token is required. Connect above to resume updates and search.",
@@ -106,6 +107,23 @@ function timestamp(id, value) {
   $(id).dateTime = date.toISOString();
 }
 
+function estimatedTimeLeft(status) {
+  const remaining = status.counts.pending + status.counts.running;
+  if (!status.counts.total) return "No work";
+  if (!remaining)
+    return status.counts.failed || status.counts.unknown
+      ? "Needs review"
+      : "Complete";
+  if (status.state !== "running")
+    return status.state === "idle" ? "Not running" : "Paused";
+  if (!(status.completedPerMinute > 0)) return "Calculating…";
+  const minutes = Math.ceil(remaining / status.completedPerMinute);
+  const hours = Math.floor(minutes / 60);
+  if (hours >= 24) return `≈ ${Math.floor(hours / 24)}d ${hours % 24}h`;
+  if (hours) return `≈ ${hours}h ${minutes % 60}m`;
+  return `≈ ${minutes} min`;
+}
+
 function renderStatus(status) {
   text("index-state", status.state);
   $("index-state").dataset.state = status.state;
@@ -125,6 +143,7 @@ function renderStatus(status) {
     `${number.format(status.concurrency)} / ${number.format(status.targetConcurrency)}`,
   );
   text("throughput", number.format(status.completedPerMinute));
+  text("eta", estimatedTimeLeft(status));
   text(
     "memory",
     status.availableMemoryMb === null
@@ -181,6 +200,7 @@ async function refreshStatus() {
     if (!needsToken && version === credentialVersion) {
       delete $("index-state").dataset.state;
       text("index-state", "Connection interrupted");
+      text("eta", "Unavailable");
       message(
         "connection-error",
         `${error instanceof Error && error.message.startsWith("Request failed") ? error.message : "Could not refresh the index."} Showing the last received values; retrying in 3 seconds.`,
