@@ -62,7 +62,10 @@ export type CapabilityDependencies = Pick<
   | "modelStatus"
 > & {
   channels?: Dependencies["channels"];
-  coding?: Pick<NonNullable<Dependencies["coding"]>, "runtimeId">;
+  coding?: Pick<
+    NonNullable<Dependencies["coding"]>,
+    "runtimeId" | "runtime" | "remoteAmp"
+  >;
   memory?: Pick<NonNullable<Dependencies["memory"]>, "store" | "source">;
 };
 
@@ -817,7 +820,7 @@ export async function runCapability(
               ).admissionReason,
             });
         }
-        text = `${heading}\nNative coding: ${deps.coding ? "configured; login and provider health are not verified" : "disabled or unavailable; no native execution can be requested"}. Permitted workspace names: ${JSON.stringify(workspaces.slice(0, 20))}.\nRecent jobs (up to 5): ${JSON.stringify(rows)}\nUse inspect with a job ID for durable details. New work requires a proposal and !approve ID as an ordinary private message. ${caution}`;
+        text = `${heading}\nLocal coding: ${deps.coding?.runtime ? "configured; login and provider health are not verified" : "disabled or unavailable; no native execution can be requested locally"}. Remote Amp jobs: ${deps.coding?.remoteAmp ? "configured via separate SSH transport; not MCP/Puck. Authentication and execution-host safety are not live verified" : "disabled or unavailable; requires separate ampJobs configuration, ordinary-job execution-host policy/key and JUNE_ALLOW_REMOTE_AMP_JOBS=1"}. Permitted workspace names: ${JSON.stringify(workspaces.slice(0, 20))}. amp-* names are remote.\nRecent jobs (up to 5): ${JSON.stringify(rows)}\nUse inspect with a job ID for durable details. New work requires a proposal and !approve ID as an ordinary private message. ${caution}`;
         if (!deps.coding) text += `\n\n${DISABLED_CODING_RECOVERY}`;
       } else {
         const matches: string[] = [];
@@ -889,7 +892,7 @@ export async function runCapability(
                 valid() &&
                 !signal.aborted
               )
-                text = `${heading}\n${request.action === "cancel" ? "Cancellation requested durably; not confirmed stopped.\n" : ""}${JSON.stringify(codingJobMetadata(id, state, deps.coding?.runtimeId))}\n${caution} Binding/recovery metadata describes current blockers, not a proven historical failure cause or permission to resume. Inspect the saved thread and isolated workspace before owner-only !resume-stopped ID as an ordinary private message; prepared work without a saved thread requires manual reconciliation, never a replacement launch.`;
+                text = `${heading}\n${request.action === "cancel" ? "Cancellation requested durably; not confirmed stopped.\n" : ""}${JSON.stringify(codingJobMetadata(id, state, deps.coding?.runtimeId))}\n${caution} Binding/recovery metadata describes current blockers, not a proven historical failure cause or permission to resume. ${state.remoteAmp ? "Remote jobs cannot resume; inspect the execution host and saved thread manually. No replacement launch after ambiguity." : "Inspect the saved thread and isolated workspace before owner-only !resume-stopped ID as an ordinary private message; prepared work without a saved thread requires manual reconciliation, never a replacement launch."}`;
             }
           }
         }

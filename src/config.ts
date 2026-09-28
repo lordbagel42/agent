@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { ampJobsSchema } from "./coding/remote-amp.js";
 import { webEmbedUrlSchema } from "./core/web-embed.js";
 import { jevQuestionSchema } from "./models/jev.js";
 import {
@@ -62,6 +63,7 @@ const schema = z
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    ampJobs: ampJobsSchema.optional(),
     continuity: z
       .strictObject({
         idleMs: z

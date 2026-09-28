@@ -88,6 +88,7 @@ async function fixture(
     disabled?: boolean;
     send?: (message: OutboundMessage) => Promise<SendResult>;
     completionText?: string;
+    remoteAmp?: CodingDependencies["remoteAmp"];
   },
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "june-supervisor-"));
@@ -140,9 +141,15 @@ async function fixture(
     workspaces: { june: repositoryRoot },
     timeoutMs: 5000,
     isolation: { june: manager },
+    ...(options?.remoteAmp
+      ? {
+          remoteAmp: options.remoteAmp,
+          workspaces: options.remoteAmp.workspaces,
+        }
+      : {}),
   };
   const codingRequest = {
-    workspace: "june",
+    workspace: options?.remoteAmp ? "amp-june" : "june",
     goal: "Fix reaction handling. Run its tests.",
   };
   const sent: OutboundMessage[] = [];
@@ -227,6 +234,123 @@ async function fixture(
 }
 
 describe("separate coding supervisor", () => {
+  it.for(["result", "ambiguous"] as const)(
+    "remote Amp %s uses private approval, receipts and never resumes or verifies locally",
+    async (outcome, t) => {
+      let launches = 0;
+      const local = vi.fn(async () => {
+        throw new Error("Local runtime forbidden");
+      });
+      const { registry, sent, coding, modelRequests } = await fixture(
+        t,
+        { run: local },
+        undefined,
+        {
+          remoteAmp: {
+            workspaces: { "amp-june": "/remote-only/june" },
+            timeoutMs: 5000,
+            async run(input) {
+              launches++;
+              expect(input).not.toHaveProperty("cwd");
+              if (outcome === "ambiguous")
+                throw new Error("Lost SSH before receipt");
+              await input.onThread("T-00000000-0000-0000-0000-000000000001");
+              return {
+                threadId: "T-00000000-0000-0000-0000-000000000001",
+                report: "Synthetic remote result",
+              };
+            },
+          },
+        },
+      );
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", owner.id]);
+      await june.send("inbox", { type: "event", event: source });
+      await expect
+        .poll(
+          () =>
+            sent.some(
+              (message) =>
+                message.content.type === "text" &&
+                message.content.text.includes("Remote Amp job proposal"),
+            ),
+          { timeout: 15000 },
+        )
+        .toBe(true);
+      const id = Object.keys((await june.snapshot()).jobs)[0];
+      if (!id) throw new Error("Missing remote proposal");
+      const job = client.job.getOrCreate([owner.id, id]);
+      await expect
+        .poll(async () => (await job.snapshot()).status)
+        .toBe("awaiting_approval");
+      expect(launches).toBe(0);
+      expect(
+        modelRequests.some((request) =>
+          request.system.includes("Ordinary remote Amp jobs"),
+        ),
+      ).toBe(true);
+      // A changed host policy cannot adopt the saved owner's preview.
+      const original = coding.runtimeId;
+      coding.runtimeId = "changed-policy";
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "stale-remote-approval",
+          messageId: "123.568",
+          text: `!approve ${id}`,
+        },
+      });
+      await expect
+        .poll(async () =>
+          Object.values((await job.snapshot()).commandApprovals),
+        )
+        .toEqual([null]);
+      expect(launches).toBe(0);
+      coding.runtimeId = original;
+      await june.send("inbox", {
+        type: "event",
+        event: {
+          ...source,
+          id: "remote-approval",
+          messageId: "123.569",
+          text: `!approve ${id}`,
+        },
+      });
+      await expect
+        .poll(async () => (await job.snapshot()).status)
+        .toBe(outcome === "result" ? "completed" : "needs_review");
+      const state = await job.snapshot();
+      expect(state.remoteAmp).toBe(true);
+      expect(state.worktree).toBeUndefined();
+      expect(state.verification).toBeUndefined();
+      expect(
+        codingJobMetadata(id, state, coding.runtimeId).verification.passed,
+      ).toBeNull();
+      expect(await job.diffSummary()).toBeNull();
+      expect(local).not.toHaveBeenCalled();
+      await job.send("commands", { type: "approve", commandId: "duplicate" });
+      await job.send("commands", {
+        type: "resume",
+        commandId: "resume",
+        confirmedStopped: true,
+      });
+      await expect
+        .poll(async () => (await job.snapshot()).commandApprovals.resume)
+        .toBeNull();
+      expect(launches).toBe(1);
+      await expect
+        .poll(() =>
+          sent.some(
+            (message) =>
+              message.content.type === "text" &&
+              message.content.text.includes("not independently verified"),
+          ),
+        )
+        .toBe(true);
+    },
+  );
+
   it("accepts advertised coding commands only from signed plain owner-DM Events", async (t) => {
     const launches: (string | undefined)[] = [];
     let reply: CompanionReply = {

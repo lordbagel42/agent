@@ -19,6 +19,7 @@ import { createClaudeRuntime } from "./coding/claude.js";
 import { createCodexRuntime } from "./coding/codex.js";
 import { createPiRuntime } from "./coding/pi.js";
 import { nativeCodingPreflight } from "./coding/preflight.js";
+import { createRemoteAmpJobs } from "./coding/remote-amp.js";
 import { createWorktreeManager } from "./coding/worktree.js";
 import { parseConfig, secret } from "./config.js";
 import { createConsoleLoginLinks } from "./console/session.js";
@@ -224,6 +225,12 @@ async function main() {
   }
   let coding: Dependencies["coding"];
   const isolation: NonNullable<Dependencies["coding"]>["isolation"] = {};
+  if (
+    Object.keys(config.coding.workspaces).some((name) =>
+      name.startsWith("amp-"),
+    )
+  )
+    throw new Error("amp- workspace names are reserved for remote Amp jobs");
   if (config.coding.enabled) {
     startupStage =
       "native coding: requires JUNE_ALLOW_NATIVE_CODING=1 on a dedicated host";
@@ -347,6 +354,29 @@ async function main() {
               : config.coding,
           ),
         )
+        .digest("hex"),
+    };
+  }
+  if (config.ampJobs?.enabled) {
+    startupStage = "remote Amp jobs activation";
+    if (process.env.JUNE_ALLOW_REMOTE_AMP_JOBS !== "1")
+      throw new Error("Remote Amp jobs require separate host opt-in");
+    if (!Object.keys(config.ampJobs.workspaces).length)
+      throw new Error("Remote Amp jobs require named execution workspaces");
+    for (const name of Object.keys(config.ampJobs.workspaces)) {
+      if (Object.hasOwn(config.coding.workspaces, name))
+        throw new Error("Local and remote workspaces must have distinct names");
+    }
+    // Remote directories never enter the local manager/CodingRuntime contract.
+    const remoteAmp = createRemoteAmpJobs(config.ampJobs);
+    coding = {
+      ...coding,
+      runtimeKind: coding?.runtimeKind ?? "amp-remote",
+      timeoutMs: coding?.timeoutMs ?? config.ampJobs.timeoutMs,
+      remoteAmp,
+      workspaces: { ...coding?.workspaces, ...remoteAmp.workspaces },
+      runtimeId: createHash("sha256")
+        .update(JSON.stringify([coding?.runtimeId ?? null, config.ampJobs]))
         .digest("hex"),
     };
   }
@@ -1223,7 +1253,8 @@ async function main() {
       capabilityMatrix: () =>
         capabilitySnapshot(config, dependencies, !!imports),
       slackMcpConfigured: !!slackMcp,
-      nativeCoding: () => nativeCodingPreflight(config.coding, !!coding),
+      nativeCoding: () =>
+        nativeCodingPreflight(config.coding, !!coding?.runtime),
       slackSearch: config.slack
         ? {
             enabled: config.slack.searchEnabled,
@@ -1234,7 +1265,7 @@ async function main() {
         client.conversation
           .getOrCreate(["private", config.owner.id])
           .outstandingOperations(),
-      coding: { ...config.coding, enabled: !!coding },
+      coding: { ...config.coding, enabled: !!coding?.runtime },
       reflectionPolicy: config.reflection?.policy,
       reflection: reflection
         ? () => client.reflection.getOrCreate([config.owner.id]).status()
@@ -1543,7 +1574,12 @@ async function main() {
       if (!coding || !(await june.canResumeJob(id))) return false;
       const job = client.job.getOrCreate([config.owner.id, id]);
       const state = await job.snapshot();
-      if (state.revoked || state.runtimeId !== coding.runtimeId) return false;
+      if (
+        state.revoked ||
+        state.remoteAmp ||
+        state.runtimeId !== coding.runtimeId
+      )
+        return false;
       if (Object.hasOwn(state.commandApprovals, commandId))
         return state.commandApprovals[commandId] !== null;
       if (

@@ -170,6 +170,7 @@ shutdown/alarm diagnostics and replay/migration limits are documented in the
 | --- | --- |
 | System design | [Architecture](docs/architecture.md) |
 | Conversation workers | [Execution agents](docs/execution-agents.md) |
+| Approved remote coding | [Ordinary Amp jobs](docs/amp-jobs.md) (SSH transport, separate from Puck/MCP) |
 | Reminders and durable programs | [Wakeups](docs/wakeups.md), [workflows](docs/workflows.md) |
 | External tools | [MCP connections](docs/mcp-connections.md), [Slack](docs/slack.md), [GitHub](docs/github.md), [browser](docs/browser.md) |
 | Evidence and learning | [Memory](src/memory/README.md), [reflection](src/reflection/README.md) |

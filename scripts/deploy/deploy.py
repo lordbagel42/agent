@@ -737,6 +737,25 @@ def recovery_prompt(number, commit, reason):
     )
 
 
+def amp_job_argv(command, directory, title, prompt):
+    """Shared launch mechanism, not authorization. Callers enforce their policy."""
+    return [
+        *command,
+        "--mode",
+        "high",
+        "--executor",
+        "runner:homelab-amp",
+        "--runner-dir",
+        directory,
+        "--stream-json",
+        "--no-archive-after-execute",
+        "--title",
+        title,
+        "--execute",
+        prompt,
+    ]
+
+
 def dispatch_recovery(
     config, number, database=Path("/var/lib/june-deploy/records/deploy.sqlite")
 ):
@@ -778,21 +797,9 @@ def dispatch_recovery(
             raw = json.dumps(incident)
             db.execute("UPDATE state SET value=? WHERE key='recovery'", (raw,))
         prompt = recovery_prompt(number, incident["revision"], incident["reason"])
-        argv = [
-            *command,
-            "--mode",
-            "high",
-            "--executor",
-            "runner:homelab-amp",
-            "--runner-dir",
-            directory,
-            "--stream-json",
-            "--no-archive-after-execute",
-            "--title",
-            f"Recover June deployment incident {number}",
-            "--execute",
-            prompt,
-        ]
+        argv = amp_job_argv(
+            command, directory, f"Recover June deployment incident {number}", prompt
+        )
         # OpenSSH's remote command is shell text: quote the complete argv once,
         # rather than letting SSH concatenate unquoted prompt arguments.
         if ssh is not None:

@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import { appIdSchema, readAppArtifact } from "../apps/artifact.js";
+import type { RemoteAmpJobs } from "../coding/remote-amp.js";
 import {
   type createWorktreeManager,
   type VerificationResult,
@@ -32,8 +33,9 @@ export const DISABLED_CODING_RECOVERY = [
 ].join("\n");
 
 export interface CodingDependencies {
-  runtime: CodingRuntime;
-  runtimeKind: "amp" | "codex" | "claude" | "pi";
+  runtime?: CodingRuntime;
+  runtimeKind: "amp" | "codex" | "claude" | "pi" | "amp-remote";
+  remoteAmp?: RemoteAmpJobs;
   /** Stable binding to the operator's runtime selection and execution policy. */
   runtimeId: string;
   workspaces: Record<string, string>;
@@ -65,6 +67,8 @@ export function codingApprovalPreview(
   request: CodingRequest,
   coding: CodingDependencies,
 ): string {
+  if (Object.hasOwn(coding.remoteAmp?.workspaces ?? {}, request.workspace))
+    return `Remote Amp job proposal for ${request.workspace}:\nExecution: runner:homelab-amp via separately authorized SSH transport (not MCP/Puck or deployment recovery).\nDirectory: ${JSON.stringify(coding.remoteAmp?.workspaces[request.workspace])}\n\nTask:\n${request.goal}\n\nReply !approve ${id.slice(0, 12)} as a fresh ordinary owner-private message to authorize only this task. No push, publication, deployment, infrastructure changes, credential access or additional agents. Remote execution is not a sandbox; no local worktree verifier runs. Thread receipts and worker claims will be saved privately. Cancellation only stops observation, not the remote agent. Ambiguous dispatch cannot be retried or resumed. A changed task or execution policy requires a fresh proposal after reconciliation.`;
   return `Coding proposal for ${request.workspace}:\nRepository: ${JSON.stringify(coding.workspaces[request.workspace])}\nRuntime: ${coding.runtimeKind}\n\nTask:\n${request.goal}\n\nReply !approve ${id.slice(0, 12)} as an ordinary private message to authorize only this task in an isolated local checkout of that repository. No push, deployment, publication, shared-infrastructure changes, or credential access is authorized. Native execution is not a sandbox. A changed task, workspace, or runtime requires a fresh proposal.`;
 }
 
@@ -92,6 +96,7 @@ export interface CodingState {
   commandApprovals: Record<string, number | null>;
   runtimeId?: string;
   threadId?: string;
+  remoteAmp?: boolean;
   report?: string;
   worktree?: WorktreeManifest;
   workerClaim?: string;
@@ -116,6 +121,8 @@ const recoveryGuidance = {
     "Prepared work has no saved session. A worker may have started; even confirmed-stopped resume is blocked. Reconcile manually, never launch a replacement session.",
   isolated_worktree_missing:
     "A saved session has no isolated worktree record. Operator reconciliation is required; June cannot continue it in a replacement worktree.",
+  remote_reconciliation_required:
+    "Remote outcome is unknown. Never retry or resume this job. Inspect the execution host and saved thread manually; cancellation or SSH exit is not proof of remote stoppage.",
   review_required:
     "The recorded outcome needs review; its cause is not established by this snapshot. Inspect the saved session and workspace and confirm prior work stopped before requesting resume. This is not proof of resume eligibility.",
 } as const;
@@ -142,15 +149,26 @@ export function codingJobMetadata(
   let reason: keyof typeof recoveryGuidance | undefined;
   if (runtimeBinding === "missing") reason = "runtime_binding_missing";
   else if (runtimeBinding === "mismatch") reason = "runtime_binding_mismatch";
-  else if (state.threadId && !state.worktree)
+  else if (state.threadId && !state.worktree && !state.remoteAmp)
     reason = "isolated_worktree_missing";
   else if (state.status === "needs_review")
-    reason =
-      state.worktree && !state.threadId
+    reason = state.remoteAmp
+      ? "remote_reconciliation_required"
+      : state.worktree && !state.threadId
         ? "saved_session_missing"
         : "review_required";
   return {
     id,
+    execution: state.remoteAmp ? "remote_amp" : "local_coding",
+    remoteOutcome: state.remoteAmp
+      ? {
+          resultRecorded: state.workerClaim !== undefined,
+          verification: "not_independently_verified",
+          resumeSupported: false,
+          guidance:
+            "Only saved receipts are inspected. Cancellation stops local observation, not the remote agent. Never redispatch an ambiguous job; reconcile on the execution host. No local verifier or diff is available.",
+        }
+      : null,
     workspace: state.proposal?.workspace.slice(0, 80) ?? null,
     status: state.status === "empty" ? "proposal_pending" : state.status,
     attempts: state.attempts,
@@ -167,7 +185,7 @@ export function codingJobMetadata(
     worktreePrepared: !!state.worktree,
     workerResultRecorded: state.workerClaim !== undefined,
     verification: {
-      source: "operator_verifier",
+      source: state.remoteAmp ? "unavailable_remote" : "operator_verifier",
       status: verification?.status ?? "unknown",
       passed: verification?.passed ?? null,
       exitCode: verification?.exitCode ?? null,
@@ -393,6 +411,10 @@ export function createCodingActor(
                 // Only the producer knows which configuration the owner reviewed.
                 // Legacy queued proposals cannot adopt the consumer's configuration.
                 step.state.runtimeId = command.proposal.runtimeId;
+                step.state.remoteAmp = Object.hasOwn(
+                  coding.remoteAmp?.workspaces ?? {},
+                  command.proposal.workspace,
+                );
                 step.state.status = "awaiting_approval";
                 await step.vars.persist();
               });
@@ -408,6 +430,7 @@ export function createCodingActor(
               }
               if (
                 command.type === "resume" &&
+                !step.state.remoteAmp &&
                 command.confirmedStopped &&
                 step.state.status === "completed" &&
                 step.state.proposal &&
@@ -431,6 +454,7 @@ export function createCodingActor(
                 !step.state.revoked &&
                 step.state.proposal.runtimeId === coding.runtimeId &&
                 step.state.runtimeId === coding.runtimeId &&
+                (!step.state.remoteAmp || command.type === "approve") &&
                 (command.type === "approve"
                   ? step.state.status === "awaiting_approval"
                   : command.confirmedStopped &&
@@ -454,8 +478,9 @@ export function createCodingActor(
                 if (step.state.attempts >= approved) {
                   if (step.state.status === "running") {
                     step.state.status = "needs_review";
-                    step.state.report =
-                      step.state.worktree && !step.state.threadId
+                    step.state.report = step.state.remoteAmp
+                      ? recoveryGuidance.remote_reconciliation_required
+                      : step.state.worktree && !step.state.threadId
                         ? missingSessionReport
                         : "The coding run was interrupted. Check its saved thread and process before resuming.";
                     await step.vars.persist();
@@ -464,6 +489,67 @@ export function createCodingActor(
                 }
                 const proposal = step.state.proposal;
                 if (!proposal) return;
+                if (step.state.remoteAmp) {
+                  // Same durable approval and no-relaunch claim as local jobs,
+                  // but a separate execution contract: never prepare/verify local files.
+                  step.state.attempts = approved;
+                  step.state.status = "running";
+                  await step.vars.persist();
+                  const controller = new AbortController();
+                  step.vars.controller = controller;
+                  const remote = coding.remoteAmp;
+                  const signal = AbortSignal.any([
+                    controller.signal,
+                    step.abortSignal,
+                    AbortSignal.timeout(remote?.timeoutMs ?? coding.timeoutMs),
+                  ]);
+                  try {
+                    if (
+                      !remote ||
+                      step.state.revoked ||
+                      step.state.cancelRequested ||
+                      proposal.runtimeId !== coding.runtimeId ||
+                      step.state.runtimeId !== coding.runtimeId
+                    )
+                      throw new Error("Remote job binding unavailable");
+                    signal.throwIfAborted();
+                    const result = await remote.run({
+                      id: proposal.id,
+                      workspace: proposal.workspace,
+                      goal: proposal.goal,
+                      signal,
+                      onThread: async (threadId) => {
+                        signal.throwIfAborted();
+                        if (
+                          step.state.threadId &&
+                          step.state.threadId !== threadId
+                        )
+                          throw new Error("Remote receipt changed");
+                        step.state.threadId = threadId;
+                        await step.vars.persist();
+                      },
+                    });
+                    signal.throwIfAborted();
+                    if (
+                      !step.state.threadId ||
+                      result.threadId !== step.state.threadId
+                    )
+                      throw new Error("Remote receipt missing");
+                    step.state.workerClaim = result.report;
+                    step.state.report =
+                      "Remote Amp returned a final result. Worker claims only; no independent verifier, local artifact, push or deployment evidence.";
+                    // Completed means transport returned a result, never verified code.
+                    step.state.status = "completed";
+                  } catch {
+                    step.state.status = "needs_review";
+                    step.state.report =
+                      "Remote dispatch/completion is unknown. Do not retry or resume, even without a thread receipt. Inspect the execution host and any saved thread manually. Local cancellation, timeout, SSH exit or host restart never proves the remote agent stopped.";
+                  } finally {
+                    delete step.vars.controller;
+                  }
+                  await step.vars.persist();
+                  return;
+                }
                 const manager = coding.isolation?.[proposal.workspace];
                 step.state.status = "running";
                 step.state.attempts = approved;
@@ -496,7 +582,8 @@ export function createCodingActor(
                     step.state.runtimeId !== coding.runtimeId
                   )
                     throw new Error("Execution binding needs reconciliation");
-                  if (!manager) throw new Error("Isolation is not configured");
+                  if (!manager || !coding.runtime)
+                    throw new Error("Isolation is not configured");
                   if (step.state.cancelRequested) controller.abort();
                   signal.throwIfAborted();
                   // A legacy saved thread belongs to the shared checkout. Never

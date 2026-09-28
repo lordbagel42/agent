@@ -51,5 +51,17 @@
     "enabled": false,
     "workspaces": {},
     "timeoutMs": 3600000
+  },
+  "ampJobs": {
+    "enabled": false,
+    "host": "amp-execution.example.invalid",
+    "user": "amp",
+    "identityFile": "/etc/june-jobs/id_ed25519",
+    "knownHostsFile": "/etc/june-jobs/known_hosts",
+    "policyRevision": "ordinary-jobs-v1",
+    "workspaces": {
+      "amp-june": "/home/amp/workspaces/june-jobs"
+    },
+    "timeoutMs": 3600000
   }
 }
