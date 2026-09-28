@@ -537,6 +537,131 @@ class ControllerProvenance(unittest.TestCase):
 
 
 class ServiceStopSafety(unittest.TestCase):
+    def test_exec_stop_pins_main_and_rejects_unknown_identity_or_timeout(self):
+        stopping = {
+            **RUNNING_SERVICE,
+            "ControlPID": str(os.getpid()),
+            "ActiveState": "deactivating",
+            "SubState": "stop",
+        }
+        for name, before, after, exited, error, sends in (
+            ("normal", stopping, stopping, True, None, True),
+            ("timeout", stopping, stopping, False, "stop_helper_timeout", True),
+            (
+                "not-control",
+                {**stopping, "ControlPID": "999999"},
+                stopping,
+                True,
+                "stop_helper_context_unknown",
+                False,
+            ),
+            (
+                "wrong-main",
+                {**stopping, "MainPID": "102"},
+                stopping,
+                True,
+                "stop_helper_identity_unknown",
+                False,
+            ),
+            (
+                "invocation-changed",
+                stopping,
+                {**stopping, "InvocationID": "f" * 32},
+                True,
+                "stop_helper_identity_changed",
+                False,
+            ),
+            (
+                "main-changed",
+                stopping,
+                {**stopping, "MainPID": "102"},
+                True,
+                "stop_helper_identity_changed",
+                False,
+            ),
+            ("cwd", stopping, stopping, True, "stop_helper_identity_changed", False),
+            ("cgroup", stopping, stopping, True, "stop_helper_identity_changed", False),
+            (
+                "already-exited",
+                {**stopping, "MainPID": "0"},
+                stopping,
+                True,
+                None,
+                False,
+            ),
+        ):
+            with (
+                self.subTest(name=name),
+                patch.dict(
+                    os.environ,
+                    {"MAINPID": "101", "INVOCATION_ID": stopping["InvocationID"]},
+                ),
+                patch.object(
+                    deploy.subprocess,
+                    "check_output",
+                    side_effect=[service_output(before), service_output(after)],
+                ),
+                patch.object(deploy.os, "pidfd_open", return_value=17) as opened,
+                patch.object(deploy.os, "close") as closed,
+                patch.object(deploy.signal, "pidfd_send_signal") as sent,
+                patch.object(deploy.select, "poll") as poll,
+                patch.object(
+                    Path,
+                    "resolve",
+                    return_value=Path(
+                        "/tmp/not-a-release"
+                        if name == "cwd"
+                        else "/opt/june/releases/" + "a" * 40
+                    ),
+                ),
+                patch.object(
+                    Path,
+                    "read_bytes",
+                    side_effect=[
+                        b"0::/system.slice/other.service\n"
+                        if name == "cgroup"
+                        else b"0::/system.slice/june.service\n",
+                        b"0::/system.slice/june.service\n",
+                    ],
+                ),
+            ):
+                poll.return_value.poll.return_value = (
+                    [(17, deploy.select.POLLIN)] if exited else []
+                )
+                if error:
+                    with self.assertRaisesRegex(ValueError, error):
+                        deploy.stop_app()
+                else:
+                    deploy.stop_app()
+                if sends:
+                    opened.assert_called_once_with(101)
+                    sent.assert_called_once_with(17, signal.SIGTERM)
+                    poll.return_value.register.assert_called_once_with(
+                        17, deploy.select.POLLIN
+                    )
+                    self.assertLessEqual(
+                        poll.return_value.poll.call_args.args[0], 45_000
+                    )
+                else:
+                    sent.assert_not_called()
+                if opened.called:
+                    closed.assert_called_once_with(17)
+
+    def test_exec_stop_mode_never_enters_deployment_lock_or_root_configuration(self):
+        with (
+            patch.object(sys, "argv", ["deploy.py", "--stop-app"]),
+            patch.object(deploy, "stop_app") as stop,
+            patch.object(
+                deploy, "private_file", side_effect=AssertionError("config read")
+            ),
+            patch.object(
+                deploy, "deployment_lock", side_effect=AssertionError("recursive lock")
+            ),
+            patch.object(deploy.os, "geteuid", return_value=999),
+        ):
+            deploy.main()
+        stop.assert_called_once_with()
+
     def test_stop_requires_retained_matching_normal_exit_not_only_job_success(self):
         host = object.__new__(deploy.Host)
         cases = [
@@ -547,6 +672,7 @@ class ServiceStopSafety(unittest.TestCase):
             ({"InvocationID": "", "ExecMainExitTimestampMonotonic": "0"}, False),
             ({"InvocationID": "", "ExecMainExitTimestampMonotonic": "1500000"}, False),
             ({"Result": "timeout"}, False),  # Even when the main process exited 0.
+            ({"Result": "exit-code"}, False),  # Failed ExecStop, normal main exit.
             ({"Result": "signal", "ExecMainCode": "2", "ExecMainStatus": "9"}, False),
             ({"ExecMainCode": "2", "ExecMainStatus": "15"}, False),
             ({"ExecMainStatus": "1"}, False),

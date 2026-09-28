@@ -13,8 +13,10 @@ import json
 import os
 import pwd
 import re
+import select
 import shlex
 import shutil
+import signal
 import sqlite3
 import stat
 import subprocess
@@ -1831,6 +1833,75 @@ def private_file(path):
         return file.read()
 
 
+def stop_app():
+    """ExecStop ordering only; the controller still proves clean exit separately."""
+    deadline = time.monotonic() + 45
+    properties = (
+        "MainPID,ExecMainPID,ControlPID,InvocationID,ActiveState,SubState,"
+        "ExecMainStartTimestampMonotonic"
+    )
+
+    def state():
+        output = subprocess.check_output(
+            ["systemctl", "show", "june.service", "--property=" + properties],
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).decode()
+        return dict(line.split("=", 1) for line in output.splitlines())
+
+    before = state()
+    invocation = os.environ.get("INVOCATION_ID", "")
+    if (
+        not re.fullmatch(r"[0-9a-f]{32}", invocation)
+        or before.get("InvocationID") != invocation
+        or before.get("ControlPID") != str(os.getpid())
+        or before.get("ActiveState") != "deactivating"
+        or before.get("SubState") != "stop"
+    ):
+        raise ValueError("stop_helper_context_unknown")
+    # A service that exited on its own can enter ExecStop without a main PID.
+    # There is nothing to signal; this does not certify its exit as successful.
+    if before.get("MainPID") == "0":
+        return
+    pid = os.environ.get("MAINPID", "")
+    if (
+        not pid.isdecimal()
+        or int(pid) <= 1
+        or before.get("MainPID") != pid
+        or before.get("ExecMainPID") != pid
+        or int(before.get("ExecMainStartTimestampMonotonic", "0")) <= 0
+    ):
+        raise ValueError("stop_helper_identity_unknown")
+    fd = os.pidfd_open(int(pid))
+    try:
+        process = Path("/proc") / pid
+        if (
+            not re.fullmatch(
+                r"/opt/june/releases/[0-9a-f]{40}", str((process / "cwd").resolve())
+            )
+            or (process / "cgroup").read_bytes()
+            != Path("/proc/self/cgroup").read_bytes()
+            or state() != before
+        ):
+            raise ValueError("stop_helper_identity_changed")
+        # Signal only June, never its group: Rivet must remain available until
+        # registry.shutdown has persisted actor state and returned. A pidfd
+        # prevents a reused numeric PID from receiving the signal.
+        try:
+            signal.pidfd_send_signal(fd, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # The pinned process may already have exited; poll proves it.
+        poll = select.poll()
+        poll.register(fd, select.POLLIN)
+        remaining = max(0, int((deadline - time.monotonic()) * 1000))
+        if not any(events & select.POLLIN for _, events in poll.poll(remaining)):
+            raise ValueError("stop_helper_timeout")
+        # systemd now terminates the remaining cgroup normally. No PID lookup,
+        # escalation, ledger write or claim about the main process's exit code.
+    finally:
+        os.close(fd)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
@@ -1838,6 +1909,7 @@ def main():
     mode.add_argument("--prepare", metavar="REVISION")
     mode.add_argument("--bootstrap", action="store_true")
     mode.add_argument("--reconcile", metavar="REVISION")
+    mode.add_argument("--stop-app", action="store_true")
     mode.add_argument("--dispatch-recovery", type=int, metavar="INCIDENT")
     mode.add_argument("--claim-recovery", metavar="THREAD")
     mode.add_argument("--operator-hold", metavar="OWNER")
@@ -1846,6 +1918,11 @@ def main():
     parser.add_argument("--recovery-thread")
     args = parser.parse_args()
     os.umask(0o077)
+    if args.stop_app:
+        # Runs as June inside systemd ExecStop while the controller already
+        # holds its deployment lock. Do not read root config or acquire it again.
+        stop_app()
+        return
     if os.geteuid() != 0:
         raise ValueError("root_required")
     config = json.loads(private_file(Path("/etc/june/deploy.json")))

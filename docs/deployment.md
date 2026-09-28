@@ -263,6 +263,44 @@ children alive: that also leaves Rivet/other children behind. Drain workers to
 completion, or independently move their lifecycle into a persistent worker
 service before claiming uninterrupted in-flight native execution.
 
+### Stop June before stopping its engine
+
+The app unit must run the root-owned installed controller's stop helper as its
+synchronous `ExecStop` command:
+
+```ini
+[Service]
+ExecStop=
+ExecStop=/usr/bin/python3 -I -B /usr/local/lib/june-deploy/deploy.py --stop-app
+KillMode=control-group
+TimeoutStopSec=60
+```
+
+For a drop-in, the empty assignment clears any existing stop command before
+installing this one. Verify June's main is the directly tracked Node process,
+not a package-manager wrapper or externally reaped PID-file process. Require
+`Delegate=no` (delegated control commands use a different cgroup), no `-` prefix
+that ignores helper failure, and no `SuccessExitStatus` accepting exit code 1.
+
+Keep the installed script readable by the app service user, but writable only by
+root. The helper needs no root credentials or deployment lock: it validates
+systemd's invocation, control PID, main PID, immutable release cwd and matching
+cgroup, then pins the main process with a Linux pidfd. It sends SIGTERM only to
+June and waits up to 45 seconds for that exact process to exit. Only after the
+helper finishes does systemd terminate the remaining cgroup. This lets Rivet
+persist actor shutdown while its engine is still available. Simultaneously
+signalling the engine can strand `registry.shutdown()` until the manager kills
+June, which correctly fails the controller's strict-stop check.
+
+The helper never certifies drain or a successful exit, escalates signals, or
+writes deployment records. The controller still requires pre-stop drain and the
+same retained normal-exit-zero evidence; helper failure/timeout also fails stop.
+Do not replace the wait with a background signal command or change `KillMode` to
+leave workers behind. Installing this hook changes the runtime binding: use a
+coordinated forward release under the new binding, never rewrite an old marker.
+Verify the actual host's Python pidfd support and a disposable real-systemd stop
+before enabling automatic rollout.
+
 **Initial integration refuses automatic drain whenever native coding, reflection
 or WhatsApp is enabled.** Coding commands now share the lifecycle fence, including
 queued approvals/resumes, and drain checks current workspace leases and admission
