@@ -640,7 +640,16 @@ export default {
                   : message.startsWith("D1_")
                     ? "database_error"
                     : "operation_failed";
-            console.error(JSON.stringify({ stage, code }));
+            console.error(
+              JSON.stringify({
+                stage,
+                code,
+                locations:
+                  error instanceof Error
+                    ? error.stack?.match(/\bindex\.js:\d+:\d+/g)?.slice(0, 4)
+                    : undefined,
+              }),
+            );
           }
         }
       })(),

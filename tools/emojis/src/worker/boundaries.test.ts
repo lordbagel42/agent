@@ -25,15 +25,22 @@ type SearchResponse = {
 test("Slack catalogues require a matching workspace or an explicit enterprise workspace grant", async (t) => {
   let identity = { team_id: "E_ORG", is_enterprise_install: true };
   let granted = true;
+  let redirect = false;
   const calls: string[] = [];
   t.mock.method(
     globalThis,
     "fetch",
     async (...[input, init]: Parameters<typeof fetch>) => {
       const request = new Request(input, init);
+      assert.equal(request.redirect, "manual");
       const method = new URL(request.url).pathname.split("/").pop();
       const params = new URLSearchParams(await request.text());
       calls.push(method ?? "");
+      if (redirect)
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "https://example.invalid/collect" },
+        });
       if (method === "auth.test")
         return Response.json({ ok: true, ...identity });
       if (method === "auth.teams.list") {
@@ -76,6 +83,10 @@ test("Slack catalogues require a matching workspace or an explicit enterprise wo
   identity = { team_id: "T0266FRGM", is_enterprise_install: false };
   await slackCatalog("fixture");
   assert.deepEqual(calls, ["auth.test", "emoji.list"]);
+  calls.length = 0;
+  redirect = true;
+  await assert.rejects(slackCatalog("fixture"), /slack_http_302/);
+  assert.deepEqual(calls, ["auth.test"]);
 });
 
 test("local D1: role boundaries, lease fencing, idempotency, alias/removal and signed events", async () => {

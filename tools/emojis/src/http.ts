@@ -45,7 +45,8 @@ export async function slackCatalog(
         "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
       },
       body: new URLSearchParams(parameters),
-      redirect: "error",
+      // Reject redirects as non-OK responses; never forward the bearer token.
+      redirect: "manual",
       signal: AbortSignal.timeout(30_000),
     });
     if (!response.ok) {
