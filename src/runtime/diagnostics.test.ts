@@ -70,6 +70,18 @@ test("persistent diagnostics exclude sensitive inputs and preserve original cloc
     },
   );
   ingress.record(request, "signature_rejected");
+  log.slackOAuth({ stage: "token_exchange", reason: "bad_client_secret" });
+  log.slackOAuth({
+    stage: "save",
+    reason: "operation_failed",
+    // @ts-expect-error Extra provider fields must never be persisted.
+    token: "private-token",
+  });
+  log.slackOAuth({
+    stage: "token_exchange",
+    // @ts-expect-error Runtime allowlist must reject unknown provider errors.
+    reason: "private-upstream-error",
+  });
   const before = log.snapshot();
   log.close();
   log = new DiagnosticLog(path, "b".repeat(40));
@@ -88,6 +100,10 @@ test("persistent diagnostics exclude sensitive inputs and preserve original cloc
     /private-|1800000000\.123456/,
   );
   expect(log.report()).toContain("slack.signature_rejected");
+  expect(log.report()).toContain(
+    "slack_oauth.token_exchange.bad_client_secret",
+  );
+  expect(log.report()).toContain("slack_oauth.save.operation_failed");
   expect((await stat(directory)).mode & 0o777).toBe(0o700);
   expect((await stat(path)).mode & 0o777).toBe(0o600);
   for (const file of [path, `${path}-wal`])
@@ -99,6 +115,13 @@ test("persistent diagnostics exclude sensitive inputs and preserve original cloc
 test("June reads persisted logs only for owner-private turns; HTTP, guest, channel and synthesis reads fail closed", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "june-log-access-"));
   const log = new DiagnosticLog(join(directory, "logs.sqlite"));
+  log.slackOAuth({ stage: "scope_validation", reason: "validation_failed" });
+  for (let i = 0; i < 105; i++)
+    log.ingress({
+      at: Date.now(),
+      stage: "arrival",
+      requestId: `fixture-${i}`,
+    });
   t.onTestFinished(async () => {
     log.close();
     await rm(directory, { recursive: true, force: true });
@@ -186,7 +209,10 @@ test("June reads persisted logs only for owner-private turns; HTTP, guest, chann
       .toBe(completed + 1);
   };
   await deliver("owner-logs");
-  expect(JSON.stringify(sent[0]?.content)).toContain("process_started");
+  expect(JSON.stringify(sent[0]?.content)).toContain("slack.arrival");
+  expect(JSON.stringify(sent[0]?.content)).toContain(
+    "slack_oauth.scope_validation.validation_failed",
+  );
   expect(JSON.stringify(sent[0]?.content).length).toBeLessThan(3500);
   expect(requests).toHaveLength(1);
   expect(reads).toHaveBeenCalledTimes(1);
@@ -200,7 +226,8 @@ test("June reads persisted logs only for owner-private turns; HTTP, guest, chann
     { senderId: "U2", metadata: { channelType: "im" } },
     ["guest", "slack", "T1", "private-dm", "", "U2"],
   );
-  expect(JSON.stringify(sent.slice(1))).not.toContain("process_started");
+  expect(JSON.stringify(sent.slice(1))).not.toContain("slack.arrival");
+  expect(JSON.stringify(sent.slice(1))).not.toContain("slack_oauth");
   search = true;
   await deliver("synthesis-logs");
   expect(requests.at(-1)?.latencyAvailable).toBe(false);
@@ -233,5 +260,5 @@ test("June reads persisted logs only for owner-private turns; HTTP, guest, chann
   });
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toBe("no-store");
-  expect(await response.text()).toContain("process_started");
+  expect(await response.text()).toContain("slack.arrival");
 });

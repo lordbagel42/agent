@@ -183,6 +183,17 @@ strings out of access logs. The hostname must expose only the private dashboard,
 not operator, health, Rivet or webhook routes; Slack's webhook keeps its separate
 signed ingress. Cloudflare Access supplements, not replaces, June's owner login.
 
+If the final save fails, ask June privately to show her logs (`latency: "logs"`)
+or inspect the private service journal. New failures record
+`slack_oauth.<stage>.<reason>` in the persistent diagnostic log, distinguishing
+callback validation, token exchange, token/account/scope verification and saving.
+Only fixed labels and allowlisted Slack error codes are retained, never callback
+URLs, tokens, account IDs or raw provider errors. Unknown provider errors remain
+`provider_rejected`; network/storage exceptions remain `operation_failed`.
+These labels do not prove whether Slack issued a token or storage committed.
+Check Connections before beginning a fresh sign-in; never replay a consumed
+confirmation. Historical failures without diagnostics cannot be recovered.
+
 ## Amp consent and activation gates
 
 Amp uses `https://ampcode.com/mcp`. `main.ts` mounts **Connect Amp** when MCP and an

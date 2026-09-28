@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSlackMcpOAuth } from "../src/tools/slack-mcp-oauth.js";
+import {
+  createSlackMcpOAuth,
+  type SlackMcpOAuthFailure,
+} from "../src/tools/slack-mcp-oauth.js";
 
 function setup(tokenOverride = {}, identityOverride = {}) {
   let time = 1000;
   let generation = "connected";
+  const onFailure = vi.fn<(failure: SlackMcpOAuthFailure) => void>();
   const saveAuthorization = vi.fn(async () => {});
   const fetchMock = vi.fn<typeof fetch>(async (url) =>
     Response.json(
@@ -30,6 +34,7 @@ function setup(tokenOverride = {}, identityOverride = {}) {
       teamId: "T1",
       scopes: ["search:read", "search:read.public"],
       generation: () => generation,
+      onFailure,
       saveAuthorization,
     },
     { fetch: fetchMock, now: () => time },
@@ -41,6 +46,7 @@ function setup(tokenOverride = {}, identityOverride = {}) {
     authorize,
     callback,
     fetchMock,
+    onFailure,
     saveAuthorization,
     disconnect: () => {
       generation = "disconnected";
@@ -166,13 +172,52 @@ describe("Slack MCP OAuth security boundary", () => {
 
   it("sanitizes network failures and consumes state before exchange", async () => {
     const s = setup();
+    s.onFailure.mockImplementationOnce(() => {
+      throw new Error("private-diagnostic-failure");
+    });
     s.fetchMock.mockRejectedValue(new Error("secret-private private-code"));
     await expect(s.oauth.complete("owner", s.callback)).rejects.toThrow(
       /^slack_mcp_oauth_failed$/,
     );
+    expect(s.onFailure).toHaveBeenCalledWith({
+      stage: "token_exchange",
+      reason: "operation_failed",
+    });
     await expect(s.oauth.complete("owner", s.callback)).rejects.toThrow();
     expect(s.fetchMock).toHaveBeenCalledTimes(1);
     expect(s.saveAuthorization).not.toHaveBeenCalled();
+  });
+
+  it("records only allowlisted reasons, distinguishes verification/save failures, and never retries", async () => {
+    for (const [error, reason] of [
+      ["bad_client_secret", "bad_client_secret"],
+      ["bad_client_secret private-token private-code", "provider_rejected"],
+    ]) {
+      const s = setup({ ok: false, error });
+      await expect(s.oauth.complete("owner", s.callback)).rejects.toThrow(
+        /^slack_mcp_oauth_failed$/,
+      );
+      expect(s.onFailure.mock.calls).toEqual([
+        [{ stage: "token_exchange", reason }],
+      ]);
+      expect(s.saveAuthorization).not.toHaveBeenCalled();
+    }
+    const identity = setup({}, { user_id: "private-other-user" });
+    await expect(
+      identity.oauth.complete("owner", identity.callback),
+    ).rejects.toThrow();
+    expect(identity.onFailure.mock.calls).toEqual([
+      [{ stage: "identity_validation", reason: "wrong_user" }],
+    ]);
+    const save = setup();
+    save.saveAuthorization.mockRejectedValue(new Error("private-store-path"));
+    await expect(save.oauth.complete("owner", save.callback)).rejects.toThrow();
+    expect(save.onFailure.mock.calls).toEqual([
+      [{ stage: "save", reason: "operation_failed" }],
+    ]);
+    await expect(save.oauth.complete("owner", save.callback)).rejects.toThrow();
+    expect(save.saveAuthorization).toHaveBeenCalledOnce();
+    expect(save.fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("rejects oversized responses and bounds even a stalled fetch", async () => {

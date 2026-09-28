@@ -481,6 +481,12 @@ async function main() {
         userId: slack.userId,
         scopes: slack.scopes,
         generation: () => store.generation("slack"),
+        onFailure(failure) {
+          diagnosticLog?.slackOAuth(failure);
+          console.error(
+            `Slack OAuth failed: ${failure.stage}/${failure.reason}`,
+          );
+        },
         async saveAuthorization(value) {
           store.connectSlack(value);
         },

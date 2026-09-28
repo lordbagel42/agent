@@ -9,6 +9,46 @@ const AUTH_TEST = "https://slack.com/api/auth.test";
 const TTL = 600_000;
 const MAX_ATTEMPTS = 32;
 
+export const slackOAuthStages = [
+  "callback",
+  "token_exchange",
+  "token_validation",
+  "scope_validation",
+  "token_lifetime",
+  "identity_request",
+  "identity_validation",
+  "connection_generation",
+  "save",
+] as const;
+// Only these fixed labels may reach diagnostics, never provider text or values.
+export const slackOAuthReasons = [
+  "validation_failed",
+  "operation_failed",
+  "provider_rejected",
+  "http_error",
+  "timeout",
+  "wrong_user",
+  "wrong_team",
+  "wrong_app",
+  "invalid_code",
+  "invalid_client_id",
+  "bad_client_secret",
+  "bad_redirect_uri",
+  "invalid_scope",
+  "missing_scope",
+  "invalid_auth",
+  "access_denied",
+  "token_revoked",
+  "token_expired",
+  "ratelimited",
+  "team_access_not_granted",
+  "oauth_authorization_url_mismatch",
+] as const;
+export interface SlackMcpOAuthFailure {
+  stage: (typeof slackOAuthStages)[number];
+  reason: (typeof slackOAuthReasons)[number];
+}
+
 export interface SlackMcpOAuthOptions {
   clientId: string;
   clientSecret: string;
@@ -18,6 +58,7 @@ export interface SlackMcpOAuthOptions {
   scopes: readonly string[];
   /** Current connection generation; disconnect must change it, even if absent. */
   generation?(): string;
+  onFailure?(failure: SlackMcpOAuthFailure): void;
   saveAuthorization(value: {
     accessToken: string;
     refreshToken?: string;
@@ -28,8 +69,16 @@ export interface SlackMcpOAuthOptions {
   }): Promise<void>;
 }
 
-function failed(): never {
-  throw new Error("slack_mcp_oauth_failed");
+class OAuthFailure extends Error {
+  constructor(readonly reason: SlackMcpOAuthFailure["reason"]) {
+    super("slack_mcp_oauth_failed");
+  }
+}
+
+function failed(
+  reason: SlackMcpOAuthFailure["reason"] = "validation_failed",
+): never {
+  throw new OAuthFailure(reason);
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -103,7 +152,7 @@ export function createSlackMcpOAuth(
             redirect: "error",
             credentials: "omit",
           });
-          if (!response.ok || response.redirected) failed();
+          if (!response.ok || response.redirected) failed("http_error");
           const reader = response.body?.getReader();
           if (!reader) failed();
           const chunks: Uint8Array[] = [];
@@ -122,13 +171,17 @@ export function createSlackMcpOAuth(
           }
           controller.signal.throwIfAborted();
           const result = record(JSON.parse(Buffer.concat(chunks).toString()));
-          if (result.ok !== true) failed();
+          if (result.ok !== true)
+            failed(
+              slackOAuthReasons.find((reason) => reason === result.error) ??
+                "provider_rejected",
+            );
           return result;
         })(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             controller.abort();
-            reject(new Error("slack_mcp_oauth_failed"));
+            reject(new OAuthFailure("timeout"));
           }, 15_000);
         }),
       ]);
@@ -179,6 +232,7 @@ export function createSlackMcpOAuth(
     },
     async complete(principal: string, callbackUrl: string): Promise<void> {
       let consumedState: string | undefined;
+      let stage: SlackMcpOAuthFailure["stage"] = "callback";
       try {
         prune();
         if (callbackUrl.length > 16_384) failed();
@@ -212,6 +266,7 @@ export function createSlackMcpOAuth(
             callback.searchParams.get("iss") !== RESOURCE)
         )
           failed();
+        stage = "token_exchange";
         const token = await request(TOKEN, {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -224,6 +279,7 @@ export function createSlackMcpOAuth(
             resource: RESOURCE,
           }),
         });
+        stage = "token_validation";
         const receivedAt = now();
         const user = record(token.authed_user);
         const team = record(token.team);
@@ -232,14 +288,17 @@ export function createSlackMcpOAuth(
           typeof token.access_token !== "string" ||
           !token.access_token ||
           token.access_token.startsWith("xoxb-") ||
-          user.id !== userId ||
-          team.id !== teamId ||
-          token.bot_user_id ||
-          (token.app_id !== undefined && token.app_id !== SLACK_APP_ID)
+          token.bot_user_id
         )
           failed();
+        if (user.id !== userId) failed("wrong_user");
+        if (team.id !== teamId) failed("wrong_team");
+        if (token.app_id !== undefined && token.app_id !== SLACK_APP_ID)
+          failed("wrong_app");
+        stage = "scope_validation";
         const granted = grantedScopes(user.scope);
         if (token.scope !== undefined) grantedScopes(token.scope);
+        stage = "token_lifetime";
         if (
           (token.refresh_token !== undefined &&
             (typeof token.refresh_token !== "string" ||
@@ -251,18 +310,18 @@ export function createSlackMcpOAuth(
               !Number.isSafeInteger(receivedAt + token.expires_in * 1000)))
         )
           failed();
+        stage = "identity_request";
         const identity = await request(AUTH_TEST, {
           method: "POST",
           headers: { authorization: `Bearer ${token.access_token}` },
         });
-        if (
-          identity.user_id !== userId ||
-          identity.team_id !== teamId ||
-          identity.bot_id ||
-          identity.is_bot === true
-        )
-          failed();
+        stage = "identity_validation";
+        if (identity.user_id !== userId) failed("wrong_user");
+        if (identity.team_id !== teamId) failed("wrong_team");
+        if (identity.bot_id || identity.is_bot === true) failed();
+        stage = "connection_generation";
         if (attempt.generation !== options.generation?.()) failed();
+        stage = "save";
         await saveAuthorization({
           accessToken: token.access_token,
           ...(typeof token.refresh_token === "string"
@@ -275,7 +334,16 @@ export function createSlackMcpOAuth(
           teamId,
           scopes: granted,
         });
-      } catch {
+      } catch (error) {
+        try {
+          options.onFailure?.({
+            stage,
+            reason:
+              error instanceof OAuthFailure ? error.reason : "operation_failed",
+          });
+        } catch {
+          // Diagnostics must not change the outcome or expose their own errors.
+        }
         failed();
       } finally {
         if (consumedState) attempts.delete(consumedState);

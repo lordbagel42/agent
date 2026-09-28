@@ -6,6 +6,11 @@ import {
   type SlackIngressObservation,
   slackIngressStages,
 } from "../channels/slack-ingress.js";
+import {
+  type SlackMcpOAuthFailure,
+  slackOAuthReasons,
+  slackOAuthStages,
+} from "../tools/slack-mcp-oauth.js";
 import type { LatencyTrace } from "./latency.js";
 
 const retentionMs = 30 * 86_400_000;
@@ -145,6 +150,18 @@ export class DiagnosticLog {
     if (lifecycleStages.includes(stage)) this.event({ at: Date.now(), stage });
   }
 
+  slackOAuth(failure: SlackMcpOAuthFailure) {
+    if (
+      !slackOAuthStages.includes(failure.stage) ||
+      !slackOAuthReasons.includes(failure.reason)
+    )
+      return;
+    this.event({
+      at: Date.now(),
+      stage: `slack_oauth.${failure.stage}.${failure.reason}`,
+    });
+  }
+
   traces(probe?: string, excludeId = ""): LatencyTrace[] {
     const rows = this.db
       .prepare(`SELECT data FROM traces WHERE at >= ? AND id != ?
@@ -179,17 +196,30 @@ export class DiagnosticLog {
 
   report() {
     const snapshot = this.snapshot();
+    // Keep failures visible even when the owner's request itself adds ingress
+    // events. Read retained rows, not the mixed snapshot's 100-event window.
+    const oauth = this.db
+      .prepare(
+        `SELECT data FROM events WHERE at >= ?
+        AND json_extract(data, '$.stage') GLOB 'slack_oauth.*'
+        ORDER BY id DESC LIMIT 3`,
+      )
+      .all(Date.now() - retentionMs) as { data: string }[];
+    const events = [
+      ...oauth.map((row) => JSON.parse(row.data) as DiagnosticEvent),
+      ...snapshot.events.filter(
+        (event) => !event.stage.startsWith("slack_oauth."),
+      ),
+    ].slice(0, 12);
     return [
       `Persistent diagnostic log, as of ${new Date().toISOString()}. Retention: 30 days, capped at 10,000 traces / 20,000 events (pruned every 128 writes).`,
       `Write failures this process: ${snapshot.writeFailures}; missing records are unknown, not proof no work occurred.`,
       "Shutdown phase returns record control flow only, not durable settlement.",
-      "Latest 12 lifecycle/Slack ingress events (no message contents or credentials):",
-      ...snapshot.events
-        .slice(0, 12)
-        .map(
-          (event) =>
-            `${new Date(event.at).toISOString()} ${event.stage}; process ${event.processId}; revision ${event.revision ?? "unknown"}`,
-        ),
+      "Latest OAuth failures (up to 3), then lifecycle/Slack ingress events (12 total; no contents or credentials). OAuth labels identify the failed check, not whether Slack issued a token; never replay a consumed confirmation:",
+      ...events.map(
+        (event) =>
+          `${new Date(event.at).toISOString()} ${event.stage}; process ${event.processId}; revision ${event.revision ?? "unknown"}`,
+      ),
       'For persisted timings, use latency: "recent" or an exact ping UUIDv4. Logs are private to the owner; never relay them to another user or a shared channel.',
     ].join("\n");
   }
