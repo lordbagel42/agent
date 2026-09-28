@@ -71,6 +71,13 @@ export function executionCapabilities(
       privateTurn && !!deps.memory && !!deps.reflection && !!deps.coding,
     juryAvailable: privateTurn && !!deps.memory && !!deps.jury,
     e2bAvailable: privateTurn && deps.e2b?.available === true,
+    webEmbedAvailable:
+      privateTurn &&
+      event.address.channel === "slack" &&
+      !!deps.channels.slack?.webEmbedOrigins?.length,
+    webEmbedOrigins: privateTurn
+      ? [...(deps.channels.slack?.webEmbedOrigins ?? [])]
+      : [],
     rivetAvailable: isOwnerRivetDm(event, deps.owner) && !!deps.rivet,
     browserProposalAvailable: privateTurn && !!deps.browserProposal,
     personalityPreviewAvailable: privateTurn,
@@ -100,6 +107,16 @@ export function currentExecutionCapabilities(
       available.workspaces?.includes(name),
     ),
     webSearchProvider: deps.webSearch?.description,
+    webEmbedAvailable:
+      available.webEmbedAvailable === true &&
+      ceiling.webEmbedAvailable === true &&
+      !!ceiling.webEmbedOrigins?.some((origin) =>
+        available.webEmbedOrigins?.includes(origin),
+      ),
+    webEmbedOrigins:
+      ceiling.webEmbedOrigins?.filter((origin) =>
+        available.webEmbedOrigins?.includes(origin),
+      ) ?? [],
     wakeupSources: deps.wakeups?.sources,
     workflowTools: deps.workflows
       ? Object.entries(deps.workflows.tools).map(([name, tool]) => ({

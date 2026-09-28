@@ -15,6 +15,7 @@ import {
 } from "../core/rivet.js";
 import { slackHistorySchema } from "../core/slack-history.js";
 import { socialActionSchema } from "../core/social.js";
+import { WEB_EMBED_HELP, webEmbedSchema } from "../core/web-embed.js";
 import {
   globalProposalInputSchema,
   reflectionPersonalitySuggestionSchema,
@@ -25,8 +26,8 @@ import {
   personalityPreviewSchema,
 } from "../runtime/personality.js";
 import { personalityEvaluateSchema } from "../runtime/personality-evaluation-preview.js";
-import { javascriptSchema } from "../tools/javascript.js";
 import { E2B_HELP, e2bRequestSchema } from "../tools/e2b.js";
+import { javascriptSchema } from "../tools/javascript.js";
 import { wakeupActionSchema } from "../wakeups/state.js";
 import { workflowCommandSchema } from "../workflows/contracts.js";
 import {
@@ -302,6 +303,7 @@ const companionReplySchema = z.strictObject({
     .optional(),
   jury: juryRequestSchema.optional(),
   e2b: e2bRequestSchema.optional(),
+  webEmbed: webEmbedSchema.optional(),
   skillCodingProposal: z
     .strictObject({
       candidateId: z.string().regex(/^[a-f0-9]{64}$/),
@@ -375,6 +377,7 @@ export type ReplyCapabilities = Pick<
   | "reflectionRequestAvailable"
   | "juryAvailable"
   | "e2bAvailable"
+  | "webEmbedAvailable"
   | "skillCodingProposalAvailable"
   | "reflectionMemoryAvailable"
   | "rivetAvailable"
@@ -475,6 +478,7 @@ function legacyReplyJsonSchema(
     reflectionRequestAvailable,
     juryAvailable,
     e2bAvailable,
+    webEmbedAvailable,
     skillCodingProposalAvailable,
     reflectionMemoryAvailable,
     rivetAvailable,
@@ -1397,6 +1401,21 @@ function legacyReplyJsonSchema(
             },
           }
         : {}),
+      ...(webEmbedAvailable
+        ? {
+            webEmbed: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                url: { type: "string" },
+                thumbnailUrl: { type: "string" },
+                title: { type: "string" },
+              },
+              required: ["url", "thumbnailUrl", "title"],
+              description: WEB_EMBED_HELP,
+            },
+          }
+        : {}),
       ...(e2bAvailable
         ? {
             e2b: {
@@ -1606,6 +1625,7 @@ function legacyReplyJsonSchema(
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
       ...(juryAvailable ? ["jury"] : []),
       ...(e2bAvailable ? ["e2b"] : []),
+      ...(webEmbedAvailable ? ["webEmbed"] : []),
       ...(skillCodingProposalAvailable && permittedWorkspaces.length > 0
         ? ["skillCodingProposal"]
         : []),
@@ -1807,6 +1827,7 @@ export function parseReply(
     reflectionRequestAvailable,
     juryAvailable,
     e2bAvailable,
+    webEmbedAvailable,
     skillCodingProposalAvailable,
     reflectionMemoryAvailable,
     rivetAvailable,
@@ -1875,6 +1896,7 @@ export function parseReply(
     "reflectionRequest",
     "jury",
     "e2b",
+    "webEmbed",
     "skillCodingProposal",
     "reflectionMemory",
     "rivet",
@@ -1941,6 +1963,7 @@ export function parseReply(
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
     (reply.jury !== undefined && !juryAvailable) ||
     (reply.e2b !== undefined && !e2bAvailable) ||
+    (reply.webEmbed !== undefined && !webEmbedAvailable) ||
     (reply.skillCodingProposal !== undefined &&
       !skillCodingProposalAvailable) ||
     (reply.reflectionMemory !== undefined && !reflectionMemoryAvailable) ||
@@ -1992,6 +2015,7 @@ export function parseReply(
     Number(reply.reflectionRequest !== undefined) +
     Number(reply.jury !== undefined) +
     Number(reply.e2b !== undefined) +
+    Number(reply.webEmbed !== undefined) +
     Number(reply.skillCodingProposal !== undefined) +
     Number(reply.reflectionMemory !== undefined) +
     Number(reply.rivet !== undefined) +
@@ -2036,6 +2060,7 @@ export function parseReply(
       reply.reflectionRequest !== undefined ||
       reply.jury !== undefined ||
       reply.e2b !== undefined ||
+      reply.webEmbed !== undefined ||
       reply.skillCodingProposal !== undefined ||
       reply.reflectionMemory !== undefined ||
       reply.rivet !== undefined ||

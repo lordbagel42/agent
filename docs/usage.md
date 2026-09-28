@@ -1476,6 +1476,30 @@ effects require exact, single-use dashboard approvals. See
 GitHub also feeds signed events into shared decision turns; see
 [GitHub account and events](github.md) for installation and live verification.
 
+## Public webpage embeds in Slack (experimental)
+
+June can call `webEmbed: {url, thumbnailUrl, title}` from an owner-private Slack
+turn, including through her execution worker. Set `slack.webEmbedOrigins` to
+exact approved HTTPS origins (no trailing slash) for both the page and thumbnail.
+The default empty list disables the capability. URLs cannot contain credentials,
+query strings or fragments; only already-public, non-sensitive content belongs
+here. This does not upload HTML, host pages, or expose June's private dashboard.
+
+Like [Coolton](https://github.com/itzmetanjim/coolton), this uses a Slack `video`
+block with a fallback link. Slack officially supports video players, not arbitrary
+webpages: rendering is experimental. An operator must authorize any live app
+changes, review `links.embed:write` requirements and registered unfurl domains,
+and verify rendering in the intended Slack client. Configuring approved origins
+alone does not establish that Slack will render the page. No live app settings
+are changed by this integration.
+
+June is gently encouraged to showcase an existing safe, public, server-enforced
+view-only E2B desktop when useful, without creating extra paid resources or
+weakening privacy for presentation. The one-shot E2B tool is headless and destroys
+its sandbox: it does not create desktops or stream URLs. Desktop provisioning and
+streaming are not implemented here; authenticated or secret-bearing streams must
+not be sent through this public embed mechanism.
+
 ## Development checks and limitations
 
 ```sh

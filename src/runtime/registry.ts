@@ -1177,6 +1177,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // already processing a turn retain the original capability plan.
           const juryVersion = await loop.getVersion("jury-request", 2);
           const e2bVersion = await loop.getVersion("e2b-request", 2);
+          const webEmbedVersion = await loop.getVersion("web-embed", 2);
           const reflectionPersonalityVersion = await loop.getVersion(
             "reflection-personality",
             2,
@@ -1654,6 +1655,7 @@ export function createJuneRegistry(deps: Dependencies) {
               workflow?: boolean;
               jury?: boolean;
               e2b?: boolean;
+              webEmbedOrigins?: string[];
             } =
               version >= 2
                 ? await loop.step("turn-plan", async () => ({
@@ -1691,6 +1693,20 @@ export function createJuneRegistry(deps: Dependencies) {
                         }
                       : {}),
                     jev: ownerTurn && scope.private && !!deps.jev,
+                    ...(webEmbedVersion >= 2
+                      ? {
+                          webEmbedOrigins:
+                            ownerTurn &&
+                            scope.private &&
+                            body.type === "event" &&
+                            event.address.channel === "slack"
+                              ? [
+                                  ...(deps.channels.slack?.webEmbedOrigins ??
+                                    []),
+                                ]
+                              : [],
+                        }
+                      : {}),
                     ...(e2bVersion >= 2
                       ? {
                           e2b:
@@ -3104,6 +3120,23 @@ export function createJuneRegistry(deps: Dependencies) {
                                   scope.private &&
                                   !!plan.e2b &&
                                   deps.e2b?.available === true,
+                                webEmbedAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  ownerTurn &&
+                                  scope.private &&
+                                  event.address.channel === "slack" &&
+                                  !!plan.webEmbedOrigins?.some((origin) =>
+                                    deps.channels.slack?.webEmbedOrigins?.includes(
+                                      origin,
+                                    ),
+                                  ),
+                                webEmbedOrigins: plan.webEmbedOrigins?.filter(
+                                  (origin) =>
+                                    deps.channels.slack?.webEmbedOrigins?.includes(
+                                      origin,
+                                    ),
+                                ),
                                 reflectionMemoryAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -4650,7 +4683,13 @@ export function createJuneRegistry(deps: Dependencies) {
                         address: replyAddress,
                         lastInboundAt:
                           step.state.lastInbound[addressId] ?? event.occurredAt,
-                        content: { type: "text", text },
+                        content: {
+                          type: "text",
+                          text,
+                          ...(reply.webEmbed
+                            ? { webEmbed: reply.webEmbed }
+                            : {}),
+                        },
                       },
                     };
                   }

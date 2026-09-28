@@ -100,7 +100,7 @@ export async function runExecutionCapability(
       }),
     );
   }
-  if (reply.dashboardLogin) {
+  if (reply.dashboardLogin || reply.webEmbed) {
     const result = await deliverPrivate(async (outbound) => {
       if (!current())
         return {
@@ -116,13 +116,20 @@ export async function runExecutionCapability(
           retryable: false,
         };
       return context.ports.send(
-        { ...outbound, content: { type: "text", text: response.text } },
+        {
+          ...outbound,
+          content: {
+            type: "text",
+            text: response.text,
+            ...(response.webEmbed ? { webEmbed: response.webEmbed } : {}),
+          },
+        },
         "text",
       );
     });
     return {
       ...receipt(result),
-      ...(result.status === "sent"
+      ...(result.status === "sent" && reply.dashboardLogin
         ? {
             text: "The host already delivered the dashboard response directly to the user: a sign-in link or an actionable explanation if issuance was unavailable. This is not proof that a link was issued or tested. Do not repeat the response or add a delivery confirmation. Report only separate findings or unresolved work that still needs attention; otherwise return empty text. The private response content is unavailable to this worker.",
           }

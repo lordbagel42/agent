@@ -10,6 +10,7 @@ import type {
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
+import { allowedWebEmbed } from "../core/web-embed.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
 import {
   createSlackContext,
@@ -388,6 +389,7 @@ export function createSlackAdapter({
   participateInOwnerChannels = false,
   contextEnabled = false,
   searchEnabled = false,
+  webEmbedOrigins = [],
   privateSearch,
   ingressDiagnostics,
   latency,
@@ -406,6 +408,7 @@ export function createSlackAdapter({
   /** Same-channel/thread reads, including the enriched initiating message. */
   contextEnabled?: boolean;
   searchEnabled?: boolean;
+  webEmbedOrigins?: readonly string[];
   privateSearch?: SlackPrivateSearchOptions;
   ingressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
@@ -435,6 +438,7 @@ export function createSlackAdapter({
   const adapter: ChannelAdapter = {
     channel: "slack",
     capabilities: { text: true, reactions: true, threads: true },
+    webEmbedOrigins,
     ...(search === undefined
       ? {}
       : { search: search.search, hasSearchToken: search.hasActionToken }),
@@ -636,6 +640,16 @@ export function createSlackAdapter({
         const privateReview = message.content.text.startsWith(
           PRIVATE_REFLECTION_REVIEW_PREFIX,
         );
+        const embed = message.content.webEmbed;
+        if (
+          embed &&
+          (message.content.plainText ||
+            privateReview ||
+            message.content.text.startsWith(RIVET_REPLY_PREFIX) ||
+            message.content.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX) ||
+            !allowedWebEmbed(embed, webEmbedOrigins))
+        )
+          return rejected("web_embed_unavailable");
         const text = privateReview
           ? message.content.text
               .replaceAll("&", "&amp;")
@@ -652,12 +666,29 @@ export function createSlackAdapter({
           channel: message.address.conversationId,
           text,
           client_msg_id: message.id,
-          ...(!message.content.plainText &&
+          ...(!embed &&
+          !message.content.plainText &&
           !privateReview &&
           text.length <= 12_000 &&
           /^\s*`{3,}/m.test(text)
             ? {
                 blocks: [{ type: "markdown", text }],
+                unfurl_links: false,
+                unfurl_media: false,
+              }
+            : {}),
+          ...(embed
+            ? {
+                blocks: [
+                  {
+                    type: "video",
+                    video_url: embed.url,
+                    title_url: embed.url,
+                    thumbnail_url: embed.thumbnailUrl,
+                    title: { type: "plain_text", text: embed.title },
+                    alt_text: embed.title,
+                  },
+                ],
                 unfurl_links: false,
                 unfurl_media: false,
               }

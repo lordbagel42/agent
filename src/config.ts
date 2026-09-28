@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { webEmbedUrlSchema } from "./core/web-embed.js";
 import { jevQuestionSchema } from "./models/jev.js";
 import {
   browserCredentialOperationSchema,
@@ -271,6 +272,15 @@ const schema = z
         botUserId: nonempty,
         signingSecretEnv: envName,
         botTokenEnv: envName,
+        webEmbedOrigins: z
+          .array(
+            webEmbedUrlSchema.refine(
+              (value) => URL.parse(value)?.origin === value,
+              "Use an exact HTTPS origin without a trailing slash",
+            ),
+          )
+          .max(20)
+          .default([]),
         searchEnabled: z.boolean().default(false),
         participateInOwnerChannels: z.boolean().default(false),
         contextEnabled: z.boolean().default(false),

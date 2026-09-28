@@ -11,14 +11,15 @@ import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { isOwnerRivetDm, RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import type { Scope } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
+import { allowedWebEmbed } from "../core/web-embed.js";
 import { pendingMemoryView } from "../memory/pending.js";
 import type { MemoryRetrieval } from "../memory/store.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type { ReflectionProposalBinding } from "../reflection/global-proposal.js";
 import { formatJuryResult } from "../reflection/jury.js";
 import { recallSessions } from "../sessions/recall.js";
-import { runJavaScript } from "../tools/javascript.js";
 import { formatE2BResult } from "../tools/e2b.js";
+import { runJavaScript } from "../tools/javascript.js";
 import {
   type CodingState,
   codingJobMetadata,
@@ -58,6 +59,7 @@ export type CapabilityDependencies = Pick<
   | "runningRevision"
   | "modelStatus"
 > & {
+  channels?: Dependencies["channels"];
   coding?: Pick<NonNullable<Dependencies["coding"]>, "runtimeId">;
   memory?: Pick<NonNullable<Dependencies["memory"]>, "store" | "source">;
 };
@@ -231,6 +233,39 @@ export async function runCapability(
         ? { replyInThread: generated.replyInThread }
         : {}),
     };
+  if (generated.webEmbed !== undefined) {
+    const origins = deps.channels?.slack?.webEmbedOrigins ?? [];
+    if (
+      origin === "event" &&
+      phase !== "synthesis" &&
+      ownerTurn &&
+      scope.private &&
+      event.address.channel === "slack" &&
+      modelRequest.webEmbedAvailable &&
+      canStartAction()
+    ) {
+      const embed = parseReply(
+        JSON.stringify(generated),
+        workspaces,
+        modelRequest,
+      ).webEmbed;
+      if (
+        embed &&
+        allowedWebEmbed(embed, origins) &&
+        allowedWebEmbed(embed, modelRequest.webEmbedOrigins ?? [])
+      )
+        return {
+          text: `${embed.title}\n${embed.url}`,
+          webEmbed: embed,
+          ...(generated.replyInThread !== undefined
+            ? { replyInThread: generated.replyInThread }
+            : {}),
+        };
+    }
+    return {
+      text: "Web embedding requires a current owner-private Slack request and approved public URL and thumbnail origins. Nothing was embedded.",
+    };
+  }
   if (generated.e2b !== undefined) {
     let text =
       "E2B requires an enabled integration and a current owner-private request. Nothing ran.";

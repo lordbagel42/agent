@@ -85,7 +85,13 @@ export interface OutboundMessage {
   /** Timestamp of the latest user message, for WhatsApp's service window. */
   lastInboundAt: number;
   content:
-    | { type: "text"; text: string; replyTo?: string; plainText?: true }
+    | {
+        type: "text";
+        text: string;
+        replyTo?: string;
+        plainText?: true;
+        webEmbed?: import("./web-embed.js").WebEmbed;
+      }
     | { type: "reaction"; messageId: string; emoji: string; remove?: boolean };
 }
 
@@ -116,6 +122,7 @@ export type ChannelSearchResult =
 export interface ChannelAdapter {
   readonly channel: Channel;
   readonly capabilities: { text: true; reactions: true; threads: boolean };
+  readonly webEmbedOrigins?: readonly string[];
   /** Verify raw bytes before decoding. Never enqueue an unauthenticated event. */
   receive(
     request: Request,
@@ -211,6 +218,7 @@ export interface CompanionReply {
   webSearch?: string;
   /** Opt-in owner-private disposable external code execution. */
   e2b?: import("../tools/e2b.js").E2BRequest;
+  webEmbed?: import("./web-embed.js").WebEmbed;
   /** Owner-authenticated release tracking; never activation or approval authority. */
   release?: { action: "inspect"; revision: string | null };
   /** Owner-private read-only inspection of model runtime health. */
@@ -373,6 +381,8 @@ export interface ModelRequest {
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;
   e2bAvailable?: boolean;
+  webEmbedAvailable?: boolean;
+  webEmbedOrigins?: readonly string[];
   skillCodingProposalAvailable?: boolean;
   reflectionMemoryAvailable?: boolean;
   rivetAvailable?: boolean;
