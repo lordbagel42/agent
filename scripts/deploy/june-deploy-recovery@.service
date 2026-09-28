@@ -1,0 +1,27 @@
+[Unit]
+Description=June deployment recovery thread for incident %i
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/june/deploy.json
+ConditionPathExists=/var/lib/june-deploy/records/deploy.sqlite
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/local/lib/june-deploy/deploy.py --dispatch-recovery %i
+Restart=no
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/june-deploy/records
+InaccessiblePaths=/var/lib/june
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=null
+StandardError=null

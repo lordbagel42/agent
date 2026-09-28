@@ -12,7 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location(
     "deploy", Path(__file__).with_name("deploy.py")
@@ -642,6 +642,144 @@ class ServiceStopSafety(unittest.TestCase):
             )
 
 
+class RecoverySafety(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.revision = "a" * 40
+        self.thread = "T-11111111-2222-3333-4444-555555555555"
+        self.store = deploy.Store(
+            self.root / "records", self.root / "feed.json", self.revision
+        )
+        self.addCleanup(self.store.close)
+        self.recovery = deploy.Recovery(self.store)
+        self.recovery.flush()
+        self.config = {
+            "ampRecovery": {
+                "command": ["/fixture/amp"],
+                "runnerDirectory": "/workspace",
+            }
+        }
+
+    def incident(self):
+        self.store.event("b" * 40, "failed", "preflight_failed")
+        with patch.object(deploy.subprocess, "run"):
+            self.recovery.flush()
+        return json.loads(self.store.get("recovery"))["incident"]
+
+    def test_dispatch_receipt_is_durable_private_and_never_recreated(self):
+        number = self.incident()
+        self.config["ampRecovery"]["ssh"] = ["/usr/bin/ssh", "fixture-runner"]
+        self.config["ampRecovery"]["runnerDirectory"] = "/workspace/it's June; $HOME"
+        fake = Mock()
+        fake.__enter__ = Mock(return_value=fake)
+        fake.__exit__ = Mock(return_value=False)
+        fake.stdout = io.StringIO(
+            json.dumps({"type": "system", "subtype": "init", "session_id": self.thread})
+            + '\n{"type":"assistant","text":"PRIVATE"}\n'
+        )
+        with patch.object(deploy.subprocess, "Popen", return_value=fake) as spawn:
+            deploy.dispatch_recovery(
+                self.config, number, self.root / "records/deploy.sqlite"
+            )
+            deploy.dispatch_recovery(
+                self.config, number, self.root / "records/deploy.sqlite"
+            )
+            self.assertEqual(spawn.call_count, 1)
+            invocation = spawn.call_args.args[0]
+            self.assertEqual(invocation[:2], ["/usr/bin/ssh", "fixture-runner"])
+            self.assertEqual(len(invocation), 3)
+            args = deploy.shlex.split(invocation[2])
+            self.assertEqual(args[args.index("--mode") + 1], "high")
+            self.assertEqual(args[args.index("--executor") + 1], "runner:homelab-amp")
+            self.assertEqual(
+                args[args.index("--runner-dir") + 1], "/workspace/it's June; $HOME"
+            )
+        self.assertEqual(json.loads(self.store.get("recovery"))["thread"], self.thread)
+        self.assertNotIn("PRIVATE", self.store.get("recovery"))
+        self.assertNotIn(self.thread, (self.root / "feed.json").read_text())
+        host = Mock()
+        deploy.Deployer(host, self.store, recovery=self.recovery).tick()
+        host.prepare.assert_not_called()
+        host.fetch.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "recovery_claim_denied"):
+            self.recovery.claim(number + 1, self.thread)
+        with self.assertRaisesRegex(ValueError, "recovery_claim_denied"):
+            self.recovery.claim(number, "T-99999999-2222-3333-4444-555555555555")
+        self.recovery.claim(number, self.thread)
+        loop = deploy.Deployer(host, self.store)
+        with self.assertRaisesRegex(ValueError, "recovery_owner_required"):
+            loop.reconcile(self.revision)
+        host.healthy.return_value = False
+        with self.assertRaisesRegex(ValueError, "reconciliation_not_ready"):
+            loop.reconcile(self.revision, self.thread)
+        self.assertTrue(self.store.get("recovery"))
+        host.healthy.return_value = True
+        loop.reconcile(self.revision, self.thread)
+        self.recovery.flush()
+        self.assertEqual(self.store.get("recovery"), "")
+        # A second candidate failure can reconcile to the SAME running SHA.
+        # Its receipt must still fence off this newer incident permanently.
+        self.store.event("c" * 40, "failed", "preflight_failed")
+        with patch.object(deploy.subprocess, "run"):
+            self.recovery.flush()
+        second = json.loads(self.store.get("recovery"))
+        second.update(phase="spawned", thread=self.thread)
+        self.store.set("recovery", json.dumps(second))
+        self.recovery.claim(second["incident"], self.thread)
+        loop.reconcile(self.revision, self.thread)
+        with patch.object(deploy.subprocess, "run") as start:
+            self.recovery.flush()
+            start.assert_not_called()
+        self.assertEqual(self.store.get("recovery"), "")
+
+    def test_unknown_creation_survives_reopen_without_retry(self):
+        number = self.incident()
+        with patch.object(
+            deploy.subprocess, "Popen", side_effect=OSError("private")
+        ) as spawn:
+            with self.assertRaises(OSError):
+                deploy.dispatch_recovery(
+                    self.config, number, self.root / "records/deploy.sqlite"
+                )
+            deploy.dispatch_recovery(
+                self.config, number, self.root / "records/deploy.sqlite"
+            )
+            self.assertEqual(spawn.call_count, 1)
+        self.assertEqual(json.loads(self.store.get("recovery"))["phase"], "dispatching")
+        with patch.object(deploy.subprocess, "run") as start:
+            self.recovery.flush()
+            start.assert_not_called()
+
+    def test_operator_hold_fences_pending_dispatch_and_claim(self):
+        number = self.incident()
+        self.store.set("operatorHold", "existing-operator")
+        with (
+            patch.object(deploy.subprocess, "run") as start,
+            patch.object(deploy.subprocess, "Popen") as spawn,
+        ):
+            self.recovery.flush()
+            deploy.dispatch_recovery(
+                self.config, number, self.root / "records/deploy.sqlite"
+            )
+            start.assert_not_called()
+            spawn.assert_not_called()
+        with self.assertRaisesRegex(ValueError, "recovery_claim_denied"):
+            self.recovery.claim(number, self.thread)
+        self.assertEqual(json.loads(self.store.get("recovery"))["phase"], "pending")
+
+    def test_legacy_failure_requires_explicit_handoff(self):
+        self.store.set("recoveryInitialized", "")
+        self.store.block("b" * 40, "activation_unknown")
+        with patch.object(deploy.subprocess, "run") as start:
+            self.recovery.flush()
+            self.recovery.flush()
+            start.assert_not_called()
+        self.assertEqual(self.store.get("operatorHold"), "legacy-recovery")
+        self.assertEqual(self.store.get("recovery"), "")
+
+
 class DeploymentSafety(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -662,6 +800,30 @@ class DeploymentSafety(unittest.TestCase):
         self.host.service("stop")
         self.store.close()
         self.tmp.cleanup()
+
+    def test_failed_preflight_hands_off_and_fences_later_main(self):
+        target = self.host.commit("src/console/view.ts", "two")
+        self.loop.recovery = deploy.Recovery(self.store)
+        run = subprocess.run
+        with (
+            patch.object(self.host, "prepare", side_effect=ValueError("bad build")),
+            patch.object(deploy.subprocess, "run", wraps=subprocess.run) as commands,
+        ):
+            # Only the recovery systemctl boundary is simulated; fixture Git,
+            # SQLite, preparation failure and service state remain real.
+            commands.side_effect = lambda args, **kwargs: (
+                None if args[0] == "systemctl" else run(args, **kwargs)
+            )
+            self.loop.tick()
+        incident = json.loads(self.store.get("recovery"))
+        self.assertEqual(incident["revision"], target)
+        self.assertEqual(incident["reason"], "preflight_failed")
+        self.host.commit("src/console/view.ts", "three")
+        with patch.object(deploy.subprocess, "run"):
+            self.loop.tick()
+        self.assertEqual(json.loads(self.store.get("recovery")), incident)
+        self.assertEqual(self.store.get("active"), self.first)
+        self.assertTrue(self.host.healthy(self.first))
 
     def test_unclean_stop_blocks_activation_and_rollback_without_switch_or_retry(self):
         for failed_stop in (1, 2):

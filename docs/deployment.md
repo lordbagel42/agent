@@ -628,6 +628,93 @@ jobs, records the observation and clears the block without invoking service
 control. It does not repair a force-pushed branch or authorize another writer.
 Never run the old provisioner concurrently with this poller.
 
+### Automatic Amp recovery handoff
+
+The optional `ampRecovery` controller configuration enables failure-triggered
+recovery threads. Install `june-deploy-recovery@.service` alongside the poller
+unit, and provision authenticated transport to the runner's Amp CLI outside
+application releases. For example, after an operator has approved and provisioned
+the June-to-runner SSH identity and independently pinned its host key:
+
+```json
+{
+  "ampRecovery": {
+    "command": ["/home/amp/.amp/bin/amp"],
+    "ssh": ["/usr/bin/ssh", "-F", "/etc/june/recovery-ssh-config", "amp-runner"],
+    "runnerDirectory": "/home/amp/workspaces/agent"
+  }
+}
+```
+
+`command` is an Amp CLI argv prefix, not shell source. Optional `ssh` is the
+OpenSSH executable/options/destination argv; the dispatcher shell-quotes the
+complete remote command, preserving argument boundaries. Omit `ssh` only when
+an authenticated CLI is installed locally. The controller supplies
+`--execute --mode high --executor runner:homelab-amp --runner-dir ...
+--stream-json --no-archive-after-execute`, a title, and a secret-free investigation
+prompt. The directory must be served by that runner. Verify the actual checkout
+there; a directory name does not establish its branch or source provenance.
+Do not put SSH inside `command`. The root-owned SSH configuration must select the
+approved destination/user and key, `BatchMode yes`, `StrictHostKeyChecking yes`,
+an independently pinned `UserKnownHostsFile`, and a bounded `ConnectTimeout`.
+The runner's existing Amp authentication stays on the runner. Local transport
+must work inside the recovery unit's sandbox (`ProtectHome=true`, read-only
+system, writable controller records only). Provision the dedicated transport
+identity using approved secret mechanisms, not June's application credentials
+or a developer home-directory copy. No June-to-runner authentication has yet
+been established; the existing runner-to-June operator SSH helper does not
+provide the reverse path. Transport provisioning is an explicit installation
+prerequisite, not something this controller silently creates.
+
+After a failed preflight, failed readiness/rollback, or controller block, the
+poller records one private SQLite `recovery` incident and fences further work.
+It lets any already-running safe rollback finish first. Old failures before the
+latest healthy/reconciled event are not replayed. A separate systemd worker
+atomically consumes `pending` before creating a thread; repeated polls, restarts,
+or lost systemd responses cannot create a second thread. The worker saves only
+the Amp init `session_id`, never conversation output or logs. The existing
+June-facing deployment feed continues to show the original failure; private
+recovery ownership and thread identifiers are not exposed there.
+
+An incident left in `dispatching` has an **unknown launch outcome**. Do not reset
+it to `pending` or start another thread. Inspect Amp and the launcher under
+operator control, identify/fence any existing execution, and repair its receipt
+only after establishing what happened. No timeout or end-of-turn releases the
+recovery fence. Launch/authentication failures therefore fail closed rather than
+spawning a thread storm.
+
+Ownership is explicit, not inferred from a released flock. Under the outer
+`/run/lock/june-operator-deploy.lock`, stop the poller, wait for prior operations
+to settle, and use the root-only installed controller commands (which take the
+inner `/var/lib/june-deploy/deploy.lock`):
+
+```sh
+# Existing operator retains ownership across stopped processes and free locks:
+python3 -I /usr/local/lib/june-deploy/deploy.py --operator-hold OWNER
+# Only that operator, after an explicit handoff, releases the hold:
+python3 -I /usr/local/lib/june-deploy/deploy.py --release-operator-hold OWNER
+# The spawned thread claims its matching recorded incident before mutations:
+python3 -I /usr/local/lib/june-deploy/deploy.py --claim-recovery T-... --incident NUMBER
+# After verified recovery, only the recorded owner may reconcile and release:
+python3 -I /usr/local/lib/june-deploy/deploy.py --reconcile RUNNING_SHA --recovery-thread T-...
+```
+
+A hold suppresses new dispatch admission and normal deployment, and rejects
+recovery claims. It cannot cancel a launch already admitted by the worker's
+durable `dispatching` transition; that thread still cannot claim while held.
+On first enabling this feature, an already unresolved failure is automatically
+held as `legacy-recovery`; it is not adopted merely because owner metadata is
+absent. Only after the actual existing operator explicitly hands off may an
+operator release that hold (using `--release-operator-hold legacy-recovery`).
+Prefer recording the known operator's hold before enabling the feature.
+Reconciliation does not clear an operator hold. Existing operator authorization
+still governs live actions; the new thread is instructed to coordinate before
+claiming, retain the fence when blocked, and never restore conversation data.
+The worker is a separate unit so stopping the poller to claim ownership does not
+terminate the Amp connection. Restart the poller only after the explicit handback.
+Install/activate this integration only in a coordinated operator window; source
+publication alone neither installs the unit nor grants new recovery privileges.
+
 Local checks:
 
 ```sh
