@@ -1,0 +1,8 @@
+[Unit]
+Description=Retain June slot execution evidence without starting slots
+# Ordering references keep inactive instances loaded for strict stop validation.
+# Do not replace these with Wants/Requires: neither slot may start at boot.
+After=june-slot@blue.service june-slot@green.service
+
+[Install]
+WantedBy=multi-user.target

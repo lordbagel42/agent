@@ -180,7 +180,14 @@ Under the existing coordinated operator/recovery ownership and deployment locks:
    root:root 0755 and `owner.lock` root:june 0660 once, including boot provisioning
    (for example tmpfiles `d /run/june-runtime 0755 root root -` and
    `f /run/june-runtime/owner.lock 0660 root june -`). Never unlink/replace the lock
-   during operation. Keep both slot units unenabled with `Restart=no`.
+   during operation. Keep both slot units unenabled with `Restart=no`. Install
+   and enable/start `june-slots-retain.target` before starting either slot, and
+   verify it remains active while the controller operates. Its ordering-only
+   references retain inactive slot execution records without starting the slots.
+   Without this anchor, systemd can garbage-collect a stopped template instance
+   and erase its MainPID/start/exit history before strict stop validation reads it.
+   Starting the anchor after that loss cannot recover evidence; never infer a
+   clean stop from zeroed fields or relax the controller's strict checks.
 3. Provision root-only `/etc/june/slot.env` with the existing application's exact
    credential bindings, `RIVETKIT_STORAGE_PATH`, namespace, engine configuration
    and host feature gates. Preserve its sandbox-required paths in reviewed unit
