@@ -3,7 +3,7 @@ import type { ChannelEvent } from "../core/contracts.js";
 import type { EvidenceStore } from "../memory/store.js";
 import type { Delivery } from "../runtime/delivery.js";
 import type { ConversationIngress } from "../runtime/inbox.js";
-import type { SessionArchiveInput } from "./archive.js";
+import { isReceiptOnlyArchive, type SessionArchiveInput } from "./archive.js";
 import { produceSessionArchiveTurn } from "./producer.js";
 
 /** Creation-only lineage, never backfilled from empty state or old journals. */
@@ -191,16 +191,7 @@ export async function archiveLegacyInputs(
     const pending = migration.archivePending;
     const revision = store.deletionRevision();
     if (pending.deletionRevision !== revision) {
-      const data = pending.input.turn.data;
-      if (
-        data.sourceIds.length ||
-        data.contextSourceIds.length ||
-        data.entries.some(
-          (entry) =>
-            entry.content.retention !== "omitted" ||
-            (entry.role === "user" && entry.sourceId !== undefined),
-        )
-      )
+      if (!isReceiptOnlyArchive(pending.input))
         throw new Error("Cannot renew a retained legacy archive projection");
       // Only this dependency-free, omitted-content receipt can cross deletion.
       // Do not regenerate its times or outcomes, or relax the ledger's fence.

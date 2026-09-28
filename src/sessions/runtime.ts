@@ -20,7 +20,11 @@ import { parseReply } from "../models/provider.js";
 import { type Delivery, deliver } from "../runtime/delivery.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
 import type { MemoryReference } from "../runtime/registry.js";
-import type { SessionArchiveInput } from "./archive.js";
+import {
+  isReceiptOnlyArchive,
+  type SessionArchiveInput,
+  sessionArchiveInputSchema,
+} from "./archive.js";
 import { type ArchiveEvidence, produceSessionArchiveTurn } from "./producer.js";
 import { sessionActorKey } from "./state.js";
 
@@ -44,6 +48,14 @@ interface TurnContext {
   retentionExcluded: boolean;
 }
 
+/** Stable-catalog outcomes only, never a command or sendable payload. The host
+ * persists this bundle before publication and accounts for every control effect,
+ * including independent outboxes. Unknown effects cannot release admission. */
+interface ControlReceipt {
+  input: SessionArchiveInput;
+  effects: "confirmed" | "unknown";
+}
+
 /** Trusted metadata interface; implementations stay on the stable coordinator.
  * prepare freezes provenance/capabilities there before returning. apply is keyed
  * by this assignment and may dispatch idempotent worker requests, not tools.
@@ -58,31 +70,37 @@ export interface ActivityCatalog {
   prepare(
     assignment: ActivityAssignment,
     history: (ConversationMessage & { reference: MemoryReference })[],
-  ): Promise<TurnContext & { request: ModelRequest }>;
+  ): Promise<
+    (TurnContext & { request: ModelRequest }) | { control: ControlReceipt }
+  >;
   apply(
     assignment: ActivityAssignment,
     reply: CompanionReply,
   ): Promise<{ text: string; messages?: string[] }>;
   acknowledge(
     assignment: ActivityAssignment,
-    outcome: {
-      inference: Exclude<ModelSettlement, "unknown">;
-      deliveries: Delivery[];
-      archivedThrough: number;
-    },
+    outcome:
+      | {
+          inference: Exclude<ModelSettlement, "unknown">;
+          deliveries: Delivery[];
+          archivedThrough: number;
+        }
+      // Match the catalog's saved outcome bundle, not caller-supplied authority.
+      | { control: true; archivedThrough: number },
   ): Promise<void>;
 }
 
 interface ActivityTurn {
   assignment: ActivityAssignment;
   context?: TurnContext;
+  control?: ControlReceipt;
   inference?: ModelSettlement | "started";
   reply?: CompanionReply;
   deliveries?: Delivery[];
   archive?: { input: SessionArchiveInput; deletionRevision: number };
   archivedThrough?: number;
   acknowledged?: true;
-  hold?: "inference" | "delivery" | "provenance";
+  hold?: "inference" | "delivery" | "provenance" | "control";
 }
 
 interface ActivityState {
@@ -226,6 +244,10 @@ export function createActivityActor(deps: ActivityDependencies) {
                   return;
                 }
                 if (status !== "active") return;
+                if (turn.control) {
+                  await finishControl();
+                  return;
+                }
                 // An answer or a lost callback is not a settlement receipt. Never
                 // reopen a paid call or release another turn after interruption.
                 if (turn.inference === "started") {
@@ -248,6 +270,35 @@ export function createActivityActor(deps: ActivityDependencies) {
                       reference: context.reference,
                     }));
                   const prepared = await catalog.prepare(assignment, history);
+                  if ("control" in prepared) {
+                    const parsed = sessionArchiveInputSchema.safeParse(
+                      prepared.control.input,
+                    );
+                    const input = parsed.success ? parsed.data : undefined;
+                    if (
+                      !input ||
+                      !isReceiptOnlyArchive(input) ||
+                      input.audience !== audience ||
+                      input.sessionId !== assignment.sessionId ||
+                      input.openedAt !== assignment.openedAt ||
+                      input.turn.eventId !== assignment.eventId ||
+                      input.turn.sequence !== assignment.sequence ||
+                      input.turn.receivedAt !== assignment.receivedAt ||
+                      !["confirmed", "unknown"].includes(
+                        prepared.control.effects,
+                      )
+                    ) {
+                      turn.hold = "provenance";
+                      await step.vars.persist();
+                      return;
+                    }
+                    turn.control = { input, effects: prepared.control.effects };
+                    // Persist the metadata-only projection before ledger write.
+                    // No original control body, result text or tool output enters.
+                    await step.vars.persist();
+                    await finishControl();
+                    return;
+                  }
                   const { request, ...context } = prepared;
                   const sourceScope = routeEvent(context.source, deps.owner);
                   if (
@@ -452,6 +503,40 @@ export function createActivityActor(deps: ActivityDependencies) {
                 delete turn.hold;
                 step.state.acknowledgedThrough = assignment.sequence;
                 await step.vars.persist();
+
+                async function finishControl() {
+                  if (!turn?.control) return;
+                  // This projection was proved dependency-free. Even the control
+                  // that deletes its own source may account for receipts after
+                  // deletion, without renewing effect authority or retaining text.
+                  const revision = deps.memory.store.deletionRevision();
+                  turn.archivedThrough = deps.memory.store.archiveSessionTurn(
+                    turn.control.input,
+                    revision,
+                  );
+                  await step.vars.persist();
+                  if (
+                    turn.control.effects !== "confirmed" ||
+                    turn.control.input.turn.data.incomplete ||
+                    turn.control.input.turn.data.entries.some(
+                      (entry) =>
+                        entry.role === "assistant" &&
+                        entry.delivery === "unknown",
+                    )
+                  ) {
+                    turn.hold = "control";
+                    await step.vars.persist();
+                    return;
+                  }
+                  await catalog.acknowledge(assignment, {
+                    control: true,
+                    archivedThrough: turn.archivedThrough,
+                  });
+                  turn.acknowledged = true;
+                  delete turn.hold;
+                  step.state.acknowledgedThrough = assignment.sequence;
+                  await step.vars.persist();
+                }
 
                 async function sendReply() {
                   if (

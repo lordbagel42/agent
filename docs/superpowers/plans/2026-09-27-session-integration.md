@@ -163,8 +163,14 @@ Publication, archive-write and catalog-ACK gaps each replay their exact saved
 record. Historical ACK repair precedes current-provenance checks and grants no
 new effect permission. Commit settlement, archive watermark and historical ACK
 without yielding between state transitions, persist, then publish successor work.
-This boundary was checked with Oracle; implementation and runtime evidence remain
-outstanding, not a new human approval gate.
+The unregistered activity actor now has the receipt-only variant. It validates
+the full archive identity and omitted-content/dependency fence before persistence,
+replays immutable receipts across deletion and lost ACKs, and holds unknown
+effects, unknown sends or incomplete coverage. It never infers, applies worker
+actions, sends, or adds these receipts to model history. Native-engine fixtures
+cover these boundaries; Oracle cleared the increment. Stable catalog publication,
+control execution routing, exact delivery indexing and cold-process recovery are
+still outstanding, not a new human approval gate or an activation claim.
 
 ## Task 5: Integrated evidence and publication
 

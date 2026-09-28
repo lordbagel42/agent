@@ -13,6 +13,7 @@ import type {
 import { slackSource } from "../imports/identity.js";
 import { EvidenceStore } from "../memory/store.js";
 import { createJuneRegistry } from "../runtime/registry.js";
+import type { SessionArchiveInput } from "./archive.js";
 import {
   type ActivityAssignment,
   type ActivityCatalog,
@@ -346,6 +347,7 @@ it("does not infer when a retained original is missing from the frozen provenanc
   if (!prepare) throw new Error("Missing fixture preparation");
   vi.mocked(f.catalog.prepare).mockImplementation(async (...args) => {
     const prepared = await prepare(...args);
+    if ("control" in prepared) throw new Error("Expected interaction");
     prepared.reference.sourceIds = [];
     return prepared;
   });
@@ -364,3 +366,132 @@ it("does not infer when a retained original is missing from the frozen provenanc
     f.store.searchSessions(audience, "FIRST PRIVATE TURN").sessions,
   ).toEqual([]);
 });
+
+const controlArchive = (input: ActivityAssignment): SessionArchiveInput => ({
+  audience,
+  sessionId: input.sessionId,
+  openedAt: input.openedAt,
+  turn: {
+    eventId: input.eventId,
+    sequence: input.sequence,
+    receivedAt: input.receivedAt,
+    data: {
+      sourceIds: [],
+      contextSourceIds: [],
+      entries: [
+        {
+          role: "assistant",
+          address: {
+            channel: "slack",
+            accountId: "T1",
+            conversationId: "D1",
+            threadId: "1700000000.000001",
+          },
+          observedAt: input.receivedAt + 123,
+          delivery: "sent",
+          messageId: "1800000001.000123",
+          content: { retention: "omitted", reason: "retention_excluded" },
+        },
+      ],
+    },
+  },
+});
+
+it("repairs excluded control receipts across deletion and lost ACKs without executing or retaining control content", async (t) => {
+  const f = await fixture(t);
+  const input = assignment();
+  const projection = controlArchive(input);
+  vi.mocked(f.catalog.prepare).mockResolvedValueOnce({
+    control: { input: projection, effects: "confirmed" },
+  });
+  const write = f.store.archiveSessionTurn.bind(f.store);
+  const archive = vi.spyOn(f.store, "archiveSessionTurn");
+  let lost = false;
+  archive.mockImplementation((value, revision) => {
+    const through = write(value, revision);
+    if (!lost) {
+      lost = true;
+      f.store.deleteSource("the-control-deleted-this-source");
+      throw new Error("Written before response was lost");
+    }
+    return through;
+  });
+  const acknowledged = new Set<string>();
+  vi.mocked(f.catalog.assignmentStatus).mockImplementation(async (value) =>
+    acknowledged.has(value.eventId) ? "acknowledged" : "active",
+  );
+  vi.mocked(f.catalog.acknowledge).mockImplementation(async (value) => {
+    acknowledged.add(value.eventId);
+    if (value.eventId === input.eventId)
+      throw new Error("Catalog committed before response was lost");
+  });
+  await f.activity(input).receive(input);
+  await vi.waitFor(
+    async () =>
+      expect((await f.activity(input).status()).acknowledgedThrough).toBe(1),
+    { timeout: 15000 },
+  );
+  await f.activity(input).receive(input);
+  expect(f.catalog.prepare).toHaveBeenCalledTimes(1);
+  expect(f.catalog.apply).not.toHaveBeenCalled();
+  expect(f.model.beginReply).not.toHaveBeenCalled();
+  expect(f.send).not.toHaveBeenCalled();
+  expect(archive).toHaveBeenCalledTimes(2);
+  for (const [value] of archive.mock.calls) expect(value).toEqual(projection);
+  expect(f.catalog.acknowledge).toHaveBeenCalledExactlyOnceWith(input, {
+    control: true,
+    archivedThrough: 1,
+  });
+  expect(
+    f.store.retrieveSession(audience, input.sessionId).turns[0]?.data,
+  ).toEqual(projection.turn.data);
+
+  const next = { ...input, eventId: "c".repeat(64), sequence: 2 };
+  await f.activity(next).receive(next);
+  await vi.waitFor(async () =>
+    expect((await f.activity(next).status()).acknowledgedThrough).toBe(2),
+  );
+  expect(f.model.beginReply.mock.calls[0]?.[0].messages).toEqual([
+    { role: "user", content: "SECOND PRIVATE TURN" },
+  ]);
+});
+
+it.for(["effect", "delivery", "retained", "assignment"] as const)(
+  "never releases an uncertain or invalid control receipt (%s)",
+  async (mode, t) => {
+    const f = await fixture(t);
+    const input = assignment();
+    const projection = controlArchive(input);
+    const entry = projection.turn.data.entries[0];
+    if (entry?.role !== "assistant") throw new Error("Missing receipt");
+    if (mode === "delivery") entry.delivery = "unknown";
+    if (mode === "retained")
+      entry.content = { retention: "retained", text: "PRIVATE CONTROL OUTPUT" };
+    if (mode === "assignment") projection.turn.eventId = "f".repeat(64);
+    vi.mocked(f.catalog.prepare).mockResolvedValue({
+      control: {
+        input: projection,
+        effects: mode === "effect" ? "unknown" : "confirmed",
+      },
+    });
+    await f.activity(input).receive(input);
+    const invalid = mode === "retained" || mode === "assignment";
+    await vi.waitFor(async () =>
+      expect((await f.activity(input).status()).turns[0]?.hold).toBe(
+        invalid ? "provenance" : "control",
+      ),
+    );
+    expect(
+      f.store.retrieveSession(audience, input.sessionId).turns,
+    ).toHaveLength(invalid ? 0 : 1);
+    expect(f.catalog.acknowledge).not.toHaveBeenCalled();
+    expect(f.catalog.apply).not.toHaveBeenCalled();
+    expect(f.model.beginReply).not.toHaveBeenCalled();
+    expect(f.send).not.toHaveBeenCalled();
+    await expect(
+      f
+        .activity(input)
+        .receive({ ...input, eventId: "c".repeat(64), sequence: 2 }),
+    ).rejects.toThrow();
+  },
+);

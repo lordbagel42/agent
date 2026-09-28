@@ -80,6 +80,21 @@ export type SessionArchiveInput = z.infer<typeof sessionArchiveInputSchema>;
 export type SessionArchive = z.infer<typeof sessionArchiveSchema>;
 export type ArchivedTurn = SessionArchive["turns"][number];
 
+/** Only dependency-free omitted metadata can cross a deletion revision. This
+ * says nothing about effect settlement or permission to execute/send again. */
+export function isReceiptOnlyArchive(input: SessionArchiveInput): boolean {
+  const data = input.turn.data;
+  return (
+    data.sourceIds.length === 0 &&
+    data.contextSourceIds.length === 0 &&
+    data.entries.every(
+      (entry) =>
+        entry.content.retention === "omitted" &&
+        (entry.role !== "user" || entry.sourceId === undefined),
+    )
+  );
+}
+
 export function sessionTurnId(sessionId: string, eventId: string): string {
   return `session-turn:${createHash("sha256")
     .update(JSON.stringify([sessionId, eventId]))
