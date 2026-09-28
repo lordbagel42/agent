@@ -12,7 +12,6 @@ import type {
 import { routeEvent } from "../core/routing.js";
 import {
   isOwner,
-  RAYGEN_SLACK_ID,
   type SocialAction,
   socialActionSchema,
 } from "../core/social.js";
@@ -53,6 +52,7 @@ interface Proposal {
  * This private host ledger must not be exposed through a guest/operator proxy. */
 export class SocialPermissions {
   private db: DatabaseSync;
+  private ownerSlackId: string;
   constructor(
     private options: {
       file: string;
@@ -64,6 +64,15 @@ export class SocialPermissions {
       deletionRevision?: () => number;
     },
   ) {
+    const identities = options.owner.identities.filter(
+      (identity) => identity.channel === "slack",
+    );
+    const identity = identities[0];
+    if (identities.length !== 1 || identity?.accountId !== options.teamId)
+      throw new Error(
+        "Configure exactly one Slack owner in the configured workspace",
+      );
+    this.ownerSlackId = identity.senderId;
     mkdirSync(dirname(options.file), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(options.file);
     chmodSync(options.file, 0o600);
@@ -142,7 +151,7 @@ export class SocialPermissions {
   private owner(event: MessageEvent) {
     return (
       this.authorized(event) &&
-      event.senderId === RAYGEN_SLACK_ID &&
+      event.senderId === this.ownerSlackId &&
       isOwner(event, this.options.owner)
     );
   }
@@ -482,7 +491,7 @@ export class SocialPermissions {
       !/^[a-f0-9]{64}$/.test(input.candidateId) ||
       !parsed.success ||
       parsed.data.kind !== "outreach" ||
-      parsed.data.userId === RAYGEN_SLACK_ID ||
+      parsed.data.userId === this.ownerSlackId ||
       parsed.data.userId === this.options.botUserId
     )
       return "Choose a valid candidate, human recipient other than Raygen or June, and a message of 1–3000 characters.";
@@ -575,7 +584,7 @@ export class SocialPermissions {
       return `Post delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived or repeat an uncertain send."}`;
     }
     if (
-      action.userId === RAYGEN_SLACK_ID ||
+      action.userId === this.ownerSlackId ||
       action.userId === this.options.botUserId
     )
       return "Choose a human recipient other than Raygen or June.";
@@ -609,7 +618,7 @@ export class SocialPermissions {
       if (
         !owner &&
         (recent.filter((row) => row.requester === event.senderId).length >= 2 ||
-          recent.filter((row) => row.requester !== RAYGEN_SLACK_ID).length >=
+          recent.filter((row) => row.requester !== this.ownerSlackId).length >=
             20)
       )
         return "I've reached the approval-request limit. Please ask Raygen directly; no extra access was granted.";
@@ -637,7 +646,7 @@ export class SocialPermissions {
       ? {
           channel: "slack",
           accountId: proposal.accountId,
-          conversationId: RAYGEN_SLACK_ID,
+          conversationId: this.ownerSlackId,
         }
       : {
           ...event.address,
@@ -657,7 +666,7 @@ export class SocialPermissions {
     const result = await this.send(
       `${id}:notice`,
       address,
-      `<@${RAYGEN_SLACK_ID}> May I? Request ${id}, requested by <@${proposal.requester}>.\n${summary}\nNothing is authorized yet. Reply with exactly !allow ${id} or !deny ${id} (mention me too if replying in a channel). Request expires in 24 hours.`,
+      `<@${this.ownerSlackId}> May I? Request ${id}, requested by <@${proposal.requester}>.\n${summary}\nNothing is authorized yet. Reply with exactly !allow ${id} or !deny ${id} (mention me too if replying in a channel). Request expires in 24 hours.`,
       canStartAction,
       undefined,
       isCurrent,

@@ -48,8 +48,21 @@ describe("configuration boundary", () => {
     });
     expect(config.credentials).toBeUndefined();
     expect(config.owner.identities).toEqual([
-      { channel: "slack", accountId: "T1", senderId: "U08R4KDL6UF" },
+      { channel: "slack", accountId: "T1", senderId: "U1" },
     ]);
+  });
+  it("requires one explicitly configured Slack owner in the matching workspace", () => {
+    for (const identities of [
+      [],
+      [{ channel: "slack", accountId: "T2", senderId: "U1" }],
+      [
+        { channel: "slack", accountId: "T1", senderId: "U1" },
+        { channel: "slack", accountId: "T1", senderId: "U2" },
+      ],
+    ])
+      expect(() =>
+        parseConfig({ ...input, owner: { ...input.owner, identities } }),
+      ).toThrow();
   });
   it("requires explicit isolation for browser reads and rejects credential or mutation recipes", () => {
     const recipe = {
@@ -159,7 +172,7 @@ describe("configuration boundary", () => {
         origin,
       });
     for (const origin of [
-      "http://192.168.0.215:3080",
+      "http://192.0.2.10:3080",
       "https://user:secret@june.example",
       "https://june.example/console",
       "https://june.example/",

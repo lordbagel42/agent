@@ -13,13 +13,14 @@ import type {
   Owner,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
-import { RAYGEN_SLACK_ID } from "../core/social.js";
 import { createMemoryRoutes } from "../http/memory.js";
 import { slackSource } from "../imports/index.js";
 import { EvidenceStore } from "../memory/store.js";
 import { createJuneRegistry } from "./registry.js";
 import { SocialPermissions } from "./social.js";
 
+// Synthetic fixture identity, never a real Slack account.
+const RAYGEN_SLACK_ID = "UOWNER";
 const owner: Owner = {
   id: "raygen",
   identities: [

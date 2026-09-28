@@ -14,7 +14,7 @@ import type {
   Owner,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
-import { RAYGEN_SLACK_ID, type SocialAction } from "../core/social.js";
+import type { SocialAction } from "../core/social.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import {
@@ -33,6 +33,8 @@ import {
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 import { SocialPermissions } from "./social.js";
 
+// Synthetic fixture identity, never a real Slack account.
+const RAYGEN_SLACK_ID = "UOWNER";
 const owner: Owner = {
   id: "raygen",
   identities: [

@@ -1,8 +1,6 @@
 import { z } from "zod";
 import type { ChannelEvent, Owner } from "./contracts.js";
 
-export const RAYGEN_SLACK_ID = "U08R4KDL6UF";
-
 export function isOwner(event: ChannelEvent, owner: Owner): boolean {
   const sender =
     event.type === "receipt" ? event.address.conversationId : event.senderId;

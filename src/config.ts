@@ -1,6 +1,5 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { RAYGEN_SLACK_ID } from "./core/social.js";
 import { jevQuestionSchema } from "./models/jev.js";
 import {
   browserCredentialOperationSchema,
@@ -484,19 +483,18 @@ export function parseConfig(input: unknown): Config {
     );
   }
   const config = result.data;
-  // June has one Slack owner. Display names and configurable extra Slack IDs
-  // cannot confer Raygen's authority; bind his fixed ID to this workspace only.
+  // June has one Slack owner, explicitly bound by trusted host configuration.
   if (config.slack) {
-    config.owner.identities = [
-      ...config.owner.identities.filter(
-        (identity) => identity.channel !== "slack",
-      ),
-      {
-        channel: "slack",
-        accountId: config.slack.teamId,
-        senderId: RAYGEN_SLACK_ID,
-      },
-    ];
+    const identities = config.owner.identities.filter(
+      (identity) => identity.channel === "slack",
+    );
+    if (
+      identities.length !== 1 ||
+      identities[0]?.accountId !== config.slack.teamId
+    )
+      throw new Error(
+        "Configure exactly one Slack owner in the configured workspace",
+      );
   }
   return config;
 }
