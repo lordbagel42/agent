@@ -22,6 +22,7 @@ import {
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { UsageLedger } from "../models/usage.js";
+import { ConversationContinuity } from "./continuity.js";
 import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry } from "./registry.js";
 
@@ -74,6 +75,80 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("projects continuity through real ingress without putting private text in a public prompt", async (t) => {
+    const sent: OutboundMessage[] = [];
+    const requests: ModelRequest[] = [];
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    const continuity = new ConversationContinuity({
+      file: ":memory:",
+      key: randomBytes(32),
+      owner,
+      idleMs: 100000,
+      revision: () => store.deletionRevision(),
+      filter: async ({ entries }) => ({
+        excerpts: entries
+          .filter((entry) => entry.message.content.includes("Orchard"))
+          .slice(0, 1)
+          .map((entry) => ({ id: entry.id, text: "Orchard" })),
+      }),
+    });
+    t.onTestFinished(() => {
+      continuity.close();
+      store.close();
+    });
+    const slack = transport("slack", sent);
+    slack.audience = async (event) => ({
+      kind: event.direct ? "owner" : "public",
+    });
+    const registry = createJuneRegistry({
+      owner,
+      continuity,
+      memory: { store, source: () => undefined },
+      channels: { slack, whatsapp: transport("whatsapp", sent) },
+      model: {
+        async reply(request) {
+          requests.push(request);
+          return { text: requests.length === 1 ? "Personal reply" : "Okay" };
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const privateChat = client.conversation.getOrCreate(["private", owner.id]);
+    await privateChat.receive({
+      ...message,
+      text: "Orchard. My medical diagnosis is PRIVATE_MEDICAL.",
+    });
+    await expect.poll(() => sent.length).toBe(1);
+    await client.conversation.getOrCreate(["slack", "T1", "C1", ""]).receive({
+      ...message,
+      id: "public",
+      messageId: "124.456",
+      direct: false,
+      text: "Which project?",
+      address: { ...message.address, conversationId: "C1" },
+      metadata: { channelType: "channel" },
+    });
+    await expect.poll(() => sent.length).toBe(2);
+    expect(requests[1]?.system).toContain('"text":"Orchard"');
+    expect(JSON.stringify(requests[1])).not.toContain("PRIVATE_MEDICAL");
+    expect(JSON.stringify(requests[1])).not.toContain("Personal reply");
+    await privateChat.receive({
+      ...message,
+      id: "whatsapp",
+      messageId: "wa123",
+      senderId: "15551234",
+      address: {
+        channel: "whatsapp",
+        accountId: "P1",
+        conversationId: "15551234",
+      },
+      text: "Back in private",
+    });
+    await expect.poll(() => sent.length).toBe(3);
+    expect(requests[2]?.system).toContain("PRIVATE_MEDICAL");
+    expect(requests[2]?.system).toContain("Personal reply");
+  });
+
   it("persists conversational questions in the outbox with numbered fallback text", async (t) => {
     const sent: OutboundMessage[] = [];
     const question = { prompt: "Which day?", options: ["Tuesday", "Thursday"] };

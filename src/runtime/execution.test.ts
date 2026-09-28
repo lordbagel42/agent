@@ -14,6 +14,7 @@ import type {
 import { slackSource } from "../imports/index.js";
 import { EvidenceStore, type Source } from "../memory/store.js";
 import { parseReply } from "../models/provider.js";
+import { ConversationContinuity } from "./continuity.js";
 import { executionKey } from "./execution.js";
 import type { ExecutionContext } from "./execution-context.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
@@ -85,6 +86,68 @@ const event = (id: string, text: string): MessageEvent => ({
   senderId: "U1",
   direct: true,
   text,
+});
+
+it("revokes continuity-derived worker output on restriction but not on idle expiry", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  let now = 1000;
+  const continuity = new ConversationContinuity({
+    file: ":memory:",
+    key: randomBytes(32),
+    owner,
+    idleMs: 1000,
+    now: () => now,
+    revision: () => store.deletionRevision(),
+    filter: async () => ({ excerpts: [] }),
+  });
+  t.onTestFinished(() => {
+    continuity.close();
+    store.close();
+  });
+  const input = event("1", "Ordinary context");
+  continuity.receive(input);
+  const projection = await continuity.project(input, { kind: "owner" });
+  const resume = Promise.withResolvers<CompanionReply>();
+  let started = false;
+  const registry = createJuneRegistry({
+    owner,
+    continuity,
+    memory: { store, source: () => undefined },
+    channels: {},
+    model: { reply: async () => ({ text: "" }) },
+    execution: {
+      model: {
+        reply: async () => {
+          started = true;
+          return resume.promise;
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const worker = client.execution.getOrCreate(
+    executionKey(["private", owner.id], "continuity"),
+  );
+  expect(
+    await worker.submit({
+      id: `${"a".repeat(64)}:work`,
+      source: input,
+      task: "Continue topic",
+      web: false,
+      workspaces: [],
+      evidenceIds: [projection.dependency],
+      deletionTracked: true,
+    }),
+  ).toBe(true);
+  await expect.poll(() => started).toBe(true);
+  now = 2000;
+  expect((await worker.summary()).status).not.toBe("revoked");
+  continuity.receive(event("2", "don't share this"));
+  resume.resolve({ text: "Must be suppressed" });
+  await expect
+    .poll(async () => (await worker.summary()).status)
+    .toBe("revoked");
+  expect((await worker.summary()).report).not.toContain("Must be suppressed");
 });
 
 it("accepts bounded execution only when granted and excludes every other directive", () => {

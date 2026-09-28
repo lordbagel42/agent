@@ -122,10 +122,21 @@ export type ChannelSearchResult =
       code: "authorization_required" | "rate_limited" | "unavailable";
     };
 
+export type ChannelAudience =
+  | { kind: "owner" }
+  | { kind: "public" }
+  | { kind: "group"; members: string[] }
+  | { kind: "unknown" };
+
 export interface ChannelAdapter {
   readonly channel: Channel;
   readonly capabilities: { text: true; reactions: true; threads: boolean };
   readonly webEmbedOrigins?: readonly string[];
+  /** Fresh authenticated audience evidence; unknown must withhold imports. */
+  audience?(
+    event: MessageEvent,
+    signal?: AbortSignal,
+  ): Promise<ChannelAudience>;
   /** Verify raw bytes before decoding. Never enqueue an unauthenticated event. */
   receive(
     request: Request,

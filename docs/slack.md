@@ -150,3 +150,49 @@ See [MCP connections](mcp-connections.md) for permission inspection, cancellatio
 and reconciliation. Do not claim activation until the installed bot scopes,
 saved user authorization, enabled tools, loaded revision and June-facing workflow
 have each been verified.
+
+## Recent conversation continuity
+
+Thread context now includes a bounded page from its parent channel as well as
+the thread, retaining the actual origin of each message. It never falls back to
+an owner DM, reads file contents, or imports replies from unrelated threads.
+
+Optional `continuity` configuration selects a separate API-key JSON model using
+the same fields as `reflection.model`, plus `idleMs` (default three hours).
+It requires configured private memory storage, `JUNE_ALLOW_MEMORY=1` and
+`JUNE_ALLOW_MEMORY_MODELS=1`. No live configuration is enabled by this change.
+The selected provider receives private working context for censorship; review
+that provider's privacy/retention policy before enabling it.
+
+The encrypted `continuity.sqlite` working buffer follows the verified owner
+across locations. It retains at most 80 messages / 32,000 JSON characters, with
+4,000 characters per message, not unlimited history. Human inactivity rotates
+it; assistant output and webhook retries do not extend it. CLEARHISTORY and any
+memory deletion revision invalidate the buffer and in-flight derived replies.
+The buffer is separate from durable archives and tool/worker permission scopes.
+
+Verified owner Slack DMs and linked owner WhatsApp conversations can receive
+uncensored ordinary context. Shared destinations receive only exact excerpts
+approved by a separate tool-free privacy model. That model is told explicitly
+that relationship memory is immature: it must not infer trust from friendliness,
+names or self-assertions. For now even small private groups get only public-safe
+material. Slack audience checks use authenticated channel info and complete,
+bounded member enumeration for private channels, rechecked after filtering.
+Unknown audiences, incomplete enumeration, invalid output and filter failures
+import nothing. Interrupted filter attempts are not automatically repeated for
+the same turn/audience. At 100 filter attempts in one activity window, further
+shared-context imports are withheld instead of evicting spent receipts. Cached
+excerpts share the working-context budget. Common secrets and explicit non-disclosure trigger a
+conservative private-only interval; pattern checks and model judgment are not a
+formal guarantee against every possible disclosure.
+
+This does not activate WhatsApp or unsupported Slack MPIMs. The existing
+Slack-only `activitySessions` gate is unchanged; cross-transport continuity is
+available through the legacy lane, while both interaction lanes receive the
+same privacy projection and runtime instructions. Existing destination history
+and authorized long-term recall are separate from this recent-context window.
+Idle expiry does not revoke durable jobs or delayed completion delivery.
+Explicit restrictions, forgetting and CLEARHISTORY do invalidate work derived
+from that context. Responses with volatile context ancestry stay in active
+conversation history, but only their delivery receipts—not their text—enter
+durable searchable archives until complete deletion ancestry can be represented.

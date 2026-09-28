@@ -110,7 +110,11 @@ export function createExecutionActor(
                 .digest("hex"))),
     ) &&
     state.evidenceIds.every(
-      (id) => !!deps.memory && !deps.memory.store.isDeleted(id),
+      (id) =>
+        !!deps.memory &&
+        (id.startsWith("volatile-context:continuity:")
+          ? deps.continuity?.valid(id) === true
+          : !deps.memory.store.isDeleted(id)),
     );
   return actor({
     state: {

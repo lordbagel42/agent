@@ -154,6 +154,52 @@ async function fixture(t: TestContext) {
   };
 }
 
+it("keeps volatile-derived speech in active history but out of the searchable archive", async (t) => {
+  const f = await fixture(t);
+  const prepare = vi.mocked(f.catalog.prepare).getMockImplementation();
+  if (!prepare) throw new Error("Missing preparation fixture");
+  vi.mocked(f.catalog.prepare).mockImplementation(async (input, history) => {
+    const result = await prepare(input, history);
+    if (!("control" in result)) {
+      result.reference.sourceIds = [
+        ...new Set([
+          ...result.reference.sourceIds,
+          ...history.flatMap((entry) => entry.reference.sourceIds),
+        ]),
+      ];
+      result.reference.contextSourceIds?.push(
+        "volatile-context:continuity:test",
+      );
+    }
+    return result;
+  });
+  const first = assignment();
+  const activity = f.activity(first);
+  await activity.receive(first);
+  await vi.waitFor(async () =>
+    expect((await activity.status()).acknowledgedThrough).toBe(1),
+  );
+  expect(
+    f.store.retrieveSession(audience, first.sessionId).turns[0]?.data
+      ?.entries[1]?.content,
+  ).toEqual({ retention: "omitted", reason: "retention_excluded" });
+  await activity.receive({
+    ...first,
+    eventId: "c".repeat(64),
+    sequence: 2,
+    receivedAt: first.receivedAt + 1,
+  });
+  await vi.waitFor(async () =>
+    expect((await activity.status()).acknowledgedThrough).toBe(2),
+  );
+  expect(
+    f.model.beginReply.mock.calls[1]?.[0].messages.some(
+      (entry) =>
+        entry.role === "assistant" && entry.content === "June's answer",
+    ),
+  ).toBe(true);
+});
+
 it("delivers an early answer but holds admission until retirement, archive and catalog acknowledgment", async (t) => {
   const f = await fixture(t);
   const retired = Promise.withResolvers<"confirmed_stopped">();

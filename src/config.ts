@@ -62,6 +62,17 @@ const schema = z
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    continuity: z
+      .strictObject({
+        idleMs: z
+          .number()
+          .int()
+          .min(1000)
+          .max(7 * 24 * 60 * 60 * 1000)
+          .default(3 * 60 * 60 * 1000),
+        model: decisionModel,
+      })
+      .optional(),
     debugShare: z
       .strictObject({
         repositoryRoot: absolutePath,
@@ -487,6 +498,10 @@ const schema = z
         (!config.reflection && !Object.keys(config.imports).length)) &&
       (!config.memory || !config.slack || !!config.slack.workspaceUrl),
     "Memory is required for reflection/imports; live Slack memory requires its verified workspace URL",
+  )
+  .refine(
+    (config) => !config.continuity || (!!config.memory && !config.setupMode),
+    "Continuity requires private memory storage and cannot run in setup mode",
   )
   .refine(
     (config) =>

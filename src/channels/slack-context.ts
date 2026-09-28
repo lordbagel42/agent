@@ -1,4 +1,5 @@
 import type {
+  ChannelAudience,
   ConversationMessage,
   MessageEvent,
   MessageMetadata,
@@ -205,7 +206,7 @@ export function createSlackContext({
     const channel = event.address.conversationId;
     const thread = event.address.threadId;
     // Do not serialize names before history.
-    const [info, history, ownerName] = await Promise.all([
+    const [info, history, ownerName, parentHistory] = await Promise.all([
       conversation(channel, readSignal),
       read(
         thread ? "conversations.replies" : "conversations.history",
@@ -219,6 +220,18 @@ export function createSlackContext({
         readSignal,
       ),
       userName(event.senderId, nameSignal),
+      thread && !event.direct
+        ? read(
+            "conversations.history",
+            {
+              channel,
+              latest: event.messageId,
+              inclusive: true,
+              limit: MESSAGE_LIMIT,
+            },
+            readSignal,
+          )
+        : undefined,
     ]);
     if (
       signal?.aborted ||
@@ -234,8 +247,12 @@ export function createSlackContext({
         : {}),
     };
     const messages = new Map<string, ConversationMessage>();
-    if (Array.isArray(history?.messages)) {
-      for (const message of history.messages.slice(0, MESSAGE_LIMIT)) {
+    for (const [page, pageThread] of [
+      [parentHistory, undefined],
+      [history, thread],
+    ] as const) {
+      if (!Array.isArray(page?.messages)) continue;
+      for (const message of page.messages.slice(0, MESSAGE_LIMIT)) {
         if (
           !isObject(message) ||
           typeof message.ts !== "string" ||
@@ -253,8 +270,8 @@ export function createSlackContext({
               message.text.includes(RIVET_REPLY_PREFIX))) ||
           message.subtype === "message_deleted" ||
           message.subtype === "message_changed" ||
-          (thread
-            ? message.ts !== thread && message.thread_ts !== thread
+          (pageThread
+            ? message.ts !== pageThread && message.thread_ts !== pageThread
             : message.thread_ts !== undefined &&
               message.thread_ts !== message.ts)
         )
@@ -278,7 +295,12 @@ export function createSlackContext({
               : "",
           source: {
             id: slackMessageId(teamId, channel, message.ts),
-            address: { ...event.address },
+            address: {
+              channel: "slack",
+              accountId: teamId,
+              conversationId: channel,
+              ...(pageThread ? { threadId: pageThread } : {}),
+            },
             // The observation time belongs to this turn. Exact Slack time remains
             // in messageId; do not invent callback event_time for history rows.
             occurredAt: event.occurredAt,
@@ -307,7 +329,7 @@ export function createSlackContext({
       .sort((a, b) =>
         compareTs(a.source?.messageId ?? "", b.source?.messageId ?? ""),
       )
-      .slice(-MESSAGE_LIMIT);
+      .slice(-(thread && !event.direct ? MESSAGE_LIMIT * 2 : MESSAGE_LIMIT));
     const missingNames = [
       ...new Set(
         result
@@ -336,5 +358,57 @@ export function createSlackContext({
     return result;
   }
 
-  return { conversation, context };
+  async function audience(
+    event: MessageEvent,
+    signal?: AbortSignal,
+  ): Promise<ChannelAudience> {
+    const unknown: ChannelAudience = { kind: "unknown" };
+    if (
+      event.address.channel !== "slack" ||
+      event.address.accountId !== teamId ||
+      !ownerUserIds.has(event.senderId)
+    )
+      return unknown;
+    const deadline = AbortSignal.timeout(CONTEXT_TIMEOUT_MS);
+    const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    const info = await conversation(event.address.conversationId, bounded);
+    if (bounded.aborted) return unknown;
+    if (info?.type === "im" && event.direct) return { kind: "owner" };
+    if (event.direct) return unknown;
+    if (info?.type === "channel") return { kind: "public" };
+    if (info?.type !== "group") return unknown;
+    const members = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const result = await read(
+        "conversations.members",
+        {
+          channel: event.address.conversationId,
+          limit: 200,
+          ...(cursor ? { cursor } : {}),
+        },
+        bounded,
+      );
+      if (
+        bounded.aborted ||
+        !Array.isArray(result?.members) ||
+        result.members.some((member) => typeof member !== "string")
+      )
+        return unknown;
+      for (const member of result.members) members.add(member as string);
+      const metadata = result.response_metadata;
+      if (metadata !== undefined && !isObject(metadata)) return unknown;
+      const next = isObject(metadata) ? metadata.next_cursor : undefined;
+      if (next !== undefined && typeof next !== "string") return unknown;
+      if (!next)
+        return members.has(event.senderId) && members.has(botUserId)
+          ? { kind: "group", members: [...members].sort() }
+          : unknown;
+      if (next === cursor) return unknown;
+      cursor = next;
+    }
+    return unknown;
+  }
+
+  return { conversation, context, audience };
 }

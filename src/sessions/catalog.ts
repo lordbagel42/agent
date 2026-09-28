@@ -117,7 +117,10 @@ function savedInput(
 
 /** Exact command recognition mirrors the stable workflow, including rejected
  * eligibility attempts. The command implementation remains there, not here. */
-function isControl(input: ConversationInput, deps: Dependencies): boolean {
+export function isControl(
+  input: ConversationInput,
+  deps: Dependencies,
+): boolean {
   if (input.type !== "event" || input.event.type !== "message") return false;
   const event = input.event;
   return !!(
@@ -441,6 +444,50 @@ export function createSessionCatalog(
     if (!valid(host, assignment, reference, revision)) return suppress();
     const globalPersonality = await host.personality();
     if (!valid(host, assignment, reference, revision)) return suppress();
+    const channelContext =
+      input.type === "event"
+        ? ((await deps.channels[source.address.channel]
+            ?.context?.(source)
+            .catch(() => [])) ?? [])
+        : [];
+    const sameSurface = channelContext
+      .filter(
+        ({ source: entry }) =>
+          entry &&
+          (revision === 0 || entry.id === source.id) &&
+          entry.direct === source.direct &&
+          entry.address.channel === source.address.channel &&
+          entry.address.accountId === source.address.accountId &&
+          entry.address.conversationId === source.address.conversationId &&
+          (entry.address.threadId === source.address.threadId ||
+            (!source.direct &&
+              source.address.threadId &&
+              !entry.address.threadId)),
+      )
+      .slice(-30);
+    const continuity =
+      input.type === "event"
+        ? await deps.continuity?.prepare(
+            source,
+            deps.channels[source.address.channel],
+          )
+        : undefined;
+    if (continuity) {
+      reference.continuityEpoch = continuity.epoch;
+      if (continuity.text)
+        reference.contextSourceIds?.push(continuity.dependency);
+      deps.continuity?.remember(source, sameSurface, continuity.epoch);
+    }
+    // Platform excerpts have no complete retained ancestry. Carry this marker
+    // transitively through existing context references; never archive derivatives.
+    if (sameSurface.some((entry) => entry.source?.id !== source.id))
+      reference.contextSourceIds = [
+        ...new Set([
+          ...(reference.contextSourceIds ?? []),
+          "volatile-context:platform",
+        ]),
+      ];
+    if (!valid(host, assignment, reference, revision)) return suppress();
     host.state.events[assignment.eventId] ??= {
       event: source,
       done: false,
@@ -463,6 +510,7 @@ export function createSessionCatalog(
       retentionExcluded:
         decision || (input.type === "wakeup" && !wakeup?.retentionTracked),
       request: buildModelRequest({
+        continuity,
         event: source,
         owner: deps.owner,
         now: new Date(),
@@ -492,7 +540,15 @@ export function createSessionCatalog(
               memoryAvailable: true,
             },
         history: [
-          ...history.map(({ reference: _reference, ...entry }) => entry),
+          ...history
+            .filter(
+              (entry) =>
+                !sameSurface.some(
+                  (item) => item.source?.id === entry.source?.id,
+                ),
+            )
+            .map(({ reference: _reference, ...entry }) => entry),
+          ...sameSurface.filter((entry) => entry.source?.id !== source.id),
           input?.type === "event"
             ? { role: "user", content: source.text, source }
             : {
@@ -736,6 +792,37 @@ export function createSessionCatalog(
       );
     }
     // No yield between settlement, searchable watermark and historical receipt.
+    if (
+      input?.type === "event" &&
+      input.event.type === "message" &&
+      !("control" in outcome) &&
+      turn.context?.reference.continuityEpoch
+    ) {
+      const direct = input.event.direct;
+      deps.continuity?.remember(
+        input.event,
+        outcome.deliveries.flatMap((delivery) =>
+          delivery.result?.status === "sent" &&
+          delivery.message.content.type === "text"
+            ? [
+                {
+                  role: "assistant" as const,
+                  content: delivery.message.content.text,
+                  source: {
+                    direct,
+                    id: delivery.message.id,
+                    address: delivery.message.address,
+                    messageId: delivery.result.messageId,
+                    senderId: "",
+                    occurredAt: Date.now(),
+                  },
+                },
+              ]
+            : [],
+        ),
+        turn.context.reference.continuityEpoch,
+      );
+    }
     if (status(host, assignment) === "cleared") return;
     const directory = host.state.sessions?.directory;
     if (!directory) throw new Error("Activity directory unavailable");

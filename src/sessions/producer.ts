@@ -128,7 +128,14 @@ export function produceSessionArchiveTurn(
   }
 
   for (const { delivery, reference } of input.deliveries) {
-    const excluded = input.retentionExcluded || delivery.ephemeral === true;
+    // Volatile context references propagate through interactions and workers,
+    // but cannot prove complete archive deletion ancestry. Keep receipts, not text.
+    const excluded =
+      input.retentionExcluded ||
+      delivery.ephemeral === true ||
+      reference?.contextSourceIds?.some((id) =>
+        id.startsWith("volatile-context:"),
+      );
     const text = delivery.message.content.type === "text";
     const valid =
       !excluded &&

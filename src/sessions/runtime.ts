@@ -782,6 +782,38 @@ export function createActivityActor(deps: ActivityDependencies) {
                       ),
                     });
                   }
+                  // Archive omission is not omission from the active conversation.
+                  // Volatile-derived speech stays bounded by this activity and is
+                  // checked through its complete reference before every reuse.
+                  if (
+                    context.reference.contextSourceIds?.some((id) =>
+                      id.startsWith("volatile-context:"),
+                    )
+                  ) {
+                    for (const delivery of turn.deliveries) {
+                      if (
+                        delivery.ephemeral ||
+                        delivery.result?.status !== "sent" ||
+                        delivery.message.content.type !== "text"
+                      )
+                        continue;
+                      step.state.history.push({
+                        role: "assistant",
+                        content: delivery.message.content.text,
+                        eventId: assignment.eventId,
+                        source: {
+                          id: delivery.message.id,
+                          address: delivery.message.address,
+                          direct: context.source.direct,
+                          senderId: "",
+                          messageId: delivery.result.messageId,
+                          occurredAt:
+                            delivery.outcomeObservedAt ?? assignment.receivedAt,
+                        },
+                        context: JSON.parse(JSON.stringify(context)),
+                      });
+                    }
+                  }
                 }
                 await step.vars.persist();
                 // Searchable recorded speech is not permission to rotate. Keep

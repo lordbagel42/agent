@@ -56,7 +56,18 @@ it.for(["interaction", "execution", "decision"] as const)(
           }
         : { agentRole: role }),
       capabilities: { inspectionAvailable: false },
+      continuity: {
+        epoch: "epoch",
+        dependency: "dependency",
+        mode: "filtered",
+        text: "APPROVED_CONTINUITY_EXCERPT",
+      },
     });
+    expect(request.system).toContain("APPROVED_CONTINUITY_EXCERPT");
+    expect(request.system).toContain("relationship memory is immature");
+    expect(request.system).toContain(
+      "Idle expiry does not cancel durable jobs",
+    );
     expect(request.system).toContain("CLEARHISTORY");
     expect(request.system).toContain("DEBUGSHARE");
     expect(request.system).toContain('inspection:"debug-shares"');

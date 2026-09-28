@@ -464,6 +464,7 @@ export function createSlackAdapter({
       ? {}
       : { search: search.search, hasSearchToken: search.hasActionToken }),
     ...(contextEnabled ? { context: context.context } : {}),
+    audience: context.audience,
     async setTyping(event, active, signal) {
       const { address } = event;
       // Slack's status UI is thread-scoped and can auto-open that thread.

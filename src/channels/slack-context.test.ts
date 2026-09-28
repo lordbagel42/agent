@@ -29,6 +29,34 @@ function adapter(fetch: typeof globalThis.fetch) {
 }
 
 describe("Slack same-surface context", () => {
+  it("requires complete authenticated private-channel membership and rejects an incomplete audience", async () => {
+    let complete = true;
+    const slack = adapter(async (url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (String(url).endsWith("conversations.info"))
+        return Response.json({
+          ok: true,
+          channel: { id: "C1", is_private: true },
+        });
+      return Response.json({
+        ok: true,
+        members: body.cursor ? ["U_OTHER"] : ["U_OWNER", "U_JUNE"],
+        response_metadata: {
+          next_cursor: body.cursor && complete ? "" : "more",
+        },
+      });
+    });
+    expect(await slack.audience?.(event)).toEqual({
+      kind: "group",
+      members: ["U_JUNE", "U_OTHER", "U_OWNER"],
+    });
+    complete = false;
+    expect(await slack.audience?.(event)).toEqual({ kind: "unknown" });
+    expect(await slack.audience?.({ ...event, direct: true })).toEqual({
+      kind: "unknown",
+    });
+  });
+
   it("expires optional names before slower history without discarding messages", async () => {
     let nameAborted = false;
     let nameAbortedBeforeHistory = false;
@@ -101,7 +129,7 @@ describe("Slack same-surface context", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("keeps participants, exact provenance and safe files in the initiating thread only", async () => {
+  it("keeps thread and parent-channel provenance without foreign replies or private data", async () => {
     const root = "1799999990.000010";
     const input = {
       ...event,
@@ -134,6 +162,22 @@ describe("Slack same-surface context", () => {
               email: "secret@example.com",
             },
           },
+        },
+        "conversations.history": {
+          ok: true,
+          messages: [
+            {
+              ts: "1800000000.000199",
+              user: "U_OTHER",
+              text: "Parent channel topic",
+            },
+            {
+              ts: "1800000000.000198",
+              user: "U_OTHER",
+              text: "foreign reply",
+              thread_ts: "1700000000.000001",
+            },
+          ],
         },
         "conversations.replies": {
           ok: true,
@@ -212,6 +256,7 @@ describe("Slack same-surface context", () => {
       "The plan",
       "Earlier reply",
       "A diagram",
+      "Parent channel topic",
       "what do you think?",
     ]);
     expect(context?.map((message) => message.role)).toEqual([
@@ -219,7 +264,9 @@ describe("Slack same-surface context", () => {
       "assistant",
       "user",
       "user",
+      "user",
     ]);
+    expect(context?.[3]?.source?.address.threadId).toBeUndefined();
     expect(context?.[2]?.source).toMatchObject({
       id: "slack:T1:C1:1799999996.000003",
       address: {
@@ -264,12 +311,12 @@ describe("Slack same-surface context", () => {
         ({ method, body }) => method === "users.info" || body.channel === "C1",
       ),
     ).toBe(true);
+    expect(requests.some(({ method }) => method.startsWith("files."))).toBe(
+      false,
+    );
     expect(
-      requests.some(
-        ({ method }) =>
-          method === "conversations.history" || method.startsWith("files."),
-      ),
-    ).toBe(false);
+      requests.filter(({ method }) => method === "conversations.history"),
+    ).toHaveLength(1);
   });
 
   it("uses a bounded channel page, not other threads or an owner DM fallback", async () => {

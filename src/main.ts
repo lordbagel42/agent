@@ -61,6 +61,10 @@ import {
   type DecisionFunction,
 } from "./reflection/evaluator.js";
 import { createJuryTool } from "./reflection/jury.js";
+import {
+  ConversationContinuity,
+  createPrivacyFilter,
+} from "./runtime/continuity.js";
 import { DiagnosticLog } from "./runtime/diagnostics.js";
 import {
   capabilitySnapshot,
@@ -619,7 +623,7 @@ async function main() {
       "memory: requires JUNE_ALLOW_MEMORY=1 after privacy/retention review";
     if (process.env.JUNE_ALLOW_MEMORY !== "1")
       throw new Error("Memory not allowed");
-    if (config.reflection || config.memory.extraction) {
+    if (config.reflection || config.memory.extraction || config.continuity) {
       startupStage =
         "memory models: requires JUNE_ALLOW_MEMORY_MODELS=1 after provider review";
       if (process.env.JUNE_ALLOW_MEMORY_MODELS !== "1")
@@ -984,8 +988,30 @@ async function main() {
             : undefined,
         }
       : undefined;
+  let continuity: ConversationContinuity | undefined;
+  if (config.continuity && config.memory && memory) {
+    startupStage = "private conversation continuity";
+    const key = memoryKey(config.memory.keyEnv);
+    try {
+      continuity = new ConversationContinuity({
+        file: join(config.memory.directory, "continuity.sqlite"),
+        key,
+        owner: config.owner,
+        idleMs: config.continuity.idleMs,
+        revision: () => memory?.store.deletionRevision() ?? 0,
+        filter: createPrivacyFilter({
+          ...config.continuity.model,
+          usage,
+          apiKey: secret(config.continuity.model.apiKeyEnv),
+        }),
+      });
+    } finally {
+      key.fill(0);
+    }
+  }
   const dependencies: Dependencies = {
     owner: config.owner,
+    continuity,
     debugShare:
       config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
         ? {
@@ -1592,6 +1618,7 @@ async function main() {
       await browser?.close();
       await connections?.close();
       capabilities?.close();
+      continuity?.close();
       memory?.personality?.close();
       memory?.store.close();
       social?.close();

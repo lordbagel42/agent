@@ -29,6 +29,7 @@ export function createWakeupActor(
     owner: Owner;
     lifecycle?: Dependencies["lifecycle"];
     memory?: Dependencies["memory"];
+    continuity?: Dependencies["continuity"];
   },
 ) {
   const decisionSources = deps.decisionSources ?? [];
@@ -57,7 +58,11 @@ export function createWakeupActor(
     return (
       (!evidence || !deps.memory?.store.isDeleted(evidence.id)) &&
       evidenceIds.every(
-        (id) => !!deps.memory && !deps.memory.store.isDeleted(id),
+        (id) =>
+          !!deps.memory &&
+          (id.startsWith("volatile-context:continuity:")
+            ? deps.continuity?.valid(id) === true
+            : !deps.memory.store.isDeleted(id)),
       )
     );
   };
@@ -131,7 +136,11 @@ export function createWakeupActor(
     for (const run of Object.values(state.runs)) {
       if (
         run.contextSourceIds?.some(
-          (id) => !deps.memory || deps.memory.store.isDeleted(id),
+          (id) =>
+            !deps.memory ||
+            (id.startsWith("volatile-context:continuity:")
+              ? deps.continuity?.valid(id) !== true
+              : deps.memory.store.isDeleted(id)),
         )
       ) {
         if (pending(run)) run.status = "cancelled";

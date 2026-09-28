@@ -32,6 +32,7 @@ import { ModelError, parseReply } from "../models/provider.js";
 import type { createJuryTool } from "../reflection/jury.js";
 import {
   createSessionCatalog,
+  isControl,
   type SessionCatalogState,
   type SessionHost,
 } from "../sessions/catalog.js";
@@ -139,6 +140,7 @@ import {
 
 export interface Dependencies {
   owner: Owner;
+  continuity?: import("./continuity.js").ConversationContinuity;
   debugShare?: DebugInvestigator;
   /** Host-injected handoff only; not exposed by production config until the
    * activity catalog/control paths are integrated. Accepted session inputs hold
@@ -210,6 +212,7 @@ export interface Dependencies {
 
 export interface MemoryReference {
   sourceIds: string[];
+  continuityEpoch?: string;
   personality: string;
   /** Complete deletion provenance; absent on legacy, source-only references. */
   deletionTracked?: true;
@@ -393,8 +396,10 @@ export function createJuneRegistry(deps: Dependencies) {
         !(source.platform === "slack" && source.text.startsWith("##"))
       );
     }) &&
-    (reference.contextSourceIds ?? []).every(
-      (id) => !deps.memory?.store.isDeleted(id),
+    (reference.contextSourceIds ?? []).every((id) =>
+      id.startsWith("volatile-context:continuity:")
+        ? deps.continuity?.valid(id) === true
+        : !deps.memory?.store.isDeleted(id),
     );
   function prune(state: ConversationState, audience: string) {
     const revision = deps.memory?.store.deletionRevision() ?? 0;
@@ -824,6 +829,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   };
                 }
                 if (command.kind === "clear") {
+                  deps.continuity?.clear();
                   resetConversation(c.state, receivedAt);
                   delete c.vars.debugRequest;
                 }
@@ -897,6 +903,11 @@ export function createJuneRegistry(deps: Dependencies) {
               return;
             c.state.pendingInputs ??= {};
             c.state.pendingInputs[id] = event;
+            if (
+              event.type === "message" &&
+              !isControl({ type: "event", event }, deps)
+            )
+              deps.continuity?.receive(event, receivedAt);
             c.state.ingress ??= {
               sequence: 0,
               receivedThrough: 0,
@@ -3134,8 +3145,13 @@ export function createJuneRegistry(deps: Dependencies) {
                                           event.address.accountId &&
                                         source.address.conversationId ===
                                           event.address.conversationId &&
-                                        source.address.threadId ===
-                                          event.address.threadId &&
+                                        (source.address.threadId ===
+                                          event.address.threadId ||
+                                          (!event.direct &&
+                                            event.address.threadId !==
+                                              undefined &&
+                                            source.address.threadId ===
+                                              undefined)) &&
                                         (source.id !== event.id ||
                                           (source.senderId === event.senderId &&
                                             source.messageId ===
@@ -3220,9 +3236,47 @@ export function createJuneRegistry(deps: Dependencies) {
                                       return evidence ? [evidence.id] : [];
                                     },
                                   ),
+                                  ...(sameSurface.some(
+                                    (entry) => entry.source?.id !== event.id,
+                                  )
+                                    ? ["volatile-context:platform"]
+                                    : []),
                                 ]),
                               ];
                             }
+                            const continuity =
+                              body.type === "event"
+                                ? await deps.continuity?.prepare(
+                                    event,
+                                    deps.channels[event.address.channel],
+                                    signal,
+                                  )
+                                : undefined;
+                            if (
+                              continuity &&
+                              step.state.memoryContexts?.[eventId]
+                            ) {
+                              step.state.memoryContexts[
+                                eventId
+                              ].continuityEpoch = continuity.epoch;
+                              if (continuity.text) {
+                                const reference =
+                                  step.state.memoryContexts[eventId];
+                                reference.contextSourceIds = [
+                                  ...new Set([
+                                    ...(reference.contextSourceIds ?? []),
+                                    continuity.dependency,
+                                  ]),
+                                ];
+                              }
+                              deps.continuity?.remember(
+                                event,
+                                sameSurface,
+                                continuity.epoch,
+                              );
+                            }
+                            if (!valid(step.state) || signal.aborted)
+                              return { reply: { text: "" }, retryable: false };
                             const unknownModel = {
                               provider: "unknown",
                               model: "not supplied",
@@ -3231,6 +3285,7 @@ export function createJuneRegistry(deps: Dependencies) {
                               current: unknownModel,
                             };
                             modelRequest = buildModelRequest({
+                              continuity,
                               ...(plan.workerCapabilities && !decisionTurn
                                 ? { agentRole: "interaction" as const }
                                 : {}),
@@ -5459,6 +5514,31 @@ export function createJuneRegistry(deps: Dependencies) {
                   for (const [index, text] of texts.entries()) {
                     if (text?.message.content.type !== "text") continue;
                     const status = text.result?.status;
+                    const epoch =
+                      step.state.memoryContexts?.[eventId]?.continuityEpoch;
+                    if (
+                      body.type === "event" &&
+                      epoch &&
+                      text.result?.status === "sent"
+                    )
+                      deps.continuity?.remember(
+                        event,
+                        [
+                          {
+                            role: "assistant",
+                            content: text.message.content.text,
+                            source: {
+                              id: text.message.id,
+                              address: text.message.address,
+                              direct: event.direct,
+                              senderId: "",
+                              messageId: text.result.messageId,
+                              occurredAt: Date.now(),
+                            },
+                          },
+                        ],
+                        epoch,
+                      );
                     content.push(
                       status === "sent"
                         ? `${texts.length > 1 ? `[Message ${index + 1}/${texts.length} sent] ` : ""}${text.message.content.text}`
@@ -5502,6 +5582,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       ? {
                           context: {
                             sourceIds: [...reference.sourceIds],
+                            continuityEpoch: reference.continuityEpoch,
                             personality: reference.personality,
                             deletionTracked: reference.deletionTracked,
                             contextSourceIds: [
@@ -5752,6 +5833,7 @@ export function createJuneRegistry(deps: Dependencies) {
               owner: deps.owner,
               lifecycle: deps.lifecycle,
               memory: deps.memory,
+              continuity: deps.continuity,
             }),
           }
         : {}),

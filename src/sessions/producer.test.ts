@@ -81,6 +81,23 @@ function input(): SessionArchiveTurnInput {
   };
 }
 
+it("omits derived text with volatile ancestry while preserving receipts and the original inbound", () => {
+  const value = input();
+  const reference = required(value.deliveries[0]?.reference);
+  reference.contextSourceIds?.push("volatile-context:continuity:revision");
+  const result = produceSessionArchiveTurn(value, evidence);
+  expect(result.turn.data.incomplete).not.toBe(true);
+  expect(result.turn.data.entries[0]?.content).toEqual({
+    retention: "retained",
+    text: original.text,
+  });
+  expect(result.turn.data.entries[1]?.content).toEqual({
+    retention: "omitted",
+    reason: "retention_excluded",
+  });
+  expect(JSON.stringify(result)).not.toContain("Assistant text");
+});
+
 it("projects exact immutable original metadata and ordered uncertain receipts deterministically", (t) => {
   const value = input();
   const before = structuredClone(value);
