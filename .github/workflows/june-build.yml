@@ -29,7 +29,10 @@ jobs:
       - name: Prepare exact revision
         env:
           REVISION: ${{ github.sha }}
-        run: python3 -I scripts/deploy/build_release.py "$REVISION" release.tar.gz
+        run: |
+          # The container user differs from the mounted checkout's owner.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -I scripts/deploy/build_release.py "$REVISION" release.tar.gz
       - name: Publish prepared dependencies
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
