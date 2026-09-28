@@ -88,7 +88,7 @@ const reasons: Record<
   drain_busy:
     "In-flight work could not be safely drained. Controller defers; inspect again later.",
   insufficient_disk:
-    "Insufficient host disk capacity. Operator must restore capacity; controller retries without a new commit.",
+    "Insufficient host disk capacity. The recovery agent or operator must restore capacity. A retry can use the same commit, but an active recovery incident or operator hold must be resolved first; do not promise an automatic retry.",
   resume_failed: "Admission could not be resumed. Operator recovery required.",
   current_unhealthy:
     "Current service identity/readiness is unverified. Operator inspection required.",
@@ -183,7 +183,7 @@ export function createReleaseTool(options: {
       `Running revision: ${running} (loaded process identity, observed ${observedAt}; not a fresh independent controller health attestation).`,
       "Policy: independent controller follows trusted lordbagel42/agent main. This tool cannot push, approve, deploy, retry, reconcile, or change policy.",
       "Controller installation is separate: main pushes do not install it; app revisions do not identify it.",
-      "With autonomous recovery installed, controller errors hand off to one Amp recovery agent on homelab-amp. A blocked feed can mean an active recovery or operator hold, not a running build. This inspection does not prove an agent launched or finished; missing recovery details remain unknown. Do not start a competing repair.",
+      "When autonomous recovery is installed and configured, controller errors can trigger a handoff to one Amp recovery agent on homelab-amp. A blocked feed can mean an active recovery or operator hold, not a running build. This inspection does not prove an agent launched or finished; missing recovery details remain unknown. Do not start a competing repair.",
     ];
     if (request.revision)
       lines.push(

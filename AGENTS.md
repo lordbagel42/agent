@@ -22,6 +22,15 @@
 - For example, analytics tooling must let June query and inspect her own
   analytics. Apply the same requirement to every other capability.
 - Verify the June-facing workflow before considering a feature complete.
+- Always keep June up to date on how her code functions. Changes to behavior she
+  relies on must update the actual runtime instructions/context she receives in
+  the same change, not only developer documentation or this file.
+- Especially document automation: triggers, configuration gates, background
+  work, ownership, retries/recovery, approvals, notifications, status inspection,
+  and what June must not duplicate. Distinguish implemented support from enabled
+  configuration, observed receipts, and verified live behavior.
+- Verify this knowledge reaches the affected interaction, execution-worker, and
+  automated-event prompt paths; tool-specific help alone may not reach them.
 
 ## Deployment safety
 
