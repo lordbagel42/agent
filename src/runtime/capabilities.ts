@@ -46,6 +46,7 @@ export type CapabilityDependencies = Pick<
   | "jev"
   | "jury"
   | "e2b"
+  | "emojiSearch"
   | "rivet"
   | "browserProposal"
   | "personalityEvaluation"
@@ -581,6 +582,33 @@ export async function runCapability(
       return unavailable;
     });
     generated = { text: "" };
+  } else if (generated.emojiSearch !== undefined) {
+    let text = "Emoji search is unavailable in this invocation.";
+    if (
+      scope.private &&
+      isOwner(event, deps.owner) &&
+      modelRequest.emojiSearchAvailable &&
+      deps.emojiSearch?.available &&
+      origin === "event" &&
+      phase !== "synthesis" &&
+      canStartAction()
+    ) {
+      const checked = parseReply(
+        JSON.stringify(generated),
+        workspaces,
+        modelRequest,
+      );
+      if (checked.emojiSearch) {
+        text = await deps.emojiSearch.search(checked.emojiSearch, signal);
+        if (!canStartAction()) return { text: "" };
+      }
+    }
+    generated = {
+      text,
+      ...(generated.replyInThread !== undefined
+        ? { replyInThread: generated.replyInThread }
+        : {}),
+    };
   } else if (generated.javascript !== undefined) {
     let text =
       "JavaScript sandbox execution is unavailable in this invocation.";

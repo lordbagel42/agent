@@ -52,6 +52,7 @@ import {
 import { sessionActorKey } from "../sessions/state.js";
 import type { McpConnections } from "../tools/connections.js";
 import type { E2BProvider } from "../tools/e2b.js";
+import type { EmojiSearchProvider } from "../tools/emoji-search.js";
 import type {
   WebSearchCitation,
   WebSearchProvider,
@@ -154,6 +155,7 @@ export interface Dependencies {
   workflows?: WorkflowDependencies;
   models?: PromptInput["models"];
   webSearch?: WebSearchProvider;
+  emojiSearch?: EmojiSearchProvider;
   e2b?: E2BProvider;
   jev?: { observe: JevObserver; question: JevQuestion };
   mcpAvailable?: boolean;
@@ -3197,6 +3199,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                 javascriptAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis",
+                                emojiSearchAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  isOwner(event, deps.owner) &&
+                                  !!deps.emojiSearch?.available,
                                 typingControlAvailable:
                                   body.type === "event" &&
                                   event.address.channel === "slack" &&

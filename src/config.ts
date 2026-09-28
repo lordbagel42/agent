@@ -7,6 +7,7 @@ import {
   browserOperationSchema,
 } from "./tools/browser.js";
 import { browserMutationSchema } from "./tools/browser-proposals.js";
+import { emojiSearchUrlSchema } from "./tools/emoji-search.js";
 
 const nonempty = z.string().trim().min(1);
 const envName = z.string().regex(/^[A-Z_][A-Z0-9_]*$/);
@@ -261,6 +262,13 @@ const schema = z
               Object.keys(question.criteria).length <= 8),
           "Use one bounded observation rubric (1024 bytes, at most 8 choices)",
         ),
+      })
+      .optional(),
+    emojiSearch: z
+      .strictObject({
+        baseUrl: emojiSearchUrlSchema.default("https://emojis.raygen.dev"),
+        readTokenEnv: envName.default("EMOJI_SEARCH_READ_TOKEN"),
+        timeoutMs: z.number().int().min(100).max(5000).default(4000),
       })
       .optional(),
     webSearch: z

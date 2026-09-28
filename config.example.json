@@ -17,6 +17,11 @@
     "apiKeyEnv": "MODEL_API_KEY"
   },
   "executionEnabled": true,
+  "emojiSearch": {
+    "baseUrl": "https://emojis.raygen.dev",
+    "readTokenEnv": "EMOJI_SEARCH_READ_TOKEN",
+    "timeoutMs": 4000
+  },
   "activitySessions": {
     "enabled": false,
     "idleMs": 10800000

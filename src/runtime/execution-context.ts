@@ -38,6 +38,7 @@ export function executionCapabilities(
       event.address.channel === "slack" && !!deps.channels.slack?.shareHistory,
     webSearchAvailable: !!deps.webSearch?.available,
     javascriptAvailable: true,
+    emojiSearchAvailable: privateTurn && !!deps.emojiSearch?.available,
     releaseAvailable: !!deps.release,
     modelStatusAvailable: privateTurn && !!deps.modelStatus,
     mcpAvailable: privateTurn && deps.mcpAvailable === true,

@@ -78,6 +78,7 @@ import { BrowserAdapter, browserOperationDigest } from "./tools/browser.js";
 import { createBrowserProposal } from "./tools/browser-proposals.js";
 import { McpConnections } from "./tools/connections.js";
 import { createE2BProvider } from "./tools/e2b.js";
+import { createEmojiSearch } from "./tools/emoji-search.js";
 import { createGitHubOAuth } from "./tools/github-oauth.js";
 import { createPuckConsoleOAuth } from "./tools/puck-oauth.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
@@ -1005,6 +1006,13 @@ async function main() {
       : undefined,
     models,
     webSearch,
+    emojiSearch: config.emojiSearch
+      ? createEmojiSearch({
+          baseUrl: config.emojiSearch.baseUrl,
+          readToken: process.env[config.emojiSearch.readTokenEnv],
+          timeoutMs: config.emojiSearch.timeoutMs,
+        })
+      : undefined,
     jev,
     lifecycle,
     latency,
