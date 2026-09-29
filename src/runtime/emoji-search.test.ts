@@ -1,9 +1,64 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type { MessageEvent } from "../core/contracts.js";
+import { createEmojiSearch } from "../tools/emoji-search.js";
 import { executionKey } from "./execution.js";
 import { executionCapabilities } from "./execution-context.js";
 import { createJuneRegistry, type Dependencies } from "./registry.js";
+
+it("searches anonymously with a tokenless provider and validates results", async () => {
+  const hit = {
+    name: "fixture_wave",
+    shortcode: ":fixture_wave:",
+    canonicalName: null,
+    imageUrl: "https://example.com/wave.png",
+    summary: "Friendly waving hand",
+    description: "A friendly wave",
+    score: 1,
+    match: "exact",
+  };
+  const result = {
+    results: [hit],
+    mode: "keyword",
+    durationMs: 1,
+    semanticAvailable: false,
+  };
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(Response.json(result));
+  try {
+    const provider = createEmojiSearch({
+      baseUrl: "https://emojis.example.com",
+      timeoutMs: 4000,
+    });
+    expect(provider.available).toBe(true);
+    const report = await provider.search(
+      { query: "friendly wave" },
+      new AbortController().signal,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("Search request missing");
+    const [url, options] = call;
+    expect(String(url)).toBe(
+      "https://emojis.example.com/api/search?q=friendly+wave&limit=8",
+    );
+    expect(options?.method).toBe("GET");
+    expect(new Headers(options?.headers).has("Authorization")).toBe(false);
+    expect(JSON.parse(report.slice(report.indexOf("\n") + 1))).toEqual({
+      ...result,
+      results: [{ ...hit, imageUrl: undefined }],
+    });
+    fetchMock.mockResolvedValueOnce(
+      Response.json({ ...result, results: [{ ...hit, shortcode: ":wrong:" }] }),
+    );
+    expect(
+      await provider.search({ query: "wave" }, new AbortController().signal),
+    ).toBe("Emoji search failed or timed out; no results available.");
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
 
 it("lets June's private worker inspect emoji candidates before reporting, but denies shared and guest grants", async (t) => {
   const owner = {

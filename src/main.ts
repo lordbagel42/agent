@@ -1192,7 +1192,6 @@ async function main() {
     emojiSearch: config.emojiSearch
       ? createEmojiSearch({
           baseUrl: config.emojiSearch.baseUrl,
-          readToken: process.env[config.emojiSearch.readTokenEnv],
           timeoutMs: config.emojiSearch.timeoutMs,
         })
       : undefined,

@@ -68,10 +68,9 @@ export interface EmojiSearchProvider {
   ): Promise<string>;
 }
 
-/** Only the operator chooses the origin and read-only credential. No model headers or URLs. */
+/** Only the operator chooses the public search origin. No model headers or URLs. */
 export function createEmojiSearch(options: {
   baseUrl: string;
-  readToken?: string;
   timeoutMs: number;
 }): EmojiSearchProvider {
   const origin = emojiSearchUrlSchema.parse(options.baseUrl);
@@ -81,12 +80,11 @@ export function createEmojiSearch(options: {
     .min(100)
     .max(5000)
     .parse(options.timeoutMs);
-  const token = options.readToken?.trim();
   return {
-    available: !!token,
+    available: true,
     async search(request, signal) {
       const parsed = emojiSearchSchema.safeParse(request);
-      if (!token || !parsed.success)
+      if (!parsed.success)
         return "Emoji search unavailable or invalid request.";
       const url = new URL("/api/search", origin);
       url.searchParams.set("q", parsed.data.query);
@@ -99,7 +97,6 @@ export function createEmojiSearch(options: {
         const response = await fetch(url, {
           method: "GET",
           headers: {
-            Authorization: `Bearer ${token}`,
             Accept: "application/json",
           },
           redirect: "error",

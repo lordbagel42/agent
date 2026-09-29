@@ -1,28 +1,25 @@
 # June emoji search
 
-Optional read-only integration with the standalone emoji service. Remove
+Optional read-only integration with the standalone [semoji service](https://github.com/lordbagel42/semoji). Remove
 `emojiSearch` from configuration to disable it. An empty object opts in to the
-defaults below; a missing or empty token also leaves the capability unavailable.
+defaults below; public search requires no authentication.
 
 ```json
 {
   "emojiSearch": {
     "baseUrl": "https://emojis.raygen.dev",
-    "readTokenEnv": "EMOJI_SEARCH_READ_TOKEN",
     "timeoutMs": 4000
   }
 }
 ```
 
-Set the named environment variable in June's private service environment to the
-emoji service's **read-only search token**. Never supply an admin/write token or
-Slack bot token. The operator must provision a read-scoped credential; June
-cannot determine a bearer token's scope locally. The endpoint must be an HTTPS
-origin without credentials, path, query or fragment. No credentials are exposed
-to models. No June Slack manifest, subscription or `emoji_changed` forwarding is
-needed: the standalone service reconciles through GitHub Actions and stores its
-catalogue in Neon. Workers serve search and embeddings without an always-on
-LEGION process. Actions requires its explicit enablement variable and secrets;
+June sends no Authorization header and reads no search secret. The endpoint must
+be an HTTPS origin without credentials, path, query or fragment. Status, indexer,
+and admin operations remain private; public search grants no access to them.
+No June Slack manifest, subscription or `emoji_changed` forwarding is needed:
+semoji owns its GitHub Actions maintenance workflow, Neon catalogue, and
+Cloudflare Workers for search and embeddings, without an always-on LEGION
+process. Actions requires its explicit enablement variable and secrets;
 source support does not prove activation. New image descriptions still require
 an explicitly operated indexer; Actions never retries failed/unknown inference.
 
@@ -34,7 +31,7 @@ Hack Club audience must be explicitly authorized before changing that boundary.
 June discovers `emojiSearch: {query: string, limit?: number}` in her capability
 schema and prompt. Queries are 1–300 characters, limits 1–20 (default 8; structured
 model output may use null for default). Requests are exclusively
-`GET /api/search?q=…&limit=…`, with the host's bearer read token. Models cannot
+`GET /api/search?q=…&limit=…`, anonymously. Models cannot
 choose URLs, headers or HTTP methods. Redirects fail closed; timeout defaults to
 4 seconds and cannot exceed 5 seconds, including reading the body. Bodies above
 128 KiB, malformed responses and more than the requested number of hits fail

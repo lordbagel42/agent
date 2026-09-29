@@ -330,7 +330,8 @@ const schema = z
     emojiSearch: z
       .strictObject({
         baseUrl: emojiSearchUrlSchema.default("https://emojis.raygen.dev"),
-        readTokenEnv: envName.default("EMOJI_SEARCH_READ_TOKEN"),
+        // Deprecated compatibility key; public search ignores credentials.
+        readTokenEnv: envName.optional(),
         timeoutMs: z.number().int().min(100).max(5000).default(4000),
       })
       .optional(),

@@ -65,6 +65,22 @@ it.for(["interaction", "execution", "decision"] as const)(
     });
     expect(request.system).toContain("APPROVED_CONTINUITY_EXCERPT");
     expect(request.system).toContain(
+      "semoji service (https://github.com/lordbagel42/semoji) owns Cloudflare Workers",
+    );
+    expect(request.system).toContain(
+      "Neon Postgres for storage, and its GitHub Actions maintenance workflow",
+    );
+    expect(request.system).toContain(
+      "Public GET /api/search needs no authentication; status, indexer, and admin operations remain private",
+    );
+    expect(request.system).toContain("source support is not activation");
+    expect(request.system).toContain(
+      "new rich descriptions still require an explicitly operated indexer",
+    );
+    expect(request.system).toContain(
+      "Your emojiSearch capability is read-only, owner-private and turn-gated",
+    );
+    expect(request.system).toContain(
       "Execution workers are durable model tasks, not Amp coding processes",
     );
     expect(request.system).toContain(

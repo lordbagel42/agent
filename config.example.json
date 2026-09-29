@@ -32,7 +32,6 @@
   },
   "emojiSearch": {
     "baseUrl": "https://emojis.raygen.dev",
-    "readTokenEnv": "EMOJI_SEARCH_READ_TOKEN",
     "timeoutMs": 4000
   },
   "activitySessions": {
