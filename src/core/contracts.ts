@@ -231,6 +231,10 @@ export interface CompanionReply {
   /** Capability-free QuickJS computation, separate from privileged workflows. */
   javascript?: { source: string; inputJson: string };
   emojiSearch?: { query: string; limit?: number };
+  /** Ask June's source specialist; only execution workers may consult it. */
+  repository?: string;
+  /** Specialist-only reads from the host's pinned public source snapshot. */
+  repositoryRead?: import("../repository/contracts.js").RepositoryRead;
   social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
   /** Owner-private reports, metadata/diff or cancellation; never approval. */
@@ -389,7 +393,7 @@ export interface ModelImageInput {
 export interface ModelRequest {
   artifactsAvailable?: boolean;
   /** Host-enforced action boundary; omitted preserves legacy mixed-role turns. */
-  agentRole?: "interaction" | "execution";
+  agentRole?: "interaction" | "execution" | "repository";
   system: string;
   messages: ConversationMessage[];
   /** Host-only scoped images: at most 8, 5 MiB each and 20 MiB total.
@@ -453,6 +457,8 @@ export interface ModelRequest {
   workflowAvailable?: boolean;
   javascriptAvailable?: boolean;
   emojiSearchAvailable?: boolean;
+  repositoryAvailable?: boolean;
+  repositoryReadAvailable?: boolean;
 }
 
 /** Prospective inference liveness only, never proof of delivery/tool outcome or

@@ -3350,6 +3350,35 @@ test("execution MCP observations retain structured IDs but revoke the whole sequ
   expect(reply).toEqual({ text: "" });
 });
 
+test("final execution MCP synthesis cannot silently request a repository consultation", async () => {
+  const f = await fixture();
+  f.store.permit(f.id, f.connection().revision, "lookup", "read");
+  let reads = 0;
+  const reply = await f.store
+    .wrap({
+      async reply(request) {
+        if (!request.mcpAvailable) {
+          expect(request.repositoryAvailable).toBe(false);
+          expect(replyJsonSchema([], request).properties).not.toHaveProperty(
+            "repository",
+          );
+          return { text: "Read budget reached; here is the result." };
+        }
+        return {
+          text: "",
+          mcp: {
+            connection: f.id,
+            tool: "lookup",
+            argumentsJson: JSON.stringify({ id: `record-${++reads}` }),
+          },
+        };
+      },
+    })
+    .reply({ ...f.request, agentRole: "execution", repositoryAvailable: true });
+  expect(f.calls).toHaveLength(3);
+  expect(reply.text).toContain("Read budget reached");
+});
+
 test("approved Puck replies are private, transient and one-use without replaying effects", async () => {
   const f = await fixture();
   f.store.disconnect(f.id, f.connection().revision);

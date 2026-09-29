@@ -39,6 +39,7 @@ export function executionCapabilities(
     webSearchAvailable: !!deps.webSearch?.available,
     javascriptAvailable: true,
     emojiSearchAvailable: privateTurn && !!deps.emojiSearch?.available,
+    repositoryAvailable: !!deps.repository,
     releaseAvailable: !!deps.release,
     modelStatusAvailable: privateTurn && !!deps.modelStatus,
     mcpAvailable: privateTurn && deps.mcpAvailable === true,

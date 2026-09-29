@@ -167,6 +167,7 @@ export interface Dependencies {
   models?: PromptInput["models"];
   webSearch?: WebSearchProvider;
   emojiSearch?: EmojiSearchProvider;
+  repository?: import("../repository/agent.js").RepositoryAgent;
   e2b?: E2BProvider;
   browserCompanion?: import("../browser/companion.js").BrowserCompanion;
   jev?: { observe: JevObserver; question: JevQuestion };
@@ -3399,6 +3400,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   scope.private &&
                                   isOwner(event, deps.owner) &&
                                   !!deps.emojiSearch?.available,
+                                repositoryAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  isOwner(event, deps.owner) &&
+                                  !!deps.repository,
                                 typingControlAvailable:
                                   body.type === "event" &&
                                   event.address.channel === "slack" &&

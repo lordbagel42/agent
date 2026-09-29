@@ -68,6 +68,7 @@ import {
   type DecisionFunction,
 } from "./reflection/evaluator.js";
 import { createJuryTool } from "./reflection/jury.js";
+import { createRepositoryAgent } from "./repository/agent.js";
 import {
   ConversationContinuity,
   createPrivacyFilter,
@@ -1189,6 +1190,13 @@ async function main() {
     models,
     webSearch,
     browserCompanion,
+    repository:
+      config.executionEnabled && !config.setupMode
+        ? createRepositoryAgent({
+            model: deepModel ?? model,
+            revision: release?.revision,
+          })
+        : undefined,
     emojiSearch: config.emojiSearch
       ? createEmojiSearch({
           baseUrl: config.emojiSearch.baseUrl,

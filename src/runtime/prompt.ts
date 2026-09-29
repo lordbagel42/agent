@@ -12,6 +12,7 @@ import { routeEvent } from "../core/routing.js";
 import { WEB_EMBED_HELP } from "../core/web-embed.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { JevQuestion } from "../models/jev.js";
+import { REPOSITORY_HELP } from "../repository/contracts.js";
 import { E2B_HELP } from "../tools/e2b.js";
 import { EMOJI_SEARCH_HELP } from "../tools/emoji-search.js";
 import { JAVASCRIPT_HELP } from "../tools/javascript.js";
@@ -89,6 +90,7 @@ export interface PromptCapabilities {
   workflowAvailable?: boolean;
   javascriptAvailable?: boolean;
   emojiSearchAvailable?: boolean;
+  repositoryAvailable?: boolean;
   workflowTools?: { name: string; description: string }[];
 }
 
@@ -331,6 +333,10 @@ export function buildModelRequest({
     !wakeup && capabilities.javascriptAvailable === true;
   const emojiSearchAvailable =
     privateTurn && !wakeup && capabilities.emojiSearchAvailable === true;
+  const repositoryAvailable =
+    !wakeup &&
+    isOwner(event, owner) &&
+    capabilities.repositoryAvailable === true;
 
   const messages = history
     .filter(({ role, source, content }) => {
@@ -813,6 +819,7 @@ export function buildModelRequest({
     workflowAvailable,
     javascriptAvailable,
     emojiSearchAvailable,
+    repositoryAvailable,
   };
   if (agentRole === "interaction") {
     const workerCapabilities = Object.entries(request)
@@ -953,6 +960,7 @@ Answer the assigned question before listing procedure. Do not return a giant tra
   }
   request.system +=
     "\n\nJune's source code is open-source software (OSS), licensed under the MIT license, and publicly available at https://github.com/lordbagel42/agent. Open-source licensing of the code does not make private conversations, memories, credentials, or host data public.";
+  request.system += `\n\n${REPOSITORY_HELP}\nRepository consultation ${repositoryAvailable ? "is available to authorized execution workers" : "is unavailable in this turn"}.`;
   // Operating knowledge must survive the interaction prompt replacement and
   // reach event decisions even when the corresponding inspection tool is absent.
   request.system +=

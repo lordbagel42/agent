@@ -48,6 +48,7 @@ export type CapabilityDependencies = Pick<
   | "e2b"
   | "browserCompanion"
   | "emojiSearch"
+  | "repository"
   | "rivet"
   | "browserProposal"
   | "personalityEvaluation"
@@ -679,6 +680,32 @@ export async function runCapability(
       return unavailable;
     });
     generated = { text: "" };
+  } else if (generated.repository !== undefined) {
+    let text = "Repository consultation is unavailable in this invocation.";
+    if (
+      isOwner(event, deps.owner) &&
+      modelRequest.agentRole === "execution" &&
+      modelRequest.repositoryAvailable &&
+      deps.repository &&
+      origin === "event" &&
+      phase !== "synthesis" &&
+      canStartAction()
+    ) {
+      const checked = parseReply(
+        JSON.stringify(generated),
+        workspaces,
+        modelRequest,
+      );
+      if (checked.repository) {
+        text = await deps.repository.ask(
+          checked.repository,
+          signal,
+          canStartAction,
+        );
+        if (!canStartAction()) return { text: "" };
+      }
+    }
+    generated = { text };
   } else if (generated.emojiSearch !== undefined) {
     let text = "Emoji search is unavailable in this invocation.";
     if (

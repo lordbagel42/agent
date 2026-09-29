@@ -29,6 +29,10 @@ import {
 } from "../reflection/global-proposal.js";
 import { juryRequestSchema } from "../reflection/jury.js";
 import {
+  repositoryQuestionSchema,
+  repositoryReadSchema,
+} from "../repository/contracts.js";
+import {
   globalStyleSchema,
   personalityPreviewSchema,
 } from "../runtime/personality.js";
@@ -144,6 +148,8 @@ const companionReplySchema = z.strictObject({
   workflow: workflowCommandSchema.optional(),
   javascript: javascriptSchema.optional(),
   emojiSearch: emojiSearchSchema.optional(),
+  repository: repositoryQuestionSchema.optional(),
+  repositoryRead: repositoryReadSchema.optional(),
   execution: z
     .array(
       z
@@ -457,6 +463,8 @@ export type ReplyCapabilities = Pick<
   | "workflowAvailable"
   | "javascriptAvailable"
   | "emojiSearchAvailable"
+  | "repositoryAvailable"
+  | "repositoryReadAvailable"
 >;
 
 function replyCapabilities(
@@ -489,6 +497,9 @@ function rolePermitsField(
   role: ModelRequest["agentRole"],
   key: string,
 ): boolean {
+  if (role === "repository") return key === "text" || key === "repositoryRead";
+  if (key === "repositoryRead") return false;
+  if (key === "repository") return role === "execution";
   if (key === "browserTask") return role === "execution";
   if (role === "interaction") {
     return [
@@ -570,6 +581,8 @@ function legacyReplyJsonSchema(
     workflowAvailable,
     javascriptAvailable,
     emojiSearchAvailable,
+    repositoryAvailable,
+    repositoryReadAvailable,
   } = replyCapabilities(capabilities);
   const { $schema: _previewSchema, ...previewSchema } = z.toJSONSchema(
     personalityPreviewSchema.nullable(),
@@ -746,6 +759,32 @@ function legacyReplyJsonSchema(
               required: ["action", "id"],
               description:
                 "Owner-private coding availability, durable job metadata, bounded saved report, or cancellation request. report returns worker claims separately from saved verifier evidence; no verifier command runs. Cancel is not proof of stoppage. Never approves, resumes, or launches work. Leave text empty and all other actions unset.",
+            },
+          }
+        : {}),
+      ...(repositoryAvailable
+        ? {
+            repository: {
+              type: ["string", "null"],
+              description:
+                "Ask June's dedicated read-only specialist about lordbagel42/agent. Self-contained question, 1–2000 characters; no private history or credentials. Consult for repo understanding before conclusions or coding proposals. Empty text, no other actions.",
+            },
+          }
+        : {}),
+      ...(repositoryReadAvailable
+        ? {
+            repositoryRead: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                action: { type: "string", enum: ["read", "search"] },
+                path: { type: "string" },
+                query: { type: "string" },
+                offset: { type: "integer" },
+              },
+              required: ["action", "path", "query", "offset"],
+              description:
+                "Specialist-only snapshot read/search. read: exact inventory path, empty query, zero-based character offset. search: path prefix (empty for all), literal case-insensitive query, zero-based match offset. Use returned nextOffset to paginate. Empty text, no other actions.",
             },
           }
         : {}),
@@ -1798,6 +1837,8 @@ function legacyReplyJsonSchema(
       ...(workflowAvailable ? ["workflow"] : []),
       ...(javascriptAvailable ? ["javascript"] : []),
       ...(emojiSearchAvailable ? ["emojiSearch"] : []),
+      ...(repositoryAvailable ? ["repository"] : []),
+      ...(repositoryReadAvailable ? ["repositoryRead"] : []),
       ...(executionAvailable ? ["execution"] : []),
       ...(releaseAvailable ? ["release"] : []),
       ...(modelStatusAvailable ? ["modelStatus"] : []),
@@ -2049,6 +2090,8 @@ export function parseReply(
     workflowAvailable,
     javascriptAvailable,
     emojiSearchAvailable,
+    repositoryAvailable,
+    repositoryReadAvailable,
   } = replyCapabilities(capabilities);
   let value: unknown;
   try {
@@ -2077,6 +2120,8 @@ export function parseReply(
     "workflow",
     "javascript",
     "emojiSearch",
+    "repository",
+    "repositoryRead",
     "execution",
     "coding",
     "codingJob",
@@ -2199,6 +2244,8 @@ export function parseReply(
     (reply.workflow !== undefined && !workflowAvailable) ||
     (reply.javascript !== undefined && !javascriptAvailable) ||
     (reply.emojiSearch !== undefined && !emojiSearchAvailable) ||
+    (reply.repository !== undefined && !repositoryAvailable) ||
+    (reply.repositoryRead !== undefined && !repositoryReadAvailable) ||
     ((reply.messages !== undefined ||
       reply.interrupt !== undefined ||
       reply.question !== undefined) &&
@@ -2215,6 +2262,8 @@ export function parseReply(
     Number(reply.workflow !== undefined) +
     Number(reply.javascript !== undefined) +
     Number(reply.emojiSearch !== undefined) +
+    Number(reply.repository !== undefined) +
+    Number(reply.repositoryRead !== undefined) +
     Number(reply.modelStatus === true) +
     Number(reply.mcp !== undefined) +
     Number(reply.mcpPermission !== undefined) +
@@ -2275,6 +2324,8 @@ export function parseReply(
       reply.workflow !== undefined ||
       reply.javascript !== undefined ||
       reply.emojiSearch !== undefined ||
+      reply.repository !== undefined ||
+      reply.repositoryRead !== undefined ||
       reply.search !== undefined ||
       reply.slackHistory !== undefined ||
       reply.modelStatus === true ||

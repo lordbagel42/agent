@@ -83,6 +83,31 @@ An uncertain external send or launch stays **unknown**, not silently retried.
 Durability is not exactly-once delivery. Coding approval is not deployment
 approval, and a worktree is not a security sandbox.
 
+### June's repository specialist
+
+For questions about her own code, June delegates to the stable `june-repo`
+worker, which calls `repository` with a self-contained question. Other execution
+workers consult the same specialist before repo-dependent conclusions or coding
+proposals. This is available for authenticated owner requests when execution is
+enabled, not for guests or automated/completion turns.
+
+Before reasoning, the specialist loads the complete public GitHub source archive
+into memory, including docs, scripts and tests. It receives the full file
+inventory and can search/read text in bounded pages; it does not put every file
+in every prompt. It uses the configured deep model, or the normal model if none
+is configured, in an isolated context with no MCP, shell or host-file access.
+The snapshot is pinned to the running release commit (public `main` at first
+consultation in a non-release instance) and cached until restart. No credentials
+are sent to GitHub. A failed download stops consultation without a partial local
+fallback. Each question allows at most twelve model calls and returns revision
+and source citations, not proof of live configuration or health.
+
+This covers the published source tree, not Git history, untracked files,
+submodule contents or Git LFS payloads. Binary/link entries are inventoried but
+not interpreted or followed. Snapshot data is shared; question/model context is
+not. Normal worker history retains the resulting report under its existing
+scope and deletion rules. Source publication does not prove runtime activation.
+
 ## Running a local instance
 
 Use Linux, Node 24, and pnpm 10.33.0. The repository pins its Node runtime in
