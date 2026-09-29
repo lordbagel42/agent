@@ -1111,10 +1111,15 @@ held as `legacy-recovery`; it is not adopted merely because owner metadata is
 absent. Only after the actual existing operator explicitly hands off may an
 operator release that hold (using `--release-operator-hold legacy-recovery`).
 Prefer recording the known operator's hold before enabling the feature.
-Reconciliation does not clear an operator hold. With the owner's autonomous
-recovery authorization, a successfully claimed incident authorizes diagnosis,
-reviewed source fixes published to trusted main, controller/stop-hook repair,
-forward deployment, and restarting the poller without another approval round.
+Reconciliation does not clear an operator hold. The automatically spawned recovery
+agent receives Raygen's standing authorization to do whatever is necessary to
+resolve its incident and restore June, within the safeguards below, without asking
+Raygen for permission or waiting for another approval round. This is explicit
+operator authorization, including diagnosis, reviewed source fixes published to
+trusted main, configuration and service changes, controller/stop-hook repair,
+deployment, and restarts; the examples are not an exhaustive list. Lock acquisition
+and stopping the poller for the claim are authorized; other recovery mutations
+require a successful incident claim.
 It does not authorize deleting non-disposable data, restoring conversation data,
 force-killing unknown work, expanding permissions, or taking another operator's
 hold. An active human operator still requires a coordinated handoff. The agent
