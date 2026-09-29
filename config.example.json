@@ -32,7 +32,7 @@
   },
   "emojiSearch": {
     "baseUrl": "https://emojis.raygen.dev",
-    "timeoutMs": 4000
+    "timeoutMs": 1500
   },
   "activitySessions": {
     "enabled": false,
