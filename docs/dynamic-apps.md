@@ -49,6 +49,9 @@ actor apps through the dashboard or another client.
    the SDK or grant deployment. Later worktree edits cannot alter the artifact.
    The workspace must also still match its verification receipt at preparation
    and approval time; changed or revoked jobs cannot deploy.
+   Choose `access: "public"` for anyone without login or `"signed-in"` for anyone
+   who signs in (no owner/workspace allowlist). Null/omitted access leaves the
+   app internal-only. Publication requires the optional viewer configuration.
 4. Send the returned `!deploy-app <receipt-id>` yourself as a fresh plain-text
    owner Slack DM. Quotes, code blocks, forwarded messages and attachments cannot
    authorize deployment, even if Slack's fallback text contains the command.
@@ -56,6 +59,9 @@ actor apps through the dashboard or another client.
    code execution and Rivet resource creation. Models cannot emit an approval
    action. Expired proposals require a new preparation turn and a new receipt;
    replaying the original turn cannot renew an approval.
+   The receipt binds the audience as well as the source. Changing the audience
+   requires a new preparation/approval, even with identical source. Publication
+   cannot recall content already downloaded while public.
 5. Ask June to inspect `counter`. She reports `prepared`, `deploying`, `deployed`
    or `unknown`, the artifact digest, recorded release and private URL. These are
    historical receipts, **not health checks**. Active/uncertain receipts take
@@ -118,14 +124,68 @@ your LAN. Restrict egress and isolate the engine from June before activation.
 Use a self-contained npm installation in PATH; Arch's split distro npm failed
 inside the SDK's projected filesystem with missing `nopt` during the probe.
 
-The host listens on loopback only. A private, authenticated proxy may expose
-**only `/apps/*`**, on an origin separate from June and any administrative UI,
-injecting the viewer bearer server-side. Never put either token in a URL or
-browser JavaScript. Keep `/control/*`, `/api/rivet/*`, and engine ports private.
-Inbound proxy/auth headers and cookies are stripped before generated code, and
-`Set-Cookie` is stripped from responses. Cookie-based sessions and WebSocket
-proxying are not supported by this adapter. Apps on this origin share a browser
-trust boundary; this is not a public multi-tenant hosting service.
+The control and internal credential-only viewer listener remains loopback-only.
+Never expose that listener through public ingress or inject its bearer into a
+public proxy: it bypasses the publication policy for private operator checks.
+Keep `/control/*`, `/health/*`, `/api/rivet/*`, and engine ports private.
+Neither credential belongs in browser code, URLs or logs.
+
+### Optional public and sign-in-required viewers
+
+Add `viewer` to the dedicated host configuration only after provisioning the
+corresponding ingress, certificates and Access application:
+
+```json
+{
+  "viewer": {
+    "port": 3091,
+    "publicDomain": "public-apps.example.invalid",
+    "signedInDomain": "signed-apps.example.invalid",
+    "issuer": "https://YOUR-TEAM.cloudflareaccess.com",
+    "audience": "REPLACE_WITH_THE_ACCESS_APPLICATION_64_HEX_AUD"
+  }
+}
+```
+
+Replace the placeholders with verified application metadata; these are not
+secrets. `viewer` starts a **separate `0.0.0.0` listener**, which exposes only
+`/apps/<appId>/*`. Each app has its own HTTPS origin, such as
+`https://counter.public-apps.example.invalid/apps/counter/`. Public and signed-in
+domain suffixes must be distinct and neither may contain the other. The host
+rejects mismatched app IDs/hosts, regardless of forwarded headers. Preserve the
+external Host at ingress; terminate HTTPS there. Allow only that gateway to reach
+the viewer port. Do not publish health/control routes or other pod ports.
+
+The signed-in domain needs a Cloudflare Access **Allow Everyone** policy with a
+login method available to anyone, such as email one-time PIN—not an owner policy,
+workspace membership requirement, Service Auth or Bypass. The host validates the
+Access assertion's signature, issuer, audience, expiry and human identity against
+cached, rotating public keys. It never trusts an email header alone and does not
+receive or log the user's password. The public domain needs no Access login.
+Verify wildcard TLS coverage: ordinary apex wildcard certificates do not cover
+these deeper app subdomains. Use the existing DNS writer, not competing manual
+and GitOps records. No hostnames, certificates, Access policies or DNS records are
+provisioned by this code.
+
+Missing/legacy policy never becomes public automatically. The durable publication
+pointer selects the **last consumed deployment**, not the most recently prepared
+receipt. Starting deployment closes viewing before the engine can switch source;
+already admitted viewer requests must finish before the engine changes code.
+A stalled request therefore delays deployment rather than gaining access to the
+next release. Only a successful recorded result reopens viewing. An unknown
+outcome stays closed, including after restart. The viewer rechecks that pointer
+after authentication and serving to avoid returning a response under a
+superseded audience. Changing viewer configuration invalidates its old
+approvals/publications; reprepare and approve, never rewrite stored binding markers.
+
+Viewer credentials, Access assertions, identity headers and cookies are stripped
+before generated code; response cookies and CORS grants are stripped as well.
+Responses prohibit caching, embedding and service workers; cross-origin browser
+requests to signed-in apps are denied. App cookies, WebSockets and service workers
+are unsupported. Generated code must still be reviewed for deliberate disclosure
+or unsafe application actions; login alone does not make its data owner-private.
+This grants viewing only, not authoring or deployment permission. The June-facing
+integration still requires its own separately coordinated runtime activation.
 
 ## Failure and recovery
 

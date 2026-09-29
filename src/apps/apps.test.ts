@@ -291,6 +291,13 @@ it("connects June's app tool to approved coding, immutable artifacts and separat
     viewerToken,
     origin: "https://apps.example.invalid",
     binding: "fixture",
+    viewer: {
+      port: 3091,
+      publicDomain: "public.example.invalid",
+      signedInDomain: "signed.example.invalid",
+      issuer: "https://fixture.cloudflareaccess.com",
+      audience: "a".repeat(64),
+    },
     async deploy(source) {
       expect(source).toEqual(artifact);
       deployments++;
@@ -439,7 +446,13 @@ it("connects June's app tool to approved coding, immutable artifacts and separat
   );
   action = {
     text: "",
-    apps: { action: "prepare", appId: "counter", goal: null, jobId },
+    apps: {
+      action: "prepare",
+      appId: "counter",
+      goal: null,
+      jobId,
+      access: "public",
+    },
   };
   // Current main also binds the whole workspace. Retained bytes cannot be
   // swapped, and a changed workspace must not bypass that additional check.
@@ -460,6 +473,14 @@ it("connects June's app tool to approved coding, immutable artifacts and separat
     ).json(),
   );
   expect(prepared.status).toBe("prepared");
+  expect(prepared.access).toBe("public");
+  expect(prepared.url).toBe(
+    "https://counter.public.example.invalid/apps/counter/",
+  );
+  const proposalMessage = sent.at(-1)?.content;
+  expect(
+    proposalMessage?.type === "text" ? proposalMessage.text : "",
+  ).toContain("Anyone, without signing in");
   expect(deployments).toBe(0);
   await deliver(`!deploy-app ${prepared.id}`, false);
   await deliver(`!deploy-app ${prepared.id}`, true, "quoted");

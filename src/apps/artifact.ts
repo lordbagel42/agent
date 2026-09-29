@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 export const appIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,47}$/);
+export const appAccessSchema = z.enum(["public", "signed-in"]);
 export const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const MAX_ARTIFACT_BYTES = 262_144;
 const filePath = z
@@ -100,5 +101,5 @@ export async function readAppArtifact(cwd: string, appId: string) {
 }
 
 export function appCodingGoal(appId: string, goal: string) {
-  return `${goal}\n\nBuild a Rivet Dynamic App with ID ${appId}. Export the complete app as june-app.json: {"appId":"${appId}","files":{"package.json":"...","index.js":"..."}}. Files are UTF-8 strings, relative paths only, no dotfiles, credentials, symlinks, node_modules or host state. Limits: 128 files, 64 KiB each, 256 KiB total JSON. Include package.json with type:module and main pointing to an entrypoint that default-exports a Fetch handler (or a Hono app). Never call listen(), serve(), or registry.start(). Only Fetch/HTTP apps are supported; do not declare rivetkit or use actors. Run the workspace's verifier against these exact exported files. Do not deploy; the host snapshots the export for separate owner approval.`;
+  return `${goal}\n\nBuild a Rivet Dynamic App with ID ${appId}. Export the complete app as june-app.json: {"appId":"${appId}","files":{"package.json":"...","index.js":"..."}}. Files are UTF-8 strings, relative paths only, no dotfiles, credentials, symlinks, node_modules or host state. Limits: 128 files, 64 KiB each, 256 KiB total JSON. Include package.json with type:module and main pointing to an entrypoint that default-exports a Fetch handler (or a Hono app). Never call listen(), serve(), or registry.start(). Only Fetch/HTTP apps are supported; do not declare rivetkit or use actors. The host controls public versus sign-in-required viewing through separate deployment approval, not this artifact. Anyone may view an approved public app; any signed-in person may view an approved sign-in-required app. Never include private conversation data or assume viewers are the owner. Serve beneath /apps/${appId}/ on the app's own origin. App cookies, identity/auth headers, cross-origin authenticated requests, embedding and service workers are unsupported. Run the workspace's verifier against these exact exported files. Do not deploy; the host snapshots the export for separate owner approval.`;
 }

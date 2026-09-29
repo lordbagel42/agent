@@ -876,10 +876,16 @@ function legacyReplyJsonSchema(
                   description:
                     "Build task (1–900 characters) for build; null otherwise.",
                 },
+                access: {
+                  type: ["string", "null"],
+                  enum: ["public", "signed-in", null],
+                  description:
+                    "For prepare: public allows anyone without login; signed-in allows anyone who signs in, not just the owner. Null leaves internal-only viewing. Requires separate deployment approval; null for build/inspect.",
+                },
               },
-              required: ["action", "appId", "jobId", "goal"],
+              required: ["action", "appId", "jobId", "goal", "access"],
               description:
-                "Request an app coding proposal, prepare verified source for separate owner approval, or inspect recorded deployment status. Never approves or deploys. Empty text, no other directives.",
+                "Request an app coding proposal, prepare verified source and audience for separate owner approval, or inspect recorded deployment status. Never approves or deploys. Empty text, no other directives.",
             },
           }
         : {}),

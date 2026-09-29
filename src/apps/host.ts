@@ -5,6 +5,7 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import {
   type AppArtifact,
+  appAccessSchema,
   appIdSchema,
   artifactDigest,
   artifactSchema,
@@ -12,6 +13,12 @@ import {
   MAX_ARTIFACT_BYTES,
 } from "./artifact.js";
 import { type AppReceipt, appReceiptSchema } from "./client.js";
+import {
+  appViewerUrl,
+  createAppsViewer,
+  type ViewerConfig,
+  viewerConfigSchema,
+} from "./viewer.js";
 
 /** A single dedicated host owns this database and its Rivet namespace/pool.
  * Generated apps must never share June's process, data directory or credentials.
@@ -21,6 +28,7 @@ export function createAppsHost(options: {
   controlToken: string;
   viewerToken: string;
   origin: string;
+  viewer?: ViewerConfig;
   /** Bind approvals to operator-managed engine, namespace, pool and serving origin. */
   binding: string;
   deploy(artifact: AppArtifact): Promise<{ release: string }>;
@@ -35,12 +43,22 @@ export function createAppsHost(options: {
     options.controlToken === options.viewerToken
   )
     throw new Error("separate_app_credentials_required");
+  const viewerConfig = options.viewer
+    ? viewerConfigSchema.parse(options.viewer)
+    : undefined;
+  const binding = viewerConfig
+    ? createHash("sha256")
+        .update(JSON.stringify([options.binding, viewerConfig]))
+        .digest("hex")
+    : options.binding;
   const db = new DatabaseSync(options.database);
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
     CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, app_id TEXT NOT NULL, binding TEXT NOT NULL, artifact TEXT NOT NULL, receipt TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS app_publications (app_id TEXT PRIMARY KEY, receipt_id TEXT NOT NULL);
     UPDATE apps SET receipt=json_set(receipt, '$.status', 'unknown') WHERE json_extract(receipt, '$.status')='deploying';`);
   const app = new Hono();
   const running = new Set<Promise<void>>();
+  const viewers = new Map<string, Set<Promise<Response>>>();
   let draining = false;
   const log = options.log ?? (() => {});
   const authorized = (request: Request, token: string) => {
@@ -53,7 +71,7 @@ export function createAppsHost(options: {
   const get = (id: string) => {
     const row = db
       .prepare("SELECT receipt FROM apps WHERE id=? AND binding=?")
-      .get(id, options.binding);
+      .get(id, binding);
     return row ? appReceiptSchema.parse(JSON.parse(String(row.receipt))) : null;
   };
   const save = (receipt: AppReceipt) => {
@@ -95,16 +113,27 @@ export function createAppsHost(options: {
   });
   app.use("/control/*", bodyLimit({ maxSize: MAX_ARTIFACT_BYTES + 1024 }));
   app.post("/control/prepare", async (c) => {
-    const { artifact, jobId, requestId } = z
+    const { artifact, jobId, requestId, access } = z
       .strictObject({
         artifact: artifactSchema,
         jobId: digestSchema,
         requestId: digestSchema,
+        access: appAccessSchema.optional(),
       })
       .parse(await c.req.json());
+    if (access && !viewerConfig)
+      return c.json({ error: "viewer_not_configured" }, 409);
     const digest = artifactDigest(artifact);
     const id = createHash("sha256")
-      .update(JSON.stringify([options.binding, jobId, digest, requestId]))
+      .update(
+        JSON.stringify([
+          binding,
+          jobId,
+          digest,
+          requestId,
+          ...(access ? [access] : []),
+        ]),
+      )
       .digest("hex");
     const existing = get(id);
     if (existing) return c.json(existing);
@@ -116,16 +145,20 @@ export function createAppsHost(options: {
       status: "prepared",
       expiresAt: Date.now() + 600_000,
       release: null,
-      url: `${options.origin}/apps/${artifact.appId}/`,
+      url:
+        access && viewerConfig
+          ? appViewerUrl(viewerConfig, artifact.appId, access)
+          : `${options.origin}/apps/${artifact.appId}/`,
+      ...(access ? { access } : {}),
     };
     db.prepare("INSERT INTO apps VALUES (?, ?, ?, ?, ?)").run(
       id,
       artifact.appId,
-      options.binding,
+      binding,
       JSON.stringify(artifact),
       JSON.stringify(receipt),
     );
-    log({ event: "prepared", receiptId: id });
+    log({ event: "prepared", receiptId: id, access: access ?? "internal" });
     return c.json(receipt);
   });
   app.get("/control/receipts/:id", (c) =>
@@ -137,7 +170,7 @@ export function createAppsHost(options: {
       .prepare(
         "SELECT receipt FROM apps WHERE app_id=? AND binding=? ORDER BY json_extract(receipt, '$.status') IN ('deploying','unknown') DESC, rowid DESC LIMIT 1",
       )
-      .get(id, options.binding);
+      .get(id, binding);
     return c.json(
       row ? appReceiptSchema.parse(JSON.parse(String(row.receipt))) : null,
     );
@@ -166,10 +199,33 @@ export function createAppsHost(options: {
     if (artifactDigest(artifact) !== receipt.digest)
       throw new Error("artifact_changed");
     receipt.status = "deploying";
-    save(receipt);
+    // Fence viewers before calling the engine. Activation order, not the order
+    // preparations were inserted, selects the audience for the running app.
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      save(receipt);
+      db.prepare(
+        "INSERT INTO app_publications VALUES (?, ?) ON CONFLICT(app_id) DO UPDATE SET receipt_id=excluded.receipt_id",
+      ).run(receipt.appId, receipt.id);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
     log({ event: "deploy_started", receiptId: receipt.id });
     const operation = Promise.resolve().then(async () => {
       try {
+        // The SDK may choose its release only after buffering a slow request.
+        // Do not switch code until every pre-fence admission has really settled.
+        const active = viewers.get(receipt.appId);
+        if (active?.size) {
+          log({
+            event: "viewer_drain",
+            receiptId: receipt.id,
+            requests: active.size,
+          });
+          await Promise.allSettled(active);
+        }
         const result = await options.deploy(artifact);
         receipt.release = z.string().min(1).max(256).parse(result.release);
         receipt.status = "deployed";
@@ -223,6 +279,36 @@ export function createAppsHost(options: {
   });
   return {
     app,
+    viewer: viewerConfig
+      ? createAppsViewer({
+          config: viewerConfig,
+          publication(appId) {
+            if (draining) return null;
+            const row = db
+              .prepare("SELECT receipt_id FROM app_publications WHERE app_id=?")
+              .get(appId);
+            const receipt = row ? get(String(row.receipt_id)) : null;
+            return receipt?.status === "deployed" ? receipt : null;
+          },
+          serve(request, appId) {
+            const active = viewers.get(appId) ?? new Set<Promise<Response>>();
+            // Registration is synchronous with the viewer's publication check.
+            const operation = Promise.resolve().then(() =>
+              options.serve(request),
+            );
+            active.add(operation);
+            viewers.set(appId, active);
+            void operation
+              .finally(() => {
+                active.delete(operation);
+                if (!active.size) viewers.delete(appId);
+              })
+              .catch(() => {});
+            return operation;
+          },
+          log,
+        })
+      : undefined,
     async close() {
       draining = true;
       await Promise.allSettled(running);

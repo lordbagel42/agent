@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { CompanionReply } from "../core/contracts.js";
 import type { CodingState } from "../runtime/coding.js";
 import {
+  appAccessSchema,
   appCodingGoal,
   appIdSchema,
   artifactDigest,
@@ -14,7 +15,9 @@ export const appsRequestSchema = z
     appId: appIdSchema,
     jobId: digestSchema.nullable(),
     goal: z.string().trim().max(900).nullable(),
+    access: appAccessSchema.nullable().optional(),
   })
+  .refine((request) => request.action === "prepare" || request.access == null)
   .refine((request) =>
     request.action === "build"
       ? !!request.goal && request.jobId === null
@@ -32,6 +35,8 @@ export const appReceiptSchema = z.strictObject({
   expiresAt: z.number(),
   release: z.string().max(256).nullable(),
   url: z.url(),
+  // Missing on legacy/internal-only receipts; never infer public access.
+  access: appAccessSchema.optional(),
   failureCode: z
     .enum([
       "dynamic_apps_install_failed",
@@ -88,7 +93,13 @@ export function createAppsClient(options: {
   function report(receipt: AppReceipt | null) {
     if (!receipt)
       return "No deployment receipt exists for that app. This is not proof it has never existed in Rivet.";
-    return `Dynamic App receipt: ${JSON.stringify(receipt)}. This is the host's last recorded outcome, not a live health check.${receipt.status === "prepared" ? (receipt.expiresAt <= Date.now() ? " This approval has expired. Ask June to prepare the app again for a fresh approval." : ` Reply !deploy-app ${receipt.id} as a fresh plain-text owner Slack DM before ${new Date(receipt.expiresAt).toISOString()} to deploy exactly this source digest. This may install dependencies, execute generated code, and provision Rivet resources. Coding approval did not authorize deployment.`) : receipt.status === "unknown" ? " Do not retry: inspect the dedicated app host and Rivet dashboard to reconcile this uncertain deployment." : ""}`;
+    const audience =
+      receipt.access === "public"
+        ? "Anyone, without signing in. Publishing cannot recall already downloaded content."
+        : receipt.access === "signed-in"
+          ? "Anyone who signs in; no owner or workspace allowlist."
+          : "Internal credential-only viewer; not published.";
+    return `Dynamic App receipt: ${JSON.stringify(receipt)}. Audience: ${audience} This is the host's last recorded outcome, not a live health check.${receipt.status === "prepared" ? (receipt.expiresAt <= Date.now() ? " This approval has expired. Ask June to prepare the app again for a fresh approval." : ` Reply !deploy-app ${receipt.id} as a fresh plain-text owner Slack DM before ${new Date(receipt.expiresAt).toISOString()} to deploy exactly this source digest AND audience. This may install dependencies, execute generated code, and provision Rivet resources. Coding approval did not authorize deployment or publication.`) : receipt.status === "unknown" ? " Do not retry: inspect the dedicated app host and Rivet dashboard to reconcile this uncertain deployment." : ""}`;
   }
   async function artifactFor(jobId: string, appId: string) {
     const job = await options.readJob(jobId);
@@ -135,6 +146,7 @@ export function createAppsClient(options: {
           await call("/control/prepare", {
             jobId: request.jobId,
             requestId,
+            ...(request.access ? { access: request.access } : {}),
             artifact: { appId: artifact.appId, files: artifact.files },
           }),
         ),

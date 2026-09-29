@@ -8,6 +8,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { secret } from "../config.js";
 import { createAppsHost } from "./host.js";
+import { viewerConfigSchema } from "./viewer.js";
 
 /** Separate entrypoint; importing June never imports or starts Dynamic Apps. */
 async function main() {
@@ -29,7 +30,9 @@ async function main() {
         ),
       controlTokenEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
       viewerTokenEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
+      viewer: viewerConfigSchema.optional(),
     })
+    .refine((value) => value.viewer?.port !== value.port)
     .parse(
       JSON.parse(
         await readFile(
@@ -101,6 +104,7 @@ async function main() {
     controlToken: secret(config.controlTokenEnv),
     viewerToken: secret(config.viewerTokenEnv),
     origin: config.origin,
+    viewer: config.viewer,
     binding: createHash("sha256")
       .update(
         JSON.stringify([
@@ -147,11 +151,24 @@ async function main() {
     hostname: "127.0.0.1",
     port: config.port,
   });
+  // Only this explicitly enabled listener is eligible for viewer ingress.
+  // It contains no control/health routes and needs no injected bearer token.
+  const viewerServer =
+    host.viewer && config.viewer
+      ? serve({
+          fetch: host.viewer.fetch,
+          hostname: "0.0.0.0",
+          port: config.viewer.port,
+        })
+      : undefined;
   log({ event: "listening" });
   const shutdown = async () => {
     log({ event: "draining" });
-    const closed = new Promise<void>((resolve) =>
-      server.close(() => resolve()),
+    const closed = Promise.all(
+      [server, ...(viewerServer ? [viewerServer] : [])].map(
+        (listener) =>
+          new Promise<void>((resolve) => listener.close(() => resolve())),
+      ),
     );
     await host.close();
     await closed;
