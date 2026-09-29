@@ -11,5 +11,12 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/indexer/**/*.ts", "src/shared.ts", "src/http.ts"]
+  "include": [
+    "src/indexer/**/*.ts",
+    "src/shared.ts",
+    "src/http.ts",
+    "src/database.ts",
+    "src/catalog.ts",
+    "src/maintenance.ts"
+  ]
 }

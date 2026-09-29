@@ -1,8 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import {
+  expire,
+  LEASE_MS,
+  markDirty,
+  resultStatement,
+  sourceStatement,
+  validateSource,
+} from "../catalog.js";
+import { batch, type DatabaseEnv, database, sql } from "../database.js";
 import { boundedJson, securityHeaders } from "../http.js";
 import {
-  ftsQuery,
   type IndexStatus,
   nameSchema,
   resultSchema,
@@ -11,18 +19,9 @@ import {
   sourceSchema,
   WORKSPACE_ID,
 } from "../shared.js";
-import {
-  drainEmbeddings,
-  embed,
-  expire,
-  LEASE_MS,
-  markDirty,
-  reconcile,
-  resultStatement,
-  sourceStatement,
-  sql,
-  validateSource,
-} from "./store.js";
+import { drainEmbeddings, embed } from "./store.js";
+
+type RuntimeEnv = Env & DatabaseEnv;
 
 class HttpError extends Error {
   constructor(
@@ -68,7 +67,7 @@ async function body(request: Request) {
     throw new HttpError(400, "invalid_body");
   }
 }
-async function slack(request: Request, env: Env) {
+async function slack(request: Request, env: RuntimeEnv) {
   const stamp = request.headers.get("x-slack-request-timestamp") ?? "";
   const signature = request.headers.get("x-slack-signature") ?? "";
   if (
@@ -197,11 +196,7 @@ async function semanticQuery(
           }),
         );
     }
-    if (!vector) return null;
-    return await env.VECTORS.query(vector, {
-      topK: 50,
-      returnMetadata: "none",
-    });
+    return vector ?? null;
   })().catch(() => null);
   // Let a slow first embedding warm the private cache, without holding up search.
   ctx?.waitUntil(work.then(() => {}));
@@ -218,7 +213,7 @@ async function semanticQuery(
 }
 async function search(
   request: Request,
-  env: Env,
+  env: RuntimeEnv,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ) {
   const started = performance.now();
@@ -237,13 +232,16 @@ async function search(
     mode === "hybrid"
       ? semanticQuery(request, env, q, ctx)
       : Promise.resolve(null);
-  const query = ftsQuery(q);
+  const query = (q.normalize("NFKC").match(/[\p{L}\p{N}]+/gu) ?? [])
+    .slice(0, 12)
+    .map((term) => `'${term}':*`)
+    .join(" | ");
   const exact = q.replace(/^:|:$/g, "");
   const keyword = await sql(
     env,
     query
-      ? `SELECT d.* FROM documents_fts f JOIN documents d ON d.name=f.name WHERE documents_fts MATCH ? ORDER BY bm25(documents_fts) LIMIT 50`
-      : `SELECT * FROM documents WHERE name=? LIMIT 50`,
+      ? `SELECT name,revision,vector_id,source_json,result_json FROM documents WHERE search_vector @@ to_tsquery('simple',$1) ORDER BY ts_rank_cd(search_vector,to_tsquery('simple',$1)) DESC,name LIMIT 50`
+      : `SELECT name,revision,vector_id,source_json,result_json FROM documents WHERE name=$1 LIMIT 50`,
     query || exact,
   ).all<DocumentRow>();
   const ranked = new Map<
@@ -255,7 +253,7 @@ async function search(
   });
   const exactRow = await sql(
     env,
-    "SELECT * FROM documents WHERE name=?",
+    "SELECT name,revision,vector_id,source_json,result_json FROM documents WHERE name=$1",
     exact,
   ).first<DocumentRow>();
   if (exactRow)
@@ -263,16 +261,23 @@ async function search(
   let semanticAvailable = false;
   if (mode === "hybrid")
     try {
-      const matches = await semantic;
-      if (!matches) throw new Error("semantic_unavailable");
-      if (matches.matches.length) {
+      const vector = await semantic;
+      if (!vector) throw new Error("semantic_unavailable");
+      const matches = (
+        await sql(
+          env,
+          "SELECT id FROM embeddings ORDER BY embedding <=> $1::halfvec LIMIT 50",
+          JSON.stringify(vector),
+        ).all<{ id: string }>()
+      ).results;
+      if (matches.length) {
         const rows = await sql(
           env,
-          `SELECT * FROM documents WHERE vector_id IN (${matches.matches.map(() => "?").join(",")})`,
-          ...matches.matches.map((m) => m.id),
+          "SELECT name,revision,vector_id,source_json,result_json FROM documents WHERE vector_id=ANY($1::text[])",
+          matches.map((m) => m.id),
         ).all<DocumentRow>();
         const current = new Map(rows.results.map((r) => [r.vector_id, r]));
-        matches.matches.forEach((m, i) => {
+        matches.forEach((m, i) => {
           const row = current.get(m.id);
           if (!row) return;
           const old = ranked.get(row.name);
@@ -295,8 +300,8 @@ async function search(
     ? (
         await sql(
           env,
-          `SELECT vector_id FROM documents WHERE vector_id IN (${candidates.map(() => "?").join(",")})`,
-          ...candidates.map((c) => c.row.vector_id),
+          "SELECT vector_id FROM documents WHERE vector_id=ANY($1::text[])",
+          candidates.map((c) => c.row.vector_id),
         ).all<{ vector_id: string }>()
       ).results
     : [];
@@ -314,10 +319,13 @@ async function search(
       : {}),
   });
 }
-async function status(env: Env) {
+async function status(env: RuntimeEnv) {
   await expire(env);
   const groups = (
-    await sql(env, "SELECT state,count(*) AS n FROM jobs GROUP BY state").all<{
+    await sql(
+      env,
+      "SELECT state,count(*)::int AS n FROM jobs GROUP BY state",
+    ).all<{
       state: string;
       n: number;
     }>()
@@ -340,26 +348,29 @@ async function status(env: Env) {
   ] as const)
     counts[state] = groups.find((r) => r.state === state)?.n ?? 0;
   counts.total =
-    (await sql(env, "SELECT count(*) AS n FROM sources").first<{ n: number }>())
-      ?.n ?? 0;
+    (
+      await sql(env, "SELECT count(*)::int AS n FROM sources").first<{
+        n: number;
+      }>()
+    )?.n ?? 0;
   counts.aliases =
     (
       await sql(
         env,
-        "SELECT count(*) AS n FROM sources WHERE json_extract(source_json,'$.aliasOf') IS NOT NULL",
+        "SELECT count(*)::int AS n FROM sources WHERE source_json::jsonb->>'aliasOf' IS NOT NULL",
       ).first<{ n: number }>()
     )?.n ?? 0;
   const recent = (
     await sql(
       env,
-      `SELECT s.name,coalesce(j.state,'alias') AS state,json_extract(d.result_json,'$.analysis.summary') AS summary,s.image_url AS imageUrl,j.error FROM sources s LEFT JOIN jobs j ON j.name=s.name LEFT JOIN documents d ON d.name=s.name ORDER BY j.updated_at DESC LIMIT 12`,
+      `SELECT s.name,coalesce(j.state,'alias') AS state,d.result_json::jsonb->'analysis'->>'summary' AS summary,s.image_url AS "imageUrl",j.error FROM sources s LEFT JOIN jobs j ON j.name=s.name LEFT JOIN documents d ON d.name=s.name ORDER BY j.updated_at DESC NULLS LAST LIMIT 12`,
     ).all<IndexStatus["recent"][number]>()
   ).results;
   const completed =
     (
       await sql(
         env,
-        "SELECT count(*) AS n FROM jobs WHERE state='completed' AND updated_at>?",
+        "SELECT count(*)::int AS n FROM jobs WHERE state='completed' AND updated_at>$1",
         Date.now() - 60_000,
       ).first<{ n: number }>()
     )?.n ?? 0;
@@ -385,7 +396,7 @@ async function status(env: Env) {
 }
 async function route(
   request: Request,
-  env: Env,
+  env: RuntimeEnv,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ) {
   const path = new URL(request.url).pathname;
@@ -429,7 +440,7 @@ async function route(
       const expiresAt = Date.now() + LEASE_MS;
       const job = await sql(
         env,
-        `UPDATE jobs SET state='running',lease_id=?,expires_at=?,updated_at=?,error=NULL WHERE name=(SELECT j.name FROM jobs j JOIN sources s ON s.name=j.name AND s.revision=j.revision WHERE j.state='pending' ORDER BY j.updated_at,j.name LIMIT 1) AND state='pending' RETURNING name,revision`,
+        `UPDATE jobs SET state='running',lease_id=$1,expires_at=$2,updated_at=$3,error=NULL WHERE name=(SELECT j.name FROM jobs j JOIN sources s ON s.name=j.name AND s.revision=j.revision WHERE j.state='pending' ORDER BY j.updated_at,j.name LIMIT 1 FOR UPDATE OF j SKIP LOCKED) AND state='pending' RETURNING name,revision`,
         id,
         expiresAt,
         Date.now(),
@@ -437,7 +448,7 @@ async function route(
       if (!job) return json({ lease: null });
       const row = await sql(
         env,
-        "SELECT source_json FROM sources WHERE name=? AND revision=?",
+        "SELECT source_json FROM sources WHERE name=$1 AND revision=$2",
         job.name,
         job.revision,
       ).first<{ source_json: string }>();
@@ -453,7 +464,7 @@ async function route(
       const expiresAt = Date.now() + LEASE_MS;
       const row = await sql(
         env,
-        "UPDATE jobs SET expires_at=?,updated_at=? WHERE lease_id=? AND state='running' AND expires_at>? RETURNING name",
+        "UPDATE jobs SET expires_at=$1,updated_at=$2 WHERE lease_id=$3 AND state='running' AND expires_at>$4 RETURNING name",
         expiresAt,
         Date.now(),
         leaseId,
@@ -469,16 +480,15 @@ async function route(
         .parse(input);
       await validateSource(result.source);
       const { digest, statement } = await resultStatement(env, result, leaseId);
-      const outcomes = await env.DB.batch([
+      const outcomes = await batch(env, [
         sql(
           env,
-          `UPDATE jobs SET state='completed',digest=?,updated_at=? WHERE lease_id=? AND name=? AND revision=? AND ((state='running' AND expires_at>?) OR (state='completed' AND digest=?)) RETURNING name`,
+          `UPDATE jobs SET state='completed',digest=$1,updated_at=$2 WHERE lease_id=$3 AND name=$4 AND revision=$5 AND ((state='running' AND expires_at>(extract(epoch FROM clock_timestamp())*1000)::bigint) OR (state='completed' AND digest=$6)) RETURNING name`,
           digest,
           Date.now(),
           leaseId,
           result.source.name,
           result.source.revision,
-          Date.now(),
           digest,
         ),
         statement,
@@ -497,7 +507,7 @@ async function route(
         .parse(input);
       const row = await sql(
         env,
-        "UPDATE jobs SET state=?,error=?,updated_at=? WHERE lease_id=? AND state='running' AND expires_at>? RETURNING name",
+        "UPDATE jobs SET state=$1,error=$2,updated_at=$3 WHERE lease_id=$4 AND state='running' AND expires_at>$5 RETURNING name",
         uncertain ? "unknown" : "failed",
         code,
         Date.now(),
@@ -510,6 +520,12 @@ async function route(
     throw new HttpError(404, "not_found");
   }
   await auth(request, env, ["ADMIN_TOKEN"]);
+  if (path === "/api/embeddings") {
+    z.object({})
+      .strict()
+      .parse(await body(request));
+    return json({ processed: await drainEmbeddings(env) });
+  }
   if (path === "/api/sync") {
     if (request.body)
       z.object({})
@@ -525,7 +541,7 @@ async function route(
       .parse(await body(request));
     const row = await sql(
       env,
-      `UPDATE jobs SET state='pending',lease_id=NULL,expires_at=NULL,digest=NULL,error=NULL,updated_at=? WHERE name=(SELECT canonical_name FROM sources WHERE name=?) RETURNING name`,
+      `UPDATE jobs SET state='pending',lease_id=NULL,expires_at=NULL,digest=NULL,error=NULL,updated_at=$1 WHERE name=(SELECT canonical_name FROM sources WHERE name=$2) RETURNING name`,
       Date.now(),
       name,
     ).first();
@@ -563,14 +579,14 @@ async function route(
       statements.push(
         sql(
           env,
-          "UPDATE jobs SET state='completed',lease_id=NULL,digest=NULL,updated_at=? WHERE name=? AND revision=?",
+          "UPDATE jobs SET state='completed',lease_id=NULL,digest=NULL,updated_at=$1 WHERE name=$2 AND revision=$3",
           Date.now(),
           result.source.name,
           result.source.revision,
         ),
       );
     }
-    if (statements.length) await env.DB.batch(statements);
+    if (statements.length) await batch(env, statements);
     return json({
       ok: true,
       sources: sources.size,
@@ -585,8 +601,9 @@ export default {
     env: Env,
     ctx?: Pick<ExecutionContext, "waitUntil">,
   ) {
+    const DB = database(env.HYPERDRIVE.connectionString);
     try {
-      return await route(request, env, ctx);
+      return await route(request, { ...env, DB }, ctx);
     } catch (error) {
       return json(
         {
@@ -607,52 +624,8 @@ export default {
             ? 400
             : 503,
       );
+    } finally {
+      await DB.close();
     }
-  },
-  async scheduled(_event, env, ctx) {
-    ctx.waitUntil(
-      (async () => {
-        await expire(env);
-        for (const [stage, operation] of [
-          ["reconcile", reconcile],
-          ["embeddings", drainEmbeddings],
-        ] as const) {
-          try {
-            await operation(env);
-          } catch (error) {
-            // Never log provider payloads, SQL, catalogue content or credentials.
-            const message = error instanceof Error ? error.message : "";
-            const code = /^slack_http_\d{3}$/.test(message)
-              ? message
-              : [
-                    "slack_missing_scope",
-                    "slack_invalid_auth",
-                    "slack_token_expired",
-                    "slack_ratelimited",
-                    "slack_request_failed",
-                    "slack_workspace_mismatch",
-                    "embedding_unavailable",
-                    "response_too_large",
-                  ].includes(message)
-                ? message
-                : error instanceof z.ZodError
-                  ? "invalid_schema"
-                  : message.startsWith("D1_")
-                    ? "database_error"
-                    : "operation_failed";
-            console.error(
-              JSON.stringify({
-                stage,
-                code,
-                locations:
-                  error instanceof Error
-                    ? error.stack?.match(/\bindex\.js:\d+:\d+/g)?.slice(0, 4)
-                    : undefined,
-              }),
-            );
-          }
-        }
-      })(),
-    );
   },
 } satisfies ExportedHandler<Env>;

@@ -19,8 +19,12 @@ emoji service's **read-only search token**. Never supply an admin/write token or
 Slack bot token. The operator must provision a read-scoped credential; June
 cannot determine a bearer token's scope locally. The endpoint must be an HTTPS
 origin without credentials, path, query or fragment. No credentials are exposed
-to models. No Slack manifest, subscription or `emoji_changed` forwarding is
-needed: the standalone service maintains its own webhook/cron synchronization.
+to models. No June Slack manifest, subscription or `emoji_changed` forwarding is
+needed: the standalone service reconciles through GitHub Actions and stores its
+catalogue in Neon. Workers serve search and embeddings without an always-on
+LEGION process. Actions requires its explicit enablement variable and secrets;
+source support does not prove activation. New image descriptions still require
+an explicitly operated indexer; Actions never retries failed/unknown inference.
 
 Initially only the owner's private turns can use this catalogue. Shared channels
 and guest turns are denied at capability advertisement and dispatch; the owner's

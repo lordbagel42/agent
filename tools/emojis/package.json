@@ -9,6 +9,7 @@
   },
   "scripts": {
     "indexer": "tsx src/indexer/cli.ts",
+    "maintenance": "tsx src/maintenance.ts",
     "dev": "wrangler dev",
     "types": "wrangler types",
     "format": "biome format --write .",
@@ -20,6 +21,7 @@
     "@hono/node-server": "2.1.1",
     "@openai/codex": "0.157.1",
     "hono": "4.13.9",
+    "pg": "^8.23.0",
     "sharp": "^0.34.5",
     "zod": "4.6.5"
   },
@@ -27,6 +29,7 @@
     "@biomejs/biome": "2.5.14",
     "@cloudflare/workers-types": "latest",
     "@types/node": "^24.0.0",
+    "@types/pg": "^8.23.1",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "wrangler": "latest"

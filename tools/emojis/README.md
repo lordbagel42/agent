@@ -1,8 +1,10 @@
 # Hack Club emoji library
 
-A standalone Cloudflare Worker with an outbound Linux indexer. June uses the
-read-only HTTP API; the service does not depend on June's process or database.
-The initial catalogue can be described locally before Cloudflare is provisioned.
+A standalone Cloudflare Worker backed by Neon Postgres. GitHub Actions maintains
+the catalogue and requests bounded Worker embeddings; no always-on LEGION
+process is needed for search or maintenance. June uses the read-only HTTP API.
+An optional outbound Linux indexer generates new image descriptions; Actions
+does not launch or retry that inference. See [WORKER.md](WORKER.md) for activation.
 
 ## Index on LEGION (or the homelab)
 
@@ -75,7 +77,7 @@ spread frames. Descriptions separate observations, visible text, subjects,
 actions, palette/style, emotions, suggested uses and uncertainty. Versioned JSON
 also records source revision, image hash, sampled frames, provider/model, prompt
 version, duration and indexing time. A compact description is used for semantic
-embeddings; the detailed description is retained in SQLite/D1.
+embeddings; the detailed description is retained in SQLite/Neon.
 
 ```sh
 pnpm indexer status --data "$EMOJI_DATA"
@@ -131,10 +133,11 @@ pnpm exec wrangler deploy --dry-run
 ```
 
 Core tests cover ownership, uncertain-work replay, stale-source rejection,
-authentication and durable completion. The Worker test uses real local D1 with
-mocked AI/Vectorize. A real Codex synthetic-image probe passed on LEGION, including
-restart. The full Slack catalogue, 1,000-way throughput, real semantic quality and
-deployed p50/p95 latency have **not** been measured. No cloud provisioning, Slack
-installation change or June activation is implied by this source implementation.
+authentication and durable completion. The Worker test uses a disposable Neon
+database with real pgvector and mocked AI; supply `EMOJI_TEST_DATABASE_URL`
+privately or it explicitly skips database checks. A real Codex synthetic-image
+probe passed on LEGION, including restart. Semantic quality, deployed CPU use
+and p50/p95 latency require live verification. Source publication does not prove
+provisioning, Actions enablement, a Slack installation change or June activation.
 
 See [June integration](../../docs/emoji-search.md) for the first agent client.

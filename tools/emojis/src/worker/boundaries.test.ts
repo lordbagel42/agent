@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { URL } from "node:url";
-import { getPlatformProxy, unstable_splitSqlQuery } from "wrangler";
+import { getPlatformProxy } from "wrangler";
+import { resultStatement, sourceStatement } from "../catalog.js";
+import { batch, database, sql, transaction } from "../database.js";
 import { slackCatalog } from "../http.js";
 import {
   catalogSources,
@@ -13,7 +20,7 @@ import {
   type SearchHit,
 } from "../shared.js";
 import worker from "./index.js";
-import { drainEmbeddings, sql } from "./store.js";
+import { drainEmbeddings } from "./store.js";
 
 type SearchResponse = {
   results: SearchHit[];
@@ -89,16 +96,37 @@ test("Slack catalogues require a matching workspace or an explicit enterprise wo
   assert.deepEqual(calls, ["auth.test"]);
 });
 
-test("local D1: role boundaries, lease fencing, idempotency, alias/removal and signed events", async () => {
+test("Postgres: role boundaries, lease fencing, idempotency, alias/removal and signed events", {
+  skip: !process.env.EMOJI_TEST_DATABASE_URL,
+}, async () => {
+  const url = new URL(process.env.EMOJI_TEST_DATABASE_URL ?? "");
+  const bootstrap = database(url.toString());
+  const schema = `emoji_test_${randomUUID().replaceAll("-", "")}`;
+  await bootstrap.query(
+    "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public",
+  );
+  await bootstrap.query(`CREATE SCHEMA ${schema}`);
+  url.searchParams.set("options", `-c search_path=${schema},public`);
+  const previous =
+    process.env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE;
+  process.env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE =
+    url.toString();
   const platform = await getPlatformProxy<Env>({
     persist: false,
     remoteBindings: false,
   });
+  const DB = database(url.toString());
   try {
     let failAI = false;
-    const vectors = new Map<string, number[]>();
-    const env: Env = {
+    const env: Env & { DB: typeof DB } = {
       ...platform.env,
+      DB,
+      HYPERDRIVE: new Proxy(platform.env.HYPERDRIVE, {
+        get: (target, key) =>
+          key === "connectionString"
+            ? url.toString()
+            : Reflect.get(target, key),
+      }),
       READ_TOKEN: randomUUID(),
       INDEXER_TOKEN: randomUUID(),
       ADMIN_TOKEN: randomUUID(),
@@ -113,34 +141,12 @@ test("local D1: role boundaries, lease fencing, idempotency, alias/removal and s
               }
             : undefined,
       }),
-      VECTORS: new Proxy(platform.env.VECTORS, {
-        get: (_target, key) => {
-          if (key === "upsert")
-            return async (rows: { id: string; values: number[] }[]) => {
-              for (const row of rows) vectors.set(row.id, row.values);
-              return { mutationId: randomUUID() };
-            };
-          if (key === "deleteByIds")
-            return async (ids: string[]) => {
-              for (const id of ids) vectors.delete(id);
-              return { mutationId: randomUUID() };
-            };
-          if (key === "query")
-            return async () => ({
-              matches: [...vectors.keys()].map((id) => ({ id, score: 0.9 })),
-              count: vectors.size,
-            });
-          return undefined;
-        },
-      }),
     };
     const migration = await readFile(
-      new URL("../../migrations/0001_catalog.sql", import.meta.url),
+      new URL("../../migrations/postgres/0001_catalog.sql", import.meta.url),
       "utf8",
     );
-    await env.DB.batch(
-      unstable_splitSqlQuery(migration).map((text) => env.DB.prepare(text)),
-    );
+    await DB.query(migration);
     const request = async (path: string, token: string, body?: unknown) =>
       worker.fetch(
         new Request(`https://local.test${path}`, {
@@ -292,7 +298,10 @@ test("local D1: role boundaries, lease fencing, idempotency, alias/removal and s
     await assert.rejects(drainEmbeddings(env));
     assert.ok(
       (
-        await sql(env, "SELECT count(*) AS n FROM embedding_outbox").first<{
+        await sql(
+          env,
+          "SELECT count(*)::int AS n FROM embedding_outbox",
+        ).first<{
           n: number;
         }>()
       )?.n,
@@ -305,7 +314,19 @@ test("local D1: role boundaries, lease fencing, idempotency, alias/removal and s
     assert.equal(search.degraded, "semantic_unavailable");
     failAI = false;
     await drainEmbeddings(env);
-    assert.ok(vectors.size);
+    assert.equal(
+      (
+        await sql(env, "SELECT count(*)::int AS n FROM embeddings").first<{
+          n: number;
+        }>()
+      )?.n,
+      2,
+    );
+    search = await (
+      await request("/api/search?q=cheerful", env.READ_TOKEN)
+    ).json<SearchResponse>();
+    assert.equal(search.semanticAvailable, true);
+    assert.ok(search.results.some((r) => r.name === "kitty"));
     assert.equal(
       (await request("/api/reindex", env.ADMIN_TOKEN, { name: "cat" })).status,
       200,
@@ -350,7 +371,7 @@ test("local D1: role boundaries, lease fencing, idempotency, alias/removal and s
     assert.ok(third);
     await sql(
       env,
-      "UPDATE jobs SET expires_at=0 WHERE lease_id=?",
+      "UPDATE jobs SET expires_at=0 WHERE lease_id=$1",
       third.id,
     ).run();
     assert.equal(
@@ -373,7 +394,10 @@ test("local D1: role boundaries, lease fencing, idempotency, alias/removal and s
     assert.equal(search.results.length, 0);
     assert.equal(
       (
-        await sql(env, "SELECT count(*) AS n FROM documents_fts").first<{
+        await sql(
+          env,
+          "SELECT count(*)::int AS n FROM search_documents",
+        ).first<{
           n: number;
         }>()
       )?.n,
@@ -420,7 +444,166 @@ test("local D1: role boundaries, lease fencing, idempotency, alias/removal and s
       )?.dirty,
       before + 1,
     );
+    // A new alias and concurrent canonical completion must publish one digest.
+    const racing = await catalogSources({
+      race: "https://emoji.slack-edge.com/race.png",
+      race_alias: "alias:race",
+    });
+    const canonical = racing.find((item) => item.name === "race");
+    const alias = racing.find((item) => item.name === "race_alias");
+    assert.ok(canonical && alias);
+    await batch(env, [sourceStatement(env, canonical)]);
+    const other = database(url.toString());
+    const ready = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const aliasWrite = transaction(env, async () => {
+      await sourceStatement(env, alias).run();
+      ready.resolve();
+      await release.promise;
+    });
+    void aliasWrite.catch(ready.reject);
+    let publication: Promise<unknown> | undefined;
+    try {
+      await ready.promise;
+      const writer = (await other.query("SELECT pg_backend_pid() AS pid"))
+        .rows[0].pid;
+      const { statement } = await resultStatement(
+        { DB: other },
+        { ...result, source: canonical },
+      );
+      publication = batch({ DB: other }, [statement]);
+      void publication.catch(() => {});
+      let blocked = false;
+      for (let i = 0; i < 50; i++) {
+        const row = await bootstrap.query(
+          "SELECT cardinality(pg_blocking_pids($1))>0 AS blocked",
+          [writer],
+        );
+        if (row.rows[0].blocked) {
+          blocked = true;
+          break;
+        }
+        await sleep(20);
+      }
+      assert.ok(
+        blocked,
+        "publication waits for the alias transaction before taking row locks",
+      );
+    } finally {
+      release.resolve();
+      await aliasWrite;
+      await publication;
+      await other.close();
+    }
+    assert.equal(
+      (
+        await DB.query(
+          "SELECT count(*)::int AS n FROM documents WHERE name='race_alias' AND result_json IS NOT NULL",
+        )
+      ).rows[0].n,
+      1,
+    );
+    await drainEmbeddings(env);
+    assert.equal(
+      (
+        await DB.query(
+          "SELECT count(*)::int AS n FROM embeddings e JOIN documents d ON d.vector_id=e.id WHERE d.name='race_alias'",
+        )
+      ).rows[0].n,
+      1,
+    );
+    await DB.query("DELETE FROM sources WHERE name IN ('race','race_alias')");
+
+    // Interrupted/replayed migration must never authorize another inference.
+    const directory = await mkdtemp(join(tmpdir(), "emoji-import-"));
+    const local = new DatabaseSync(join(directory, "index.sqlite"));
+    try {
+      local.exec(
+        `CREATE TABLE emoji(name TEXT,revision TEXT,source TEXT,result TEXT,state TEXT,error TEXT,updated INTEGER,active INTEGER)`,
+      );
+      const imported = await catalogSources({
+        import_completed: "https://emoji.slack-edge.com/complete.png",
+        import_pending: "https://emoji.slack-edge.com/pending.png",
+        import_unknown: "https://emoji.slack-edge.com/unknown.png",
+      });
+      for (const item of imported)
+        local
+          .prepare("INSERT INTO emoji VALUES(?,?,?,NULL,?,NULL,1,1)")
+          .run(
+            item.name,
+            item.revision,
+            JSON.stringify(item),
+            item.name.replace("import_", ""),
+          );
+      const runImport = () =>
+        spawnSync(
+          process.execPath,
+          [
+            "--import",
+            "tsx",
+            "src/maintenance.ts",
+            "import",
+            "--data",
+            directory,
+          ],
+          {
+            env: { ...process.env, EMOJI_DATABASE_URL: url.toString() },
+            encoding: "utf8",
+            timeout: 60_000,
+          },
+        );
+      // Missing completed payload forces failure after the source batch commits.
+      assert.equal(runImport().status, 1);
+      assert.deepEqual(
+        (
+          await DB.query(
+            "SELECT state FROM jobs WHERE name LIKE 'import_%' ORDER BY name",
+          )
+        ).rows,
+        [{ state: "completed" }, { state: "pending" }, { state: "unknown" }],
+      );
+      const completed = imported.find(
+        (item) => item.name === "import_completed",
+      );
+      assert.ok(completed);
+      local
+        .prepare("UPDATE emoji SET result=? WHERE name='import_completed'")
+        .run(JSON.stringify({ ...result, source: completed }));
+      await DB.query(
+        "UPDATE jobs SET state='unknown',lease_id=$1,error='lease_expired' WHERE name='import_pending'",
+        [randomUUID()],
+      );
+      assert.equal(runImport().status, 0);
+      assert.deepEqual(
+        (
+          await DB.query(
+            "SELECT state FROM jobs WHERE name LIKE 'import_%' ORDER BY name",
+          )
+        ).rows,
+        [{ state: "completed" }, { state: "unknown" }, { state: "unknown" }],
+      );
+      assert.equal(
+        (
+          await (
+            await request("/api/jobs/claim", env.INDEXER_TOKEN, {})
+          ).json<{ lease: EmojiLease | null }>()
+        ).lease,
+        null,
+      );
+    } finally {
+      local.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   } finally {
+    await DB.close();
     await platform.dispose();
+    if (previous === undefined)
+      delete process.env
+        .CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE;
+    else
+      process.env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE =
+        previous;
+    await bootstrap.query(`DROP SCHEMA ${schema} CASCADE`);
+    await bootstrap.close();
   }
 });

@@ -1,179 +1,148 @@
 # Private cloud emoji backend
 
-The HTTP API is June's primary integration. This Worker serves only a static
-login/dashboard shell publicly; no catalog, status, or search data is public.
-All API credentials are distinct, randomly generated **32–512 character** bearer
-tokens. Put them in secret storage, never query strings, browser persistence,
-Git, or model-visible tool arguments. The dashboard holds its read token in
-memory. No MCP server is required.
+Cloudflare Workers serve the dashboard/API and run Workers AI embeddings. Neon
+Postgres holds the catalogue, analyses, job leases, full-text index, pgvector
+index, and durable embedding outbox. GitHub Actions owns scheduled maintenance;
+neither search nor catalogue reconciliation requires LEGION or June's process.
+There is no Worker cron or Workers Paid CPU setting.
 
-## Runtime requirements
+## Credentials and API
 
-Full Hack Club catalogue reconciliation requires **Workers Paid**. The Free
-plan's 10 ms CPU limit terminates the 62,013-entry sync before publication;
-network waiting is not the issue. `wrangler.jsonc` explicitly requests a 30-second
-CPU budget so deployment fails clearly on Free instead of silently starving the
-catalogue. Enabling Paid changes account billing and requires owner approval.
-See [Cloudflare pricing](https://developers.cloudflare.com/workers/platform/pricing/).
+Only the static login/dashboard shell is public. Read, indexer and admin tokens
+must be distinct random **32–512 character** values. Store them as secrets, never
+in URLs, model arguments, logs or Git. The dashboard keeps its read token only
+in memory. June receives only the read token through server-side configuration.
 
-## API
-
-All API responses use `Cache-Control: no-store`. Send JSON for POST bodies and
-`Authorization: Bearer <role token>`. Responses never include provider errors.
-Wrong role/missing credential: 401; invalid input: 400; obsolete lease: 409;
-unconfigured secrets/storage failure: 503. An empty queue is 200 with a null lease.
+Send JSON for POST bodies and `Authorization: Bearer <role token>`. API responses
+are `no-store`. Wrong role: 401; invalid input: 400; obsolete lease: 409; storage
+or provider error: generic 503. Provider errors and credentials are never returned.
 
 | Endpoint | Role | Request / response |
 | --- | --- | --- |
 | `GET /api/status` | read or admin | `IndexStatus` from `src/shared.ts` |
-| `GET /api/search?q=...&limit=12&mode=hybrid` | **read only** | `{results: SearchHit[], mode, durationMs, semanticAvailable}` |
+| `GET /api/search?q=...&limit=12&mode=hybrid` | read only | `{results,mode,durationMs,semanticAvailable,degraded?}` |
 | `POST /api/jobs/claim` | indexer | `{}` → `{lease: EmojiLease \| null}` |
-| `POST /api/jobs/heartbeat` | indexer | `{leaseId}` → `{expiresAt}` (epoch milliseconds) |
-| `POST /api/jobs/complete` | indexer | `{leaseId, result: EmojiResult}` → `{ok:true}` |
-| `POST /api/jobs/fail` | indexer | `{leaseId, code, uncertain}` → `{ok:true}` |
-| `POST /api/import` | admin | `{sources: EmojiSource[], results: EmojiResult[]}` → `{ok:true,sources,results}` |
+| `POST /api/jobs/heartbeat` | indexer | `{leaseId}` → `{expiresAt}` |
+| `POST /api/jobs/complete` | indexer | `{leaseId,result}` → `{ok:true}` |
+| `POST /api/jobs/fail` | indexer | `{leaseId,code,uncertain}` → `{ok:true}` |
+| `POST /api/import` | admin | `{sources,results}` → `{ok:true,sources,results}` |
 | `POST /api/reindex` | admin | `{name}` → `{ok:true}`; alias resolves to canonical job |
-| `POST /api/sync` | admin | `{}` → 202 `{ok:true}`; next cron reconciles |
+| `POST /api/sync` | admin | `{}` → 202; marks dirty for the next Actions run |
+| `POST /api/embeddings` | admin | `{}` → `{processed}`; at most eight documents |
 | `POST /slack/events` | Slack signature | signed challenge or workspace-scoped event |
 
-Search accepts 1–300 characters, 1–50 results, and `mode=hybrid|keyword`.
-Hybrid combines FTS5 BM25 and semantic rank with reciprocal-rank fusion; exact
-shortcodes rank first. A provider failure returns **200 keyword results** with
-`mode:"keyword"`, `semanticAvailable:false`, and
-`degraded:"semantic_unavailable"`. Explicit keyword mode does not call AI and
-reports `semanticAvailable:false` (not attempted). No result bodies are cached.
-Semantic work runs alongside keyword search with a 150 ms wait budget. Slow
-semantic work produces explicit keyword fallback, not an unbounded wait. Query
-vectors alone are cached for one hour under a hashed, non-public Worker Cache
-API key; slow first requests can warm that cache after responding. No raw query,
-credential or catalogue result is cached. Network/D1 time still adds to the wait
-budget, and cold or unique semantic queries may fall back more often.
-The 200 ms target is a deployment measurement goal, **not a guarantee**; measure
-warm/cold p50/p95 end-to-end on realistic queries and provider failures.
+JSON bodies are capped at 512 KiB. API imports accept at most 50 sources and 20
+canonical results. They are administrative overwrites, not authoritative deletion.
+Do not import over concurrent maintenance. The CLI import shares the maintenance
+advisory lock and reads the local SQLite catalogue without modifying it.
 
-General JSON bodies are capped at 512 KiB. Imports are bounded upserts, not
-replacement: at most 50 explicit sources and 20 canonical results per call;
-result-only batches also upsert their embedded sources. Importing old revisions
-is an explicit administrative overwrite; normal completion can never do that.
-Only authoritative Slack reconciliation removes names absent from the catalog.
-Source revision hashes follow `catalogSources` exactly. Workspace is fixed to
-`T0266FRGM`; changing workspaces requires a separate database/index/deployment.
+Search accepts 1–300 characters and 1–50 results. PostgreSQL prefix full-text
+search and pgvector cosine search combine using reciprocal-rank fusion; exact
+shortcodes rank first. Query embeddings get a 150 ms wait budget and a one-hour
+private hashed-key cache. Slow/unavailable AI yields keyword results with
+`semanticAvailable:false` and `degraded:"semantic_unavailable"`. Explicit keyword
+mode does not call AI. Database/network time is additional; 200 ms is a measurement
+goal, not a guarantee. Results are revalidated against current revision/digest IDs
+after AI returns. No catalogue results are cached; disable Hyperdrive query caching.
 
-## Paid-work safety
+## Actions owns maintenance, not image descriptions
 
-Only canonical images get jobs. Alias documents stay independently searchable
-while using the canonical analysis. Claims are atomic SQL update/returning.
-Leases last five minutes; heartbeat well before expiry, including while waiting
-for a provider. A claimed job is conservatively considered potentially submitted:
-**any expired running lease becomes unknown**, never automatically requeued.
-`fail` requires a lower-case error code (`[a-z0-9_]{1,64}`), never raw exceptions.
-`uncertain:true` records unknown, otherwise failed; neither automatically retries.
+`.github/workflows/emoji-maintenance.yml` runs every 15 minutes or by manual
+dispatch, serialized by concurrency group. GitHub may delay scheduled runs. It
+requires repository variable `EMOJI_MAINTENANCE_ENABLED=true` and secrets:
 
-Persist each local result before completion. Retry the same completion payload
-after network ambiguity: the same completed lease and canonical result digest
-is idempotent. A different digest, expired lease, obsolete revision, deleted
-name, or admin requeue is rejected. Explicit admin reindex fences existing leases
-and authorizes another paid attempt; inspect the local durable output first.
-The read token cannot claim work or trigger reconciliation, and the indexer
-cannot search, import, reindex, or read status.
+- `EMOJI_DATABASE_URL`: direct, non-pooled Neon URL for the maintenance role.
+- `EMOJI_SLACK_BOT_TOKEN`: the existing workspace-authorized catalogue token.
+- `EMOJI_ADMIN_TOKEN`: Worker admin token for bounded embedding requests.
 
-## Durable search and reconciliation
+Each run expires old leases and reconciles Slack when dirty or an hour since the
+last successful reconciliation. It then requests up to 120 embedding batches;
+manual dispatch accepts 1–10000 batches for initial backfill, with a 25-minute
+job timeout. It never starts or retries Codex image analysis. New images are
+searchable by name immediately after reconciliation; rich descriptions require
+an explicitly operated indexer. Existing completed descriptions are imported,
+not regenerated, and failed/unknown work is not silently retried.
 
-D1 owns sources, jobs, analyses, current search documents, FTS5, sync state, and
-the embedding outbox. SQL triggers update documents/FTS/outbox in the same
-transaction as catalog/results. Analyses are keyed by canonical name/revision.
-Vector IDs combine 128 bits of source revision and 128 bits of result digest;
-names without analysis use revision-derived IDs and name-only text. Embedding
-input is name plus the compact `embeddingText`, never the full description.
+Slack identity is validated before fetching the catalogue, always selecting
+workspace `T0266FRGM`. Enterprise tokens must prove that workspace grant. Signed
+`emoji_changed` events increment a durable counter before acknowledgment;
+retries may harmlessly increment it again. A five-minute signature timestamp
+window and raw-body HMAC protect events. Only signed URL verification is exempt
+from the workspace check. No Slack app changes are required for hourly polling.
 
-Every minute cron expires leases, processes a dirty sync marker (or reconciles
-if the last successful sync is an hour old), then drains at most 32 outbox items.
-Slack events verify raw-body HMAC-SHA256 and a five-minute timestamp window.
-The `emoji_changed` callback must have the fixed workspace ID. A durable
-coalesced counter is incremented **before** the acknowledgement. Slack's signed
-URL verification payload has no team ID; only that challenge is exempt from
-workspace validation. Retries may increment the counter again harmlessly.
+Reconciliation uses a session advisory lock on a direct connection, validates
+the entire nonempty catalogue, writes bounded batches, and removes absent names
+only after all batches succeed. Events received during the run remain dirty.
+Failed/interrupted reconciliation is retried at the next Actions run. Publication
+is incremental, not a snapshot swap. Unchanged source rows are not rewritten.
+Source/result writers share a short transaction lock acquired before row locks,
+so concurrent aliases and completions publish matching projections. Slack and
+AI calls never hold this lock. Inspect Actions receipts for maintenance
+success, and `/api/status` for job counts; neither proves all embeddings are ready.
+No separate notification is sent by this workflow.
 
-Reconciliation validates Slack `auth.test` before `emoji.list`. Enterprise tokens
-must independently prove access to `T0266FRGM` through `auth.teams.list`; an
-enterprise ID alone is never accepted. Every catalogue request explicitly selects
-that workspace. Reconciliation uses a durable fenced ten-minute lock, bounded D1
-batches, and only removes unseen sources after all batches succeed. Events arriving
-during a sync remain dirty. Partial failures leave the marker pending; next cron
-retries. Catalog publication is incremental,
-not a whole-catalog snapshot swap. Partial administrative imports should not run
-concurrently with authoritative sync unless overwriting them is intended.
+## Revision and paid-work safety
 
-Outbox records exist before external writes. Workers AI model is
-`@cf/baai/bge-small-en-v1.5`, **384 dimensions**, Vectorize **cosine** index.
-Vector writes are deterministic batched upserts; failures retain pending work.
-Successful acknowledgement marks only the same current vector ID indexed.
-Vectorize acknowledgement is not immediate query visibility. Every semantic hit
-must resolve to a current D1 vector ID; keyword candidates are revalidated after
-AI returns as well. Changed or removed records cannot leak stale analyses even
-while Vectorize mutations are propagating. A stale vector write racing a delete
-may leave an unreachable vector in Vectorize; correctness does not depend on
-garbage collection. Keyword search remains available while embeddings catch up.
+Source/result changes transactionally rebuild current search projections and
+enqueue embeddings. Vector IDs combine source revision and analysis digest.
+Foreign keys cascade deletion through vectors/outbox; stale embedding work
+cannot republish removed or changed documents. Model
+`@cf/baai/bge-small-en-v1.5` produces 384 dimensions, stored as pgvector `halfvec`
+with an HNSW cosine index. Embedding writes and outbox acknowledgment are one
+atomic statement. Failures retain the queue; keyword search stays available.
 
-## Local verification (no provisioning)
+Only canonical images receive jobs. Claims use `FOR UPDATE SKIP LOCKED`; leases
+last five minutes. Expired running work becomes **unknown**, never automatically
+pending. Failed/unknown inference requires operator reconciliation and explicit
+reindex. Stop/reconcile an old indexer before retrying uncertain work.
+Persist local output before completion. Replaying the same completed lease and
+digest is idempotent; different digests, expired/replaced leases, changed source
+revisions and removed names are rejected. Admin reindex fences the previous lease
+and authorizes another attempt. Read credentials cannot change any of this.
 
-Install this package's dependencies using its documented pnpm workflow, then:
+## Verification and cutover
+
+Use Node 24 through this package's pinned pnpm setup. Supply a **disposable**
+direct database URL privately as `EMOJI_TEST_DATABASE_URL`, then run:
 
 ```sh
+pnpm format && pnpm lint && pnpm typecheck && pnpm test
 pnpm exec wrangler types
-pnpm exec wrangler d1 migrations apply raygen-emojis --local --persist-to /tmp/emoji-d1-check
-pnpm exec tsx --test src/worker/boundaries.test.ts
-pnpm exec biome check src/worker wrangler.jsonc slack-manifest.json
-pnpm typecheck
 pnpm exec wrangler deploy --dry-run
 ```
 
-Use a unique disposable local state directory, then remove only that directory.
-The boundary test uses Wrangler's local D1/workerd through `getPlatformProxy`,
-with persistence and remote bindings disabled. It invokes the real HTTP handler;
-AI and Vectorize are in-memory mocks. It checks role separation, atomic claim,
-lease ownership, idempotent completion, revision fencing, aliases, expiry,
-deletion/FTS cleanup, stale-vector filtering, outbox retry, keyword degradation,
-and Slack signatures/workspace checks. It is **not** a live AI quality/latency,
-Vectorize consistency, Slack installation, or deployed HTTP test.
+The boundary test creates/drops a unique schema in that database and exercises
+the HTTP handler against real Postgres/pgvector with mocked AI. Without the test
+URL, it explicitly skips the database test. It is not a deployed Workers CPU,
+Hyperdrive, AI quality, latency or Slack installation check. Ordinary Wrangler
+development can call remote AI; do not use it as an offline inference fixture.
 
-Ordinary `wrangler dev` may access Workers AI remotely and incur costs even
-without `--remote`; do not use it as an offline semantic test. `.dev.vars.example`
-lists local keys; do not put real credentials in fixture tests. Generated
-`worker-configuration.d.ts` derives secret types from `secrets.required`.
-Wrangler also augments `NodeJS.ProcessEnv`; keep the standalone indexer's type
-configuration isolated or handle that generated ambient typing without forwarding
-cloud credentials to a model subprocess.
+For an authorized cutover, first migrate/import into a disposable Neon branch
+and compare counts/digests and storage size, including embeddings. Maintenance
+uses `EMOJI_DATABASE_URL` from a private environment, never a CLI argument:
 
-## Operator deployment checklist (not executed by this implementation)
+```sh
+pnpm maintenance migrate
+pnpm maintenance import --data /absolute/private/catalog
+pnpm maintenance sync
+```
 
-1. Obtain explicit authorization for Cloudflare provisioning/deployment and Slack
-   app installation/configuration. Verify the target account, Workers Paid plan
-   and DNS zone; provisioning permission alone does not authorize a plan upgrade.
-2. Provision a dedicated D1 database and replace the all-zero placeholder ID in
-   `wrangler.jsonc`. Provision a dedicated Vectorize index named `raygen-emojis`
-   with 384 dimensions and cosine distance; no metadata indexes are required.
-3. Configure distinct read/indexer/admin secrets and Slack bot/signing secrets
-   using secret storage/interactive Wrangler prompts. Never put their values in
-   command arguments. Give June **only READ_TOKEN** through server-side config.
-4. Apply `migrations/0001_catalog.sql` to the intended remote database using
-   `wrangler d1 migrations apply raygen-emojis --remote` after reviewing target
-   and backup strategy. Generate types and inspect a dry run before deploying.
-5. Deploy the Worker/custom domain `emojis.raygen.dev`, verify unauthenticated
-   data rejection and authenticated status, and verify the minute cron is active.
-6. `slack-manifest.json` is a **new standalone app template**, not a replacement
-   for June's live manifest. For an existing app, first fetch its live manifest,
-   preserve unrelated settings, and obtain approval before adding `emoji:read`,
-   `emoji_changed`, and the event URL. Complete signed URL verification and
-   install in `T0266FRGM`; verify `auth.test` workspace before initial sync.
-7. Call admin sync, inspect resulting counts, and connect the outbound indexer.
-   Import existing durable output in bounded batches if needed. The indexer
-   requires no inbound port. Verify add/change/alias/remove and completion retry
-   on disposable names before relying on production search.
-8. Measure real semantic quality and warm/cold p50/p95 latency. Verify provider
-   failure fallback and removal while Vectorize propagation is delayed. No 200 ms
-   claim should be made until this deployment-specific measurement passes.
+`migrate` creates the schema once; it deliberately fails on an existing schema.
+Import is restartable and preserves completed/failed/unknown states. Use a
+restricted runtime database role, provision cache-disabled Hyperdrive against
+Neon, and replace the placeholder binding ID before deploying. Keep the old D1,
+Vectorize and local SQLite data until the new service is verified. Do not delete
+them as part of cutover. Measure the footprint after import and compact the
+bootstrap database before embedding backfill if necessary, while it is offline;
+do not run blocking full-table compaction as periodic maintenance. The full-size
+test used 456 MiB after compaction, including 62,013 synthetic vectors and HNSW,
+leaving limited growth room under 512 MiB. Synthetic vectors test storage only
+and must never be copied into production. Configure Actions secrets and enable its variable only
+after the Worker is ready. Verify anonymous/role rejection, authenticated search,
+June's read-only client, and an actual Actions receipt. Monitor Neon storage and
+compute quotas; scheduling and connection pooling are not unlimited capacity.
 
-Current documentation consulted: Cloudflare Vectorize Workers binding API,
-Workers secret configuration/type generation, installed Wrangler 4.142.0 schema
-and generated workerd types. No cloud resources or Slack app were changed here.
+Provisioning, deployment, workflow activation and Slack configuration require
+operator authorization. Source publication alone proves none of them. The
+standalone `slack-manifest.json` is a template, never a replacement for June's
+live manifest. Preserve unrelated settings when changing an authorized app.
