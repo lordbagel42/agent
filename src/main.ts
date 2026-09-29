@@ -72,6 +72,7 @@ import {
   ConversationContinuity,
   createPrivacyFilter,
 } from "./runtime/continuity.js";
+import { editHistory } from "./runtime/conversation-storage.js";
 import { createDebugDispatcher } from "./runtime/debug-dispatch.js";
 import { DiagnosticLog } from "./runtime/diagnostics.js";
 import {
@@ -1590,7 +1591,12 @@ async function main() {
     async ready() {
       return (await registry.routes.health()).ok;
     },
-    inspectConversation: () => june.snapshot(),
+    async inspectConversation() {
+      const state = await june.snapshot();
+      // Expand only the detached RPC response, never persisted actor state.
+      editHistory(state);
+      return state;
+    },
     async inspectJob(id) {
       const state = await june.snapshot();
       if (!Object.hasOwn(state.jobs, id) || state.forgottenEvents?.includes(id))

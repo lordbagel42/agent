@@ -3,6 +3,11 @@ import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type { MessageEvent, ModelSettlement } from "../core/contracts.js";
 import { beginModelReply } from "../models/invocation.js";
+import {
+  type CompressedJson,
+  commandSnapshot,
+  readHistory,
+} from "./conversation-storage.js";
 import { type Delivery, deliver } from "./delivery.js";
 import { conversationInputId } from "./inbox.js";
 import type { ConversationState, Dependencies } from "./registry.js";
@@ -37,6 +42,8 @@ export interface DebugInvestigator {
 
 export interface SessionCommandReceipt {
   snapshot?: DebugSnapshot;
+  snapshotId?: string;
+  snapshotCompressed?: CompressedJson;
   delivery: Delivery;
   published?: boolean;
   ping?: {
@@ -104,7 +111,7 @@ export function captureDebug(
         )
         .map(([id]) => id),
       ...Object.keys(state.pendingNotifications ?? {}),
-      ...state.history
+      ...readHistory(state)
         .filter((entry) => entry.content.startsWith("[Automated wakeup;"))
         .map((entry) => entry.id),
     ].filter((id) => !state.clearedInputs?.[id]),
@@ -129,7 +136,7 @@ export function captureDebug(
     scope: [...scope],
     reason: String(redactDebug(reason)),
     data: redactDebug({
-      history: state.history.filter(
+      history: readHistory(state).filter(
         (entry) =>
           ids.has(entry.id) ||
           (entry.id.endsWith(":reply") && ids.has(entry.id.slice(0, -6))),
@@ -181,6 +188,7 @@ export function resetConversation(state: ConversationState, at: number) {
   // Events, deliveries, model settlement markers and memory archives remain.
   // Revocation is not proof that an already-running external effect stopped.
   state.history = [];
+  delete state.historyArchive;
   const directory = state.sessions?.directory;
   if (directory) {
     const active =
@@ -450,6 +458,8 @@ export function createPingActor(deps: Dependencies) {
         if (
           !receipt.ping ||
           receipt.snapshot ||
+          receipt.snapshotCompressed ||
+          receipt.snapshotId ||
           c.key[0] !== receipt.delivery.message.id
         )
           throw new Error("Ping receipt identity mismatch");
@@ -504,8 +514,9 @@ export async function publishSessionCommand(
   const release = await deps.lifecycle?.enter(signal);
   let settlement: Promise<ModelSettlement> | undefined;
   try {
-    if (receipt.snapshot && !receipt.published) {
-      await publish(receipt.snapshot);
+    const snapshot = !receipt.published && commandSnapshot(receipt);
+    if (snapshot) {
+      await publish(snapshot);
       receipt.published = true;
       await persist();
     }

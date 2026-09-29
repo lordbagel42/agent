@@ -77,6 +77,14 @@ is not perfect DLP: do not put secrets in conversation text.
 Snapshots are explicit private diagnostic exports to Amp and survive resets;
 ordinary memory forgetting does not erase already-exported Amp conversations.
 
+Large retained conversation history and pending snapshots use lossless compressed
+storage, not summaries. Prompts, DEBUGSHARE capture and operator inspection still
+read the original entries. After durable snapshot publication, the conversation
+keeps its destination ID and delivery receipt rather than a duplicate body; June
+can inspect these through her existing private debug-share inspection capability.
+This storage migration requires a compatible forward release: do not roll back
+to code that cannot read compressed history or pending snapshots.
+
 Automatic Amp investigation requires operator configuration:
 
 ```json
