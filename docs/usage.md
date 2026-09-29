@@ -81,25 +81,35 @@ Automatic Amp investigation requires operator configuration:
 
 ```json
 "debugShare": {
-  "repositoryRoot": "/private/checkouts/agent",
-  "worktreeRoot": "/private/debug-worktrees",
+  "directory": "/var/lib/june-debugshare",
   "timeoutMs": 900000
 }
 ```
 
-Both directories must already exist, be canonical and non-overlapping; the
-worktree root must be owner-private and outside a Git repository. Set
-`JUNE_ALLOW_DEBUGSHARE=1` only after reviewing the execution environment and
-providing Amp authentication through its existing private mechanism. Amp gets
-an isolated Git worktree, **not a security sandbox**, and can inherit service
-credentials and host access. Do not enable this on a privileged service account
-without the corresponding operator review. Configuration/service changes require
-deployment-owner authorization. This feature does not enable ordinary coding jobs.
+Set `JUNE_ALLOW_DEBUGSHARE=1` after installing the independent dispatcher and
+dedicated runner transport described in [deployment.md](deployment.md#debugshare-investigations).
+The directory must be canonical, owned by June's service user and mode 0700,
+outside Git, and writable in June's service sandbox. June writes a mode-0600
+snapshot request; she does not spawn Amp. The separate service dispatches on
+`homelab-amp` with Fast and high mode, outside June's lifecycle and ordinary
+coding-job approval/runtime paths. Credentials remain on the runner. Snapshots
+are limited to 64 MiB. `timeoutMs` bounds only June's observation, not the remote
+investigation. Legacy `repositoryRoot`/`worktreeRoot` settings are accepted but
+ignored; there is no fallback to local execution.
 
-The command authorizes investigating and verifying local fixes, not pushing,
-deploying, infrastructure changes or destructive operations. If no runtime is
-configured, the snapshot is saved and June explicitly says no agent was started.
-A persisted launch intent is never retried automatically after interruption.
+The designated investigator has standing, incident-scoped recovery authority to
+diagnose and solve the reported problem, including publishing reviewed fixes,
+configuration/service repairs, deploying and restarting June without another
+approval. It must coordinate with existing recovery ownership, respect holds,
+use deployment locks and establish its own operator hold before live changes.
+This does not authorize June or ordinary workers to do the same, unrelated work,
+destructive data operations, or credential/permission expansion.
+
+Without the application gate the snapshot is saved but no request is dispatched.
+Queued does not establish that the independent service is installed or running.
+June restarts do not cancel investigations. The dispatcher and runner each fence
+duplicate launches; ambiguous launches are never automatically retried. Old
+local-runtime running/unknown receipts are not migrated into new investigations.
 June can inspect recent UUIDs, timestamps, states and thread IDs with
 `inspection: "debug-shares"`; ask her for investigation status. Completed means
 Amp returned, not that its fix was independently verified or deployed.

@@ -85,9 +85,15 @@ it.for(["interaction", "execution", "decision"] as const)(
       "PINGMODEL first invokes the configured model",
     );
     expect(request.system).toContain('inspection:"debug-shares"');
-    expect(request.system).toContain("no agent starts");
+    expect(request.system).toContain("separately installed DEBUGSHARE service");
     expect(request.system).toContain(
-      "never push, deployment or infrastructure changes",
+      "including publishing reviewed fixes, configuration/service repairs, deploying and restarting June",
+    );
+    expect(request.system).toContain(
+      "These permissions belong to the separately dispatched investigator, not to you or an ordinary worker",
+    );
+    expect(request.system).toContain(
+      "any unresolved recovery record is an ownership fence",
     );
     expect(request.system).toContain("actionsBuild enabled");
     expect(request.system).toContain("no automatic local-build fallback");

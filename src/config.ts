@@ -77,8 +77,10 @@ const schema = z
       .optional(),
     debugShare: z
       .strictObject({
-        repositoryRoot: absolutePath,
-        worktreeRoot: absolutePath,
+        directory: absolutePath.default("/var/lib/june-debugshare"),
+        // Accepted during migration only; DEBUGSHARE no longer executes locally.
+        repositoryRoot: absolutePath.optional(),
+        worktreeRoot: absolutePath.optional(),
         timeoutMs: z.number().int().min(1000).max(3_600_000).default(900_000),
       })
       .optional(),

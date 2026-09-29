@@ -1253,3 +1253,96 @@ Focused local safety check (no live Slack calls):
 ```sh
 (umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_slack_responder.py)
 ```
+
+## DEBUGSHARE investigations
+
+DEBUGSHARE uses its own independently installed service and restricted SSH key,
+not June's local SDK, ordinary Amp jobs, or the recovery incident ledger. June
+publishes an immutable UUID-named snapshot into a private shared inbox. The
+dispatcher persists launch intent before SSH; the runner durably admits each
+UUID once before starting Amp. Loss of either process/receipt is unknown, never
+permission to launch twice. The dispatcher serializes investigations; a queued
+request can wait behind an active one. Restarting June does not stop it. Restarting
+the dispatcher marks interrupted observations unknown and never replays them;
+an Amp thread may still be running. Do not delete admission records to retry.
+
+Installation is a separate authorized, coordinated operation, not a consequence
+of pushing source. Preserve existing recovery and ordinary-job keys/config:
+
+1. On June, install `scripts/deploy/debugshare.py` root-owned at
+   `/usr/local/lib/june-deploy/debugshare.py`, and install the supplied
+   `june-debugshare.service`. It is deliberately not `PartOf` a June app/slot or
+   deployment unit. Use the actual June service user/group (the template uses
+   `june`). Create `/var/lib/june-debugshare` owned by that user with mode 0700.
+   Add this path to the app's writable paths through an operator-installed
+   `june-slot@.service` template drop-in covering **both slots**, and to the
+   legacy app unit if used, as well as the dispatcher. Verify effective paths
+   for both slots before activation; preserve the rest of the sandbox. Custom
+   paths require all units and configuration to agree. Do not point it at the
+   app's data directory.
+2. Install root-owned `/etc/june/debugshare.json` (not group/world writable):
+
+   ```json
+   {
+     "directory": "/var/lib/june-debugshare",
+     "ssh": ["/usr/bin/ssh", "-F", "/etc/june/debugshare-ssh-config", "amp-runner"]
+   }
+   ```
+
+   Supply a dedicated DEBUGSHARE SSH configuration/key accessible to the service
+   user, with pinned host verification, `BatchMode yes`, `IdentitiesOnly yes`,
+   no agent/forwarding, connection timeout and server-alive limits. Do not reuse
+   the recovery or ordinary-job identity or provision Amp credentials on June.
+3. On `homelab-amp`, install `debugshare_runner.py`, `debugshare.py`, `runner.py`
+   and `deploy.py` together root-owned outside releases. The dedicated SSH key
+   must have `restrict`, the expected source restriction, and forced command
+   `/usr/bin/python3 -I /usr/local/lib/june-deploy/debugshare_runner.py`.
+   That endpoint only accepts `june-debugshare UUID SHA256`, with the snapshot
+   on stdin (maximum 64 MiB). No caller-selected prompt, executable, directory,
+   or arbitrary shell is accepted. Store snapshots outside Git in a canonical
+   mode-0700 directory owned by the authenticated Amp account. Install root-owned
+   `/etc/june-debugshare/runner.json`:
+
+   ```json
+   {
+     "command": ["/home/amp/.amp/bin/amp"],
+     "runnerDirectory": "/home/amp/workspaces/agent-recovery-01a0e71e",
+     "snapshotDirectory": "/home/amp/.local/share/june-debugshare"
+   }
+   ```
+
+   Verify the actual executable, checkout and pinned operator SSH workflow on
+   the runner; these paths are deployment examples, not provisioning commands.
+   The runner reuses only recovery's high/Fast CLI arguments and sanitized exec
+   environment. DEBUGSHARE owns its own prompt, admission and snapshots.
+   Separate processes/keys are not a security sandbox against native execution
+   under June's own UID: retain the native-coding isolation prerequisite so
+   ordinary workers cannot access this key or write repair-authorized requests.
+4. Start the independent service and enable the application configuration from
+   [usage.md](usage.md). Verify a newly owner-authorized diagnostic snapshot's
+   request, runner admission and thread receipt without logging its body. Then
+   verify private `inspection:"debug-shares"` sees that same thread. Do not send
+   a real repair-authorized DEBUGSHARE merely as a transport self-test.
+
+Raygen authorizes the designated investigator to diagnose and solve its reported
+problem with recovery-equivalent authority, including reviewed publication,
+configuration/service changes, deployment and restarts. This is not authority
+for ordinary June workers. Its prompt requires an isolated worktree, Oracle
+review before publication, privacy/data safeguards and the existing pinned SSH
+workflow. Before live mutations it must hold the operator deployment lock,
+coordinate with any recovery record/hold, stop and settle the poller, recheck
+ownership and establish its own operator hold. **Any unresolved recovery record
+is a fence**, including pending, dispatching, spawned or uncertain launches with
+no owner yet. Missing owner metadata is not permission to proceed; reconciliation
+and a coordinated handoff must come first. It must not claim or clear an
+unrelated recovery incident. Oracle review is required and permitted, but a
+duplicate investigator is not. Verification of the triggering fault, readiness and
+loaded process revision precedes release of only its own hold and poller recovery.
+
+The inbox contains private exported snapshots and metadata-only receipts, not
+stream transcripts. Runner snapshots and admission directories are also private
+durable exports; forgetting ordinary memory does not erase them or Amp threads.
+Completed means the CLI returned successfully, not that a fix was independently
+verified or deployed. Old running/unknown local investigations are not replayed
+through this transport during migration; reconcile them manually. Legacy local
+repository/worktree config is accepted but ignored, with no local fallback.

@@ -19,6 +19,15 @@ export interface DebugSnapshot {
 }
 
 export interface DebugInvestigator {
+  /** Repeating run only submits/observes the same durable request, never relaunches. */
+  resumeSafe?: boolean;
+  inspect?(id: string): Promise<
+    | {
+        status: "queued" | "running" | "completed" | "unknown";
+        threadId?: string;
+      }
+    | undefined
+  >;
   run(
     snapshot: DebugSnapshot,
     signal: AbortSignal,
@@ -232,6 +241,7 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
       snapshot?: DebugSnapshot;
       upload?: { sha256: string; totalBytes: number; parts: string[] };
       status?: "queued" | "running" | "completed" | "unavailable" | "unknown";
+      independentDispatch?: boolean;
       threadId?: string;
       report?: string;
     },
@@ -359,13 +369,23 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
         );
         return receiving;
       },
-      inspect: (c) => ({
-        id: c.state.snapshot?.id,
-        sessionId: c.state.snapshot?.sessionId,
-        capturedAt: c.state.snapshot?.capturedAt,
-        status: c.state.status,
-        threadId: c.state.threadId,
-      }),
+      inspect: async (c) => {
+        const external =
+          c.state.independentDispatch &&
+          c.state.snapshot &&
+          deps.debugShare?.inspect
+            ? await deps.debugShare
+                .inspect(c.state.snapshot.id)
+                .catch(() => undefined)
+            : undefined;
+        return {
+          id: c.state.snapshot?.id,
+          sessionId: c.state.snapshot?.sessionId,
+          capturedAt: c.state.snapshot?.capturedAt,
+          status: external?.status ?? c.state.status,
+          threadId: external?.threadId ?? c.state.threadId,
+        };
+      },
     },
     run: workflow(async (ctx) => {
       await ctx.loop("investigations", async (loop) => {
@@ -376,13 +396,22 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
           run: async (step) => {
             if (!step.state.snapshot || !deps.debugShare) return;
             // A restart after launch intent is uncertain, never an automatic second agent.
-            if (step.state.status === "running") {
+            if (
+              step.state.status === "running" &&
+              !(deps.debugShare.resumeSafe && step.state.independentDispatch)
+            ) {
               step.state.status = "unknown";
               await step.vars.persist();
               return;
             }
-            if (step.state.status !== "queued") return;
+            if (
+              step.state.status !== "queued" &&
+              step.state.status !== "running"
+            )
+              return;
             step.state.status = "running";
+            step.state.independentDispatch =
+              deps.debugShare.resumeSafe === true;
             await step.vars.persist();
             try {
               const result = await deps.debugShare.run(

@@ -1,0 +1,32 @@
+[Unit]
+Description=June independent DEBUGSHARE investigator dispatcher
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/june/debugshare.json
+
+[Service]
+Type=exec
+User=june
+Group=june
+ExecStart=/usr/bin/python3 -I /usr/local/lib/june-deploy/debugshare.py
+Restart=on-failure
+RestartSec=10
+UMask=0077
+StateDirectory=june-debugshare
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/june-debugshare
+InaccessiblePaths=/var/lib/june
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target
