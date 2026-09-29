@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { agentWebhookAction, agentWebhookSchema } from "../agent/actions.js";
 import { routeEvent } from "../core/routing.js";
 import { parseReply } from "../models/provider.js";
 import type { Dependencies } from "../runtime/registry.js";
@@ -11,7 +12,7 @@ import { jsonValue } from "./sandbox.js";
 export function createWorkflowTools(
   deps: Pick<
     Dependencies,
-    "owner" | "channels" | "model" | "webSearch" | "analytics"
+    "owner" | "channels" | "model" | "webSearch" | "analytics" | "agents"
   >,
 ): Record<string, WorkflowTool> {
   const empty = z.strictObject({});
@@ -106,6 +107,31 @@ export function createWorkflowTools(
       schema: period,
       async execute(args) {
         return jsonValue(await analytics(period.parse(args).days));
+      },
+    };
+  }
+  if (deps.agents) {
+    const agents = deps.agents;
+    tools.agent_webhook = {
+      description:
+        "Registered agent callbacks: action list; send with id,text; delivery with id; revoke with id. Queued is not delivery. Never repeat unknown effects. No arbitrary URLs or credentials.",
+      schema: agentWebhookSchema,
+      async execute(args, { source, operationId, signal }) {
+        signal.throwIfAborted();
+        if (
+          !routeEvent(source, deps.owner)?.private ||
+          (source.address.channel === "agent" &&
+            !agents.clientActive(source.senderId))
+        )
+          throw new Error("workflow_denied");
+        return jsonValue(
+          agentWebhookAction(
+            agents,
+            args,
+            operationId,
+            source.address.channel === "agent" ? source.senderId : undefined,
+          ),
+        );
       },
     };
   }

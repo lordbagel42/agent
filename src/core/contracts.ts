@@ -1,7 +1,7 @@
 import type { PersonalityPreview } from "../runtime/personality.js";
 
 /** Platform IDs stay opaque; never parse message timestamps as numbers. */
-export type Channel = "slack" | "whatsapp";
+export type Channel = "slack" | "whatsapp" | "agent";
 
 export interface Address {
   channel: Channel;
@@ -135,7 +135,7 @@ export type ChannelAudience =
 
 export interface ChannelAdapter {
   readonly channel: Channel;
-  readonly capabilities: { text: true; reactions: true; threads: boolean };
+  readonly capabilities: { text: true; reactions: boolean; threads: boolean };
   readonly webEmbedOrigins?: readonly string[];
   /** Fresh authenticated audience evidence; unknown must withhold imports. */
   audience?(
@@ -243,6 +243,9 @@ export interface CompanionReply {
     id: string | null;
   };
   reaction?: string;
+  agentWebhook?: import("zod").infer<
+    typeof import("../agent/actions.js").agentWebhookSchema
+  >;
   /** Request one current-channel lookup instead of a conversational reply. */
   search?: string;
   /** Owner-only cross-conversation lookup, delivered only to the owner's Slack DM. */
@@ -391,6 +394,8 @@ export interface ModelImageInput {
 }
 
 export interface ModelRequest {
+  agentConversation?: boolean;
+  agentWebhooksAvailable?: boolean;
   artifactsAvailable?: boolean;
   /** Host-enforced action boundary; omitted preserves legacy mixed-role turns. */
   agentRole?: "interaction" | "execution" | "repository";

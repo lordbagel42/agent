@@ -63,6 +63,47 @@ const schema = z
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    agentMcp: z
+      .strictObject({
+        origin: z.url().refine((value) => {
+          const url = new URL(value);
+          return (
+            value === url.origin &&
+            (url.protocol === "https:" ||
+              (url.protocol === "http:" &&
+                ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)))
+          );
+        }, "Use a canonical HTTPS origin or loopback HTTP for local checks"),
+        directory: absolutePath,
+        keyEnv: envName,
+        clients: z
+          .record(
+            name,
+            z.strictObject({
+              tokenEnv: envName,
+              expiresAt: z.number().int().positive().safe(),
+            }),
+          )
+          .refine(
+            (clients) =>
+              Object.keys(clients).length > 0 &&
+              Object.keys(clients).length <= 32 &&
+              Object.keys(clients).every((id) => id.length <= 80),
+          ),
+        destinations: z
+          .array(
+            z.strictObject({
+              origin: z.url().refine((value) => {
+                const url = new URL(value);
+                return value === url.origin && url.protocol === "https:";
+              }),
+              pathPrefix: z.string().min(1).max(1000),
+            }),
+          )
+          .max(32)
+          .default([]),
+      })
+      .optional(),
     ampJobs: ampJobsSchema.optional(),
     continuity: z
       .strictObject({
@@ -543,9 +584,13 @@ const schema = z
   .refine(
     (config) =>
       config.setupMode
-        ? !config.slack && !config.whatsapp && !config.coding.enabled
-        : (config.slack || config.whatsapp) &&
-          config.owner.identities.length > 0,
+        ? !config.slack &&
+          !config.whatsapp &&
+          !config.agentMcp &&
+          !config.coding.enabled
+        : !!config.agentMcp ||
+          (!!(config.slack || config.whatsapp) &&
+            config.owner.identities.length > 0),
     "Configure a channel and owner identities, or enable channel-free setup mode with coding disabled",
   )
   .refine(

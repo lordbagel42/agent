@@ -1,6 +1,7 @@
 # Owner-trusted agent MCP and outbound webhooks
 
-Status: proposed implementation contract, pending owner review.
+Status: approved by owner on 2026-09-29. See `agent-mcp.md` for the implemented
+configuration, limits, verification scope and remaining Amp receiving dependency.
 
 ## Goal and authority
 

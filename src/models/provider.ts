@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { agentWebhookSchema } from "../agent/actions.js";
 import { appsRequestSchema } from "../apps/client.js";
 import {
   ARTIFACT_HELP,
@@ -130,6 +131,7 @@ const recallTimestampSchema = z
   .transform((value) => value ?? undefined);
 
 const companionReplySchema = z.strictObject({
+  agentWebhook: agentWebhookSchema.optional(),
   text: z.string(),
   sendMessages: sendMessagesSchema.optional(),
   question: questionSchema.optional(),
@@ -418,6 +420,8 @@ function isJsonObject(value: unknown): value is JsonObject {
 export type ReplyCapabilities = Pick<
   ModelRequest,
   | "agentRole"
+  | "agentConversation"
+  | "agentWebhooksAvailable"
   | "codingJobsAvailable"
   | "searchAvailable"
   | "slackHistoryAvailable"
@@ -481,6 +485,16 @@ export function replyJsonSchema(
   capabilities: ReplyCapabilities | boolean = false,
 ) {
   const schema = legacyReplyJsonSchema(workspaces, capabilities);
+  const grants = replyCapabilities(capabilities);
+  if (grants.agentConversation) {
+    schema.properties.text.description =
+      "One plain-text response, at most 32000 characters; no reactions or split messages.";
+    Object.assign(schema.properties.reaction, { type: "null" });
+    for (const key of ["messages", "sendMessages", "question", "interrupt"]) {
+      Reflect.deleteProperty(schema.properties, key);
+      schema.required = schema.required.filter((field) => field !== key);
+    }
+  }
   const { agentRole } = replyCapabilities(capabilities);
   for (const key of Object.keys(schema.properties)) {
     if (!rolePermitsField(agentRole, key)) {
@@ -661,6 +675,13 @@ function legacyReplyJsonSchema(
     type: "object",
     additionalProperties: false,
     properties: {
+      ...(replyCapabilities(capabilities).agentWebhooksAvailable
+        ? {
+            agentWebhook: {
+              anyOf: [z.toJSONSchema(agentWebhookSchema), { type: "null" }],
+            },
+          }
+        : {}),
       text: {
         type: "string",
         description: `Must be no more than ${replyCapabilities(capabilities).agentRole === "repository" ? REPOSITORY_REPORT_LIMIT : 3500} Unicode characters.`,
@@ -1826,6 +1847,9 @@ function legacyReplyJsonSchema(
         : {}),
     },
     required: [
+      ...(replyCapabilities(capabilities).agentWebhooksAvailable
+        ? ["agentWebhook"]
+        : []),
       "text",
       "coding",
       "reaction",
@@ -2117,6 +2141,7 @@ export function parseReply(
     "sendMessages",
     "question",
     "interrupt",
+    "agentWebhook",
     "typingEnabled",
     "workflow",
     "javascript",
@@ -2188,9 +2213,24 @@ export function parseReply(
     throw new ModelError("invalid_response", false);
   }
   const reply = parsed.data;
+  const grants = replyCapabilities(capabilities);
+  if (
+    (reply.agentWebhook && !grants.agentWebhooksAvailable) ||
+    (grants.agentConversation &&
+      (reply.reaction ||
+        reply.messages ||
+        reply.sendMessages ||
+        reply.question ||
+        reply.interrupt))
+  )
+    throw new ModelError("invalid_response", false);
   if (
     Array.from(reply.text).length >
-    (agentRole === "repository" ? REPOSITORY_REPORT_LIMIT : 3500)
+    (agentRole === "repository"
+      ? REPOSITORY_REPORT_LIMIT
+      : grants.agentConversation
+        ? 32000
+        : 3500)
   )
     throw new ModelError("invalid_response", false);
   if (
@@ -2277,6 +2317,7 @@ export function parseReply(
     Number(reply.mcpProposal !== undefined) +
     Number(reply.execution !== undefined) +
     Number(reply.search !== undefined) +
+    Number(reply.agentWebhook !== undefined) +
     Number(reply.slackHistory !== undefined) +
     Number(reply.webSearch !== undefined) +
     Number(reply.release !== undefined) +
@@ -2326,7 +2367,8 @@ export function parseReply(
     directiveCount > 1 ||
     (directiveCount > 0 &&
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
-    ((reply.codingJob !== undefined ||
+    ((reply.agentWebhook !== undefined ||
+      reply.codingJob !== undefined ||
       reply.workflow !== undefined ||
       reply.javascript !== undefined ||
       reply.emojiSearch !== undefined ||

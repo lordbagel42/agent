@@ -8,6 +8,9 @@ import { promisify } from "node:util";
 import { serve } from "@hono/node-server";
 import { createClient } from "rivetkit/client";
 import { z } from "zod";
+import { createAgentMcp } from "./agent/mcp.js";
+import { operatorRequest } from "./agent/operator.js";
+import { AgentService } from "./agent/service.js";
 import { createAppsClient } from "./apps/client.js";
 import { ArtifactRenderer } from "./artifacts/render.js";
 import { createArtifactRoutes } from "./artifacts/routes.js";
@@ -33,7 +36,9 @@ import type {
   ChannelAdapter,
   CodingRuntime,
   ModelProvider,
+  Owner,
 } from "./core/contracts.js";
+import { routeEvent } from "./core/routing.js";
 import { createBitwardenCredentialResolver } from "./credentials/bitwarden.js";
 import { createBitwardenFileSession } from "./credentials/session.js";
 import {
@@ -44,7 +49,7 @@ import {
   awaitSlotActivation,
   validateSlotLauncher,
 } from "./deployment/standby.js";
-import { createHttpApp } from "./http/app.js";
+import { createHttpApp, type HttpDependencies } from "./http/app.js";
 import { createImportRoutes } from "./http/imports.js";
 import { createMemoryRoutes } from "./http/memory.js";
 import { ImportedMemoryExtraction } from "./imports/extraction.js";
@@ -91,6 +96,7 @@ import {
 } from "./runtime/registry.js";
 import { createRivetReader } from "./runtime/rivet-inspection.js";
 import { SocialPermissions } from "./runtime/social.js";
+import { sessionActorKey } from "./sessions/state.js";
 import { CapabilityBroker } from "./tools/broker.js";
 import { BrowserAdapter, browserOperationDigest } from "./tools/browser.js";
 import { createBrowserProposal } from "./tools/browser-proposals.js";
@@ -161,6 +167,17 @@ async function main() {
       await readFile(process.env.JUNE_CONFIG ?? "config.local.json", "utf8"),
     ),
   );
+  const owner: Owner = {
+    ...config.owner,
+    identities: [
+      ...config.owner.identities,
+      ...Object.keys(config.agentMcp?.clients ?? {}).map((id) => ({
+        channel: "agent" as const,
+        accountId: config.owner.id,
+        senderId: id,
+      })),
+    ],
+  };
   startupStage = "immutable release marker";
   // Resolve from this loaded source, never from a later-switched current symlink.
   const releaseRoot = dirname(
@@ -768,6 +785,23 @@ async function main() {
       personality,
       source(event, scope) {
         if (
+          event.address.channel === "agent" &&
+          event.direct &&
+          scope === ownerAudience
+        ) {
+          return {
+            id: `agent:${event.id}`,
+            audiences: [ownerAudience],
+            platform: "agent",
+            account: event.address.accountId,
+            conversation: event.address.conversationId,
+            author: event.senderId,
+            observedAt: event.occurredAt,
+            sourceUrl: `urn:june:agent:${event.id}`,
+            text: event.text,
+          };
+        }
+        if (
           event.address.channel !== "slack" ||
           !event.direct ||
           scope !== ownerAudience
@@ -1015,6 +1049,53 @@ async function main() {
       accessToken: secret(config.whatsapp.accessTokenEnv),
     });
   }
+  let agents: AgentService | undefined;
+  if (config.agentMcp) {
+    startupStage = "owner-trusted MCP storage and credentials";
+    await privateDirectory(config.agentMcp.directory);
+    const key = memoryKey(config.agentMcp.keyEnv);
+    try {
+      const clients = Object.entries(config.agentMcp.clients).map(
+        ([id, settings]) => {
+          const token = secret(settings.tokenEnv);
+          if (token === operatorToken)
+            throw new Error("MCP and operator credentials must differ");
+          return { id, token, expiresAt: settings.expiresAt };
+        },
+      );
+      agents = new AgentService({
+        directory: config.agentMcp.directory,
+        key,
+        ownerId: owner.id,
+        clients,
+        destinations: config.agentMcp.destinations,
+        deletionRevision: () => memory?.store.deletionRevision() ?? 0,
+        async submit(event) {
+          const scope = routeEvent(event, owner);
+          if (!scope?.private) throw new Error("agent_scope_denied");
+          await submit(scope, event);
+        },
+        snapshot: () => june.snapshot(),
+        activityProjection: async (state, eventId) => {
+          const directory = state.sessions?.directory;
+          const receipt = eventId ? directory?.receipts[eventId] : undefined;
+          const sessionId = eventId
+            ? receipt && "sessionId" in receipt
+              ? receipt.sessionId
+              : undefined
+            : directory?.activeSessionId;
+          if (!sessionId) return null;
+          const scopeKey = ["private", owner.id];
+          return client.activity
+            .getOrCreate(sessionActorKey(scopeKey, sessionId))
+            .readProjection(scopeKey, sessionId, eventId);
+        },
+      });
+      channels.agent = agents.adapter;
+    } finally {
+      key.fill(0);
+    }
+  }
   // Start retention/expiry only after the durable memory revision is available.
   if (
     config.browserCompanion?.enabled &&
@@ -1023,7 +1104,7 @@ async function main() {
   ) {
     browserCompanion = new BrowserCompanion({
       ...config.browserCompanion,
-      owner: config.owner,
+      owner,
       origin: config.console?.origin,
       revision: () => memory?.store.deletionRevision() ?? 0,
     });
@@ -1033,7 +1114,7 @@ async function main() {
     config.slack && channels.slack
       ? new SocialPermissions({
           file: join(process.env.RIVETKIT_STORAGE_PATH, "social.sqlite"),
-          owner: config.owner,
+          owner,
           teamId: config.slack.teamId,
           botUserId: config.slack.botUserId,
           slack: channels.slack,
@@ -1044,6 +1125,7 @@ async function main() {
     audience(scope);
     if (!memory?.store.isDeleted(sourceId))
       throw new Error("Source must be tombstoned first");
+    agents?.webhooks.invalidatePending();
     social?.forget();
     await client.conversation.getOrCreate(JSON.parse(scope)).forget(sourceId);
     if (reflection) {
@@ -1095,7 +1177,7 @@ async function main() {
       continuity = new ConversationContinuity({
         file: join(config.memory.directory, "continuity.sqlite"),
         key,
-        owner: config.owner,
+        owner,
         idleMs: config.continuity.idleMs,
         revision: () => memory?.store.deletionRevision() ?? 0,
         filter: createPrivacyFilter({
@@ -1115,10 +1197,10 @@ async function main() {
   const artifacts = config.artifacts
     ? new ArtifactService({
         origin: config.artifacts.origin,
-        owner: config.owner,
+        owner,
         store: new ArtifactStore({
           file: join(config.artifacts.directory, "artifacts.sqlite"),
-          owner: config.owner,
+          owner,
           encryptionKey: secret(config.artifacts.encryptionKeyEnv),
           pepper: secret(config.artifacts.pepperEnv),
         }),
@@ -1148,7 +1230,8 @@ async function main() {
     : undefined;
   const dependencies: Dependencies = {
     artifacts,
-    owner: config.owner,
+    owner,
+    agents,
     continuity,
     debugShare:
       config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
@@ -1177,7 +1260,8 @@ async function main() {
       ? undefined
       : {
           tools: createWorkflowTools({
-            owner: config.owner,
+            owner,
+            agents,
             channels,
             model,
             webSearch,
@@ -1210,7 +1294,7 @@ async function main() {
     analytics: (days) =>
       `${usage.report(days)}\n\n${memory?.store.operationReport() ?? "Memory operation metrics are unavailable; memory is disabled."}`,
     rivet: createRivetReader({
-      owner: config.owner,
+      owner,
       connection: (): {
         endpoint: string;
         namespace: string;
@@ -1401,8 +1485,55 @@ async function main() {
     ? client.wakeups.getOrCreate([config.owner.id])
     : undefined;
   const browserViewShutdown = new AbortController();
+  const submit: HttpDependencies["submit"] = async (
+    scope,
+    incoming,
+    receivedAt,
+  ) => {
+    let event = incoming;
+    const revision = memory?.store.deletionRevision() ?? 0;
+    // Share verified actor intake with HTTP, including PIN redaction and memory
+    // filtering. Never bypass receive's durable ingress/latest-input contract.
+    if (event.type === "message") {
+      event = (await artifacts?.consumePin(event)) ?? event;
+      if (/!artifact-pin\b/i.test(event.text))
+        event = {
+          ...event,
+          text: "Artifact PIN input unavailable; command removed before history.",
+        };
+      event = browserCompanion?.consumePin(event) ?? event;
+      if (/!browser-pin\b/i.test(event.text))
+        event = {
+          ...event,
+          text: "Browser PIN input is unavailable. The command contents were removed before history.",
+        };
+    }
+    // Forgetting or client revocation may happen during asynchronous preparation.
+    if (
+      event.address.channel === "agent" &&
+      (event.type !== "message" ||
+        revision !== (memory?.store.deletionRevision() ?? 0) ||
+        !agents?.clientActive(event.senderId))
+    )
+      return;
+    if (memory && event.type === "message") {
+      const source = memory.source(event, JSON.stringify(scope.key));
+      if (source) {
+        if (memory.store.isDeleted(source.id)) return;
+        const reflectionReview =
+          scope.private &&
+          JSON.stringify(scope.key) === ownerAudience &&
+          (event.address.channel !== "slack" ||
+            event.reflectionReviewEligible === true) &&
+          parseReflectionReviewCommand(event.text);
+        if (!reflectionReview && !social?.interruptionCommand(event))
+          memory.store.appendSource(source);
+      }
+    }
+    await client.conversation.getOrCreate(scope.key).receive(event, receivedAt);
+  };
   const app = createHttpApp({
-    owner: config.owner,
+    owner,
     channels,
     operatorToken,
     capabilities,
@@ -1559,43 +1690,7 @@ async function main() {
           },
         }
       : undefined,
-    async submit(scope, event, receivedAt) {
-      // Secret replies must never reach memory.source, actor admission, or model
-      // history. Even stale/duplicate owner PIN commands become safe receipts.
-      if (event.type === "message") {
-        event = (await artifacts?.consumePin(event)) ?? event;
-        if (/!artifact-pin\b/i.test(event.text))
-          event = {
-            ...event,
-            text: "Artifact PIN input unavailable; command removed before history.",
-          };
-        event = browserCompanion?.consumePin(event) ?? event;
-        if (/!browser-pin\b/i.test(event.text))
-          event = {
-            ...event,
-            text: "Browser PIN input is unavailable. The command contents were removed before history.",
-          };
-      }
-      if (memory && event.type === "message") {
-        const source = memory.source(event, JSON.stringify(scope.key));
-        if (source) {
-          if (memory.store.isDeleted(source.id)) return;
-          // Review is an authenticated control message, not new evidence. Keep
-          // deletion filtering, but do not require an append to revoke a candidate.
-          const reflectionReview =
-            scope.private &&
-            JSON.stringify(scope.key) === ownerAudience &&
-            (event.address.channel !== "slack" ||
-              event.reflectionReviewEligible === true) &&
-            parseReflectionReviewCommand(event.text);
-          if (!reflectionReview && !social?.interruptionCommand(event))
-            memory.store.appendSource(source);
-        }
-      }
-      await client.conversation
-        .getOrCreate(scope.key)
-        .receive(event, receivedAt);
-    },
+    submit,
     async ready() {
       return (await registry.routes.health()).ok;
     },
@@ -1708,6 +1803,33 @@ async function main() {
       return c.json({ reconciled: await actor.reconcile(input.id, true) });
     });
   }
+  if (agents && config.agentMcp) {
+    const handler = createAgentMcp({
+      service: agents,
+      origin: config.agentMcp.origin,
+      status: async () => ({
+        ready: lifecycle.ready && (await registry.routes.health()).ok,
+        capabilities: {
+          messaging: true,
+          webhooks: true,
+          coding: !!coding,
+          memory: !!memory,
+          imports: !!imports,
+          reflection: !!reflection,
+          workflows: !!dependencies.workflows,
+          capabilities: !!capabilities,
+          deployment: !!readDeployment,
+        },
+      }),
+      operator: operatorRequest((request) => app.fetch(request), operatorToken),
+    });
+    app.all("/mcp", (c) => handler(c.req.raw));
+    app.get("/operator/agents", (c) => c.json({ clients: agents?.clients() }));
+    app.post("/operator/agents/:id/revoke", async (c) => {
+      z.strictObject({ confirmed: z.literal(true) }).parse(await c.req.json());
+      return c.json(agents?.revokeClient(c.req.param("id")));
+    });
+  }
   registry.start();
   if (!config.setupMode) {
     startupStage = "authored workflow recovery";
@@ -1738,6 +1860,28 @@ async function main() {
     startupStage = "durable wakeup scheduler";
     await wakeups.snapshot();
   }
+  let pumping: Promise<void> | undefined;
+  const pump = agents
+    ? setInterval(() => {
+        if (pumping || !agents || !lifecycle.ready) return;
+        const release = lifecycle.tryEnter();
+        if (!release) return;
+        const service = agents;
+        pumping = service
+          .recover()
+          .then(() => service.webhooks.drain(1))
+          .catch(() =>
+            console.error(
+              "Agent queue recovery unavailable; durable work retained.",
+            ),
+          )
+          .finally(() => {
+            release();
+            pumping = undefined;
+          });
+      }, 1000)
+    : undefined;
+  pump?.unref();
   startupStage = "HTTP listener";
   const artifactServer =
     artifacts && artifactRenderer && config.artifacts
@@ -1766,12 +1910,14 @@ async function main() {
     (stopping ??= (async () => {
       diagnosticLog?.lifecycle("process_stopping");
       try {
+        if (pump) clearInterval(pump);
         diagnosticLog?.lifecycle("shutdown_http_close_started");
         browserViewShutdown.abort();
         artifactShutdown.abort();
         if (artifactServer)
           await new Promise<void>((done) => artifactServer.close(() => done()));
         await new Promise<void>((done) => server.close(() => done()));
+        await pumping;
         diagnosticLog?.lifecycle("shutdown_http_close_returned");
         diagnosticLog?.lifecycle("shutdown_client_dispose_started");
         await client.dispose();
@@ -1785,6 +1931,7 @@ async function main() {
         diagnosticLog?.lifecycle("shutdown_providers_close_returned");
       }
       diagnosticLog?.lifecycle("shutdown_resources_close_started");
+      await agents?.close();
       artifacts?.store.close();
       await browserCompanion?.close();
       await browser?.close();

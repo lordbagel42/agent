@@ -65,7 +65,7 @@ export interface LatencyTrace {
   processId?: string;
   processStartedAt?: number;
   revision?: string;
-  channel: "slack" | "whatsapp";
+  channel: "slack" | "whatsapp" | "agent";
   threaded: boolean;
   probe?: string;
   transportMs?: number;

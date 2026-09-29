@@ -1,3 +1,4 @@
+import { agentWebhookAction } from "../agent/actions.js";
 import type { WorktreeDiffSummary } from "../coding/worktree.js";
 import type {
   CompanionReply,
@@ -43,6 +44,7 @@ export const invalidRecallCategory =
 export type CapabilityDependencies = Pick<
   Dependencies,
   | "owner"
+  | "agents"
   | "jev"
   | "jury"
   | "e2b"
@@ -243,6 +245,33 @@ export async function runCapability(
         ? { replyInThread: generated.replyInThread }
         : {}),
     };
+  if (generated.agentWebhook !== undefined) {
+    if (
+      origin !== "event" ||
+      phase === "synthesis" ||
+      !scope.private ||
+      !modelRequest.agentWebhooksAvailable ||
+      !deps.agents
+    )
+      return { text: "Agent webhooks are unavailable in this turn." };
+    parseReply(JSON.stringify(generated), workspaces, modelRequest);
+    try {
+      return {
+        text: JSON.stringify(
+          agentWebhookAction(
+            deps.agents,
+            generated.agentWebhook,
+            context.operationId ?? eventId,
+            event.address.channel === "agent" ? event.senderId : undefined,
+          ),
+        ),
+      };
+    } catch {
+      return {
+        text: "Webhook operation unconfirmed; inspect the existing receipt before retrying.",
+      };
+    }
+  }
   if (generated.artifact !== undefined) {
     if (
       origin !== "event" ||

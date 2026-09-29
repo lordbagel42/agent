@@ -95,6 +95,8 @@ export function createExecutionActor(
     Object.values(state.requests).every(
       (r) =>
         r.deletionTracked === true &&
+        (r.source.address.channel !== "agent" ||
+          deps.agents?.clientActive(r.source.senderId) === true) &&
         (!r.context ||
           (r.context.deletionRevision ===
             (deps.memory?.store.deletionRevision() ?? 0) &&

@@ -122,6 +122,7 @@ export type WebhookServiceOptions = {
   key: Buffer;
   destinations: WebhookDestination[];
   clientActive: (id: string) => boolean;
+  deletionRevision?: () => number;
 };
 type Registration = z.infer<typeof registerWebhookSchema> & {
   clientId: string;
@@ -130,6 +131,7 @@ type Registration = z.infer<typeof registerWebhookSchema> & {
 type Delivery = z.infer<typeof sendWebhookSchema> & {
   clientId: string;
   time: number;
+  revision?: number;
 };
 type Row = { id: string; digest: string; data: string; revoked: number };
 
@@ -154,6 +156,7 @@ export class WebhookService {
   private readonly key: Buffer;
   private readonly destinations: WebhookDestination[];
   private readonly clientActive: (id: string) => boolean;
+  private readonly deletionRevision: () => number;
   private readonly transport: WebhookTransport;
   private pump?: Promise<void>;
   private closing = false;
@@ -181,6 +184,7 @@ export class WebhookService {
       return { origin, pathPrefix };
     });
     this.clientActive = options.clientActive;
+    this.deletionRevision = options.deletionRevision ?? (() => 0);
     this.transport = trustedTransport;
     const fd = openSync(
       options.path,
@@ -429,7 +433,15 @@ export class WebhookService {
           clientId,
           parsed.idempotencyKey,
           digest,
-          this.encrypt({ ...parsed, clientId, time: Date.now() }, id),
+          this.encrypt(
+            {
+              ...parsed,
+              clientId,
+              time: Date.now(),
+              revision: this.deletionRevision(),
+            },
+            id,
+          ),
           parsed.webhookId,
         );
       return this.receipt(id);
@@ -494,6 +506,8 @@ export class WebhookService {
     try {
       const delivery = this.decrypt<Delivery>(row.data, row.id);
       const current = () => {
+        if ((delivery.revision ?? 0) !== this.deletionRevision())
+          throw new Error("webhook_context_forgotten");
         const registration = this.db
           .prepare("SELECT * FROM webhook_registrations WHERE id=?")
           .get(delivery.webhookId) as Row | undefined;

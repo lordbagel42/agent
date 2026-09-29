@@ -196,9 +196,24 @@ export function createSessionCatalog(
   ) {
     return (
       status(host, assignment) === "active" &&
+      !host.state.sessions?.turns[assignment.eventId]?.revoked &&
+      agentActive(host, assignment) &&
       !host.state.forgottenEvents?.includes(assignment.eventId) &&
       revision === deps.memory?.store.deletionRevision() &&
       current(audience(host), reference)
+    );
+  }
+  function agentActive(host: SessionHost, assignment: ActivityAssignment) {
+    const input = savedInput(host.state, assignment.eventId);
+    const source =
+      host.state.sessions?.turns[assignment.eventId]?.context?.source ??
+      (input?.type === "event" ? input.event : input?.source);
+    return (
+      source?.address.channel !== "agent" ||
+      (source.type === "message" &&
+        source.address.accountId === deps.owner.id &&
+        source.senderId === source.address.threadId &&
+        deps.agents?.clientActive(source.address.threadId ?? "") === true)
     );
   }
   const evidence: ArchiveEvidence = {
@@ -347,7 +362,7 @@ export function createSessionCatalog(
       if (!turn.control) throw new Error("Control receipt unavailable");
       return { control: turn.control };
     }
-    if (turn.revoked) return suppress();
+    if (turn.revoked || !agentActive(host, assignment)) return suppress();
     const input = savedInput(host.state, assignment.eventId);
     if (!input) return suppress();
     const source = input?.type === "event" ? input.event : input?.source;
@@ -408,6 +423,7 @@ export function createSessionCatalog(
       return suppress();
     // Worker recall can expand ancestry after dispatch; the original turn's
     // reference is not the authoritative dependency set of a scheduled run.
+    if (!agentActive(host, assignment)) return suppress();
     if (
       input?.type === "wakeup" &&
       (!wakeup || !(await host.claimWakeup(input.wakeup.runId, wakeup.mode)))
@@ -473,6 +489,7 @@ export function createSessionCatalog(
           )
         : undefined;
     if (continuity) {
+      if (!valid(host, assignment, reference, revision)) return suppress();
       reference.continuityEpoch = continuity.epoch;
       if (continuity.text)
         reference.contextSourceIds?.push(continuity.dependency);
@@ -650,13 +667,13 @@ export function createSessionCatalog(
   ): ReturnType<ActivityCatalog["apply"]> {
     if (status(host, assignment) === "cleared") return { text: "" };
     const turn = active(host, assignment);
-    if (turn.applied) return turn.applied;
     const context = turn.context;
     if (
       !context ||
       !valid(host, assignment, context.reference, context.deletionRevision)
     )
       throw new Error("Activity context revoked");
+    if (turn.applied) return turn.applied;
     // The original immutable directives survive a save/RPC gap. Worker submit
     // and cancellation are idempotent under the existing event/request IDs.
     if (turn.applying && !isDeepStrictEqual(turn.applying, reply))

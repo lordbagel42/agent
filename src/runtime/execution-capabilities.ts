@@ -220,6 +220,8 @@ export async function runExecutionCapability(
     // An effect/proposal/ambiguous external read may be interpreted, not chained
     // into another attempt. Pure local reads can supply inputs to a later step.
     terminal: !!(
+      (reply.agentWebhook &&
+        ["send", "revoke"].includes(reply.agentWebhook.action)) ||
       reply.jevObservation ||
       reply.reflectionRequest ||
       reply.skillEvaluationRequest ||

@@ -206,9 +206,20 @@ shutdown/alarm diagnostics and replay/migration limits are documented in the
 | Approved remote coding | [Ordinary Amp jobs](docs/amp-jobs.md) (SSH transport, separate from Puck/MCP) |
 | Reminders and durable programs | [Wakeups](docs/wakeups.md), [workflows](docs/workflows.md) |
 | External tools | [MCP connections](docs/mcp-connections.md), [Slack](docs/slack.md), [GitHub](docs/github.md), [browser](docs/browser.md) |
+| Trusted external agents | [Optional inbound agent MCP](docs/agent-mcp.md): configure `agentMcp`, separately from outbound `mcp` connections |
 | Evidence and learning | [Memory](src/memory/README.md), [reflection](src/reflection/README.md) |
 | Hosting | [Deployment](docs/deployment.md), [dynamic apps](docs/dynamic-apps.md) |
 | Implementation versus activation | [Capability inventory](docs/implementation-plan.md) |
+
+Inbound `agentMcp` is opt-in administrative access to shared owner-private
+context, named operator controls, messaging, and signed outbound callbacks.
+Use independently revocable client credentials and explicitly allowed callback
+destinations; never reuse the operator token. Durable admission recovery and a
+single-delivery background pump resume queued work after restart; uncertain
+deliveries are not blindly retried. Forgetting invalidates pending callbacks,
+but cannot recall dispatched effects. Enabling configuration requires a separate
+operator decision; this implementation is not evidence of a production deployment
+or a verified live receiver. See the setup guide before provisioning credentials.
 
 There is no license file yet. Public visibility alone would make this
 source-available, not grant an open-source license.

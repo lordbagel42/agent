@@ -10,6 +10,7 @@ export function createMemoryRoutes(deps: {
   store: EvidenceStore;
   personality?: CuratedPersonalityStore;
   audience(value: unknown): string;
+  invalidateDeliveries?(): void;
   forget(audience: string, sourceId: string): Promise<void>;
 }) {
   const app = new Hono();
@@ -87,7 +88,10 @@ export function createMemoryRoutes(deps: {
       !deps.store.isDeleted(input.sourceId)
     )
       return c.json({ error: "not_found" }, 404);
-    // Ledger first. A crash before working-context cleanup still fails closed
+    // Cancel queued external copies before tombstoning, with no async gap.
+    // A crash here may over-cancel, never dispatch forgotten context on restart.
+    deps.invalidateDeliveries?.();
+    // Ledger before working-context cleanup. A crash still fails closed
     // at runtime source revalidation; retry repeats the remaining cleanup.
     deps.store.deleteSource(input.sourceId);
     deps.personality?.forgetGlobalProposals();

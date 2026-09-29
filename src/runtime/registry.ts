@@ -148,6 +148,7 @@ import {
 } from "./typing.js";
 
 export interface Dependencies {
+  agents?: import("../agent/service.js").AgentService;
   owner: Owner;
   continuity?: import("./continuity.js").ConversationContinuity;
   debugShare?: DebugInvestigator;
@@ -915,7 +916,11 @@ export function createJuneRegistry(deps: Dependencies) {
             return;
           }
           if (c.state.clearedInputs?.[id]) return;
-          if (c.state.migration && event.address.channel !== "slack")
+          if (
+            c.state.migration &&
+            event.address.channel !== "slack" &&
+            event.address.channel !== "agent"
+          )
             throw new Error(
               "Session scope cannot admit a linked legacy adapter",
             );
@@ -1039,7 +1044,11 @@ export function createJuneRegistry(deps: Dependencies) {
           return;
         const receiving = c.vars.receiving.then(async () => {
           const id = conversationInputId(input);
-          if (c.state.migration && input.source.address.channel !== "slack")
+          if (
+            c.state.migration &&
+            input.source.address.channel !== "slack" &&
+            input.source.address.channel !== "agent"
+          )
             throw new Error(
               "Session scope cannot admit a linked legacy adapter",
             );
@@ -1714,6 +1723,11 @@ export function createJuneRegistry(deps: Dependencies) {
               );
             };
             const valid = (state: ConversationState) => {
+              if (
+                event.address.channel === "agent" &&
+                !deps.agents?.clientActive(event.address.threadId ?? "")
+              )
+                return false;
               if (state.clearedInputs?.[eventId]) return false;
               if (
                 deletionRevision !==
@@ -3381,6 +3395,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   : {}),
                               },
                               capabilities: {
+                                agentWebhooksAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  scope.private &&
+                                  !!deps.agents,
                                 artifactsAvailable:
                                   body.type === "event" &&
                                   phase !== "synthesis" &&
@@ -5270,6 +5289,9 @@ export function createJuneRegistry(deps: Dependencies) {
                         content: {
                           type: "text",
                           text,
+                          ...(event.address.channel === "agent"
+                            ? { replyTo: event.messageId }
+                            : {}),
                           ...(reply.webEmbed
                             ? { webEmbed: reply.webEmbed }
                             : {}),
@@ -5935,6 +5957,7 @@ export function createJuneRegistry(deps: Dependencies) {
       conversation,
       typing: createTypingActor(deps.channels),
       activity: createActivityActor({
+        agentActive: (id) => deps.agents?.clientActive(id) === true,
         owner: deps.owner,
         model: deps.model,
         webSearch: deps.webSearch,

@@ -71,7 +71,9 @@ const terminal = (status: Status) =>
 const revision = (deps: Dependencies) =>
   deps.memory?.store.deletionRevision() ?? 0;
 const authorized = (deps: Dependencies, origin: MessageEvent) =>
-  routeEvent(origin, deps.owner)?.private === true;
+  routeEvent(origin, deps.owner)?.private === true &&
+  (origin.address.channel !== "agent" ||
+    deps.agents?.clientActive(origin.senderId) === true);
 const current = (deps: Dependencies, spec: RunSpec) =>
   !!deps.workflows &&
   authorized(deps, spec.origin) &&

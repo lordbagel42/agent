@@ -135,9 +135,32 @@ interface ActivityState {
   acknowledgedThrough: number;
 }
 
+/** Owner-private read model, not diagnostics or renewed effect authority. */
+export interface ActivityReadProjection {
+  sessionId: string;
+  turns: {
+    eventId: string;
+    status:
+      | "completed"
+      | "uncertain"
+      | "processing_or_interrupted"
+      | "forgotten"
+      | "revoked";
+    response: string | null;
+    deliveries: {
+      id: string;
+      phase: Delivery["phase"];
+      result: Delivery["result"] | null;
+    }[];
+  }[];
+  history: { id: string; role: "user" | "assistant"; content: string }[];
+}
+
 export interface ActivityDependencies {
   owner: Owner;
   model: ModelProvider;
+  /** Live host authentication; agent traffic fails closed when absent. */
+  agentActive?(clientId: string): boolean;
   webSearch?: WebSearchProvider;
   channel: Pick<ChannelAdapter, "send" | "setTyping">;
   lifecycle?: Pick<Lifecycle, "enter" | "fail">;
@@ -168,7 +191,13 @@ export interface ActivityDependencies {
  * and coordinator admission are deliberately separate from constructing it.
  */
 export function createActivityActor(deps: ActivityDependencies) {
+  const agentActive = (source: MessageEvent) =>
+    source.address.channel !== "agent" ||
+    (source.address.accountId === deps.owner.id &&
+      source.senderId === source.address.threadId &&
+      deps.agentActive?.(source.address.threadId ?? "") === true);
   const current = (assignment: ActivityAssignment, context: TurnContext) =>
+    agentActive(context.source) &&
     context.deletionRevision === deps.memory.store.deletionRevision() &&
     deps.memory.current(JSON.stringify(assignment.scopeKey), context.reference);
   const keyMatches = (key: string[], assignment: ActivityAssignment) =>
@@ -193,6 +222,105 @@ export function createActivityActor(deps: ActivityDependencies) {
           await c.queue.send("turns", { eventId: turn.assignment.eventId });
     },
     actions: {
+      readProjection: (
+        c,
+        scopeKey: string[],
+        sessionId: string,
+        eventId?: string,
+      ): ActivityReadProjection | null => {
+        const binding = c.state.binding;
+        if (
+          !binding ||
+          binding.sessionId !== sessionId ||
+          !isDeepStrictEqual(scopeKey, ["private", deps.owner.id]) ||
+          !isDeepStrictEqual(binding.scopeKey, scopeKey) ||
+          !isDeepStrictEqual(c.key, sessionActorKey(scopeKey, sessionId))
+        )
+          return null;
+        const projection: ActivityReadProjection = {
+          sessionId,
+          turns: [],
+          history: [],
+        };
+        // Explicit polling can still find an older turn. Shared history is only
+        // the bounded current activity window; never scan an archive here.
+        const turns = eventId
+          ? c.state.turns[eventId]
+            ? [c.state.turns[eventId]]
+            : []
+          : Object.values(c.state.turns)
+              .sort((a, b) => a.assignment.sequence - b.assignment.sequence)
+              .slice(-40);
+        for (const turn of turns) {
+          if (!turn) continue;
+          const context = turn.context;
+          const visible =
+            !!context &&
+            !context.retentionExcluded &&
+            isOwner(context.source, deps.owner) &&
+            routeEvent(context.source, deps.owner)?.private === true &&
+            current(turn.assignment, context);
+          const deliveries = visible
+            ? (turn.deliveries ?? []).filter((delivery) => !delivery.ephemeral)
+            : [];
+          const uncertain =
+            turn.inference === "unknown" ||
+            Object.values(turn.effects ?? {}).some(
+              (effect) => effect === "unknown",
+            ) ||
+            turn.control?.effects === "unknown" ||
+            deliveries.some(
+              (delivery) => delivery.result?.status === "unknown",
+            );
+          projection.turns.push({
+            eventId: turn.assignment.eventId,
+            status:
+              context && !agentActive(context.source)
+                ? "revoked"
+                : context && !current(turn.assignment, context)
+                  ? "forgotten"
+                  : uncertain
+                    ? "uncertain"
+                    : turn.acknowledged
+                      ? "completed"
+                      : "processing_or_interrupted",
+            response: visible ? (turn.reply?.text ?? null) : null,
+            deliveries: deliveries.slice(0, 16).map((delivery) => ({
+              id: delivery.message.id,
+              phase: delivery.phase,
+              result: delivery.result ?? null,
+            })),
+          });
+          if (!visible || !context) continue;
+          if (turn.assignment.kind === "message")
+            projection.history.push({
+              id: `${sessionId}:${turn.assignment.eventId}:user`,
+              role: "user",
+              content: context.source.text,
+            });
+          for (const delivery of deliveries.slice(0, 16)) {
+            if (
+              delivery.message.content.type !== "text" ||
+              delivery.result?.status !== "sent"
+            )
+              continue;
+            projection.history.push({
+              id: `${sessionId}:${delivery.message.id}`,
+              role: "assistant",
+              content: delivery.message.content.text,
+            });
+          }
+        }
+        projection.history = projection.history.slice(-100);
+        // Bound characters without splitting or censoring a retained message.
+        let characters = projection.history.reduce(
+          (sum, entry) => sum + entry.content.length,
+          0,
+        );
+        while (characters > 128_000 && projection.history.length)
+          characters -= projection.history.shift()?.content.length ?? 0;
+        return projection;
+      },
       diagnostic: (c, sessionId: string) => {
         if (c.state.binding?.sessionId !== sessionId) return null;
         return {
@@ -452,7 +580,9 @@ export function createActivityActor(deps: ActivityDependencies) {
                   if (
                     !sourceScope?.private ||
                     !isOwner(context.source, deps.owner) ||
-                    context.source.address.channel !== "slack" ||
+                    !["slack", "agent"].includes(
+                      context.source.address.channel,
+                    ) ||
                     !context.source.direct ||
                     !isDeepStrictEqual(sourceScope.key, assignment.scopeKey) ||
                     context.replyAddress.channel !==
@@ -461,6 +591,9 @@ export function createActivityActor(deps: ActivityDependencies) {
                       context.source.address.accountId ||
                     context.replyAddress.conversationId !==
                       context.source.address.conversationId ||
+                    (context.source.address.channel === "agent" &&
+                      context.replyAddress.threadId !==
+                        context.source.address.threadId) ||
                     (context.decision
                       ? request.agentRole !== undefined ||
                         assignment.kind !== "notification" ||
@@ -928,6 +1061,9 @@ export function createActivityActor(deps: ActivityDependencies) {
                           content: {
                             type: "text",
                             text,
+                            ...(context.source.address.channel === "agent"
+                              ? { replyTo: context.source.messageId }
+                              : {}),
                             ...(output.question &&
                             context.replyAddress.channel === "slack" &&
                             context.replyAddress.conversationId.startsWith(
