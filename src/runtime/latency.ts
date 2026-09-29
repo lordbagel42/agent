@@ -23,6 +23,11 @@ const stages = [
   "dequeued",
   "admitted",
   "context_started",
+  "context_memory_ready",
+  "context_platform_ready",
+  "context_continuity_ready",
+  "context_prompt_ready",
+  "context_roster_ready",
   "context_ready",
   "fast_started",
   "fast_finished",
@@ -308,6 +313,7 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
             : []),
           `Slack E2E ${ms(sent?.platformMs)}; host text ${ms(time("text_sent"))}; HTTP ack ${ms(time("http_ack"))}; typing ack ${ms(time("typing_accepted"))}; textual ack ${ms(time("ack_sent"))}.`,
           `Queue ${ms(span("submission_started", "dequeued"))}; context ${ms(span("context_started", "context_ready"))}; provider fast/deep/synthesis ${ms(span("fast_started", "fast_finished"))}/${ms(span("deep_started", "deep_finished"))}/${ms(span("synthesis_started", "synthesis_finished"))}; send ${ms(span("text_started", "text_sent"))}.`,
+          `Context preparation: memory ${ms(span("context_started", "context_memory_ready"))}; platform ${ms(span("context_memory_ready", "context_platform_ready"))}; continuity ${ms(span("context_platform_ready", "context_continuity_ready"))}; prompt/typing preference ${ms(span("context_continuity_ready", "context_prompt_ready"))}; worker roster ${ms(span("context_prompt_ready", "context_roster_ready"))}; host status ${ms(span("context_roster_ready", "context_ready"))}.`,
           `Provider first observed call (${firstProvider?.providerPhase ?? "unobserved"}): submitted→terminal ${ms(providerSpan("submitted", "terminal"))}; validation ${ms(providerSpan("terminal", "validated"))}; answer-ready ${ms(providerTime("validated"))} since arrival; submitted→answer-ready ${ms(providerSpan("submitted", "validated"))}; cleanup ${ms(providerSpan("validated", "retired"))}; missing stages: ${missing.length ? missing.map((stage) => `provider_${stage}`).join(", ") : "none"}.`,
         ].join("\n");
       });

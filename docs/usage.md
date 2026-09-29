@@ -595,11 +595,21 @@ Direct Slack pings use a temporary `hourglass_flowing_sand` reaction in channels
 threads and DMs, even when optional typing indicators are disabled. Unthreaded
 Slack DMs also use that reaction instead of the unavailable native typing bubble.
 It starts alongside context/model work,
-is not repeatedly added, and is removed on completion/cancellation. An ambiguous
-add, failed cleanup, or process crash can leave it behind; reactions have no Slack-side TTL.
-An existing reaction not added by this activity run is left alone.
+is not repeatedly added, and cleanup is attempted on completion/cancellation,
+even after an ambiguous add, `already_reacted`, or loss of the process-local cache.
+`no_reaction` confirms cleanup. This reserved bot reaction represents the current
+conversation turn, not a background worker or Amp job; other users' reactions are
+untouched. Failed cleanup or a crash before cleanup can still leave it behind;
+reactions have no Slack-side TTL and this is not an orphan-reaction sweep.
 Unsupported surfaces and status failures do not prevent a reply. Live Slack
 status rendering still needs verification after an authorized rollout.
+
+Private latency reports split context preparation into memory, platform context,
+continuity, prompt/typing preference, worker-roster reads and host status. These
+are sequential preparation phases, including their local bookkeeping, not pure
+network timings. June can inspect them through her existing `latency` action.
+Older traces report missing phases as unobserved; a slow aggregate context span
+alone does not identify the slow dependency or prove model slowness.
 
 Set `slack.contextEnabled: true` for one bounded same-channel/thread context page.
 It preserves the initiating message once and the original sender of each

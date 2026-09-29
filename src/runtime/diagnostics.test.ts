@@ -195,9 +195,17 @@ test("June reads persisted logs only for owner-private turns; HTTP, guest, chann
     const completed = Object.values((await actor.snapshot()).events).filter(
       (entry) => entry.done,
     ).length;
+    const input = {
+      ...event,
+      id,
+      messageId: id,
+      text: "Show your logs",
+      ...extra,
+    };
+    latency.begin(input);
     await actor.send("inbox", {
       type: "event",
-      event: { ...event, id, messageId: id, text: "Show your logs", ...extra },
+      event: input,
     });
     await expect
       .poll(
@@ -209,6 +217,20 @@ test("June reads persisted logs only for owner-private turns; HTTP, guest, chann
       .toBe(completed + 1);
   };
   await deliver("owner-logs");
+  expect(
+    latency
+      .snapshot()
+      .traces[0]?.observations.map(({ stage }) => stage)
+      .filter((stage) => stage.startsWith("context_")),
+  ).toEqual([
+    "context_started",
+    "context_memory_ready",
+    "context_platform_ready",
+    "context_continuity_ready",
+    "context_prompt_ready",
+    "context_roster_ready",
+    "context_ready",
+  ]);
   expect(JSON.stringify(sent[0]?.content)).toContain("slack.arrival");
   expect(JSON.stringify(sent[0]?.content)).toContain(
     "slack_oauth.scope_validation.validation_failed",

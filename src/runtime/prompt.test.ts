@@ -64,6 +64,15 @@ it.for(["interaction", "execution", "decision"] as const)(
       },
     });
     expect(request.system).toContain("APPROVED_CONTINUITY_EXCERPT");
+    expect(request.system).toContain(
+      "Execution workers are durable model tasks, not Amp coding processes",
+    );
+    expect(request.system).toContain(
+      "The host hourglass describes the current conversation turn, not worker liveness",
+    );
+    expect(request.system).toContain(
+      "A slow context total alone cannot identify the slow dependency",
+    );
     expect(request.system).toContain("relationship memory is immature");
     expect(request.system).toContain(
       "Idle expiry does not cancel durable jobs",

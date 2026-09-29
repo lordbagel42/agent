@@ -523,7 +523,9 @@ export function createSlackAdapter({
         address.conversationId,
         event.messageId,
       ]);
-      if (reaction && thinkingReactions.has(reactionKey) === active) return;
+      // The durable status target can survive a restart or an ambiguous add.
+      // A missing process-local entry must never suppress its cleanup.
+      if (reaction && active && thinkingReactions.has(reactionKey)) return;
       const controller = new AbortController();
       const abort = () => controller.abort();
       signal?.addEventListener("abort", abort, { once: true });
@@ -563,13 +565,13 @@ export function createSlackAdapter({
         if (!response.ok) throw new Error("typing_unavailable");
         const result: unknown = await response.json();
         if (
-          reaction &&
-          active &&
-          isJsonObject(result) &&
-          result.error === "already_reacted"
+          !isJsonObject(result) ||
+          (result.ok !== true &&
+            !(
+              reaction &&
+              result.error === (active ? "already_reacted" : "no_reaction")
+            ))
         )
-          return;
-        if (!isJsonObject(result) || result.ok !== true)
           throw new Error("typing_unavailable");
         if (reaction && active) thinkingReactions.add(reactionKey);
         latency?.mark(event, active ? "typing_accepted" : "typing_cleared");

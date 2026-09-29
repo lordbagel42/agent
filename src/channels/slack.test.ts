@@ -672,9 +672,21 @@ describe("createSlackAdapter", () => {
     );
     await adapter.setTyping?.(event, true);
     await adapter.setTyping?.(event, false);
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
     expect(fetchImpl.mock.calls[2]?.[0]).toBe(
       "https://slack.com/api/reactions.add",
+    );
+    expect(fetchImpl.mock.calls[3]?.[0]).toBe(
+      "https://slack.com/api/reactions.remove",
+    );
+    // A durable typing target can outlive the adapter's process-local cache.
+    const restarted = makeAdapter(fetchImpl);
+    fetchImpl.mockResolvedValueOnce(
+      jsonResponse({ ok: false, error: "no_reaction" }),
+    );
+    await expect(restarted.setTyping?.(event, false)).resolves.toBeUndefined();
+    expect(fetchImpl.mock.calls[4]?.[0]).toBe(
+      "https://slack.com/api/reactions.remove",
     );
   });
 

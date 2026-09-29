@@ -71,6 +71,18 @@ test("private report separates answer readiness from late retirement without mix
     expect(latency.snapshot().traces).toEqual([]);
     latency.begin(event);
     absent("retired");
+    for (const [stage, at] of [
+      ["context_started", 0],
+      ["context_memory_ready", 1],
+      ["context_platform_ready", 2],
+      ["context_continuity_ready", 4],
+      ["context_prompt_ready", 5],
+      ["context_roster_ready", 8],
+      ["context_ready", 9],
+    ] as const) {
+      clock.mockReturnValue(at);
+      latency.mark(event, stage as LatencyStage);
+    }
     const first = latency.providerTiming(event, "fast");
     clock.mockReturnValue(10);
     first("submitted");
@@ -88,6 +100,9 @@ test("private report separates answer readiness from late retirement without mix
     latency.begin(reportEvent);
     const pending = latency.report("recent", reportEvent, "revision");
     expect(pending).toContain("1 retained sample(s)");
+    expect(pending).toContain(
+      "Context preparation: memory 1.0ms; platform 1.0ms; continuity 2.0ms; prompt/typing preference 1.0ms; worker roster 3.0ms; host status 1.0ms.",
+    );
     expect(pending).toContain("submitted→terminal 90.0ms; validation 20.0ms");
     expect(pending).toContain("answer-ready 120.0ms since arrival");
     expect(pending).toContain("submitted→answer-ready 110.0ms");
@@ -111,6 +126,9 @@ test("private report separates answer readiness from late retirement without mix
     ]);
     expect(latency.report("recent", reportEvent)).toContain(
       "missing stages: provider_submitted, provider_terminal, provider_validated, provider_retired",
+    );
+    expect(latency.report("recent", reportEvent)).toContain(
+      "Context preparation: memory unobserved; platform unobserved; continuity unobserved; prompt/typing preference unobserved; worker roster unobserved; host status unobserved.",
     );
   } finally {
     clock.mockRestore();
