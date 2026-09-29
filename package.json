@@ -26,6 +26,7 @@
     "@openai/codex": "0.157.1",
     "ajv": "8.20.0",
     "hono": "4.13.9",
+    "ipaddr.js": "2.5.0",
     "playwright": "1.63.0",
     "rivetkit": "2.3.21",
     "zod": "4.6.5"
