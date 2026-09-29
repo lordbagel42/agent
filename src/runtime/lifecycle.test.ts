@@ -1,5 +1,30 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { createLifecycle } from "./lifecycle.js";
+
+test("first failure is attributed without logging abort content or weakening the latch", async () => {
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const lifecycle = createLifecycle();
+    const signal = new AbortController();
+    const release = await lifecycle.enter(signal.signal);
+    signal.abort(new Error("private message must not be logged"));
+    lifecycle.fail();
+    release();
+    expect(log).toHaveBeenCalledTimes(1);
+    const receipt = JSON.parse(log.mock.calls[0]?.[0] as string);
+    expect(receipt.event).toBe("lifecycle_failed");
+    expect(receipt.kind).toBe("lease_abort");
+    expect(receipt.active).toBe(1);
+    expect(receipt.admittedAt).toEqual(expect.any(Number));
+    expect(receipt.admissionStack).toContain("lifecycle.test.ts");
+    expect(JSON.stringify(receipt)).not.toContain("private message");
+    lifecycle.resume();
+    expect(lifecycle.ready).toBe(false);
+    expect(await lifecycle.drain()).toBe(false);
+  } finally {
+    log.mockRestore();
+  }
+});
 
 test("drain waits for admitted work and holds queued turns without cancelling them", async () => {
   const lifecycle = createLifecycle();

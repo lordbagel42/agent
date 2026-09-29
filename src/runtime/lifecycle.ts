@@ -15,9 +15,28 @@ export function createLifecycle(isSettled?: () => Promise<boolean>) {
     finishDrain?.(false);
     for (const wake of waiting) wake();
   };
-  const fail = () => {
+  const fail = (admission?: { admittedAt: number; admissionStack: string }) => {
+    const first = !failed;
     failed = true;
     resume();
+    if (first) {
+      // Host-generated frames only: never log a thrown error, signal reason,
+      // actor key, message body, or arbitrary workflow metadata.
+      try {
+        console.error(
+          JSON.stringify({
+            event: "lifecycle_failed",
+            kind: admission ? "lease_abort" : "explicit_failure",
+            at: Date.now(),
+            active,
+            stack: new Error().stack?.split("\n").slice(1, 9).join("\n"),
+            ...admission,
+          }),
+        );
+      } catch {
+        // Diagnostics must not undo or interrupt the safety latch.
+      }
+    }
   };
   const tryEnter = (): (() => void) | undefined => {
     if (fenced || failed) return undefined;
@@ -64,13 +83,19 @@ export function createLifecycle(isSettled?: () => Promise<boolean>) {
       if (!release) throw new Error("workflow_unavailable");
       // A forced workflow abort may release its callback before a raw effect
       // settles. Never certify that process as naturally drained afterwards.
-      signal.addEventListener("abort", fail, { once: true });
+      const admission = {
+        admittedAt: Date.now(),
+        admissionStack:
+          new Error().stack?.split("\n").slice(1, 9).join("\n") ?? "",
+      };
+      const abort = () => fail(admission);
+      signal.addEventListener("abort", abort, { once: true });
       return () => {
-        signal.removeEventListener("abort", fail);
+        signal.removeEventListener("abort", abort);
         release();
       };
     },
-    fail,
+    fail: () => fail(),
     drain(timeoutMs = 4_000): Promise<boolean> {
       if (failed) return Promise.resolve(false);
       if (draining) return draining;
