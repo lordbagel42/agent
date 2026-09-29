@@ -29,6 +29,7 @@ import {
 } from "../reflection/global-proposal.js";
 import { juryRequestSchema } from "../reflection/jury.js";
 import {
+  REPOSITORY_REPORT_LIMIT,
   repositoryQuestionSchema,
   repositoryReadSchema,
 } from "../repository/contracts.js";
@@ -129,7 +130,7 @@ const recallTimestampSchema = z
   .transform((value) => value ?? undefined);
 
 const companionReplySchema = z.strictObject({
-  text: z.string().refine((text) => Array.from(text).length <= 3_500),
+  text: z.string(),
   sendMessages: sendMessagesSchema.optional(),
   question: questionSchema.optional(),
   messages: z
@@ -662,7 +663,7 @@ function legacyReplyJsonSchema(
     properties: {
       text: {
         type: "string",
-        description: "Must be no more than 3500 Unicode characters.",
+        description: `Must be no more than ${replyCapabilities(capabilities).agentRole === "repository" ? REPOSITORY_REPORT_LIMIT : 3500} Unicode characters.`,
       },
       ...(replyCapabilities(capabilities).messagingAvailable
         ? {
@@ -2187,6 +2188,11 @@ export function parseReply(
     throw new ModelError("invalid_response", false);
   }
   const reply = parsed.data;
+  if (
+    Array.from(reply.text).length >
+    (agentRole === "repository" ? REPOSITORY_REPORT_LIMIT : 3500)
+  )
+    throw new ModelError("invalid_response", false);
   if (
     (reply.coding !== undefined &&
       !workspaces.includes(reply.coding.workspace)) ||

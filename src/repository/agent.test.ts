@@ -111,6 +111,26 @@ it("keeps repository consultation in workers and source reads in the tool-free s
   ).toThrow();
 });
 
+it("allows bounded internal repository reports without expanding chat replies", () => {
+  const specialist = { agentRole: "repository" as const };
+  const text = "🌻".repeat(12_000);
+  expect(parseReply(JSON.stringify({ text }), [], specialist)).toEqual({
+    text,
+  });
+  expect(() =>
+    parseReply(JSON.stringify({ text: `${text}x` }), [], specialist),
+  ).toThrow();
+  for (const agentRole of [undefined, "interaction", "execution"] as const) {
+    expect(() =>
+      parseReply(JSON.stringify({ text: "x".repeat(3501) }), [], { agentRole }),
+    ).toThrow();
+    expect(
+      parseReply(JSON.stringify({ text: "🌻".repeat(3500) }), [], { agentRole })
+        .text,
+    ).toBe("🌻".repeat(3500));
+  }
+});
+
 it("loads source without following links, opening host paths, or accepting a partial unsafe archive", async () => {
   const archive = async (unsafe = false) => {
     const tar = pack();
@@ -167,6 +187,7 @@ it("loads source without following links, opening host paths, or accepting a par
 
 it("routes June's request through the specialist and withholds guest, revoked and automated grants", async (t) => {
   let consultations = 0;
+  const report = `${"Source detail. ".repeat(270)}The deployment lock serializes activation (scripts/deploy.py:2–3); this does not prove live health.`;
   const repository = createRepositoryAgent({
     revision,
     load: async () => snapshot(),
@@ -177,7 +198,7 @@ it("routes June's request through the specialist and withholds guest, revoked an
       const observation = request.messages.at(-1)?.content ?? "";
       return observation.includes("Untrusted snapshot observation")
         ? {
-            text: "The deployment lock serializes activation (scripts/deploy.py:2–3); this does not prove live health.",
+            text: report,
           }
         : {
             text: "",
@@ -219,8 +240,13 @@ it("routes June's request through the specialist and withholds guest, revoked an
           const observation = request.messages.find((message) =>
             message.content.includes("Repository specialist report"),
           );
+          if (observation) expect(observation.content).toContain(report);
           return observation
-            ? { text: observation.content.slice(-3000) }
+            ? {
+                text:
+                  observation.content.slice(0, 500) +
+                  observation.content.slice(-2000),
+              }
             : {
                 text: "",
                 repository: "What serializes deployment activation?",
