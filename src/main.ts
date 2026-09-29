@@ -6,6 +6,9 @@ import { promisify } from "node:util";
 import { serve } from "@hono/node-server";
 import { createClient } from "rivetkit/client";
 import { z } from "zod";
+import { createAgentMcp } from "./agent/mcp.js";
+import { operatorRequest } from "./agent/operator.js";
+import { AgentService } from "./agent/service.js";
 import { createSlackAdapter } from "./channels/slack.js";
 import { createSlackIngressDiagnostics } from "./channels/slack-ingress.js";
 import { createWhatsAppAdapter } from "./channels/whatsapp.js";
@@ -279,6 +282,23 @@ async function main() {
       personality,
       source(event, scope) {
         if (
+          event.address.channel === "agent" &&
+          event.direct &&
+          scope === ownerAudience
+        ) {
+          return {
+            id: `agent:${event.id}`,
+            audiences: [ownerAudience],
+            platform: "agent",
+            account: event.address.accountId,
+            conversation: event.address.conversationId,
+            author: event.senderId,
+            observedAt: event.occurredAt,
+            sourceUrl: `urn:june:agent:${event.id}`,
+            text: event.text,
+          };
+        }
+        if (
           event.address.channel !== "slack" ||
           !event.direct ||
           scope !== ownerAudience
@@ -430,16 +450,79 @@ async function main() {
       accessToken: secret(config.whatsapp.accessTokenEnv),
     });
   }
+  let agents: AgentService | undefined;
+  const owner = {
+    ...config.owner,
+    identities: [
+      ...config.owner.identities,
+    ] as Dependencies["owner"]["identities"],
+  };
+  if (config.mcp) {
+    startupStage = "owner-trusted MCP storage and credentials";
+    await privateDirectory(config.mcp.directory);
+    const key = memoryKey(config.mcp.keyEnv);
+    const clients = Object.entries(config.mcp.clients).map(([id, settings]) => {
+      const token = secret(settings.tokenEnv);
+      if (token === operatorToken)
+        throw new Error("MCP and operator credentials must differ");
+      return { id, token, expiresAt: settings.expiresAt };
+    });
+    agents = new AgentService({
+      directory: config.mcp.directory,
+      key,
+      ownerId: config.owner.id,
+      clients,
+      destinations: config.mcp.destinations,
+      submit: async (event) => {
+        if (memory) {
+          const source = memory.source(event, ownerAudience);
+          if (source) {
+            if (memory.store.isDeleted(source.id)) return;
+            memory.store.appendSource(source);
+          }
+        }
+        await june.send("inbox", { type: "event", event });
+      },
+      snapshot: () => june.snapshot(),
+    });
+    key.fill(0);
+    channels.agent = agents.adapter;
+    for (const client of clients)
+      owner.identities.push({
+        channel: "agent",
+        accountId: owner.id,
+        senderId: client.id,
+      });
+  }
   startupStage = "Rivet configuration/startup";
   process.env.RIVETKIT_STORAGE_PATH ??= resolve(".data");
   process.env.RIVET_INSPECTOR_DISABLE ??= "1";
   const registry = createJuneRegistry({
-    owner: config.owner,
+    owner,
     channels,
     model,
     memory,
     reflection,
     coding,
+    agentActive: (id) => agents?.clientActive(id) ?? false,
+    webhooks: agents
+      ? {
+          targets: (conversationId) =>
+            agents
+              ?.targets("message", conversationId)
+              .map(({ id, name }) => ({ id, name })) ?? [],
+          send: async (id, text, idempotencyKey) => {
+            const hook = agents?.webhooks.get(id);
+            if (!hook || !agents) throw new Error("webhook_unavailable");
+            return agents.webhooks.enqueue(hook.clientId, {
+              webhookId: id,
+              idempotencyKey,
+              type: "message",
+              payload: { text },
+            });
+          },
+        }
+      : undefined,
   });
   Object.assign(registry.config, {
     startEngine: !process.env.RIVET_ENDPOINT && !process.env.RIVET_ENGINE,
@@ -456,7 +539,7 @@ async function main() {
   });
   const june = client.conversation.getOrCreate(["private", config.owner.id]);
   const app = createHttpApp({
-    owner: config.owner,
+    owner,
     channels,
     operatorToken,
     slackIngressDiagnostics,
@@ -607,6 +690,7 @@ async function main() {
       createMemoryRoutes({
         ...memory,
         audience,
+        invalidateDeliveries: () => agents?.webhooks.invalidatePending(),
         async forget(scope, sourceId) {
           await client.conversation
             .getOrCreate(JSON.parse(scope))
@@ -669,7 +753,52 @@ async function main() {
       return c.json({ reconciled: await actor.reconcile(input.id, true) });
     });
   }
+  if (agents && config.mcp) {
+    const handler = createAgentMcp({
+      service: agents,
+      origin: config.mcp.origin,
+      status: async () => ({
+        ready: (await registry.routes.health()).ok,
+        capabilities: {
+          messaging: true,
+          webhooks: true,
+          coding: !!coding,
+          memory: !!memory,
+          imports: !!imports,
+          reflection: !!reflection,
+        },
+      }),
+      operator: operatorRequest((request) => app.fetch(request), operatorToken),
+    });
+    app.all("/mcp", (c) => handler(c.req.raw));
+    // Recovery remains available with the separate private operator credential,
+    // including if all MCP credentials have been revoked or lost.
+    app.get("/operator/agents", (c) => c.json({ clients: agents?.clients() }));
+    app.post("/operator/agents/:id/revoke", async (c) => {
+      z.strictObject({ confirmed: z.literal(true) }).parse(await c.req.json());
+      return c.json(agents?.revokeClient(c.req.param("id")));
+    });
+  }
   registry.start();
+  let pumping: Promise<void> | undefined;
+  const pump = agents
+    ? setInterval(() => {
+        if (pumping || !agents) return;
+        const service = agents;
+        pumping = service
+          .recover()
+          .then(() => service.webhooks.drain(1))
+          .catch(() => {
+            console.error(
+              "Agent queue recovery unavailable; durable work retained.",
+            );
+          })
+          .finally(() => {
+            pumping = undefined;
+          });
+      }, 1000)
+    : undefined;
+  pump?.unref();
   startupStage = "HTTP listener";
   const server = serve(
     { fetch: app.fetch, hostname: config.host, port: config.port },
@@ -687,8 +816,11 @@ async function main() {
   const shutdown = () =>
     (stopping ??= (async () => {
       await new Promise<void>((done) => server.close(() => done()));
+      if (pump) clearInterval(pump);
+      await pumping;
       await client.dispose();
       await registry.shutdown();
+      await agents?.close();
       memory?.personality?.close();
       memory?.store.close();
       // Rivet's own signal handler terminates after draining. With custom signal

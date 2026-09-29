@@ -1,5 +1,5 @@
 /** Platform IDs stay opaque; never parse message timestamps as numbers. */
-export type Channel = "slack" | "whatsapp";
+export type Channel = "slack" | "whatsapp" | "agent";
 
 export interface Address {
   channel: Channel;
@@ -75,7 +75,7 @@ export type ChannelSearchResult =
 
 export interface ChannelAdapter {
   readonly channel: Channel;
-  readonly capabilities: { text: true; reactions: true; threads: boolean };
+  readonly capabilities: { text: true; reactions: boolean; threads: boolean };
   /** Verify raw bytes before decoding. Never enqueue an unauthenticated event. */
   receive(
     request: Request,
@@ -112,6 +112,8 @@ export interface CompanionReply {
   reaction?: string;
   /** Request one current-channel lookup instead of a conversational reply. */
   search?: string;
+  /** Host resolves the registered destination and credentials, never the model. */
+  webhook?: { id: string; text: string };
 }
 
 export interface ModelRequest {
@@ -120,6 +122,8 @@ export interface ModelRequest {
   /** Only these configured workspace names may be delegated. */
   workspaces: string[];
   searchAvailable?: boolean;
+  webhookIds?: string[];
+  agentConversation?: boolean;
 }
 
 export interface ModelProvider {

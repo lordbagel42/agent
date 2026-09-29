@@ -22,7 +22,7 @@ export class ModelError extends Error {
 }
 
 const companionReplySchema = z.strictObject({
-  text: z.string().refine((text) => Array.from(text).length <= 3_500),
+  text: z.string().max(32_000),
   coding: z
     .strictObject({
       workspace: z.string(),
@@ -36,6 +36,9 @@ const companionReplySchema = z.strictObject({
     .min(1)
     .refine((value) => Array.from(value).length <= 500)
     .optional(),
+  webhook: z
+    .strictObject({ id: z.uuid(), text: z.string().min(1).max(32_000) })
+    .optional(),
 });
 
 type JsonObject = Record<string, unknown>;
@@ -44,7 +47,12 @@ function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function replyJsonSchema(workspaces: string[], searchAvailable = false) {
+export function replyJsonSchema(
+  workspaces: string[],
+  searchAvailable = false,
+  webhookIds: string[] = [],
+  agentConversation = false,
+) {
   const permittedWorkspaces = [...new Set(workspaces)];
   const coding =
     permittedWorkspaces.length === 0
@@ -69,10 +77,31 @@ export function replyJsonSchema(workspaces: string[], searchAvailable = false) {
     properties: {
       text: {
         type: "string",
-        description: "Must be no more than 3500 Unicode characters.",
+        description: agentConversation
+          ? "One plain-text response, at most 32000 characters. Do not split or apply chat-platform formatting."
+          : "Must be no more than 3500 Unicode characters.",
       },
       coding,
-      reaction: { type: ["string", "null"] },
+      reaction: agentConversation
+        ? { type: "null" }
+        : { type: ["string", "null"] },
+      ...(webhookIds.length
+        ? {
+            webhook: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                id: { type: "string", enum: webhookIds },
+                text: {
+                  type: "string",
+                  description:
+                    "Message to the registered receiver, 1–32000 characters.",
+                },
+              },
+              required: ["id", "text"],
+            },
+          }
+        : {}),
       ...(searchAvailable
         ? {
             search: {
@@ -88,6 +117,7 @@ export function replyJsonSchema(workspaces: string[], searchAvailable = false) {
       "coding",
       "reaction",
       ...(searchAvailable ? ["search"] : []),
+      ...(webhookIds.length ? ["webhook"] : []),
     ],
   };
 }
@@ -249,6 +279,8 @@ export function parseReply(
   text: string,
   workspaces: string[],
   searchAvailable = false,
+  webhookIds: string[] = [],
+  agentConversation = false,
 ): CompanionReply {
   let value: unknown;
   try {
@@ -270,12 +302,21 @@ export function parseReply(
   if (normalized.search === null) {
     delete normalized.search;
   }
+  if (normalized.webhook === null) delete normalized.webhook;
 
   const parsed = companionReplySchema.safeParse(normalized);
   if (!parsed.success) {
     throw new ModelError("invalid_response", false);
   }
   const reply = parsed.data;
+  if (
+    (!agentConversation && Array.from(reply.text).length > 3500) ||
+    (agentConversation && (reply.reaction || reply.search)) ||
+    (reply.webhook &&
+      (!webhookIds.includes(reply.webhook.id) || reply.coding || reply.search))
+  ) {
+    throw new ModelError("invalid_response", false);
+  }
   if (
     reply.coding !== undefined &&
     !workspaces.includes(reply.coding.workspace)
@@ -390,6 +431,8 @@ export function createModelProvider(
             schema: replyJsonSchema(
               request.workspaces,
               request.searchAvailable,
+              request.webhookIds,
+              request.agentConversation,
             ),
             name: "companion_reply",
           },
@@ -397,6 +440,8 @@ export function createModelProvider(
         ),
         request.workspaces,
         request.searchAvailable,
+        request.webhookIds,
+        request.agentConversation,
       );
     },
   };

@@ -33,6 +33,11 @@ into June or tested with a real account.
 - Headless configuration, health check, and bearer-protected inspection API.
 - Optional owner-private, read-only browser console using the existing operator
   credential. It cannot approve actions or change configuration.
+- Optional [owner-trusted agent MCP](docs/agent-mcp.md): shared private context,
+  operator controls, plain-text messaging, and generic signed outbound webhooks
+  that June can also select directly. Individually revocable administrative
+  credentials, restricted destinations, and durable no-blind-retry delivery.
+  Locally verified; not deployed or connected to a live Amp receiver.
 
 June can reply with text, a native reaction, both, or intentional silence. A light
 acknowledgment no longer forces an extra text message. Delivery history records

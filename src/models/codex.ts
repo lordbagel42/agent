@@ -474,7 +474,12 @@ export function createCodexProvider({
         await writeFile(
           schemaPath,
           JSON.stringify(
-            replyJsonSchema(request.workspaces, request.searchAvailable),
+            replyJsonSchema(
+              request.workspaces,
+              request.searchAvailable,
+              request.webhookIds,
+              request.agentConversation,
+            ),
           ),
           { flag: "wx", mode: 0o600 },
         );
@@ -496,7 +501,13 @@ export function createCodexProvider({
         }
 
         const answer = await readAnswer(answerPath);
-        reply = parseReply(answer, request.workspaces, request.searchAvailable);
+        reply = parseReply(
+          answer,
+          request.workspaces,
+          request.searchAvailable,
+          request.webhookIds,
+          request.agentConversation,
+        );
       } catch (error) {
         requestFailed = true;
         requestError = error;

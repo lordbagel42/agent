@@ -120,6 +120,7 @@ export function createHttpApp(deps: HttpDependencies) {
     return c.json({ name: "June", ready }, ready ? 200 : 503);
   });
   for (const [channel, adapter] of Object.entries(deps.channels)) {
+    if (channel === "agent") continue; // MCP authenticates before durable intake.
     app.on(
       channel === "whatsapp" ? ["GET", "POST"] : ["POST"],
       `/webhooks/${channel}`,
