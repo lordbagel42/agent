@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { MessageEvent, OutboundMessage } from "../core/contracts.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
+import { sessionCommand } from "../runtime/session-controls.js";
 import { createSlackAdapter } from "./slack.js";
 import {
   createSlackIngressDiagnostics,
@@ -96,6 +97,114 @@ function jsonResponse(
 }
 
 describe("createSlackAdapter", () => {
+  it("admits mentioned session controls only from plain authenticated owner input", async () => {
+    const adapter = makeAdapter();
+    for (const command of [
+      "PING",
+      "PINGMODEL",
+      "CLEARHISTORY",
+      "DEBUGSHARE slow replies",
+    ]) {
+      for (const type of ["message", "app_mention"]) {
+        for (const leading of [true, false]) {
+          const text = leading ? `<@U_BOT> ${command}` : `${command} <@U_BOT>`;
+          const elements = leading
+            ? [
+                { type: "user", user_id: "U_BOT" },
+                { type: "text", text: ` ${command}` },
+              ]
+            : [
+                { type: "text", text: `${command} ` },
+                { type: "user", user_id: "U_BOT" },
+              ];
+          const blocks = [
+            {
+              type: "rich_text",
+              elements: [{ type: "rich_text_section", elements }],
+            },
+          ];
+          const event = {
+            type,
+            channel_type: type === "message" ? "im" : "channel",
+            channel: type === "message" ? "D1" : "C1",
+            user: "U_HUMAN",
+            ts: "123.456",
+            text,
+            blocks,
+          };
+          for (const changes of [{}, { blocks: undefined }]) {
+            const { events } = await adapter.receive(
+              signedRequest(eventBody({ ...event, ...changes })),
+            );
+            const normalized = events[0] as MessageEvent;
+            expect(normalized).toMatchObject({
+              text: command,
+              botMentioned: true,
+              sessionCommandEligible: true,
+            });
+            expect(sessionCommand(normalized)).toEqual(
+              command === "CLEARHISTORY"
+                ? { kind: "clear" }
+                : command.startsWith("DEBUGSHARE")
+                  ? { kind: "debug", reason: "slow replies" }
+                  : { kind: "ping", model: command === "PINGMODEL" },
+            );
+          }
+          for (const changes of [
+            { user: "U_GUEST" },
+            { attachments: [] },
+            { subtype: "me_message" },
+            { text: `> ${text}` },
+            { text: text.replace("U_BOT", "U_OTHER") },
+            { text: `${text} extra` },
+            ...[
+              "rich_text_quote",
+              "rich_text_preformatted",
+              "rich_text_list",
+            ].map((type) => ({
+              blocks: [{ type: "rich_text", elements: [{ type, elements }] }],
+            })),
+            {
+              blocks: [
+                {
+                  type: "rich_text",
+                  elements: [
+                    {
+                      type: "rich_text_section",
+                      elements: [
+                        { type: "text", text: "different visible content" },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ]) {
+            const { events } = await adapter.receive(
+              signedRequest(eventBody({ ...event, ...changes })),
+            );
+            const normalized = events[0] as MessageEvent | undefined;
+            expect(normalized?.sessionCommandEligible).not.toBe(true);
+            if (normalized) {
+              expect(sessionCommand(normalized)).toBeUndefined();
+              expect(normalized.text).toBe(
+                "text" in changes ? changes.text : text,
+              );
+            }
+          }
+          const { events } = await adapter.receive(
+            signedRequest(
+              eventBody(event),
+              Math.floor(now / 1000),
+              "wrong-body",
+            ),
+          );
+          expect(events).toEqual([]);
+        }
+      }
+    }
+  });
+
   it.each([
     { kind: "ping", text: "PING", field: "sessionCommandEligible" as const },
     {

@@ -46,9 +46,13 @@ function nonEmptyString(value: unknown): value is string {
 /** Slack's fallback text alone does not prove the composer wasn't a quote.
  * Commands allow only ordinary rich-text sections, never quotes/code/lists or
  * attachment fallbacks. Historical/context readers never set this marker. */
-export function isPlainSlackCommand(event: JsonObject): boolean {
+export function isPlainSlackCommand(
+  event: JsonObject,
+  botUserId?: string,
+): boolean {
   if (
-    event.type !== "message" ||
+    (event.type !== "message" &&
+      !(botUserId && event.type === "app_mention")) ||
     typeof event.text !== "string" ||
     event.text.includes("`") ||
     event.subtype !== undefined ||
@@ -75,8 +79,10 @@ export function isPlainSlackCommand(event: JsonObject): boolean {
     !section.elements.every(
       (element) =>
         isJsonObject(element) &&
-        element.type === "text" &&
-        typeof element.text === "string" &&
+        ((element.type === "text" && typeof element.text === "string") ||
+          (botUserId &&
+            element.type === "user" &&
+            element.user_id === botUserId)) &&
         (!isJsonObject(element.style) || element.style.code !== true),
     )
   )
@@ -85,7 +91,13 @@ export function isPlainSlackCommand(event: JsonObject): boolean {
   const fallback = event.text.replace(/&(?:amp|lt|gt);/g, (entity) =>
     entity === "&amp;" ? "&" : entity === "&lt;" ? "<" : ">",
   );
-  return section.elements.map((element) => element.text).join("") === fallback;
+  return (
+    section.elements
+      .map((element) =>
+        element.type === "user" ? `<@${element.user_id}>` : element.text,
+      )
+      .join("") === fallback
+  );
 }
 
 function verifySignature(input: {
@@ -278,6 +290,22 @@ async function normalizeEvent(
     const threadId = nonEmptyString(event.thread_ts)
       ? event.thread_ts
       : undefined;
+    // Only session controls accept one boundary mention. Validate the original
+    // rich text before removing it; don't grant other command families new syntax.
+    const prefix = `<@${botUserId}> `;
+    const suffix = ` <@${botUserId}>`;
+    const sessionText = event.text.startsWith(prefix)
+      ? event.text.slice(prefix.length)
+      : event.text.endsWith(suffix)
+        ? event.text.slice(0, -suffix.length)
+        : event.text;
+    const sessionCandidate =
+      owner &&
+      /^(?:PING|PINGMODEL|CLEARHISTORY|DEBUGSHARE(?: [^\r\n]*)?)$/.test(
+        sessionText,
+      );
+    const sessionEligible =
+      sessionCandidate && isPlainSlackCommand(event, botUserId);
     // Subscribe on contact, not on a reply: June may intentionally stay silent.
     // Keep guest admission and direct-ping policy separate from name matching.
     if (
@@ -301,13 +329,10 @@ async function normalizeEvent(
         messageId: event.ts,
         senderId: event.user,
         direct: channelType === "im",
-        text: event.text,
+        text: sessionEligible ? sessionText : event.text,
         botMentioned: mentioned,
-        ...(owner &&
-        /^(?:PING|PINGMODEL|CLEARHISTORY|DEBUGSHARE(?: [^\r\n]*)?)$/.test(
-          event.text,
-        )
-          ? { sessionCommandEligible: isPlainSlackCommand(event) }
+        ...(sessionCandidate
+          ? { sessionCommandEligible: sessionEligible }
           : {}),
         ...(event.text.startsWith("!memory-correct")
           ? { ownerCorrectionEligible: isPlainSlackCommand(event) }

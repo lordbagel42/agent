@@ -81,6 +81,11 @@ it.for(["interaction", "execution", "decision"] as const)(
       "Transfer completion is not investigation completion",
     );
     expect(request.system).toContain("PING sends PONG without inference");
+    expect(request.system).toContain("@June PING");
+    expect(request.system).toContain("PINGMODEL @June");
+    expect(request.system).toContain(
+      "DEBUGSHARE still requires the owner's private DM",
+    );
     expect(request.system).toContain(
       "PINGMODEL first invokes the configured model",
     );
