@@ -341,6 +341,9 @@ async function normalizeEvent(
         ...(owner && channelType === "im" && /^!browser-pin\b/.test(event.text)
           ? { browserPinEligible: isPlainSlackCommand(event) }
           : {}),
+        ...(channelType === "im" && /^!artifact-pin\b/.test(event.text)
+          ? { artifactPinEligible: isPlainSlackCommand(event) }
+          : {}),
         ...(owner && channelType === "im" && event.text === "!memory-backup"
           ? { memoryBackupEligible: isPlainSlackCommand(event) }
           : {}),
@@ -416,6 +419,8 @@ export function createSlackAdapter({
   contextEnabled = false,
   searchEnabled = false,
   webEmbedOrigins = [],
+  artifactOrigin,
+  experimentalArtifactEmbed = false,
   privateSearch,
   ingressDiagnostics,
   latency,
@@ -435,6 +440,8 @@ export function createSlackAdapter({
   contextEnabled?: boolean;
   searchEnabled?: boolean;
   webEmbedOrigins?: readonly string[];
+  artifactOrigin?: string;
+  experimentalArtifactEmbed?: boolean;
   privateSearch?: SlackPrivateSearchOptions;
   ingressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
@@ -691,6 +698,16 @@ export function createSlackAdapter({
           PRIVATE_REFLECTION_REVIEW_PREFIX,
         );
         const embed = message.content.webEmbed;
+        const artifact = message.content.artifact;
+        if (
+          artifact &&
+          (!artifactOrigin ||
+            !/^[a-f0-9]{32}$/.test(artifact.id) ||
+            artifact.url !== `${artifactOrigin}/artifacts/${artifact.id}/` ||
+            (artifact.imageUrl &&
+              artifact.imageUrl !== `${artifact.url}preview.png`))
+        )
+          return rejected("artifact_origin_denied");
         if (
           embed &&
           (message.content.plainText ||
@@ -738,6 +755,42 @@ export function createSlackAdapter({
                     thumbnail_url: embed.thumbnailUrl,
                     title: { type: "plain_text", text: embed.title },
                     alt_text: embed.title,
+                  },
+                ],
+                unfurl_links: false,
+                unfurl_media: false,
+              }
+            : {}),
+          ...(artifact?.imageUrl
+            ? {
+                blocks: [
+                  ...(experimentalArtifactEmbed
+                    ? [
+                        {
+                          type: "video",
+                          video_url: artifact.url,
+                          title_url: artifact.url,
+                          thumbnail_url: artifact.imageUrl,
+                          title: { type: "plain_text", text: artifact.title },
+                          alt_text: artifact.title,
+                        },
+                      ]
+                    : [
+                        {
+                          type: "image",
+                          image_url: artifact.imageUrl,
+                          alt_text: `${artifact.title} — static preview; open the browser link for live detail.`,
+                        },
+                      ]),
+                  {
+                    type: "section",
+                    text: { type: "plain_text", text: message.content.text },
+                    accessory: {
+                      type: "button",
+                      text: { type: "plain_text", text: "Open shared space" },
+                      url: artifact.url,
+                      action_id: "artifact_open",
+                    },
                   },
                 ],
                 unfurl_links: false,

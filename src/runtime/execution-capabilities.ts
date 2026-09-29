@@ -102,7 +102,7 @@ export async function runExecutionCapability(
       }),
     );
   }
-  if (reply.dashboardLogin || reply.webEmbed) {
+  if (reply.dashboardLogin || reply.webEmbed || reply.artifact) {
     const result = await deliverPrivate(async (outbound) => {
       if (!current())
         return {
@@ -124,6 +124,9 @@ export async function runExecutionCapability(
             type: "text",
             text: response.text,
             ...(response.webEmbed ? { webEmbed: response.webEmbed } : {}),
+            ...(response.artifactPresentation
+              ? { artifact: response.artifactPresentation }
+              : {}),
           },
         },
         "text",

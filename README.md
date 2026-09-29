@@ -16,6 +16,9 @@ support for a feature does not mean it is enabled, live-tested, or safe to expos
 
 ## What’s here
 
+- **Shared visual spaces.** Optional [HTML artifacts, collaborative Excalidraw
+  boards and live workflow views](docs/shared-artifacts.md), with image/link
+  delivery and creator-DM PIN protection when June chooses a private view.
 - **Conversation that continues.** Slack DMs, mentions, threaded follow-ups,
   reactions, multipart replies, and intentional silence. Owner and guest context
   have separate privacy and permission boundaries.

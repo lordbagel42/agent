@@ -1,5 +1,9 @@
 import { z } from "zod";
 import { appsRequestSchema } from "../apps/client.js";
+import {
+  ARTIFACT_HELP,
+  artifactCommandSchema,
+} from "../artifacts/contracts.js";
 import { BROWSER_HELP, browserCommandSchema } from "../browser/contracts.js";
 import type {
   CompanionReply,
@@ -227,6 +231,7 @@ const companionReplySchema = z.strictObject({
     .optional(),
   replyInThread: z.boolean().optional(),
   apps: appsRequestSchema.optional(),
+  artifact: artifactCommandSchema.optional(),
   inspection: z
     .union([
       z.enum([
@@ -420,6 +425,7 @@ export type ReplyCapabilities = Pick<
   | "analyticsAvailable"
   | "inspectionAvailable"
   | "appsAvailable"
+  | "artifactsAvailable"
   | "recallAvailable"
   | "pendingMemoryAvailable"
   | "personalitySuggestionAvailable"
@@ -495,6 +501,7 @@ function rolePermitsField(
       "replyInThread",
       "typingEnabled",
       "execution",
+      "artifact",
     ].includes(key);
   }
   if (role === "execution") {
@@ -532,6 +539,7 @@ function legacyReplyJsonSchema(
     analyticsAvailable,
     inspectionAvailable,
     appsAvailable,
+    artifactsAvailable,
     recallAvailable,
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
@@ -848,6 +856,15 @@ function legacyReplyJsonSchema(
                 },
                 required: ["agent", "action", "task"],
               },
+            },
+          }
+        : {}),
+      ...(artifactsAvailable
+        ? {
+            artifact: {
+              ...z.toJSONSchema(artifactCommandSchema, { target: "draft-7" }),
+              type: ["object", "null"],
+              description: ARTIFACT_HELP,
             },
           }
         : {}),
@@ -1795,6 +1812,7 @@ function legacyReplyJsonSchema(
       ...(analyticsAvailable ? ["analytics"] : []),
       ...(inspectionAvailable ? ["inspection"] : []),
       ...(appsAvailable ? ["apps"] : []),
+      ...(artifactsAvailable ? ["artifact"] : []),
       ...(recallAvailable ? ["recall"] : []),
       ...(pendingMemoryAvailable ? ["pendingMemory"] : []),
       ...(personalitySuggestionAvailable ? ["personalitySuggestion"] : []),
@@ -2000,6 +2018,7 @@ export function parseReply(
     analyticsAvailable,
     inspectionAvailable,
     appsAvailable,
+    artifactsAvailable,
     recallAvailable,
     pendingMemoryAvailable,
     personalitySuggestionAvailable,
@@ -2076,6 +2095,7 @@ export function parseReply(
     "analytics",
     "inspection",
     "apps",
+    "artifact",
     "recall",
     "pendingMemory",
     "personalitySuggestion",
@@ -2148,6 +2168,7 @@ export function parseReply(
     (reply.inspection !== undefined && !inspectionAvailable) ||
     (reply.apps !== undefined && !appsAvailable) ||
     (reply.recall !== undefined && !recallAvailable) ||
+    (reply.artifact !== undefined && !artifactsAvailable) ||
     (reply.pendingMemory !== undefined && !pendingMemoryAvailable) ||
     (reply.personalitySuggestion !== undefined &&
       !personalitySuggestionAvailable) ||
@@ -2209,6 +2230,7 @@ export function parseReply(
     Number(reply.analytics !== undefined) +
     Number(reply.inspection !== undefined) +
     Number(reply.apps !== undefined) +
+    Number(reply.artifact !== undefined) +
     Number(reply.recall !== undefined) +
     Number(reply.pendingMemory === true) +
     Number(reply.personalitySuggestion !== undefined) +
@@ -2266,6 +2288,7 @@ export function parseReply(
       reply.analytics !== undefined ||
       reply.inspection !== undefined ||
       reply.apps !== undefined ||
+      reply.artifact !== undefined ||
       reply.recall !== undefined ||
       reply.pendingMemory === true ||
       reply.personalitySuggestion !== undefined ||

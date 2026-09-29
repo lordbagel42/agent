@@ -325,8 +325,15 @@ function buildGraphPayload(message: OutboundMessage): JsonObject | undefined {
       ...(message.content.replyTo === undefined
         ? {}
         : { context: { message_id: message.content.replyTo } }),
-      type: "text",
-      text: { body: message.content.text },
+      ...(message.content.artifact?.imageUrl
+        ? {
+            type: "image",
+            image: {
+              link: message.content.artifact.imageUrl,
+              caption: message.content.text.slice(0, 1024),
+            },
+          }
+        : { type: "text", text: { body: message.content.text } }),
     };
   }
 

@@ -11,6 +11,7 @@
     "dev": "tsx watch --env-file-if-exists=.env src/main.ts",
     "start": "tsx --env-file-if-exists=.env src/main.ts",
     "apps:start": "node src/apps/supervisor.mjs",
+    "artifacts:build": "tsx scripts/build-artifacts.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -23,6 +24,7 @@
     "@anthropic-ai/claude-agent-sdk": "0.3.283",
     "@anthropic-ai/sdk": "0.128.0",
     "@e2b/code-interpreter": "2.8.0",
+    "@excalidraw/excalidraw": "0.18.1",
     "@hono/node-server": "2.1.1",
     "@modelcontextprotocol/sdk": "1.30.1",
     "@openai/codex": "0.157.1",
@@ -33,12 +35,17 @@
     "jose": "6.2.12",
     "playwright": "1.63.0",
     "quickjs-emscripten": "0.32.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "rivetkit": "2.3.21",
     "zod": "4.6.5"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",
     "@types/node": "^24.0.0",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "esbuild": "0.28.2",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vitest": "5.0.2"

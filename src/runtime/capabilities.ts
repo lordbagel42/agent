@@ -52,6 +52,7 @@ export type CapabilityDependencies = Pick<
   | "browserProposal"
   | "personalityEvaluation"
   | "apps"
+  | "artifacts"
   | "importCancel"
   | "inspection"
   | "dashboardLogin"
@@ -241,6 +242,34 @@ export async function runCapability(
         ? { replyInThread: generated.replyInThread }
         : {}),
     };
+  if (generated.artifact !== undefined) {
+    if (
+      origin !== "event" ||
+      phase === "synthesis" ||
+      !modelRequest.artifactsAvailable ||
+      !deps.artifacts
+    )
+      return {
+        text: "Shared artifacts require a current user request and configured hosting.",
+      };
+    const checked = parseReply(
+      JSON.stringify(generated),
+      workspaces,
+      modelRequest,
+    );
+    try {
+      const result = await deps.artifacts.request(checked.artifact, {
+        event,
+        operationId: context.operationId ?? eventId,
+        isCurrent: canStartAction,
+      });
+      return { text: result.text, artifactPresentation: result.presentation };
+    } catch {
+      return {
+        text: "The artifact request was not confirmed. Inspect its existing receipt before retrying; no PIN is available in chat context.",
+      };
+    }
+  }
   if (generated.browserTask !== undefined) {
     if (
       origin !== "event" ||

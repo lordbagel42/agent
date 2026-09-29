@@ -95,6 +95,21 @@ const schema = z
           .default(3 * 60 * 60 * 1000),
       })
       .default({ enabled: false, idleMs: 3 * 60 * 60 * 1000 }),
+    artifacts: z
+      .strictObject({
+        origin: baseUrl.refine(
+          (value) =>
+            new URL(value).origin === value && value.startsWith("https://"),
+          "Use a dedicated HTTPS origin",
+        ),
+        port: z.number().int().min(1024).max(65535),
+        directory: absolutePath,
+        assets: absolutePath,
+        encryptionKeyEnv: envName,
+        pepperEnv: envName,
+        experimentalSlackEmbed: z.boolean().default(false),
+      })
+      .optional(),
     dynamicApps: z
       .strictObject({
         endpoint: baseUrl.refine(
@@ -569,6 +584,14 @@ const schema = z
     (config) =>
       !config.browserCompanion?.enabled || !config.deployment?.blueGreen,
     "Browser PIN input cannot pass through the durable blue-green Slack intake queue",
+  )
+  .refine(
+    (config) =>
+      !config.artifacts ||
+      (!config.deployment?.blueGreen &&
+        !config.setupMode &&
+        config.artifacts.port !== config.port),
+    "Artifacts require a separate listener, active channels, and non-queued PIN ingress (blue-green is unsupported)",
   )
   .refine(
     (config) =>

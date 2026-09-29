@@ -63,6 +63,8 @@ export interface MessageEvent extends EventBase {
   forgetCommandEligible?: boolean;
   /** Fresh plain owner-DM PIN reply; never imported history or quoted text. */
   browserPinEligible?: boolean;
+  /** Fresh plain creator/owner DM input; checked again by the artifact host. */
+  artifactPinEligible?: boolean;
   metadata?: MessageMetadata;
 }
 
@@ -95,6 +97,7 @@ export interface OutboundMessage {
         replyTo?: string;
         plainText?: true;
         webEmbed?: import("./web-embed.js").WebEmbed;
+        artifact?: import("../artifacts/contracts.js").ArtifactPresentation;
         question?: import("./question.js").Question;
       }
     | { type: "reaction"; messageId: string; emoji: string; remove?: boolean };
@@ -209,6 +212,9 @@ export interface ExecutionCommand {
 }
 
 export interface CompanionReply {
+  artifact?: import("../artifacts/contracts.js").ArtifactCommand;
+  /** Host-only output, never accepted from model JSON. */
+  artifactPresentation?: import("../artifacts/contracts.js").ArtifactPresentation;
   text: string;
   /** Alternative to text: ordered conversational messages, not tool actions. */
   messages?: string[];
@@ -381,6 +387,7 @@ export interface ModelImageInput {
 }
 
 export interface ModelRequest {
+  artifactsAvailable?: boolean;
   /** Host-enforced action boundary; omitted preserves legacy mixed-role turns. */
   agentRole?: "interaction" | "execution";
   system: string;

@@ -9,6 +9,11 @@ import { serve } from "@hono/node-server";
 import { createClient } from "rivetkit/client";
 import { z } from "zod";
 import { createAppsClient } from "./apps/client.js";
+import { ArtifactRenderer } from "./artifacts/render.js";
+import { createArtifactRoutes } from "./artifacts/routes.js";
+import { ArtifactService } from "./artifacts/service.js";
+import { slackArtifactSecret } from "./artifacts/slack-secret.js";
+import { ArtifactStore } from "./artifacts/store.js";
 import { BrowserCompanion } from "./browser/companion.js";
 import { createSlackAdapter } from "./channels/slack.js";
 import { createSlackIngressDiagnostics } from "./channels/slack-ingress.js";
@@ -991,6 +996,8 @@ async function main() {
         .map((identity) => identity.senderId),
       signingSecret: secret(config.slack.signingSecretEnv),
       botToken: secret(config.slack.botTokenEnv),
+      artifactOrigin: config.artifacts?.origin,
+      experimentalArtifactEmbed: config.artifacts?.experimentalSlackEmbed,
       ingressDiagnostics: slackIngressDiagnostics,
       latency,
       threads: slackThreads,
@@ -1098,7 +1105,46 @@ async function main() {
       key.fill(0);
     }
   }
+  const artifactRenderer = config.artifacts
+    ? new ArtifactRenderer(config.artifacts.assets)
+    : undefined;
+  const artifactShutdown = new AbortController();
+  const artifacts = config.artifacts
+    ? new ArtifactService({
+        origin: config.artifacts.origin,
+        owner: config.owner,
+        store: new ArtifactStore({
+          file: join(config.artifacts.directory, "artifacts.sqlite"),
+          owner: config.owner,
+          encryptionKey: secret(config.artifacts.encryptionKeyEnv),
+          pepper: secret(config.artifacts.pepperEnv),
+        }),
+        deletionRevision: () => memory?.store.deletionRevision() ?? 0,
+        workflow: async (id) =>
+          (await client.workflowRun
+            .getOrCreate([config.owner.id, id])
+            .presentation()) ?? undefined,
+        sendSecret: config.slack
+          ? slackArtifactSecret(
+              config.slack.teamId,
+              secret(config.slack.botTokenEnv),
+            )
+          : async () => ({
+              status: "rejected",
+              code: "artifact_dm_unavailable",
+              retryable: false,
+            }),
+        preview: async (record, workflow) => {
+          await artifactRenderer?.render(
+            record,
+            workflow,
+            record.visibility === "private",
+          );
+        },
+      })
+    : undefined;
   const dependencies: Dependencies = {
+    artifacts,
     owner: config.owner,
     continuity,
     debugShare:
@@ -1508,6 +1554,12 @@ async function main() {
       // Secret replies must never reach memory.source, actor admission, or model
       // history. Even stale/duplicate owner PIN commands become safe receipts.
       if (event.type === "message") {
+        event = (await artifacts?.consumePin(event)) ?? event;
+        if (/!artifact-pin\b/i.test(event.text))
+          event = {
+            ...event,
+            text: "Artifact PIN input unavailable; command removed before history.",
+          };
         event = browserCompanion?.consumePin(event) ?? event;
         if (/!browser-pin\b/i.test(event.text))
           event = {
@@ -1673,6 +1725,16 @@ async function main() {
     await wakeups.snapshot();
   }
   startupStage = "HTTP listener";
+  const artifactServer =
+    artifacts && artifactRenderer && config.artifacts
+      ? serve({
+          fetch: createArtifactRoutes(artifacts, artifactRenderer, {
+            shutdown: artifactShutdown.signal,
+          }).fetch,
+          hostname: "127.0.0.1",
+          port: config.artifacts.port,
+        })
+      : undefined;
   const server = serve(
     { fetch: app.fetch, hostname: config.host, port: config.port },
     () => {
@@ -1692,6 +1754,9 @@ async function main() {
       try {
         diagnosticLog?.lifecycle("shutdown_http_close_started");
         browserViewShutdown.abort();
+        artifactShutdown.abort();
+        if (artifactServer)
+          await new Promise<void>((done) => artifactServer.close(() => done()));
         await new Promise<void>((done) => server.close(() => done()));
         diagnosticLog?.lifecycle("shutdown_http_close_returned");
         diagnosticLog?.lifecycle("shutdown_client_dispose_started");
@@ -1706,6 +1771,7 @@ async function main() {
         diagnosticLog?.lifecycle("shutdown_providers_close_returned");
       }
       diagnosticLog?.lifecycle("shutdown_resources_close_started");
+      artifacts?.store.close();
       await browserCompanion?.close();
       await browser?.close();
       await connections?.close();

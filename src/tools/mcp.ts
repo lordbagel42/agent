@@ -3,7 +3,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { redactBrowserPin } from "../core/private-input.js";
+import {
+  containsArtifactSecret,
+  redactBrowserPin,
+} from "../core/private-input.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import type { ToolAction, ToolAdapter } from "./broker.js";
@@ -58,6 +61,7 @@ function containsPrivateInspection(value: unknown, depth = 0): boolean {
   if (typeof value === "string") {
     if (
       value.includes(RIVET_REPLY_PREFIX) ||
+      containsArtifactSecret(value) ||
       value.includes(PRIVATE_REFLECTION_REVIEW_PREFIX)
     )
       return true;
@@ -75,6 +79,7 @@ function containsPrivateInspection(value: unknown, depth = 0): boolean {
     Object.entries(value).some(
       ([key, child]) =>
         key.includes(RIVET_REPLY_PREFIX) ||
+        containsArtifactSecret(key) ||
         key.includes(PRIVATE_REFLECTION_REVIEW_PREFIX) ||
         containsPrivateInspection(child, depth + 1),
     )

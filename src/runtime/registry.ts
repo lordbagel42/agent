@@ -187,6 +187,7 @@ export interface Dependencies {
   browserProposal?: (operation: string | null) => string;
   personalityEvaluation?: ReturnType<typeof createPersonalityPreview>;
   apps?: ReturnType<typeof createAppsClient>;
+  artifacts?: import("../artifacts/service.js").ArtifactService;
   importCancel?: (selection: string) => string;
   dashboardLogin?: {
     issue(): { url: string; expiresAt: string } | undefined;
@@ -3353,6 +3354,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                   : {}),
                               },
                               capabilities: {
+                                artifactsAvailable:
+                                  body.type === "event" &&
+                                  phase !== "synthesis" &&
+                                  !!deps.artifacts,
                                 messagingAvailable:
                                   ownerTurn &&
                                   event.address.channel === "slack" &&
@@ -5233,6 +5238,9 @@ export function createJuneRegistry(deps: Dependencies) {
                           text,
                           ...(reply.webEmbed
                             ? { webEmbed: reply.webEmbed }
+                            : {}),
+                          ...(reply.artifactPresentation
+                            ? { artifact: reply.artifactPresentation }
                             : {}),
                           ...(reply.question &&
                           scope.private &&

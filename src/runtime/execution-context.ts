@@ -46,6 +46,7 @@ export function executionCapabilities(
     analyticsAvailable: privateTurn && !!deps.analytics,
     inspectionAvailable: privateTurn && !!deps.inspection,
     appsAvailable: privateTurn && !!deps.apps,
+    artifactsAvailable: !!deps.artifacts,
     importCancelAvailable: privateTurn && !!deps.importCancel,
     memoryAvailable: privateTurn && !!deps.memory,
     recallAvailable: privateTurn && !!deps.memory,

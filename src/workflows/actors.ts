@@ -132,6 +132,20 @@ export function createWorkflowRunActor(deps: Dependencies) {
         if (!c.state.started && !terminal(c.state.status))
           await c.queue.send("start", null);
       },
+      presentation: (c) => {
+        const spec = c.state.spec;
+        if (!spec || !current(deps, spec) || c.state.status === "revoked")
+          return null;
+        return {
+          runId: spec.id,
+          name: spec.name,
+          revision: spec.revision,
+          status: c.state.status,
+          operations: Object.entries(c.state.operations).map(
+            ([name, receipt]) => ({ name, status: receipt.status }),
+          ),
+        };
+      },
       inspect: (c) => {
         const spec = c.state.spec;
         if (!spec || !current(deps, spec) || c.state.status === "revoked")
