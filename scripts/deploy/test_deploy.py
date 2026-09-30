@@ -2174,6 +2174,58 @@ class WarmStandbySafety(unittest.TestCase):
             (self.host.data / "starts").read_text().splitlines(), [self.first, target]
         )
 
+    def test_release_hashing_finishes_before_intake_pauses(self):
+        self.enable_slots()
+        target = self.host.commit("src/console/view.ts", "two")
+        digest = deploy.tree_digest
+        paused_reads = []
+
+        def measure(root):
+            if "pause" in self.trace and "forward" not in self.trace:
+                paused_reads.append(root)
+            return digest(root)
+
+        with patch.object(deploy, "tree_digest", side_effect=measure):
+            self.loop.tick()
+        self.assertEqual(self.store.status(target), "healthy")
+        self.assertEqual(self.trace, ["standby", "pause", "activate", "forward"])
+        self.assertEqual(paused_reads, [])
+
+    def test_binding_drift_during_drain_resumes_without_activation(self):
+        self.enable_slots()
+        target = self.host.commit("src/console/view.ts", "two")
+        pid = self.host.process.pid
+        drain = self.host.drain
+
+        def changed_binding(commit):
+            drained = drain(commit)
+            self.host.binding = lambda: "b" * 64
+            return drained
+
+        with patch.object(self.host, "drain", side_effect=changed_binding):
+            self.loop.tick()
+        self.assertEqual(self.store.status(target), "deferred")
+        self.assertEqual(self.trace, ["standby", "pause", "forward"])
+        self.assertEqual(self.host.process.pid, pid)
+        self.assertTrue(self.host.healthy(self.first))
+        self.assertEqual(self.store.get("intent"), "")
+
+    def test_retry_revalidates_retained_release_before_pausing(self):
+        self.enable_slots()
+        target = self.host.commit("src/console/view.ts", "two")
+        (self.host.data / "busy").touch()
+        self.loop.tick()
+        self.assertEqual(self.store.status(target), "deferred")
+        (self.host.data / "busy").unlink()
+        (self.host.releases / target / "src/console/view.ts").write_text("changed")
+        self.trace.clear()
+        pid = self.host.process.pid
+        self.loop.tick()
+        self.assertEqual(self.store.status(target), "failed")
+        self.assertEqual(self.trace, [])
+        self.assertEqual(self.host.process.pid, pid)
+        self.assertTrue(self.host.healthy(self.first))
+
     def test_slot_environment_change_blocks_before_drain(self):
         self.enable_slots()
         with (

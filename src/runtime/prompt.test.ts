@@ -144,6 +144,12 @@ it.for(["interaction", "execution", "decision"] as const)(
       "Separately configured blue/green deployment",
     );
     expect(request.system).toContain("Only one runtime may own live state");
+    expect(request.system).toContain(
+      "reuses those verified immutable manifests only within that locked attempt",
+    );
+    expect(request.system).toContain(
+      "Source publication does not install this optimization",
+    );
     expect(request.system).toContain("do not activate a slot");
     expect(request.system).toContain("there is no Sign in button");
     expect(request.system).toContain("with no save confirmation or checkbox");

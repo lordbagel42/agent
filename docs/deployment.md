@@ -141,6 +141,16 @@ health and MainPID identity must pass before forwarding switches and success is
 recorded. A standby failure blocks recovery without stopping or draining old
 June. A lost activation acknowledgment blocks rather than activating twice.
 
+Full release-byte verification happens before intake forwarding pauses. Within
+that single locked attempt, the controller reuses the verified manifests of the
+sealed, root-owned releases instead of hashing both trees again during cutover.
+It still checks current runtime binding and standby after drain. A later attempt
+verifies retained releases again; this is not a persistent integrity cache.
+This relies on protected release directories and exclusive operator ownership,
+not detection of privileged tampering or new disk corruption mid-attempt.
+Installing the updated controller is separate from publishing application code;
+the optimization does not promise zero downtime or a particular deployment time.
+
 The existing independent `slack_responder.py` has an opt-in `durableQueue` mode.
 Unlike legacy notices, this mode verifies and stores events before ACK, sends no
 "currently deploying" messages, and replays accepted traffic after handoff. It

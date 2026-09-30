@@ -598,7 +598,10 @@ class Deployer:
                 # may have died during a long drain, or installation may drift.
                 if not h.standby(target):
                     raise ValueError("candidate_not_standby")
-                h.rollback_safe(h.manifest(previous), h.manifest(target))
+                # Both releases were verified earlier in this locked attempt
+                # and remain sealed. Recheck the live binding, not their bytes,
+                # while intake is paused. Never reuse these across attempts.
+                h.rollback_safe(prior, candidate)
         except Exception:  # noqa: BLE001 - resume even after an ambiguous HTTP error
             s.event(target, "deferred", "drain_busy")
             self.resume(target)
