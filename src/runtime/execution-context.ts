@@ -40,6 +40,13 @@ export function executionCapabilities(
     webSearchAvailable: !!deps.webSearch?.available,
     javascriptAvailable: true,
     emojiSearchAvailable: privateTurn && !!deps.emojiSearch?.available,
+    readImageAvailable:
+      privateTurn &&
+      event.direct &&
+      event.address.channel === "slack" &&
+      event.metadata?.channelType === "im" &&
+      !!event.metadata.files?.length &&
+      !!deps.channels.slack?.readImage,
     repositoryAvailable: !!deps.repository,
     releaseAvailable: !!deps.release,
     modelStatusAvailable: privateTurn && !!deps.modelStatus,

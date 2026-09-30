@@ -22,6 +22,18 @@ into June or tested with a real account.
 - Optional owner-only participation in channels containing `raygen`, scoped
   surrounding messages, sender names/IDs, exact Slack timestamps and file
   descriptors. Other participants provide context, never authorization.
+- Owner-DM image reading through execution workers: attach a PNG/JPEG (up to
+  5 MiB) and ask June about it. Workers call `readImage:{fileId,question}` for
+  a file on that initiating message and receive a tool-free native vision
+  review. This requires execution workers, Slack `files:read` access, and a
+  vision-capable configured model; no new credential or permission is granted.
+  Private download URLs and bytes stay volatile; review text follows normal
+  scoped history retention. Reads are on demand, never automatic background
+  OCR or retries. Each worker request reads one image, then reports. The host
+  awaits provider retirement; uncertain inference requires review, not retry.
+  Guests, channels, automated events, arbitrary URLs and
+  history-only files are not supported; reattach a file for a follow-up read.
+  Availability is not proof of a successful download or visual interpretation.
 - Linked owner DMs share history. Public Slack threads have separate context and
   cannot access private history or approve coding tasks.
 - Durable inbox, serial turns, event deduplication, and a persisted outbox.

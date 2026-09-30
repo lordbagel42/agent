@@ -235,6 +235,7 @@ export async function runExecutionCapability(
       reply.jury ||
       reply.e2b ||
       reply.browserTask ||
+      reply.readImage ||
       reply.personalitySuggestion ||
       reply.personalityEvaluate ||
       reply.rivet ||

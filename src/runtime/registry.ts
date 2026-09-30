@@ -3477,6 +3477,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                       scope.private &&
                                       isOwner(event, deps.owner) &&
                                       !!deps.emojiSearch?.available,
+                                    readImageAvailable:
+                                      body.type === "event" &&
+                                      phase !== "synthesis" &&
+                                      !!deps.execution &&
+                                      !!deps.channels.slack?.readImage,
                                     repositoryAvailable:
                                       body.type === "event" &&
                                       phase !== "synthesis" &&

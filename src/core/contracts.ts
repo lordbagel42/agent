@@ -171,6 +171,16 @@ export interface ChannelAdapter {
     event: MessageEvent,
     signal?: AbortSignal,
   ): Promise<ConversationMessage[]>;
+  /** Ephemeral native image bytes from an attachment on this authorized event.
+   * Never retain the result in actor state, text prompts, or journals. */
+  readImage?(
+    event: MessageEvent,
+    fileId: string,
+    signal: AbortSignal,
+  ): Promise<
+    | { status: "ready"; image: ModelImageInput }
+    | { status: "unavailable"; code?: "files_read_required" }
+  >;
   /** Ephemeral host activity, never a model action or a durable delivery.
    * Unsupported surfaces are a no-op; adapters bound each transport attempt. */
   setTyping?(
@@ -231,6 +241,7 @@ export interface CompanionReply {
   /** Capability-free QuickJS computation, separate from privileged workflows. */
   javascript?: { source: string; inputJson: string };
   emojiSearch?: { query: string; limit?: number };
+  readImage?: { fileId: string; question: string };
   /** Ask June's source specialist; only execution workers may consult it. */
   repository?: string;
   /** Specialist-only reads from the host's pinned public source snapshot. */
@@ -465,6 +476,7 @@ export interface ModelRequest {
   workflowAvailable?: boolean;
   javascriptAvailable?: boolean;
   emojiSearchAvailable?: boolean;
+  readImageAvailable?: boolean;
   repositoryAvailable?: boolean;
   repositoryReadAvailable?: boolean;
 }

@@ -18,6 +18,7 @@ import {
   slackMetadata,
 } from "./slack-context.js";
 import { createSlackHistory } from "./slack-history.js";
+import { createSlackImageReader } from "./slack-images.js";
 import type { SlackIngressDiagnostics } from "./slack-ingress.js";
 import { slackQuestionAnswer, slackQuestionBlocks } from "./slack-question.js";
 import {
@@ -502,6 +503,12 @@ export function createSlackAdapter({
       : { search: search.search, hasSearchToken: search.hasActionToken }),
     ...(contextEnabled ? { context: context.context } : {}),
     audience: context.audience,
+    readImage: createSlackImageReader({
+      teamId,
+      botToken,
+      ownerUserIds: owners,
+      fetch: fetchImpl,
+    }),
     async setTyping(event, active, signal) {
       const { address } = event;
       // Slack's status UI is thread-scoped and can auto-open that thread.
