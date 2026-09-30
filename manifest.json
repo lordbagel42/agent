@@ -107,6 +107,7 @@
       "request_url": "https://june.example.com/webhooks/slack",
       "bot_events": [
         "message.im",
+        "message.mpim",
         "message.channels",
         "message.groups",
         "app_mention",

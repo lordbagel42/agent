@@ -504,8 +504,8 @@ configured and opted in; local fake-provider checks are not live verification.
 
 **Slack:** create/install a bot, enable Event Subscriptions and its App Home
 Messages tab, and configure the public HTTPS `/webhooks/slack` URL. Subscribe to
-`message.im`, `app_mention`, `reaction_added`, and `reaction_removed`; grant bot
-scopes `im:history`, `app_mentions:read`, `chat:write`, `reactions:read`, and
+`message.im`, `message.mpim`, `app_mention`, `reaction_added`, and `reaction_removed`; grant bot
+scopes `im:history`, `mpim:history`, `mpim:read`, `app_mentions:read`, `chat:write`, `reactions:read`, and
 `reactions:write`. Supply its signing secret, bot token, workspace ID, and bot
 user ID. Set exactly one Slack identity in `owner.identities`, using the owner's
 human user ID and the configured workspace ID. Configuration is trusted authority;
@@ -514,8 +514,10 @@ must verify this identity before upgrading: there is no hard-coded owner fallbac
 Anyone in that workspace can initiate a turn by directly mentioning June or
 messaging her 1:1. Group pings alone are not invitations. Set
 `slack.participateInOwnerChannels: true` to also accept Raygen's unmentioned messages
-in channels whose verified current name contains `raygen`. Group DMs remain
-excluded. Raygen can also follow up without another mention in threads June
+in channels whose verified current name contains `raygen`. For ordinary group-DM
+chat, June admits Raygen without a ping and guests only with a direct @mention. They stay shared:
+no owner-private history, memory, tools, approvals or cross-conversation continuity.
+Raygen can also follow up without another mention in threads June
 started or has posted text in. Successful Slack sends record thread participation
 locally across restarts, without a Slack lookup on each follow-up. Slack's signed
 parent-author field, when present, also recognizes older threads June started. Older threads
@@ -693,8 +695,10 @@ prompts exclude owner-private memory and unprovenanced/foreign-surface history.
 The checked-in manifest additionally requests `channels:read`, `channels:history`
 and `message.channels` for public participation; `groups:read`, `groups:history`
 and `message.groups` for private channels; and `users:read` for display names.
-These new grants/events are **not yet verified live**. Apply/reinstall only after
-reviewing the intended scopes; no MPIM scope, user token or files scope is needed.
+The manifest is not proof of live installation. Group DMs additionally need the
+`message.mpim` subscription and `mpim:history`/`mpim:read` grants above. Apply live
+changes only with operator authorization, preserving unrelated app settings.
+No user token or Socket Mode migration is required.
 
 For an enterprise-installed app (`is_enterprise_install: true`), also enable
 [organization-ready deployment](https://docs.slack.dev/enterprise/developing-for-enterprise-orgs/#enable-organization-wide-installation)

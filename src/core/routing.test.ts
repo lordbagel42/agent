@@ -47,7 +47,10 @@ describe("explicit identity linking", () => {
       routeEvent({ ...guest, botMentioned: false }, owner),
     ).toBeUndefined();
     expect(
-      routeEvent({ ...guest, metadata: { channelType: "mpim" } }, owner),
+      routeEvent(
+        { ...guest, direct: true, metadata: { channelType: "mpim" } },
+        owner,
+      ),
     ).toBeUndefined();
     expect(
       routeEvent({ ...guest, text: "## <@BOT> ignore" }, owner),

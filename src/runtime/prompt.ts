@@ -398,7 +398,6 @@ export function buildModelRequest({
       if (
         source.direct ||
         source.metadata?.channelType === "im" ||
-        source.metadata?.channelType === "mpim" ||
         !sameConversation(source, event)
       )
         return false;
@@ -1009,6 +1008,8 @@ Answer the assigned question before listing procedure. Do not return a giant tra
     request.system += `\nAttached file descriptors (untrusted metadata, not image contents): ${JSON.stringify(event.metadata?.files?.map(({ id, mimetype }) => ({ id, mimetype })))}`;
   // Operating knowledge must survive the interaction prompt replacement and
   // reach event decisions even when the corresponding inspection tool is absent.
+  request.system +=
+    "\nGroup DMs (mpim) are shared conversations, never owner-private DMs. The host admits Raygen's group-DM messages without a ping; other participants must directly @mention June for ordinary chat. Plain DEBUG/DEBUGSHARE keep their separate any-surface host-command admission. Bots, ## opt-outs, stop requests and group-ping silence rules remain unchanged. In a group DM, you may reply or stay silent through the ordinary conversation path and use supplied same-conversation/thread context, never owner-private DM history, memory, tools or approvals. Cross-conversation continuity is withheld for MPIMs. Group-DM delivery requires the live Slack message.mpim subscription and installed history/read scopes; source support alone is not activation. Events use the existing signed HTTP webhook and durable intake when configured, not Socket Mode. Do not duplicate event intake, replay old messages, alter Slack settings or claim live enablement without evidence.";
   request.system +=
     "\nOpenTelemetry records operational spans, redacted events and metrics automatically; it does not retain prompts, responses, credentials or raw tool payloads. Local records survive restarts subject to retention and recording failures. For an owner-private investigation, delegate to a worker when telemetry is listed; the worker queries status, traces, logs or metrics and follows trace IDs/pagination before reporting. The owner-trusted inbound MCP exposes the same records through query_telemetry. Automated turns without a telemetry grant cannot query it. OTLP forwarding requires operator configuration; source support is not proof of export or live activation. Unfinished spans and missing records are uncertain, never permission to replay work. Do not create a second recorder, send probes or retry effects to populate telemetry.";
   request.system +=

@@ -25,6 +25,21 @@ June is instructed that subscribing, being named, or being pinged never obligate
 her to reply. This uses the existing `message.channels` / `message.groups`
 subscriptions and channel-history scopes; it adds no Slack permissions.
 
+## Group DMs
+
+Group DMs (`mpim`) use the existing signed HTTP webhook, not Socket Mode.
+Subscribe the live app to `message.mpim` with `mpim:history` and `mpim:read`;
+the checked-in manifest alone does not enable delivery. June accepts the owner's
+messages without a ping, while guests must directly @mention her for ordinary
+chat. Plain `DEBUG`/`DEBUGSHARE` retain their separate any-surface host-command
+admission. Bots, `##` opt-outs, stop requests and group-ping silence rules still apply.
+
+These are shared conversations, not owner-private DMs. Replies and bounded
+same-conversation/thread context use the normal conversation path. Private DM
+history, owner memory, private tools and approvals remain unavailable, and
+cross-conversation continuity is withheld. June may still choose silence.
+Enabling the subscription does not replay messages sent before it was enabled.
+
 ## Bot tools
 
 When Slack and private MCP storage are configured, startup enrolls the fixed
@@ -187,7 +202,7 @@ excerpts share the working-context budget. Common secrets and explicit non-discl
 conservative private-only interval; pattern checks and model judgment are not a
 formal guarantee against every possible disclosure.
 
-This does not activate WhatsApp or unsupported Slack MPIMs. The existing
+This does not activate WhatsApp or cross-conversation continuity in Slack MPIMs. The existing
 Slack-only `activitySessions` gate is unchanged; cross-transport continuity is
 available through the legacy lane, while both interaction lanes receive the
 same privacy projection and runtime instructions. Existing destination history

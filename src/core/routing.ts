@@ -32,7 +32,7 @@ export function routeEvent(
           identity.channel === "slack" &&
           identity.accountId === address.accountId,
       ) ||
-      !["im", "channel", "group", ...(debug ? ["mpim"] : [])].includes(
+      !["im", "channel", "group", "mpim"].includes(
         event.metadata?.channelType ?? "",
       ) ||
       event.direct !== (event.metadata?.channelType === "im") ||

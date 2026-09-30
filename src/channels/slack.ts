@@ -242,8 +242,7 @@ async function normalizeEvent(
       event.hidden === true ||
       !nonEmptyString(event.channel) ||
       !nonEmptyString(event.ts) ||
-      typeof event.text !== "string" ||
-      (event.channel_type === "mpim" && !debugEligible)
+      typeof event.text !== "string"
     ) {
       return [];
     }
@@ -251,16 +250,16 @@ async function normalizeEvent(
     let channelType: MessageMetadata["channelType"];
     if (
       event.channel_type === "im" ||
-      (event.channel_type === "mpim" && debugEligible) ||
       event.channel_type === "channel" ||
-      event.channel_type === "group"
+      event.channel_type === "group" ||
+      event.channel_type === "mpim"
     ) {
       channelType = event.channel_type;
     }
     let channelName: string | undefined;
     if (event.type === "app_mention" && channelType === undefined) {
-      // app_mention is a channel event, but legacy G IDs can also be MPIMs.
-      // Fail closed on that ambiguity; public C mentions need no extra grant.
+      // Both channels and MPIMs are shared surfaces. Legacy G IDs still need
+      // classification; a C mention can safely use shared-channel admission.
       if (event.channel.startsWith("C")) channelType = "channel";
       else if (event.channel.startsWith("G")) {
         const info = await context.conversation(
@@ -273,9 +272,9 @@ async function normalizeEvent(
     }
     if (
       channelType !== "im" &&
-      !(channelType === "mpim" && debugEligible) &&
       channelType !== "channel" &&
-      channelType !== "group"
+      channelType !== "group" &&
+      channelType !== "mpim"
     )
       return [];
     if (event.type === "app_mention" && channelType === "im") return [];
@@ -292,6 +291,7 @@ async function normalizeEvent(
         threads?.has(teamId, botUserId, event.channel, event.thread_ts));
     if (
       channelType !== "im" &&
+      !(owner && channelType === "mpim") &&
       !mentioned &&
       !named &&
       !participatingThread &&

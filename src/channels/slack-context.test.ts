@@ -110,7 +110,7 @@ describe("Slack same-surface context", () => {
     expect(requestedUsers).toEqual(["U_OWNER"]);
   });
 
-  it("rejects unauthorized owners, workspaces, group DMs and cancellation without reading", async () => {
+  it("rejects unauthorized owners, workspaces, private group-DM claims and cancellation without reading", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>();
     const slack = adapter(fetchMock);
     expect(slack.context).toBeTypeOf("function");
@@ -120,7 +120,7 @@ describe("Slack same-surface context", () => {
       { ...event, senderId: "U_OTHER" },
       { ...event, senderId: "U_JUNE" },
       { ...event, address: { ...event.address, accountId: "T_OTHER" } },
-      { ...event, metadata: { channelType: "mpim" as const } },
+      { ...event, direct: true, metadata: { channelType: "mpim" as const } },
       { ...event, direct: true },
     ]) {
       expect(await slack.context?.(input)).toEqual([]);
@@ -129,195 +129,207 @@ describe("Slack same-surface context", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("keeps thread and parent-channel provenance without foreign replies or private data", async () => {
-    const root = "1799999990.000010";
-    const input = {
-      ...event,
-      address: { ...event.address, threadId: root },
-      metadata: { channelType: "channel" as const, threadTs: root },
-    };
-    const requests: { method: string; body: Record<string, unknown> }[] = [];
-    const fetchMock = vi.fn<typeof globalThis.fetch>(async (url, init) => {
-      const request = new Request(url, init);
-      expect(request.redirect).toBe("error");
-      const method = request.url.split("/").at(-1) ?? "";
-      const body = (await request.json()) as Record<string, unknown>;
-      requests.push({ method, body });
-      const responses: Record<string, unknown> = {
-        "conversations.info": {
-          ok: true,
-          channel: {
-            id: "C1",
-            name: "raygen-project",
-            is_channel: true,
-            is_mpim: false,
-          },
-        },
-        "users.info": {
-          ok: true,
-          user: {
-            id: body.user,
-            profile: {
-              display_name: body.user === "U_OWNER" ? "Raygen" : "Other person",
-              email: "secret@example.com",
+  it.for(["channel", "mpim"] as const)(
+    "keeps %s thread and parent provenance without foreign replies or private data",
+    async (channelType) => {
+      const root = "1799999990.000010";
+      const input = {
+        ...event,
+        address: { ...event.address, threadId: root },
+        metadata: { channelType, threadTs: root },
+      };
+      const requests: { method: string; body: Record<string, unknown> }[] = [];
+      const fetchMock = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+        const request = new Request(url, init);
+        expect(request.redirect).toBe("error");
+        const method = request.url.split("/").at(-1) ?? "";
+        const body = (await request.json()) as Record<string, unknown>;
+        requests.push({ method, body });
+        const responses: Record<string, unknown> = {
+          "conversations.info": {
+            ok: true,
+            channel: {
+              id: "C1",
+              name: "raygen-project",
+              is_channel: true,
+              is_mpim: channelType === "mpim",
             },
           },
-        },
-        "conversations.history": {
-          ok: true,
-          messages: [
-            {
-              ts: "1800000000.000199",
-              user: "U_OTHER",
-              text: "Parent channel topic",
-            },
-            {
-              ts: "1800000000.000198",
-              user: "U_OTHER",
-              text: "foreign reply",
-              thread_ts: "1700000000.000001",
-            },
-          ],
-        },
-        "conversations.replies": {
-          ok: true,
-          has_more: true,
-          response_metadata: { next_cursor: "never-follow" },
-          messages: [
-            { ts: root, user: "U_OTHER", text: "The plan", thread_ts: root },
-            {
-              ts: "1799999995.000002",
-              user: "U_JUNE",
-              text: "Earlier reply",
-              thread_ts: root,
-            },
-            {
-              ts: "1799999996.000003",
-              user: "U_OTHER",
-              text: "A diagram",
-              thread_ts: root,
-              files: [
-                {
-                  id: "F1",
-                  name: "plan.png",
-                  title: "Plan",
-                  mimetype: "image/png",
-                  url_private: "https://secret.example/file",
-                  token: "secret-token",
-                  preview: "secret-preview",
-                },
-              ],
-              action_token: "secret-action",
-              user_profile: {
-                display_name: "Other person",
+          "users.info": {
+            ok: true,
+            user: {
+              id: body.user,
+              profile: {
+                display_name:
+                  body.user === "U_OWNER" ? "Raygen" : "Other person",
                 email: "secret@example.com",
               },
             },
+          },
+          "conversations.history": {
+            ok: true,
+            messages: [
+              {
+                ts: "1800000000.000199",
+                user: "U_OTHER",
+                text: "Parent channel topic",
+              },
+              {
+                ts: "1800000000.000198",
+                user: "U_OTHER",
+                text: "foreign reply",
+                thread_ts: "1700000000.000001",
+              },
+            ],
+          },
+          "conversations.replies": {
+            ok: true,
+            has_more: true,
+            response_metadata: { next_cursor: "never-follow" },
+            messages: [
+              { ts: root, user: "U_OTHER", text: "The plan", thread_ts: root },
+              {
+                ts: "1799999995.000002",
+                user: "U_JUNE",
+                text: "Earlier reply",
+                thread_ts: root,
+              },
+              {
+                ts: "1799999996.000003",
+                user: "U_OTHER",
+                text: "A diagram",
+                thread_ts: root,
+                files: [
+                  {
+                    id: "F1",
+                    name: "plan.png",
+                    title: "Plan",
+                    mimetype: "image/png",
+                    url_private: "https://secret.example/file",
+                    token: "secret-token",
+                    preview: "secret-preview",
+                  },
+                ],
+                action_token: "secret-action",
+                user_profile: {
+                  display_name: "Other person",
+                  email: "secret@example.com",
+                },
+              },
+              {
+                ts: "1799999997.000004",
+                user: "U_OTHER",
+                text: "foreign thread",
+                thread_ts: "1790000000.000001",
+              },
+              {
+                ts: "1799999998.000005",
+                user: "U_OTHER",
+                text: "private DM",
+                channel: "D_PRIVATE",
+                thread_ts: root,
+              },
+              {
+                ts: "1799999999.000006",
+                user: "U_OTHER",
+                text: "foreign workspace",
+                team: "T_OTHER",
+                thread_ts: root,
+              },
+              { ts: "1800000000.000199", user: "U_OTHER", text: "unthreaded" },
+              {
+                ts: event.messageId,
+                user: "U_OWNER",
+                text: event.text,
+                thread_ts: root,
+              },
+              {
+                ts: "1800000000.000201",
+                user: "U_OTHER",
+                text: "future reply",
+                thread_ts: root,
+              },
+            ],
+          },
+        };
+        return Response.json(responses[method] ?? { ok: false });
+      });
+      const context = await adapter(fetchMock).context?.(input);
+      expect(context?.map((message) => message.content)).toEqual([
+        "The plan",
+        "Earlier reply",
+        "A diagram",
+        "Parent channel topic",
+        "what do you think?",
+      ]);
+      expect(context?.map((message) => message.role)).toEqual([
+        "user",
+        "assistant",
+        "user",
+        "user",
+        "user",
+      ]);
+      expect(context?.[3]?.source?.address.threadId).toBeUndefined();
+      expect(context?.[2]?.source).toMatchObject({
+        id: "slack:T1:C1:1799999996.000003",
+        address: {
+          channel: "slack",
+          accountId: "T1",
+          conversationId: "C1",
+          threadId: root,
+        },
+        messageId: "1799999996.000003",
+        senderId: "U_OTHER",
+        direct: false,
+        metadata: {
+          senderName: "Other person",
+          channelName: "raygen-project",
+          channelType,
+          threadTs: root,
+          files: [
             {
-              ts: "1799999997.000004",
-              user: "U_OTHER",
-              text: "foreign thread",
-              thread_ts: "1790000000.000001",
-            },
-            {
-              ts: "1799999998.000005",
-              user: "U_OTHER",
-              text: "private DM",
-              channel: "D_PRIVATE",
-              thread_ts: root,
-            },
-            {
-              ts: "1799999999.000006",
-              user: "U_OTHER",
-              text: "foreign workspace",
-              team: "T_OTHER",
-              thread_ts: root,
-            },
-            { ts: "1800000000.000199", user: "U_OTHER", text: "unthreaded" },
-            {
-              ts: event.messageId,
-              user: "U_OWNER",
-              text: event.text,
-              thread_ts: root,
-            },
-            {
-              ts: "1800000000.000201",
-              user: "U_OTHER",
-              text: "future reply",
-              thread_ts: root,
+              id: "F1",
+              name: "plan.png",
+              title: "Plan",
+              mimetype: "image/png",
             },
           ],
         },
-      };
-      return Response.json(responses[method] ?? { ok: false });
-    });
-    const context = await adapter(fetchMock).context?.(input);
-    expect(context?.map((message) => message.content)).toEqual([
-      "The plan",
-      "Earlier reply",
-      "A diagram",
-      "Parent channel topic",
-      "what do you think?",
-    ]);
-    expect(context?.map((message) => message.role)).toEqual([
-      "user",
-      "assistant",
-      "user",
-      "user",
-      "user",
-    ]);
-    expect(context?.[3]?.source?.address.threadId).toBeUndefined();
-    expect(context?.[2]?.source).toMatchObject({
-      id: "slack:T1:C1:1799999996.000003",
-      address: {
-        channel: "slack",
-        accountId: "T1",
-        conversationId: "C1",
-        threadId: root,
-      },
-      messageId: "1799999996.000003",
-      senderId: "U_OTHER",
-      direct: false,
-      metadata: {
-        senderName: "Other person",
-        channelName: "raygen-project",
-        channelType: "channel",
-        threadTs: root,
-        files: [
-          { id: "F1", name: "plan.png", title: "Plan", mimetype: "image/png" },
-        ],
-      },
-    });
-    expect(context?.at(-1)?.source?.metadata?.senderName).toBe("Raygen");
-    expect(JSON.stringify(context)).not.toMatch(
-      /secret|foreign|private DM|future reply|unthreaded/,
-    );
-    expect(
-      requests.filter((request) => request.method === "conversations.replies"),
-    ).toEqual([
-      {
-        method: "conversations.replies",
-        body: {
-          channel: "C1",
-          ts: root,
-          latest: event.messageId,
-          inclusive: true,
-          limit: 15,
+      });
+      expect(context?.at(-1)?.source?.metadata?.senderName).toBe("Raygen");
+      expect(JSON.stringify(context)).not.toMatch(
+        /secret|foreign|private DM|future reply|unthreaded/,
+      );
+      expect(
+        requests.filter(
+          (request) => request.method === "conversations.replies",
+        ),
+      ).toEqual([
+        {
+          method: "conversations.replies",
+          body: {
+            channel: "C1",
+            ts: root,
+            latest: event.messageId,
+            inclusive: true,
+            limit: 15,
+          },
         },
-      },
-    ]);
-    expect(
-      requests.every(
-        ({ method, body }) => method === "users.info" || body.channel === "C1",
-      ),
-    ).toBe(true);
-    expect(requests.some(({ method }) => method.startsWith("files."))).toBe(
-      false,
-    );
-    expect(
-      requests.filter(({ method }) => method === "conversations.history"),
-    ).toHaveLength(1);
-  });
+      ]);
+      expect(
+        requests.every(
+          ({ method, body }) =>
+            method === "users.info" || body.channel === "C1",
+        ),
+      ).toBe(true);
+      expect(requests.some(({ method }) => method.startsWith("files."))).toBe(
+        false,
+      );
+      expect(
+        requests.filter(({ method }) => method === "conversations.history"),
+      ).toHaveLength(1);
+    },
+  );
 
   it("uses a bounded channel page, not other threads or an owner DM fallback", async () => {
     const requests: string[] = [];

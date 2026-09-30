@@ -189,7 +189,10 @@ export function createSlackContext({
         !event.botMentioned &&
         !event.direct) ||
       event.senderId === botUserId ||
-      (type !== "im" && type !== "channel" && type !== "group") ||
+      (type !== "im" &&
+        type !== "channel" &&
+        type !== "group" &&
+        type !== "mpim") ||
       event.direct !== (type === "im") ||
       signal?.aborted
     )
@@ -236,7 +239,6 @@ export function createSlackContext({
     ]);
     if (
       signal?.aborted ||
-      info?.type === "mpim" ||
       (info?.type && (info.type === "im") !== event.direct)
     )
       return [];

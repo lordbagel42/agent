@@ -65,6 +65,9 @@ it.for(["interaction", "execution", "decision"] as const)(
     });
     expect(request.system).toContain("APPROVED_CONTINUITY_EXCERPT");
     expect(request.system).toContain(
+      "Group DMs (mpim) are shared conversations, never owner-private DMs",
+    );
+    expect(request.system).toContain(
       "matching mcp.slack.appId/client credentials",
     );
     expect(request.system).toContain(
@@ -266,69 +269,76 @@ it("excludes opted-out Slack history but keeps raw whitespace and other platform
   ).toEqual([" ## keep", "## WhatsApp"]);
 });
 
-it("keeps private/unscoped history and config out of a channel named after the owner", () => {
-  const request = buildModelRequest({
-    ...input,
-    models: {
-      current: {
-        ...input.models.current,
-        ...{ home: "PRIVATE-home", apiKey: "PRIVATE-token" },
-      },
-    },
-    capabilities: {
-      workspaces: ["PRIVATE-workspace"],
-      memoryAvailable: true,
-      reflectionAvailable: true,
-      puckAvailable: true,
-      webSearchProvider: "PRIVATE-disabled-provider",
-      latencyAvailable: true,
-    },
-    memory: {
-      audience: '["private","PRIVATE-owner-id"]',
-      text: "PRIVATE-memory",
-    },
-    history: [
-      { role: "user", content: "PRIVATE-legacy" },
-      { role: "assistant", content: "PRIVATE-unscoped-reply" },
-      {
-        role: "user",
-        content: "PRIVATE-dm",
-        source: {
-          ...event,
-          direct: true,
-          metadata: { channelType: "im" },
+it.for(["group", "mpim"] as const)(
+  "keeps private/unscoped history and config out of shared %s conversations",
+  (channelType) => {
+    const sharedEvent = { ...event, metadata: { channelType } };
+    const request = buildModelRequest({
+      ...input,
+      event: sharedEvent,
+      models: {
+        current: {
+          ...input.models.current,
+          ...{ home: "PRIVATE-home", apiKey: "PRIVATE-token" },
         },
       },
-      {
-        role: "assistant",
-        content: "PRIVATE-other-workspace",
-        source: {
-          ...event,
-          address: { ...event.address, accountId: "T2" },
+      capabilities: {
+        workspaces: ["PRIVATE-workspace"],
+        memoryAvailable: true,
+        reflectionAvailable: true,
+        puckAvailable: true,
+        webSearchProvider: "PRIVATE-disabled-provider",
+        latencyAvailable: true,
+      },
+      memory: {
+        audience: '["private","PRIVATE-owner-id"]',
+        text: "PRIVATE-memory",
+      },
+      history: [
+        { role: "user", content: "PRIVATE-legacy" },
+        { role: "assistant", content: "PRIVATE-unscoped-reply" },
+        {
+          role: "user",
+          content: "PRIVATE-dm",
+          source: {
+            ...event,
+            direct: true,
+            metadata: { channelType: "im" },
+          },
         },
-      },
-      {
-        role: "user",
-        content: "PRIVATE-other-channel",
-        source: {
-          ...event,
-          address: { ...event.address, conversationId: "C2" },
+        {
+          role: "assistant",
+          content: "PRIVATE-other-workspace",
+          source: {
+            ...event,
+            address: { ...event.address, accountId: "T2" },
+          },
         },
-      },
-      {
-        role: "user",
-        content: "PRIVATE-other-thread",
-        source: { ...event, metadata: { threadTs: "other-thread" } },
-      },
-      ...input.history,
-    ],
-  });
-  expect(JSON.stringify(request)).not.toContain("PRIVATE");
-  expect(request.workspaces).toEqual([]);
-  expect(request.latencyAvailable).toBe(false);
-  expect(request.messages).toHaveLength(1);
-  expect(JSON.parse(request.messages[0]?.content ?? "").text).toBe(event.text);
-});
+        {
+          role: "user",
+          content: "PRIVATE-other-channel",
+          source: {
+            ...event,
+            address: { ...event.address, conversationId: "C2" },
+          },
+        },
+        {
+          role: "user",
+          content: "PRIVATE-other-thread",
+          source: { ...event, metadata: { threadTs: "other-thread" } },
+        },
+        { role: "user", content: event.text, source: sharedEvent },
+      ],
+    });
+    expect(JSON.stringify(request)).not.toContain("PRIVATE");
+    expect(request.workspaces).toEqual([]);
+    expect(request.latencyAvailable).toBe(false);
+    expect(request.messages).toHaveLength(1);
+    expect(JSON.parse(request.messages[0]?.content ?? "").text).toBe(
+      event.text,
+    );
+  },
+);
 
 it("allows owner channel deployment inspection without granting it to a guest named Raygen", () => {
   const capabilities = { releaseAvailable: true };

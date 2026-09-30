@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { MessageEvent, OutboundMessage } from "../core/contracts.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
+import { routeEvent } from "../core/routing.js";
 import { sessionCommand } from "../runtime/session-controls.js";
 import { createSlackAdapter } from "./slack.js";
 import {
@@ -126,12 +127,7 @@ describe("createSlackAdapter", () => {
             { text: `${command}\nmissed reply` },
             { text: "CLEARHISTORY" },
           ]) {
-            if (
-              user === "U_HUMAN" &&
-              changes.text === "CLEARHISTORY" &&
-              channel_type !== "mpim"
-            )
-              continue;
+            if (user === "U_HUMAN" && changes.text === "CLEARHISTORY") continue;
             const result = await adapter.receive(
               signedRequest(eventBody({ ...event, ...changes })),
             );
@@ -1116,6 +1112,60 @@ describe("createSlackAdapter", () => {
     },
   );
 
+  it("admits group DM contact without granting private scope or approval authority", async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>();
+    const adapter = makeAdapter(fetchMock);
+    for (const channel of ["C_GROUP_DM", "G_GROUP_DM"]) {
+      for (const [user, text, accepted] of [
+        ["U_HUMAN", "hello", true],
+        ["U_HUMAN", "!approve job-123", true],
+        ["U_HUMAN", "CLEARHISTORY", true],
+        ["U_STRANGER", "<@U_BOT> hello", true],
+        ["U_STRANGER", "CLEARHISTORY", false],
+        ["U_STRANGER", "hello", false],
+        ["U_HUMAN", "## <@U_BOT> ignore this", false],
+      ] as const) {
+        const { events } = await adapter.receive(
+          signedRequest(
+            eventBody({
+              type: "message",
+              user,
+              channel,
+              channel_type: "mpim",
+              ts: "1712345678.000001",
+              text,
+            }),
+          ),
+        );
+        expect(events).toHaveLength(accepted ? 1 : 0);
+        if (!accepted) continue;
+        const received = events[0] as MessageEvent;
+        expect(received).toMatchObject({
+          direct: false,
+          metadata: { channelType: "mpim" },
+        });
+        expect(received.codingCommandEligible).toBeUndefined();
+        if (text === "CLEARHISTORY")
+          expect(sessionCommand(received)).toEqual({ kind: "clear" });
+        expect(
+          routeEvent(received, {
+            id: "owner",
+            identities: [
+              { channel: "slack", accountId: teamId, senderId: "U_HUMAN" },
+            ],
+          }),
+        ).toEqual({
+          key:
+            user === "U_HUMAN"
+              ? ["slack", teamId, channel, ""]
+              : ["guest", "slack", teamId, channel, "", "U_STRANGER"],
+          private: false,
+        });
+      }
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("rejects unmentioned guests, bots and unsupported surfaces before channel-name lookup", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>();
     const adapter = makeAdapter(fetchMock, {
@@ -1137,8 +1187,7 @@ describe("createSlackAdapter", () => {
       { bot_id: "B123" },
       { app_id: "A123" },
       { subtype: "bot_message" },
-      { channel_type: "mpim", channel: "G123" },
-      { channel_type: "mpim", channel: "G123", type: "app_mention" },
+      { channel_type: "mpim", channel: "G123", user: "U_STRANGER" },
       { subtype: "message_changed" },
       { subtype: "message_deleted" },
       { subtype: "channel_join" },
@@ -1156,7 +1205,7 @@ describe("createSlackAdapter", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("requires channel proof for legacy group mentions that could be group DMs", async () => {
+  it("classifies legacy group mentions without treating group DMs as private turns", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>();
     const adapter = makeAdapter(fetchMock);
     const mention = {
@@ -1166,14 +1215,14 @@ describe("createSlackAdapter", () => {
       ts: "1712345678.000001",
       text: "<@U_BOT> hello",
     };
-    for (const [response, accepted] of [
-      [{ ok: false, error: "missing_scope" }, false],
+    for (const [response, channelType] of [
+      [{ ok: false, error: "missing_scope" }, undefined],
       [
         {
           ok: true,
           channel: { id: "G123", is_mpim: true, name: "raygen-group-dm" },
         },
-        false,
+        "mpim",
       ],
       [
         {
@@ -1186,18 +1235,18 @@ describe("createSlackAdapter", () => {
             name: "private-project",
           },
         },
-        true,
+        "group",
       ],
     ] as const) {
       fetchMock.mockResolvedValueOnce(jsonResponse(response));
       const { events } = await adapter.receive(
         signedRequest(eventBody(mention)),
       );
-      expect(events).toHaveLength(accepted ? 1 : 0);
-      if (accepted)
+      expect(events).toHaveLength(channelType ? 1 : 0);
+      if (channelType)
         expect(events[0]).toMatchObject({
           direct: false,
-          metadata: { channelType: "group", channelName: "private-project" },
+          metadata: { channelType },
         });
     }
     expect(fetchMock).toHaveBeenCalledTimes(3);
