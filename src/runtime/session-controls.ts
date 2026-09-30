@@ -19,6 +19,8 @@ export interface DebugSnapshot {
   revision: string;
   scope: string[];
   reason: string;
+  /** DEBUG is storage-only. Missing on historical DEBUGSHARE snapshots. */
+  snapshotOnly?: boolean;
   data: unknown;
   exclusions: string[];
 }
@@ -65,8 +67,13 @@ export function sessionCommand(event: MessageEvent) {
   if (event.text === "CLEARHISTORY") return { kind: "clear" as const };
   if (event.text === "PING" || event.text === "PINGMODEL")
     return { kind: "ping" as const, model: event.text === "PINGMODEL" };
-  const match = /^DEBUGSHARE(?: ([^\r\n]*))?$/.exec(event.text);
-  if (match) return { kind: "debug" as const, reason: match[1] ?? "" };
+  const match = /^(DEBUG|DEBUGSHARE)(?: ([^\r\n]*))?$/.exec(event.text);
+  if (match)
+    return {
+      kind: "debug" as const,
+      reason: match[2] ?? "",
+      snapshotOnly: match[1] === "DEBUG",
+    };
 }
 
 /** Do not export arbitrary actor/config state. This second layer removes common
@@ -250,7 +257,13 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
     state: {} as {
       snapshot?: DebugSnapshot;
       upload?: { sha256: string; totalBytes: number; parts: string[] };
-      status?: "queued" | "running" | "completed" | "unavailable" | "unknown";
+      status?:
+        | "saved"
+        | "queued"
+        | "running"
+        | "completed"
+        | "unavailable"
+        | "unknown";
       independentDispatch?: boolean;
       threadId?: string;
       report?: string;
@@ -273,7 +286,11 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
           throw new Error("Debug snapshot conflict");
         if (!c.state.snapshot) {
           c.state.snapshot = snapshot;
-          c.state.status = deps.debugShare ? "queued" : "unavailable";
+          c.state.status = snapshot.snapshotOnly
+            ? "saved"
+            : deps.debugShare
+              ? "queued"
+              : "unavailable";
         }
         delete c.state.upload;
         // Even a duplicate after a lost save acknowledgment needs a barrier.
@@ -404,7 +421,12 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
           name: "investigate",
           timeout: 0,
           run: async (step) => {
-            if (!step.state.snapshot || !deps.debugShare) return;
+            if (
+              !step.state.snapshot ||
+              step.state.snapshot.snapshotOnly ||
+              !deps.debugShare
+            )
+              return;
             // A restart after launch intent is uncertain, never an automatic second agent.
             if (
               step.state.status === "running" &&

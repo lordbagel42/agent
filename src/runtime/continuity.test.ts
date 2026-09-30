@@ -37,6 +37,35 @@ const group: MessageEvent = {
   text: "What's the project?",
 };
 
+it("excludes DEBUG commands and receipts from cross-surface continuity", async (t) => {
+  const store = new ConversationContinuity({
+    file: ":memory:",
+    key: randomBytes(32),
+    owner,
+    idleMs: 100000,
+    revision: () => 0,
+    filter: vi.fn<PrivacyFilter>(),
+  });
+  t.onTestFinished(() => store.close());
+  store.receive(event);
+  const destination: MessageEvent = {
+    ...event,
+    senderId: "P1",
+    address: { channel: "whatsapp", accountId: "W1", conversationId: "P1" },
+  };
+  const before = await store.project(destination, { kind: "owner" });
+  const debug = { ...event, id: "debug", messageId: "3.1", text: "DEBUG slow" };
+  store.receive(debug);
+  store.remember(
+    event,
+    [{ role: "assistant", content: "DEBUG diagnostic-id", source: debug }],
+    before.epoch,
+  );
+  const after = await store.project(destination, { kind: "owner" });
+  expect(after.text).toContain("Orchard");
+  expect(after.text).not.toContain("DEBUG");
+});
+
 it("carries owner continuity across verified transports, expires by human inactivity, and invalidates on forgetting", async (t) => {
   let now = 1000;
   let revision = 0;

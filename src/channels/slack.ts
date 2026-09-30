@@ -303,7 +303,7 @@ async function normalizeEvent(
         : event.text;
     const sessionCandidate =
       owner &&
-      /^(?:PING|PINGMODEL|CLEARHISTORY|DEBUGSHARE(?: [^\r\n]*)?)$/.test(
+      /^(?:PING|PINGMODEL|CLEARHISTORY|DEBUG(?:SHARE)?(?: [^\r\n]*)?)$/.test(
         sessionText,
       );
     const sessionEligible =

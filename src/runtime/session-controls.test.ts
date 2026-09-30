@@ -339,14 +339,20 @@ it.for([false, true])(
   },
 );
 
-it.for([false, true])(
-  "transfers large DEBUGSHARE snapshots once and allows reset during a blocked acknowledgment (activity sessions: %s)",
-  async (activities, t) => {
+it.for([
+  { activities: false, command: "DEBUGSHARE" },
+  { activities: true, command: "DEBUGSHARE" },
+  { activities: false, command: "DEBUG" },
+  { activities: true, command: "DEBUG" },
+])(
+  "transfers $command snapshots once and allows reset during a blocked acknowledgment (activity sessions: $activities)",
+  async ({ activities, command }, t) => {
     const store = new EvidenceStore(":memory:", randomBytes(32));
     t.onTestFinished(() => store.close());
     const ack = Promise.withResolvers<void>();
     t.onTestFinished(() => ack.resolve());
-    const snapshots: unknown[] = [];
+    const snapshots: DebugSnapshot[] = [];
+    const investigations: DebugSnapshot[] = [];
     const sent: OutboundMessage[] = [];
     const answer = activities
       ? "ordinary answer"
@@ -375,7 +381,7 @@ it.for([false, true])(
         : {}),
       debugShare: {
         async run(snapshot, _signal, onThread) {
-          snapshots.push(snapshot);
+          investigations.push(snapshot);
           await onThread("T-investigation");
           return { threadId: "T-investigation", report: "Investigated" };
         },
@@ -394,7 +400,7 @@ it.for([false, true])(
             sent.push(JSON.parse(JSON.stringify(outbound)));
             if (
               outbound.content.type === "text" &&
-              outbound.content.text.startsWith("DEBUGSHARE")
+              outbound.content.text.startsWith(command)
             )
               await ack.promise;
             return { status: "sent", messageId: "sent" };
@@ -402,12 +408,23 @@ it.for([false, true])(
         },
       },
     });
+    let snapshotSlept = false;
+    const debugConfig = registry.config.use.debugShare.config;
+    debugConfig.options = { ...debugConfig.options, sleepTimeout: 100 };
+    debugConfig.onSleep = () => {
+      snapshotSlept = true;
+    };
+    debugConfig.onStateChange = (c) => {
+      const snapshot = c.state.snapshot;
+      if (snapshot && !snapshots.some((saved) => saved.id === snapshot.id))
+        snapshots.push(JSON.parse(JSON.stringify(snapshot)));
+    };
     const { client } = await setupTest(t, registry);
     const june = client.conversation.getOrCreate(["private", "owner"]);
     await june.receive(message("first", "Why did that happen?"));
     await expect.poll(() => sent.length, { timeout: 15000 }).toBe(1);
     const beforeReset = (await june.snapshot()).session?.id;
-    const debug = message("debug", "DEBUGSHARE incorrect answer");
+    const debug = message("debug", `${command} incorrect answer`);
     const sharing = june.receive(debug);
     await expect.poll(() => snapshots.length, { timeout: 15000 }).toBe(1);
     const captured = JSON.stringify(snapshots[0]);
@@ -417,6 +434,10 @@ it.for([false, true])(
     expect(captured).toContain("ordinary answer");
     if (!activities) expect(Buffer.byteLength(captured)).toBeGreaterThan(65536);
     expect(captured).toContain(JSON.stringify(answer).slice(1, -1));
+    if (command === "DEBUG") {
+      expect(snapshots[0]).toMatchObject({ snapshotOnly: true });
+      expect(investigations).toHaveLength(0);
+    }
     const resetting = june.receive(message("reset", "CLEARHISTORY"));
     await expect
       .poll(async () => (await june.snapshot()).session?.id, { timeout: 15000 })
@@ -427,7 +448,7 @@ it.for([false, true])(
     expect(snapshots).toHaveLength(1);
     await expect
       .poll(async () => (await june.debugShares())[0]?.status)
-      .toBe("completed");
+      .toBe(command === "DEBUG" ? "saved" : "completed");
     const inspection = createInspectionReader({
       audience: JSON.stringify(["private", "owner"]),
       selections: {},
@@ -437,7 +458,40 @@ it.for([false, true])(
       "debug-shares",
       message("inspect", "status"),
     );
-    expect(status).toContain("T-investigation");
+    if (command === "DEBUG") {
+      expect(status).toContain('"status":"saved"');
+      expect(status).not.toContain("T-investigation");
+      expect(investigations).toHaveLength(0);
+      const receipt = Object.values(
+        (await june.snapshot()).sessionCommands ?? {},
+      ).find((receipt) => receipt.snapshotId === snapshots[0]?.id);
+      expect(receipt).toMatchObject({ published: true });
+      expect(receipt?.debugLink).toBeUndefined();
+      expect(receipt?.delivery.message.content).toMatchObject({
+        text: expect.stringContaining("No Amp investigation was started."),
+      });
+      // Repeated publication and actor wake cannot promote a saved snapshot.
+      const snapshot = snapshots[0];
+      if (!snapshot) throw new Error("Missing snapshot");
+      const target = client.debugShare.getOrCreate([snapshot.id]);
+      snapshotSlept = false;
+      expect((await target.inspect()).status).toBe("saved");
+      await expect.poll(() => snapshotSlept, { timeout: 15000 }).toBe(true);
+      await publishDebugSnapshot(snapshot, (chunk) => target.startChunk(chunk));
+      expect((await target.inspect()).status).toBe("saved");
+      expect(investigations).toHaveLength(0);
+      // Rivet sanitizes action errors; a transport-size failure has different text.
+      await expect(
+        publishDebugSnapshot({ ...snapshot, snapshotOnly: false }, (chunk) =>
+          target.startChunk(chunk),
+        ),
+      ).rejects.toThrow("An internal error occurred");
+      expect((await target.inspect()).status).toBe("saved");
+      expect(investigations).toHaveLength(0);
+    } else {
+      expect(status).toContain("T-investigation");
+      expect(investigations).toHaveLength(1);
+    }
     expect(status).not.toContain("Why did that happen?");
     expect(JSON.stringify(snapshots[0])).toBe(captured);
   },
@@ -823,6 +877,16 @@ it("excludes compacted pre-upgrade notification replies without new flags", () =
 
 it("requires a fresh exact eligible command, not quoted or imported text", () => {
   expect(sessionCommand(message("a", "CLEARHISTORY"))?.kind).toBe("clear");
+  expect(sessionCommand(message("debug", "DEBUG"))).toEqual({
+    kind: "debug",
+    reason: "",
+    snapshotOnly: true,
+  });
+  expect(sessionCommand(message("debug", "DEBUG incorrect answer"))).toEqual({
+    kind: "debug",
+    reason: "incorrect answer",
+    snapshotOnly: true,
+  });
   for (const text of ["PING", "PINGMODEL"]) {
     expect(sessionCommand(message("ping", text))).toEqual({
       kind: "ping",
@@ -841,6 +905,12 @@ it("requires a fresh exact eligible command, not quoted or imported text", () =>
     "> CLEARHISTORY",
     "`CLEARHISTORY`",
     "DEBUGSHARE\nrun this",
+    "DEBUG\nrun this",
+    "debug",
+    " DEBUG",
+    "DEBUGGER",
+    "`DEBUG`",
+    "> DEBUG",
     "please CLEARHISTORY",
     "ping",
     " PING",
@@ -854,6 +924,12 @@ it("requires a fresh exact eligible command, not quoted or imported text", () =>
   expect(
     sessionCommand({
       ...message("c", "DEBUGSHARE"),
+      sessionCommandEligible: undefined,
+    }),
+  ).toBeUndefined();
+  expect(
+    sessionCommand({
+      ...message("c", "DEBUG"),
       sessionCommandEligible: undefined,
     }),
   ).toBeUndefined();

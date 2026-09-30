@@ -104,6 +104,7 @@ describe("createSlackAdapter", () => {
       "PINGMODEL",
       "CLEARHISTORY",
       "DEBUGSHARE slow replies",
+      "DEBUG slow replies",
     ]) {
       for (const type of ["message", "app_mention"]) {
         for (const leading of [true, false]) {
@@ -145,8 +146,12 @@ describe("createSlackAdapter", () => {
             expect(sessionCommand(normalized)).toEqual(
               command === "CLEARHISTORY"
                 ? { kind: "clear" }
-                : command.startsWith("DEBUGSHARE")
-                  ? { kind: "debug", reason: "slow replies" }
+                : command.startsWith("DEBUG")
+                  ? {
+                      kind: "debug",
+                      reason: "slow replies",
+                      snapshotOnly: command.startsWith("DEBUG "),
+                    }
                   : { kind: "ping", model: command === "PINGMODEL" },
             );
           }
@@ -210,6 +215,11 @@ describe("createSlackAdapter", () => {
     {
       kind: "model ping",
       text: "PINGMODEL",
+      field: "sessionCommandEligible" as const,
+    },
+    {
+      kind: "snapshot-only debug",
+      text: "DEBUG",
       field: "sessionCommandEligible" as const,
     },
     {

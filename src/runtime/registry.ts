@@ -701,6 +701,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 else if (
                   status.status === "unknown" ||
                   status.status === "unavailable" ||
+                  status.status === "saved" ||
                   status.status === "completed"
                 ) {
                   delete receipt.debugLink.pollAt;
@@ -950,6 +951,12 @@ export function createJuneRegistry(deps: Dependencies) {
                         c.vars.debugRequest,
                       )
                     : undefined;
+                if (
+                  snapshot &&
+                  command.kind === "debug" &&
+                  command.snapshotOnly
+                )
+                  snapshot.snapshotOnly = true;
                 if (snapshot && c.state.sessions?.directory.activeSessionId) {
                   const activityId = c.state.sessions.directory.activeSessionId;
                   const activity = await c
@@ -969,7 +976,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 }
                 c.state.sessionCommands[id] = {
                   ...(snapshot ? { snapshot } : {}),
-                  ...(snapshot && deps.debugShare
+                  ...(snapshot && !snapshot.snapshotOnly && deps.debugShare
                     ? { debugLink: { pollAt: Date.now() } }
                     : {}),
                   ...(command.kind === "ping"
@@ -999,8 +1006,10 @@ export function createJuneRegistry(deps: Dependencies) {
                             : command.kind === "clear"
                               ? "Started a new session. Saved memories and archives are unchanged."
                               : snapshot
-                                ? `DEBUGSHARE ${snapshot.id}\n${snapshot.capturedAt}\n${deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}`
-                                : "Send DEBUGSHARE in your private DM with me so the diagnostic snapshot stays private.",
+                                ? snapshot.snapshotOnly
+                                  ? `DEBUG ${snapshot.id}\n${snapshot.capturedAt}\nSnapshot saved. No Amp investigation was started.`
+                                  : `DEBUGSHARE ${snapshot.id}\n${snapshot.capturedAt}\n${deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}`
+                                : `Send ${command.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} in your private DM with me so the diagnostic snapshot stays private.`,
                       },
                     },
                   },

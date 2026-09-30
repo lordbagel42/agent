@@ -115,6 +115,11 @@ it.for(["interaction", "execution", "decision"] as const)(
     );
     expect(request.system).toContain("both legacy and activity-session turns");
     expect(request.system).toContain("DEBUGSHARE");
+    expect(request.system).toContain("DEBUG optionally followed by a reason");
+    expect(request.system).toContain(
+      "never starts or queues an Amp investigation",
+    );
+    expect(request.system).toContain("saved means snapshot-only storage");
     expect(request.system).toContain(
       "interrupted transfers resume the same snapshot",
     );

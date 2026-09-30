@@ -110,8 +110,20 @@ is not perfect DLP: do not put secrets in conversation text.
 Snapshots are explicit private diagnostic exports to Amp and survive resets;
 ordinary memory forgetting does not erase already-exported Amp conversations.
 
+Use `DEBUG` or `DEBUG a short explanation` for the same snapshot **without an
+Amp investigation**. It follows the same plain-command and private-capture rules,
+including a June mention at either end. The reply contains the UUID and UTC
+timestamp and confirms that no investigation was started. The snapshot stays in
+June's private UUID-keyed `debugShare` actor; it is not written to the dispatcher
+inbox or exported to Amp, and no thread-link notification is scheduled. This works
+without investigation configuration or `JUNE_ALLOW_DEBUGSHARE`. Duplicate commands
+and resumed transfers preserve the original snapshot-only intent. June can inspect
+the `saved` receipt with `inspection:"debug-shares"`; an authorized operator can
+retrieve the body through private Rivet actor-state inspection. Saved snapshots
+survive `CLEARHISTORY`; `saved` does not mean an investigation completed.
+
 Large retained conversation history and pending snapshots use lossless compressed
-storage, not summaries. Prompts, DEBUGSHARE capture and operator inspection still
+storage, not summaries. Prompts, DEBUG/DEBUGSHARE capture and operator inspection still
 read the original entries. After durable snapshot publication, the conversation
 keeps its destination ID and delivery receipt rather than a duplicate body; June
 can inspect these through her existing private debug-share inspection capability.
