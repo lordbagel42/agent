@@ -202,7 +202,9 @@ it("reads an attached MP4 as distinct timestamped frames, not a thumbnail or fil
             id: "F123",
             mimetype: "video/mp4",
             size: video.length,
-            url_private: "https://files.slack.com/files-pri/T1-F123/video.mp4",
+            // Slack can serve the actual video in url_private via files-tmb,
+            // despite the route name. Never substitute its thumb_* fields.
+            url_private: "https://files.slack.com/files-tmb/T1-F123/video.mp4",
           },
         });
       downloads++;

@@ -98,7 +98,9 @@ export function createSlackFileReader(options: SlackFileOptions) {
         url.username ||
         url.password ||
         url.hash ||
-        !url.pathname.startsWith("/files-pri/") ||
+        // Slack's authoritative url_private can use its transcoded-media route.
+        // Never use thumb_* metadata or accept a caller-supplied URL instead.
+        !/^\/files-(?:pri|tmb)\//.test(url.pathname) ||
         boundedSignal.aborted
       )
         return unavailable;
