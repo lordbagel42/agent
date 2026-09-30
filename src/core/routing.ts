@@ -36,7 +36,10 @@ export function routeEvent(
         event.metadata?.channelType ?? "",
       ) ||
       event.direct !== (event.metadata?.channelType === "im") ||
-      (!event.direct && !event.botMentioned && !debug)
+      (!event.direct &&
+        !event.botMentioned &&
+        !debug &&
+        !event.senderId.startsWith("bot:"))
     )
       return undefined;
     // Guests never join the owner's actor/queue, even in the same thread.

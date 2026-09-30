@@ -17,8 +17,13 @@ into June or tested with a real account.
 ## What works in this increment
 
 - Slack DMs and mentions, WhatsApp Cloud API text, and native reactions. Webhooks
-  are verified before accepting events; bots are ignored. Slack guests can
-  directly mention June or DM her without gaining owner privileges.
+  are verified before accepting events. Human Slack guests can directly mention
+  June or DM her without gaining owner privileges. Other bots' messages and
+  thread follow-ups are admitted without a mention requirement or bot-specific
+  turn limit; June is instructed to disengage from repetitive loops herself.
+  Bot-origin messages use separate guest identities and cannot trigger host
+  commands. June's own messages are ignored; userless bot callbacks require
+  a successful `auth.test` self-identity check, cached for the adapter lifetime.
 - Optional owner-only participation in channels containing `raygen`, scoped
   surrounding messages, sender names/IDs, exact Slack timestamps and file
   descriptors. Other participants provide context, never authorization.

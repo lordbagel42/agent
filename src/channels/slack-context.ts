@@ -103,8 +103,9 @@ export function createSlackContext({
   fetch: typeof globalThis.fetch;
   now: () => number;
 }) {
-  // Only display names are cached, never responses, messages, files or tokens.
+  // Only identity and display names are cached, never messages, files or tokens.
   const names = new Map<string, { name: string; expires: number }>();
+  let ownBotId: string | undefined;
 
   async function read(
     method: string,
@@ -130,6 +131,21 @@ export function createSlackContext({
     } catch {
       return undefined;
     }
+  }
+
+  async function isOtherBot(botId: string, signal: AbortSignal) {
+    if (ownBotId === undefined) {
+      const identity = await read("auth.test", {}, signal);
+      if (
+        identity?.team_id !== teamId ||
+        identity.user_id !== botUserId ||
+        typeof identity.bot_id !== "string" ||
+        !identity.bot_id
+      )
+        return false;
+      ownBotId = identity.bot_id;
+    }
+    return botId !== ownBotId;
   }
 
   async function conversation(channel: string, signal: AbortSignal) {
@@ -413,5 +429,5 @@ export function createSlackContext({
     return unknown;
   }
 
-  return { conversation, context, audience };
+  return { conversation, context, audience, isOtherBot };
 }

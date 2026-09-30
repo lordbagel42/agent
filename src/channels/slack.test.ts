@@ -1166,7 +1166,7 @@ describe("createSlackAdapter", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rejects unmentioned guests, bots and unsupported surfaces before channel-name lookup", async () => {
+  it("rejects unmentioned human guests, self messages and unsupported surfaces before channel-name lookup", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>();
     const adapter = makeAdapter(fetchMock, {
       participateInOwnerChannels: true,
@@ -1184,9 +1184,6 @@ describe("createSlackAdapter", () => {
       { user: "U_STRANGER" },
       { user: "U_STRANGER", type: "app_mention" },
       { user: botUserId },
-      { bot_id: "B123" },
-      { app_id: "A123" },
-      { subtype: "bot_message" },
       { channel_type: "mpim", channel: "G123", user: "U_STRANGER" },
       { subtype: "message_changed" },
       { subtype: "message_deleted" },
@@ -1355,14 +1352,130 @@ describe("createSlackAdapter", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("admits all bot conversation messages without granting human command authority", async () => {
+    const adapter = makeAdapter();
+    for (const [source, senderId] of [
+      [{ user: "U_APP", bot_id: "B123", subtype: "bot_message" }, "bot:B123"],
+      [{ user: "U_HUMAN", bot_id: "B123" }, "bot:B123"],
+      [{ user: "U_HUMAN", app_id: "A123" }, "bot:A123"],
+      [{ user: "U_HUMAN", subtype: "bot_message" }, "bot:U_HUMAN"],
+    ] as const) {
+      for (const channel_type of ["channel", "group", "mpim", "im"]) {
+        const event = {
+          type: "message",
+          channel: channel_type === "im" ? "D123" : "C123",
+          channel_type,
+          ts: "1712345678.000400",
+          text: "<@U_BOT> hello",
+          ...source,
+        };
+        const { events } = await adapter.receive(
+          signedRequest(eventBody(event)),
+        );
+        expect(events).toHaveLength(1);
+        expect(events[0]).toMatchObject({ type: "message", senderId });
+        expect(
+          routeEvent(events[0] as MessageEvent, {
+            id: "owner",
+            identities: [
+              { channel: "slack", accountId: teamId, senderId: "U_HUMAN" },
+            ],
+          }),
+        ).toMatchObject({
+          private: false,
+          key: ["guest", "slack", teamId, event.channel, "", senderId],
+        });
+        for (const text of [
+          "hello",
+          "June hello",
+          "DEBUGSHARE",
+          "CLEARHISTORY",
+          "!memory-correct hello",
+        ]) {
+          const received = await adapter.receive(
+            signedRequest(
+              eventBody({ ...event, text, thread_ts: "1712340000.001" }),
+            ),
+          );
+          expect(received.events).toHaveLength(1);
+          expect(received.events[0]).toMatchObject({ botMentioned: false });
+          expect(
+            routeEvent(received.events[0] as MessageEvent, {
+              id: "owner",
+              identities: [
+                { channel: "slack", accountId: teamId, senderId: "U_HUMAN" },
+              ],
+            }),
+          ).toEqual({
+            private: false,
+            key: [
+              "guest",
+              "slack",
+              teamId,
+              event.channel,
+              "1712340000.001",
+              senderId,
+            ],
+          });
+          expect(
+            sessionCommand(received.events[0] as MessageEvent),
+          ).toBeUndefined();
+          expect(
+            (received.events[0] as MessageEvent).ownerCorrectionEligible,
+          ).not.toBe(true);
+        }
+      }
+    }
+  });
+
+  it("checks the authenticated bot identity for userless bot messages and fails closed", async () => {
+    for (const identity of [
+      { ok: true, team_id: teamId, user_id: botUserId, bot_id: "B_SELF" },
+      { ok: true, team_id: "T_OTHER", user_id: botUserId, bot_id: "B_SELF" },
+      { ok: true, team_id: teamId, user_id: "U_OTHER", bot_id: "B_SELF" },
+      { ok: false, error: "invalid_auth" },
+    ]) {
+      const fetchMock = vi
+        .fn<typeof globalThis.fetch>()
+        .mockImplementation(async (url) => {
+          expect(String(url)).toBe("https://slack.com/api/auth.test");
+          return jsonResponse(identity);
+        });
+      const adapter = makeAdapter(fetchMock);
+      for (const bot_id of ["B_OTHER", "B_SELF"]) {
+        const { events } = await adapter.receive(
+          signedRequest(
+            eventBody({
+              type: "message",
+              subtype: "bot_message",
+              bot_id,
+              text: "hello without a mention",
+              channel: "C123",
+              channel_type: "channel",
+              ts: "1712345678.000400",
+            }),
+          ),
+        );
+        const accepted =
+          identity.ok &&
+          identity.team_id === teamId &&
+          identity.user_id === botUserId &&
+          bot_id === "B_OTHER";
+        expect(events).toHaveLength(accepted ? 1 : 0);
+        if (accepted)
+          expect(events[0]).toMatchObject({ senderId: "bot:B_OTHER" });
+      }
+    }
+  });
+
   it.each([
     [
-      "bot messages",
+      "the bot's own bot-message callbacks",
       {
         type: "message",
         subtype: "bot_message",
         bot_id: "B123",
-        user: "U_APP",
+        user: botUserId,
         text: "bot output",
         channel: "D123",
         channel_type: "im",

@@ -67,6 +67,8 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain(
       "Group DMs (mpim) are shared conversations, never owner-private DMs",
     );
+    expect(request.system).toContain("Slack bots may converse with you");
+    expect(request.system).toContain("always have guest permissions");
     expect(request.system).toContain(
       "matching mcp.slack.appId/client credentials",
     );

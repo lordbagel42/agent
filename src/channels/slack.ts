@@ -58,6 +58,7 @@ export function isPlainSlackCommand(
     typeof event.text !== "string" ||
     event.text.includes("`") ||
     event.subtype !== undefined ||
+    isBotEvent(event) ||
     event.attachments !== undefined ||
     event.files !== undefined
   )
@@ -151,16 +152,9 @@ function occurredAtFrom(payload: JsonObject): number | undefined {
   return eventTime * 1_000;
 }
 
-function isHumanEvent(
-  event: JsonObject,
-  botUserId: string,
-): event is JsonObject & { user: string } {
+function isBotEvent(event: JsonObject): boolean {
   return (
-    nonEmptyString(event.user) &&
-    event.user !== botUserId &&
-    !("bot_id" in event) &&
-    !("app_id" in event) &&
-    event.subtype !== "bot_message"
+    "bot_id" in event || "app_id" in event || event.subtype === "bot_message"
   );
 }
 
@@ -196,10 +190,22 @@ async function normalizeEvent(
   }
 
   const event = payload.event;
-  if (!isHumanEvent(event, botUserId) || ownerUserIds.size === 0) {
+  const bot = isBotEvent(event);
+  const botId = nonEmptyString(event.bot_id) ? event.bot_id : undefined;
+  if (
+    (!nonEmptyString(event.user) && !botId) ||
+    event.user === botUserId ||
+    ownerUserIds.size === 0
+  ) {
     return [];
   }
-  const owner = ownerUserIds.has(event.user);
+  // Bot provenance must survive routing: a bot posting on behalf of an owner
+  // must not join the owner's private queue or capture their tool authority.
+  const senderId = bot
+    ? `bot:${botId ?? (nonEmptyString(event.app_id) ? event.app_id : event.user)}`
+    : event.user;
+  if (!nonEmptyString(senderId)) return [];
+  const owner = !bot && ownerUserIds.has(senderId);
   const mentioned =
     typeof event.text === "string" && event.text.includes(`<@${botUserId}>`);
   // DEBUG/DEBUGSHARE are contact in their own right, including guest/group DMs. Other
@@ -225,9 +231,11 @@ async function normalizeEvent(
     (event.text.startsWith("##") || event.text.includes(RIVET_REPLY_PREFIX))
   )
     return [];
-  // Guests must explicitly address June. Direct DMs also count as contact.
+  // Human guests must explicitly address June. Bot messages are ordinary
+  // conversational input even without a ping; the model decides whether to reply.
   if (
     !owner &&
+    !bot &&
     !mentioned &&
     !debugEligible &&
     !(event.type === "message" && event.channel_type === "im")
@@ -238,6 +246,7 @@ async function normalizeEvent(
       (event.subtype !== undefined &&
         event.subtype !== "file_share" &&
         event.subtype !== "me_message" &&
+        event.subtype !== "bot_message" &&
         event.subtype !== "thread_broadcast") ||
       event.hidden === true ||
       !nonEmptyString(event.channel) ||
@@ -291,6 +300,7 @@ async function normalizeEvent(
         threads?.has(teamId, botUserId, event.channel, event.thread_ts));
     if (
       channelType !== "im" &&
+      !bot &&
       !(owner && channelType === "mpim") &&
       !mentioned &&
       !named &&
@@ -314,6 +324,18 @@ async function normalizeEvent(
     if (channelType !== "im" && event.channel.startsWith("D")) {
       return [];
     }
+
+    // Legacy bot callbacks can omit user. Identify our own bot before admitting
+    // those, rather than trusting a display name or risking a self-reply loop.
+    if (
+      !nonEmptyString(event.user) &&
+      (!botId ||
+        !(await context.isOtherBot(
+          botId,
+          AbortSignal.timeout(CHANNEL_LOOKUP_TIMEOUT_MS),
+        )))
+    )
+      return [];
 
     const threadId = nonEmptyString(event.thread_ts)
       ? event.thread_ts
@@ -339,7 +361,7 @@ async function normalizeEvent(
         address: slackAddress(teamId, event.channel, threadId),
         occurredAt,
         messageId: event.ts,
-        senderId: event.user,
+        senderId,
         direct: channelType === "im",
         text: sessionEligible ? sessionText : event.text,
         botMentioned: mentioned,
@@ -421,7 +443,7 @@ async function normalizeEvent(
         address: slackAddress(teamId, event.item.channel),
         occurredAt,
         messageId: event.item.ts,
-        senderId: event.user,
+        senderId,
         emoji: event.reaction,
         removed: event.type === "reaction_removed",
       },
