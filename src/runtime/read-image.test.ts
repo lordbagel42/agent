@@ -261,65 +261,156 @@ it("holds image review until provider retirement, including abort, rejection and
   }
 });
 
-it("delegates an image-only message, reads it once, and enters report-only mode", async (t) => {
-  const { context, counts } = fixture();
-  const sent: string[] = [];
-  let reported = false;
-  const adapter = context.deps.channels?.slack;
-  if (!adapter) throw new Error("Missing adapter");
-  adapter.send = async (message) => {
-    if (message.content.type === "text") sent.push(message.content.text);
-    return { status: "sent", messageId: `out-${sent.length}` };
-  };
-  const registry = createJuneRegistry({
-    owner: context.deps.owner,
-    channels: { slack: adapter },
-    model: {
-      async reply(input) {
-        if (input.executionAvailable) {
-          expect(input.readImageAvailable).toBe(true);
-          return {
-            text: "",
-            execution: [
-              {
-                agent: "image",
-                action: "run",
-                task: "Inspect attached F123 and report the sign text.",
-              },
-            ],
-          };
-        }
-        if (!reported) return { text: "No verified review" };
-        return { text: "The sign says WEST; small text is unreadable." };
-      },
-    },
-    execution: {
+it.for(["readImage", "readVideo"] as const)(
+  "delegates %s once and enters report-only mode",
+  async (action, t) => {
+    const { context, counts } = fixture();
+    const sent: string[] = [];
+    let reported = false;
+    const adapter = context.deps.channels?.slack;
+    if (!adapter) throw new Error("Missing adapter");
+    if (action === "readVideo") {
+      context.event.metadata = {
+        channelType: "im",
+        files: [{ id: "F123", mimetype: "video/mp4" }],
+      };
+      adapter.readVideo = async (...args) => {
+        const result = await adapter.readImage?.(...args);
+        if (result?.status !== "ready") throw new Error("Missing fixture");
+        return {
+          status: "ready",
+          images: [{ ...result.image, mediaTimeSeconds: 0.5 }],
+        };
+      };
+      context.model.reply = async (input) => {
+        expect(input.images?.[0]?.mediaTimeSeconds).toBe(0.5);
+        expect(input.system).toContain("audio");
+        expect(input.readVideoAvailable).not.toBe(true);
+        return {
+          text: "The sign says WEST in the sampled frame; no audio was reviewed.",
+        };
+      };
+    }
+    adapter.send = async (message) => {
+      if (message.content.type === "text") sent.push(message.content.text);
+      return { status: "sent", messageId: `out-${sent.length}` };
+    };
+    const registry = createJuneRegistry({
+      owner: context.deps.owner,
+      channels: { slack: adapter },
       model: {
-        beginReply: context.model.beginReply,
         async reply(input) {
-          const observation = input.messages.find((m) =>
-            m.content.includes("Host tool observation"),
-          );
-          if (observation) {
-            expect(observation.content).toContain("WEST");
-            expect(input.readImageAvailable).toBe(false);
-            reported = true;
-            return { text: "The sign says WEST; small text is unreadable." };
+          if (input.executionAvailable) {
+            expect(input[`${action}Available`]).toBe(true);
+            return {
+              text: "",
+              execution: [
+                {
+                  agent: "image",
+                  action: "run",
+                  task: "Inspect attached F123 and report the sign text.",
+                },
+              ],
+            };
           }
-          expect(input.system).toContain("F123");
-          return { text: "", readImage: command };
+          if (!reported) return { text: "No verified review" };
+          return { text: "The sign says WEST; small text is unreadable." };
         },
+      },
+      execution: {
+        model: {
+          beginReply: context.model.beginReply,
+          async reply(input) {
+            const observation = input.messages.find((m) =>
+              m.content.includes("Host tool observation"),
+            );
+            if (observation) {
+              expect(observation.content).toContain("WEST");
+              expect(input[`${action}Available`]).toBe(false);
+              reported = true;
+              return { text: "The sign says WEST; small text is unreadable." };
+            }
+            expect(input.system).toContain("F123");
+            return { text: "", [action]: command };
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const scope = routeEvent(context.event, context.deps.owner);
+    if (!scope) throw new Error("Missing scope");
+    await client.conversation
+      .getOrCreate(scope.key)
+      .send("inbox", { type: "event", event: context.event });
+    await expect
+      .poll(() => sent.join("\n"), { timeout: 15000 })
+      .toContain("WEST");
+    expect(counts().downloads).toBe(1);
+  },
+);
+
+it("limits video schema and prompt grants to current owner-private worker requests", () => {
+  const { context } = fixture();
+  const videoRequest = {
+    ...request,
+    readImageAvailable: false,
+    readVideoAvailable: true,
+  };
+  const reply = JSON.stringify({ text: "", readVideo: command });
+  expect(parseReply(reply, [], videoRequest).readVideo).toEqual(command);
+  for (const caps of [
+    {},
+    { ...videoRequest, agentRole: "interaction" as const },
+    { ...videoRequest, readVideoAvailable: false },
+  ])
+    expect(() => parseReply(reply, [], caps)).toThrow();
+  expect(() =>
+    parseReply(
+      JSON.stringify({ text: "", readImage: command, readVideo: command }),
+      [],
+      { ...request, readVideoAvailable: true },
+    ),
+  ).toThrow();
+  for (const agentRole of ["interaction", "execution"] as const) {
+    const prompt = buildModelRequest({
+      event: context.event,
+      owner: context.deps.owner,
+      history: [],
+      now: new Date(),
+      agentRole,
+      capabilities: { readVideoAvailable: true },
+      models: { current: { provider: "test", model: "test" } },
+    });
+    expect(prompt.system).toContain("readVideo");
+    expect(prompt.system).toContain("F123");
+    expect(
+      Object.hasOwn(replyJsonSchema([], prompt).properties, "readVideo"),
+    ).toBe(agentRole === "execution");
+  }
+  const automated = buildModelRequest({
+    event: context.event,
+    owner: context.deps.owner,
+    history: [],
+    now: new Date(),
+    capabilities: { readVideoAvailable: true },
+    models: { current: { provider: "test", model: "test" } },
+    wakeup: {
+      mode: "decision",
+      runId: "run",
+      jobId: "job",
+      instruction: "observe",
+      event: {
+        id: "trigger",
+        source: "github",
+        type: "push",
+        occurredAt: 1,
+        data: {},
       },
     },
   });
-  const { client } = await setupTest(t, registry);
-  const scope = routeEvent(context.event, context.deps.owner);
-  if (!scope) throw new Error("Missing scope");
-  await client.conversation
-    .getOrCreate(scope.key)
-    .send("inbox", { type: "event", event: context.event });
-  await expect
-    .poll(() => sent.join("\n"), { timeout: 15000 })
-    .toContain("WEST");
-  expect(counts()).toEqual({ downloads: 1, reviews: 1 });
+  expect(automated.readVideoAvailable).toBe(false);
+  expect(
+    Object.hasOwn(replyJsonSchema([], automated).properties, "readVideo"),
+  ).toBe(false);
+  expect(automated.system).toContain("readVideo");
 });

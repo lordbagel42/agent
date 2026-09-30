@@ -3635,6 +3635,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                       phase !== "synthesis" &&
                                       !!deps.execution &&
                                       !!deps.channels.slack?.readImage,
+                                    readVideoAvailable:
+                                      body.type === "event" &&
+                                      phase !== "synthesis" &&
+                                      !!deps.execution &&
+                                      !!deps.channels.slack?.readVideo,
                                     repositoryAvailable:
                                       body.type === "event" &&
                                       phase !== "synthesis" &&

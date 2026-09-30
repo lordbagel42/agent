@@ -181,6 +181,16 @@ export interface ChannelAdapter {
     | { status: "ready"; image: ModelImageInput }
     | { status: "unavailable"; code?: "files_read_required" }
   >;
+  /** Ephemeral sampled video frames; same initiating owner-DM boundary as images.
+   * Decode in private temporary storage, remove it before returning, no audio. */
+  readVideo?(
+    event: MessageEvent,
+    fileId: string,
+    signal: AbortSignal,
+  ): Promise<
+    | { status: "ready"; images: ModelImageInput[] }
+    | { status: "unavailable"; code?: "files_read_required" }
+  >;
   /** Ephemeral host activity, never a model action or a durable delivery.
    * Unsupported surfaces are a no-op; adapters bound each transport attempt. */
   setTyping?(
@@ -242,6 +252,7 @@ export interface CompanionReply {
   javascript?: { source: string; inputJson: string };
   emojiSearch?: { query: string; limit?: number };
   readImage?: { fileId: string; question: string };
+  readVideo?: { fileId: string; question: string };
   /** Ask June's source specialist; only execution workers may consult it. */
   repository?: string;
   /** Specialist-only reads from the host's pinned public source snapshot. */
@@ -477,6 +488,7 @@ export interface ModelRequest {
   javascriptAvailable?: boolean;
   emojiSearchAvailable?: boolean;
   readImageAvailable?: boolean;
+  readVideoAvailable?: boolean;
   repositoryAvailable?: boolean;
   repositoryReadAvailable?: boolean;
 }

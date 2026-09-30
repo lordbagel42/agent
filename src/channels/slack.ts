@@ -26,6 +26,7 @@ import {
   type SlackPrivateSearchOptions,
 } from "./slack-search.js";
 import type { SlackThreads } from "./slack-threads.js";
+import { createSlackVideoReader } from "./slack-video.js";
 
 const SIGNATURE_TOLERANCE_SECONDS = 300;
 const SLACK_TEXT_LIMIT = 40_000;
@@ -504,6 +505,12 @@ export function createSlackAdapter({
     ...(contextEnabled ? { context: context.context } : {}),
     audience: context.audience,
     readImage: createSlackImageReader({
+      teamId,
+      botToken,
+      ownerUserIds: owners,
+      fetch: fetchImpl,
+    }),
+    readVideo: createSlackVideoReader({
       teamId,
       botToken,
       ownerUserIds: owners,

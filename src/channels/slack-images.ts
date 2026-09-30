@@ -1,4 +1,4 @@
-import type { ChannelAdapter } from "../core/contracts.js";
+import type { ChannelAdapter, MessageEvent } from "../core/contracts.js";
 
 const IMAGE_LIMIT = 5 * 1024 * 1024;
 
@@ -32,13 +32,21 @@ async function readBounded(response: Response, limit: number) {
 
 /** File URLs are resolved privately, never retained in message metadata or
  * accepted from the model. No redirects may forward the bot credential. */
-export function createSlackImageReader(options: {
+interface SlackFileOptions {
   teamId: string;
   botToken: string;
   ownerUserIds: ReadonlySet<string>;
   fetch: typeof globalThis.fetch;
-}): NonNullable<ChannelAdapter["readImage"]> {
-  return async (event, fileId, signal) => {
+}
+
+export function createSlackFileReader(options: SlackFileOptions) {
+  return async (
+    event: MessageEvent,
+    fileId: string,
+    signal: AbortSignal,
+    mimetypes: readonly string[],
+    limit: number,
+  ) => {
     const unavailable = { status: "unavailable" as const };
     if (
       signal.aborted ||
@@ -57,27 +65,28 @@ export function createSlackImageReader(options: {
     ]);
     const headers = { authorization: `Bearer ${options.botToken}` };
     try {
-      const response = await options.fetch("https://slack.com/api/files.info", {
-        method: "POST",
-        redirect: "error",
-        headers: {
-          ...headers,
-          "content-type": "application/json; charset=utf-8",
+      const response = await options.fetch(
+        `https://slack.com/api/files.info?${new URLSearchParams({ file: fileId })}`,
+        {
+          redirect: "error",
+          headers,
+          signal: boundedSignal,
         },
-        body: JSON.stringify({ file: fileId }),
-        signal: boundedSignal,
-      });
+      );
       const info = JSON.parse(
         (await readBounded(response, 256 * 1024)).toString("utf8"),
       );
       if (info?.ok === false && info.error === "missing_scope")
-        return { status: "unavailable", code: "files_read_required" };
+        return {
+          status: "unavailable" as const,
+          code: "files_read_required" as const,
+        };
       const file = info?.file;
       if (
         info?.ok !== true ||
         file?.id !== fileId ||
-        !["image/png", "image/jpeg"].includes(file.mimetype) ||
-        (typeof file.size === "number" && file.size > IMAGE_LIMIT) ||
+        !mimetypes.includes(file.mimetype) ||
+        (typeof file.size === "number" && file.size > limit) ||
         typeof file.url_private !== "string"
       )
         return unavailable;
@@ -98,23 +107,46 @@ export function createSlackImageReader(options: {
         headers,
         signal: boundedSignal,
       });
-      const data = await readBounded(download, IMAGE_LIMIT);
-      const signature =
-        file.mimetype === "image/png"
-          ? [137, 80, 78, 71, 13, 10, 26, 10]
-          : [255, 216, 255];
-      if (
-        boundedSignal.aborted ||
-        !signature.every((byte, i) => data[i] === byte)
-      )
-        return unavailable;
+      const data = await readBounded(download, limit);
+      if (boundedSignal.aborted) return unavailable;
       return {
-        status: "ready",
-        image: { evidenceId: `slack:${fileId}`, mimeType: file.mimetype, data },
+        status: "ready" as const,
+        mimeType: file.mimetype as string,
+        data,
       };
     } catch {
       // Provider errors can contain private URLs/headers; return no raw errors.
       return unavailable;
     }
+  };
+}
+
+export function createSlackImageReader(
+  options: SlackFileOptions,
+): NonNullable<ChannelAdapter["readImage"]> {
+  const read = createSlackFileReader(options);
+  return async (event, fileId, signal) => {
+    const result = await read(
+      event,
+      fileId,
+      signal,
+      ["image/png", "image/jpeg"],
+      IMAGE_LIMIT,
+    );
+    if (result.status !== "ready") return result;
+    const signature =
+      result.mimeType === "image/png"
+        ? [137, 80, 78, 71, 13, 10, 26, 10]
+        : [255, 216, 255];
+    if (!signature.every((byte, i) => result.data[i] === byte))
+      return { status: "unavailable" };
+    return {
+      status: "ready",
+      image: {
+        evidenceId: `slack:${fileId}`,
+        mimeType: result.mimeType as "image/png" | "image/jpeg",
+        data: result.data,
+      },
+    };
   };
 }

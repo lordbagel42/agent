@@ -34,6 +34,23 @@ into June or tested with a real account.
   Guests, channels, automated events, arbitrary URLs and
   history-only files are not supported; reattach a file for a follow-up read.
   Availability is not proof of a successful download or visual interpretation.
+- Owner-DM video visual review follows the same worker boundary with
+  `readVideo:{fileId,question}`. Attach an MP4/MOV of at most 50 MiB
+  (up to 3840×2160 pixels). The host samples at most eight frames within its first 120 seconds,
+  scaled within 640×640, and sends actual image bytes and timestamps to a
+  tool-free review. Timestamps start at the first decoded frame; total clip
+  duration and completeness are not verified. This is sparse
+  visual evidence, **not audio transcription or complete-motion coverage**;
+  brief events between samples may be missed. One read ends the worker's tool
+  phase, including failures. No background reads or automatic retries occur.
+  Linux hosts must separately install `/usr/bin/ffmpeg`, `/usr/bin/ffprobe`
+  (the distribution's `ffmpeg` package) and `/usr/bin/prlimit` (`util-linux`)
+  in an authorized operator window. Decoder children receive no app credentials,
+  use only the MOV demuxer with external tracks disabled, and have bounded CPU,
+  memory, output and wall time. Cancellation waits for child exit. Private
+  temporary files are removed before returning frames; only review text persists.
+  These resource limits are not a native-code sandbox. Keep decoder packages
+  patched. Missing binaries or failed decoding report unavailable, not success.
 - Linked owner DMs share history. Public Slack threads have separate context and
   cannot access private history or approve coding tasks.
 - Durable inbox, serial turns, event deduplication, and a persisted outbox.

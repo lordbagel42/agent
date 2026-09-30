@@ -47,6 +47,13 @@ export function executionCapabilities(
       event.metadata?.channelType === "im" &&
       !!event.metadata.files?.length &&
       !!deps.channels.slack?.readImage,
+    readVideoAvailable:
+      privateTurn &&
+      event.direct &&
+      event.address.channel === "slack" &&
+      event.metadata?.channelType === "im" &&
+      !!event.metadata.files?.length &&
+      !!deps.channels.slack?.readVideo,
     repositoryAvailable: !!deps.repository,
     releaseAvailable: !!deps.release,
     modelStatusAvailable: privateTurn && !!deps.modelStatus,
