@@ -633,6 +633,7 @@ async function main() {
       )
         throw new Error("Slack MCP identity must be the configured owner");
       slackMcp = createSlackMcpOAuth({
+        appId: slack.appId,
         clientId: secret(slack.clientIdEnv),
         clientSecret: secret(slack.clientSecretEnv),
         redirectUrl: `${config.console.origin}/console/connections/slack/callback`,

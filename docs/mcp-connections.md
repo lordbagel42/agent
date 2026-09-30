@@ -172,6 +172,7 @@ and placeholder Slack IDs with your own verified deployment values:
     "directory": "/var/lib/june/mcp",
     "keyEnv": "JUNE_MCP_KEY",
     "slack": {
+      "appId": "A0000000000",
       "clientIdEnv": "JUNE_SLACK_CLIENT_ID",
       "clientSecretEnv": "JUNE_SLACK_CLIENT_SECRET",
       "teamId": "T0000000000",
@@ -197,6 +198,17 @@ requires the configured owner's separate **user** consent; bot and management
 tokens do not qualify. Only configured user scopes are requested. Other Slack
 tools require their corresponding user scopes and a new consent. Expiring grants
 currently require reconnecting; automatic refresh is not implemented.
+
+Set `mcp.slack.appId` to the app owning those client credentials, not its numeric
+OAuth client ID or bot user ID. A returned OAuth `app_id` must match. Omission
+preserves the legacy app `A0C4749KM3R` for existing deployments; replacement June
+uses `A0C59GPUNJW`. Coordinate the new app ID and credentials in the same immutable
+configuration release after host recovery. This setting does not install an app,
+switch the bot identity, migrate saved user tokens or broaden permissions.
+Disconnect the old `slack` user connection and reconnect with fresh owner consent
+when migrating; discover tools and review their permissions again. A changed bot
+identity separately disables the `slack-bot` tools and invalidates pending
+approvals until the owner reviews permissions. Keep uncertain effects unknown.
 
 Choose **Connect Slack**, review Slack's consent screen and approve. The browser
 returns to June, which verifies the account, saves the authorization and opens

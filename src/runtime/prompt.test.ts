@@ -65,6 +65,12 @@ it.for(["interaction", "execution", "decision"] as const)(
     });
     expect(request.system).toContain("APPROVED_CONTINUITY_EXCERPT");
     expect(request.system).toContain(
+      "matching mcp.slack.appId/client credentials",
+    );
+    expect(request.system).toContain(
+      "Do not perform the cutover or consent yourself",
+    );
+    expect(request.system).toContain(
       "semoji service (https://github.com/lordbagel42/semoji) owns Cloudflare Workers",
     );
     expect(request.system).toContain(

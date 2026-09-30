@@ -1,7 +1,6 @@
 import { randomBytes } from "node:crypto";
 
 export const SLACK_MCP_URL = "https://mcp.slack.com/mcp";
-export const SLACK_APP_ID = "A0C4749KM3R";
 const RESOURCE = "https://mcp.slack.com";
 const AUTHORIZE = "https://slack.com/oauth/v2_user/authorize";
 const TOKEN = "https://slack.com/api/oauth.v2.user.access";
@@ -50,6 +49,7 @@ export interface SlackMcpOAuthFailure {
 }
 
 export interface SlackMcpOAuthOptions {
+  appId: string;
   clientId: string;
   clientSecret: string;
   redirectUrl: string;
@@ -105,6 +105,7 @@ export function createSlackMcpOAuth(
     return failed();
   }
   if (
+    !/^A[A-Z0-9]+$/.test(options.appId) ||
     !clientId ||
     !clientSecret ||
     !teamId ||
@@ -293,7 +294,7 @@ export function createSlackMcpOAuth(
           failed();
         if (user.id !== userId) failed("wrong_user");
         if (team.id !== teamId) failed("wrong_team");
-        if (token.app_id !== undefined && token.app_id !== SLACK_APP_ID)
+        if (token.app_id !== undefined && token.app_id !== options.appId)
           failed("wrong_app");
         stage = "scope_validation";
         const granted = grantedScopes(user.scope);

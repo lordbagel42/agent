@@ -2825,6 +2825,7 @@ test("Slack OAuth returns once to a saved connection, bound to the starting brow
   let exchanges = 0;
   const slack = createSlackMcpOAuth(
     {
+      appId: "A0C59GPUNJW",
       clientId: "fixture",
       clientSecret: "fixture-secret",
       redirectUrl: `${origin}${base}/slack/callback`,
@@ -2846,6 +2847,7 @@ test("Slack OAuth returns once to a saved connection, bound to the starting brow
               ? { ok: true, user_id: "U1", team_id: "T1" }
               : {
                   ok: true,
+                  app_id: "A0C59GPUNJW",
                   token_type: "user",
                   access_token: "fixture-slack-token",
                   authed_user: { id: "U1", scope: "search:read" },
@@ -2898,6 +2900,9 @@ test("Slack OAuth returns once to a saved connection, bound to the starting brow
     app.request(`${base}/slack/callback?${query}`, {
       headers: { cookie: jar },
     });
+  const overview = await (await get("")).text();
+  expect(overview).toContain("Uses the host-configured Slack app.");
+  expect(overview).not.toContain("A0C4749KM3R");
   // Connect is on Connections; Reconnect for a saved account is on its page.
   const start = async (from = "") => {
     const begin = await post("/slack/connect", {

@@ -196,6 +196,11 @@ const schema = z
           .optional(),
         slack: z
           .strictObject({
+            // Preserve existing installs until the operator coordinates cutover.
+            appId: z
+              .string()
+              .regex(/^A[A-Z0-9]+$/)
+              .default("A0C4749KM3R"),
             clientIdEnv: envName.default("JUNE_SLACK_CLIENT_ID"),
             clientSecretEnv: envName.default("JUNE_SLACK_CLIENT_SECRET"),
             teamId: nonempty,

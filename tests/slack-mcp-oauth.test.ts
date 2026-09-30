@@ -27,6 +27,7 @@ function setup(tokenOverride = {}, identityOverride = {}) {
   );
   const oauth = createSlackMcpOAuth(
     {
+      appId: "A0C59GPUNJW",
       clientId: "client",
       clientSecret: "secret-private",
       redirectUrl: "https://june.example/oauth/slack",
@@ -58,6 +59,39 @@ function setup(tokenOverride = {}, identityOverride = {}) {
 }
 
 describe("Slack MCP OAuth security boundary", () => {
+  it.each([
+    ["A0C59GPUNJW", true],
+    ["A0C4749KM3R", false],
+    ["AOTHERAPP", false],
+  ])(
+    "binds returned app %s to the configured replacement",
+    async (appId, accepted) => {
+      const s = setup({ app_id: appId });
+      if (accepted) {
+        await s.oauth.complete("owner", s.callback);
+        expect(s.saveAuthorization).toHaveBeenCalledWith(
+          expect.objectContaining({
+            userId: "U1",
+            teamId: "T1",
+            scopes: ["search:read"],
+          }),
+        );
+      } else {
+        await expect(s.oauth.complete("owner", s.callback)).rejects.toThrow(
+          "slack_mcp_oauth_failed",
+        );
+        expect(s.onFailure).toHaveBeenCalledWith({
+          stage: "token_validation",
+          reason: "wrong_app",
+        });
+        expect(s.saveAuthorization).not.toHaveBeenCalled();
+        // Reject before identity verification, and never replay the exchange.
+        await expect(s.oauth.complete("owner", s.callback)).rejects.toThrow();
+        expect(s.fetchMock).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
   it("does not save an authorization after a disconnect during identity verification", async () => {
     const s = setup();
     const original = s.fetchMock.getMockImplementation();

@@ -9,7 +9,6 @@ import {
 import type { createGitHubOAuth } from "../tools/github-oauth.js";
 import type { createPuckConsoleOAuth } from "../tools/puck-oauth.js";
 import type { createSlackMcpOAuth } from "../tools/slack-mcp-oauth.js";
-import { SLACK_APP_ID } from "../tools/slack-mcp-oauth.js";
 import { createConnectionOAuthRoutes } from "./connection-oauth.js";
 import {
   binding,
@@ -55,7 +54,8 @@ const providers = [
       "Search Slack as you through Slack's official MCP server. Separate from June's bot login.",
     setup:
       "The host must configure the Slack app client credentials and register this dashboard's callback.",
-    notes: `Slack app ${SLACK_APP_ID}. Expired Slack authorization requires reconnecting.`,
+    notes:
+      "Uses the host-configured Slack app. Expired Slack authorization requires reconnecting.",
   },
   {
     id: "amp",

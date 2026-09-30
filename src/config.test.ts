@@ -318,6 +318,33 @@ describe("configuration boundary", () => {
         .slack?.searchEnabled,
     ).toBe(true);
   });
+  it("allows a replacement Slack OAuth app without changing legacy configuration", () => {
+    const slack = {
+      teamId: "T1",
+      userId: "U1",
+      scopes: ["search:read.public"],
+    };
+    const configured = {
+      ...input,
+      console: { origin: "https://june.example" },
+      mcp: { directory: "/private/mcp", slack },
+    };
+    expect(parseConfig(configured).mcp?.slack?.appId).toBe("A0C4749KM3R");
+    expect(
+      parseConfig({
+        ...configured,
+        mcp: { ...configured.mcp, slack: { ...slack, appId: "A0C59GPUNJW" } },
+      }).mcp?.slack?.appId,
+    ).toBe("A0C59GPUNJW");
+    for (const appId of ["", "T0266FRGM", "123.456", "A0C59GPUNJW "]) {
+      expect(() =>
+        parseConfig({
+          ...configured,
+          mcp: { ...configured.mcp, slack: { ...slack, appId } },
+        }),
+      ).toThrow();
+    }
+  });
   it("accepts a dedicated ChatGPT subscription provider without an API key", () => {
     const model = {
       protocol: "codex",

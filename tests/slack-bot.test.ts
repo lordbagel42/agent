@@ -46,7 +46,7 @@ test("changing the host bot identity revokes saved grants and pending proposals"
     await store.close();
     store = new McpConnections(options, {
       fetch,
-      slackBot: { token: "other", teamId: "T2", botUserId: "U2" },
+      slackBot: { token: "other", teamId: "T1", botUserId: "U2" },
     });
     expect(
       store.list()[0]?.tools.every((entry) => entry.permission === "disabled"),
