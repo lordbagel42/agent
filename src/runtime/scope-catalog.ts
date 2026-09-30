@@ -8,6 +8,7 @@ import type {
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import type { EvidenceStore } from "../memory/store.js";
+import { type CompressedJson, eventRecord } from "./conversation-storage.js";
 import { type ExecutionRequest, executionLimits } from "./execution.js";
 import type { ExecutionContext } from "./execution-context.js";
 import type { ConversationState, MemoryReference } from "./registry.js";
@@ -47,6 +48,7 @@ export interface ScopeCatalog {
 interface CatalogAuthorityState
   extends Pick<ScopeCatalog, "jobs" | "delegations"> {
   events: Record<string, { event: ChannelEvent }>;
+  eventsArchive?: CompressedJson;
   forgottenEvents?: string[];
   memoryContexts?: Record<string, MemoryReference>;
 }
@@ -70,7 +72,7 @@ export function createScopeCatalogAuthority(
   ) {
     const context = state.delegations?.[requestId];
     const id = context?.originEventId ?? "";
-    const event = state.events[id]?.event;
+    const event = eventRecord(state, id)?.event;
     const scope = event && routeEvent(event, deps.owner);
     if (
       !context ||

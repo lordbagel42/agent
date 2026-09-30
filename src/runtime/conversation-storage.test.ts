@@ -3,9 +3,18 @@ import { setupTest } from "../../tests/rivet.js";
 import {
   commandSnapshot,
   compactConversation,
+  deliveryRecord,
+  editDelivery,
+  editEvent,
   editHistory,
+  eventRecord,
+  readDeliveries,
+  readEvents,
   readHistory,
 } from "./conversation-storage.js";
+import { deliver } from "./delivery.js";
+import { conversationInputId } from "./inbox.js";
+import { outstandingOperationMetadata } from "./inspection.js";
 import { type ConversationState, createJuneRegistry } from "./registry.js";
 import {
   captureDebug,
@@ -143,7 +152,7 @@ test("pending snapshots survive a lost publication acknowledgment and restart", 
   });
 });
 
-test("legacy oversized history wakes and completes a real workflow without losing context", async (t) => {
+test("legacy oversized state wakes and replays without losing context or repeating a completed turn", async (t) => {
   const requests: string[] = [];
   const registry = createJuneRegistry({
     owner: {
@@ -168,9 +177,32 @@ test("legacy oversized history wakes and completes a real workflow without losin
   expect(Buffer.byteLength(JSON.stringify(history))).toBeGreaterThan(
     512 * 1024,
   );
-  Object.assign(config.state, { history });
+  const old = {
+    id: "old",
+    type: "message" as const,
+    messageId: "old-1",
+    occurredAt: 1,
+    address: {
+      channel: "slack" as const,
+      accountId: "team",
+      conversationId: "dm",
+    },
+    senderId: "owner",
+    direct: true,
+    text: "saved inbound ".repeat(50_000),
+  };
+  const oldId = conversationInputId({ type: "event", event: old });
+  Object.assign(config.state, {
+    history,
+    events: { [oldId]: { event: old, done: true } },
+  });
   const { client } = await setupTest(t, registry);
   const june = client.conversation.getOrCreate(["private", "owner"]);
+  // The small duplicate uses the old identity; no oversized queue message.
+  await june.send("inbox", {
+    type: "event",
+    event: { ...old, text: "duplicate" },
+  });
   await june.send("inbox", {
     type: "event",
     event: {
@@ -188,7 +220,7 @@ test("legacy oversized history wakes and completes a real workflow without losin
     .poll(
       async () =>
         Object.values((await june.snapshot()).events).some(
-          (record) => record.done,
+          (record) => record.event.id === "new" && record.done,
         ),
       { timeout: 20000 },
     )
@@ -198,7 +230,129 @@ test("legacy oversized history wakes and completes a real workflow without losin
   expect(readHistory(await june.snapshot()).slice(0, history.length)).toEqual(
     history,
   );
-  expect(Buffer.byteLength(JSON.stringify(await june.snapshot()))).toBeLessThan(
-    512 * 1024,
+  const snapshot = await june.snapshot();
+  expect(snapshot.events[oldId]?.event).toEqual(old);
+  compactConversation(snapshot);
+  expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThan(512 * 1024);
+});
+
+test("completed ledgers preserve replay, uncertainty, edits and reset boundaries", async () => {
+  const state: ConversationState = {
+    history: [],
+    events: {},
+    deliveries: {},
+    jobs: {},
+    lastInbound: {},
+  };
+  for (let n = 0; n < 240; n++) {
+    const event = {
+      id: `source-${n}`,
+      type: "message" as const,
+      messageId: `${n}.123`,
+      occurredAt: n + 1,
+      address: {
+        channel: "slack" as const,
+        accountId: "team",
+        conversationId: "dm",
+      },
+      senderId: "owner",
+      direct: true,
+      text: `${n}: résumé 😀 ${"retained inbound content ".repeat(70)}`,
+    };
+    const id = conversationInputId({ type: "event", event });
+    state.events[id] = { event, done: n !== 239 };
+    state.deliveries[`${id}:text`] = {
+      message: {
+        id: `${id}:text`,
+        address: event.address,
+        lastInboundAt: n + 1,
+        content: {
+          type: "text",
+          text: `${n}: ${"retained outbound content ".repeat(50)}`,
+        },
+      },
+      phase: n === 238 ? "sending" : "settled",
+      attempts: 1,
+      ...(n === 238
+        ? {}
+        : {
+            result:
+              n === 7
+                ? { status: "unknown" as const, code: "interrupted_send" }
+                : { status: "sent" as const, messageId: `sent-${n}` },
+          }),
+    };
+  }
+  const ids = Object.keys(state.events);
+  const firstId = ids[0];
+  const unknownId = `${ids[7]}:text`;
+  const sendingId = `${ids[238]}:text`;
+  const lastId = ids[239];
+  if (!firstId || !lastId) throw new Error("Missing fixture");
+  const liveEvent = state.events[lastId];
+  const liveDelivery = state.deliveries[sendingId];
+  const operations = outstandingOperationMetadata(state);
+  const expected = captureDebug(state, ["private", "owner"], "").data;
+  expect(Buffer.byteLength(JSON.stringify(state))).toBeGreaterThan(512 * 1024);
+  compactConversation(state);
+  expect(state.events[lastId]).toBe(liveEvent);
+  expect(state.deliveries[sendingId]).toBe(liveDelivery);
+  expect(Buffer.byteLength(JSON.stringify(state))).toBeLessThan(256 * 1024);
+  const reloaded: ConversationState = JSON.parse(JSON.stringify(state));
+  expect(captureDebug(reloaded, ["private", "owner"], "").data).toEqual(
+    expected,
   );
+  expect(Object.values(reloaded.events).some((record) => !record.done)).toBe(
+    true,
+  );
+  expect(
+    Object.values(reloaded.deliveries).some(
+      (delivery) => delivery.phase === "sending",
+    ),
+  ).toBe(true);
+  expect(outstandingOperationMetadata(reloaded)).toEqual(operations);
+  const compactBytes = JSON.stringify(reloaded);
+  for (const id of ids) {
+    expect(eventRecord(reloaded, id)).toBeDefined();
+    expect(deliveryRecord(reloaded, `${id}:text`)).toBeDefined();
+  }
+  expect(JSON.stringify(reloaded)).toBe(compactBytes);
+  let sends = 0;
+  for (const id of [`${firstId}:text`, unknownId]) {
+    const receipt = editDelivery(reloaded, id);
+    if (!receipt) throw new Error("Missing receipt");
+    const result = structuredClone(receipt.result);
+    expect(
+      await deliver(
+        receipt,
+        async () => compactConversation(reloaded),
+        async () => {
+          sends++;
+          throw new Error("Archived effect must not be repeated");
+        },
+      ),
+    ).toEqual(result);
+  }
+  expect(sends).toBe(0);
+  // Forgetting mutates the hot overlay; the next compaction must replace the
+  // archived body, not resurrect it on another restart.
+  const forgotten = editEvent(reloaded, firstId);
+  const sent = editDelivery(reloaded, `${firstId}:text`);
+  if (forgotten?.event.type !== "message" || !sent)
+    throw new Error("Missing fixture");
+  forgotten.event.text = "";
+  sent.message.content = { type: "text", text: "" };
+  compactConversation(reloaded);
+  const restarted = JSON.parse(JSON.stringify(reloaded));
+  expect(readEvents(restarted)[firstId]).toMatchObject({ event: { text: "" } });
+  expect(readDeliveries(restarted)[`${firstId}:text`]).toMatchObject({
+    message: { content: { text: "" } },
+  });
+  resetConversation(restarted, 1000);
+  expect(Object.keys(restarted.clearedInputs)).toHaveLength(240);
+  expect(captureDebug(restarted, ["private", "owner"], "").data).toMatchObject({
+    events: {},
+    deliveries: {},
+  });
+  expect(outstandingOperationMetadata(restarted)).toEqual(operations);
 });

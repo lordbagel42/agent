@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import type { ChannelEvent } from "../core/contracts.js";
 import type { EvidenceStore } from "../memory/store.js";
+import {
+  type CompressedJson,
+  eventRecord,
+  readDeliveries,
+  readEvents,
+} from "../runtime/conversation-storage.js";
 import type { Delivery } from "../runtime/delivery.js";
 import type { ConversationIngress } from "../runtime/inbox.js";
 import { isReceiptOnlyArchive, type SessionArchiveInput } from "./archive.js";
@@ -35,6 +41,8 @@ export interface LegacyDrainState {
   /** Lane ownership only, including direct queue inputs; not effect coverage. */
   legacyAdmissions?: string[];
   events: Record<string, { done: boolean }>;
+  eventsArchive?: CompressedJson;
+  deliveriesArchive?: CompressedJson;
   pendingInputs?: Record<string, unknown>;
   pendingNotifications?: Record<string, unknown>;
   ingress?: { receipts: Record<string, { lane?: "legacy" | "session" }> };
@@ -46,7 +54,7 @@ export interface LegacyDrainState {
 const inputIds = (state: LegacyDrainState) =>
   [
     ...new Set([
-      ...Object.keys(state.events),
+      ...Object.keys(readEvents(state)),
       ...Object.keys(state.pendingInputs ?? {}),
       ...Object.keys(state.pendingNotifications ?? {}),
       ...Object.keys(state.ingress?.receipts ?? {}),
@@ -136,7 +144,7 @@ export async function archiveLegacyInputs(
   for (const [index, id] of ordered.entries()) {
     if (migration.archivedInputs.includes(id)) continue;
     const receipt = receipts[id];
-    const record = state.events[id];
+    const record = eventRecord(state, id);
     if (
       !receipt ||
       !record?.done ||
@@ -145,7 +153,7 @@ export async function archiveLegacyInputs(
       Object.hasOwn(state.pendingNotifications ?? {}, id)
     )
       return;
-    const deliveries = Object.entries(state.deliveries)
+    const deliveries = Object.entries(readDeliveries(state))
       .filter(([key]) => key.startsWith(`${id}:`))
       .map(([, delivery]) => ({ delivery }));
     if (
@@ -241,20 +249,21 @@ export function inspectLegacyDrain(
           Object.hasOwn(coverage?.turns ?? {}, id))
       )
         counts.unfrozenLegacyInputs++;
+  const events = readEvents(state);
   for (const id of ids) {
     const turn = coverage?.turns[id];
     if (!turn) counts.missingCoverage++;
     if (turn?.untrackedEffect) counts.untrackedTurnEffects++;
     if (
       !turn?.finished ||
-      state.events[id]?.done === false ||
+      events[id]?.done === false ||
       Object.hasOwn(state.pendingInputs ?? {}, id) ||
       Object.hasOwn(state.pendingNotifications ?? {}, id)
     )
       counts.unfinishedInputs++;
     if (!migration?.archivedInputs.includes(id)) counts.unarchivedInputs++;
   }
-  for (const delivery of Object.values(state.deliveries)) {
+  for (const delivery of Object.values(readDeliveries(state))) {
     const result = delivery.result;
     if (
       delivery.phase !== "settled" ||

@@ -23,6 +23,7 @@ import {
 } from "../reflection/domain.js";
 import type { inspectLegacyDrain } from "../sessions/migration.js";
 import type { McpConnections } from "../tools/connections.js";
+import { type CompressedJson, readDeliveries } from "./conversation-storage.js";
 import type { Delivery } from "./delivery.js";
 import { executionLimits } from "./execution.js";
 import { proposeImportApproval } from "./import-approval.js";
@@ -279,6 +280,7 @@ export function outstandingOperationMetadata(state: {
   modelInvocations?: InvocationMarkers;
   webInvocations?: InvocationMarkers;
   deliveries: Record<string, Delivery>;
+  deliveriesArchive?: CompressedJson;
 }) {
   const counts = {
     model: { started: 0, uncertain: 0 },
@@ -317,7 +319,7 @@ export function outstandingOperationMetadata(state: {
       counts[kind][marker]++;
       include(key, kind, marker);
     }
-  for (const [key, delivery] of Object.entries(state.deliveries)) {
+  for (const [key, delivery] of Object.entries(readDeliveries(state))) {
     // A previous known rejection may remain while a new send is in progress.
     const marker =
       delivery.phase === "sending"

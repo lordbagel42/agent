@@ -59,11 +59,110 @@ export function commandSnapshot(
   );
 }
 
+/** Complete read projections. Archived records are not mutable actor state. */
+export function readEvents<T>(state: {
+  events: Record<string, T>;
+  eventsArchive?: CompressedJson;
+}): Record<string, T> {
+  return state.eventsArchive
+    ? { ...expand<Record<string, T>>(state.eventsArchive), ...state.events }
+    : state.events;
+}
+
+export function readDeliveries<T>(state: {
+  deliveries: Record<string, T>;
+  deliveriesArchive?: CompressedJson;
+}): Record<string, T> {
+  return state.deliveriesArchive
+    ? {
+        ...expand<Record<string, T>>(state.deliveriesArchive),
+        ...state.deliveries,
+      }
+    : state.deliveries;
+}
+
+export function eventRecord<T>(
+  state: { events: Record<string, T>; eventsArchive?: CompressedJson },
+  id: string,
+): T | undefined {
+  return state.events[id] ?? readEvents(state)[id];
+}
+
+export function deliveryRecord<T>(
+  state: { deliveries: Record<string, T>; deliveriesArchive?: CompressedJson },
+  id: string,
+): T | undefined {
+  return state.deliveries[id] ?? readDeliveries(state)[id];
+}
+
+/** Promote only for mutation. Read-only deduplication must not inflate state. */
+export function editEvent<T>(
+  state: { events: Record<string, T>; eventsArchive?: CompressedJson },
+  id: string,
+): T | undefined {
+  const record = eventRecord(state, id);
+  if (record && !state.events[id]) state.events[id] = record;
+  return state.events[id];
+}
+
+export function editDelivery<T>(
+  state: { deliveries: Record<string, T>; deliveriesArchive?: CompressedJson },
+  id: string,
+): T | undefined {
+  const record = deliveryRecord(state, id);
+  if (record && !state.deliveries[id]) state.deliveries[id] = record;
+  return state.deliveries[id];
+}
+
+export function conversationSnapshot(
+  state: ConversationState,
+): ConversationState {
+  const {
+    eventsArchive: _events,
+    deliveriesArchive: _deliveries,
+    ...rest
+  } = state;
+  return {
+    ...rest,
+    events: readEvents(state),
+    deliveries: readDeliveries(state),
+  };
+}
+
 /** Run before persistence and synchronously before legacy workflow replay. */
 export function compactConversation(state: ConversationState) {
   if (Buffer.byteLength(JSON.stringify(state.history)) > 64 * 1024) {
     state.historyArchive = compress(readHistory(state));
     state.history = [];
+  }
+  // Leave unfinished turns and their deliveries in place: asynchronous callbacks
+  // can still own their objects. Storage classification is not drain evidence.
+  const completed = Object.fromEntries(
+    Object.entries(readEvents(state)).filter(([, record]) => record.done),
+  );
+  if (
+    state.eventsArchive ||
+    Buffer.byteLength(JSON.stringify(completed)) > 64 * 1024
+  ) {
+    state.eventsArchive = compress(completed);
+    for (const id of Object.keys(completed)) delete state.events[id];
+  }
+  const completedIds = Object.keys(completed);
+  const deliveries = Object.fromEntries(
+    Object.entries(readDeliveries(state)).filter(
+      ([id, delivery]) =>
+        delivery.phase === "settled" &&
+        delivery.result &&
+        !(delivery.result.status === "rejected" && delivery.result.retryable) &&
+        completedIds.some((eventId) => id.startsWith(`${eventId}:`)),
+    ),
+  );
+  if (
+    state.deliveriesArchive ||
+    Buffer.byteLength(JSON.stringify(deliveries)) > 64 * 1024
+  ) {
+    state.deliveriesArchive = compress(deliveries);
+    for (const id of Object.keys(deliveries)) delete state.deliveries[id];
   }
   for (const receipt of Object.values(state.sessionCommands ?? {})) {
     if (receipt.snapshot) {

@@ -112,6 +112,15 @@ it.for(["interaction", "execution", "decision"] as const)(
       "Slow notification RPCs retain deployment admission until they settle",
     );
     expect(request.system).toContain("Do not rerun the task");
+    expect(request.system).toContain(
+      "losslessly compresses completed conversation event and terminal delivery ledgers",
+    );
+    expect(request.system).toContain(
+      "not deletion, summarization, cancellation or proof of settlement",
+    );
+    expect(request.system).toContain(
+      "operations inspection still read the complete retained records",
+    );
     expect(request.system).toContain("CLEARHISTORY");
     expect(request.system).toContain(
       "excerpts older than the host's reset timestamp",

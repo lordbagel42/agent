@@ -5,6 +5,11 @@ import type {
   ConversationMessage,
 } from "../core/contracts.js";
 import { isMemoryCorrectionCommand } from "../memory/correction.js";
+import {
+  editEvent,
+  eventRecord,
+  readDeliveries,
+} from "../runtime/conversation-storage.js";
 import type { ExecutionRequest } from "../runtime/execution.js";
 import { executionCapabilities } from "../runtime/execution-context.js";
 import {
@@ -507,11 +512,12 @@ export function createSessionCatalog(
         ]),
       ];
     if (!valid(host, assignment, reference, revision)) return suppress();
-    host.state.events[assignment.eventId] ??= {
-      event: source,
-      done: false,
-      ...(decision ? { decision: true as const } : {}),
-    };
+    if (!eventRecord(host.state, assignment.eventId))
+      host.state.events[assignment.eventId] = {
+        event: source,
+        done: false,
+        ...(decision ? { decision: true as const } : {}),
+      };
     host.state.memoryContexts ??= {};
     host.state.memoryContexts[assignment.eventId] = reference;
     turn.capabilities ??= executionCapabilities(deps, source);
@@ -856,7 +862,7 @@ export function createSessionCatalog(
       assignment.sessionId,
       assignment.sequence,
     );
-    const event = host.state.events[assignment.eventId];
+    const event = editEvent(host.state, assignment.eventId);
     if (event) event.done = true;
     delete host.state.pendingInputs?.[assignment.eventId];
     delete host.state.pendingNotifications?.[assignment.eventId];
@@ -870,7 +876,7 @@ export function createSessionCatalog(
     const turn = host.state.sessions?.turns[id];
     if (turn?.mode !== "control") return;
     if (!turn.control) {
-      const deliveries = Object.entries(host.state.deliveries)
+      const deliveries = Object.entries(readDeliveries(host.state))
         .filter(([key]) => key.startsWith(`${id}:`))
         .map(([, delivery]) => ({ delivery }));
       const assignment = turn.assignment;

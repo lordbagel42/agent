@@ -10,6 +10,8 @@ import { beginModelReply } from "../models/invocation.js";
 import {
   type CompressedJson,
   commandSnapshot,
+  readDeliveries,
+  readEvents,
   readHistory,
 } from "./conversation-storage.js";
 import { type Delivery, deliver } from "./delivery.js";
@@ -120,9 +122,10 @@ export function captureDebug(
 ): DebugSnapshot {
   state.session ??= { id: randomUUID(), startedAt: 0 };
   const session = state.session;
+  const events = readEvents(state);
   const excluded = new Set(
     [
-      ...Object.entries(state.events)
+      ...Object.entries(events)
         // A notification retains its originating message, but has a distinct
         // host input identity. This also covers pre-upgrade compacted receipts.
         .filter(
@@ -139,13 +142,13 @@ export function captureDebug(
   );
   const ids = new Set(
     [
-      ...Object.keys(state.events),
+      ...Object.keys(events),
       ...Object.keys(state.pendingInputs ?? {}),
       ...Object.keys(state.pendingNotifications ?? {}),
     ].filter(
       (id) =>
         !state.clearedInputs?.[id] &&
-        !state.events[id]?.decision &&
+        !events[id]?.decision &&
         !excluded.has(id),
     ),
   );
@@ -163,13 +166,13 @@ export function captureDebug(
           (entry.id.endsWith(":reply") && ids.has(entry.id.slice(0, -6))),
       ),
       events: Object.fromEntries(
-        Object.entries(state.events).filter(([id]) => ids.has(id)),
+        Object.entries(events).filter(([id]) => ids.has(id)),
       ),
       pending: Object.fromEntries(
         Object.entries(state.pendingInputs ?? {}).filter(([id]) => ids.has(id)),
       ),
       deliveries: Object.fromEntries(
-        Object.entries(state.deliveries).filter(
+        Object.entries(readDeliveries(state)).filter(
           ([id, delivery]) =>
             !delivery.ephemeral &&
             [...ids].some((eventId) => id.startsWith(`${eventId}:`)),
@@ -199,7 +202,7 @@ export function captureDebug(
 export function resetConversation(state: ConversationState, at: number) {
   state.clearedInputs ??= {};
   for (const id of new Set([
-    ...Object.keys(state.events),
+    ...Object.keys(readEvents(state)),
     ...Object.keys(state.pendingInputs ?? {}),
     ...Object.keys(state.pendingNotifications ?? {}),
     ...Object.keys(state.ingress?.receipts ?? {}),

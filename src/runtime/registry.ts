@@ -81,7 +81,14 @@ import {
 import {
   type CompressedJson,
   compactConversation,
+  conversationSnapshot,
+  deliveryRecord,
+  editDelivery,
+  editEvent,
   editHistory,
+  eventRecord,
+  readDeliveries,
+  readEvents,
   readHistory,
 } from "./conversation-storage.js";
 import { type Delivery, deliver } from "./delivery.js";
@@ -280,6 +287,9 @@ export interface ConversationState extends ScopeCatalog {
       };
     }
   >;
+  /** Lossless cold ledgers; use storage accessors for complete reads or edits. */
+  eventsArchive?: CompressedJson;
+  deliveriesArchive?: CompressedJson;
   deliveries: Record<string, Delivery>;
   lastInbound: Record<string, number>;
   /** Write-ahead admission and deduplication until record-event takes ownership. */
@@ -319,12 +329,12 @@ function captureForgetTargets(
     historyIds: readHistory(state).map((entry) => entry.id),
     eventIds: [
       ...new Set([
-        ...Object.keys(state.events),
+        ...Object.keys(readEvents(state)),
         ...Object.keys(state.pendingInputs ?? {}),
         ...Object.keys(state.pendingNotifications ?? {}),
       ]),
     ],
-    deliveryIds: Object.keys(state.deliveries),
+    deliveryIds: Object.keys(readDeliveries(state)),
     agents: { ...state.agents },
     jobIds: Object.keys(state.jobs),
   };
@@ -432,10 +442,11 @@ export function createJuneRegistry(deps: Dependencies) {
     }
     // Never assign read proxies back into actor state: each action has a fresh
     // proxy cache, so filter/reassignment nests wrappers on every snapshot.
+    const events = readEvents(state);
     for (const [index, entry] of [...editHistory(state).entries()].reverse()) {
       if (
         ((entry.source?.address.channel ??
-          state.events[
+          events[
             entry.role === "assistant"
               ? entry.id.replace(/:reply$/, "")
               : entry.id
@@ -980,7 +991,7 @@ export function createJuneRegistry(deps: Dependencies) {
               try {
                 if (
                   event.botMentioned &&
-                  !c.state.events[id] &&
+                  !eventRecord(c.state, id) &&
                   !c.state.forgottenEvents?.includes(id)
                 ) {
                   c.state.events[id] = { event, done: false };
@@ -1129,7 +1140,7 @@ export function createJuneRegistry(deps: Dependencies) {
             throw new Error(
               "Session scope cannot admit a linked legacy adapter",
             );
-          if (c.state.events[id] || c.state.forgottenEvents?.includes(id))
+          if (eventRecord(c.state, id) || c.state.forgottenEvents?.includes(id))
             return;
           const source = deps.memory?.source(event, JSON.stringify(c.key));
           if (source && deps.memory?.store.isDeleted(source.id)) return;
@@ -1138,7 +1149,9 @@ export function createJuneRegistry(deps: Dependencies) {
             if (
               event.address.channel === "slack" &&
               [
-                ...Object.values(c.state.events).map((record) => record.event),
+                ...Object.values(readEvents(c.state)).map(
+                  (record) => record.event,
+                ),
                 ...Object.values(c.state.pendingInputs ?? {}),
               ].some(
                 (previous) =>
@@ -1154,7 +1167,7 @@ export function createJuneRegistry(deps: Dependencies) {
               return;
             await prepareHandoff(c.state, c.key, c.vars.persist);
             if (
-              c.state.events[id] ||
+              eventRecord(c.state, id) ||
               c.state.forgottenEvents?.includes(id) ||
               (source && deps.memory?.store.isDeleted(source.id))
             )
@@ -1254,7 +1267,7 @@ export function createJuneRegistry(deps: Dependencies) {
             throw new Error(
               "Session scope cannot admit a linked legacy adapter",
             );
-          if (c.state.events[id] || c.state.forgottenEvents?.includes(id))
+          if (eventRecord(c.state, id) || c.state.forgottenEvents?.includes(id))
             return;
           const source =
             input.type === "wakeup" && input.wakeup.mode === "decision"
@@ -1301,7 +1314,7 @@ export function createJuneRegistry(deps: Dependencies) {
           if (!c.state.pendingNotifications[id]) {
             await prepareHandoff(c.state, c.key, c.vars.persist);
             if (
-              c.state.events[id] ||
+              eventRecord(c.state, id) ||
               c.state.forgottenEvents?.includes(id) ||
               (originId && c.state.forgottenEvents?.includes(originId)) ||
               (source && deps.memory?.store.isDeleted(source.id)) ||
@@ -1342,7 +1355,7 @@ export function createJuneRegistry(deps: Dependencies) {
       wake: () => true,
       snapshot: (c): ConversationState => {
         prune(c.state, JSON.stringify(c.key));
-        return c.state;
+        return conversationSnapshot(c.state);
       },
       outstandingOperations: async (
         c,
@@ -1421,7 +1434,7 @@ export function createJuneRegistry(deps: Dependencies) {
         if (context.audience !== JSON.stringify(["private", deps.owner.id]))
           throw new Error("Private execution required");
         const events = Object.fromEntries(
-          Object.entries(c.state.events).filter(([id, record]) => {
+          Object.entries(readEvents(c.state)).filter(([id, record]) => {
             const reference = c.state.memoryContexts?.[id];
             const source =
               record.event.type === "message" && !record.decision
@@ -1505,7 +1518,7 @@ export function createJuneRegistry(deps: Dependencies) {
         },
       ) => {
         const context = delegatedScope(c.state, c.key, requestId);
-        const event = c.state.events[context.originEventId]?.event;
+        const event = eventRecord(c.state, context.originEventId)?.event;
         if (
           context.audience !== JSON.stringify(["private", deps.owner.id]) ||
           event?.type !== "message" ||
@@ -1599,7 +1612,7 @@ export function createJuneRegistry(deps: Dependencies) {
         for (const id of cleanup.eventIds) {
           delete c.state.pendingInputs?.[id];
           delete c.state.pendingNotifications?.[id];
-          const record = c.state.events[id];
+          const record = editEvent(c.state, id);
           if (record?.event.type === "message") record.event.text = "";
           const turn = c.state.sessions?.turns[id];
           if (turn) {
@@ -1616,7 +1629,7 @@ export function createJuneRegistry(deps: Dependencies) {
             );
         }
         for (const id of cleanup.deliveryIds) {
-          const delivery = c.state.deliveries[id];
+          const delivery = editDelivery(c.state, id);
           if (delivery?.message.content.type === "text")
             delivery.message.content = { type: "text", text: "" };
         }
@@ -1995,7 +2008,7 @@ export function createJuneRegistry(deps: Dependencies) {
             const canStartAction = (state: ConversationState) => {
               if (!valid(state)) return false;
               if (!superseded(state)) return true;
-              const record = state.events[eventId];
+              const record = editEvent(state, eventId);
               if (record) record.deferred = true;
               return false;
             };
@@ -2013,7 +2026,7 @@ export function createJuneRegistry(deps: Dependencies) {
               if (body.type !== "event")
                 captureNotificationCleanup(step.state, body);
               if (
-                step.state.events[eventId]?.done ||
+                eventRecord(step.state, eventId)?.done ||
                 step.state.forgottenEvents?.includes(eventId)
               ) {
                 if (!sessionControl) {
@@ -2024,7 +2037,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 return false;
               }
               prune(step.state, audience);
-              if (!step.state.events[eventId]) {
+              if (!eventRecord(step.state, eventId)) {
                 // Older Slack versions keyed turns by callback ID. A delayed
                 // callback with the new stable message ID is still the same turn.
                 if (
@@ -2032,7 +2045,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   body.type === "event" &&
                   event.type === "message" &&
                   event.address.channel === "slack" &&
-                  Object.values(step.state.events).some(
+                  Object.values(readEvents(step.state)).some(
                     ({ event: previous }) =>
                       previous.type === "message" &&
                       previous.address.channel === event.address.channel &&
@@ -2111,7 +2124,10 @@ export function createJuneRegistry(deps: Dependencies) {
               event.botMentioned === true;
             if (ping)
               await loop.step("acknowledge-ping", async (step) => {
-                if (!valid(step.state) || step.state.events[eventId]?.done)
+                if (
+                  !valid(step.state) ||
+                  eventRecord(step.state, eventId)?.done
+                )
                   return;
                 // Only a fresh callback starts feedback; journal replay cannot
                 // re-acknowledge an already processed ping. Keep it through all
@@ -2444,7 +2460,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   !reply.interrupt &&
                   superseded(state)
                 ) {
-                  const record = state.events[eventId];
+                  const record = editEvent(state, eventId);
                   if (record) record.deferred = true;
                   return {
                     status: "rejected",
@@ -2573,8 +2589,10 @@ export function createJuneRegistry(deps: Dependencies) {
                       );
                     const cleanupKey = JSON.stringify(entry.sourceId);
                     if (entry.status === "pending") {
-                      const delivered =
-                        step.state.deliveries[`${entry.previewEventId}:text`];
+                      const delivered = deliveryRecord(
+                        step.state,
+                        `${entry.previewEventId}:text`,
+                      );
                       if (
                         step.abortSignal.aborted ||
                         !valid(step.state) ||
@@ -3025,9 +3043,12 @@ export function createJuneRegistry(deps: Dependencies) {
                           return false;
                         if (!reply.text.trim()) return !!deps.deepModel;
                         const id = `${eventId}:ack`;
-                        if (!deps.deepModel && !step.state.deliveries[id])
+                        if (!deps.deepModel && !deliveryRecord(step.state, id))
                           return false;
-                        step.state.deliveries[id] ??= {
+                        step.state.deliveries[id] ??= deliveryRecord(
+                          step.state,
+                          id,
+                        ) ?? {
                           phase: "ready",
                           attempts: 0,
                           message: {
@@ -3039,8 +3060,9 @@ export function createJuneRegistry(deps: Dependencies) {
                             content: { type: "text", text: reply.text },
                           },
                         };
+                        const delivery = step.state.deliveries[id];
                         const result = await deliver(
-                          step.state.deliveries[id],
+                          delivery,
                           step.vars.persist,
                           async (outbound) => {
                             if (!deps.deepModel)
@@ -3226,7 +3248,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                   )
                                     step.state.modelInvocations[invocation] =
                                       "uncertain";
-                                  const record = step.state.events[eventId];
+                                  const record = editEvent(step.state, eventId);
                                   if (record)
                                     record.inference = {
                                       status: "unknown",
@@ -3254,7 +3276,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 }
                               }
                               if (superseded(step.state)) {
-                                const record = step.state.events[eventId];
+                                const record = editEvent(step.state, eventId);
                                 if (record) record.deferred = true;
                                 await step.vars.persist();
                                 return {
@@ -4310,7 +4332,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                   superseded(step.state) &&
                                   !generated.interrupt
                                 ) {
-                                  const record = step.state.events[eventId];
+                                  const record = editEvent(step.state, eventId);
                                   if (record) record.deferred = true;
                                   await step.vars.persist();
                                   outcome.reply = {
@@ -4415,8 +4437,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                             }
                                           : undefined,
                                       beginJevObservation: async () => {
-                                        const record =
-                                          step.state.events[eventId];
+                                        const record = editEvent(
+                                          step.state,
+                                          eventId,
+                                        );
                                         if (!record)
                                           throw new Error("Missing event");
                                         record.jevObservation = {
@@ -4629,7 +4653,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                       inspectInference: () => {
                                         const events = Object.fromEntries(
                                           Object.entries(
-                                            step.state.events,
+                                            readEvents(step.state),
                                           ).filter(([id, record]) => {
                                             if (!record.inference) return false;
                                             const reference =
@@ -4663,19 +4687,25 @@ export function createJuneRegistry(deps: Dependencies) {
                                       },
                                       deliverRivet: async (dispatch) => {
                                         const id = `${eventId}:rivet`;
-                                        step.state.deliveries[id] ??= {
-                                          ephemeral: true,
-                                          phase: "ready",
-                                          attempts: 0,
-                                          message: {
-                                            id: randomUUID(),
-                                            address: event.address,
-                                            lastInboundAt: event.occurredAt,
-                                            content: { type: "text", text: "" },
-                                          },
-                                        };
+                                        step.state.deliveries[id] ??=
+                                          deliveryRecord(step.state, id) ?? {
+                                            ephemeral: true,
+                                            phase: "ready",
+                                            attempts: 0,
+                                            message: {
+                                              id: randomUUID(),
+                                              address: event.address,
+                                              lastInboundAt: event.occurredAt,
+                                              content: {
+                                                type: "text",
+                                                text: "",
+                                              },
+                                            },
+                                          };
+                                        const delivery =
+                                          step.state.deliveries[id];
                                         await deliver(
-                                          step.state.deliveries[id],
+                                          delivery,
                                           step.vars.persist,
                                           dispatch,
                                         );
@@ -4832,7 +4862,7 @@ export function createJuneRegistry(deps: Dependencies) {
                           step.state.modelInvocations[invocation] === "started"
                         )
                           step.state.modelInvocations[invocation] = "uncertain";
-                        const record = step.state.events[eventId];
+                        const record = editEvent(step.state, eventId);
                         if (record)
                           record.inference = {
                             status: "unknown",
@@ -5117,7 +5147,10 @@ export function createJuneRegistry(deps: Dependencies) {
                     const id = `${eventId}:slack-history`;
                     // Only intent and receipt are durable. The adapter resolves
                     // the verified owner DM and sends contents without returning them.
-                    step.state.deliveries[id] ??= {
+                    step.state.deliveries[id] ??= deliveryRecord(
+                      step.state,
+                      id,
+                    ) ?? {
                       ephemeral: true,
                       phase: "ready",
                       attempts: 0,
@@ -5521,7 +5554,10 @@ export function createJuneRegistry(deps: Dependencies) {
                   timeout: 30_000,
                   run: async (step) => {
                     const id = `${eventId}:search`;
-                    step.state.deliveries[id] ??= {
+                    step.state.deliveries[id] ??= deliveryRecord(
+                      step.state,
+                      id,
+                    ) ?? {
                       ephemeral: true,
                       phase: "ready",
                       attempts: 0,
@@ -5628,7 +5664,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   const directedIds = [
                     ...new Set([
                       ...directed.map((_, index) => `${eventId}:send:${index}`),
-                      ...Object.keys(step.state.deliveries).filter((id) =>
+                      ...Object.keys(readDeliveries(step.state)).filter((id) =>
                         id.startsWith(`${eventId}:send:`),
                       ),
                     ]),
@@ -5637,7 +5673,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   // Preserve already-persisted intents after an interrupted step;
                   // deliver will settle them without dispatch when invalidated.
                   if (!valid(step.state))
-                    return ids.filter((id) => step.state.deliveries[id]);
+                    return ids.filter((id) => deliveryRecord(step.state, id));
                   // Settlement must not disappear when synthesis is silent or
                   // interrupted. Reuse the same per-attempt outbox identity and
                   // host report, with its unknown/verification caveats intact.
@@ -5654,7 +5690,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       : [text];
                   for (const [index, text] of texts.entries()) {
                     const id = textIds[index];
-                    if (!id || !text.trim() || step.state.deliveries[id])
+                    if (!id || !text.trim() || deliveryRecord(step.state, id))
                       continue;
                     step.state.deliveries[id] = {
                       phase: "ready",
@@ -5694,7 +5730,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   }
                   for (const [index, message] of directed.entries()) {
                     const id = `${eventId}:send:${index}`;
-                    if (step.state.deliveries[id]) continue;
+                    if (deliveryRecord(step.state, id)) continue;
                     step.state.deliveries[id] = {
                       phase: "ready",
                       attempts: 0,
@@ -5709,7 +5745,10 @@ export function createJuneRegistry(deps: Dependencies) {
                       },
                     };
                   }
-                  if (reply.reaction && !step.state.deliveries[reactionId]) {
+                  if (
+                    reply.reaction &&
+                    !deliveryRecord(step.state, reactionId)
+                  ) {
                     step.state.deliveries[reactionId] = {
                       phase: "ready",
                       attempts: 0,
@@ -5727,7 +5766,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     };
                   }
                   await step.vars.persist();
-                  return ids.filter((id) => step.state.deliveries[id]);
+                  return ids.filter((id) => deliveryRecord(step.state, id));
                 },
               );
               for (const id of deliveryIds) {
@@ -5735,7 +5774,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   const result = await loop.step(
                     `deliver-${id}-${attempt}`,
                     async (step) => {
-                      const delivery = step.state.deliveries[id];
+                      const delivery = editDelivery(step.state, id);
                       if (!delivery)
                         throw new Error("Missing durable delivery");
                       return deliver(
@@ -5760,8 +5799,8 @@ export function createJuneRegistry(deps: Dependencies) {
                               id.startsWith(`${eventId}:send:`)) &&
                             outbound.content.type === "text" &&
                             previous &&
-                            step.state.deliveries[previous]?.result?.status !==
-                              "sent"
+                            deliveryRecord(step.state, previous)?.result
+                              ?.status !== "sent"
                           )
                             return {
                               status: "rejected",
@@ -6034,27 +6073,35 @@ export function createJuneRegistry(deps: Dependencies) {
                 ) {
                   // Describe persisted payloads and receipts, including on replay.
                   // A reaction receipt says nothing about a separate text delivery.
-                  const text = step.state.deliveries[`${eventId}:text`];
+                  const text = deliveryRecord(step.state, `${eventId}:text`);
                   const texts = deliveryIds
-                    .map((id) => step.state.deliveries[id])
+                    .map((id) => deliveryRecord(step.state, id))
                     .filter(
                       (delivery) => delivery?.message.content.type === "text",
                     );
-                  const reaction = step.state.deliveries[`${eventId}:reaction`];
-                  const search = step.state.deliveries[`${eventId}:search`];
-                  const slackHistory =
-                    step.state.deliveries[`${eventId}:slack-history`];
-                  const rivet = step.state.deliveries[`${eventId}:rivet`];
+                  const reaction = deliveryRecord(
+                    step.state,
+                    `${eventId}:reaction`,
+                  );
+                  const search = deliveryRecord(
+                    step.state,
+                    `${eventId}:search`,
+                  );
+                  const slackHistory = deliveryRecord(
+                    step.state,
+                    `${eventId}:slack-history`,
+                  );
+                  const rivet = deliveryRecord(step.state, `${eventId}:rivet`);
                   const ack =
                     version >= 3
-                      ? step.state.deliveries[`${eventId}:ack`]
+                      ? deliveryRecord(step.state, `${eventId}:ack`)
                       : undefined;
                   const content: string[] = [];
-                  if (step.state.events[eventId]?.deferred)
+                  if (eventRecord(step.state, eventId)?.deferred)
                     content.push(
                       "[Reply deferred to newer user input in the same conversation/thread. Consider those message parts together; already-recorded actions are not undone or authorized to repeat.]",
                     );
-                  if (step.state.events[eventId]?.inference)
+                  if (eventRecord(step.state, eventId)?.inference)
                     content.push(
                       "[Inference outcome unknown after interruption; the result was not durably recorded. Not intentional silence. No automatic retry was made; actions may have occurred, so rely only on recorded receipts.]",
                     );
@@ -6083,7 +6130,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       deliveryIds.some(
                         (id) =>
                           id.startsWith(`${eventId}:send:`) &&
-                          step.state.deliveries[id]?.message.id ===
+                          deliveryRecord(step.state, id)?.message.id ===
                             text.message.id,
                       )
                     ) {
@@ -6264,7 +6311,7 @@ export function createJuneRegistry(deps: Dependencies) {
             }
             if (body.type === "wakeup") {
               await loop.step("complete-wakeup", async (step) => {
-                const results = Object.entries(step.state.deliveries)
+                const results = Object.entries(readDeliveries(step.state))
                   .filter(([id]) => id.startsWith(`${eventId}:`))
                   .map(([, delivery]) => delivery.result?.status);
                 const uncertain = Object.entries(
@@ -6288,7 +6335,7 @@ export function createJuneRegistry(deps: Dependencies) {
               });
             }
             await loop.step("finish-event", async (step) => {
-              const record = step.state.events[eventId];
+              const record = editEvent(step.state, eventId);
               if (record) record.done = true;
               const coverage = step.state.legacyCoverage?.turns[eventId];
               if (coverageVersion >= 2 && coverage) coverage.finished = true;
