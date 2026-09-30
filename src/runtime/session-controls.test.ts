@@ -2,12 +2,14 @@ import { randomBytes } from "node:crypto";
 import type { Client } from "rivetkit/client";
 import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
+import { createSlackAdapter } from "../channels/slack.js";
 import type {
   CompanionReply,
   MessageEvent,
   ModelRequest,
   OutboundMessage,
 } from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
 import { EvidenceStore } from "../memory/store.js";
 import { conversationInputId } from "./inbox.js";
 import { createInspectionReader } from "./inspection.js";
@@ -37,6 +39,258 @@ const message = (id: string, text: string): MessageEvent => ({
   senderId: "U1",
   direct: true,
   sessionCommandEligible: true,
+});
+
+it("captures shared and guest reports once, replies safely at origin, and forwards private details only to the owner", async (t) => {
+  const sent: OutboundMessage[] = [];
+  const snapshots: DebugSnapshot[] = [];
+  const registry = createJuneRegistry({
+    owner,
+    model: {
+      async reply() {
+        throw new Error("DEBUGSHARE must bypass inference");
+      },
+    },
+    debugShare: {
+      async run(snapshot) {
+        snapshots.push(snapshot);
+        return {
+          threadId: `T-${snapshot.id}`,
+          report: "private investigation findings",
+        };
+      },
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, threads: true, reactions: true },
+        receive: async () => ({ events: [], response: new Response() }),
+        async send(outbound) {
+          sent.push(JSON.parse(JSON.stringify(outbound)));
+          // Failure at origin must not suppress forwarding; an uncertain owner
+          // receipt must not be resent when the command is replayed below.
+          if (outbound.address.conversationId === "D2")
+            return {
+              status: "rejected",
+              code: "not_in_channel",
+              retryable: false,
+            };
+          if (
+            outbound.content.type === "text" &&
+            outbound.content.text.includes("Reason (untrusted): guest reason")
+          )
+            return { status: "unknown", code: "timeout" };
+          return { status: "sent", messageId: "sent" };
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const reports: MessageEvent[] = [
+    {
+      ...message("public-owner", "DEBUGSHARE sensitive owner reason"),
+      direct: false,
+      address: {
+        channel: "slack",
+        accountId: "T1",
+        conversationId: "C1",
+        threadId: "123.4",
+      },
+      metadata: { channelType: "channel" },
+    },
+    {
+      ...message("guest-dm", "DEBUGSHARE guest reason xoxb-secret"),
+      senderId: "U2",
+      address: { channel: "slack", accountId: "T1", conversationId: "D2" },
+      metadata: { channelType: "im" },
+    },
+    {
+      ...message("guest-group", "DEBUGSHARE group reason"),
+      senderId: "U3",
+      direct: false,
+      address: { channel: "slack", accountId: "T1", conversationId: "G1" },
+      metadata: { channelType: "mpim" },
+    },
+    {
+      ...message("guest-channel", "DEBUGSHARE channel reason"),
+      senderId: "U4",
+      direct: false,
+      address: { channel: "slack", accountId: "T1", conversationId: "C2" },
+      metadata: { channelType: "channel" },
+    },
+  ];
+  for (const [index, report] of reports.entries()) {
+    const scope = routeEvent(report, owner);
+    if (!scope) throw new Error("DEBUGSHARE was not routed");
+    expect(scope.private).toBe(false);
+    const june = client.conversation.getOrCreate(scope.key);
+    await june.receive(report);
+    await expect
+      .poll(() => snapshots.length, { timeout: 15000 })
+      .toBe(index + 1);
+    await june.receive(report);
+    await june.resumeSessionCommands();
+    const snapshot = snapshots[index];
+    if (!snapshot) throw new Error("DEBUGSHARE was not captured");
+    expect(snapshot.scope).toEqual(scope.key);
+    expect(snapshot.reason).toBe(
+      report.text.slice(11).replace("xoxb-secret", "[redacted]"),
+    );
+    await expect
+      .poll(
+        () =>
+          sent.filter((out) =>
+            JSON.stringify(out.content).includes(`T-${snapshot.id}`),
+          ).length,
+        { timeout: 15000 },
+      )
+      .toBe(1);
+    const origin = sent.filter(
+      (out) => out.address.conversationId === report.address.conversationId,
+    );
+    expect(origin).toHaveLength(1);
+    expect(origin[0]?.address).toEqual(report.address);
+    expect(JSON.stringify(origin)).toContain(snapshot.id);
+    expect(JSON.stringify(origin)).not.toMatch(
+      /reason|ampcode\.com|findings|xoxb-/,
+    );
+    const privateMessages = sent.filter(
+      (out) =>
+        out.address.conversationId === "U1" &&
+        JSON.stringify(out.content).includes(snapshot.id),
+    );
+    expect(privateMessages).toHaveLength(2);
+    expect(
+      privateMessages.every((out) => out.address.threadId === undefined),
+    ).toBe(true);
+    expect(JSON.stringify(privateMessages)).toContain(snapshot.reason);
+    expect(JSON.stringify(privateMessages)).not.toContain("xoxb-secret");
+    expect(await june.debugShares()).toEqual([]);
+  }
+  expect(snapshots).toHaveLength(4);
+  const ownerJune = client.conversation.getOrCreate(["private", "owner"]);
+  expect((await ownerJune.debugShares()).map((entry) => entry.id)).toEqual(
+    snapshots.map((snapshot) => snapshot.id),
+  );
+});
+
+it.for(["DEBUGSHARE", "DEBUG"])(
+  "automatically retries a bounded %s owner copy after Slack's deadline without investigation",
+  async (command, t) => {
+    const attempts: { at: number; text: string; id: string }[] = [];
+    const run = vi.fn(async () => {
+      throw new Error("No investigation");
+    });
+    const inspect = vi.fn(async () => ({
+      status: "running" as const,
+      threadId: "T-forbidden",
+    }));
+    const slack = createSlackAdapter({
+      signingSecret: "fixture",
+      botToken: "fixture",
+      teamId: "T1",
+      botUserId: "BOT",
+      ownerUserIds: ["U1"],
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body));
+        if (body.channel === "U1") {
+          attempts.push({
+            at: Date.now(),
+            text: body.text,
+            id: body.client_msg_id,
+          });
+          if (attempts.length === 1)
+            return new Response("", {
+              status: 429,
+              headers: { "retry-after": "6" },
+            });
+        }
+        return Response.json({ ok: true, ts: "123.4" });
+      },
+    });
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack },
+      ...(command === "DEBUG"
+        ? { debugShare: { resumeSafe: true, run, inspect } }
+        : {}),
+      model: {
+        async reply() {
+          throw new Error("No inference");
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const report: MessageEvent = {
+      ...message("long-report", `${command} ${"r".repeat(39950)}`),
+      senderId: "U2",
+      direct: false,
+      address: { channel: "slack", accountId: "T1", conversationId: "C1" },
+      metadata: { channelType: "channel" },
+    };
+    const scope = routeEvent(report, owner);
+    if (!scope) throw new Error("Guest report was not routed");
+    const june = client.conversation.getOrCreate(scope.key);
+    await june.receive(report);
+    await expect.poll(() => attempts.length, { timeout: 20000 }).toBe(2);
+    expect(attempts[1]?.id).toBe(attempts[0]?.id);
+    expect(
+      (attempts[1]?.at ?? 0) - (attempts[0]?.at ?? 0),
+    ).toBeGreaterThanOrEqual(6000);
+    expect(attempts[0]?.text).toContain(
+      "[truncated; full reason in private snapshot]",
+    );
+    expect(attempts[0]?.text.length).toBeLessThan(40000);
+    const ownerJune = client.conversation.getOrCreate(["private", "owner"]);
+    expect((await ownerJune.debugShares())[0]?.status).toBe(
+      command === "DEBUG" ? "saved" : "unavailable",
+    );
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).sessionCommands ?? {})[0]
+            ?.debugLink?.pollAt,
+      )
+      .toBeUndefined();
+    await june.receive(report);
+    await june.resumeSessionCommands();
+    expect(attempts).toHaveLength(2);
+    expect(run).not.toHaveBeenCalled();
+    expect(inspect).not.toHaveBeenCalled();
+    if (command === "DEBUG") {
+      expect(attempts[0]?.text).toContain("No Amp investigation was started.");
+      expect(JSON.stringify(attempts)).not.toContain("ampcode.com");
+      const receipt = Object.values(
+        (await june.snapshot()).sessionCommands ?? {},
+      )[0];
+      expect(receipt?.debugLink).toMatchObject({ ownerOnly: true });
+      expect(receipt?.debugLink?.delivery).toBeUndefined();
+    }
+  },
+);
+
+it("keeps the newest ten captures when older publications arrive late or replay", async (t) => {
+  const registry = createJuneRegistry({
+    owner,
+    channels: {},
+    model: {
+      async reply() {
+        return { text: "unused" };
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", "owner"]);
+  const captures = Array.from({ length: 11 }, (_, i) => ({
+    id: `capture-${i}`,
+    capturedAt: new Date(i * 1000).toISOString(),
+  }));
+  for (const capture of captures.slice(1)) await june.trackDebugShare(capture);
+  const oldest = captures[0];
+  if (!oldest) throw new Error("Missing oldest capture fixture");
+  await june.trackDebugShare(oldest);
+  await june.trackDebugShare(oldest);
+  expect((await june.snapshot()).debugShareIndex).toEqual(captures.slice(1));
 });
 
 it("keeps serialized command publication alive beyond action and idle deadlines", async (t) => {
@@ -563,7 +817,8 @@ it.for(["sent", "unknown", "retry"] as const)(
     debug.address.threadId = "123.456";
     await june.receive(debug);
     await expect.poll(() => snapshots.length, { timeout: 15000 }).toBe(1);
-    expect(sent).toHaveLength(1);
+    // Snapshot dispatch precedes index persistence and the asynchronous ack.
+    await expect.poll(() => sent.length, { timeout: 15000 }).toBe(1);
     threadId = "T-11111111-2222-3333-4444-555555555555";
     await expect
       .poll(() => linkAttempts, { timeout: 20000 })

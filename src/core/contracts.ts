@@ -55,7 +55,8 @@ export interface MessageEvent extends EventBase {
   mcpCommandEligible?: boolean;
   /** Verified fresh plain Slack backup command; absent on old/context events. */
   memoryBackupEligible?: boolean;
-  /** Verified fresh plain owner Slack session control, never imported context. */
+  /** Verified fresh plain Slack session control, never imported context.
+   * DEBUG/DEBUGSHARE are open to everyone; other controls separately require the owner. */
   sessionCommandEligible?: boolean;
   /** Fresh, plain owner-DM deployment approval; never set by history/model text. */
   appDeploymentEligible?: boolean;

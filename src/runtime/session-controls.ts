@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
-import type { MessageEvent, ModelSettlement } from "../core/contracts.js";
+import type {
+  Address,
+  MessageEvent,
+  ModelSettlement,
+} from "../core/contracts.js";
 import { beginModelReply } from "../models/invocation.js";
 import {
   type CompressedJson,
@@ -47,9 +51,17 @@ export interface SessionCommandReceipt {
   snapshotId?: string;
   snapshotCompressed?: CompressedJson;
   delivery: Delivery;
+  /** Private owner copy for reports originating outside the owner DM. */
+  ownerDelivery?: Delivery;
   published?: boolean;
-  /** Only new requests opt in; do not notify historical DEBUGSHAREs on upgrade. */
-  debugLink?: { pollAt?: number; delivery?: Delivery };
+  /** Durable owner-copy/link polling; only new requests opt in, never backfill. */
+  debugLink?: {
+    pollAt?: number;
+    address?: Address;
+    delivery?: Delivery;
+    /** DEBUG only drains its owner copy, never reads an Amp receipt or sends a link. */
+    ownerOnly?: boolean;
+  };
   ping?: {
     receivedAt: number;
     messageAt?: number;
@@ -528,23 +540,15 @@ export function createPingActor(deps: Dependencies) {
   });
 }
 
-export async function publishDebugLink(
+export async function publishDebugNotifications(
   receipt: SessionCommandReceipt,
-  threadId: string,
+  threadId: string | undefined,
   deps: Dependencies,
   persist: () => Promise<void>,
 ) {
   const link = receipt.debugLink;
-  if (!link) return;
-  const previous = link.delivery;
-  if (
-    previous?.result?.status === "rejected" &&
-    previous.result.retryable &&
-    Date.now() <
-      (previous.outcomeObservedAt ?? 0) + (previous.result.retryAfterMs ?? 0)
-  )
-    return;
-  if (!link.delivery) {
+  if (!link) return false;
+  if (threadId && !link.delivery) {
     const outbound = receipt.delivery.message;
     const owner = deps.owner.identities.find(
       (identity) =>
@@ -561,6 +565,7 @@ export async function publishDebugLink(
       message: {
         ...outbound,
         id: randomUUID(),
+        address: link.address ?? outbound.address,
         content: {
           type: "text",
           text: `${mention}DEBUGSHARE ${receipt.snapshotId ?? receipt.snapshot?.id}\nAmp investigation: https://ampcode.com/threads/${encodeURIComponent(threadId)}`,
@@ -569,24 +574,36 @@ export async function publishDebugLink(
     };
     await persist();
   }
-  const result = await deliver(
-    link.delivery,
-    persist,
-    (message) =>
-      deps.channels[message.address.channel]?.send(message) ??
-      Promise.resolve({
-        status: "rejected" as const,
-        code: "channel_disabled",
-        retryable: false,
-      }),
-  );
-  if (
-    result.status !== "rejected" ||
-    !result.retryable ||
-    link.delivery.attempts >= 3
-  )
-    delete link.pollAt;
-  await persist();
+  let pending = false;
+  // One serialized notifier owns both sends. Origin publication never touches
+  // these deliveries, so concurrent retries cannot turn a live send into unknown.
+  for (const delivery of [receipt.ownerDelivery, link.delivery]) {
+    if (!delivery) continue;
+    if (
+      delivery.result?.status === "rejected" &&
+      delivery.result.retryable &&
+      delivery.attempts < 3 &&
+      Date.now() <
+        (delivery.outcomeObservedAt ?? 0) + (delivery.result.retryAfterMs ?? 0)
+    ) {
+      pending = true;
+      continue;
+    }
+    const result = await deliver(
+      delivery,
+      persist,
+      (message) =>
+        deps.channels[message.address.channel]?.send(message) ??
+        Promise.resolve({
+          status: "rejected" as const,
+          code: "channel_disabled",
+          retryable: false,
+        }),
+    );
+    pending ||=
+      result.status === "rejected" && result.retryable && delivery.attempts < 3;
+  }
+  return pending;
 }
 
 export async function publishSessionCommand(

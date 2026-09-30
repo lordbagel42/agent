@@ -20,6 +20,10 @@ export function routeEvent(
   )
     return undefined;
   if (!isOwner(event, owner)) {
+    const debug =
+      event.type === "message" &&
+      event.sessionCommandEligible === true &&
+      /^DEBUG(?:SHARE)?(?: [^\r\n]*)?$/.test(event.text);
     if (
       event.type !== "message" ||
       address.channel !== "slack" ||
@@ -28,9 +32,11 @@ export function routeEvent(
           identity.channel === "slack" &&
           identity.accountId === address.accountId,
       ) ||
-      !["im", "channel", "group"].includes(event.metadata?.channelType ?? "") ||
+      !["im", "channel", "group", ...(debug ? ["mpim"] : [])].includes(
+        event.metadata?.channelType ?? "",
+      ) ||
       event.direct !== (event.metadata?.channelType === "im") ||
-      (!event.direct && !event.botMentioned)
+      (!event.direct && !event.botMentioned && !debug)
     )
       return undefined;
     // Guests never join the owner's actor/queue, even in the same thread.

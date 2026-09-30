@@ -202,6 +202,23 @@ async function normalizeEvent(
   const owner = ownerUserIds.has(event.user);
   const mentioned =
     typeof event.text === "string" && event.text.includes(`<@${botUserId}>`);
+  // DEBUG/DEBUGSHARE are contact in their own right, including guest/group DMs. Other
+  // controls remain owner-only. Validate original rich text before normalization.
+  const prefix = `<@${botUserId}> `;
+  const suffix = ` <@${botUserId}>`;
+  const text = typeof event.text === "string" ? event.text : "";
+  const sessionText = text.startsWith(prefix)
+    ? text.slice(prefix.length)
+    : text.endsWith(suffix)
+      ? text.slice(0, -suffix.length)
+      : text;
+  const debugCandidate = /^DEBUG(?:SHARE)?(?: [^\r\n]*)?$/.test(sessionText);
+  const sessionCandidate =
+    debugCandidate ||
+    (owner && /^(?:PING|PINGMODEL|CLEARHISTORY)$/.test(sessionText));
+  const sessionEligible =
+    sessionCandidate && isPlainSlackCommand(event, botUserId);
+  const debugEligible = debugCandidate && sessionEligible;
   // Ignore opt-outs and intact inspection copies before memory or actor ingress.
   if (
     typeof event.text === "string" &&
@@ -212,6 +229,7 @@ async function normalizeEvent(
   if (
     !owner &&
     !mentioned &&
+    !debugEligible &&
     !(event.type === "message" && event.channel_type === "im")
   )
     return [];
@@ -225,7 +243,7 @@ async function normalizeEvent(
       !nonEmptyString(event.channel) ||
       !nonEmptyString(event.ts) ||
       typeof event.text !== "string" ||
-      event.channel_type === "mpim"
+      (event.channel_type === "mpim" && !debugEligible)
     ) {
       return [];
     }
@@ -233,6 +251,7 @@ async function normalizeEvent(
     let channelType: MessageMetadata["channelType"];
     if (
       event.channel_type === "im" ||
+      (event.channel_type === "mpim" && debugEligible) ||
       event.channel_type === "channel" ||
       event.channel_type === "group"
     ) {
@@ -254,6 +273,7 @@ async function normalizeEvent(
     }
     if (
       channelType !== "im" &&
+      !(channelType === "mpim" && debugEligible) &&
       channelType !== "channel" &&
       channelType !== "group"
     )
@@ -270,7 +290,13 @@ async function normalizeEvent(
       event.thread_ts !== event.ts &&
       (event.parent_user_id === botUserId ||
         threads?.has(teamId, botUserId, event.channel, event.thread_ts));
-    if (channelType !== "im" && !mentioned && !named && !participatingThread) {
+    if (
+      channelType !== "im" &&
+      !mentioned &&
+      !named &&
+      !participatingThread &&
+      !debugEligible
+    ) {
       if (!owner || !participateInOwnerChannels) return [];
       // Never authorize by an ID, event-supplied name, text, or stale name cache.
       const info = await context.conversation(
@@ -292,22 +318,6 @@ async function normalizeEvent(
     const threadId = nonEmptyString(event.thread_ts)
       ? event.thread_ts
       : undefined;
-    // Only session controls accept one boundary mention. Validate the original
-    // rich text before removing it; don't grant other command families new syntax.
-    const prefix = `<@${botUserId}> `;
-    const suffix = ` <@${botUserId}>`;
-    const sessionText = event.text.startsWith(prefix)
-      ? event.text.slice(prefix.length)
-      : event.text.endsWith(suffix)
-        ? event.text.slice(0, -suffix.length)
-        : event.text;
-    const sessionCandidate =
-      owner &&
-      /^(?:PING|PINGMODEL|CLEARHISTORY|DEBUG(?:SHARE)?(?: [^\r\n]*)?)$/.test(
-        sessionText,
-      );
-    const sessionEligible =
-      sessionCandidate && isPlainSlackCommand(event, botUserId);
     // Subscribe on contact, not on a reply: June may intentionally stay silent.
     // Keep guest admission and direct-ping policy separate from name matching.
     if (

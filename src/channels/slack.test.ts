@@ -97,6 +97,54 @@ function jsonResponse(
 }
 
 describe("createSlackAdapter", () => {
+  it.for(["DEBUG", "DEBUGSHARE"])(
+    "admits plain %s from anyone on every known Slack surface without broadening other controls",
+    async (command) => {
+      const adapter = makeAdapter();
+      for (const user of ["U_HUMAN", "U_GUEST"]) {
+        for (const channel_type of ["im", "mpim", "channel", "group"]) {
+          const event = {
+            type: "message",
+            channel_type,
+            channel: channel_type === "im" ? "D1" : "C1",
+            user,
+            ts: "123.456",
+            text: `${command} missed reply`,
+          };
+          const { events } = await adapter.receive(
+            signedRequest(eventBody(event)),
+          );
+          expect(events).toHaveLength(1);
+          expect(events[0]).toMatchObject({
+            sessionCommandEligible: true,
+            text: `${command} missed reply`,
+            metadata: { channelType: channel_type },
+          });
+          for (const changes of [
+            { text: `> ${command} missed reply` },
+            { attachments: [] },
+            { text: `${command}\nmissed reply` },
+            { text: "CLEARHISTORY" },
+          ]) {
+            if (
+              user === "U_HUMAN" &&
+              changes.text === "CLEARHISTORY" &&
+              channel_type !== "mpim"
+            )
+              continue;
+            const result = await adapter.receive(
+              signedRequest(eventBody({ ...event, ...changes })),
+            );
+            expect(
+              (result.events[0] as MessageEvent | undefined)
+                ?.sessionCommandEligible,
+            ).not.toBe(true);
+          }
+        }
+      }
+    },
+  );
+
   it("admits mentioned session controls only from plain authenticated owner input", async () => {
     const adapter = makeAdapter();
     for (const command of [
@@ -156,7 +204,7 @@ describe("createSlackAdapter", () => {
             );
           }
           for (const changes of [
-            { user: "U_GUEST" },
+            ...(command.startsWith("DEBUG") ? [] : [{ user: "U_GUEST" }]),
             { attachments: [] },
             { subtype: "me_message" },
             { text: `> ${text}` },
@@ -215,11 +263,6 @@ describe("createSlackAdapter", () => {
     {
       kind: "model ping",
       text: "PINGMODEL",
-      field: "sessionCommandEligible" as const,
-    },
-    {
-      kind: "snapshot-only debug",
-      text: "DEBUG",
       field: "sessionCommandEligible" as const,
     },
     {

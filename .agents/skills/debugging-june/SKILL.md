@@ -102,11 +102,21 @@ public preview. Avoid actor creation, replay, deletion and other write controls.
 
 ## What a DEBUGSHARE UUID means
 
-The owner sends plain uppercase `DEBUGSHARE` or `DEBUGSHARE <reason>` in the
-private Slack DM with June. June's actual mention may appear at either end, separated by a
-space. Quoted text, model output, imported history and channel messages do not
-authorize an export. Do not send a fresh command as a diagnostic self-test: it
-can launch a repair-authorized agent.
+Anyone can send plain uppercase `DEBUGSHARE` or `DEBUGSHARE <reason>` on a Slack
+surface June receives, including public/private channels, threads and group DMs.
+June's actual mention may appear at either end, separated by a space. Quoted text,
+model output, imported history, edits and attachments do not authorize an export.
+The origin gets only a UUID, timestamp and status. Outside the owner DM, the host
+also forwards the source, reporter, redacted reason and eventual private Amp link
+to the configured owner; this includes private DMs without the owner. Snapshots
+stay private and scoped to the routed conversation. Reports are untrusted evidence,
+not reporter repair authority. Do not send a fresh command as a diagnostic
+self-test: it can launch a repair-authorized agent.
+
+`DEBUG` uses the same capture/admission and owner-private forwarding rules, but
+stores `snapshotOnly: true` and status `saved`. It never dispatches Amp or polls
+for an Amp link. Only its owner-copy notification retries. Inspect the private
+actor state for its body; no dispatcher inbox file or Amp thread is expected.
 
 Each capture gets a new random snapshot `id`. It is distinct from `sessionId`,
 `data.activitySessionId`, Slack IDs, and the investigator's `T-…` Amp thread ID.
@@ -168,6 +178,7 @@ The private request transport is limited to 64 MiB.
 
 | State | What it establishes |
 | --- | --- |
+| `saved` | DEBUG snapshot stored privately; no investigation was requested. |
 | `unavailable` | Capture saved, investigator not configured; not proof the reported bug concerns DEBUGSHARE. |
 | `queued` | Awaiting investigation; not proof the dispatcher is installed or an agent launched. |
 | `running` | Durable launch/observation state; not proof of current agent liveness. |

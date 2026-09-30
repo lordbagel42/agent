@@ -97,8 +97,13 @@ workflow may still wait for its current provider call to settle before answering
 the next message. Linked owner DMs share one conversation; channel threads are
 separate. Quoted commands, attachments, edited messages and guests cannot reset it.
 
-In the owner DM, send `DEBUGSHARE` or `DEBUGSHARE a short explanation`. June
-captures a private UUID-tagged snapshot before queuing investigation: UTC timestamp,
+Anyone can send `DEBUGSHARE` or `DEBUGSHARE a short explanation` in any Slack
+conversation June receives: public/private channels, threads, DMs and group DMs.
+June's actual mention may appear at either end, separated by a space; no mention
+is required for a plain command. Slack authentication, workspace checks and
+quote/attachment/edit rejection still apply. This does not subscribe June to
+unavailable channels, enable ordinary group-DM chat or allow guest owner controls.
+June captures a private UUID-tagged snapshot before queuing investigation: UTC timestamp,
 session ID, running revision, retained conversation, pending input, delivery and
 model/tool invocation receipts, and the latest ordinary model request when still
 available in the current process. It is not a dump of provider internals or all
@@ -109,13 +114,23 @@ may contain it is omitted rather than exporting non-retainable context. Redactio
 is not perfect DLP: do not put secrets in conversation text.
 Snapshots are explicit private diagnostic exports to Amp and survive resets;
 ordinary memory forgetting does not erase already-exported Amp conversations.
+The initial receipt contains only the UUID, timestamp and status, never
+snapshot contents, the reason or private Amp links. Outside the owner's private
+DM, June also queues an owner DM with the UUID, source, reporter and redacted
+reason excerpt (at most 3,000 characters; the full reason stays in the snapshot).
+This includes private DMs without the owner; the originating receipt
+discloses that forwarding. Full diagnostic data remains in private storage/Amp.
+Guest scopes stay isolated from the owner's history and other reporters.
 
 Use `DEBUG` or `DEBUG a short explanation` for the same snapshot **without an
-Amp investigation**. It follows the same plain-command and private-capture rules,
+Amp investigation**. Anyone can use it on the same Slack surfaces, with the same
+plain-command and private-capture rules,
 including a June mention at either end. The reply contains the UUID and UTC
 timestamp and confirms that no investigation was started. The snapshot stays in
 June's private UUID-keyed `debugShare` actor; it is not written to the dispatcher
 inbox or exported to Amp, and no thread-link notification is scheduled. This works
+with a separate owner-copy notification outside the owner DM; only that copy
+retries, without reading Amp receipts, and polling stops once it settles. Capture works
 without investigation configuration or `JUNE_ALLOW_DEBUGSHARE`. Duplicate commands
 and resumed transfers preserve the original snapshot-only intent. June can inspect
 the `saved` receipt with `inspection:"debug-shares"`; an authorized operator can
@@ -165,15 +180,19 @@ duplicate launches; ambiguous launches are never automatically retried. Old
 local-runtime running/unknown receipts are not migrated into new investigations.
 For new enabled requests, June follows the queued acknowledgment with the Amp
 thread link as soon as its receipt supplies the thread ID. The reply stays in the
-original private DM/thread and mentions Raygen's configured Slack owner identity;
-it contains no diagnostic body. Durable polling continues while queued/running,
+original owner-private DM/thread, or goes to a separate owner DM for other origins,
+and mentions Raygen's configured Slack owner identity. It contains no diagnostic
+body. Durable polling continues while queued/running,
 even after the initial observer times out, and resumes after June restarts.
-Terminal receipts without a thread ID stop polling; no link is fabricated and no
-investigator is relaunched. Old requests are not backfilled. Explicitly retryable
-send rejections get at most three attempts; uncertain sends are never repeated.
-June can inspect recent UUIDs, timestamps, states, thread IDs and notification
-delivery outcomes with `inspection: "debug-shares"`; ask her for investigation
-status. Completed means Amp returned, not that its fix was independently verified
+Terminal receipts without a thread ID stop link polling; no link is fabricated and no
+investigator is relaunched. Old requests are not backfilled. Owner-copy and link
+retries are scheduled durably, honor Slack's retry deadline and stop after three
+attempts. An uncertain send is never repeated. Owner-copy retries also run when
+investigation is disabled or terminal; origin-send failure does not suppress them.
+June can inspect recent UUIDs, timestamps, states, thread IDs and available
+notification delivery outcomes with `inspection: "debug-shares"` in an owner-private turn,
+including reports from other surfaces. Missing delivery outcomes are unknown.
+Ask her for investigation status. Completed means Amp returned, not that its fix was independently verified
 or deployed. Source publication does not establish live notification delivery.
 
 ## Optional E2B execution

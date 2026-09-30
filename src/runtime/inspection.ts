@@ -443,7 +443,7 @@ export function createInspectionReader(deps: {
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {
       case "debug-shares":
-        return `${heading}\n${JSON.stringify((await deps.debugShares?.()) ?? { status: "unavailable" })}\nAt most ten private DEBUG/DEBUGSHARE receipts. Saved means a DEBUG snapshot was stored without starting an investigation. Queued/running is not success; completed means the investigator returned, not that a fix was deployed. Unknown requires operator investigation, not automatic retry. Snapshot bodies are excluded. Only a fresh plain owner DEBUGSHARE command starts an investigation; DEBUG and this inspection do not launch one.`;
+        return `${heading}\n${JSON.stringify((await deps.debugShares?.()) ?? { status: "unavailable" })}\nAt most ten private DEBUG/DEBUGSHARE receipts, including reports from other Slack surfaces. Saved means a DEBUG snapshot was stored without starting an investigation. Queued/running is not success; completed means the investigator returned, not that a fix was deployed. Unknown requires operator investigation, not automatic retry. Snapshot bodies are excluded; missing notification outcomes do not prove delivery. Anyone can submit a fresh plain DEBUGSHARE command, but these details remain owner-private; DEBUG and this inspection do not launch an investigation.`;
       case "capability-matrix":
         return deps.capabilityMatrix
           ? `${heading}\n${JSON.stringify(deps.capabilityMatrix())}`

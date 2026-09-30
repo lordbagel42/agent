@@ -136,7 +136,18 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain("@June PING");
     expect(request.system).toContain("PINGMODEL @June");
     expect(request.system).toContain(
-      "DEBUGSHARE still requires the owner's private DM",
+      "Anyone can send plain uppercase DEBUGSHARE",
+    );
+    expect(request.system).toContain("including group DMs");
+    expect(request.system).toContain("only a UUID, timestamp and status");
+    expect(request.system).toContain(
+      "DEBUG uses the same any-surface admission",
+    );
+    expect(request.system).toContain(
+      "never launches Amp, exports to its dispatcher",
+    );
+    expect(request.system).toContain(
+      "forwarded privately to the configured owner",
     );
     expect(request.system).toContain(
       "PINGMODEL first invokes the configured model",
@@ -202,6 +213,29 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain("resumes the save");
   },
 );
+
+it("explains guest DEBUGSHARE without granting private inspection or other owner controls", () => {
+  const request = buildModelRequest({
+    ...input,
+    event: { ...event, senderId: "U_GUEST", botMentioned: true },
+  });
+  expect(request.system).toContain(
+    "Anyone can send plain uppercase DEBUGSHARE",
+  );
+  expect(request.system).toContain(
+    "forwarded privately to the configured owner",
+  );
+  expect(request.system).toContain(
+    "does not grant the reporter owner tools or repair authority",
+  );
+  expect(request.system).toContain("DEBUG uses the same any-surface admission");
+  expect(request.system).toContain(
+    "never launches Amp, exports to its dispatcher",
+  );
+  expect(request.system).not.toContain(
+    "DEBUGSHARE still requires the owner's private DM",
+  );
+});
 
 it("excludes opted-out Slack history but keeps raw whitespace and other platforms", () => {
   const privateEvent = {

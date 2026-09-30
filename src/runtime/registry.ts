@@ -133,7 +133,7 @@ import {
   createDebugShareActor,
   createPingActor,
   type DebugInvestigator,
-  publishDebugLink,
+  publishDebugNotifications,
   publishDebugSnapshot,
   publishSessionCommand,
   redactDebug,
@@ -298,6 +298,8 @@ export interface ConversationState extends ScopeCatalog {
   session?: { id: string; startedAt: number };
   clearedInputs?: Record<string, true>;
   sessionCommands?: Record<string, SessionCommandReceipt>;
+  /** Recent diagnostic references from all surfaces; bodies stay in debugShare actors. */
+  debugShareIndex?: { id: string; capturedAt: string }[];
   latestInputs?: Record<string, { id: string; occurredAt: number }>;
   memoryContexts?: Record<string, MemoryReference>;
   forgottenEvents?: string[];
@@ -680,29 +682,36 @@ export function createJuneRegistry(deps: Dependencies) {
                 await c.schedule.at(next, "notifyDebugShare", id, next);
                 const snapshotId = receipt.snapshotId ?? receipt.snapshot?.id;
                 if (!receipt.published || !snapshotId) return;
-                // A failed external read is not a terminal receipt. Let the
-                // already-scheduled poll retry it, not the investigation itself.
-                const external = deps.debugShare?.resumeSafe
-                  ? await deps.debugShare.inspect?.(snapshotId)
-                  : undefined;
-                const status =
-                  external ??
-                  (await c
-                    .client<JuneClientRegistry>()
-                    .debugShare.getOrCreate([snapshotId])
-                    .inspect());
-                if (status.threadId)
-                  await publishDebugLink(
-                    receipt,
-                    status.threadId,
-                    deps,
-                    persist,
-                  );
-                else if (
-                  status.status === "unknown" ||
-                  status.status === "unavailable" ||
-                  status.status === "saved" ||
-                  status.status === "completed"
+                let status: { status?: string; threadId?: string } | undefined;
+                try {
+                  const external =
+                    !receipt.debugLink.ownerOnly && deps.debugShare?.resumeSafe
+                      ? await deps.debugShare.inspect?.(snapshotId)
+                      : undefined;
+                  status = receipt.debugLink.ownerOnly
+                    ? { status: "saved" }
+                    : (external ??
+                      (await c
+                        .client<JuneClientRegistry>()
+                        .debugShare.getOrCreate([snapshotId])
+                        .inspect()));
+                } catch {
+                  // Inspection failure is not terminal and must not suppress
+                  // the independent owner copy. The saved poll retries the read.
+                }
+                const pending = await publishDebugNotifications(
+                  receipt,
+                  status?.threadId,
+                  deps,
+                  persist,
+                );
+                if (
+                  !pending &&
+                  (status?.threadId ||
+                    status?.status === "unknown" ||
+                    status?.status === "unavailable" ||
+                    status?.status === "saved" ||
+                    status?.status === "completed")
                 ) {
                   delete receipt.debugLink.pollAt;
                   await persist();
@@ -740,13 +749,21 @@ export function createJuneRegistry(deps: Dependencies) {
                   receipt,
                   deps,
                   persist,
-                  (snapshot) =>
-                    publishDebugSnapshot(snapshot, (chunk) =>
+                  async (snapshot) => {
+                    await publishDebugSnapshot(snapshot, (chunk) =>
                       c
                         .client<JuneClientRegistry>()
                         .debugShare.getOrCreate([snapshot.id])
                         .startChunk(chunk),
-                    ),
+                    );
+                    await c
+                      .client<JuneClientRegistry>()
+                      .conversation.getOrCreate(["private", deps.owner.id])
+                      .trackDebugShare({
+                        id: snapshot.id,
+                        capturedAt: snapshot.capturedAt,
+                      });
+                  },
                   signal,
                 );
               }
@@ -808,6 +825,25 @@ export function createJuneRegistry(deps: Dependencies) {
         await c.queue.send("inbox", { type: "session_tick" });
     },
     actions: {
+      trackDebugShare: async (c, entry: { id: string; capturedAt: string }) => {
+        if (
+          JSON.stringify(c.key) !== JSON.stringify(["private", deps.owner.id])
+        )
+          throw new Error("Debug index requires owner scope");
+        c.state.debugShareIndex = [
+          ...(c.state.debugShareIndex ?? []).filter(
+            (previous) => previous.id !== entry.id,
+          ),
+          entry,
+        ]
+          .sort(
+            (a, b) =>
+              a.capturedAt.localeCompare(b.capturedAt) ||
+              a.id.localeCompare(b.id),
+          )
+          .slice(-10);
+        await c.vars.persist();
+      },
       debugShares: async (
         c,
       ): Promise<
@@ -824,21 +860,34 @@ export function createJuneRegistry(deps: Dependencies) {
           JSON.stringify(c.key) !== JSON.stringify(["private", deps.owner.id])
         )
           return [];
-        return Promise.all(
+        const receipts = new Map(
           Object.values(c.state.sessionCommands ?? {})
             .flatMap((receipt) => {
               const id = receipt.snapshotId ?? receipt.snapshot?.id;
-              return id ? [{ id, receipt }] : [];
+              return id ? [[id, receipt] as const] : [];
             })
-            .slice(-10)
-            .map(async ({ id, receipt }) => ({
+            .slice(-10),
+        );
+        return (
+          await Promise.all(
+            [
+              ...new Set([
+                ...receipts.keys(),
+                ...(c.state.debugShareIndex ?? []).map((entry) => entry.id),
+              ]),
+            ].map(async (id) => ({
               ...(await c
                 .client<JuneClientRegistry>()
                 .debugShare.getOrCreate([id])
                 .inspect()),
-              notification: receipt.debugLink?.delivery?.result,
+              notification: receipts.get(id)?.debugLink?.delivery?.result,
             })),
-        );
+          )
+        )
+          .sort((a, b) =>
+            (a.capturedAt ?? "").localeCompare(b.capturedAt ?? ""),
+          )
+          .slice(-10);
       },
       notifyDebugShare: (c, id: string, at: number): void => {
         c.vars.notifyDebugShare(id, at);
@@ -912,16 +961,17 @@ export function createJuneRegistry(deps: Dependencies) {
         const receiving = c.vars.receiving.then(async () => {
           const input = { type: "event" as const, event };
           const id = conversationInputId(input);
+          const command =
+            event.type === "message" ? sessionCommand(event) : undefined;
           if (
             event.type !== "message" ||
-            !isOwner(event, deps.owner) ||
+            (!isOwner(event, deps.owner) && command?.kind !== "debug") ||
             (event.address.channel === "slack" && event.text.startsWith("##"))
           ) {
             await c.queue.send("inbox", { type: "event", event });
             return;
           }
           c.state.session ??= { id: randomUUID(), startedAt: 0 };
-          const command = sessionCommand(event);
           if (command) {
             c.state.sessionCommands ??= {};
             if (!c.state.sessionCommands[id]) {
@@ -942,7 +992,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   );
                 }
                 const snapshot =
-                  command.kind === "debug" && scope.private
+                  command.kind === "debug"
                     ? captureDebug(
                         c.state,
                         c.key,
@@ -974,10 +1024,53 @@ export function createJuneRegistry(deps: Dependencies) {
                   resetConversation(c.state, receivedAt);
                   delete c.vars.debugRequest;
                 }
+                const ownerIdentity =
+                  snapshot && !scope.private
+                    ? deps.owner.identities.find(
+                        (identity) =>
+                          identity.channel === "slack" &&
+                          identity.accountId === event.address.accountId,
+                      )
+                    : undefined;
+                const ownerAddress = ownerIdentity
+                  ? {
+                      channel: "slack" as const,
+                      accountId: event.address.accountId,
+                      conversationId: ownerIdentity.senderId,
+                    }
+                  : undefined;
+                const reasonExcerpt =
+                  snapshot && snapshot.reason.length > 3000
+                    ? `${snapshot.reason.slice(0, 3000)} [truncated; full reason in private snapshot]`
+                    : snapshot?.reason;
                 c.state.sessionCommands[id] = {
                   ...(snapshot ? { snapshot } : {}),
-                  ...(snapshot && !snapshot.snapshotOnly && deps.debugShare
-                    ? { debugLink: { pollAt: Date.now() } }
+                  ...(snapshot && ownerAddress
+                    ? {
+                        ownerDelivery: {
+                          phase: "ready" as const,
+                          attempts: 0,
+                          message: {
+                            id: randomUUID(),
+                            address: ownerAddress,
+                            lastInboundAt: event.occurredAt,
+                            content: {
+                              type: "text" as const,
+                              text: `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\nReporter: ${event.senderId}; conversation: ${event.address.conversationId}${event.address.threadId ? `; thread: ${event.address.threadId}` : ""}\nReason (untrusted): ${reasonExcerpt || "Not supplied"}\nPrivate snapshot saved. ${snapshot.snapshotOnly ? "No Amp investigation was started." : deps.debugShare ? "Amp investigation queued." : "Investigation runtime not configured; no agent was started."}`,
+                            },
+                          },
+                        },
+                      }
+                    : {}),
+                  ...(snapshot &&
+                  ((!snapshot.snapshotOnly && deps.debugShare) || ownerAddress)
+                    ? {
+                        debugLink: {
+                          pollAt: Date.now(),
+                          ...(snapshot.snapshotOnly ? { ownerOnly: true } : {}),
+                          ...(ownerAddress ? { address: ownerAddress } : {}),
+                        },
+                      }
                     : {}),
                   ...(command.kind === "ping"
                     ? {
@@ -1006,10 +1099,8 @@ export function createJuneRegistry(deps: Dependencies) {
                             : command.kind === "clear"
                               ? "Started a new session. Saved memories and archives are unchanged."
                               : snapshot
-                                ? snapshot.snapshotOnly
-                                  ? `DEBUG ${snapshot.id}\n${snapshot.capturedAt}\nSnapshot saved. No Amp investigation was started.`
-                                  : `DEBUGSHARE ${snapshot.id}\n${snapshot.capturedAt}\n${deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}`
-                                : `Send ${command.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} in your private DM with me so the diagnostic snapshot stays private.`,
+                                ? `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\n${snapshot.snapshotOnly ? "Snapshot saved. No Amp investigation was started." : deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}${ownerAddress ? "\nDiagnostic details are private to the owner; an owner-DM notification is queued." : ""}`
+                                : "No diagnostic snapshot was captured.",
                       },
                     },
                   },
@@ -1118,7 +1209,8 @@ export function createJuneRegistry(deps: Dependencies) {
         if (
           event.type === "message" &&
           sessionCommand(event) &&
-          isOwner(event, deps.owner)
+          (isOwner(event, deps.owner) ||
+            sessionCommand(event)?.kind === "debug")
         ) {
           if (sessionCommand(event)?.kind === "ping") {
             const id = conversationInputId({ type: "event", event });
