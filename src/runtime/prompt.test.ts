@@ -170,6 +170,12 @@ it.for(["interaction", "execution", "decision"] as const)(
       "mentioning Raygen's configured owner identity on Slack",
     );
     expect(request.system).toContain(
+      "the later reply adds only the Amp link in that message's Slack thread",
+    );
+    expect(request.system).toContain(
+      "If the acknowledgment was rejected or uncertain",
+    );
+    expect(request.system).toContain(
       "do not duplicate the link reply or owner ping",
     );
     expect(request.system).toContain("notification delivery outcomes");

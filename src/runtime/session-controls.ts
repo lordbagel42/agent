@@ -548,8 +548,45 @@ export async function publishDebugNotifications(
 ) {
   const link = receipt.debugLink;
   if (!link) return false;
+  // One serialized notifier owns both sends. Origin publication never touches
+  // these deliveries, so concurrent retries cannot turn a live send into unknown.
+  const sendNotification = async (delivery: Delivery) => {
+    if (
+      delivery.result?.status === "rejected" &&
+      delivery.result.retryable &&
+      delivery.attempts < 3 &&
+      Date.now() <
+        (delivery.outcomeObservedAt ?? 0) + (delivery.result.retryAfterMs ?? 0)
+    )
+      return true;
+    const result = await deliver(
+      delivery,
+      persist,
+      (message) =>
+        deps.channels[message.address.channel]?.send(message) ??
+        Promise.resolve({
+          status: "rejected" as const,
+          code: "channel_disabled",
+          retryable: false,
+        }),
+    );
+    return (
+      result.status === "rejected" && result.retryable && delivery.attempts < 3
+    );
+  };
+  if (receipt.ownerDelivery && (await sendNotification(receipt.ownerDelivery)))
+    return true;
   if (threadId && !link.delivery) {
+    const acknowledgment = receipt.ownerDelivery ?? receipt.delivery;
+    // The independently published origin acknowledgment may still be in flight.
+    // Wait for its publisher; never call deliver on that live send here.
+    if (acknowledgment.phase !== "settled") return true;
     const outbound = receipt.delivery.message;
+    const address = link.address ?? outbound.address;
+    const replyThread =
+      acknowledgment.result?.status === "sent"
+        ? (address.threadId ?? acknowledgment.result.messageId)
+        : undefined;
     const owner = deps.owner.identities.find(
       (identity) =>
         identity.channel === outbound.address.channel &&
@@ -565,45 +602,16 @@ export async function publishDebugNotifications(
       message: {
         ...outbound,
         id: randomUUID(),
-        address: link.address ?? outbound.address,
+        address: replyThread ? { ...address, threadId: replyThread } : address,
         content: {
           type: "text",
-          text: `${mention}DEBUGSHARE ${receipt.snapshotId ?? receipt.snapshot?.id}\nAmp investigation: https://ampcode.com/threads/${encodeURIComponent(threadId)}`,
+          text: `${mention}${replyThread ? "" : `DEBUGSHARE ${receipt.snapshotId ?? receipt.snapshot?.id}\n`}Amp investigation: https://ampcode.com/threads/${encodeURIComponent(threadId)}`,
         },
       },
     };
     await persist();
   }
-  let pending = false;
-  // One serialized notifier owns both sends. Origin publication never touches
-  // these deliveries, so concurrent retries cannot turn a live send into unknown.
-  for (const delivery of [receipt.ownerDelivery, link.delivery]) {
-    if (!delivery) continue;
-    if (
-      delivery.result?.status === "rejected" &&
-      delivery.result.retryable &&
-      delivery.attempts < 3 &&
-      Date.now() <
-        (delivery.outcomeObservedAt ?? 0) + (delivery.result.retryAfterMs ?? 0)
-    ) {
-      pending = true;
-      continue;
-    }
-    const result = await deliver(
-      delivery,
-      persist,
-      (message) =>
-        deps.channels[message.address.channel]?.send(message) ??
-        Promise.resolve({
-          status: "rejected" as const,
-          code: "channel_disabled",
-          retryable: false,
-        }),
-    );
-    pending ||=
-      result.status === "rejected" && result.retryable && delivery.attempts < 3;
-  }
-  return pending;
+  return link.delivery ? sendNotification(link.delivery) : false;
 }
 
 export async function publishSessionCommand(

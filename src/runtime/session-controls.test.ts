@@ -14,11 +14,16 @@ import { EvidenceStore } from "../memory/store.js";
 import { conversationInputId } from "./inbox.js";
 import { createInspectionReader } from "./inspection.js";
 import { createLifecycle } from "./lifecycle.js";
-import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
+import {
+  createJuneRegistry,
+  type Dependencies,
+  type JuneClientRegistry,
+} from "./registry.js";
 import {
   captureDebug,
   type DebugSnapshot,
   type DebugSnapshotChunk,
+  publishDebugNotifications,
   publishDebugSnapshot,
   publishSessionCommand,
   type SessionCommandReceipt,
@@ -80,7 +85,10 @@ it("captures shared and guest reports once, replies safely at origin, and forwar
             outbound.content.text.includes("Reason (untrusted): guest reason")
           )
             return { status: "unknown", code: "timeout" };
-          return { status: "sent", messageId: "sent" };
+          return {
+            status: "sent",
+            messageId: `owner-${snapshots.at(-1)?.id}`,
+          };
         },
       },
     },
@@ -157,12 +165,14 @@ it("captures shared and guest reports once, replies safely at origin, and forwar
     const privateMessages = sent.filter(
       (out) =>
         out.address.conversationId === "U1" &&
-        JSON.stringify(out.content).includes(snapshot.id),
+        (JSON.stringify(out.content).includes(snapshot.id) ||
+          out.address.threadId === `owner-${snapshot.id}`),
     );
     expect(privateMessages).toHaveLength(2);
-    expect(
-      privateMessages.every((out) => out.address.threadId === undefined),
-    ).toBe(true);
+    expect(privateMessages[0]?.address.threadId).toBeUndefined();
+    expect(privateMessages[1]?.address.threadId).toBe(
+      report.senderId === "U2" ? undefined : `owner-${snapshot.id}`,
+    );
     expect(JSON.stringify(privateMessages)).toContain(snapshot.reason);
     expect(JSON.stringify(privateMessages)).not.toContain("xoxb-secret");
     expect(await june.debugShares()).toEqual([]);
@@ -814,7 +824,7 @@ it.for(["sent", "unknown", "retry"] as const)(
     const { client } = await setupTest(t, registry);
     const june = client.conversation.getOrCreate(["private", "owner"]);
     const debug = message("debug-link", "DEBUGSHARE private reason");
-    debug.address.threadId = "123.456";
+    if (outcome !== "sent") debug.address.threadId = "123.456";
     await june.receive(debug);
     await expect.poll(() => snapshots.length, { timeout: 15000 }).toBe(1);
     // Snapshot dispatch precedes index persistence and the asynchronous ack.
@@ -828,7 +838,7 @@ it.for(["sent", "unknown", "retry"] as const)(
       channel: "slack",
       accountId: "T1",
       conversationId: "D1",
-      threadId: "123.456",
+      threadId: outcome === "sent" ? "sent" : "123.456",
     });
     expect(link?.content).toMatchObject({
       type: "text",
@@ -838,6 +848,10 @@ it.for(["sent", "unknown", "retry"] as const)(
     });
     expect(JSON.stringify(link)).toContain("<@U1>");
     expect(JSON.stringify(link)).not.toContain("private reason");
+    expect(JSON.stringify(link?.content)).not.toMatch(
+      /DEBUGSHARE|Snapshot|queued/,
+    );
+    expect(JSON.stringify(link?.content)).not.toContain(snapshots[0]?.id);
     await june.receive(debug);
     await june.resumeSessionCommands();
     const status = await june.debugShares();
@@ -855,6 +869,122 @@ it.for(["sent", "unknown", "retry"] as const)(
     }
   },
 );
+
+it("waits for the acknowledgment and owner-copy retry before adding a nonrepeating link", async () => {
+  const sent: OutboundMessage[] = [];
+  const receipt: SessionCommandReceipt = {
+    snapshotId: "fixture-snapshot",
+    published: true,
+    delivery: {
+      phase: "sending",
+      attempts: 1,
+      message: {
+        id: "ack",
+        lastInboundAt: 0,
+        address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+        content: { type: "text", text: "DEBUGSHARE fixture-snapshot" },
+      },
+    },
+    debugLink: { pollAt: 1 },
+  };
+  const deps: Dependencies = {
+    owner,
+    model: { reply: async () => ({ text: "unused" }) },
+    channels: {
+      slack: {
+        channel: "slack" as const,
+        capabilities: { text: true, threads: true, reactions: true },
+        receive: async () => ({ events: [], response: new Response() }),
+        send: async (outbound: OutboundMessage) => {
+          sent.push(structuredClone(outbound));
+          return { status: "sent" as const, messageId: "456.789" };
+        },
+      },
+    },
+  };
+  const persist = async () => {};
+  expect(
+    await publishDebugNotifications(receipt, "T-fixture", deps, persist),
+  ).toBe(true);
+  expect(sent).toEqual([]);
+  expect(receipt.delivery.phase).toBe("sending");
+
+  receipt.delivery.phase = "settled";
+  // Without a confirmed acknowledgment, retain context without resending it.
+  for (const result of [
+    { status: "unknown", code: "timeout" },
+    { status: "rejected", code: "rate_limited", retryable: true },
+  ] as const) {
+    receipt.delivery.result = result;
+    receipt.debugLink = { pollAt: 1 };
+    expect(
+      await publishDebugNotifications(receipt, "T-fixture", deps, persist),
+    ).toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.address.threadId).toBeUndefined();
+    expect(JSON.stringify(sent[0]?.content)).toContain("fixture-snapshot");
+    expect(receipt.delivery.attempts).toBe(1);
+    sent.length = 0;
+  }
+  const ownerAddress = {
+    channel: "slack" as const,
+    accountId: "T1",
+    conversationId: "U1",
+  };
+  receipt.debugLink = { pollAt: 1, address: ownerAddress };
+  receipt.ownerDelivery = {
+    phase: "settled",
+    attempts: 1,
+    message: {
+      ...receipt.delivery.message,
+      id: "owner-copy",
+      address: ownerAddress,
+    },
+    result: {
+      status: "rejected",
+      code: "rate_limited",
+      retryable: true,
+      retryAfterMs: 60000,
+    },
+    outcomeObservedAt: Date.now(),
+  };
+  expect(
+    await publishDebugNotifications(receipt, "T-fixture", deps, persist),
+  ).toBe(true);
+  expect(sent).toEqual([]);
+  receipt.ownerDelivery.outcomeObservedAt = 0;
+  expect(
+    await publishDebugNotifications(receipt, "T-fixture", deps, persist),
+  ).toBe(false);
+  expect(sent).toHaveLength(2);
+  expect(sent[1]?.address).toEqual({ ...ownerAddress, threadId: "456.789" });
+  expect(JSON.stringify(sent[1]?.content)).not.toContain("fixture-snapshot");
+  // A persisted retry/resume never republishes either successful send.
+  await publishDebugNotifications(
+    structuredClone(receipt),
+    "T-fixture",
+    deps,
+    persist,
+  );
+  expect(sent).toHaveLength(2);
+  const legacyMessage: OutboundMessage = {
+    id: "legacy-link",
+    lastInboundAt: 0,
+    address: ownerAddress,
+    content: {
+      type: "text",
+      text: "<@U1> DEBUGSHARE fixture-snapshot\nAmp investigation: https://ampcode.com/threads/T-legacy",
+    },
+  };
+  receipt.debugLink = {
+    pollAt: 1,
+    address: ownerAddress,
+    delivery: { phase: "ready", attempts: 0, message: legacyMessage },
+  };
+  await publishDebugNotifications(receipt, "T-fixture", deps, persist);
+  expect(sent.at(-1)).toEqual(legacyMessage);
+  expect(sent).toHaveLength(3);
+});
 
 it("owns queued DEBUGSHARE notifications beyond action and idle deadlines", async (t) => {
   const blocked = Promise.withResolvers<void>();
