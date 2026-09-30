@@ -97,6 +97,11 @@ import {
 import { createRivetReader } from "./runtime/rivet-inspection.js";
 import { SocialPermissions } from "./runtime/social.js";
 import { sessionActorKey } from "./sessions/state.js";
+import {
+  initializeTelemetry,
+  recordEvent,
+  type Telemetry,
+} from "./telemetry/index.js";
 import { CapabilityBroker } from "./tools/broker.js";
 import { BrowserAdapter, browserOperationDigest } from "./tools/browser.js";
 import { createBrowserProposal } from "./tools/browser-proposals.js";
@@ -112,6 +117,7 @@ import { createWorkflowTools } from "./workflows/tools.js";
 let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
 const hotProviders: ReturnType<typeof createHotCodexProvider>[] = [];
 let slotActivated = false;
+let telemetry: Telemetry | undefined;
 
 function exitOrRetainOwnership(code: number) {
   if (slotActivated && code !== 0) {
@@ -228,6 +234,13 @@ async function main() {
     await awaitSlotActivation({ ...slot, revision: release.revision, token });
     slotActivated = true;
   }
+  startupStage = "OpenTelemetry";
+  process.env.RIVETKIT_STORAGE_PATH ??= resolve(".data");
+  telemetry = initializeTelemetry({
+    path: join(process.env.RIVETKIT_STORAGE_PATH, "diagnostics", "otel.sqlite"),
+    revision: release?.revision,
+  });
+  recordEvent("june.process.started");
   const readDeployment = config.deployment
     ? createDeploymentReader({
         file: config.deployment.eventsFile,
@@ -1291,6 +1304,7 @@ async function main() {
     jev,
     lifecycle,
     latency,
+    telemetry,
     analytics: (days) =>
       `${usage.report(days)}\n\n${memory?.store.operationReport() ?? "Memory operation metrics are unavailable; memory is disabled."}`,
     rivet: createRivetReader({
@@ -1556,6 +1570,7 @@ async function main() {
       : undefined,
     slackIngressDiagnostics,
     latency,
+    telemetry,
     github:
       wakeups && githubWebhookSecret
         ? {
@@ -1819,6 +1834,7 @@ async function main() {
           workflows: !!dependencies.workflows,
           capabilities: !!capabilities,
           deployment: !!readDeployment,
+          telemetry: !!telemetry,
         },
       }),
       operator: operatorRequest((request) => app.fetch(request), operatorToken),
@@ -1946,13 +1962,15 @@ async function main() {
       // Rivet's own signal handler terminates after draining. With custom signal
       // handling we own that final step too; native runtime handles may remain.
     })().then(
-      () => {
+      async () => {
         diagnosticLog?.lifecycle("process_stopped");
         diagnosticLog?.close();
+        await telemetry?.shutdown();
         exitOrRetainOwnership(Number(process.exitCode ?? 0));
       },
-      () => {
+      async () => {
         diagnosticLog?.lifecycle("shutdown_failed");
+        await telemetry?.shutdown();
         console.error("June could not finish a graceful shutdown.");
         exitOrRetainOwnership(1);
       },
@@ -1974,6 +1992,11 @@ await main().catch(async () => {
   // descriptor and MainPID alive until the controller stops the entire cgroup.
   if (slotActivated) setInterval(() => {}, 60_000);
   await Promise.allSettled(hotProviders.map((provider) => provider.close()));
+  recordEvent("june.lifecycle", {
+    "june.phase": "shutdown_failed",
+    "june.outcome": "error",
+  });
+  await telemetry?.shutdown();
   // Provider/transport exceptions can contain credentials or message bodies.
   console.error(`June startup failed at ${startupStage}.`);
   process.exitCode = 1;

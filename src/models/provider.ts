@@ -39,6 +39,7 @@ import {
   personalityPreviewSchema,
 } from "../runtime/personality.js";
 import { personalityEvaluateSchema } from "../runtime/personality-evaluation-preview.js";
+import { telemetryQuerySchema } from "../telemetry/index.js";
 import { E2B_HELP, e2bRequestSchema } from "../tools/e2b.js";
 import { emojiSearchSchema } from "../tools/emoji-search.js";
 import { javascriptSchema } from "../tools/javascript.js";
@@ -238,6 +239,7 @@ const companionReplySchema = z.strictObject({
       z.uuid({ version: "v4" }).transform((value) => value.toLowerCase()),
     ])
     .optional(),
+  telemetry: telemetryQuerySchema.optional(),
   replyInThread: z.boolean().optional(),
   apps: appsRequestSchema.optional(),
   artifact: artifactCommandSchema.optional(),
@@ -433,6 +435,7 @@ export type ReplyCapabilities = Pick<
   | "mcpPermissionAvailable"
   | "mcpProposalAvailable"
   | "latencyAvailable"
+  | "telemetryAvailable"
   | "analyticsAvailable"
   | "inspectionAvailable"
   | "appsAvailable"
@@ -562,6 +565,7 @@ function legacyReplyJsonSchema(
     mcpPermissionAvailable,
     mcpProposalAvailable,
     latencyAvailable,
+    telemetryAvailable,
     analyticsAvailable,
     inspectionAvailable,
     appsAvailable,
@@ -1836,6 +1840,64 @@ function legacyReplyJsonSchema(
             },
           }
         : {}),
+      ...(telemetryAvailable
+        ? {
+            telemetry: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                view: {
+                  type: "string",
+                  enum: ["status", "traces", "logs", "metrics"],
+                },
+                traceId: {
+                  type: ["string", "null"],
+                  description:
+                    "Exact 32-character lowercase hex trace ID, or null.",
+                },
+                name: {
+                  type: ["string", "null"],
+                  description:
+                    "Exact instrument name (at most 80 characters), or null.",
+                },
+                status: {
+                  type: ["string", "null"],
+                  enum: ["ok", "error", "unfinished", null],
+                },
+                since: {
+                  type: ["integer", "null"],
+                  description: "Inclusive start epoch milliseconds, or null.",
+                },
+                until: {
+                  type: ["integer", "null"],
+                  description: "Inclusive end epoch milliseconds, or null.",
+                },
+                before: {
+                  type: ["integer", "null"],
+                  description:
+                    "nextBefore cursor from the previous page, or null.",
+                },
+                limit: {
+                  type: "integer",
+                  description:
+                    "Page size 1–100; prefer 10 while investigating.",
+                },
+              },
+              required: [
+                "view",
+                "traceId",
+                "name",
+                "status",
+                "since",
+                "until",
+                "before",
+                "limit",
+              ],
+              description:
+                "Read owner-private OpenTelemetry status, span pages, correlated logs or retained-span metric aggregates. Use nextBefore to page and traceId to inspect a trace. Empty text and no other actions. Unfinished is not proof work is still running; never retry effects from telemetry alone.",
+            },
+          }
+        : {}),
       ...(replyPlacementAvailable
         ? {
             replyInThread: {
@@ -1875,6 +1937,7 @@ function legacyReplyJsonSchema(
       ...(escalationAvailable ? ["escalate"] : []),
       ...(webSearchAvailable ? ["webSearch"] : []),
       ...(latencyAvailable ? ["latency"] : []),
+      ...(telemetryAvailable ? ["telemetry"] : []),
       ...(analyticsAvailable ? ["analytics"] : []),
       ...(inspectionAvailable ? ["inspection"] : []),
       ...(appsAvailable ? ["apps"] : []),
@@ -2081,6 +2144,7 @@ export function parseReply(
     mcpPermissionAvailable,
     mcpProposalAvailable,
     latencyAvailable,
+    telemetryAvailable,
     analyticsAvailable,
     inspectionAvailable,
     appsAvailable,
@@ -2163,6 +2227,7 @@ export function parseReply(
     "mcpCatalog",
     "mcpProposal",
     "latency",
+    "telemetry",
     "analytics",
     "inspection",
     "apps",
@@ -2200,6 +2265,10 @@ export function parseReply(
     normalized.emojiSearch.limit === null
   )
     delete normalized.emojiSearch.limit;
+  if (isJsonObject(normalized.telemetry)) {
+    for (const key of ["traceId", "name", "status", "since", "until", "before"])
+      if (normalized.telemetry[key] === null) delete normalized.telemetry[key];
+  }
   const parsed = companionReplySchema.safeParse(normalized);
   if (!parsed.success) {
     if (
@@ -2255,6 +2324,7 @@ export function parseReply(
     (reply.mcpCatalog !== undefined && !mcpAvailable) ||
     (reply.mcpProposal !== undefined && !mcpProposalAvailable) ||
     (reply.latency !== undefined && !latencyAvailable) ||
+    (reply.telemetry !== undefined && !telemetryAvailable) ||
     (reply.analytics !== undefined && !analyticsAvailable) ||
     (reply.inspection !== undefined && !inspectionAvailable) ||
     (reply.apps !== undefined && !appsAvailable) ||
@@ -2323,6 +2393,7 @@ export function parseReply(
     Number(reply.release !== undefined) +
     Number(reply.social !== undefined) +
     Number(reply.latency !== undefined) +
+    Number(reply.telemetry !== undefined) +
     Number(reply.analytics !== undefined) +
     Number(reply.inspection !== undefined) +
     Number(reply.apps !== undefined) +
@@ -2384,6 +2455,7 @@ export function parseReply(
       reply.mcpPermission !== undefined ||
       reply.mcpCatalog !== undefined ||
       reply.mcpProposal !== undefined ||
+      reply.telemetry !== undefined ||
       reply.analytics !== undefined ||
       reply.inspection !== undefined ||
       reply.apps !== undefined ||

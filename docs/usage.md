@@ -1605,6 +1605,88 @@ its sandbox: it does not create desktops or stream URLs. Desktop provisioning an
 streaming are not implemented here; authenticated or secret-bearing streams must
 not be sent through this public embed mechanism.
 
+## OpenTelemetry
+
+June records every instrumented operation (no sampling) using the OpenTelemetry
+SDK. Traces cover HTTP requests, inbound/outbound MCP tools, model calls and token
+counters, host capabilities, delivery attempts, interaction/execution workers,
+coding dispatch, reflection, wakeups, authored-workflow tools and agent callbacks.
+Lifecycle, Slack ingress/OAuth and context/provider timing stages produce redacted
+OTel log events. Nested live work shares trace context; separate actor/queue turns
+start separate traces. Process-local operation hashes help correlate observations
+without retaining message/user IDs; those hashes change on restart.
+
+The host automatically stores spans and events in
+`$RIVETKIT_STORAGE_PATH/diagnostics/otel.sqlite` (default `.data/diagnostics`).
+It requires a private canonical directory owned by the process, with `0700`
+directories and `0600` database files. Retention is 30 days, capped at 100,000 spans
+and 50,000 events. Span starts are persisted immediately, so a process crash leaves
+unfinished records rather than silently losing every active operation. SQLite
+WAL/NORMAL protects against application crashes, not all power-loss scenarios.
+Recording failures are counted and never replay or block an external effect.
+
+**June can inspect the records herself.** In a private owner conversation, ask her
+to investigate telemetry. Her execution worker uses `telemetry` with one of:
+
+```json
+{"view":"status"}
+{"view":"traces","status":"error","limit":10}
+{"view":"traces","traceId":"0123456789abcdef0123456789abcdef","limit":25}
+{"view":"logs","name":"june.latency.stage","limit":25}
+{"view":"metrics"}
+```
+
+The trace ID above is illustrative; use an observed ID. Queries also accept
+`since`/`until` in epoch milliseconds, exact `name`, and `before` from the previous
+page's `nextBefore`. Trace pages contain spans, newest first, with parent IDs,
+timings, outcomes, token counters and originating process/revision. Pages are
+bounded by count (1–100, default 25) and approximately 48 KiB of row data; keep
+paging until `nextBefore` is null. Queries neither mutate workflow state nor
+retry work. Owner-private worker results can enter the existing private history.
+Guests, shared channels, automated/completion turns and revoked/stale work do not
+gain this read capability.
+
+The inbound owner-trusted MCP exposes the same query as `query_telemetry`; the
+operator API accepts its JSON body at `POST /operator/telemetry/query` under the
+existing bearer authentication. MCP `operator_request` also accepts
+`operation:"telemetry"` with the query in `body`. The private interfaces query
+June's local retained records, **not an arbitrary collector or other services**.
+
+External export is off unless the operator sets `OTEL_EXPORTER_OTLP_ENDPOINT`
+(for example, a trusted collector's `http://127.0.0.1:4318`) or a signal-specific
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `_LOGS_ENDPOINT`, or `_METRICS_ENDPOINT`.
+The general endpoint receives `/v1/traces`, `/v1/logs` and `/v1/metrics`; specific
+endpoints are complete URLs. Standard general/signal-specific `_HEADERS` variables
+provide collector authentication through the environment. June uses **OTLP
+HTTP/JSON**, not gRPC; changing a protocol environment variable does not switch
+the exporter. Keep the destination and headers private, and obtain operator
+authorization before changing production configuration or deploying a collector.
+
+Export batches have bounded memory queues and short transport timeouts. Graceful
+shutdown waits at most five seconds for a flush, then closes local storage; this
+deadline does not cancel in-flight export requests. Batches are not a durable
+outbox; local retention remains queryable when a collector is unavailable, but
+failed batches are not re-exported after restart. `status` reports observed
+persistence/export failures and enabled signals without revealing destinations
+or headers. SDK queue overflow can drop exports without incrementing these
+counters. A configured exporter is not proof of delivery.
+
+Exported metrics include completed-operation counts and duration distributions,
+process RSS and CPU time. The local metrics query instead aggregates retained
+spans, with current-process memory/CPU observations labelled separately. Retention
+can remove old evidence; unfinished means active **or interrupted**, and `ok`
+means the callback returned, not that its external effect succeeded. Check
+`june.outcome` and authoritative receipts before drawing conclusions.
+
+Instrumentation deliberately excludes message/prompt/response bodies, tool
+arguments/results, raw exceptions/stacks, headers, credentials and arbitrary URL
+paths/queries. Only allowlisted names and operational attributes reach either
+SQLite or exporters. This is comprehensive application-boundary telemetry, not
+provider-internal inference, native subprocess internals, every SQL/network call,
+or durable trace propagation through Rivet journals. New boundaries must extend
+`src/telemetry/privacy.ts` alongside their instrumentation. Existing `latency`
+and `analytics` actions remain available for their more specialized reports.
+
 ## Development checks and limitations
 
 ```sh

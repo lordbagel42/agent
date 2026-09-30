@@ -1,5 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { SpanStatusCode } from "@opentelemetry/api";
+import { correlationId, withSpan } from "../telemetry/index.js";
 
 export type Json =
   | null
@@ -363,116 +365,144 @@ export class CapabilityBroker {
     const action = this.propose(input);
     const adapter = this.#options.tools[action.tool];
     if (!adapter) deny();
-    let receipt: Receipt;
-    this.#db.exec("BEGIN IMMEDIATE");
-    try {
-      if (
-        linkToken !== undefined &&
-        this.#link(principal, linkToken).grant_id !== grantId
-      )
-        deny();
-      const grant = this.#grant(principal, grantId);
-      if (grant.fingerprint !== digest(canonical(action))) deny();
-      const existing = this.#receipt(grantId);
-      if (existing) {
-        this.#db.exec("COMMIT");
-        return existing;
-      }
-      // Unknown is the durable intent: a crash at ANY later point is never retried.
-      receipt = {
-        id: randomUUID(),
-        grantId,
-        status: "unknown",
-        startedAt: this.#now(),
-      };
-      this.#db
-        .prepare(
-          "INSERT INTO capability_receipts(id,grantId,status,startedAt) VALUES(?,?,?,?)",
-        )
-        .run(receipt.id, grantId, receipt.status, receipt.startedAt);
-      this.#event(grantId, "execution_claimed");
-      this.#db.exec("COMMIT");
-    } catch (error) {
-      this.#db.exec("ROLLBACK");
-      throw error;
-    }
-    const controller = new AbortController();
-    this.#active.set(grantId, controller);
-    try {
-      const scope = Object.freeze({
-        account: action.account,
-        item: action.item,
-        origin: action.origin,
-      });
-      let requested = false;
-      let admitted = false;
-      const authorize = () => {
-        if (!this.#active.has(grantId)) deny();
-        this.#grant(principal, grantId);
-        if (linkToken !== undefined) this.#link(principal, linkToken);
-        if (this.#receipt(grantId)?.status !== "unknown") deny();
-      };
-      const authorized = () => {
+    return withSpan(
+      "june.broker.execute",
+      {
+        "june.operation.id": correlationId(grantId),
+        "june.capability": /^[A-Za-z0-9_.-]{1,64}$/.test(action.tool)
+          ? action.tool
+          : "other",
+        "june.outcome": "rejected",
+        "june.replayed": false,
+      },
+      async (span) => {
+        let receipt: Receipt;
+        this.#db.exec("BEGIN IMMEDIATE");
         try {
-          authorize();
-          return true;
-        } catch {
-          return false;
-        }
-      };
-      const resolveCredential = async () => {
-        if (requested) deny();
-        requested = true;
-        authorize();
-        const credential = await this.#options.resolveCredential(scope, action);
-        // Cancellation/expiry during lookup prevents releasing the secret to
-        // the adapter. A retained callback cannot resolve outside this execution.
-        this.#transaction(() => {
-          authorize();
-          this.#event(grantId, "adapter_admitted");
-          admitted = true;
-        });
-        return credential;
-      };
-      let result: unknown;
-      if (adapter.executeWithCredentialResolver)
-        result = await adapter.executeWithCredentialResolver(
-          action,
-          resolveCredential,
-          controller.signal,
-        );
-      else {
-        const credential = await resolveCredential();
-        if (adapter.executeAuthorized)
-          result = await adapter.executeAuthorized(
-            action,
-            credential,
-            authorized,
-            controller.signal,
-          );
-        else
-          result = await adapter.execute(action, credential, controller.signal);
-      }
-      if (!admitted) deny();
-      const releaseResult = authorized();
-      // Await without a race. The adapter owns confirmation: a cancellation
-      // request cannot erase an independently confirmed external outcome.
-      this.#transaction(() => {
-        this.#db
-          .prepare(
-            "UPDATE capability_receipts SET status='succeeded' WHERE grantId=? AND status='unknown'",
+          if (
+            linkToken !== undefined &&
+            this.#link(principal, linkToken).grant_id !== grantId
           )
-          .run(grantId);
-        this.#event(grantId, "adapter_succeeded");
-      });
-      receipt.status = "succeeded";
-      if (releaseResult) onResult?.(result);
-    } catch {
-      /* Never expose errors, credentials, or ambiguous transport payloads. */
-    } finally {
-      this.#active.delete(grantId);
-    }
-    return receipt;
+            deny();
+          const grant = this.#grant(principal, grantId);
+          if (grant.fingerprint !== digest(canonical(action))) deny();
+          const existing = this.#receipt(grantId);
+          if (existing) {
+            this.#db.exec("COMMIT");
+            span.setAttribute("june.replayed", true);
+            span.setAttribute("june.outcome", existing.status);
+            if (existing.status !== "succeeded")
+              span.setStatus({ code: SpanStatusCode.ERROR });
+            return existing;
+          }
+          // Unknown is the durable intent: a crash at ANY later point is never retried.
+          receipt = {
+            id: randomUUID(),
+            grantId,
+            status: "unknown",
+            startedAt: this.#now(),
+          };
+          this.#db
+            .prepare(
+              "INSERT INTO capability_receipts(id,grantId,status,startedAt) VALUES(?,?,?,?)",
+            )
+            .run(receipt.id, grantId, receipt.status, receipt.startedAt);
+          this.#event(grantId, "execution_claimed");
+          this.#db.exec("COMMIT");
+        } catch (error) {
+          this.#db.exec("ROLLBACK");
+          throw error;
+        }
+        const controller = new AbortController();
+        span.setAttribute("june.outcome", "unknown");
+        this.#active.set(grantId, controller);
+        try {
+          const scope = Object.freeze({
+            account: action.account,
+            item: action.item,
+            origin: action.origin,
+          });
+          let requested = false;
+          let admitted = false;
+          const authorize = () => {
+            if (!this.#active.has(grantId)) deny();
+            this.#grant(principal, grantId);
+            if (linkToken !== undefined) this.#link(principal, linkToken);
+            if (this.#receipt(grantId)?.status !== "unknown") deny();
+          };
+          const authorized = () => {
+            try {
+              authorize();
+              return true;
+            } catch {
+              return false;
+            }
+          };
+          const resolveCredential = async () => {
+            if (requested) deny();
+            requested = true;
+            authorize();
+            const credential = await this.#options.resolveCredential(
+              scope,
+              action,
+            );
+            // Cancellation/expiry during lookup prevents releasing the secret to
+            // the adapter. A retained callback cannot resolve outside this execution.
+            this.#transaction(() => {
+              authorize();
+              this.#event(grantId, "adapter_admitted");
+              admitted = true;
+            });
+            return credential;
+          };
+          let result: unknown;
+          if (adapter.executeWithCredentialResolver)
+            result = await adapter.executeWithCredentialResolver(
+              action,
+              resolveCredential,
+              controller.signal,
+            );
+          else {
+            const credential = await resolveCredential();
+            if (adapter.executeAuthorized)
+              result = await adapter.executeAuthorized(
+                action,
+                credential,
+                authorized,
+                controller.signal,
+              );
+            else
+              result = await adapter.execute(
+                action,
+                credential,
+                controller.signal,
+              );
+          }
+          if (!admitted) deny();
+          const releaseResult = authorized();
+          // Await without a race. The adapter owns confirmation: a cancellation
+          // request cannot erase an independently confirmed external outcome.
+          this.#transaction(() => {
+            this.#db
+              .prepare(
+                "UPDATE capability_receipts SET status='succeeded' WHERE grantId=? AND status='unknown'",
+              )
+              .run(grantId);
+            this.#event(grantId, "adapter_succeeded");
+          });
+          receipt.status = "succeeded";
+          if (releaseResult) onResult?.(result);
+        } catch {
+          /* Never expose errors, credentials, or ambiguous transport payloads. */
+        } finally {
+          this.#active.delete(grantId);
+        }
+        span.setAttribute("june.outcome", receipt.status);
+        if (receipt.status !== "succeeded")
+          span.setStatus({ code: SpanStatusCode.ERROR });
+        return receipt;
+      },
+    );
   }
   issueLink(principal: string, grantId: string, expiresAt: number): string {
     this.#owner(principal);

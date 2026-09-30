@@ -10,7 +10,7 @@ import type {
 } from "../core/contracts.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { isOwnerRivetDm, RIVET_REPLY_PREFIX } from "../core/rivet.js";
-import type { Scope } from "../core/routing.js";
+import { routeEvent, type Scope } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import { allowedWebEmbed } from "../core/web-embed.js";
 import { pendingMemoryView } from "../memory/pending.js";
@@ -19,6 +19,7 @@ import { ModelError, parseReply } from "../models/provider.js";
 import type { ReflectionProposalBinding } from "../reflection/global-proposal.js";
 import { formatJuryResult } from "../reflection/jury.js";
 import { recallSessions } from "../sessions/recall.js";
+import { correlationId, withSpan } from "../telemetry/index.js";
 import { formatE2BResult } from "../tools/e2b.js";
 import { runJavaScript } from "../tools/javascript.js";
 import {
@@ -62,6 +63,7 @@ export type CapabilityDependencies = Pick<
   | "release"
   | "analytics"
   | "latency"
+  | "telemetry"
   | "runningRevision"
   | "modelStatus"
 > & {
@@ -210,6 +212,22 @@ export interface CapabilityContext {
  * workflow steps or replay policy: the caller must keep its no-replay receipt
  * and occupancy through this call and provider/transport settlement. */
 export async function runCapability(
+  generated: CompanionReply,
+  modelRequest: ModelRequest,
+  context: CapabilityContext,
+): Promise<CompanionReply> {
+  return withSpan(
+    "june.capability",
+    {
+      "june.operation.id": correlationId(context.eventId),
+      "june.channel": context.event.address.channel,
+      "june.phase": context.phase,
+    },
+    () => dispatchCapability(generated, modelRequest, context),
+  );
+}
+
+async function dispatchCapability(
   generated: CompanionReply,
   modelRequest: ModelRequest,
   context: CapabilityContext,
@@ -1739,6 +1757,29 @@ export async function runCapability(
         ? { replyInThread: generated.replyInThread }
         : {}),
     };
+  } else if (generated.telemetry !== undefined) {
+    let text =
+      "Telemetry requires an authenticated owner-private conversation.";
+    if (
+      scope.private &&
+      isOwner(event, deps.owner) &&
+      routeEvent(event, deps.owner)?.private &&
+      ownerTurn &&
+      origin === "event" &&
+      phase !== "synthesis" &&
+      modelRequest.telemetryAvailable &&
+      valid() &&
+      !signal.aborted &&
+      deps.telemetry
+    ) {
+      try {
+        text = JSON.stringify(deps.telemetry.query(generated.telemetry));
+      } catch {
+        text =
+          "Telemetry query unavailable or invalid; missing evidence is not proof of success or failure.";
+      }
+    }
+    generated = { text };
   } else if (generated.latency !== undefined) {
     generated = {
       text:

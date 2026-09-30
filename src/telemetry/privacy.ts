@@ -1,0 +1,319 @@
+import type { Attributes } from "@opentelemetry/api";
+import { slackIngressStages } from "../channels/slack-ingress.js";
+import {
+  slackOAuthReasons,
+  slackOAuthStages,
+} from "../tools/slack-mcp-oauth.js";
+
+// Host-owned vocabulary. Extend these lists with instrumentation, never with
+// values supplied by a conversation, request, tool result, or exception.
+const names = new Set([
+  "june.operation",
+  "june.event",
+  "june.turn",
+  "june.turn.run",
+  "june.model.call",
+  "june.tool.execute",
+  "june.tool.call",
+  "june.delivery.dispatch",
+  "june.delivery.send",
+  "june.execution.run",
+  "june.execution.step",
+  "june.execution.enqueue",
+  "june.execution.resume",
+  "june.scheduler.tick",
+  "june.schedule.run",
+  "june.schedule.fire",
+  "june.automation.run",
+  "june.automation.trigger",
+  "june.ingress",
+  "june.http.request",
+  "june.mcp.request",
+  "june.mcp.tool",
+  "june.process.started",
+  "june.process.stopping",
+  "june.process.stopped",
+  "june.shutdown",
+  "june.approval.request",
+  "june.approval.resolve",
+  "june.work.started",
+  "june.work.completed",
+  "june.work.failed",
+  "june.broker.execute",
+  "june.mcp.call",
+  "june.coding.supervise",
+  "june.coding.dispatch",
+  "june.reflection.run",
+  "june.slack.ingress",
+  "june.slack.oauth",
+  "june.lifecycle",
+  "june.latency.stage",
+  "june.latency.provider",
+  "june.wakeup.dispatch",
+  "june.workflow.tool",
+  "june.activity.interaction",
+  "june.capability",
+  "june.webhook.dispatch",
+  "june.mcp.settled",
+]);
+const enums: Record<string, readonly string[]> = {
+  "june.channel": [
+    "slack",
+    "http",
+    "cli",
+    "mcp",
+    "internal",
+    "web",
+    "discord",
+    "telegram",
+    "whatsapp",
+    "agent",
+  ],
+  "june.phase": [
+    ...slackIngressStages,
+    ...slackOAuthStages,
+    "local",
+    "remote",
+    "fast",
+    "deep",
+    "synthesis",
+    "reply",
+    "process_started",
+    "process_stopping",
+    "process_stopped",
+    "shutdown_http_close_started",
+    "shutdown_http_close_returned",
+    "shutdown_client_dispose_started",
+    "shutdown_client_dispose_returned",
+    "shutdown_registry_started",
+    "shutdown_registry_returned",
+    "shutdown_providers_close_started",
+    "shutdown_providers_close_returned",
+    "shutdown_resources_close_started",
+    "shutdown_resources_close_returned",
+    "shutdown_failed",
+    "http_listener_failed",
+    "accepted",
+    "submission_started",
+    "submission_failed",
+    "submitted",
+    "http_ack",
+    "dequeued",
+    "admitted",
+    "context_started",
+    "context_memory_ready",
+    "context_platform_ready",
+    "context_continuity_ready",
+    "context_prompt_ready",
+    "context_roster_ready",
+    "context_ready",
+    "fast_started",
+    "fast_finished",
+    "deep_started",
+    "deep_finished",
+    "synthesis_started",
+    "synthesis_finished",
+    "provider_submitted",
+    "provider_terminal",
+    "provider_validated",
+    "provider_retired",
+    "typing_started",
+    "typing_accepted",
+    "typing_unavailable",
+    "typing_cleared",
+    "ack_started",
+    "ack_sent",
+    "text_started",
+    "text_sent",
+    "reaction_started",
+    "reaction_sent",
+    "search_started",
+    "search_sent",
+    "send_rejected",
+    "send_unknown",
+    "finished",
+    "released",
+    ...["fast", "deep", "synthesis"].flatMap((phase) =>
+      ["submitted", "terminal", "validated", "retired"].map(
+        (stage) => `${phase}.${stage}`,
+      ),
+    ),
+    "interaction",
+    "execution",
+    "worker",
+    "automation",
+    "planning",
+    "summary",
+    "compaction",
+    "reflection",
+    "extraction",
+    "classification",
+    "routing",
+    "response",
+    "delivery",
+    "startup",
+    "shutdown",
+  ],
+  "june.outcome": [
+    ...slackOAuthReasons,
+    "ok",
+    "error",
+    "success",
+    "failed",
+    "completed",
+    "cancelled",
+    "canceled",
+    "pending",
+    "denied",
+    "approved",
+    "replayed",
+    "unknown",
+    "sent",
+    "delivered",
+    "skipped",
+    "blocked",
+    "accepted",
+    "rejected",
+    "timeout",
+    "retry",
+    "running",
+    "queued",
+    "succeeded",
+    "needs_review",
+    "not_started",
+    "invalid_result",
+  ],
+  "june.role": [
+    "owner",
+    "guest",
+    "system",
+    "assistant",
+    "user",
+    "worker",
+    "admin",
+    "interaction",
+    "execution",
+    "reflection",
+    "coding",
+  ],
+  "gen_ai.provider.name": [
+    "anthropic",
+    "openai",
+    "google",
+    "google_genai",
+    "codex",
+    "amp",
+    "claude",
+    "neon",
+    "unknown",
+  ],
+  "gen_ai.operation.name": [
+    "chat",
+    "text_completion",
+    "generate_content",
+    "execute_tool",
+  ],
+  "http.request.method": [
+    "GET",
+    "POST",
+    "PUT",
+    "PATCH",
+    "DELETE",
+    "HEAD",
+    "OPTIONS",
+  ],
+  "rpc.system": ["mcp", "jsonrpc"],
+  "rpc.method": [
+    "initialize",
+    "ping",
+    "tools/list",
+    "tools/call",
+    "resources/list",
+    "resources/read",
+    "prompts/list",
+    "prompts/get",
+    "notifications/initialized",
+    "notifications/cancelled",
+  ],
+  "http.route": [
+    "/health",
+    "/healthz",
+    "/ready",
+    "/readyz",
+    "/mcp",
+    "/webhooks/:channel",
+    "/operator/telemetry/query",
+    "/operator/conversation",
+    "/operator/latency",
+    "/operator/logs",
+    "/operator/ingress/slack",
+    "/operator/wakeups",
+    "/operator/deployment/status",
+    "/operator/deployment/drain",
+    "/operator/deployment/intake/slack",
+    "/operator/jobs/:id",
+    "/operator/jobs/:id/diff",
+    "/operator/jobs/:id/resume",
+    "/operator/jobs/:id/cancel",
+    "/slack/events",
+    "/slack/interactions",
+    "/slack/commands",
+    "/telemetry",
+    "/api/telemetry",
+    "/api/chat",
+    "/chat",
+    "unmatched",
+  ],
+};
+const numbers = new Set([
+  "gen_ai.usage.input_tokens",
+  "gen_ai.usage.output_tokens",
+  "gen_ai.usage.cached_tokens",
+  "gen_ai.usage.cache_write_tokens",
+  "gen_ai.usage.reasoning_tokens",
+  "http.response.status_code",
+  "june.attempt",
+]);
+
+export function safeName(name: string, event = false): string {
+  return names.has(name) ? name : event ? "june.event" : "june.operation";
+}
+
+export function safeAttributes(input: Attributes = {}): Attributes {
+  const output: Attributes = {};
+  // Iterate the known vocabulary, not unbounded caller-supplied keys.
+  for (const [key, values] of Object.entries(enums)) {
+    const value = input[key];
+    if (typeof value === "string" && values.includes(value))
+      output[key] = value;
+  }
+  for (const key of numbers) {
+    const value = input[key];
+    if (
+      typeof value === "number" &&
+      Number.isSafeInteger(value) &&
+      value >= 0 &&
+      value <= 1e12
+    )
+      output[key] = value;
+  }
+  const operation = input["june.operation.id"];
+  if (typeof operation === "string" && /^[a-f0-9]{64}$/.test(operation))
+    output["june.operation.id"] = operation;
+  if (typeof input["june.replayed"] === "boolean")
+    output["june.replayed"] = input["june.replayed"];
+  // Configured model identifiers only; never accept user text in this field.
+  const model = input["gen_ai.request.model"];
+  if (
+    typeof model === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(model)
+  )
+    output["gen_ai.request.model"] = model;
+  const capability = input["june.capability"];
+  if (
+    typeof capability === "string" &&
+    /^[A-Za-z0-9_.-]{1,64}$/.test(capability)
+  )
+    output["june.capability"] = capability;
+  return output;
+}

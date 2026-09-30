@@ -4,7 +4,9 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { SpanStatusCode } from "@opentelemetry/api";
 import { z } from "zod";
+import { telemetryQuerySchema, withSpan } from "../telemetry/index.js";
 import { operatorSchema } from "./operator.js";
 import { type AgentService, sendMessageSchema } from "./service.js";
 import { registerWebhookSchema, sendWebhookSchema } from "./webhooks.js";
@@ -62,6 +64,16 @@ export function createAgentMcp(options: {
       description:
         "Owner-level debugging and controls. Select a named operation, optional path id, and JSON body matching the operator API. Mutations retain confirmations: resume_job needs confirmedStopped:true and UUID idempotencyKey; forget_memory needs sourceId and confirmed:true; start_import needs confirmed:true,digest,expectedPages. Disabled features stay unavailable. Never confirm stoppage without evidence. No arbitrary URL or shell execution.",
       run: options.operator,
+    },
+    query_telemetry: {
+      schema: telemetryQuerySchema,
+      description:
+        "Read June's owner-private OpenTelemetry. view selects status, traces (span pages), logs, or metrics (retained-span aggregates). Filter exact traceId/name/status or since/until epoch milliseconds; paginate with nextBefore as before, limit 1–100. Records survive restarts within retention; unfinished may mean interrupted, and ok only means the callback returned. Inspect june.outcome and authoritative receipts before conclusions; this never retries work. Status reports persistence/export failures, not collector query access. Keep results private.",
+      run: (input: z.input<typeof telemetryQuerySchema>) =>
+        options.operator({
+          operation: "telemetry",
+          body: input,
+        }),
     },
     register_webhook: {
       schema: registerWebhookSchema,
@@ -188,40 +200,54 @@ export function createAgentMcp(options: {
           }) as { type: "object" },
         })),
       }));
-      server.setRequestHandler(CallToolRequestSchema, async (call) => {
-        const name = call.params.name;
-        if (!Object.hasOwn(tools, name))
-          return {
-            isError: true,
-            content: [{ type: "text", text: "unknown_tool" }],
-          };
-        const tool = tools[name as keyof typeof tools];
-        try {
-          if (!service.clientActive(client)) throw new Error("agent_inactive");
-          service.audit(client, name, "started");
-          const input = tool.schema.parse(call.params.arguments ?? {});
-          const result = await (
-            tool.run as (input: unknown, client: string) => unknown
-          )(input, client);
-          const structuredContent = { result: result ?? null };
-          const text = JSON.stringify(structuredContent);
-          if (Buffer.byteLength(text) > 512 * 1024)
-            throw new Error("result_too_large");
-          service.audit(client, name, "completed");
-          return { content: [{ type: "text", text }], structuredContent };
-        } catch (error) {
-          service.audit(client, name, "failed_or_uncertain");
-          // Never echo Zod inputs, network errors, paths, URLs, or credentials.
-          const code =
-            error instanceof Error &&
-            /^(webhook_|message_|agent_|cursor_|result_)[a-z_]+$/.test(
-              error.message,
-            )
-              ? error.message
-              : "request_failed_or_invalid";
-          return { isError: true, content: [{ type: "text", text: code }] };
-        }
-      });
+      server.setRequestHandler(CallToolRequestSchema, async (call) =>
+        withSpan(
+          "june.mcp.request",
+          {
+            "rpc.system": "mcp",
+            "rpc.method": "tools/call",
+            "june.capability": Object.hasOwn(tools, call.params.name)
+              ? call.params.name
+              : "unknown",
+          },
+          async (span) => {
+            const name = call.params.name;
+            if (!Object.hasOwn(tools, name))
+              return {
+                isError: true,
+                content: [{ type: "text", text: "unknown_tool" }],
+              };
+            const tool = tools[name as keyof typeof tools];
+            try {
+              if (!service.clientActive(client))
+                throw new Error("agent_inactive");
+              service.audit(client, name, "started");
+              const input = tool.schema.parse(call.params.arguments ?? {});
+              const result = await (
+                tool.run as (input: unknown, client: string) => unknown
+              )(input, client);
+              const structuredContent = { result: result ?? null };
+              const text = JSON.stringify(structuredContent);
+              if (Buffer.byteLength(text) > 512 * 1024)
+                throw new Error("result_too_large");
+              service.audit(client, name, "completed");
+              return { content: [{ type: "text", text }], structuredContent };
+            } catch (error) {
+              span.setStatus({ code: SpanStatusCode.ERROR });
+              service.audit(client, name, "failed_or_uncertain");
+              // Never echo Zod inputs, network errors, paths, URLs, or credentials.
+              const code =
+                error instanceof Error &&
+                /^(webhook_|message_|agent_|cursor_|result_)[a-z_]+$/.test(
+                  error.message,
+                )
+                  ? error.message
+                  : "request_failed_or_invalid";
+              return { isError: true, content: [{ type: "text", text: code }] };
+            }
+          },
+        ),
+      );
       await server.connect(transport);
       const response = await transport.handleRequest(request);
       for (const [name, value] of Object.entries(headers))

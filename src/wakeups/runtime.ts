@@ -4,6 +4,7 @@ import type { MessageEvent, Owner } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import type { DeploymentFeed } from "../deployment/feed.js";
 import type { Dependencies, JuneClientRegistry } from "../runtime/registry.js";
+import { correlationId, withSpan } from "../telemetry/index.js";
 import {
   acceptEvent,
   applyAction,
@@ -420,28 +421,38 @@ export function createWakeupActor(
                     continue;
                   }
                   try {
-                    await step
-                      .client<JuneClientRegistry>()
-                      .conversation.getOrCreate(["private", deps.owner.id])
-                      .notify({
-                        type: "wakeup",
-                        source: job.source,
-                        wakeup: {
-                          runId: run.id,
-                          jobId: job.id,
-                          ...(job.mode ? { mode: job.mode } : {}),
-                          ...(job.originEventId
-                            ? { originEventId: job.originEventId }
-                            : {}),
-                          instruction: job.instruction,
-                          event: run.event,
-                        },
-                      });
-                    // Conversation admission can race this receipt; never regress running/completed.
-                    const current = step.state.runs[run.id];
-                    if (current?.status === "pending")
-                      current.status = "queued";
-                    await step.vars.persist();
+                    await withSpan(
+                      "june.wakeup.dispatch",
+                      {
+                        "june.operation.id": correlationId(run.id),
+                        "june.channel": job.source.address.channel,
+                      },
+                      async (span) => {
+                        await step
+                          .client<JuneClientRegistry>()
+                          .conversation.getOrCreate(["private", deps.owner.id])
+                          .notify({
+                            type: "wakeup",
+                            source: job.source,
+                            wakeup: {
+                              runId: run.id,
+                              jobId: job.id,
+                              ...(job.mode ? { mode: job.mode } : {}),
+                              ...(job.originEventId
+                                ? { originEventId: job.originEventId }
+                                : {}),
+                              instruction: job.instruction,
+                              event: run.event,
+                            },
+                          });
+                        // Conversation admission can race this receipt; never regress running/completed.
+                        const current = step.state.runs[run.id];
+                        if (current?.status === "pending")
+                          current.status = "queued";
+                        await step.vars.persist();
+                        span.setAttribute("june.outcome", "queued");
+                      },
+                    );
                   } catch {
                     // Stable occurrence IDs make an uncertain queue ACK safe to retry.
                     // External model/send effects remain the conversation's responsibility.

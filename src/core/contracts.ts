@@ -277,6 +277,8 @@ export interface CompanionReply {
   mcpProposal?: { action: "inspect" | "result"; id: string };
   /** Owner-private diagnostics: "logs", "recent" timings or one ping UUIDv4. */
   latency?: string;
+  /** Owner-private paginated OpenTelemetry observations, never replay authority. */
+  telemetry?: import("../telemetry/index.js").TelemetryQuery;
   /** Owner-private aggregate token usage for the last 1, 7, or 30 days. */
   analytics?: { days: 1 | 7 | 30 };
   /** Owner-private bounded metadata inspection; never recall or mutation. */
@@ -427,6 +429,7 @@ export interface ModelRequest {
   /** Historical receipt reads remain available independently of enabled tools. */
   mcpProposalAvailable?: boolean;
   latencyAvailable?: boolean;
+  telemetryAvailable?: boolean;
   analyticsAvailable?: boolean;
   inspectionAvailable?: boolean;
   appsAvailable?: boolean;

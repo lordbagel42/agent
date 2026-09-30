@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { withSpan } from "../telemetry/index.js";
 
 export type UsageStage =
   | "fast"
@@ -311,5 +312,36 @@ export function observeUsage<T>(
   identity: UsageIdentity,
   run: (report: (usage: TokenUsage) => void) => Promise<T>,
 ): Promise<T> {
-  return ledger ? ledger.track(identity, run) : run(() => {});
+  return withSpan(
+    "june.model.call",
+    {
+      "gen_ai.provider.name": identity.provider,
+      "gen_ai.request.model": /^[A-Za-z0-9._:/-]{1,128}$/.test(identity.model)
+        ? identity.model
+        : "other",
+      "gen_ai.operation.name": "chat",
+      "june.phase": identity.stage,
+    },
+    async (span) => {
+      const observed = (forward: (usage: TokenUsage) => void) =>
+        run((usage) => {
+          for (const [key, value] of [
+            ["input_tokens", usage.input],
+            ["output_tokens", usage.output],
+            ["cached_tokens", usage.cached],
+            ["cache_write_tokens", usage.cacheWrite],
+            ["reasoning_tokens", usage.reasoning],
+          ] as const) {
+            if (count(value) !== null)
+              span.setAttribute(`gen_ai.usage.${key}`, value as number);
+          }
+          forward(usage);
+        });
+      const result = await (ledger
+        ? ledger.track(identity, observed)
+        : observed(() => {}));
+      span.setAttribute("june.outcome", "completed");
+      return result;
+    },
+  );
 }

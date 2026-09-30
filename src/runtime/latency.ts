@@ -4,6 +4,7 @@ import type {
   ProviderTimingStage,
   SendResult,
 } from "../core/contracts.js";
+import { correlationId, recordEvent } from "../telemetry/index.js";
 import type { DiagnosticLog } from "./diagnostics.js";
 
 const providerStages = [
@@ -121,6 +122,11 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
     if (!stages.includes(stage)) return;
     const entry = find(event);
     if (!entry || entry.trace.observations.length >= 128) return;
+    recordEvent("june.latency.stage", {
+      "june.operation.id": correlationId(event.id),
+      "june.channel": event.address.channel,
+      "june.phase": stage,
+    });
     entry.trace.observations.push({
       stage,
       ms: performance.now() - entry.start,
@@ -177,6 +183,14 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
           entry.trace.observations.length >= 128
         )
           return;
+        recordEvent("june.latency.provider", {
+          "june.operation.id": correlationId(event.id),
+          "june.channel": event.address.channel,
+          "june.phase": `${phase}.${stage}`,
+          ...(providerCall === undefined
+            ? {}
+            : { "june.attempt": providerCall }),
+        });
         entry.trace.observations.push({
           stage: `provider_${stage}`,
           ms: performance.now() - entry.start,

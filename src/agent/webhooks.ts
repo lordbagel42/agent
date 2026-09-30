@@ -7,7 +7,9 @@ import {
 } from "node:crypto";
 import { chmodSync, closeSync, constants, openSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { SpanStatusCode } from "@opentelemetry/api";
 import { z } from "zod";
+import { correlationId, withSpan } from "../telemetry/index.js";
 import {
   httpsWebhookTransport,
   type WebhookDestination,
@@ -500,103 +502,122 @@ export class WebhookService {
   }
 
   private async dispatch(row: { id: string; data: string }): Promise<void> {
-    let marked = false;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), DEADLINE_MS);
-    try {
-      const delivery = this.decrypt<Delivery>(row.data, row.id);
-      const current = () => {
-        if ((delivery.revision ?? 0) !== this.deletionRevision())
-          throw new Error("webhook_context_forgotten");
-        const registration = this.db
-          .prepare("SELECT * FROM webhook_registrations WHERE id=?")
-          .get(delivery.webhookId) as Row | undefined;
-        if (!registration) throw new Error("webhook_not_found");
-        const data = this.decrypt<Registration>(
-          registration.data,
-          registration.id,
-        );
-        if (
-          registration.revoked ||
-          data.expiresAt <= Date.now() ||
-          !data.events.includes(delivery.type)
-        )
-          throw new Error("webhook_inactive");
-        this.checkClient(data.clientId);
-        this.checkClient(delivery.clientId);
-        return { data, url: webhookUrl(data.url, this.destinations) };
-      };
-      const { data, url } = current();
-      const timestamp = String(Math.floor(Date.now() / 1000));
-      const body = Buffer.from(
-        JSON.stringify({
-          version: 1,
-          id: row.id,
-          time: delivery.time,
-          type: delivery.type,
-          ...(data.conversationId
-            ? { conversationId: data.conversationId }
-            : {}),
-          payload: delivery.payload,
-        }),
-      );
-      // Receiver contract: X-June-Timestamp is decimal Unix seconds;
-      // X-June-Signature is "v1=" + lowercase hex HMAC-SHA256 using the
-      // base64url-decoded signingKey over UTF-8 timestamp + "." + RAW body.
-      // X-June-Event-Id equals envelope.id. Verify signature and timestamp window,
-      // then durably deduplicate event IDs BEFORE performing receiver effects.
-      const signature = createHmac(
-        "sha256",
-        Buffer.from(data.signingKey, "base64url"),
-      )
-        .update(`${timestamp}.`)
-        .update(body)
-        .digest("hex");
-      const status = await this.transport({
-        url,
-        body,
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          "Content-Length": String(body.length),
-          "X-June-Timestamp": timestamp,
-          "X-June-Event-Id": row.id,
-          "X-June-Signature": `v1=${signature}`,
-        },
-        beforeDispatch: () => {
-          controller.signal.throwIfAborted();
-          current(); // Recheck after DNS, immediately before the actual request.
-          if (marked) throw new Error("webhook_already_dispatching");
-          const result = this.db
-            .prepare(
-              "UPDATE webhook_deliveries SET status='dispatching' WHERE id=? AND status='queued'",
+    return withSpan(
+      "june.webhook.dispatch",
+      {
+        "june.operation.id": correlationId(row.id),
+      },
+      async (span) => {
+        let marked = false;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), DEADLINE_MS);
+        try {
+          const delivery = this.decrypt<Delivery>(row.data, row.id);
+          const current = () => {
+            if ((delivery.revision ?? 0) !== this.deletionRevision())
+              throw new Error("webhook_context_forgotten");
+            const registration = this.db
+              .prepare("SELECT * FROM webhook_registrations WHERE id=?")
+              .get(delivery.webhookId) as Row | undefined;
+            if (!registration) throw new Error("webhook_not_found");
+            const data = this.decrypt<Registration>(
+              registration.data,
+              registration.id,
+            );
+            if (
+              registration.revoked ||
+              data.expiresAt <= Date.now() ||
+              !data.events.includes(delivery.type)
             )
-            .run(row.id);
-          if (result.changes !== 1)
-            throw new Error("webhook_already_dispatching");
-          marked = true;
-        },
-      });
-      if (!marked) throw new Error("webhook_transport_contract");
-      this.db
-        .prepare("UPDATE webhook_deliveries SET status=?,code=? WHERE id=?")
-        .run(
-          status >= 200 && status < 300 ? "accepted" : "unknown",
-          status >= 200 && status < 300 ? "http_accepted" : "http_non_success",
-          row.id,
-        );
-    } catch {
-      // Never return exception messages (they can contain URLs or response data).
-      this.db
-        .prepare("UPDATE webhook_deliveries SET status=?,code=? WHERE id=?")
-        .run(
-          marked ? "unknown" : "rejected",
-          marked ? "dispatch_uncertain" : "dispatch_prevented",
-          row.id,
-        );
-    } finally {
-      clearTimeout(timeout);
-    }
+              throw new Error("webhook_inactive");
+            this.checkClient(data.clientId);
+            this.checkClient(delivery.clientId);
+            return { data, url: webhookUrl(data.url, this.destinations) };
+          };
+          const { data, url } = current();
+          const timestamp = String(Math.floor(Date.now() / 1000));
+          const body = Buffer.from(
+            JSON.stringify({
+              version: 1,
+              id: row.id,
+              time: delivery.time,
+              type: delivery.type,
+              ...(data.conversationId
+                ? { conversationId: data.conversationId }
+                : {}),
+              payload: delivery.payload,
+            }),
+          );
+          // Receiver contract: X-June-Timestamp is decimal Unix seconds;
+          // X-June-Signature is "v1=" + lowercase hex HMAC-SHA256 using the
+          // base64url-decoded signingKey over UTF-8 timestamp + "." + RAW body.
+          // X-June-Event-Id equals envelope.id. Verify signature and timestamp window,
+          // then durably deduplicate event IDs BEFORE performing receiver effects.
+          const signature = createHmac(
+            "sha256",
+            Buffer.from(data.signingKey, "base64url"),
+          )
+            .update(`${timestamp}.`)
+            .update(body)
+            .digest("hex");
+          const status = await this.transport({
+            url,
+            body,
+            signal: controller.signal,
+            headers: {
+              "Content-Type": "application/json",
+              "Content-Length": String(body.length),
+              "X-June-Timestamp": timestamp,
+              "X-June-Event-Id": row.id,
+              "X-June-Signature": `v1=${signature}`,
+            },
+            beforeDispatch: () => {
+              controller.signal.throwIfAborted();
+              current(); // Recheck after DNS, immediately before the actual request.
+              if (marked) throw new Error("webhook_already_dispatching");
+              const result = this.db
+                .prepare(
+                  "UPDATE webhook_deliveries SET status='dispatching' WHERE id=? AND status='queued'",
+                )
+                .run(row.id);
+              if (result.changes !== 1)
+                throw new Error("webhook_already_dispatching");
+              marked = true;
+            },
+          });
+          if (!marked) throw new Error("webhook_transport_contract");
+          span.setAttribute("http.response.status_code", status);
+          span.setAttribute(
+            "june.outcome",
+            status >= 200 && status < 300 ? "accepted" : "unknown",
+          );
+          if (status < 200 || status >= 300)
+            span.setStatus({ code: SpanStatusCode.ERROR });
+          this.db
+            .prepare("UPDATE webhook_deliveries SET status=?,code=? WHERE id=?")
+            .run(
+              status >= 200 && status < 300 ? "accepted" : "unknown",
+              status >= 200 && status < 300
+                ? "http_accepted"
+                : "http_non_success",
+              row.id,
+            );
+        } catch {
+          // Never return exception messages (they can contain URLs or response data).
+          span.setAttribute("june.outcome", marked ? "unknown" : "rejected");
+          span.setStatus({ code: SpanStatusCode.ERROR });
+          this.db
+            .prepare("UPDATE webhook_deliveries SET status=?,code=? WHERE id=?")
+            .run(
+              marked ? "unknown" : "rejected",
+              marked ? "dispatch_uncertain" : "dispatch_prevented",
+              row.id,
+            );
+        } finally {
+          clearTimeout(timeout);
+        }
+      },
+    );
   }
 
   close(): Promise<void> {

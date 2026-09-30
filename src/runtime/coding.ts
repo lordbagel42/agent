@@ -17,6 +17,7 @@ import type {
   MessageEvent,
 } from "../core/contracts.js";
 import type { SkillChangeProposal } from "../reflection/domain.js";
+import { correlationId, withSpan } from "../telemetry/index.js";
 import type { Lifecycle } from "./lifecycle.js";
 import type {
   JuneClientRegistry,
@@ -489,238 +490,278 @@ export function createCodingActor(
                 }
                 const proposal = step.state.proposal;
                 if (!proposal) return;
-                if (step.state.remoteAmp) {
-                  // Same durable approval and no-relaunch claim as local jobs,
-                  // but a separate execution contract: never prepare/verify local files.
-                  step.state.attempts = approved;
-                  step.state.status = "running";
-                  await step.vars.persist();
-                  const controller = new AbortController();
-                  step.vars.controller = controller;
-                  const remote = coding.remoteAmp;
-                  const signal = AbortSignal.any([
-                    controller.signal,
-                    step.abortSignal,
-                    AbortSignal.timeout(remote?.timeoutMs ?? coding.timeoutMs),
-                  ]);
-                  try {
-                    if (
-                      !remote ||
-                      step.state.revoked ||
-                      step.state.cancelRequested ||
-                      proposal.runtimeId !== coding.runtimeId ||
-                      step.state.runtimeId !== coding.runtimeId
-                    )
-                      throw new Error("Remote job binding unavailable");
-                    signal.throwIfAborted();
-                    const result = await remote.run({
-                      id: proposal.id,
-                      workspace: proposal.workspace,
-                      goal: proposal.goal,
-                      signal,
-                      onThread: async (threadId) => {
+                return withSpan(
+                  "june.coding.supervise",
+                  {
+                    "june.operation.id": correlationId(proposal.id),
+                    "june.role": "coding",
+                    "june.attempt": approved,
+                  },
+                  async (span) => {
+                    try {
+                      if (step.state.remoteAmp) {
+                        // Same durable approval and no-relaunch claim as local jobs,
+                        // but a separate execution contract: never prepare/verify local files.
+                        step.state.attempts = approved;
+                        step.state.status = "running";
+                        await step.vars.persist();
+                        const controller = new AbortController();
+                        step.vars.controller = controller;
+                        const remote = coding.remoteAmp;
+                        const signal = AbortSignal.any([
+                          controller.signal,
+                          step.abortSignal,
+                          AbortSignal.timeout(
+                            remote?.timeoutMs ?? coding.timeoutMs,
+                          ),
+                        ]);
+                        try {
+                          if (
+                            !remote ||
+                            step.state.revoked ||
+                            step.state.cancelRequested ||
+                            proposal.runtimeId !== coding.runtimeId ||
+                            step.state.runtimeId !== coding.runtimeId
+                          )
+                            throw new Error("Remote job binding unavailable");
+                          signal.throwIfAborted();
+                          const result = await withSpan(
+                            "june.coding.dispatch",
+                            { "june.phase": "remote" },
+                            async () =>
+                              remote.run({
+                                id: proposal.id,
+                                workspace: proposal.workspace,
+                                goal: proposal.goal,
+                                signal,
+                                onThread: async (threadId) => {
+                                  signal.throwIfAborted();
+                                  if (
+                                    step.state.threadId &&
+                                    step.state.threadId !== threadId
+                                  )
+                                    throw new Error("Remote receipt changed");
+                                  step.state.threadId = threadId;
+                                  await step.vars.persist();
+                                },
+                              }),
+                          );
+                          signal.throwIfAborted();
+                          if (
+                            !step.state.threadId ||
+                            result.threadId !== step.state.threadId
+                          )
+                            throw new Error("Remote receipt missing");
+                          step.state.workerClaim = result.report;
+                          step.state.report =
+                            "Remote Amp returned a final result. Worker claims only; no independent verifier, local artifact, push or deployment evidence.";
+                          // Completed means transport returned a result, never verified code.
+                          step.state.status = "completed";
+                        } catch {
+                          step.state.status = "needs_review";
+                          step.state.report =
+                            "Remote dispatch/completion is unknown. Do not retry or resume, even without a thread receipt. Inspect the execution host and any saved thread manually. Local cancellation, timeout, SSH exit or host restart never proves the remote agent stopped.";
+                        } finally {
+                          delete step.vars.controller;
+                        }
+                        await step.vars.persist();
+                        return;
+                      }
+                      const manager = coding.isolation?.[proposal.workspace];
+                      step.state.status = "running";
+                      step.state.attempts = approved;
+                      delete step.state.verification;
+                      delete step.state.workerClaim;
+                      delete step.state.appArtifact;
+                      delete step.state.admissionReason;
+                      await step.vars.persist();
+                      const controller = new AbortController();
+                      step.vars.controller = controller;
+                      const signal = AbortSignal.any([
+                        controller.signal,
+                        step.abortSignal,
+                        AbortSignal.timeout(coding.timeoutMs),
+                      ]);
+                      let admissionAttempted = false;
+                      let admitted = false;
+                      let launched = false;
+                      let settled = false;
+                      let acceptingThread = true;
+                      let onAbort: () => void = () => {};
+                      try {
+                        // Do not launch an old approval in a shared checkout, nor silently
+                        // upgrade that approval to new isolation/verification effects.
+                        if (version < 2)
+                          throw new Error(
+                            "Legacy approval needs reconciliation",
+                          );
+                        if (
+                          step.state.revoked ||
+                          proposal.runtimeId !== coding.runtimeId ||
+                          step.state.runtimeId !== coding.runtimeId
+                        )
+                          throw new Error(
+                            "Execution binding needs reconciliation",
+                          );
+                        if (!manager || !coding.runtime)
+                          throw new Error("Isolation is not configured");
+                        if (step.state.cancelRequested) controller.abort();
                         signal.throwIfAborted();
+                        // A legacy saved thread belongs to the shared checkout. Never
+                        // silently continue it in a new worktree after a code upgrade.
+                        if (step.state.threadId && !step.state.worktree)
+                          throw new Error(
+                            "Legacy execution requires manual reconciliation",
+                          );
+                        admissionAttempted = true;
+                        await manager.admit(
+                          proposal.id,
+                          approved,
+                          command.type === "resume" && command.confirmedStopped,
+                        );
+                        admitted = true;
+                        signal.throwIfAborted();
+                        const { manifest } = await manager.prepare(proposal.id);
+                        if (
+                          manifest.repositoryRoot !==
+                            coding.workspaces[proposal.workspace] ||
+                          (step.state.worktree &&
+                            JSON.stringify(step.state.worktree) !==
+                              JSON.stringify(manifest))
+                        )
+                          throw new Error(
+                            "Worktree configuration changed; manual reconciliation required",
+                          );
+                        step.state.worktree = manifest;
+                        await step.vars.persist();
+                        signal.throwIfAborted();
+                        launched = true;
+                        const runtime = coding.runtime;
+                        const execution = withSpan(
+                          "june.coding.dispatch",
+                          { "june.phase": "local" },
+                          async () =>
+                            runtime.run({
+                              cwd: manifest.cwd,
+                              prompt: `You are June's coding worker, not her conversational persona. Work only on this approved local task. Follow repository guidance, preserve others' changes, and run relevant checks. Do not push, deploy, publish, modify shared infrastructure, or access credentials. Report what changed, verification evidence, limitations, and delivery state. Native execution is not a sandbox.\n\nTask:\n${proposal.goal}`,
+                              threadId: step.state.threadId,
+                              signal,
+                              onThread: async (threadId) => {
+                                if (signal.aborted || !acceptingThread) return;
+                                if (
+                                  step.state.threadId &&
+                                  step.state.threadId !== threadId
+                                )
+                                  throw new Error(
+                                    "Worker changed its saved thread",
+                                  );
+                                step.state.threadId = threadId;
+                                await step.vars.persist();
+                              },
+                            }),
+                        );
+                        // Neither worker nor verifier settlement may block cancellation.
+                        // An abort is NOT proof either process exited; retain its lease.
+                        const interrupted = new Promise<never>((_, reject) => {
+                          onAbort = () =>
+                            reject(new Error("Execution interrupted"));
+                          signal.addEventListener("abort", onAbort, {
+                            once: true,
+                          });
+                          if (signal.aborted) onAbort();
+                        });
+                        const result = await Promise.race([
+                          execution,
+                          interrupted,
+                        ]).finally(() => {
+                          acceptingThread = false;
+                        });
+                        signal.throwIfAborted();
+                        settled = true;
                         if (
                           step.state.threadId &&
-                          step.state.threadId !== threadId
+                          step.state.threadId !== result.threadId
                         )
-                          throw new Error("Remote receipt changed");
-                        step.state.threadId = threadId;
+                          throw new Error(
+                            "Worker result changed its saved thread",
+                          );
+                        step.state.threadId = result.threadId;
+                        step.state.workerClaim = result.report;
                         await step.vars.persist();
-                      },
-                    });
-                    signal.throwIfAborted();
-                    if (
-                      !step.state.threadId ||
-                      result.threadId !== step.state.threadId
-                    )
-                      throw new Error("Remote receipt missing");
-                    step.state.workerClaim = result.report;
-                    step.state.report =
-                      "Remote Amp returned a final result. Worker claims only; no independent verifier, local artifact, push or deployment evidence.";
-                    // Completed means transport returned a result, never verified code.
-                    step.state.status = "completed";
-                  } catch {
-                    step.state.status = "needs_review";
-                    step.state.report =
-                      "Remote dispatch/completion is unknown. Do not retry or resume, even without a thread receipt. Inspect the execution host and any saved thread manually. Local cancellation, timeout, SSH exit or host restart never proves the remote agent stopped.";
-                  } finally {
-                    delete step.vars.controller;
-                  }
-                  await step.vars.persist();
-                  return;
-                }
-                const manager = coding.isolation?.[proposal.workspace];
-                step.state.status = "running";
-                step.state.attempts = approved;
-                delete step.state.verification;
-                delete step.state.workerClaim;
-                delete step.state.appArtifact;
-                delete step.state.admissionReason;
-                await step.vars.persist();
-                const controller = new AbortController();
-                step.vars.controller = controller;
-                const signal = AbortSignal.any([
-                  controller.signal,
-                  step.abortSignal,
-                  AbortSignal.timeout(coding.timeoutMs),
-                ]);
-                let admissionAttempted = false;
-                let admitted = false;
-                let launched = false;
-                let settled = false;
-                let acceptingThread = true;
-                let onAbort: () => void = () => {};
-                try {
-                  // Do not launch an old approval in a shared checkout, nor silently
-                  // upgrade that approval to new isolation/verification effects.
-                  if (version < 2)
-                    throw new Error("Legacy approval needs reconciliation");
-                  if (
-                    step.state.revoked ||
-                    proposal.runtimeId !== coding.runtimeId ||
-                    step.state.runtimeId !== coding.runtimeId
-                  )
-                    throw new Error("Execution binding needs reconciliation");
-                  if (!manager || !coding.runtime)
-                    throw new Error("Isolation is not configured");
-                  if (step.state.cancelRequested) controller.abort();
-                  signal.throwIfAborted();
-                  // A legacy saved thread belongs to the shared checkout. Never
-                  // silently continue it in a new worktree after a code upgrade.
-                  if (step.state.threadId && !step.state.worktree)
-                    throw new Error(
-                      "Legacy execution requires manual reconciliation",
-                    );
-                  admissionAttempted = true;
-                  await manager.admit(
-                    proposal.id,
-                    approved,
-                    command.type === "resume" && command.confirmedStopped,
-                  );
-                  admitted = true;
-                  signal.throwIfAborted();
-                  const { manifest } = await manager.prepare(proposal.id);
-                  if (
-                    manifest.repositoryRoot !==
-                      coding.workspaces[proposal.workspace] ||
-                    (step.state.worktree &&
-                      JSON.stringify(step.state.worktree) !==
-                        JSON.stringify(manifest))
-                  )
-                    throw new Error(
-                      "Worktree configuration changed; manual reconciliation required",
-                    );
-                  step.state.worktree = manifest;
-                  await step.vars.persist();
-                  signal.throwIfAborted();
-                  launched = true;
-                  const execution = coding.runtime.run({
-                    cwd: manifest.cwd,
-                    prompt: `You are June's coding worker, not her conversational persona. Work only on this approved local task. Follow repository guidance, preserve others' changes, and run relevant checks. Do not push, deploy, publish, modify shared infrastructure, or access credentials. Report what changed, verification evidence, limitations, and delivery state. Native execution is not a sandbox.\n\nTask:\n${proposal.goal}`,
-                    threadId: step.state.threadId,
-                    signal,
-                    onThread: async (threadId) => {
-                      if (signal.aborted || !acceptingThread) return;
-                      if (
-                        step.state.threadId &&
-                        step.state.threadId !== threadId
-                      )
-                        throw new Error("Worker changed its saved thread");
-                      step.state.threadId = threadId;
+                        const appArtifact = proposal.appId
+                          ? await readAppArtifact(manifest.cwd, proposal.appId)
+                          : undefined;
+                        settled = false;
+                        const verification = await Promise.race([
+                          manager.verify(proposal.id, signal, approved),
+                          interrupted,
+                        ]);
+                        settled = verification.status !== "needs_review";
+                        step.state.verification = verification;
+                        step.state.report = verification.replayed
+                          ? "Only a historical verifier receipt is available; current workspace changes are not verified."
+                          : `Separate operator verifier: ${verification.status}. This is evidence only for that command at ${verification.finishedAt}, not approval to push or deploy.`;
+                        if (verification.artifact) {
+                          step.state.report += ` Source artifact SHA-256: ${verification.artifact.digest}; HEAD: ${verification.artifact.headCommit}; artifact match: ${verification.artifactMatches ?? "unknown"}. Scope: tracked and nonignored untracked files only; ignored files and external dependencies excluded. Deployment is not verified.`;
+                        }
+                        step.state.status =
+                          verification.status === "passed" &&
+                          verification.artifactMatches === true &&
+                          !verification.replayed &&
+                          !signal.aborted
+                            ? "completed"
+                            : "needs_review";
+                        if (appArtifact && step.state.status === "completed") {
+                          const after = await readAppArtifact(
+                            manifest.cwd,
+                            appArtifact.appId,
+                          );
+                          if (after.digest !== appArtifact.digest)
+                            throw new Error("verified_app_changed");
+                          signal.throwIfAborted();
+                          // Retain exact verified bytes, never mutable worker paths.
+                          step.state.appArtifact = appArtifact;
+                        }
+                      } catch (error) {
+                        step.state.status = "needs_review";
+                        if (admissionAttempted && !admitted) {
+                          const occupied =
+                            error instanceof WorkspaceOccupiedError;
+                          step.state.admissionReason = occupied
+                            ? "workspace_occupied"
+                            : "admission_unknown";
+                          step.state.report =
+                            (occupied
+                              ? "Workspace admission was blocked by an existing execution lease. "
+                              : "Workspace admission could not be established; occupancy is unknown. ") +
+                            "No worker launched for this attempt, and it is not queued for automatic retry. An operator must inspect and reconcile any retained admission before an explicitly authorized retry; this does not confirm any worker stopped.";
+                        } else {
+                          step.state.report =
+                            step.state.worktree && !step.state.threadId
+                              ? missingSessionReport
+                              : "No confirmed completion. Admission, cancellation, worker execution, or verification needs review. Inspect the isolated workspace and saved thread; unknown execution must be confirmed stopped before resuming.";
+                        }
+                      } finally {
+                        acceptingThread = false;
+                        signal.removeEventListener("abort", onAbort);
+                        // Unknown worker or verifier execution retains durable capacity
+                        // until explicit reconciliation, even if it later reports success.
+                        if (manager && admitted && (!launched || settled)) {
+                          try {
+                            await manager.release(proposal.id, approved);
+                          } catch {
+                            step.state.status = "needs_review";
+                          }
+                        }
+                        delete step.vars.controller;
+                      }
                       await step.vars.persist();
-                    },
-                  });
-                  // Neither worker nor verifier settlement may block cancellation.
-                  // An abort is NOT proof either process exited; retain its lease.
-                  const interrupted = new Promise<never>((_, reject) => {
-                    onAbort = () => reject(new Error("Execution interrupted"));
-                    signal.addEventListener("abort", onAbort, { once: true });
-                    if (signal.aborted) onAbort();
-                  });
-                  const result = await Promise.race([
-                    execution,
-                    interrupted,
-                  ]).finally(() => {
-                    acceptingThread = false;
-                  });
-                  signal.throwIfAborted();
-                  settled = true;
-                  if (
-                    step.state.threadId &&
-                    step.state.threadId !== result.threadId
-                  )
-                    throw new Error("Worker result changed its saved thread");
-                  step.state.threadId = result.threadId;
-                  step.state.workerClaim = result.report;
-                  await step.vars.persist();
-                  const appArtifact = proposal.appId
-                    ? await readAppArtifact(manifest.cwd, proposal.appId)
-                    : undefined;
-                  settled = false;
-                  const verification = await Promise.race([
-                    manager.verify(proposal.id, signal, approved),
-                    interrupted,
-                  ]);
-                  settled = verification.status !== "needs_review";
-                  step.state.verification = verification;
-                  step.state.report = verification.replayed
-                    ? "Only a historical verifier receipt is available; current workspace changes are not verified."
-                    : `Separate operator verifier: ${verification.status}. This is evidence only for that command at ${verification.finishedAt}, not approval to push or deploy.`;
-                  if (verification.artifact) {
-                    step.state.report += ` Source artifact SHA-256: ${verification.artifact.digest}; HEAD: ${verification.artifact.headCommit}; artifact match: ${verification.artifactMatches ?? "unknown"}. Scope: tracked and nonignored untracked files only; ignored files and external dependencies excluded. Deployment is not verified.`;
-                  }
-                  step.state.status =
-                    verification.status === "passed" &&
-                    verification.artifactMatches === true &&
-                    !verification.replayed &&
-                    !signal.aborted
-                      ? "completed"
-                      : "needs_review";
-                  if (appArtifact && step.state.status === "completed") {
-                    const after = await readAppArtifact(
-                      manifest.cwd,
-                      appArtifact.appId,
-                    );
-                    if (after.digest !== appArtifact.digest)
-                      throw new Error("verified_app_changed");
-                    signal.throwIfAborted();
-                    // Retain exact verified bytes, never mutable worker paths.
-                    step.state.appArtifact = appArtifact;
-                  }
-                } catch (error) {
-                  step.state.status = "needs_review";
-                  if (admissionAttempted && !admitted) {
-                    const occupied = error instanceof WorkspaceOccupiedError;
-                    step.state.admissionReason = occupied
-                      ? "workspace_occupied"
-                      : "admission_unknown";
-                    step.state.report =
-                      (occupied
-                        ? "Workspace admission was blocked by an existing execution lease. "
-                        : "Workspace admission could not be established; occupancy is unknown. ") +
-                      "No worker launched for this attempt, and it is not queued for automatic retry. An operator must inspect and reconcile any retained admission before an explicitly authorized retry; this does not confirm any worker stopped.";
-                  } else {
-                    step.state.report =
-                      step.state.worktree && !step.state.threadId
-                        ? missingSessionReport
-                        : "No confirmed completion. Admission, cancellation, worker execution, or verification needs review. Inspect the isolated workspace and saved thread; unknown execution must be confirmed stopped before resuming.";
-                  }
-                } finally {
-                  acceptingThread = false;
-                  signal.removeEventListener("abort", onAbort);
-                  // Unknown worker or verifier execution retains durable capacity
-                  // until explicit reconciliation, even if it later reports success.
-                  if (manager && admitted && (!launched || settled)) {
-                    try {
-                      await manager.release(proposal.id, approved);
-                    } catch {
-                      step.state.status = "needs_review";
+                    } finally {
+                      // Supervisor completion does not assert native or remote stoppage.
+                      span.setAttribute("june.outcome", step.state.status);
                     }
-                  }
-                  delete step.vars.controller;
-                }
-                await step.vars.persist();
+                  },
+                );
               },
             });
             await loop.step("notify-companion", async (step): Promise<void> => {

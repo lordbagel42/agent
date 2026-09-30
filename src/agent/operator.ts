@@ -6,6 +6,7 @@ const operations = {
   slack_ingress: ["GET", "/operator/ingress/slack"],
   latency: ["GET", "/operator/latency"],
   logs: ["GET", "/operator/logs"],
+  telemetry: ["POST", "/operator/telemetry/query"],
   wakeups: ["GET", "/operator/wakeups"],
   deployment_events: ["GET", "/operator/deployment/events"],
   console_login_link: ["POST", "/operator/console/login-links"],

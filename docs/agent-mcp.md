@@ -76,6 +76,7 @@ their existing explicit configuration and host opt-ins.
 | `get_message` | Inspect an admitted message by returned UUID, including reply, local delivery and callback receipts. |
 | `read_messages` | Page through shared private history with optional `after` cursor and `limit` (1–50). |
 | `operator_request` | Call a named existing owner operation; see below. |
+| `query_telemetry` | Page through retained OpenTelemetry spans/logs, inspect an exact trace, or read status/metrics. |
 | `register_webhook` | Register a destination, subscriptions, expiration and correlation ID. |
 | `list_webhooks`, `get_webhook`, `revoke_webhook` | Inspect metadata or revoke a callback. URLs and signing keys are not listed. |
 | `send_webhook` | Durably queue a signed event for a registered callback. |
@@ -126,6 +127,17 @@ Only this closed catalog is supported, not arbitrary HTTP requests:
   `start_import_extraction`, `cancel_import_extraction`.
 - `reflection`, `enqueue_reflection`, `cancel_reflection`,
   `reflection_candidate`, `reconcile_reflection`.
+- `telemetry` (read-only POST; its `body` is the same query as `query_telemetry`).
+
+For traces, call `query_telemetry` with `{"view":"traces","limit":10}`, then
+follow an observed `traceId` or paginate with `before: nextBefore`. Other views
+are `status`, `logs` and `metrics`; filters include exact `name`, `status`, and
+`since`/`until` epoch milliseconds. Read `status` for retention and recording/export
+failures. These are June's locally retained records, not remote collector queries.
+Unfinished spans may be interrupted; a returned callback is not evidence of a
+successful effect. Keep results owner-private and inspect authoritative receipts
+before considering any retry. See [OpenTelemetry](usage.md#opentelemetry) for
+coverage, privacy, retention and optional OTLP export configuration.
 
 Bodies follow the existing operator API documented in the README. For example,
 `resume_job` requires the full job ID, a UUID idempotency key and

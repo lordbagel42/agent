@@ -9,6 +9,7 @@ import {
 } from "../core/private-input.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
+import { withSpan } from "../telemetry/index.js";
 import type { ToolAction, ToolAdapter } from "./broker.js";
 
 /** Operator-owned configuration. Never construct this from model output. */
@@ -551,16 +552,43 @@ export class McpToolAdapter implements ToolAdapter {
         )
           throw new Error();
         controller.signal.throwIfAborted();
-        const result = await client.callTool(
-          { name: config.remoteTool, arguments: args },
-          undefined,
-          options,
+        const result = await withSpan(
+          "june.mcp.call",
+          {
+            "rpc.system": "mcp",
+            "rpc.method": "tools/call",
+            "june.capability": /^[A-Za-z0-9_.-]{1,64}$/.test(config.tool)
+              ? config.tool
+              : "other",
+          },
+          async (span) => {
+            try {
+              const result = await client.callTool(
+                { name: config.remoteTool, arguments: args },
+                undefined,
+                options,
+              );
+              if (
+                result.isError ||
+                (validateOutput && !validateOutput(result.structuredContent))
+              ) {
+                span.setAttribute(
+                  "june.outcome",
+                  result.isError ? "error" : "invalid_result",
+                );
+                throw new Error();
+              }
+              span.setAttribute("june.outcome", "completed");
+              return result;
+            } catch (error) {
+              // A failed RPC does not prove the remote effect did not happen.
+              span.addEvent("june.mcp.settled", {
+                "june.outcome": dispatched ? "unknown" : "not_started",
+              });
+              throw error;
+            }
+          },
         );
-        if (
-          result.isError ||
-          (validateOutput && !validateOutput(result.structuredContent))
-        )
-          throw new Error();
         if (read || captureResult) {
           // Return only the marker so the caller can explain why this copy was
           // withheld without ever passing its body to ordinary synthesis.

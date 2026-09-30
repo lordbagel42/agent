@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { SpanStatusCode } from "@opentelemetry/api";
 import { type Handler, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
@@ -37,6 +38,11 @@ import { createActionLinkRoutes } from "../links/routes.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
 import { sessionCommand } from "../runtime/session-controls.js";
+import {
+  type Telemetry,
+  telemetryQuerySchema,
+  withSpan,
+} from "../telemetry/index.js";
 import type { CapabilityBroker } from "../tools/broker.js";
 import { createCapabilityRoutes } from "../tools/routes.js";
 import {
@@ -65,6 +71,7 @@ export interface HttpDependencies {
   };
   slackIngressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
+  telemetry?: Telemetry;
   wakeups?: WakeupWebhooks & { inspect(): Promise<unknown> };
   github?: GitHubWebhooks;
   console?: {
@@ -126,6 +133,21 @@ export function createHttpApp(deps: HttpDependencies) {
     throw new Error("GitHub requires a separate signing credential");
   const app = new Hono<HttpEnvironment>();
   app.onError((_error, c) => c.json({ error: "request_failed" }, 500));
+  app.use("*", (c, next) =>
+    withSpan(
+      "june.http.request",
+      {
+        "http.request.method": c.req.method,
+      },
+      async (span) => {
+        await next();
+        // The matched host-owned template, never a request path, query or header.
+        span.setAttribute("http.route", c.req.routePath || "unmatched");
+        span.setAttribute("http.response.status_code", c.res.status);
+        if (c.res.status >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
+      },
+    ),
+  );
   app.use("/webhooks/*", async (c, next) => {
     c.set("arrival", { at: Date.now(), monotonic: performance.now() });
     await next();
@@ -452,6 +474,21 @@ export function createHttpApp(deps: HttpDependencies) {
   app.get("/operator/conversation", async () =>
     Response.json(await deps.inspectConversation()),
   );
+  if (deps.telemetry) {
+    const telemetry = deps.telemetry;
+    app.post(
+      "/operator/telemetry/query",
+      bodyLimit({ maxSize: 8192 }),
+      async (c) => {
+        const query = telemetryQuerySchema.safeParse(
+          await c.req.json().catch(() => null),
+        );
+        if (!query.success)
+          return c.json({ error: "invalid_telemetry_query" }, 400);
+        return c.json(telemetry.query(query.data));
+      },
+    );
+  }
   if (deps.wakeups) {
     const wakeups = deps.wakeups;
     app.get("/operator/wakeups", async (c) => c.json(await wakeups.inspect()));

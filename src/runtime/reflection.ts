@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { SpanStatusCode } from "@opentelemetry/api";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type {
@@ -33,6 +34,7 @@ import {
   skillEvaluationContext,
   validateDecision,
 } from "../reflection/evaluator.js";
+import { correlationId, withSpan } from "../telemetry/index.js";
 import type { Lifecycle } from "./lifecycle.js";
 import type { InterruptionReference, SocialPermissions } from "./social.js";
 
@@ -1597,309 +1599,324 @@ export function createReflectionActor(
                   }))
                   .sort((a, b) => b.priority - a.priority)[0]?.request;
                 if (!request || isQuiet(now, deps.policy.quiet)) return;
-                const controller = new AbortController();
-                step.vars.active.set(request.id, controller);
-                const signal = AbortSignal.any([
-                  controller.signal,
-                  step.abortSignal,
-                  AbortSignal.timeout(deps.timeoutMs),
-                ]);
-                let attempt: number | undefined;
-                let invocation = "";
-                const operationEpoch = step.state.epoch;
-                try {
-                  const evidence = await retrieve(request, signal);
-                  if (
-                    signal.aborted ||
-                    step.state.liveActive > 0 ||
-                    (request.evaluationFor &&
-                      operationEpoch !== step.state.epoch)
-                  )
-                    return;
-                  if (!evidence) {
-                    step.vars.replaceReflection(
-                      cancel(step.state.reflection, request.id),
-                    );
-                    await step.vars.persist();
-                    return;
-                  }
-                  const admitted = claim(
-                    step.state.reflection,
-                    request.id,
-                    Date.now(),
-                    deps.policy,
-                    evidence,
-                    step.state.liveActive,
-                  );
-                  step.vars.replaceReflection(admitted.state);
-                  attempt = admitted.attempt;
-                  if (!attempt) {
-                    if (
-                      admitted.reason === "stopped" ||
-                      admitted.reason === "stale-evidence"
-                    )
-                      step.vars.replaceReflection(
-                        cancel(step.state.reflection, request.id),
-                      );
-                    await step.vars.persist();
-                    return;
-                  }
-                  invocation = JSON.stringify([request.id, attempt]);
-                  step.state.invocations[invocation] = "started";
-                  await step.vars.persist();
-                  if (request.evaluationFor) {
-                    const alias = request.evaluationFor;
-                    const currentRequest = () =>
-                      step.state.reflection.requests.find(
-                        (r) => r.id === request.id,
-                      );
-                    const canRun = () =>
-                      !signal.aborted &&
-                      operationEpoch === step.state.epoch &&
-                      !step.state.liveActive &&
-                      !isQuiet(Date.now(), deps.policy.quiet) &&
-                      currentRequest()?.status === "running";
-                    const persistReceipt = async () => {
-                      step.vars.publishingEvaluations.add(request.id);
-                      try {
+                return withSpan(
+                  "june.reflection.run",
+                  {
+                    "june.operation.id": correlationId(request.id),
+                    "june.role": "reflection",
+                  },
+                  async (span) => {
+                    const controller = new AbortController();
+                    step.vars.active.set(request.id, controller);
+                    const signal = AbortSignal.any([
+                      controller.signal,
+                      step.abortSignal,
+                      AbortSignal.timeout(deps.timeoutMs),
+                    ]);
+                    let attempt: number | undefined;
+                    let invocation = "";
+                    const operationEpoch = step.state.epoch;
+                    try {
+                      const evidence = await retrieve(request, signal);
+                      if (
+                        signal.aborted ||
+                        step.state.liveActive > 0 ||
+                        (request.evaluationFor &&
+                          operationEpoch !== step.state.epoch)
+                      )
+                        return;
+                      if (!evidence) {
+                        step.vars.replaceReflection(
+                          cancel(step.state.reflection, request.id),
+                        );
                         await step.vars.persist();
-                      } catch (error) {
-                        controller.abort();
-                        throw error;
+                        return;
                       }
-                      step.vars.publishingEvaluations.delete(request.id);
-                    };
-                    const read = await readSkillEvaluation(
-                      step,
-                      alias,
-                      request.scope,
-                    );
-                    if (!read?.isCurrent() || !canRun()) return;
-                    await evaluateSkillCandidate(
-                      read.input,
-                      async (context, callSignal) => {
-                        const evidenceId = context.evidence[0]?.id;
-                        const before = await readSkillEvaluation(
-                          step,
-                          alias,
-                          request.scope,
-                        );
-                        const receipt = currentRequest()?.skillEvaluation;
-                        const item = receipt?.cases.find(
-                          (item) => item.evidenceId === evidenceId,
-                        );
-                        if (
-                          !before?.isCurrent() ||
-                          !receipt ||
-                          !item ||
-                          item.status !== "pending" ||
-                          !canRun()
-                        )
-                          return abstain("stale-or-invalid-evidence");
-                        receipt.status = "started";
-                        item.status = "started";
-                        await persistReceipt();
-                        // Persistence yields: recheck every source and the operation
-                        // fence again immediately before the shared provider call.
-                        const current = await readSkillEvaluation(
-                          step,
-                          alias,
-                          request.scope,
-                        );
-                        if (!current?.isCurrent() || !canRun())
-                          return abstain("stale-or-invalid-evidence");
-                        return deps.decide(
-                          {
-                            ...context,
-                            now: Date.now(),
-                            evidence: current.input.heldOutEvidence.filter(
-                              (e) => e.id === evidenceId,
-                            ),
-                          },
-                          callSignal,
-                        );
-                      },
-                      signal,
-                      async (result) => {
-                        const receipt = currentRequest()?.skillEvaluation;
-                        const item = receipt?.cases.find(
-                          (item) => item.evidenceId === result.evidenceId,
-                        );
-                        if (
-                          !receipt ||
-                          !item ||
-                          receipt.status === "invalidated"
-                        )
-                          return;
-                        item.status = "settled";
-                        item.decision = result.decision;
-                        await persistReceipt();
-                      },
-                    );
-                    return;
-                  }
-                  const executionEvidence = await retrieve(request, signal);
-                  if (
-                    !executionEvidence ||
-                    signal.aborted ||
-                    step.state.liveActive > 0 ||
-                    isQuiet(Date.now(), deps.policy.quiet) ||
-                    step.state.reflection.requests.find(
-                      (r) => r.id === request.id,
-                    )?.status !== "running"
-                  )
-                    return;
-                  const mode = step.state.modes[request.id] ?? "interaction";
-                  const epoch = step.state.epoch;
-                  const input: DecisionInput = {
-                    scope: request.scope,
-                    question:
-                      request.kind === "curiosity" && mode !== "deep"
-                        ? "interruption-cost"
-                        : "novelty",
-                    prompt:
-                      "Use only the supplied existing evidence. No web search was performed for this request; do not request additional sources, private account access or tool execution. " +
-                      (mode === "deep"
-                        ? "Simulate 1–3 alternative responses to these episodes, each at most 2000 characters. Alternatives and predicted effects are hypothetical, never independent evidence. Optionally suggest a bounded skillChange describing better behavior, with a rationale grounded in original cited evidence. Stage a proposal only; no code, installed instructions, actions or permission changes."
-                        : "Evaluate whether these episodes support a useful reflection proposal or interruption candidate. Silence is normal; do not repeatedly contact an idle owner. No actions or permission changes."),
-                    ...(mode === "deep" ? { simulateResponses: true } : {}),
-                    now: Date.now(),
-                    evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
-                    evidence: executionEvidence,
-                  };
-                  // Await actual settlement. An uncooperative provider keeps its durable
-                  // claim; abort is not evidence that its external request has stopped.
-                  const decision = validateDecision(
-                    await deps.decide(structuredClone(input), signal),
-                    input,
-                  );
-                  const current = await retrieve(request, signal);
-                  const running = step.state.reflection.requests.find(
-                    (r) => r.id === request.id,
-                  );
-                  if (
-                    current &&
-                    !signal.aborted &&
-                    running?.status === "running" &&
-                    epoch === step.state.epoch &&
-                    !step.state.liveActive &&
-                    !isQuiet(Date.now(), deps.policy.quiet)
-                  ) {
-                    step.state.decisionOutcomes ??= {};
-                    step.state.decisionOutcomes[invocation] = decision.answer;
-                    const interruption =
-                      request.kind === "curiosity" && mode !== "deep";
-                    // Citing original episodes does not turn simulated replies into
-                    // observations or independent grounds for an interruption.
-                    const hypothesisOnly =
-                      mode === "deep" ||
-                      !current.some(
-                        (e) =>
-                          e.source !== "dream" &&
-                          decision.evidenceIds.includes(e.id),
-                      );
-                    if (
-                      decision.answer === "yes" &&
-                      (!interruption ||
-                        (!hypothesisOnly &&
-                          step.state.interruptionEpoch !== epoch))
-                    ) {
-                      const createdAt = Date.now();
-                      const skillChange: SkillChangeProposal | undefined =
-                        decision.skillChange
-                          ? {
-                              ...decision.skillChange,
-                              id: reflectionCandidateId(
-                                `skill-change:${invocation}`,
-                              ),
-                              digest: reflectionCandidateId(
-                                JSON.stringify([
-                                  "skill-change-v1",
-                                  invocation,
-                                  epoch,
-                                  request.evidenceIds,
-                                  decision,
-                                ]),
-                              ),
-                              createdAt,
-                              hypothesisOnly: true,
-                            }
-                          : undefined;
-                      step.vars.publishingCandidates.add(invocation);
-                      step.state.candidates[invocation] = {
-                        id: invocation,
-                        requestId: request.id,
-                        scope: request.scope,
-                        attempt,
-                        mode,
-                        kind: interruption
-                          ? "interruption-candidate"
-                          : "proposal",
-                        hypothesisOnly,
-                        decision,
-                        ...(skillChange ? { skillChange } : {}),
-                        createdAt,
-                        epoch,
-                        publication: {
-                          version: 1,
-                          expiresAt: Math.min(
-                            expiresAt(executionEvidence),
-                            expiresAt(current),
-                          ),
-                        },
-                      };
-                      if (interruption) step.state.interruptionEpoch = epoch;
-                    }
-                  }
-                } catch {
-                  // No exception text or evidence enters receipts/state. Failure consumes
-                  // the admitted attempt rather than causing automatic provider replay.
-                  if (!attempt && !signal.aborted)
-                    step.vars.replaceReflection(
-                      cancel(step.state.reflection, request.id),
-                    );
-                } finally {
-                  step.vars.active.delete(request.id);
-                  if (attempt) {
-                    step.vars.replaceReflection(
-                      finish(
+                      const admitted = claim(
                         step.state.reflection,
                         request.id,
-                        attempt,
                         Date.now(),
-                        [],
                         deps.policy,
-                      ),
-                    );
-                    step.state.invocations[invocation] = "settled";
-                    const current = step.state.reflection.requests.find(
-                      (r) => r.id === request.id,
-                    );
-                    if (current?.skillEvaluation) {
-                      // An admitted evaluation is once-only, including partial
-                      // failure/abort. Never run the remaining cases on replay.
-                      if (current.status === "pending")
-                        current.status = "stopped";
-                      if (current.skillEvaluation.status !== "invalidated")
-                        current.skillEvaluation.status =
-                          current.skillEvaluation.cases.every(
-                            (item) => item.status === "settled",
-                          )
-                            ? "settled"
-                            : "uncertain";
-                      step.vars.publishingEvaluations.add(request.id);
+                        evidence,
+                        step.state.liveActive,
+                      );
+                      step.vars.replaceReflection(admitted.state);
+                      attempt = admitted.attempt;
+                      if (attempt) span.setAttribute("june.attempt", attempt);
+                      if (!attempt) {
+                        if (
+                          admitted.reason === "stopped" ||
+                          admitted.reason === "stale-evidence"
+                        )
+                          step.vars.replaceReflection(
+                            cancel(step.state.reflection, request.id),
+                          );
+                        await step.vars.persist();
+                        return;
+                      }
+                      invocation = JSON.stringify([request.id, attempt]);
+                      step.state.invocations[invocation] = "started";
+                      await step.vars.persist();
+                      if (request.evaluationFor) {
+                        const alias = request.evaluationFor;
+                        const currentRequest = () =>
+                          step.state.reflection.requests.find(
+                            (r) => r.id === request.id,
+                          );
+                        const canRun = () =>
+                          !signal.aborted &&
+                          operationEpoch === step.state.epoch &&
+                          !step.state.liveActive &&
+                          !isQuiet(Date.now(), deps.policy.quiet) &&
+                          currentRequest()?.status === "running";
+                        const persistReceipt = async () => {
+                          step.vars.publishingEvaluations.add(request.id);
+                          try {
+                            await step.vars.persist();
+                          } catch (error) {
+                            controller.abort();
+                            throw error;
+                          }
+                          step.vars.publishingEvaluations.delete(request.id);
+                        };
+                        const read = await readSkillEvaluation(
+                          step,
+                          alias,
+                          request.scope,
+                        );
+                        if (!read?.isCurrent() || !canRun()) return;
+                        await evaluateSkillCandidate(
+                          read.input,
+                          async (context, callSignal) => {
+                            const evidenceId = context.evidence[0]?.id;
+                            const before = await readSkillEvaluation(
+                              step,
+                              alias,
+                              request.scope,
+                            );
+                            const receipt = currentRequest()?.skillEvaluation;
+                            const item = receipt?.cases.find(
+                              (item) => item.evidenceId === evidenceId,
+                            );
+                            if (
+                              !before?.isCurrent() ||
+                              !receipt ||
+                              !item ||
+                              item.status !== "pending" ||
+                              !canRun()
+                            )
+                              return abstain("stale-or-invalid-evidence");
+                            receipt.status = "started";
+                            item.status = "started";
+                            await persistReceipt();
+                            // Persistence yields: recheck every source and the operation
+                            // fence again immediately before the shared provider call.
+                            const current = await readSkillEvaluation(
+                              step,
+                              alias,
+                              request.scope,
+                            );
+                            if (!current?.isCurrent() || !canRun())
+                              return abstain("stale-or-invalid-evidence");
+                            return deps.decide(
+                              {
+                                ...context,
+                                now: Date.now(),
+                                evidence: current.input.heldOutEvidence.filter(
+                                  (e) => e.id === evidenceId,
+                                ),
+                              },
+                              callSignal,
+                            );
+                          },
+                          signal,
+                          async (result) => {
+                            const receipt = currentRequest()?.skillEvaluation;
+                            const item = receipt?.cases.find(
+                              (item) => item.evidenceId === result.evidenceId,
+                            );
+                            if (
+                              !receipt ||
+                              !item ||
+                              receipt.status === "invalidated"
+                            )
+                              return;
+                            item.status = "settled";
+                            item.decision = result.decision;
+                            await persistReceipt();
+                          },
+                        );
+                        return;
+                      }
+                      const executionEvidence = await retrieve(request, signal);
+                      if (
+                        !executionEvidence ||
+                        signal.aborted ||
+                        step.state.liveActive > 0 ||
+                        isQuiet(Date.now(), deps.policy.quiet) ||
+                        step.state.reflection.requests.find(
+                          (r) => r.id === request.id,
+                        )?.status !== "running"
+                      )
+                        return;
+                      const mode =
+                        step.state.modes[request.id] ?? "interaction";
+                      const epoch = step.state.epoch;
+                      const input: DecisionInput = {
+                        scope: request.scope,
+                        question:
+                          request.kind === "curiosity" && mode !== "deep"
+                            ? "interruption-cost"
+                            : "novelty",
+                        prompt:
+                          "Use only the supplied existing evidence. No web search was performed for this request; do not request additional sources, private account access or tool execution. " +
+                          (mode === "deep"
+                            ? "Simulate 1–3 alternative responses to these episodes, each at most 2000 characters. Alternatives and predicted effects are hypothetical, never independent evidence. Optionally suggest a bounded skillChange describing better behavior, with a rationale grounded in original cited evidence. Stage a proposal only; no code, installed instructions, actions or permission changes."
+                            : "Evaluate whether these episodes support a useful reflection proposal or interruption candidate. Silence is normal; do not repeatedly contact an idle owner. No actions or permission changes."),
+                        ...(mode === "deep" ? { simulateResponses: true } : {}),
+                        now: Date.now(),
+                        evidenceMaxAgeMs: deps.policy.evidenceMaxAgeMs,
+                        evidence: executionEvidence,
+                      };
+                      // Await actual settlement. An uncooperative provider keeps its durable
+                      // claim; abort is not evidence that its external request has stopped.
+                      const decision = validateDecision(
+                        await deps.decide(structuredClone(input), signal),
+                        input,
+                      );
+                      const current = await retrieve(request, signal);
+                      const running = step.state.reflection.requests.find(
+                        (r) => r.id === request.id,
+                      );
+                      if (
+                        current &&
+                        !signal.aborted &&
+                        running?.status === "running" &&
+                        epoch === step.state.epoch &&
+                        !step.state.liveActive &&
+                        !isQuiet(Date.now(), deps.policy.quiet)
+                      ) {
+                        step.state.decisionOutcomes ??= {};
+                        step.state.decisionOutcomes[invocation] =
+                          decision.answer;
+                        const interruption =
+                          request.kind === "curiosity" && mode !== "deep";
+                        // Citing original episodes does not turn simulated replies into
+                        // observations or independent grounds for an interruption.
+                        const hypothesisOnly =
+                          mode === "deep" ||
+                          !current.some(
+                            (e) =>
+                              e.source !== "dream" &&
+                              decision.evidenceIds.includes(e.id),
+                          );
+                        if (
+                          decision.answer === "yes" &&
+                          (!interruption ||
+                            (!hypothesisOnly &&
+                              step.state.interruptionEpoch !== epoch))
+                        ) {
+                          const createdAt = Date.now();
+                          const skillChange: SkillChangeProposal | undefined =
+                            decision.skillChange
+                              ? {
+                                  ...decision.skillChange,
+                                  id: reflectionCandidateId(
+                                    `skill-change:${invocation}`,
+                                  ),
+                                  digest: reflectionCandidateId(
+                                    JSON.stringify([
+                                      "skill-change-v1",
+                                      invocation,
+                                      epoch,
+                                      request.evidenceIds,
+                                      decision,
+                                    ]),
+                                  ),
+                                  createdAt,
+                                  hypothesisOnly: true,
+                                }
+                              : undefined;
+                          step.vars.publishingCandidates.add(invocation);
+                          step.state.candidates[invocation] = {
+                            id: invocation,
+                            requestId: request.id,
+                            scope: request.scope,
+                            attempt,
+                            mode,
+                            kind: interruption
+                              ? "interruption-candidate"
+                              : "proposal",
+                            hypothesisOnly,
+                            decision,
+                            ...(skillChange ? { skillChange } : {}),
+                            createdAt,
+                            epoch,
+                            publication: {
+                              version: 1,
+                              expiresAt: Math.min(
+                                expiresAt(executionEvidence),
+                                expiresAt(current),
+                              ),
+                            },
+                          };
+                          if (interruption)
+                            step.state.interruptionEpoch = epoch;
+                        }
+                      }
+                    } catch {
+                      // No exception text or evidence enters receipts/state. Failure consumes
+                      // the admitted attempt rather than causing automatic provider replay.
+                      span.setStatus({ code: SpanStatusCode.ERROR });
+                      span.setAttribute("june.outcome", "unknown");
+                      if (!attempt && !signal.aborted)
+                        step.vars.replaceReflection(
+                          cancel(step.state.reflection, request.id),
+                        );
+                    } finally {
+                      step.vars.active.delete(request.id);
+                      if (attempt) {
+                        step.vars.replaceReflection(
+                          finish(
+                            step.state.reflection,
+                            request.id,
+                            attempt,
+                            Date.now(),
+                            [],
+                            deps.policy,
+                          ),
+                        );
+                        step.state.invocations[invocation] = "settled";
+                        const current = step.state.reflection.requests.find(
+                          (r) => r.id === request.id,
+                        );
+                        if (current?.skillEvaluation) {
+                          // An admitted evaluation is once-only, including partial
+                          // failure/abort. Never run the remaining cases on replay.
+                          if (current.status === "pending")
+                            current.status = "stopped";
+                          if (current.skillEvaluation.status !== "invalidated")
+                            current.skillEvaluation.status =
+                              current.skillEvaluation.cases.every(
+                                (item) => item.status === "settled",
+                              )
+                                ? "settled"
+                                : "uncertain";
+                          step.vars.publishingEvaluations.add(request.id);
+                        }
+                      }
+                      trimCandidates(step.state);
+                      await step.vars.persist();
+                      step.vars.publishingEvaluations.delete(request.id);
+                      // Publication linearizes at the final checks + synchronous
+                      // candidate/settled assignment. Later occupancy revokes effects,
+                      // not that publication; the flush ACK only gates read visibility.
+                      // Failed flushes remain hidden for this process. Recovery reads
+                      // only the candidate plus matching receipt that reached disk.
+                      step.vars.publishingCandidates.delete(invocation);
                     }
-                  }
-                  trimCandidates(step.state);
-                  await step.vars.persist();
-                  step.vars.publishingEvaluations.delete(request.id);
-                  // Publication linearizes at the final checks + synchronous
-                  // candidate/settled assignment. Later occupancy revokes effects,
-                  // not that publication; the flush ACK only gates read visibility.
-                  // Failed flushes remain hidden for this process. Recovery reads
-                  // only the candidate plus matching receipt that reached disk.
-                  step.vars.publishingCandidates.delete(invocation);
-                }
+                  },
+                );
               },
             });
           } finally {

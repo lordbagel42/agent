@@ -6,6 +6,7 @@ import {
   type SlackIngressObservation,
   slackIngressStages,
 } from "../channels/slack-ingress.js";
+import { correlationId, recordEvent } from "../telemetry/index.js";
 import {
   type SlackMcpOAuthFailure,
   slackOAuthReasons,
@@ -139,6 +140,13 @@ export class DiagnosticLog {
 
   ingress(observation: SlackIngressObservation) {
     if (!slackIngressStages.includes(observation.stage)) return;
+    recordEvent("june.slack.ingress", {
+      "june.channel": "slack",
+      "june.phase": observation.stage,
+      ...(observation.requestId
+        ? { "june.operation.id": correlationId(observation.requestId) }
+        : {}),
+    });
     this.event({
       at: observation.at,
       stage: `slack.${observation.stage}`,
@@ -147,7 +155,10 @@ export class DiagnosticLog {
   }
 
   lifecycle(stage: (typeof lifecycleStages)[number]) {
-    if (lifecycleStages.includes(stage)) this.event({ at: Date.now(), stage });
+    if (lifecycleStages.includes(stage)) {
+      recordEvent("june.lifecycle", { "june.phase": stage });
+      this.event({ at: Date.now(), stage });
+    }
   }
 
   slackOAuth(failure: SlackMcpOAuthFailure) {
@@ -156,6 +167,11 @@ export class DiagnosticLog {
       !slackOAuthReasons.includes(failure.reason)
     )
       return;
+    recordEvent("june.slack.oauth", {
+      "june.channel": "slack",
+      "june.phase": failure.stage,
+      "june.outcome": failure.reason,
+    });
     this.event({
       at: Date.now(),
       stage: `slack_oauth.${failure.stage}.${failure.reason}`,

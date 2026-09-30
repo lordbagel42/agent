@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { MessageEvent } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import type { Dependencies } from "../runtime/registry.js";
+import { correlationId, withSpan } from "../telemetry/index.js";
 import { WORKFLOW_HELP, workflowCommandSchema } from "./contracts.js";
 import {
   type Json,
@@ -278,12 +279,30 @@ export function createWorkflowRunActor(deps: Dependencies) {
                   requireCurrent();
                   let next: Receipt;
                   try {
-                    const value = jsonValue(
-                      await tool.execute(args, {
-                        source: spec.origin,
-                        operationId: `${spec.id}:${id}`,
-                        signal,
-                      }),
+                    const value = await withSpan(
+                      "june.workflow.tool",
+                      {
+                        "june.operation.id": correlationId(spec.id),
+                        "june.capability": /^[A-Za-z0-9_.-]{1,64}$/.test(
+                          call.tool,
+                        )
+                          ? call.tool
+                          : "other",
+                      },
+                      async (span) => {
+                        const value = jsonValue(
+                          await tool.execute(args, {
+                            source: spec.origin,
+                            operationId: `${spec.id}:${id}`,
+                            signal,
+                          }),
+                        );
+                        span.setAttribute(
+                          "june.outcome",
+                          usable() ? "completed" : "unknown",
+                        );
+                        return value;
+                      },
                     );
                     next = usable()
                       ? { signature, status: "completed", value }

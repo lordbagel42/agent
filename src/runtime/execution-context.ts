@@ -45,6 +45,7 @@ export function executionCapabilities(
     modelStatusAvailable: privateTurn && !!deps.modelStatus,
     mcpAvailable: privateTurn && deps.mcpAvailable === true,
     latencyAvailable: privateTurn && !!deps.latency,
+    telemetryAvailable: privateTurn && !!deps.telemetry,
     analyticsAvailable: privateTurn && !!deps.analytics,
     inspectionAvailable: privateTurn && !!deps.inspection,
     appsAvailable: privateTurn && !!deps.apps,

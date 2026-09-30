@@ -1,4 +1,6 @@
+import { SpanStatusCode } from "@opentelemetry/api";
 import type { OutboundMessage, SendResult } from "../core/contracts.js";
+import { correlationId, withSpan } from "../telemetry/index.js";
 
 export interface Delivery {
   message: OutboundMessage;
@@ -41,7 +43,26 @@ export async function deliver(
         await persist();
         return delivery.result;
       }
-      delivery.result = await send(delivery.message);
+      delivery.result = await withSpan(
+        "june.delivery.dispatch",
+        {
+          "june.operation.id": correlationId(delivery.message.id),
+          "june.channel": delivery.message.address.channel,
+          "june.attempt": delivery.attempts,
+        },
+        async (span) => {
+          try {
+            const result = await send(delivery.message);
+            span.setAttribute("june.outcome", result.status);
+            if (result.status !== "sent")
+              span.setStatus({ code: SpanStatusCode.ERROR });
+            return result;
+          } catch (error) {
+            span.setAttribute("june.outcome", "unknown");
+            throw error;
+          }
+        },
+      );
     } catch {
       delivery.result = { status: "unknown", code: "transport_error" };
     }
