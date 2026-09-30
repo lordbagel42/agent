@@ -122,7 +122,11 @@ import { createPersonalityActor, isPersonalityCommand } from "./personality.js";
 import { createPersonalityComparison } from "./personality-comparison.js";
 import type { createPersonalityPreview } from "./personality-evaluation-preview.js";
 import { createPriorityAdmission } from "./priority.js";
-import { buildModelRequest, type PromptInput } from "./prompt.js";
+import {
+  buildModelRequest,
+  CONVERSATIONAL_CURIOSITY_HELP,
+  type PromptInput,
+} from "./prompt.js";
 import {
   createReflectionActor,
   parseReflectionReviewCommand,
@@ -3424,6 +3428,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 searchAvailable,
                                 // Memory is constructed here, never returned to the journal.
                               };
+                              modelRequest.system += `\n\n${CONVERSATIONAL_CURIOSITY_HELP}`;
                               let executionCapacity: CapacityContext["execution"] =
                                 {
                                   enabled: !!deps.execution,

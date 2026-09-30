@@ -64,6 +64,16 @@ it.for(["interaction", "execution", "decision"] as const)(
       },
     });
     expect(request.system).toContain("APPROVED_CONTINUITY_EXCERPT");
+    // Check the final role-specific payload, not just the shared identity array.
+    expect(request.system).toContain(
+      "A genuine question counts as something useful to add",
+    );
+    expect(request.system).toContain(
+      "execution workers report relevant gaps to June rather than questioning the user",
+    );
+    expect(request.system).toContain(
+      "automated/completion turns stay within their saved instruction or notification",
+    );
     expect(request.system).toContain(
       "Group DMs (mpim) are shared conversations, never owner-private DMs",
     );
