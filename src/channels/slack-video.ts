@@ -169,6 +169,10 @@ export function createSlackVideoReader(
           "-hide_banner",
           "-loglevel",
           "error",
+          // Sparse review can reduce inter-frame decode work by sampling
+          // keyframes, without widening the host's CPU/wall budgets.
+          "-skip_frame",
+          "nokey",
           ...input,
           "-t",
           "120",

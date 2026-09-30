@@ -36,9 +36,11 @@ into June or tested with a real account.
   Availability is not proof of a successful download or visual interpretation.
 - Owner-DM video visual review follows the same worker boundary with
   `readVideo:{fileId,question}`. Attach an MP4/MOV of at most 50 MiB
-  (up to 3840×2160 pixels). The host samples at most eight frames within its first 120 seconds,
+  (up to 3840×2160 pixels). The host samples at most eight keyframes within its first 120 seconds,
   scaled within 640×640, and sends actual image bytes and timestamps to a
-  tool-free review. Timestamps start at the first decoded frame; total clip
+  tool-free review. Clips with few keyframes yield fewer samples; decoding only
+  these independently encoded pictures avoids processing every intervening frame.
+  Timestamps start at the first decoded frame; total clip
   duration and completeness are not verified. This is sparse
   visual evidence, **not audio transcription or complete-motion coverage**;
   brief events between samples may be missed. One read ends the worker's tool

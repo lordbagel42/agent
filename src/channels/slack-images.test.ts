@@ -159,7 +159,7 @@ it.for(["readImage", "readVideo"] as const)(
   },
 );
 
-it("reads an attached MP4 as distinct timestamped frames, not a thumbnail or filename", async () => {
+it("reads an attached MP4 as distinct timestamped keyframes, not every frame or a thumbnail", async () => {
   const home = await mkdtemp(join(tmpdir(), "june-video-test-"));
   try {
     const path = join(home, "two-scenes.mp4");
@@ -181,6 +181,8 @@ it("reads an attached MP4 as distinct timestamped frames, not a thumbnail or fil
       "1",
       "-c:v",
       "libx264",
+      "-g",
+      "4",
       "-metadata",
       "title=n: 0 pts: 0 pts_time:99",
       path,
@@ -219,15 +221,15 @@ it("reads an attached MP4 as distinct timestamped frames, not a thumbnail or fil
     expect(result?.status).toBe("ready");
     if (result?.status !== "ready") throw new Error("Missing video frames");
     expect(downloads).toBe(1);
-    expect(result.images).toHaveLength(8);
+    expect(result.images).toHaveLength(4);
     expect(result.images.map((image) => image.mediaTimeSeconds)).toEqual([
-      0, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75,
+      0, 0.5, 1, 1.5,
     ]);
     // Decode real returned frames: first is red, last is blue. Repeating one
     // thumbnail or merely relabeling its timestamp cannot pass this check.
     for (const [index, dominant] of [
       [0, 0],
-      [7, 2],
+      [3, 2],
     ] as const) {
       const frame = result.images[index];
       if (!frame) throw new Error("Missing frame");
@@ -338,6 +340,8 @@ it("rejects cover-only/corrupt containers and bounds samples despite forged dura
         "1",
         "-c:v",
         "libx264",
+        "-g",
+        "15",
         "-movflags",
         "+faststart",
         path,
