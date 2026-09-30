@@ -137,6 +137,15 @@ it.for(["interaction", "execution", "decision"] as const)(
     );
     expect(request.system).toContain("notification delivery outcomes");
     expect(request.system).toContain(
+      "DEBUGSHARE notification triggers return before delivery settles",
+    );
+    expect(request.system).toContain(
+      "a forced actor shutdown still fails the readiness latch",
+    );
+    expect(request.system).toContain(
+      "A successful trigger RPC is not proof of delivery or safe drain",
+    );
+    expect(request.system).toContain(
       "including publishing reviewed fixes, configuration/service repairs, deploying and restarting June",
     );
     expect(request.system).toContain(

@@ -473,6 +473,101 @@ it.for(["sent", "unknown", "retry"] as const)(
   },
 );
 
+it("owns queued DEBUGSHARE notifications beyond action and idle deadlines", async (t) => {
+  const blocked = Promise.withResolvers<void>();
+  t.onTestFinished(() => blocked.resolve());
+  const lifecycle = createLifecycle();
+  const links: OutboundMessage[] = [];
+  let ready = false;
+  let asleep = false;
+  const registry = createJuneRegistry({
+    owner,
+    lifecycle,
+    model: {
+      reply: async () => {
+        throw new Error("No inference for DEBUGSHARE");
+      },
+    },
+    debugShare: {
+      resumeSafe: true,
+      run: async () => ({
+        threadId: "T-11111111-2222-3333-4444-555555555555",
+        report: "fixture",
+      }),
+      inspect: async () =>
+        ready
+          ? {
+              status: "completed",
+              threadId: "T-11111111-2222-3333-4444-555555555555",
+            }
+          : { status: "queued" },
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, threads: true, reactions: true },
+        receive: async () => ({ events: [], response: new Response() }),
+        async send(outbound) {
+          if (
+            outbound.content.type === "text" &&
+            outbound.content.text.includes("https://ampcode.com/threads/")
+          ) {
+            links.push(JSON.parse(JSON.stringify(outbound)));
+            if (links.length === 1) await blocked.promise;
+          }
+          return { status: "sent", messageId: "sent" };
+        },
+      },
+    },
+  });
+  const config = registry.config.use.conversation.config;
+  config.options = {
+    ...config.options,
+    actionTimeout: 2000,
+    sleepTimeout: 500,
+  };
+  config.onSleep = () => {
+    asleep = true;
+  };
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", "owner"]);
+  await june.receive(message("first-link", "DEBUGSHARE first"));
+  await june.receive(message("second-link", "DEBUGSHARE second"));
+  const receipts = Object.entries(
+    (await june.snapshot()).sessionCommands ?? {},
+  );
+  expect(receipts).toHaveLength(2);
+  asleep = false;
+  ready = true;
+  const triggers = [...receipts, ...receipts].map(([id, receipt]) => {
+    const at = receipt.debugLink?.pollAt;
+    if (at === undefined) throw new Error("Missing notification poll");
+    return june.notifyDebugShare(id, at);
+  });
+  const triggered = Promise.all(triggers);
+  void triggered.catch(() => {});
+  await expect.poll(() => links.length, { timeout: 15000 }).toBe(1);
+  await triggered;
+  // Only host-side observations during this wait: RPC polling could mask sleep.
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  expect(asleep).toBe(false);
+  expect(links).toHaveLength(1);
+  expect(lifecycle.ready).toBe(true);
+  expect(await lifecycle.drain(20)).toBe(false);
+  blocked.resolve();
+  await expect.poll(() => links.length, { timeout: 15000 }).toBe(2);
+  await expect.poll(() => lifecycle.active, { timeout: 15000 }).toBe(0);
+  await expect
+    .poll(async () =>
+      (await june.debugShares()).map((entry) => entry.notification?.status),
+    )
+    .toEqual(["sent", "sent"]);
+  expect(new Set(links.map((link) => link.id)).size).toBe(2);
+  expect(lifecycle.ready).toBe(true);
+  expect(await lifecycle.drain()).toBe(true);
+  lifecycle.resume();
+});
+
 it("withholds a delegated search result that completes after reset", async (t) => {
   const search = Promise.withResolvers<void>();
   t.onTestFinished(() => search.resolve());

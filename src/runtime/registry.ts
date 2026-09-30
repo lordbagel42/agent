@@ -647,19 +647,82 @@ export function createJuneRegistry(deps: Dependencies) {
       persist: () => Promise<void>;
       receiving: Promise<void>;
       publishing: Promise<void>;
-      notifyingDebug: Promise<void>;
+      notifyDebugShare(id: string, at: number): void;
       schedule(at: number): Promise<unknown>;
       debugRequest?: unknown;
-    } => ({
-      persist: () => {
+    } => {
+      const persist = () => {
         compactConversation(c.state);
         return c.saveState({ immediate: true });
-      },
-      receiving: Promise.resolve(),
-      publishing: Promise.resolve(),
-      notifyingDebug: Promise.resolve(),
-      schedule: (at) => c.schedule.at(at, "sessionIdle"),
-    }),
+      };
+      // createVars owns the actor incarnation, not a dispatch deadline. Queued
+      // notification work must outlive the short action that triggers it.
+      const signal = c.abortSignal;
+      let notifyingDebug = Promise.resolve();
+      return {
+        persist,
+        receiving: Promise.resolve(),
+        publishing: Promise.resolve(),
+        notifyDebugShare: (id, at) => {
+          notifyingDebug = notifyingDebug
+            .then(async () => {
+              signal.throwIfAborted();
+              const receipt = c.state.sessionCommands?.[id];
+              if (!receipt?.debugLink || receipt.debugLink.pollAt !== at)
+                return;
+              const release = await deps.lifecycle?.enter(signal);
+              try {
+                // Schedule before external work. The timestamp fences duplicate
+                // wakeups; startup repairs an interrupted scheduling acknowledgment.
+                const next = Date.now() + 5000;
+                receipt.debugLink.pollAt = next;
+                await persist();
+                await c.schedule.at(next, "notifyDebugShare", id, next);
+                const snapshotId = receipt.snapshotId ?? receipt.snapshot?.id;
+                if (!receipt.published || !snapshotId) return;
+                // A failed external read is not a terminal receipt. Let the
+                // already-scheduled poll retry it, not the investigation itself.
+                const external = deps.debugShare?.resumeSafe
+                  ? await deps.debugShare.inspect?.(snapshotId)
+                  : undefined;
+                const status =
+                  external ??
+                  (await c
+                    .client<JuneClientRegistry>()
+                    .debugShare.getOrCreate([snapshotId])
+                    .inspect());
+                if (status.threadId)
+                  await publishDebugLink(
+                    receipt,
+                    status.threadId,
+                    deps,
+                    persist,
+                  );
+                else if (
+                  status.status === "unknown" ||
+                  status.status === "unavailable" ||
+                  status.status === "completed"
+                ) {
+                  delete receipt.debugLink.pollAt;
+                  await persist();
+                }
+              } finally {
+                release?.();
+              }
+            })
+            .catch(() => {
+              // No raw receipt, transport error, or private message in logs.
+              console.error(
+                JSON.stringify({ event: "debugshare_notification_failed" }),
+              );
+            });
+          // Register the real, rejection-handled settlement, including the
+          // final receipt save. It must prevent idle sleep while effects run.
+          void c.keepAwake(notifyingDebug);
+        },
+        schedule: (at) => c.schedule.at(at, "sessionIdle"),
+      };
+    },
     queues: {
       inbox: queue<
         ConversationInput | SessionBarrier | { type: "session_tick" }
@@ -737,52 +800,8 @@ export function createJuneRegistry(deps: Dependencies) {
             })),
         );
       },
-      notifyDebugShare: async (c, id: string, at: number): Promise<void> => {
-        const notifying = c.vars.notifyingDebug.then(async () => {
-          const receipt = c.state.sessionCommands?.[id];
-          if (!receipt?.debugLink || receipt.debugLink.pollAt !== at) return;
-          const release = await deps.lifecycle?.enter(c.abortSignal);
-          try {
-            // Schedule before external work. The timestamp fences duplicate
-            // wakeups; startup repairs an interrupted scheduling acknowledgment.
-            const next = Date.now() + 5000;
-            receipt.debugLink.pollAt = next;
-            await c.vars.persist();
-            await c.schedule.at(next, "notifyDebugShare", id, next);
-            const snapshotId = receipt.snapshotId ?? receipt.snapshot?.id;
-            if (!receipt.published || !snapshotId) return;
-            // A failed external read is not a terminal receipt. Let the
-            // already-scheduled poll retry it, not the investigation itself.
-            const external = deps.debugShare?.resumeSafe
-              ? await deps.debugShare.inspect?.(snapshotId)
-              : undefined;
-            const status =
-              external ??
-              (await c
-                .client<JuneClientRegistry>()
-                .debugShare.getOrCreate([snapshotId])
-                .inspect());
-            if (status.threadId)
-              await publishDebugLink(
-                receipt,
-                status.threadId,
-                deps,
-                c.vars.persist,
-              );
-            else if (
-              status.status === "unknown" ||
-              status.status === "unavailable" ||
-              status.status === "completed"
-            ) {
-              delete receipt.debugLink.pollAt;
-              await c.vars.persist();
-            }
-          } finally {
-            release?.();
-          }
-        });
-        c.vars.notifyingDebug = notifying.catch(() => {});
-        await notifying;
+      notifyDebugShare: (c, id: string, at: number): void => {
+        c.vars.notifyDebugShare(id, at);
       },
       resumeSessionCommands: async (c): Promise<void> => {
         const publishing = c.vars.publishing.then(async () => {
