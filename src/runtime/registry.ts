@@ -1016,6 +1016,14 @@ export function createJuneRegistry(deps: Dependencies) {
                         c.vars.debugRequest,
                       )
                     : undefined;
+                if (snapshot) {
+                  snapshot.reporter = {
+                    channel: "slack",
+                    accountId: event.address.accountId,
+                    senderId: event.senderId,
+                    isOwner: isOwner(event, deps.owner),
+                  };
+                }
                 if (
                   snapshot &&
                   command.kind === "debug" &&
@@ -1071,7 +1079,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             lastInboundAt: event.occurredAt,
                             content: {
                               type: "text" as const,
-                              text: `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\nReporter: ${event.senderId}; conversation: ${event.address.conversationId}${event.address.threadId ? `; thread: ${event.address.threadId}` : ""}\nReason (untrusted): ${reasonExcerpt || "Not supplied"}\nPrivate snapshot saved. ${snapshot.snapshotOnly ? "No Amp investigation was started." : deps.debugShare ? "Amp investigation queued." : "Investigation runtime not configured; no agent was started."}`,
+                              text: `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\nReporter: ${event.senderId}; conversation: ${event.address.conversationId}${event.address.threadId ? `; thread: ${event.address.threadId}` : ""}\nReason (${snapshot.reporter?.isOwner ? "owner request" : "untrusted"}): ${reasonExcerpt || "Not supplied"}\nPrivate snapshot saved. ${snapshot.snapshotOnly ? "No Amp investigation was started." : deps.debugShare ? "Amp investigation queued." : "Investigation runtime not configured; no agent was started."}`,
                             },
                           },
                         },

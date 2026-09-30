@@ -1334,6 +1334,16 @@ of pushing source. Preserve existing recovery and ordinary-job keys/config:
    the runner; these paths are deployment examples, not provisioning commands.
    The runner reuses only recovery's high/Fast CLI arguments and sanitized exec
    environment. DEBUGSHARE owns its own prompt, admission and snapshots.
+   Install the updated `debugshare_runner.py` alongside the app that emits
+   host-authenticated `reporter` metadata to preserve owner-reason trust. The
+   dedicated transport attests that metadata; the runner never derives ownership
+   from the report's reason, history or conversation scope. Only an authenticated
+   owner's top-level reason is a trusted request, on every Slack surface. Other
+   diagnostic content stays untrusted; missing/invalid provenance defaults to an
+   untrusted report. This does not change incident authority or safety rules.
+   Replace the runner script atomically under coordinated operator ownership;
+   it is loaded on each new SSH invocation, so no dispatcher restart or duplicate
+   investigation is needed. Existing snapshots and running prompts are unchanged.
    Separate processes/keys are not a security sandbox against native execution
    under June's own UID: retain the native-coding isolation prerequisite so
    ordinary workers cannot access this key or write repair-authorized requests.

@@ -153,6 +153,12 @@ it("returns owner report links at origin while keeping guest links and all diagn
     const snapshot = snapshots[index];
     if (!snapshot) throw new Error("DEBUGSHARE was not captured");
     expect(snapshot.scope).toEqual(scope.key);
+    expect(snapshot.reporter).toEqual({
+      channel: "slack",
+      accountId: "T1",
+      senderId: report.senderId,
+      isOwner: [0, 4, 5].includes(index),
+    });
     expect(snapshot.reason).toBe(
       report.text.slice(11).replace("xoxb-secret", "[redacted]"),
     );
@@ -200,6 +206,9 @@ it("returns owner report links at origin while keeping guest links and all diagn
         report.senderId === "U2" ? undefined : `ack-U1-${snapshot.id}`,
       );
     expect(JSON.stringify(privateMessages)).toContain(snapshot.reason);
+    expect(JSON.stringify(privateMessages)).toContain(
+      ownerReport ? "Reason (owner request):" : "Reason (untrusted):",
+    );
     expect(JSON.stringify(privateMessages)).not.toContain("xoxb-secret");
     expect(await june.debugShares()).toEqual([]);
   }
@@ -853,6 +862,12 @@ it.for(["sent", "unknown", "retry"] as const)(
     if (outcome !== "sent") debug.address.threadId = "123.456";
     await june.receive(debug);
     await expect.poll(() => snapshots.length, { timeout: 15000 }).toBe(1);
+    expect(snapshots[0]?.reporter).toEqual({
+      channel: "slack",
+      accountId: "T1",
+      senderId: "U1",
+      isOwner: true,
+    });
     // Snapshot dispatch precedes index persistence and the asynchronous ack.
     await expect.poll(() => sent.length, { timeout: 15000 }).toBe(1);
     threadId = "T-11111111-2222-3333-4444-555555555555";

@@ -25,6 +25,14 @@ export interface DebugSnapshot {
   revision: string;
   scope: string[];
   reason: string;
+  /** Set only by verified command ingress, never inferred from scope or text.
+   * Missing on historical snapshots; absence does not attest owner authority. */
+  reporter?: {
+    channel: "slack";
+    accountId: string;
+    senderId: string;
+    isOwner: boolean;
+  };
   /** DEBUG is storage-only. Missing on historical DEBUGSHARE snapshots. */
   snapshotOnly?: boolean;
   data: unknown;

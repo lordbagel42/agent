@@ -126,6 +126,17 @@ reason excerpt (at most 3,000 characters; the full reason stays in the snapshot)
 This includes private DMs without the owner; the originating receipt
 discloses that forwarding. Full diagnostic data remains in private storage/Amp.
 Guest scopes stay isolated from the owner's history and other reporters.
+New snapshots carry host-authenticated Slack reporter identity and owner status,
+separately from the captured conversation scope. Raygen's authenticated top-level
+reason is immediately a trusted owner request for the investigator, whether sent
+in a DM, group DM, channel or thread. This authenticates the request, not the
+accuracy of its diagnosis. Guest reasons, quoted third-party instructions and
+other diagnostic contents remain untrusted evidence; old snapshots without
+reporter provenance are not promoted based on names, claimed IDs or scope.
+Owner-copy notifications distinguish owner requests from untrusted reports.
+This changes no ordinary June permissions or deployment safeguards. Both the app
+and standalone runner must be updated; existing snapshots are not backfilled or
+relaunched.
 For new owner-submitted `DEBUGSHARE` reports, the later Amp link returns to the
 originating conversation, including shared channels and group DMs. It replies in
 the origin acknowledgment's thread (preserving an existing thread), not the
