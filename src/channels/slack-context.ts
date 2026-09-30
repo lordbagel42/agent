@@ -202,6 +202,7 @@ export function createSlackContext({
       event.address.channel !== "slack" ||
       event.address.accountId !== teamId ||
       (!ownerUserIds.has(event.senderId) &&
+        !event.senderId.startsWith("bot:") &&
         !event.botMentioned &&
         !event.direct) ||
       event.senderId === botUserId ||

@@ -29,6 +29,33 @@ function adapter(fetch: typeof globalThis.fetch) {
 }
 
 describe("Slack same-surface context", () => {
+  it("gives unmentioned bot turns same-conversation context without admitting human bystanders", async () => {
+    const slack = adapter(async (url) => {
+      if (String(url).endsWith("conversations.info"))
+        return Response.json({
+          ok: true,
+          channel: { id: "C1", is_channel: true },
+        });
+      if (String(url).endsWith("conversations.history"))
+        return Response.json({
+          ok: true,
+          messages: [
+            {
+              ts: "1799999998.000001",
+              user: "U_OTHER",
+              text: "The launch is Friday",
+            },
+          ],
+        });
+      return Response.json({ ok: false });
+    });
+    const bot = { ...event, senderId: "bot:B_OTHER", botMentioned: false };
+    expect((await slack.context?.(bot))?.map(({ content }) => content)).toEqual(
+      ["The launch is Friday", "what do you think?"],
+    );
+    expect(await slack.context?.({ ...bot, senderId: "U_OTHER" })).toEqual([]);
+  });
+
   it("requires complete authenticated private-channel membership and rejects an incomplete audience", async () => {
     let complete = true;
     const slack = adapter(async (url, init) => {
