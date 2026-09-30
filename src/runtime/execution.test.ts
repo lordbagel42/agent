@@ -18,11 +18,16 @@ import { parseReply } from "../models/provider.js";
 import { ConversationContinuity } from "./continuity.js";
 import { executionKey } from "./execution.js";
 import type { ExecutionContext } from "./execution-context.js";
+import { createLatencyDiagnostics } from "./latency.js";
 import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
 const notification = vi.hoisted(() => ({
   before: undefined as undefined | (() => Promise<void>),
+}));
+const summaryRead = vi.hoisted(() => ({
+  after: undefined as undefined | (() => Promise<void>),
+  evidenceId: undefined as string | undefined,
 }));
 // Pause a real worker save, not a replacement workflow or production test hook.
 const persistence = vi.hoisted(() => ({
@@ -60,8 +65,26 @@ vi.mock("rivetkit", async (importOriginal) => {
               context: unknown,
             ) => object | Promise<object>)
           : undefined;
+      const summary = config.actions?.summary;
       return real.actor({
         ...config,
+        actions: {
+          ...config.actions,
+          ...(typeof summary === "function"
+            ? {
+                summary: async (...args: Parameters<typeof summary>) => {
+                  // A dependency known only to this worker, not conversation history.
+                  if (summaryRead.evidenceId) {
+                    const state = args[0].state as { evidenceIds: string[] };
+                    state.evidenceIds.push(summaryRead.evidenceId);
+                  }
+                  const result = await summary(...args);
+                  await summaryRead.after?.();
+                  return result;
+                },
+              }
+            : {}),
+        },
         createVars: async (c) => ({
           ...(await createVars?.(c)),
           persist: async () => {
@@ -179,6 +202,136 @@ it("keeps a slow execution notification owned until its real RPC settles", async
   expect(notifications).toBe(1);
   expect(executions).toBe(1);
 }, 60_000);
+
+it.for(["ready", "failed", "revoked"])(
+  "overlaps owner context and roster reads without abandoning a pending summary (%s)",
+  async (outcome, t) => {
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    const continuity = new ConversationContinuity({
+      file: ":memory:",
+      key: randomBytes(32),
+      owner,
+      idleMs: 1000,
+      now: () => 1000,
+      revision: () => store.deletionRevision(),
+      filter: async () => ({ excerpts: [] }),
+    });
+    const lifecycle = createLifecycle();
+    const latency = createLatencyDiagnostics();
+    const contextEntered = Promise.withResolvers<void>();
+    const contextGate = Promise.withResolvers<void>();
+    const summaryGate = Promise.withResolvers<void>();
+    let reads = 0;
+    const turns: ModelRequest[] = [];
+    t.onTestFinished(() => {
+      summaryRead.after = undefined;
+      summaryRead.evidenceId = undefined;
+      contextGate.resolve();
+      summaryGate.resolve();
+      continuity.close();
+      store.close();
+    });
+    const registry = createJuneRegistry({
+      owner,
+      continuity,
+      lifecycle,
+      latency,
+      memory: { store, source: () => undefined },
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, reactions: true, threads: true },
+          receive: async () => ({ response: new Response(), events: [] }),
+          send: async () => ({ status: "sent", messageId: "out" }),
+          context: async (input) => {
+            if (input.id === "overlap") {
+              contextEntered.resolve();
+              await contextGate.promise;
+            }
+            return [];
+          },
+        },
+      },
+      model: {
+        reply: async (request): Promise<CompanionReply> => {
+          turns.push(request);
+          if (turns.length !== 1) return { text: "Noted." };
+          return {
+            text: "",
+            execution: [
+              { agent: "trains", action: "run", task: "Compare trains" },
+              { agent: "boats", action: "run", task: "Compare boats" },
+            ],
+          };
+        },
+      },
+      execution: { model: { reply: async () => ({ text: "Fixture report" }) } },
+    });
+    const { client } = await setupTest(t, registry);
+    const conversation = client.conversation.getOrCreate(["private", owner.id]);
+    await conversation.send("inbox", {
+      type: "event",
+      event: event("setup", "Compare trains and boats"),
+    });
+    await expect.poll(() => turns.length, { timeout: 15000 }).toBe(3);
+    await expect.poll(() => lifecycle.active, { timeout: 15000 }).toBe(0);
+    summaryRead.after = async () => {
+      reads++;
+      if (outcome === "failed" && reads === 1)
+        throw new Error("fixture summary failure");
+      await summaryGate.promise;
+    };
+    const input = event("overlap", "How do they compare?");
+    const dependency = (await continuity.project(input, { kind: "owner" }))
+      .dependency;
+    if (outcome === "revoked") {
+      summaryRead.evidenceId = dependency;
+      expect(JSON.stringify(await conversation.snapshot())).not.toContain(
+        summaryRead.evidenceId,
+      );
+    }
+    latency.begin(input);
+    try {
+      await conversation.send("inbox", { type: "event", event: input });
+      await contextEntered.promise;
+      // Serial collection cannot reach either summary while context is blocked.
+      await expect.poll(() => reads, { timeout: 1500 }).toBe(2);
+      if (outcome === "revoked") {
+        continuity.clear();
+        expect(continuity.valid(dependency)).toBe(false);
+        expect(store.deletionRevision()).toBe(0);
+      }
+      contextGate.resolve();
+      await expect
+        .poll(() =>
+          latency
+            .snapshot()
+            .traces[0]?.observations.some(
+              ({ stage }) => stage === "context_platform_ready",
+            ),
+        )
+        .toBe(true);
+      expect(turns).toHaveLength(3);
+      expect(await lifecycle.drain(100)).toBe(false);
+      expect(lifecycle.active).toBeGreaterThan(0);
+      summaryGate.resolve();
+      await expect.poll(() => lifecycle.active, { timeout: 15000 }).toBe(0);
+      expect(turns).toHaveLength(outcome === "ready" ? 4 : 3);
+      if (outcome === "ready") {
+        expect(turns[3]?.system).toContain('"name":"trains"');
+        expect(turns[3]?.system).toContain('"name":"boats"');
+        expect(turns[3]?.system).toContain('"report":"Fixture report"');
+      }
+      expect(reads).toBe(2);
+      expect(lifecycle.ready).toBe(true);
+    } finally {
+      summaryRead.after = undefined;
+      contextGate.resolve();
+      summaryGate.resolve();
+      await expect.poll(() => lifecycle.active, { timeout: 15000 }).toBe(0);
+    }
+  },
+);
 
 it("revokes continuity-derived worker output on restriction but not on idle expiry", async (t) => {
   const store = new EvidenceStore(":memory:", randomBytes(32));

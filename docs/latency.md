@@ -199,6 +199,20 @@ over SSH is not a live June turn, even with the actual model and login.
 - `context_started` → `context_ready`: memory, platform context, prompt building,
   deployment-status read. `context_ready` → `fast_started`: invocation intent
   persistence and occupancy. No journal durability is skipped to save time.
+- Ordinary owner-private Slack replies with context and memory enabled overlap
+  platform context and fresh worker-summary reads. Platform context and every
+  summary RPC settle before validation or further context assembly, including
+  failures. An RPC failure/timeout does not prove underlying actor or persistence
+  settlement; this is not independent deployment-drain evidence.
+  `context_platform_ready` still marks platform completion; the new
+  `context_reads_ready` marks their join. Reports separate the remaining parallel
+  roster wait from continuity, and label the later roster interval as evidence
+  merge rather than RPC duration. Older/serial traces retain their original
+  labels. Capacity's `observedAt` is collection completion, not prompt completion.
+  No summary is reused across turns, and dispatch independently refreshes worker
+  state. Job-result recording still precedes summary collection. This changes
+  neither model/Fast/reasoning settings nor durability, permissions or retries;
+  source support alone is not a measured live improvement.
 - `fast/deep/synthesis_started` → corresponding `finished`: full provider call,
   not first-token time; SDK/subprocess overhead and accounting are included.
 - Providers may invoke the optional host-only `ModelRequest.onProviderTiming`

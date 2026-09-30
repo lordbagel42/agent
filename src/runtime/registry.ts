@@ -3310,18 +3310,72 @@ export function createJuneRegistry(deps: Dependencies) {
                                   counts: null,
                                 };
                               if (version >= 3) {
-                                const context =
-                                  plan.context && body.type === "event"
-                                    ? ((await deps.channels[
-                                        event.address.channel
-                                      ]
-                                        ?.context?.(event, signal)
-                                        .catch(() => [])) ?? [])
-                                    : [];
-                                deps.latency?.mark(
-                                  event,
-                                  "context_platform_ready",
-                                );
+                                const readRoster = async () => {
+                                  // Summary can persist cancellation of stale queued work.
+                                  // Drain every RPC, even if another one has failed.
+                                  const results = await Promise.allSettled(
+                                    Object.entries(step.state.agents ?? {}).map(
+                                      async ([name, id]) => ({
+                                        name,
+                                        ...(await step
+                                          .client<JuneClientRegistry>()
+                                          .execution.getOrCreate(
+                                            executionKey(scope.key, id),
+                                          )
+                                          .summary()),
+                                      }),
+                                    ),
+                                  );
+                                  return {
+                                    roster: results.map((result) => {
+                                      if (result.status === "rejected")
+                                        throw result.reason;
+                                      return result.value;
+                                    }),
+                                    observedAt: new Date().toISOString(),
+                                  };
+                                };
+                                const [platform, rosterSnapshot] =
+                                  await Promise.allSettled([
+                                    (async () => {
+                                      const context =
+                                        plan.context && body.type === "event"
+                                          ? ((await deps.channels[
+                                              event.address.channel
+                                            ]
+                                              ?.context?.(event, signal)
+                                              .catch(() => [])) ?? [])
+                                          : [];
+                                      deps.latency?.mark(
+                                        event,
+                                        "context_platform_ready",
+                                      );
+                                      return context;
+                                    })(),
+                                    version >= 7 &&
+                                    body.type === "event" &&
+                                    phase === "reply" &&
+                                    event.address.channel === "slack" &&
+                                    ownerTurn &&
+                                    scope.private &&
+                                    plan.context &&
+                                    plan.memory &&
+                                    deps.memory
+                                      ? readRoster()
+                                      : undefined,
+                                  ]);
+                                // Join all reads before validation or any early return.
+                                // A failed RPC is not proof of raw actor/persist settlement.
+                                if (platform.status === "rejected")
+                                  throw platform.reason;
+                                if (rosterSnapshot.status === "rejected")
+                                  throw rosterSnapshot.reason;
+                                if (rosterSnapshot.value)
+                                  deps.latency?.mark(
+                                    event,
+                                    "context_reads_ready",
+                                  );
+                                const context = platform.value;
                                 if (!valid(step.state) || signal.aborted)
                                   return {
                                     reply: { text: "" },
@@ -3902,22 +3956,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                           body.text,
                                         );
                                   }
-                                  const roster = await Promise.all(
-                                    Object.entries(step.state.agents ?? {}).map(
-                                      async ([name, id]) => ({
-                                        name,
-                                        ...(await step
-                                          .client<JuneClientRegistry>()
-                                          .execution.getOrCreate(
-                                            executionKey(scope.key, id),
-                                          )
-                                          .summary()),
-                                      }),
-                                    ),
-                                  );
+                                  const { roster, observedAt } =
+                                    rosterSnapshot.value ??
+                                    (await readRoster());
                                   executionCapacity = {
                                     enabled: !!deps.execution,
-                                    observedAt: new Date().toISOString(),
+                                    observedAt,
                                     workers: roster.length,
                                     // Older actor instances can lack this projection.
                                     counts: roster.every(

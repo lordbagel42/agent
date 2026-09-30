@@ -95,6 +95,12 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain(
       "A slow context total alone cannot identify the slow dependency",
     );
+    expect(request.system).toContain(
+      "joins every issued read before proceeding, including failures",
+    );
+    expect(request.system).toContain(
+      "refreshes worker state separately before dispatch",
+    );
     expect(request.system).toContain("relationship memory is immature");
     expect(request.system).toContain(
       "Idle expiry does not cancel durable jobs",
