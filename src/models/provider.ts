@@ -509,6 +509,10 @@ export function replyJsonSchema(
       Reflect.deleteProperty(schema.properties, key);
     }
   }
+  if ("messages" in schema.properties) {
+    schema.properties.text.description +=
+      " One coherent conversational thought or an explicitly requested single message. For distinct conversational beats, even short ones, leave this empty and use messages instead. Newlines do not create separate sends. Action acknowledgments still use text.";
+  }
   return {
     ...schema,
     required: schema.required.filter((key) => rolePermitsField(agentRole, key)),
@@ -763,7 +767,7 @@ function legacyReplyJsonSchema(
               type: ["array", "null"],
               items: { type: "string" },
               description:
-                "Optional one to four separate messages in order, each nonempty and at most 3500 Unicode characters. Use instead of text, leaving text empty. Conversational replies only; never combine with action directives.",
+                "Default for conversational replies with distinct beats, even when short: put a setup, emphatic line, and follow-up in three separate items, not one multiline item. One to four ordered nonempty parts, each at most 3500 Unicode characters; leave text empty. Keep code, quotations and cohesive passages together; honor an explicit request for one message. Conversational replies only; never combine with action directives.",
             },
             interrupt: {
               type: ["boolean", "null"],
