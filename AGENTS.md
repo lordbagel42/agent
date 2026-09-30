@@ -6,6 +6,7 @@
 
 ## Slack app configuration
 
+- Never request the Slack OAuth scope `links:write`.
 - Obtain the deployment owner's authorization before changing Slack app features,
   permissions, subscriptions, or installations. This file grants no standing
   permission to change a live app or infrastructure.
