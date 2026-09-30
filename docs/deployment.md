@@ -1271,10 +1271,19 @@ not June's local SDK, ordinary Amp jobs, or the recovery incident ledger. June
 publishes an immutable UUID-named snapshot into a private shared inbox. The
 dispatcher persists launch intent before SSH; the runner durably admits each
 UUID once before starting Amp. Loss of either process/receipt is unknown, never
-permission to launch twice. The dispatcher serializes investigations; a queued
-request can wait behind an active one. Restarting June does not stop it. Restarting
-the dispatcher marks interrupted observations unknown and never replays them;
-an Amp thread may still be running. Do not delete admission records to retry.
+permission to launch twice. Each distinct UUID gets its own concurrent dispatcher
+worker on the next two-second inbox scan; ten shares can start ten investigations
+without waiting for any to finish. The single dispatcher lock prevents competing
+daemons, not parallel investigations. Each worker publishes its thread ID as soon
+as Amp emits it, independently of completion. Snapshot transfer and Amp startup
+still take time; the initial queued acknowledgment is not a launch receipt.
+Deployment locks and operator/recovery ownership still serialize live mutations.
+Restarting June does not stop investigations. Restarting the dispatcher marks
+interrupted observations unknown and never replays them; an Amp thread may still
+be running. Do not delete admission records to retry. Updating this standalone
+dispatcher requires an authorized installation/restart outside app deployment;
+coordinate the cutover around active transports rather than interrupting them
+merely to enable parallel launches.
 
 Installation is a separate authorized, coordinated operation, not a consequence
 of pushing source. Preserve existing recovery and ordinary-job keys/config:

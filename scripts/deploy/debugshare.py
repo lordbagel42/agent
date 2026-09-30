@@ -8,6 +8,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -159,10 +160,28 @@ def main():
             if receipt["status"] == "running":
                 receipt["status"] = "unknown"
                 save_receipt(directory, receipt)
+        workers = {}
         while True:
+            workers = {
+                identity: worker
+                for identity, worker in workers.items()
+                if worker.is_alive()
+            }
             for path in sorted(directory.glob("*.json")):
-                if UUID.fullmatch(path.stem):
-                    dispatch(directory, path, ssh)
+                if (
+                    UUID.fullmatch(path.stem)
+                    and path.stem not in workers
+                    and not (directory / f"{path.stem}.receipt.json").exists()
+                ):
+                    # One observer per UUID, not one investigation at a time.
+                    # Track the worker before the next scan, even if it has not
+                    # persisted its launch fence yet. The daemon lock excludes
+                    # other dispatchers; durable receipts exclude later replay.
+                    worker = threading.Thread(
+                        target=dispatch, args=(directory, path, ssh), daemon=True
+                    )
+                    worker.start()
+                    workers[path.stem] = worker
             time.sleep(2)
 
 

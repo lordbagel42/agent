@@ -175,8 +175,13 @@ The private request transport is limited to 64 MiB.
 | `completed` | Amp returned successfully; not independent verification, publication, deployment or proof of a fix. |
 
 June's `timeoutMs` limits observation, not remote execution. App restarts do not
-cancel the independent investigation. The dispatcher serializes requests and
-records launch intent before SSH; the runner admits each UUID once. Never
+cancel the independent investigation. The updated dispatcher starts distinct UUIDs
+concurrently on its next two-second inbox scan, without waiting for earlier
+investigations to finish. Verify the separately installed dispatcher, not just
+the app revision: older dispatchers serialize through investigation completion.
+Each worker records launch intent before SSH; the runner admits each UUID once.
+Concurrent investigations still coordinate live changes through deployment locks
+and operator/recovery ownership. Never
 delete receipts/admission directories to retry, or spawn a second investigator
 because a response was lost. A completion receipt promises no follow-up message.
 

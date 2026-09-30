@@ -133,6 +133,12 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain('inspection:"debug-shares"');
     expect(request.system).toContain("separately installed DEBUGSHARE service");
     expect(request.system).toContain(
+      "Each distinct DEBUGSHARE UUID starts an independent Amp investigation",
+    );
+    expect(request.system).toContain(
+      "without waiting for earlier investigations to finish",
+    );
+    expect(request.system).toContain(
       "the host replies with the Amp thread link",
     );
     expect(request.system).toContain(
