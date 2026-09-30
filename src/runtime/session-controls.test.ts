@@ -131,6 +131,7 @@ it.for([false, true])(
     t.onTestFinished(() => store.close());
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];
+    let resetAt: number | undefined;
     const blocked = Promise.withResolvers<CompanionReply>();
     t.onTestFinished(() => blocked.resolve({ text: "old answer" }));
     const lifecycle = createLifecycle();
@@ -173,8 +174,21 @@ it.for([false, true])(
             {
               role: "user",
               content: "old platform context",
-              source: { ...message("old-platform", ""), occurredAt: 1 },
+              source: {
+                ...message("old-platform", ""),
+                occurredAt: resetAt === undefined ? 1 : resetAt - 1,
+              },
             },
+            ...(resetAt === undefined
+              ? []
+              : [resetAt, resetAt + 1].map((occurredAt, offset) => ({
+                  role: "user" as const,
+                  content: `fresh platform context ${offset}`,
+                  source: {
+                    ...message(`new-platform-${offset}`, ""),
+                    occurredAt,
+                  },
+                }))),
           ],
           async send(outbound) {
             sent.push(JSON.parse(JSON.stringify(outbound)));
@@ -208,6 +222,8 @@ it.for([false, true])(
     ).toBe(true);
     const first = await june.snapshot();
     expect(first.session?.id).toMatch(/^[\da-f-]{36}$/);
+    resetAt = first.session?.startedAt;
+    expect(resetAt).toBeGreaterThan(0);
     await june.receive(reset);
     expect((await june.snapshot()).session?.id).toBe(first.session?.id);
     blocked.resolve({ text: "old answer" });
@@ -234,6 +250,12 @@ it.for([false, true])(
     );
     expect(JSON.stringify(requests.at(-1)?.messages)).not.toContain(
       "old platform context",
+    );
+    expect(JSON.stringify(requests.at(-1)?.messages)).toContain(
+      "fresh platform context 0",
+    );
+    expect(JSON.stringify(requests.at(-1)?.messages)).toContain(
+      "fresh platform context 1",
     );
     expect(lifecycle.ready).toBe(true);
     if (activities)

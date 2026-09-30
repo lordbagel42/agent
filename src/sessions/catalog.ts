@@ -470,6 +470,8 @@ export function createSessionCatalog(
       .filter(
         ({ source: entry }) =>
           entry &&
+          (!host.state.session?.startedAt ||
+            entry.occurredAt >= host.state.session.startedAt) &&
           (revision === 0 || entry.id === source.id) &&
           entry.direct === source.direct &&
           entry.address.channel === source.address.channel &&

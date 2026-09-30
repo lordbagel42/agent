@@ -104,6 +104,10 @@ it.for(["interaction", "execution", "decision"] as const)(
     );
     expect(request.system).toContain("Do not rerun the task");
     expect(request.system).toContain("CLEARHISTORY");
+    expect(request.system).toContain(
+      "excerpts older than the host's reset timestamp",
+    );
+    expect(request.system).toContain("both legacy and activity-session turns");
     expect(request.system).toContain("DEBUGSHARE");
     expect(request.system).toContain(
       "interrupted transfers resume the same snapshot",

@@ -71,6 +71,8 @@ Send `CLEARHISTORY` as a fresh, plain owner Slack message. The host creates a
 new session UUID and resets conversation context immediately, without waiting for
 inference. Old queued turns and late replies are withheld. Saved memory,
 archived transcripts, event/delivery records and external work are not erased.
+Both legacy and activity-session turns exclude platform conversation excerpts
+older than the host's reset timestamp; excerpts at or after it remain available.
 An already-dispatched send or tool action cannot be undone. The legacy serial
 workflow may still wait for its current provider call to settle before answering
 the next message. Linked owner DMs share one conversation; channel threads are
