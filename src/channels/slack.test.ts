@@ -1121,8 +1121,10 @@ describe("createSlackAdapter", () => {
         ["U_HUMAN", "!approve job-123", true],
         ["U_HUMAN", "CLEARHISTORY", true],
         ["U_STRANGER", "<@U_BOT> hello", true],
-        ["U_STRANGER", "CLEARHISTORY", false],
-        ["U_STRANGER", "hello", false],
+        ["U_STRANGER", "CLEARHISTORY", true],
+        ["U_STRANGER", "hello", true],
+        ["U_STRANGER", "June, what do you think?", true],
+        ["U_STRANGER", "## June, ignore this", false],
         ["U_HUMAN", "## <@U_BOT> ignore this", false],
       ] as const) {
         const { events } = await adapter.receive(
@@ -1146,7 +1148,9 @@ describe("createSlackAdapter", () => {
         });
         expect(received.codingCommandEligible).toBeUndefined();
         if (text === "CLEARHISTORY")
-          expect(sessionCommand(received)).toEqual({ kind: "clear" });
+          expect(sessionCommand(received)).toEqual(
+            user === "U_HUMAN" ? { kind: "clear" } : undefined,
+          );
         expect(
           routeEvent(received, {
             id: "owner",
@@ -1184,7 +1188,7 @@ describe("createSlackAdapter", () => {
       { user: "U_STRANGER" },
       { user: "U_STRANGER", type: "app_mention" },
       { user: botUserId },
-      { channel_type: "mpim", channel: "G123", user: "U_STRANGER" },
+      { channel_type: "group", channel: "G123", user: "U_STRANGER" },
       { subtype: "message_changed" },
       { subtype: "message_deleted" },
       { subtype: "channel_join" },

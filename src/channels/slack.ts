@@ -231,14 +231,17 @@ async function normalizeEvent(
     (event.text.startsWith("##") || event.text.includes(RIVET_REPLY_PREFIX))
   )
     return [];
-  // Human guests must explicitly address June. Bot messages are ordinary
-  // conversational input even without a ping; the model decides whether to reply.
+  // Human guests must explicitly address June outside DMs and group DMs.
+  // Bot messages are ordinary conversational input even without a ping.
   if (
     !owner &&
     !bot &&
     !mentioned &&
     !debugEligible &&
-    !(event.type === "message" && event.channel_type === "im")
+    !(
+      event.type === "message" &&
+      (event.channel_type === "im" || event.channel_type === "mpim")
+    )
   )
     return [];
   if (event.type === "message" || event.type === "app_mention") {
@@ -300,8 +303,8 @@ async function normalizeEvent(
         threads?.has(teamId, botUserId, event.channel, event.thread_ts));
     if (
       channelType !== "im" &&
+      channelType !== "mpim" &&
       !bot &&
-      !(owner && channelType === "mpim") &&
       !mentioned &&
       !named &&
       !participatingThread &&

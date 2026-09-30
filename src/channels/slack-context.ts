@@ -204,6 +204,7 @@ export function createSlackContext({
       (!ownerUserIds.has(event.senderId) &&
         !event.senderId.startsWith("bot:") &&
         !event.botMentioned &&
+        type !== "mpim" &&
         !event.direct) ||
       event.senderId === botUserId ||
       (type !== "im" &&

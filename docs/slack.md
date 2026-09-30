@@ -21,23 +21,29 @@ restarts and let the owner follow up without another ping. Guest access, `##`
 opt-outs, direct-mention requirements for group pings, and privacy boundaries
 remain unchanged. A name reference does not count as a direct @mention.
 
-June is instructed that subscribing, being named, or being pinged never obligates
-her to reply. This uses the existing `message.channels` / `message.groups`
+Outside group DMs, subscribing, being named, or being pinged does not obligate
+June to reply. This uses the existing `message.channels` / `message.groups`
 subscriptions and channel-history scopes; it adds no Slack permissions.
 
 ## Group DMs
 
 Group DMs (`mpim`) use the existing signed HTTP webhook, not Socket Mode.
 Subscribe the live app to `message.mpim` with `mpim:history` and `mpim:read`;
-the checked-in manifest alone does not enable delivery. June accepts the owner's
-messages without a ping, while guests must directly @mention her for ordinary
-chat. Plain `DEBUG`/`DEBUGSHARE` retain their separate any-surface host-command
-admission. Bots, `##` opt-outs, stop requests and group-ping silence rules still apply.
+the checked-in manifest alone does not enable delivery. June accepts ordinary
+messages from every participant without a ping or name reference. Guests remain
+in separate guest queues with unchanged tool permissions. June is instructed to
+reply to each ordinary group-DM message, especially one naming her; a brief
+acknowledgment or follow-up is enough. Multipart messages may still be answered
+together. Explicit wait/stop requests, `##` and `<>` opt-outs, group-ping silence
+rules, self-message suppression and repetitive bot-loop prevention take precedence.
+Plain `DEBUG`/`DEBUGSHARE` and other recognized host commands keep their existing
+command path; this policy does not add acknowledgments to commands, worker
+completions or automated notifications.
 
 These are shared conversations, not owner-private DMs. Replies and bounded
 same-conversation/thread context use the normal conversation path. Private DM
 history, owner memory, private tools and approvals remain unavailable, and
-cross-conversation continuity is withheld. June may still choose silence.
+cross-conversation continuity is withheld.
 Enabling the subscription does not replay messages sent before it was enabled.
 
 ## Bot tools

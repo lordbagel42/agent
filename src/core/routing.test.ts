@@ -48,6 +48,15 @@ describe("explicit identity linking", () => {
     ).toBeUndefined();
     expect(
       routeEvent(
+        { ...guest, botMentioned: false, metadata: { channelType: "mpim" } },
+        owner,
+      ),
+    ).toEqual({
+      key: ["guest", "slack", "T1", "C1", "", "U2"],
+      private: false,
+    });
+    expect(
+      routeEvent(
         { ...guest, direct: true, metadata: { channelType: "mpim" } },
         owner,
       ),

@@ -37,6 +37,7 @@ export function routeEvent(
       ) ||
       event.direct !== (event.metadata?.channelType === "im") ||
       (!event.direct &&
+        event.metadata?.channelType !== "mpim" &&
         !event.botMentioned &&
         !debug &&
         !event.senderId.startsWith("bot:"))

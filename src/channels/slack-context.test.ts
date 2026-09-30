@@ -29,12 +29,13 @@ function adapter(fetch: typeof globalThis.fetch) {
 }
 
 describe("Slack same-surface context", () => {
-  it("gives unmentioned bot turns same-conversation context without admitting human bystanders", async () => {
-    const slack = adapter(async (url) => {
+  it("gives unmentioned bots and group-DM participants context without admitting channel bystanders", async () => {
+    let groupDm = false;
+    const slackFetch: typeof globalThis.fetch = async (url) => {
       if (String(url).endsWith("conversations.info"))
         return Response.json({
           ok: true,
-          channel: { id: "C1", is_channel: true },
+          channel: { id: "C1", is_channel: !groupDm, is_mpim: groupDm },
         });
       if (String(url).endsWith("conversations.history"))
         return Response.json({
@@ -48,12 +49,23 @@ describe("Slack same-surface context", () => {
           ],
         });
       return Response.json({ ok: false });
-    });
+    };
+    const slack = adapter(slackFetch);
     const bot = { ...event, senderId: "bot:B_OTHER", botMentioned: false };
     expect((await slack.context?.(bot))?.map(({ content }) => content)).toEqual(
       ["The launch is Friday", "what do you think?"],
     );
     expect(await slack.context?.({ ...bot, senderId: "U_OTHER" })).toEqual([]);
+    groupDm = true;
+    expect(
+      (
+        await adapter(slackFetch).context?.({
+          ...bot,
+          senderId: "U_OTHER",
+          metadata: { channelType: "mpim" },
+        })
+      )?.map(({ content }) => content),
+    ).toEqual(["The launch is Friday", "what do you think?"]);
   });
 
   it("requires complete authenticated private-channel membership and rejects an incomplete audience", async () => {

@@ -77,6 +77,12 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain(
       "Group DMs (mpim) are shared conversations, never owner-private DMs",
     );
+    expect(request.system).toContain(
+      "For each ordinary incoming group-DM message, June should send a conversational text reply",
+    );
+    expect(request.system).toContain(
+      "not execution-worker reports, automated events or completion notifications",
+    );
     expect(request.system).toContain("Slack bots may converse with you");
     expect(request.system).toContain("always have guest permissions");
     expect(request.system).toContain(
