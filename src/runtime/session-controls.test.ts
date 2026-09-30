@@ -39,6 +39,78 @@ const message = (id: string, text: string): MessageEvent => ({
   sessionCommandEligible: true,
 });
 
+it("keeps serialized command publication alive beyond action and idle deadlines", async (t) => {
+  const ack = Promise.withResolvers<void>();
+  t.onTestFinished(() => ack.resolve());
+  const lifecycle = createLifecycle();
+  const sent: OutboundMessage[] = [];
+  let asleep = false;
+  const registry = createJuneRegistry({
+    owner,
+    lifecycle,
+    model: {
+      async reply() {
+        return { text: "unused" };
+      },
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, threads: true, reactions: true },
+        receive: async () => ({ events: [], response: new Response() }),
+        async send(outbound) {
+          sent.push(outbound);
+          if (sent.length === 1) await ack.promise;
+          return { status: "sent", messageId: "sent" };
+        },
+      },
+    },
+  });
+  const config = registry.config.use.conversation.config;
+  config.options = {
+    ...config.options,
+    actionTimeout: 2_000,
+    sleepTimeout: 500,
+  };
+  config.onSleep = () => {
+    asleep = true;
+  };
+  const { client } = await setupTest(t, registry);
+  const june = client.conversation.getOrCreate(["private", "owner"]);
+  const first = message("first-command", "CLEARHISTORY");
+  let admitted = false;
+  const admission = june.receive(first).then(() => {
+    admitted = true;
+  });
+  // Attach rejection handling immediately, including on the buggy implementation.
+  void admission.catch(() => {});
+  await expect.poll(() => sent.length, { timeout: 15_000 }).toBe(1);
+  await expect.poll(() => admitted, { timeout: 1_000 }).toBe(true);
+  await june.receive(message("second-command", "CLEARHISTORY"));
+  await Promise.all([
+    june.resumeSessionCommands(),
+    june.resumeSessionCommands(),
+  ]);
+  // No actor polling/connections to hide ordinary idle sleep during this wait.
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  expect(asleep).toBe(false);
+  expect(sent).toHaveLength(1);
+  expect(lifecycle.ready).toBe(true);
+  expect(await lifecycle.drain(20)).toBe(false);
+  ack.resolve();
+  await admission;
+  await expect.poll(() => sent.length, { timeout: 15_000 }).toBe(2);
+  await expect.poll(() => lifecycle.active, { timeout: 15_000 }).toBe(0);
+  await june.receive(first);
+  await june.resumeSessionCommands();
+  await expect.poll(() => lifecycle.active, { timeout: 15_000 }).toBe(0);
+  expect(new Set(sent.map((entry) => entry.id)).size).toBe(2);
+  expect(sent).toHaveLength(2);
+  expect(lifecycle.ready).toBe(true);
+  expect(await lifecycle.drain()).toBe(true);
+  lifecycle.resume();
+});
+
 it("resumes large debug transfers after lost acknowledgments without replacing or reinvestigating snapshots", async (t) => {
   const snapshots: DebugSnapshot[] = [];
   const registry = createJuneRegistry({
@@ -213,13 +285,15 @@ it.for([false, true])(
     });
     const reset = message("reset", "CLEARHISTORY");
     await june.receive(reset);
-    expect(
-      sent.some(
-        (entry) =>
-          entry.content.type === "text" &&
-          entry.content.text.includes("new session"),
-      ),
-    ).toBe(true);
+    await expect
+      .poll(() =>
+        sent.some(
+          (entry) =>
+            entry.content.type === "text" &&
+            entry.content.text.includes("new session"),
+        ),
+      )
+      .toBe(true);
     const first = await june.snapshot();
     expect(first.session?.id).toMatch(/^[\da-f-]{36}$/);
     resetAt = first.session?.startedAt;

@@ -646,8 +646,8 @@ export function createJuneRegistry(deps: Dependencies) {
     ): {
       persist: () => Promise<void>;
       receiving: Promise<void>;
-      publishing: Promise<void>;
       notifyDebugShare(id: string, at: number): void;
+      publishSessionCommands: () => void;
       schedule(at: number): Promise<unknown>;
       debugRequest?: unknown;
     } => {
@@ -656,13 +656,13 @@ export function createJuneRegistry(deps: Dependencies) {
         return c.saveState({ immediate: true });
       };
       // createVars owns the actor incarnation, not a dispatch deadline. Queued
-      // notification work must outlive the short action that triggers it.
+      // publication and notification work outlive the short triggering actions.
       const signal = c.abortSignal;
       let notifyingDebug = Promise.resolve();
+      let publishing = Promise.resolve();
       return {
         persist,
         receiving: Promise.resolve(),
-        publishing: Promise.resolve(),
         notifyDebugShare: (id, at) => {
           notifyingDebug = notifyingDebug
             .then(async () => {
@@ -719,6 +719,45 @@ export function createJuneRegistry(deps: Dependencies) {
           // Register the real, rejection-handled settlement, including the
           // final receipt save. It must prevent idle sleep while effects run.
           void c.keepAwake(notifyingDebug);
+        },
+        publishSessionCommands: () => {
+          publishing = publishing
+            .then(async () => {
+              signal.throwIfAborted();
+              for (const receipt of Object.values(
+                c.state.sessionCommands ?? {},
+              )) {
+                signal.throwIfAborted();
+                if (receipt.ping) {
+                  await c
+                    .client<JuneClientRegistry>()
+                    .ping.getOrCreate([receipt.delivery.message.id])
+                    .start(receipt);
+                  continue;
+                }
+                await publishSessionCommand(
+                  receipt,
+                  deps,
+                  persist,
+                  (snapshot) =>
+                    publishDebugSnapshot(snapshot, (chunk) =>
+                      c
+                        .client<JuneClientRegistry>()
+                        .debugShare.getOrCreate([snapshot.id])
+                        .startChunk(chunk),
+                    ),
+                  signal,
+                );
+              }
+            })
+            .catch(() => {
+              // Retain the original receipts for wake/explicit-trigger recovery.
+              // Do not hand arbitrary provider/RPC errors to keepAwake's logger.
+              console.error("session_command_publication_failed");
+            });
+          // Includes raw effects and final persistence, never a timeout race.
+          // Every trigger appends a sweep so new receipts cannot miss a running one.
+          void c.keepAwake(publishing);
         },
         schedule: (at) => c.schedule.at(at, "sessionIdle"),
       };
@@ -803,33 +842,8 @@ export function createJuneRegistry(deps: Dependencies) {
       notifyDebugShare: (c, id: string, at: number): void => {
         c.vars.notifyDebugShare(id, at);
       },
-      resumeSessionCommands: async (c): Promise<void> => {
-        const publishing = c.vars.publishing.then(async () => {
-          for (const receipt of Object.values(c.state.sessionCommands ?? {})) {
-            if (receipt.ping) {
-              await c
-                .client<JuneClientRegistry>()
-                .ping.getOrCreate([receipt.delivery.message.id])
-                .start(receipt);
-              continue;
-            }
-            await publishSessionCommand(
-              receipt,
-              deps,
-              c.vars.persist,
-              (snapshot) =>
-                publishDebugSnapshot(snapshot, (chunk) =>
-                  c
-                    .client<JuneClientRegistry>()
-                    .debugShare.getOrCreate([snapshot.id])
-                    .startChunk(chunk),
-                ),
-              c.abortSignal,
-            );
-          }
-        });
-        c.vars.publishing = publishing.catch(() => {});
-        await publishing;
+      resumeSessionCommands: (c): void => {
+        c.vars.publishSessionCommands();
       },
       sessionIdle: async (c) => {
         await c.queue.send("inbox", { type: "session_tick" });
@@ -1105,11 +1119,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 .client<JuneClientRegistry>()
                 .ping.getOrCreate([receipt.delivery.message.id])
                 .start(receipt);
-          } else
-            await c
-              .client<JuneClientRegistry>()
-              .conversation.getOrCreate(c.key)
-              .resumeSessionCommands();
+          } else c.vars.publishSessionCommands();
         }
       },
       /** Trusted worker/scheduler ingress. Uses the same admission serializer as

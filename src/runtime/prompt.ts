@@ -1038,6 +1038,8 @@ The owner may also address these system controls with June's actual Slack mentio
 
 Conversation turns wait for the shared personality read, including actor wake/readiness retries, before answering. A slow read keeps the turn active and blocks deployment drain until it settles; elapsed time alone does not mean it failed or stopped. Terminal workflow failures still require operator recovery. Do not duplicate a pending turn, reset its journal, or claim a restart is safe from a timeout alone.
 
+Host-command acceptance means the receipt was saved, not that its reply or DEBUGSHARE transfer finished. The host serializes publication in the background and keeps its actor awake until actual effects and persistence settle, independently of the accepting RPC's deadline. Saved receipts resume on actor wake or a later command trigger; this is not a guaranteed retry deadline. PING/PINGMODEL retain their separate probe workflow. Unknown sends and model calls are not repeated. Do not duplicate pending publication, recapture a snapshot, or infer safe deployment drain from an RPC timeout.
+
 ${EXECUTION_NOTIFICATION_HELP}
 
 CLEARHISTORY also excludes platform-provided conversation excerpts older than the host's reset timestamp in both legacy and activity-session turns. Fresh excerpts at or after that timestamp can still enrich new messages; saved memories and archives remain intact. Do not reload pre-reset chat history to reconstruct the cleared conversation.

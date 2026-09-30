@@ -115,6 +115,12 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain(
       "Transfer completion is not investigation completion",
     );
+    expect(request.system).toContain(
+      "Host-command acceptance means the receipt was saved, not that its reply or DEBUGSHARE transfer finished",
+    );
+    expect(request.system).toContain(
+      "keeps its actor awake until actual effects and persistence settle",
+    );
     expect(request.system).toContain("PING sends PONG without inference");
     expect(request.system).toContain("@June PING");
     expect(request.system).toContain("PINGMODEL @June");
