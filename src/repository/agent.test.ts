@@ -6,8 +6,9 @@ import type {
   CompanionReply,
   MessageEvent,
   ModelProvider,
+  ModelSettlement,
 } from "../core/contracts.js";
-import { parseReply, replyJsonSchema } from "../models/provider.js";
+import { ModelError, parseReply, replyJsonSchema } from "../models/provider.js";
 import { executionKey } from "../runtime/execution.js";
 import {
   currentExecutionCapabilities,
@@ -185,22 +186,198 @@ it("loads source without following links, opening host paths, or accepting a par
   ).rejects.toThrow("repository_unsafe_path");
 });
 
-it("routes June's request through the specialist and withholds guest, revoked and automated grants", async (t) => {
-  let consultations = 0;
-  const report = `${"Source detail. ".repeat(270)}The deployment lock serializes activation (scripts/deploy.py:2–3); this does not prove live health.`;
-  const repository = createRepositoryAgent({
-    revision,
-    load: async () => snapshot(),
-    model: settled(async (request) => {
-      consultations++;
-      expect(request.agentRole).toBe("repository");
-      expect(request.system).toContain("scripts/deploy.py");
-      const observation = request.messages.at(-1)?.content ?? "";
-      return observation.includes("Untrusted snapshot observation")
-        ? {
-            text: report,
-          }
-        : {
+it.for([false, true])(
+  "routes June's repository result without retrying failures (timeout=%s)",
+  async (timeout, t) => {
+    let consultations = 0;
+    let workerCalls = 0;
+    let completion = "";
+    const report = `${"Source detail. ".repeat(270)}The deployment lock serializes activation (scripts/deploy.py:2–3); this does not prove live health.`;
+    const repository = createRepositoryAgent({
+      revision,
+      load: async () => snapshot(),
+      model: settled(async (request) => {
+        consultations++;
+        expect(request.agentRole).toBe("repository");
+        expect(request.system).toContain("scripts/deploy.py");
+        const observation = request.messages.at(-1)?.content ?? "";
+        if (timeout && observation.includes("Untrusted snapshot observation"))
+          throw new ModelError("timeout", false);
+        return observation.includes("Untrusted snapshot observation")
+          ? {
+              text: report,
+            }
+          : {
+              text: "",
+              repositoryRead: {
+                action: "read",
+                path: "scripts/deploy.py",
+                query: "",
+                offset: 0,
+              },
+            };
+      }),
+    });
+    const deps: Dependencies = {
+      owner,
+      channels: {},
+      repository,
+      model: {
+        async reply(request) {
+          if (request.system.includes("Execution completion"))
+            completion = request.system;
+          return request.system.includes("Execution completion")
+            ? { text: "" }
+            : {
+                text: "",
+                execution: [
+                  {
+                    agent: "june-repo",
+                    action: "run",
+                    task: "Consult the repository specialist about deployment serialization.",
+                  },
+                ],
+              };
+        },
+      },
+      execution: {
+        model: {
+          async reply(request): Promise<CompanionReply> {
+            workerCalls++;
+            expect(request.system).toContain(
+              "dedicated read-only repository specialist",
+            );
+            const observation = request.messages.find((message) =>
+              message.content.includes("Repository specialist report"),
+            );
+            if (observation) expect(observation.content).toContain(report);
+            return observation
+              ? {
+                  text:
+                    observation.content.slice(0, 500) +
+                    observation.content.slice(-2000),
+                }
+              : {
+                  text: "",
+                  repository: "What serializes deployment activation?",
+                };
+          },
+        },
+      },
+    };
+    const ceiling = executionCapabilities(deps, source);
+    expect(ceiling.repositoryAvailable).toBe(true);
+    expect(
+      executionCapabilities(deps, { ...source, senderId: "guest" })
+        .repositoryAvailable,
+    ).not.toBe(true);
+    expect(
+      currentExecutionCapabilities(
+        { ...deps, repository: undefined },
+        source,
+        ceiling,
+      ).repositoryAvailable,
+    ).not.toBe(true);
+    expect(
+      currentExecutionCapabilities(deps, source, {}).repositoryAvailable,
+    ).not.toBe(true);
+    const instructions: string[] = [];
+    for (const agentRole of ["interaction", "execution"] as const) {
+      const prompt = buildModelRequest({
+        agentRole,
+        event: source,
+        history: [],
+        now: new Date(),
+        owner,
+        models: { current: { provider: "fixture", model: "fixture" } },
+        capabilities: ceiling,
+      });
+      expect(prompt.system).toContain("june-repo");
+      expect(prompt.system).toContain("repository:");
+      instructions.push(prompt.system);
+    }
+    const wakeup = buildModelRequest({
+      event: source,
+      history: [],
+      now: new Date(),
+      owner,
+      models: { current: { provider: "fixture", model: "fixture" } },
+      capabilities: ceiling,
+      wakeup: {
+        runId: "r",
+        jobId: "w",
+        instruction: "notify",
+        event: {
+          id: "e",
+          source: "timer",
+          type: "due",
+          occurredAt: Date.now(),
+          data: {},
+        },
+      },
+    });
+    expect(wakeup.system).toContain(
+      "dedicated read-only repository specialist",
+    );
+    instructions.push(wakeup.system);
+    expect(wakeup.repositoryAvailable).toBe(false);
+    const { client } = await setupTest(t, createJuneRegistry(deps));
+    const june = client.conversation.getOrCreate(["private", "owner"]);
+    await june.send("inbox", { type: "event", event: source });
+    await expect.poll(() => consultations, { timeout: 15000 }).toBe(2);
+    const name = (await june.snapshot()).agents?.["june-repo"];
+    expect(name).toBeTruthy();
+    if (!name) throw new Error("Repository worker missing");
+    const worker = client.execution.getOrCreate(
+      executionKey(["private", "owner"], name),
+    );
+    await expect
+      .poll(async () => (await worker.summary())?.status, { timeout: 15000 })
+      .toBe(timeout ? "needs_review" : "completed");
+    if (timeout) {
+      expect((await worker.summary())?.report).toContain("timed out");
+      expect((await worker.summary())?.capacity.unknownOutcomes).toBe(1);
+      await expect
+        .poll(() => completion, { timeout: 15000 })
+        .toContain("timed out");
+      expect(workerCalls).toBe(1);
+      expect(consultations).toBe(2);
+    } else {
+      expect((await worker.summary())?.report).toContain(revision);
+      expect((await worker.summary())?.report).toContain("deployment lock");
+      expect(workerCalls).toBe(2);
+    }
+    for (const system of instructions)
+      expect(system.includes("configured model timeout")).toBe(true);
+  },
+);
+
+it.for(["unknown", "confirmed_stopped", "revoked"] as const)(
+  "waits for settlement before reporting a final repository timeout (%s)",
+  async (status, t) => {
+    const settlement = Promise.withResolvers<ModelSettlement>();
+    const finalStarted = Promise.withResolvers<void>();
+    t.onTestFinished(() => settlement.resolve("unknown"));
+    const error = new ModelError("timeout", false);
+    error.message = "PRIVATE provider payload must not become a worker report";
+    let calls = 0;
+    let finished = false;
+    let allowed = true;
+    const model: ModelProvider = {
+      reply: async () => {
+        throw new Error("Expected lifecycle-aware invocation");
+      },
+      beginReply: (request) => {
+        calls++;
+        if (!request.repositoryReadAvailable) {
+          finalStarted.resolve();
+          return {
+            answer: Promise.reject(error),
+            settlement: settlement.promise,
+          };
+        }
+        return {
+          answer: Promise.resolve({
             text: "",
             repositoryRead: {
               action: "read",
@@ -208,120 +385,43 @@ it("routes June's request through the specialist and withholds guest, revoked an
               query: "",
               offset: 0,
             },
-          };
-    }),
-  });
-  const deps: Dependencies = {
-    owner,
-    channels: {},
-    repository,
-    model: {
-      async reply(request) {
-        return request.system.includes("Execution completion")
-          ? { text: "" }
-          : {
-              text: "",
-              execution: [
-                {
-                  agent: "june-repo",
-                  action: "run",
-                  task: "Consult the repository specialist about deployment serialization.",
-                },
-              ],
-            };
+          }),
+          settlement: Promise.resolve("confirmed_stopped"),
+        };
       },
-    },
-    execution: {
-      model: {
-        async reply(request): Promise<CompanionReply> {
-          expect(request.system).toContain(
-            "dedicated read-only repository specialist",
-          );
-          const observation = request.messages.find((message) =>
-            message.content.includes("Repository specialist report"),
-          );
-          if (observation) expect(observation.content).toContain(report);
-          return observation
-            ? {
-                text:
-                  observation.content.slice(0, 500) +
-                  observation.content.slice(-2000),
-              }
-            : {
-                text: "",
-                repository: "What serializes deployment activation?",
-              };
-        },
-      },
-    },
-  };
-  const ceiling = executionCapabilities(deps, source);
-  expect(ceiling.repositoryAvailable).toBe(true);
-  expect(
-    executionCapabilities(deps, { ...source, senderId: "guest" })
-      .repositoryAvailable,
-  ).not.toBe(true);
-  expect(
-    currentExecutionCapabilities(
-      { ...deps, repository: undefined },
-      source,
-      ceiling,
-    ).repositoryAvailable,
-  ).not.toBe(true);
-  expect(
-    currentExecutionCapabilities(deps, source, {}).repositoryAvailable,
-  ).not.toBe(true);
-  for (const agentRole of ["interaction", "execution"] as const) {
-    const prompt = buildModelRequest({
-      agentRole,
-      event: source,
-      history: [],
-      now: new Date(),
-      owner,
-      models: { current: { provider: "fixture", model: "fixture" } },
-      capabilities: ceiling,
+    };
+    const agent = createRepositoryAgent({
+      load: async () => snapshot(),
+      model,
     });
-    expect(prompt.system).toContain("june-repo");
-    expect(prompt.system).toContain("repository:");
-  }
-  const wakeup = buildModelRequest({
-    event: source,
-    history: [],
-    now: new Date(),
-    owner,
-    models: { current: { provider: "fixture", model: "fixture" } },
-    capabilities: ceiling,
-    wakeup: {
-      runId: "r",
-      jobId: "w",
-      instruction: "notify",
-      event: {
-        id: "e",
-        source: "timer",
-        type: "due",
-        occurredAt: Date.now(),
-        data: {},
-      },
-    },
-  });
-  expect(wakeup.system).toContain("dedicated read-only repository specialist");
-  expect(wakeup.repositoryAvailable).toBe(false);
-  const { client } = await setupTest(t, createJuneRegistry(deps));
-  const june = client.conversation.getOrCreate(["private", "owner"]);
-  await june.send("inbox", { type: "event", event: source });
-  await expect.poll(() => consultations, { timeout: 15000 }).toBe(2);
-  const name = (await june.snapshot()).agents?.["june-repo"];
-  expect(name).toBeTruthy();
-  if (!name) throw new Error("Repository worker missing");
-  const worker = client.execution.getOrCreate(
-    executionKey(["private", "owner"], name),
-  );
-  await expect
-    .poll(async () => (await worker.summary())?.status, { timeout: 15000 })
-    .toBe("completed");
-  expect((await worker.summary())?.report).toContain(revision);
-  expect((await worker.summary())?.report).toContain("deployment lock");
-});
+    const result = agent
+      .ask("Inspect deployment", new AbortController().signal, () => allowed)
+      .then(
+        () => {
+          throw new Error("Unexpected success");
+        },
+        (failure: Error) => {
+          finished = true;
+          return failure;
+        },
+      );
+    await finalStarted.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(finished).toBe(false);
+    if (status === "revoked") allowed = false;
+    settlement.resolve(status === "revoked" ? "unknown" : status);
+    const failure = await result;
+    if (status === "revoked") {
+      expect(failure.message).toBe("repository_consultation_invalidated");
+    } else {
+      expect(failure.message).toContain("final report timed out");
+      expect(failure.message).toContain(status);
+      expect(failure.message).toContain("No automatic retry");
+    }
+    expect(failure.message).not.toContain("PRIVATE");
+    expect(calls).toBe(12);
+  },
+);
 
 it("never continues inference after unknown settlement or revoked authority", async () => {
   let calls = 0;

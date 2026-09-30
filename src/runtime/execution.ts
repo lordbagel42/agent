@@ -15,6 +15,7 @@ import type {
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import { parseReply } from "../models/provider.js";
+import { RepositoryTimeoutError } from "../repository/contracts.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import { type Delivery, deliver } from "./delivery.js";
 import { runExecutionCapability } from "./execution-capabilities.js";
@@ -845,7 +846,7 @@ export function createExecutionActor(
                               reply.skillCodingProposal;
                           break;
                         }
-                      } catch {
+                      } catch (error) {
                         if (
                           !step.state.revoked &&
                           step.state.requests[id]?.status !== "cancelled"
@@ -856,7 +857,9 @@ export function createExecutionActor(
                               ? "needs_review"
                               : "failed";
                           request.report =
-                            "Execution did not produce a confirmed result. No automatic retry was made; ask for another attempt if needed.";
+                            error instanceof RepositoryTimeoutError
+                              ? error.message
+                              : "Execution did not produce a confirmed result. No automatic retry was made; ask for another attempt if needed.";
                         }
                       } finally {
                         try {
