@@ -123,6 +123,16 @@ it.for(["interaction", "execution", "decision"] as const)(
     expect(request.system).toContain('inspection:"debug-shares"');
     expect(request.system).toContain("separately installed DEBUGSHARE service");
     expect(request.system).toContain(
+      "the host replies with the Amp thread link",
+    );
+    expect(request.system).toContain(
+      "mentioning Raygen's configured owner identity on Slack",
+    );
+    expect(request.system).toContain(
+      "do not duplicate the link reply or owner ping",
+    );
+    expect(request.system).toContain("notification delivery outcomes");
+    expect(request.system).toContain(
       "including publishing reviewed fixes, configuration/service repairs, deploying and restarting June",
     );
     expect(request.system).toContain(

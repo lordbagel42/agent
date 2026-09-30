@@ -130,9 +130,18 @@ Queued does not establish that the independent service is installed or running.
 June restarts do not cancel investigations. The dispatcher and runner each fence
 duplicate launches; ambiguous launches are never automatically retried. Old
 local-runtime running/unknown receipts are not migrated into new investigations.
-June can inspect recent UUIDs, timestamps, states and thread IDs with
-`inspection: "debug-shares"`; ask her for investigation status. Completed means
-Amp returned, not that its fix was independently verified or deployed.
+For new enabled requests, June follows the queued acknowledgment with the Amp
+thread link as soon as its receipt supplies the thread ID. The reply stays in the
+original private DM/thread and mentions Raygen's configured Slack owner identity;
+it contains no diagnostic body. Durable polling continues while queued/running,
+even after the initial observer times out, and resumes after June restarts.
+Terminal receipts without a thread ID stop polling; no link is fabricated and no
+investigator is relaunched. Old requests are not backfilled. Explicitly retryable
+send rejections get at most three attempts; uncertain sends are never repeated.
+June can inspect recent UUIDs, timestamps, states, thread IDs and notification
+delivery outcomes with `inspection: "debug-shares"`; ask her for investigation
+status. Completed means Amp returned, not that its fix was independently verified
+or deployed. Source publication does not establish live notification delivery.
 
 ## Optional E2B execution
 

@@ -133,6 +133,7 @@ import {
   createDebugShareActor,
   createPingActor,
   type DebugInvestigator,
+  publishDebugLink,
   publishDebugSnapshot,
   publishSessionCommand,
   redactDebug,
@@ -646,6 +647,7 @@ export function createJuneRegistry(deps: Dependencies) {
       persist: () => Promise<void>;
       receiving: Promise<void>;
       publishing: Promise<void>;
+      notifyingDebug: Promise<void>;
       schedule(at: number): Promise<unknown>;
       debugRequest?: unknown;
     } => ({
@@ -655,6 +657,7 @@ export function createJuneRegistry(deps: Dependencies) {
       },
       receiving: Promise.resolve(),
       publishing: Promise.resolve(),
+      notifyingDebug: Promise.resolve(),
       schedule: (at) => c.schedule.at(at, "sessionIdle"),
     }),
     queues: {
@@ -670,6 +673,18 @@ export function createJuneRegistry(deps: Dependencies) {
       // Do not await an immediate save here: native startup cannot service it.
       if (Object.keys(c.state.sessionCommands ?? {}).length)
         await c.schedule.after(1, "resumeSessionCommands");
+      for (const [id, receipt] of Object.entries(
+        c.state.sessionCommands ?? {},
+      )) {
+        const at = receipt.debugLink?.pollAt;
+        if (at !== undefined)
+          await c.schedule.at(
+            Math.max(Date.now(), at),
+            "notifyDebugShare",
+            id,
+            at,
+          );
+      }
       const pending: ConversationInput[] = [
         ...Object.values(c.state.pendingInputs ?? {}).map((event) => ({
           type: "event" as const,
@@ -699,6 +714,7 @@ export function createJuneRegistry(deps: Dependencies) {
           capturedAt?: string;
           status?: string;
           threadId?: string;
+          notification?: SendResult;
         }[]
       > => {
         if (
@@ -709,16 +725,64 @@ export function createJuneRegistry(deps: Dependencies) {
           Object.values(c.state.sessionCommands ?? {})
             .flatMap((receipt) => {
               const id = receipt.snapshotId ?? receipt.snapshot?.id;
-              return id ? [id] : [];
+              return id ? [{ id, receipt }] : [];
             })
             .slice(-10)
-            .map((id) =>
-              c
+            .map(async ({ id, receipt }) => ({
+              ...(await c
                 .client<JuneClientRegistry>()
                 .debugShare.getOrCreate([id])
-                .inspect(),
-            ),
+                .inspect()),
+              notification: receipt.debugLink?.delivery?.result,
+            })),
         );
+      },
+      notifyDebugShare: async (c, id: string, at: number): Promise<void> => {
+        const notifying = c.vars.notifyingDebug.then(async () => {
+          const receipt = c.state.sessionCommands?.[id];
+          if (!receipt?.debugLink || receipt.debugLink.pollAt !== at) return;
+          const release = await deps.lifecycle?.enter(c.abortSignal);
+          try {
+            // Schedule before external work. The timestamp fences duplicate
+            // wakeups; startup repairs an interrupted scheduling acknowledgment.
+            const next = Date.now() + 5000;
+            receipt.debugLink.pollAt = next;
+            await c.vars.persist();
+            await c.schedule.at(next, "notifyDebugShare", id, next);
+            const snapshotId = receipt.snapshotId ?? receipt.snapshot?.id;
+            if (!receipt.published || !snapshotId) return;
+            // A failed external read is not a terminal receipt. Let the
+            // already-scheduled poll retry it, not the investigation itself.
+            const external = deps.debugShare?.resumeSafe
+              ? await deps.debugShare.inspect?.(snapshotId)
+              : undefined;
+            const status =
+              external ??
+              (await c
+                .client<JuneClientRegistry>()
+                .debugShare.getOrCreate([snapshotId])
+                .inspect());
+            if (status.threadId)
+              await publishDebugLink(
+                receipt,
+                status.threadId,
+                deps,
+                c.vars.persist,
+              );
+            else if (
+              status.status === "unknown" ||
+              status.status === "unavailable" ||
+              status.status === "completed"
+            ) {
+              delete receipt.debugLink.pollAt;
+              await c.vars.persist();
+            }
+          } finally {
+            release?.();
+          }
+        });
+        c.vars.notifyingDebug = notifying.catch(() => {});
+        await notifying;
       },
       resumeSessionCommands: async (c): Promise<void> => {
         const publishing = c.vars.publishing.then(async () => {
@@ -872,6 +936,9 @@ export function createJuneRegistry(deps: Dependencies) {
                 }
                 c.state.sessionCommands[id] = {
                   ...(snapshot ? { snapshot } : {}),
+                  ...(snapshot && deps.debugShare
+                    ? { debugLink: { pollAt: Date.now() } }
+                    : {}),
                   ...(command.kind === "ping"
                     ? {
                         ping: {
@@ -907,6 +974,9 @@ export function createJuneRegistry(deps: Dependencies) {
                 };
                 c.state.events[id] = { event, done: true };
                 await c.vars.persist();
+                const at = c.state.sessionCommands[id]?.debugLink?.pollAt;
+                if (at !== undefined)
+                  await c.schedule.at(at, "notifyDebugShare", id, at);
               } finally {
                 try {
                   await stopPing?.();

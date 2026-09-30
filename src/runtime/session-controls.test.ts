@@ -347,6 +347,110 @@ it.for([false, true])(
   },
 );
 
+it.for(["sent", "unknown", "retry"] as const)(
+  "replies to a late DEBUGSHARE thread receipt with the owner mention and preserves %s delivery",
+  async (outcome, t) => {
+    const sent: OutboundMessage[] = [];
+    const snapshots: DebugSnapshot[] = [];
+    let threadId: string | undefined;
+    let linkAttempts = 0;
+    const attemptedAt: number[] = [];
+    let failInspection = outcome === "sent";
+    const registry = createJuneRegistry({
+      owner,
+      model: {
+        async reply() {
+          throw new Error("No inference for DEBUGSHARE");
+        },
+      },
+      debugShare: {
+        resumeSafe: true,
+        async run(snapshot) {
+          snapshots.push(snapshot);
+          throw new Error("Observer timed out while dispatcher was queued");
+        },
+        async inspect() {
+          if (threadId && failInspection) {
+            failInspection = false;
+            throw new Error("Transient receipt read failure");
+          }
+          return threadId
+            ? { status: "running", threadId }
+            : { status: "queued" };
+        },
+      },
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, threads: true, reactions: true },
+          receive: async () => ({ events: [], response: new Response() }),
+          async send(outbound) {
+            sent.push(JSON.parse(JSON.stringify(outbound)));
+            if (
+              outbound.content.type === "text" &&
+              outbound.content.text.includes("https://ampcode.com/threads/")
+            ) {
+              linkAttempts++;
+              attemptedAt.push(Date.now());
+              if (outcome === "unknown")
+                return { status: "unknown", code: "timeout" };
+              if (outcome === "retry" && linkAttempts === 1)
+                return {
+                  status: "rejected",
+                  code: "rate_limited",
+                  retryable: true,
+                  retryAfterMs: 6000,
+                };
+            }
+            return { status: "sent", messageId: "sent" };
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", "owner"]);
+    const debug = message("debug-link", "DEBUGSHARE private reason");
+    debug.address.threadId = "123.456";
+    await june.receive(debug);
+    await expect.poll(() => snapshots.length, { timeout: 15000 }).toBe(1);
+    expect(sent).toHaveLength(1);
+    threadId = "T-11111111-2222-3333-4444-555555555555";
+    await expect
+      .poll(() => linkAttempts, { timeout: 20000 })
+      .toBe(outcome === "retry" ? 2 : 1);
+    const link = sent.at(-1);
+    expect(link?.address).toEqual({
+      channel: "slack",
+      accountId: "T1",
+      conversationId: "D1",
+      threadId: "123.456",
+    });
+    expect(link?.content).toMatchObject({
+      type: "text",
+      text: expect.stringContaining(
+        "https://ampcode.com/threads/T-11111111-2222-3333-4444-555555555555",
+      ),
+    });
+    expect(JSON.stringify(link)).toContain("<@U1>");
+    expect(JSON.stringify(link)).not.toContain("private reason");
+    await june.receive(debug);
+    await june.resumeSessionCommands();
+    const status = await june.debugShares();
+    expect(status[0]).toMatchObject({
+      threadId,
+      notification: { status: outcome === "unknown" ? "unknown" : "sent" },
+    });
+    expect(snapshots).toHaveLength(1);
+    expect(linkAttempts).toBe(outcome === "retry" ? 2 : 1);
+    if (outcome === "retry") {
+      expect(sent[1]?.id).toBe(sent[2]?.id);
+      expect(
+        (attemptedAt[1] ?? 0) - (attemptedAt[0] ?? 0),
+      ).toBeGreaterThanOrEqual(6000);
+    }
+  },
+);
+
 it("withholds a delegated search result that completes after reset", async (t) => {
   const search = Promise.withResolvers<void>();
   t.onTestFinished(() => search.resolve());

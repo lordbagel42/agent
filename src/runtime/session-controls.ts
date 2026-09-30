@@ -46,6 +46,8 @@ export interface SessionCommandReceipt {
   snapshotCompressed?: CompressedJson;
   delivery: Delivery;
   published?: boolean;
+  /** Only new requests opt in; do not notify historical DEBUGSHAREs on upgrade. */
+  debugLink?: { pollAt?: number; delivery?: Delivery };
   ping?: {
     receivedAt: number;
     messageAt?: number;
@@ -502,6 +504,67 @@ export function createPingActor(deps: Dependencies) {
       });
     }),
   });
+}
+
+export async function publishDebugLink(
+  receipt: SessionCommandReceipt,
+  threadId: string,
+  deps: Dependencies,
+  persist: () => Promise<void>,
+) {
+  const link = receipt.debugLink;
+  if (!link) return;
+  const previous = link.delivery;
+  if (
+    previous?.result?.status === "rejected" &&
+    previous.result.retryable &&
+    Date.now() <
+      (previous.outcomeObservedAt ?? 0) + (previous.result.retryAfterMs ?? 0)
+  )
+    return;
+  if (!link.delivery) {
+    const outbound = receipt.delivery.message;
+    const owner = deps.owner.identities.find(
+      (identity) =>
+        identity.channel === outbound.address.channel &&
+        identity.accountId === outbound.address.accountId,
+    );
+    const mention =
+      outbound.address.channel === "slack" && owner
+        ? `<@${owner.senderId}> `
+        : "";
+    link.delivery = {
+      phase: "ready",
+      attempts: 0,
+      message: {
+        ...outbound,
+        id: randomUUID(),
+        content: {
+          type: "text",
+          text: `${mention}DEBUGSHARE ${receipt.snapshotId ?? receipt.snapshot?.id}\nAmp investigation: https://ampcode.com/threads/${encodeURIComponent(threadId)}`,
+        },
+      },
+    };
+    await persist();
+  }
+  const result = await deliver(
+    link.delivery,
+    persist,
+    (message) =>
+      deps.channels[message.address.channel]?.send(message) ??
+      Promise.resolve({
+        status: "rejected" as const,
+        code: "channel_disabled",
+        retryable: false,
+      }),
+  );
+  if (
+    result.status !== "rejected" ||
+    !result.retryable ||
+    link.delivery.attempts >= 3
+  )
+    delete link.pollAt;
+  await persist();
 }
 
 export async function publishSessionCommand(
