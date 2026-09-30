@@ -46,7 +46,7 @@ const message = (id: string, text: string): MessageEvent => ({
   sessionCommandEligible: true,
 });
 
-it("captures shared and guest reports once, replies safely at origin, and forwards private details only to the owner", async (t) => {
+it("returns owner report links at origin while keeping guest links and all diagnostic details private", async (t) => {
   const sent: OutboundMessage[] = [];
   const snapshots: DebugSnapshot[] = [];
   const registry = createJuneRegistry({
@@ -87,7 +87,7 @@ it("captures shared and guest reports once, replies safely at origin, and forwar
             return { status: "unknown", code: "timeout" };
           return {
             status: "sent",
-            messageId: `owner-${snapshots.at(-1)?.id}`,
+            messageId: `ack-${outbound.address.conversationId}-${snapshots.at(-1)?.id}`,
           };
         },
       },
@@ -126,6 +126,18 @@ it("captures shared and guest reports once, replies safely at origin, and forwar
       address: { channel: "slack", accountId: "T1", conversationId: "C2" },
       metadata: { channelType: "channel" },
     },
+    {
+      ...message("public-owner-root", "DEBUGSHARE owner root reason"),
+      direct: false,
+      address: { channel: "slack", accountId: "T1", conversationId: "C3" },
+      metadata: { channelType: "channel" },
+    },
+    {
+      ...message("owner-group", "DEBUGSHARE owner group reason"),
+      direct: false,
+      address: { channel: "slack", accountId: "T1", conversationId: "G2" },
+      metadata: { channelType: "mpim" },
+    },
   ];
   for (const [index, report] of reports.entries()) {
     const scope = routeEvent(report, owner);
@@ -156,33 +168,47 @@ it("captures shared and guest reports once, replies safely at origin, and forwar
     const origin = sent.filter(
       (out) => out.address.conversationId === report.address.conversationId,
     );
-    expect(origin).toHaveLength(1);
+    const ownerReport = report.senderId === "U1";
+    expect(origin).toHaveLength(ownerReport ? 2 : 1);
     expect(origin[0]?.address).toEqual(report.address);
     expect(JSON.stringify(origin)).toContain(snapshot.id);
-    expect(JSON.stringify(origin)).not.toMatch(
+    expect(JSON.stringify(origin[0])).not.toMatch(
       /reason|ampcode\.com|findings|xoxb-/,
     );
+    if (ownerReport) {
+      expect(origin[1]?.address).toEqual({
+        ...report.address,
+        threadId:
+          report.address.threadId ??
+          `ack-${report.address.conversationId}-${snapshot.id}`,
+      });
+      expect(origin[1]?.content).toEqual({
+        type: "text",
+        text: `<@U1> Amp investigation: https://ampcode.com/threads/T-${snapshot.id}`,
+      });
+    }
     const privateMessages = sent.filter(
       (out) =>
         out.address.conversationId === "U1" &&
         (JSON.stringify(out.content).includes(snapshot.id) ||
-          out.address.threadId === `owner-${snapshot.id}`),
+          out.address.threadId === `ack-U1-${snapshot.id}`),
     );
-    expect(privateMessages).toHaveLength(2);
+    expect(privateMessages).toHaveLength(ownerReport ? 1 : 2);
     expect(privateMessages[0]?.address.threadId).toBeUndefined();
-    expect(privateMessages[1]?.address.threadId).toBe(
-      report.senderId === "U2" ? undefined : `owner-${snapshot.id}`,
-    );
+    if (!ownerReport)
+      expect(privateMessages[1]?.address.threadId).toBe(
+        report.senderId === "U2" ? undefined : `ack-U1-${snapshot.id}`,
+      );
     expect(JSON.stringify(privateMessages)).toContain(snapshot.reason);
     expect(JSON.stringify(privateMessages)).not.toContain("xoxb-secret");
     expect(await june.debugShares()).toEqual([]);
   }
-  expect(snapshots).toHaveLength(4);
+  expect(snapshots).toHaveLength(6);
   const ownerJune = client.conversation.getOrCreate(["private", "owner"]);
   expect((await ownerJune.debugShares()).map((entry) => entry.id)).toEqual(
     snapshots.map((snapshot) => snapshot.id),
   );
-});
+}, 60_000);
 
 it.for(["DEBUGSHARE", "DEBUG"])(
   "automatically retries a bounded %s owner copy after Slack's deadline without investigation",
@@ -984,6 +1010,37 @@ it("waits for the acknowledgment and owner-copy retry before adding a nonrepeati
   await publishDebugNotifications(receipt, "T-fixture", deps, persist);
   expect(sent.at(-1)).toEqual(legacyMessage);
   expect(sent).toHaveLength(3);
+
+  // A successful private copy must not supply a thread ID in a public channel
+  // or permit the link to race the still-pending origin acknowledgment.
+  receipt.delivery.message.address.conversationId = "C1";
+  receipt.delivery.phase = "sending";
+  receipt.debugLink = { pollAt: 1, replyAtOrigin: true };
+  expect(
+    await publishDebugNotifications(receipt, "T-fixture", deps, persist),
+  ).toBe(true);
+  expect(sent).toHaveLength(3);
+  receipt.delivery.phase = "settled";
+  receipt.delivery.result = { status: "unknown", code: "timeout" };
+  expect(
+    await publishDebugNotifications(receipt, "T-fixture", deps, persist),
+  ).toBe(false);
+  expect(sent.at(-1)?.address).toEqual({
+    channel: "slack",
+    accountId: "T1",
+    conversationId: "C1",
+  });
+  expect(sent.at(-1)?.content).toEqual({
+    type: "text",
+    text: "<@U1> DEBUGSHARE fixture-snapshot\nAmp investigation: https://ampcode.com/threads/T-fixture",
+  });
+  await publishDebugNotifications(
+    structuredClone(receipt),
+    "T-fixture",
+    deps,
+    persist,
+  );
+  expect(sent).toHaveLength(4);
 });
 
 it("owns queued DEBUGSHARE notifications beyond action and idle deadlines", async (t) => {

@@ -1083,7 +1083,11 @@ export function createJuneRegistry(deps: Dependencies) {
                         debugLink: {
                           pollAt: Date.now(),
                           ...(snapshot.snapshotOnly ? { ownerOnly: true } : {}),
-                          ...(ownerAddress ? { address: ownerAddress } : {}),
+                          ...(isOwner(event, deps.owner)
+                            ? { replyAtOrigin: true }
+                            : ownerAddress
+                              ? { address: ownerAddress }
+                              : {}),
                         },
                       }
                     : {}),

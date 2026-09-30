@@ -61,6 +61,8 @@ export interface SessionCommandReceipt {
     pollAt?: number;
     address?: Address;
     delivery?: Delivery;
+    /** New owner reports return only their link to the originating surface. */
+    replyAtOrigin?: boolean;
     /** DEBUG only drains its owner copy, never reads an Amp receipt or sends a link. */
     ownerOnly?: boolean;
   };
@@ -580,7 +582,9 @@ export async function publishDebugNotifications(
   if (receipt.ownerDelivery && (await sendNotification(receipt.ownerDelivery)))
     return true;
   if (threadId && !link.delivery) {
-    const acknowledgment = receipt.ownerDelivery ?? receipt.delivery;
+    const acknowledgment = link.replyAtOrigin
+      ? receipt.delivery
+      : (receipt.ownerDelivery ?? receipt.delivery);
     // The independently published origin acknowledgment may still be in flight.
     // Wait for its publisher; never call deliver on that live send here.
     if (acknowledgment.phase !== "settled") return true;

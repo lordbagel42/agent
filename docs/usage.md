@@ -126,6 +126,12 @@ reason excerpt (at most 3,000 characters; the full reason stays in the snapshot)
 This includes private DMs without the owner; the originating receipt
 discloses that forwarding. Full diagnostic data remains in private storage/Amp.
 Guest scopes stay isolated from the owner's history and other reporters.
+For new owner-submitted `DEBUGSHARE` reports, the later Amp link returns to the
+originating conversation, including shared channels and group DMs. It replies in
+the origin acknowledgment's thread (preserving an existing thread), not the
+separate owner-copy thread. Only the URL is shared: snapshots, reasons and
+findings stay private, and Amp access controls are unchanged. Guest-report links
+remain owner-private. Older saved destinations and messages are not backfilled.
 
 Use `DEBUG` or `DEBUG a short explanation` for the same snapshot **without an
 Amp investigation**. Anyone can use it on the same Slack surfaces, with the same
@@ -184,9 +190,10 @@ June restarts do not cancel investigations. The dispatcher and runner each fence
 duplicate launches; ambiguous launches are never automatically retried. Old
 local-runtime running/unknown receipts are not migrated into new investigations.
 For new enabled requests, June follows the queued acknowledgment with the Amp
-thread link as soon as its receipt supplies the thread ID. The reply stays in the
-original owner-private DM/thread, or goes to a separate owner DM for other origins,
-and mentions Raygen's configured Slack owner identity. It contains no diagnostic
+thread link as soon as its receipt supplies the thread ID. Owner-submitted reports
+return the link to the original conversation/thread, including shared channels;
+guest-report links go to a separate owner DM. The reply mentions Raygen's
+configured Slack owner identity. It contains no diagnostic
 body. Durable polling continues while queued/running,
 even after the initial observer times out, and resumes after June restarts.
 Terminal receipts without a thread ID stop link polling; no link is fabricated and no

@@ -191,6 +191,14 @@ it.for(["interaction", "execution", "decision"] as const)(
       "mentioning Raygen's configured owner identity on Slack",
     );
     expect(request.system).toContain(
+      "For new owner-submitted reports, the later Amp link returns to the originating conversation",
+    );
+    expect(request.system).toContain("guest-report links remain owner-private");
+    expect(request.system).toContain(
+      "Sharing the URL does not publish the snapshot or change Amp access controls",
+    );
+    expect(request.system).not.toContain("never to a guest or shared channel");
+    expect(request.system).toContain(
       "the later reply adds only the Amp link in that message's Slack thread",
     );
     expect(request.system).toContain(
