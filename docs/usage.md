@@ -694,8 +694,11 @@ their earlier placement policy, including an inbox iteration already waiting at
 upgrade; the next fresh iteration enables June's placement choice. Typing is
 best-effort and never dictates where the reply belongs.
 Direct Slack pings use a temporary `hourglass_flowing_sand` reaction in channels,
-threads and DMs, even when optional typing indicators are disabled. Unthreaded
-Slack DMs also use that reaction instead of the unavailable native typing bubble.
+threads and DMs (including group DMs), even when optional typing indicators are
+disabled. Ordinary group-DM turns, including threads, also use that reaction
+as optional feedback for any admitted participant, respecting `typingEnabled`.
+They never use native thread status or gain private-DM authority. Unthreaded
+one-to-one Slack DMs also use the reaction instead of the unavailable typing bubble.
 It starts alongside context/model work,
 is not repeatedly added, and cleanup is attempted on completion/cancellation,
 even after an ambiguous add, `already_reacted`, or loss of the process-local cache.

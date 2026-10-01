@@ -553,21 +553,28 @@ export function createSlackAdapter({
     }),
     async setTyping(event, active, signal) {
       const { address } = event;
+      const groupDm = event.metadata?.channelType === "mpim";
       // Slack's status UI is thread-scoped and can auto-open that thread.
       // Direct pings always use a reaction, including in channels and threads.
-      // Plain DMs also use a reaction; never invent a thread for feedback.
+      // Group DMs and unthreaded DMs also use reactions, never a new thread.
       // https://docs.slack.dev/reference/methods/assistant.threads.setStatus/
       if (
         address.channel !== "slack" ||
         address.accountId !== teamId ||
-        (!owners.has(event.senderId) && !event.botMentioned && !event.direct) ||
+        (!owners.has(event.senderId) &&
+          !event.botMentioned &&
+          !event.direct &&
+          !groupDm) ||
         event.senderId === botUserId ||
-        event.metadata?.channelType === "mpim" ||
-        (!address.threadId && !event.direct && !event.botMentioned) ||
+        (!address.threadId &&
+          !event.direct &&
+          !event.botMentioned &&
+          !groupDm) ||
         signal?.aborted
       )
         return;
-      const reaction = event.botMentioned === true || !address.threadId;
+      const reaction =
+        event.botMentioned === true || groupDm || !address.threadId;
       const reactionKey = JSON.stringify([
         address.conversationId,
         event.messageId,

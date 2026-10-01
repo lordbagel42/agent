@@ -687,6 +687,60 @@ describe("createSlackAdapter", () => {
     });
   });
 
+  it.each([
+    ["U_STRANGER", "<@U_BOT> hey", undefined],
+    ["U_HUMAN", "<@U_BOT> hey", "1712345678.000001"],
+    ["U_STRANGER", "hello", undefined],
+    ["U_HUMAN", "hello", "1712345678.000001"],
+  ])(
+    "uses hourglass feedback for admitted group-DM turns (%s, %s, %s)",
+    async (user, text, thread_ts) => {
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockImplementation(async () => jsonResponse({ ok: true }));
+      const adapter = makeAdapter(fetchImpl);
+      const result = await adapter.receive(
+        signedRequest(
+          eventBody({
+            type: "message",
+            user,
+            text,
+            channel: "G_MPIM",
+            channel_type: "mpim",
+            ts: "1712345678.000002",
+            ...(thread_ts ? { thread_ts } : {}),
+          }),
+        ),
+      );
+      const event = result.events[0];
+      if (event?.type !== "message")
+        throw new Error("missing group-DM message");
+      expect(event.direct).toBe(false);
+      const route = routeEvent(event, {
+        id: "owner",
+        identities: [
+          { channel: "slack", accountId: teamId, senderId: "U_HUMAN" },
+        ],
+      });
+      expect(route?.private).toBe(false);
+      fetchImpl.mockClear();
+      await adapter.setTyping?.(event, true);
+      await adapter.setTyping?.(event, true);
+      await adapter.setTyping?.(event, false);
+      expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+        "https://slack.com/api/reactions.add",
+        "https://slack.com/api/reactions.remove",
+      ]);
+      for (const [, init] of fetchImpl.mock.calls)
+        expect(JSON.parse(String(init?.body))).toEqual({
+          channel: "G_MPIM",
+          timestamp: "1712345678.000002",
+          name: "hourglass_flowing_sand",
+        });
+      expect(event.address.threadId).toBe(thread_ts);
+    },
+  );
+
   it("shows and clears a thinking reaction in unthreaded DMs without creating a thread", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

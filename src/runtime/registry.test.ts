@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
+import { createSlackAdapter } from "../channels/slack.js";
 import { createConsoleLoginLinks } from "../console/session.js";
 import type {
   ChannelAdapter,
@@ -14,6 +15,7 @@ import type {
   ReactionEvent,
   SendResult,
 } from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
 import {
   createDeploymentReader,
   createReleaseTool,
@@ -2500,6 +2502,88 @@ describe("Rivet conversation workflow", () => {
     expect(
       await client.typing.getOrCreate(["slack", "T1", "D1", ""]).read(),
     ).toBe(false);
+  });
+
+  it("keeps guest group-DM pings mandatory while ordinary feedback respects typing preference", async (t) => {
+    const updates: { method: string; timestamp: string }[] = [];
+    const sent: OutboundMessage[] = [];
+    const slack = createSlackAdapter({
+      signingSecret: "fixture-secret",
+      botToken: "fixture-token",
+      teamId: "T1",
+      botUserId: "BOT",
+      ownerUserIds: ["U1"],
+      fetch: async (url, init) => {
+        const body = JSON.parse(String(init?.body));
+        updates.push({
+          method: new URL(String(url)).pathname,
+          timestamp: body.timestamp,
+        });
+        return Response.json({ ok: true });
+      },
+    });
+    const registry = createJuneRegistry({
+      owner,
+      model: {
+        async reply() {
+          return { text: "Hello." };
+        },
+      },
+      channels: { slack: { ...slack, send: transport("slack", sent).send } },
+    });
+    const { client } = await setupTest(t, registry);
+    const event: MessageEvent = {
+      ...message,
+      senderId: "U_GUEST",
+      direct: false,
+      botMentioned: false,
+      metadata: { channelType: "mpim" },
+      address: {
+        channel: "slack",
+        accountId: "T1",
+        conversationId: "G1",
+        threadId: "123.000",
+      },
+    };
+    const scope = routeEvent(event, owner);
+    expect(scope?.private).toBe(false);
+    if (!scope) throw new Error("missing guest route");
+    const june = client.conversation.getOrCreate(scope.key);
+    const typing = client.typing.getOrCreate(["slack", "T1", "G1", "123.000"]);
+    for (const [id, enabled, mentioned] of [
+      ["123.461", true, false],
+      ["123.462", false, false],
+      ["123.463", false, true],
+    ] as const) {
+      await typing.set(enabled);
+      const incoming = { ...event, id, messageId: id, botMentioned: mentioned };
+      await june.receive(incoming);
+      await expect
+        .poll(
+          async () =>
+            Object.values((await june.snapshot()).events).find(
+              (record) => record.event.id === id,
+            )?.done,
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+    }
+    await june.receive({
+      ...event,
+      id: "123.463",
+      messageId: "123.463",
+      botMentioned: true,
+    });
+    expect(sent).toHaveLength(3);
+    await expect
+      .poll(() => updates)
+      .toEqual([
+        { method: "/api/reactions.add", timestamp: "123.461" },
+        { method: "/api/reactions.remove", timestamp: "123.461" },
+        { method: "/api/reactions.add", timestamp: "123.463" },
+        { method: "/api/reactions.remove", timestamp: "123.463" },
+      ]);
+    expect(await typing.read()).toBe(false);
   });
 
   it("delivers before a late status settles but holds deployment admission until it is cleared", async (t) => {

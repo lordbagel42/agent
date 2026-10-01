@@ -138,6 +138,15 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain(
       "not execution-worker reports, automated events or completion notifications",
     );
+    expect(request.system).toContain(
+      "admitted direct pings use the mandatory hourglass regardless of typingEnabled",
+    );
+    expect(request.system).toContain(
+      "ordinary admitted turns use an optional hourglass during context/model work unless typingEnabled is false",
+    );
+    expect(request.system).toContain(
+      "Never duplicate the host's hourglass from a reply, worker or automated event",
+    );
     expect(request.system).toContain("Slack bots may converse with you");
     expect(request.system).toContain("always have guest permissions");
     expect(request.system).toContain(
