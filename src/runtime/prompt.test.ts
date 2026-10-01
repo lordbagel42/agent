@@ -124,6 +124,12 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "A genuine question counts as something useful to add",
     );
     expect(request.system).toContain(
+      "A thread subscription or your earlier reply does not make you the addressee",
+    );
+    expect(request.system).toContain(
+      "Failed or truncated context reads are not complete history",
+    );
+    expect(request.system).toContain(
       "execution workers report relevant gaps to June rather than questioning the user",
     );
     expect(request.system).toContain(

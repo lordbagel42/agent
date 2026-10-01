@@ -1363,7 +1363,11 @@ describe("createSlackAdapter", () => {
     for (const call of fetchMock.mock.calls) {
       const request = new Request(...call);
       expect(request.url).toBe("https://slack.com/api/conversations.info");
-      await expect(request.json()).resolves.toEqual({ channel: "C123" });
+      expect(
+        Object.fromEntries(new URLSearchParams(await request.text())),
+      ).toEqual({
+        channel: "C123",
+      });
       expect(request.redirect).toBe("error");
     }
   });

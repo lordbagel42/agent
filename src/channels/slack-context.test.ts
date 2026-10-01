@@ -71,7 +71,7 @@ describe("Slack same-surface context", () => {
   it("requires complete authenticated private-channel membership and rejects an incomplete audience", async () => {
     let complete = true;
     const slack = adapter(async (url, init) => {
-      const body = JSON.parse(String(init?.body));
+      const body = Object.fromEntries(new URLSearchParams(String(init?.body)));
       if (String(url).endsWith("conversations.info"))
         return Response.json({
           ok: true,
@@ -102,7 +102,9 @@ describe("Slack same-surface context", () => {
     const requestedUsers: string[] = [];
     const slack = adapter(async (url, init) => {
       if (String(url).endsWith("users.info")) {
-        requestedUsers.push(JSON.parse(String(init?.body)).user);
+        requestedUsers.push(
+          new URLSearchParams(String(init?.body)).get("user") ?? "",
+        );
         await new Promise<void>((resolve) => {
           init?.signal?.addEventListener(
             "abort",
@@ -182,7 +184,16 @@ describe("Slack same-surface context", () => {
         const request = new Request(url, init);
         expect(request.redirect).toBe("error");
         const method = request.url.split("/").at(-1) ?? "";
-        const body = (await request.json()) as Record<string, unknown>;
+        // Slack's read methods ignore JSON bodies; model the actual wire contract.
+        if (
+          !request.headers
+            .get("content-type")
+            ?.startsWith("application/x-www-form-urlencoded")
+        )
+          return Response.json({ ok: false, error: "invalid_arguments" });
+        const body = Object.fromEntries(
+          new URLSearchParams(await request.text()),
+        );
         requests.push({ method, body });
         const responses: Record<string, unknown> = {
           "conversations.info": {
@@ -350,8 +361,8 @@ describe("Slack same-surface context", () => {
             channel: "C1",
             ts: root,
             latest: event.messageId,
-            inclusive: true,
-            limit: 15,
+            inclusive: "true",
+            limit: "15",
           },
         },
       ]);
@@ -376,11 +387,13 @@ describe("Slack same-surface context", () => {
       const request = new Request(url, init);
       requests.push(request.url);
       if (request.url.endsWith("conversations.history")) {
-        expect(await request.json()).toEqual({
+        expect(
+          Object.fromEntries(new URLSearchParams(await request.text())),
+        ).toEqual({
           channel: "C1",
           latest: event.messageId,
-          inclusive: true,
-          limit: 15,
+          inclusive: "true",
+          limit: "15",
         });
         return Response.json({
           ok: true,

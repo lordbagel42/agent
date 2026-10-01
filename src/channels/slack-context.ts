@@ -119,9 +119,12 @@ export function createSlackContext({
         redirect: "error",
         headers: {
           authorization: `Bearer ${botToken}`,
-          "content-type": "application/json",
+          "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
         },
-        body: JSON.stringify(body),
+        // These read methods ignore JSON bodies, including required channel/ts.
+        body: new URLSearchParams(
+          Object.entries(body).map(([key, value]) => [key, String(value)]),
+        ).toString(),
         signal,
       });
       if (!response.ok) return undefined;
