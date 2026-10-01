@@ -1927,6 +1927,9 @@ export function createJuneRegistry(deps: Dependencies) {
                     event.address.accountId,
                     event.type === "receipt" ? "" : event.senderId,
                   ]),
+                  event.address.channel === "slack" &&
+                    event.type === "message" &&
+                    event.senderId.startsWith("bot:"),
                 ),
               );
               if (!admitted) return;

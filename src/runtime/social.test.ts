@@ -1598,6 +1598,79 @@ it("delivers a reviewed interruption once through June, retaining quiet holds an
   expect(extractionCalls).toBe(0);
 });
 
+it("keeps bot conversations going past the human guest quota without removing load shedding", async (t) => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(100_000);
+  t.onTestFinished(() => clock.mockRestore());
+  const admission = createPriorityAdmission();
+  for (let i = 0; i < 6; i++) {
+    expect(admission.acceptGuest("bot:B1", true)).toBe(true);
+    expect(admission.acceptGuest("U1")).toBe(i < 4);
+  }
+  clock.mockReturnValue(159_999);
+  expect(admission.acceptGuest("U1")).toBe(false);
+  clock.mockReturnValue(160_000);
+  expect(admission.acceptGuest("U1")).toBe(true);
+
+  for (let i = 0; i < 254; i++)
+    expect(admission.acceptGuest(`other:${i}`)).toBe(true);
+  expect(admission.acceptGuest("bot:B1", true)).toBe(false);
+  expect(admission.acceptGuest("bot:B2", true)).toBe(false);
+  clock.mockReturnValue(220_001);
+  expect(admission.acceptGuest("bot:B1", true)).toBe(true);
+
+  const queued = new AbortController();
+  const release = await admission.enter(false, queued.signal);
+  const waiters = Array.from({ length: 32 }, () =>
+    admission.enter(false, queued.signal).catch(() => undefined),
+  );
+  expect(admission.acceptGuest("bot:B1", true)).toBe(false);
+  queued.abort();
+  await Promise.all(waiters);
+  release?.();
+  expect(admission.acceptGuest("bot:B1", true)).toBe(true);
+});
+
+it("delivers six bot follow-ups across conversations through the guest workflow", async (t) => {
+  const { slack, sent } = fixture(t);
+  const registry = createJuneRegistry({
+    owner,
+    channels: { slack },
+    model: {
+      async reply(request) {
+        expect(request.workspaces).toEqual([]);
+        expect(request.webSearchAvailable).toBe(false);
+        expect(request.system).toContain("always have guest permissions");
+        return { text: "a fresh conversational response" };
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  for (let i = 0; i < 6; i++) {
+    const event = {
+      ...guest,
+      id: `bot-follow-up-${i}`,
+      messageId: `123.${500 + i}`,
+      senderId: "bot:B1",
+      botMentioned: false,
+      text: `new topic ${i}`,
+      address: { ...guest.address, conversationId: `CBOT${i % 2}` },
+    };
+    const scope = routeEvent(event, owner);
+    expect(scope?.private).toBe(false);
+    const actor = client.conversation.getOrCreate(scope?.key ?? []);
+    await actor.send("inbox", { type: "event", event });
+    await expect.poll(() => sent.length, { timeout: 5000 }).toBe(i + 1);
+  }
+  expect(sent.map((message) => message.address.conversationId)).toEqual([
+    "CBOT0",
+    "CBOT1",
+    "CBOT0",
+    "CBOT1",
+    "CBOT0",
+    "CBOT1",
+  ]);
+});
+
 it("reserves owner capacity and prioritizes the owner over queued guests without cancelling work", async () => {
   const admission = createPriorityAdmission();
   const signal = new AbortController().signal;

@@ -53,16 +53,22 @@ export function createPriorityAdmission() {
     },
     /** Journal this decision once per turn. Replay must never re-charge or
      * reject a turn whose effects/journal already exist. */
-    acceptGuest(sender: string): boolean {
+    acceptGuest(sender: string, botMessage = false): boolean {
       const now = Date.now();
       for (const [id, times] of recent)
         if ((times.at(-1) ?? 0) < now - 60_000) recent.delete(id);
       const times = (recent.get(sender) ?? []).filter(
         (at) => at > now - 60_000,
       );
-      if (times.length >= 4 || waiting.length >= 32 || recent.size >= 256)
+      if (
+        (!botMessage && times.length >= 4) ||
+        waiting.length >= 32 ||
+        recent.size >= 256
+      )
         return false;
-      recent.set(sender, [...times, now]);
+      // Bot loop decisions belong to June, not a turn counter. Track only
+      // last activity for bots so capacity accounting stays bounded.
+      recent.set(sender, botMessage ? [now] : [...times, now]);
       return true;
     },
     async enter(

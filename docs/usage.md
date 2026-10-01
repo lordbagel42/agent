@@ -22,7 +22,11 @@ into June or tested with a real account.
   thread follow-ups are admitted without a mention requirement or bot-specific
   turn limit; June is instructed to disengage from repetitive loops herself.
   Bot-origin messages use separate guest identities and cannot trigger host
-  commands. June's own messages are ignored; userless bot callbacks require
+  commands. They are exempt from the human-guest four-turns-per-minute cutoff,
+  but still share one guest execution slot, yield to owners and can be rejected
+  under overload. Previously journaled admission decisions remain unchanged;
+  dropped historical messages are not reprocessed.
+  June's own messages are ignored; userless bot callbacks require
   a successful `auth.test` self-identity check, cached for the adapter lifetime.
 - Optional owner-only participation in channels containing `raygen`, scoped
   surrounding messages, sender names/IDs, exact Slack timestamps and file

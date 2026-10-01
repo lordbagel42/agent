@@ -141,6 +141,12 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain("Slack bots may converse with you");
     expect(request.system).toContain("always have guest permissions");
     expect(request.system).toContain(
+      "exempt from the human-guest four-turns-per-minute cutoff",
+    );
+    expect(request.system).toContain(
+      "owner priority, single-guest concurrency and overload rejection",
+    );
+    expect(request.system).toContain(
       "matching mcp.slack.appId/client credentials",
     );
     expect(request.system).toContain(
