@@ -1,8 +1,40 @@
-- Always start code from the latest commit on GitHub's `main` branch.
-- Once code is tested and reviewed, push directly to `main`. Use trunk-based development.
+# June project guidance
+
+## Session startup
+
+- Always pull the latest code from the current branch's configured remote
+  upstream at the start of every session, before beginning work. Use
+  `git pull --ff-only` to avoid implicit merge commits or rebases.
+- Check Git status first and preserve all local changes and unpushed commits.
+  If the pull is blocked by local changes, divergent history, a missing upstream,
+  or an authentication failure, report the blocker rather than resetting,
+  discarding, or automatically stashing work.
+
+## Trunk-based development and shipping
+
+- Work directly on `main`. Do not create feature branches or pull requests;
+  this repository uses trunk-based development, not a branch-and-PR workflow.
+- Ship the smallest working, verified increment to remote `main` as soon as it
+  is ready, even when the larger feature is unfinished. Keep `main` usable;
+  do not wait to batch independently shippable changes into a complete feature.
+- Use small, atomic Conventional Commits. Run the project's formatter, linter,
+  and typechecker before committing code, plus relevant focused checks.
+- Larger or high-impact changes require an Oracle review before shipping.
+  Address material findings before pushing; small, routine changes do not
+  require Oracle review.
+- Agents have standing permission to commit and push ready changes directly to
+  remote `main` without asking for approval each time. This permission does not
+  authorize force-pushing, discarding others' work, or unrelated external actions.
+- Fetch the latest remote `main` before pushing and integrate concurrent changes
+  safely, rerunning affected checks. Use normal, non-force pushes only.
+- Preserve other sessions' work. If an existing shared checkout is on another
+  branch, do not switch it out from under them or ship their unreviewed changes;
+  use a separate checkout on `main` instead.
 - Do not impose push holds on this or other agents for measurements, settings changes, or coordination. Rebase over concurrent work; use deployment/operator locks for live mutations, not Git publication freezes.
+
+## Tests and verification
+
 - Keep unit tests few and focused. Prioritize thorough manual testing of real workflows, edge cases, and failure paths.
-- Always have a more capable or higher-effort agent review changes before pushing (for example, Oracle in Amp or Opus at higher effort in Claude Code).
 
 ## Slack app configuration
 
