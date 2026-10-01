@@ -991,17 +991,18 @@ def recovery_prompt(number, commit, reason):
         "the triggering fault first. Require an Oracle review before publishing code. "
         "If blocked, report the blocker and retain ownership; never clear the fence "
         "just because this turn ends. Do not spawn another recovery thread. "
-        "June launches Amp workers with the mandatory Fast thread feature, without "
-        "changing reasoning mode. Preserve this policy in any launcher repairs."
+        "June launches DEBUGSHARE investigators and deployment-recovery agents in Ultra "
+        "reasoning mode with the mandatory Fast thread feature. Preserve this policy "
+        "in any launcher repairs; ordinary jobs keep their existing reasoning modes."
     )
 
 
-def amp_job_argv(command, directory, title, prompt):
+def amp_job_argv(command, directory, title, prompt, *, mode="high"):
     """Shared launch mechanism, not authorization. Callers enforce their policy."""
     return [
         *command,
         "--mode",
-        "high",
+        mode,
         "--features",
         "fast",
         "--executor",
@@ -1059,7 +1060,11 @@ def dispatch_recovery(
             db.execute("UPDATE state SET value=? WHERE key='recovery'", (raw,))
         prompt = recovery_prompt(number, incident["revision"], incident["reason"])
         argv = amp_job_argv(
-            command, directory, f"Recover June deployment incident {number}", prompt
+            command,
+            directory,
+            f"Recover June deployment incident {number}",
+            prompt,
+            mode="ultra",
         )
         # OpenSSH's remote command is shell text: quote the complete argv once,
         # rather than letting SSH concatenate unquoted prompt arguments.

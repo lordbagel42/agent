@@ -279,6 +279,10 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain('inspection:"debug-shares"');
     expect(request.system).toContain("separately installed DEBUGSHARE service");
     expect(request.system).toContain(
+      "Independent DEBUGSHARE investigators and automatic deployment-recovery agents use Ultra reasoning (--mode ultra)",
+    );
+    expect(request.system).toContain("--features fast");
+    expect(request.system).toContain(
       "Each distinct DEBUGSHARE UUID starts an independent Amp investigation",
     );
     expect(request.system).toContain(

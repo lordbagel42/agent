@@ -38,7 +38,7 @@ def command(original, config):
     prefix = [
         *cli,
         "--mode",
-        "high",
+        "ultra",
         "--features",
         "fast",
         "--executor",

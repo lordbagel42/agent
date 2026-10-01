@@ -1115,10 +1115,11 @@ the June-to-runner SSH identity and independently pinned its host key:
 OpenSSH executable/options/destination argv; the dispatcher shell-quotes the
 complete remote command, preserving argument boundaries. Omit `ssh` only when
 an authenticated CLI is installed locally. The controller supplies
-`--mode high --features fast --executor runner:homelab-amp --runner-dir ...
+`--mode ultra --features fast --executor runner:homelab-amp --runner-dir ...
 --stream-json --no-archive-after-execute --title TITLE --execute PROMPT`.
-Fast is mandatory for recovery and ordinary Amp jobs, including the transport
-self-test; it does not change `high` reasoning mode. Install the matching
+Recovery and DEBUGSHARE use `ultra` reasoning; ordinary Amp jobs retain `high`.
+Fast remains mandatory for all of them, including the recovery transport
+self-test; Fast is independent of reasoning mode. Install the matching
 `deploy.py` on the controller and `runner.py`/`deploy.py` on the SSH host under
 the normal authorized operator workflow. Mixed versions fail the strict command
 check; do not relax validation or retry an uncertain dispatch to work around it.
@@ -1165,7 +1166,7 @@ file. Disable agent/password authentication, forwarding and host-key updates in
 the dedicated SSH config. Do not grant this key general SSH or sudo access.
 
 The only alternate command is `june-recovery-self-test`. It launches a real
-`high`/`homelab-amp` thread with a fixed no-tools/no-mutations prompt and returns
+`ultra`/Fast/`homelab-amp` thread with a fixed no-tools/no-mutations prompt and returns
 the normal JSON stream. Run it only for an authorized transport check, through
 the same SSH config and service sandbox; verify the init thread ID, executor and
 mode, then zero tool calls, `JUNE_RECOVERY_TRANSPORT_OK`, and successful completion.
@@ -1464,7 +1465,7 @@ of pushing source. Preserve existing recovery and ordinary-job keys/config:
 
    Verify the actual executable, checkout and pinned operator SSH workflow on
    the runner; these paths are deployment examples, not provisioning commands.
-   The runner reuses only recovery's high/Fast CLI arguments and sanitized exec
+   The runner reuses only recovery's Ultra/Fast CLI arguments and sanitized exec
    environment. DEBUGSHARE owns its own prompt, admission and snapshots.
    Install the updated `debugshare_runner.py` alongside the app that emits
    host-authenticated `reporter` metadata to preserve owner-reason trust. The

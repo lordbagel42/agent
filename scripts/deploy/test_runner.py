@@ -25,7 +25,7 @@ class RunnerCommand(unittest.TestCase):
         argv = [
             "/home/amp/.amp/bin/amp",
             "--mode",
-            "high",
+            "ultra",
             "--features",
             "fast",
             "--executor",
@@ -42,7 +42,7 @@ class RunnerCommand(unittest.TestCase):
         self.assertEqual(self.runner.command(shlex.join(argv), self.config), argv)
         for index, replacement in (
             (0, "/bin/sh"),
-            (2, "ultra"),
+            (2, "high"),
             (4, "plaid"),
             (6, "runner:other"),
             (8, "/tmp"),
@@ -75,7 +75,7 @@ class RunnerCommand(unittest.TestCase):
             argv[1:9],
             [
                 "--mode",
-                "high",
+                "ultra",
                 "--features",
                 "fast",
                 "--executor",

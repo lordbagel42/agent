@@ -73,8 +73,8 @@ def prompt(identity, snapshot, owner_report=False):
         "DEBUGSHARE/recovery investigator or duplicate this assignment. Oracle review is required and "
         "permitted before publication. "
         "Report the diagnosis, evidence, changes, verification, actual delivery state and any blocker in "
-        "this private Amp thread. A returned turn is not proof of a deployed fix. Preserve mandatory Fast "
-        "without changing reasoning mode."
+        "this private Amp thread. A returned turn is not proof of a deployed fix. Preserve Ultra reasoning "
+        "and mandatory Fast for DEBUGSHARE and deployment recovery; ordinary jobs keep their existing reasoning modes."
     )
 
 
@@ -133,6 +133,7 @@ def prepare(original, config, incoming):
         directory,
         f"Diagnose June DEBUGSHARE {identity}",
         prompt(identity, snapshot, owner_report),
+        mode="ultra",
     )
 
 

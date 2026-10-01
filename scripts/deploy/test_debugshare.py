@@ -105,7 +105,7 @@ class DebugShare(unittest.TestCase):
                 argv[1:9],
                 [
                     "--mode",
-                    "high",
+                    "ultra",
                     "--features",
                     "fast",
                     "--executor",

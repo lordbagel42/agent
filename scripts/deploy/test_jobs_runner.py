@@ -40,8 +40,10 @@ class JobsRunner(unittest.TestCase):
         self.assertEqual(job_id, payload["id"])
         self.assertEqual(directory, "/work/june")
         self.assertEqual(
-            argv[3:9],
+            argv[1:9],
             [
+                "--mode",
+                "high",
                 "--features",
                 "fast",
                 "--executor",

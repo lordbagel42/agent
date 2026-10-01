@@ -911,7 +911,7 @@ class RecoverySafety(unittest.TestCase):
             self.assertEqual(invocation[:2], ["/usr/bin/ssh", "fixture-runner"])
             self.assertEqual(len(invocation), 3)
             args = deploy.shlex.split(invocation[2])
-            self.assertEqual(args[args.index("--mode") + 1], "high")
+            self.assertEqual(args[args.index("--mode") + 1], "ultra")
             self.assertEqual(args[args.index("--features") + 1], "fast")
             self.assertEqual(args[args.index("--executor") + 1], "runner:homelab-amp")
             self.assertEqual(args[-2], "--execute")
