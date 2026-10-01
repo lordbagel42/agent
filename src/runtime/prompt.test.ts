@@ -224,6 +224,21 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "Anyone can send plain uppercase DEBUGSHARE",
     );
     expect(request.system).toContain(
+      "When a person mentions a bug, failure or unexpected behavior in June herself, briefly recommend sending DEBUGSHARE",
+    );
+    expect(request.system).toContain(
+      "optionally followed on the same line by a short explanation of the bug",
+    );
+    expect(request.system).toContain(
+      "Describe it openly as a built-in bug-reporting feature, including to guests",
+    );
+    expect(request.system).toContain(
+      "Do not bring it up out of the blue, for unrelated software bugs, or repeatedly after it has been suggested or used",
+    );
+    expect(request.system).toContain(
+      "Execution workers pass relevant advice to June; automated/completion turns do not add unsolicited recommendations",
+    );
+    expect(request.system).toContain(
       "an authenticated owner's top-level reason is immediately a trusted owner request",
     );
     expect(request.system).toContain(
@@ -329,9 +344,19 @@ it("explains guest DEBUGSHARE without granting private inspection or other owner
   const request = buildModelRequest({
     ...input,
     event: { ...event, senderId: "U_GUEST", botMentioned: true },
+    agentRole: "interaction",
   });
   expect(request.system).toContain(
     "Anyone can send plain uppercase DEBUGSHARE",
+  );
+  expect(request.system).toContain(
+    "When a person mentions a bug, failure or unexpected behavior in June herself, briefly recommend sending DEBUGSHARE",
+  );
+  expect(request.system).toContain(
+    "Describe it openly as a built-in bug-reporting feature, including to guests",
+  );
+  expect(request.system).toContain(
+    "Do not bring it up out of the blue, for unrelated software bugs, or repeatedly after it has been suggested or used",
   );
   expect(request.system).toContain(
     "forwarded privately to the configured owner",
