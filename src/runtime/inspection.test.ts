@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Client } from "rivetkit/client";
 import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
+import { createAppsClient } from "../apps/client.js";
 import { nativeCodingPreflight } from "../coding/preflight.js";
 import { parseConfig } from "../config.js";
 import type {
@@ -61,6 +62,68 @@ it("advertises import cancellation only when mounted outside setup mode", () => 
     ).capabilities.find((row) => row.capability === "history-imports");
     expect(row?.juneCallable).toBe(expected);
     expect(row?.liveVerified).toBe("unknown");
+  }
+});
+
+it("distinguishes implemented Apps from activation and callability without contacting the host", () => {
+  const config = parseConfig({
+    setupMode: true,
+    owner: { id: "owner", identities: [] },
+    model: { protocol: "openai", model: "fixture", apiKeyEnv: "FIXTURE_KEY" },
+  });
+  const forbidden = () => {
+    throw new Error("Inspection must not read jobs or contact the app host");
+  };
+  const dynamicApps = {
+    endpoint: "https://private-app-host.example.invalid",
+    workspace: "private-app-workspace",
+    tokenEnv: "PRIVATE_APPS_TOKEN",
+  };
+  const apps = createAppsClient({
+    ...dynamicApps,
+    token: "private-control-token",
+    readJob: forbidden,
+    fetch: forbidden,
+  });
+  for (const [
+    configured,
+    activated,
+    mounted,
+    setupMode,
+    integrated,
+    callable,
+    enabled,
+  ] of [
+    [false, false, false, false, "no", "no", "no"],
+    [true, false, false, false, "no", "no", "no"],
+    [true, true, false, false, "no", "no", "yes"],
+    [true, true, true, false, "yes", "yes", "yes"],
+    [true, true, true, true, "yes", "no", "yes"],
+  ] as const) {
+    const snapshot = capabilitySnapshot(
+      {
+        ...config,
+        setupMode,
+        coding: { ...config.coding, enabled: configured },
+        ...(configured ? { dynamicApps } : {}),
+      },
+      { apps: mounted ? apps : undefined },
+      false,
+      { JUNE_ALLOW_NATIVE_CODING: activated ? "1" : "0" },
+    );
+    const row = snapshot.capabilities.find(
+      (entry) => entry.capability === "dynamic-apps",
+    );
+    expect(row).toMatchObject({
+      implemented: "yes",
+      hostIntegrated: integrated,
+      juneCallable: callable,
+      enabled,
+      liveVerified: "unknown",
+    });
+    expect(JSON.stringify(row)).not.toMatch(
+      /private-app-host|private-app-workspace|PRIVATE_APPS_TOKEN|private-control-token/,
+    );
   }
 });
 

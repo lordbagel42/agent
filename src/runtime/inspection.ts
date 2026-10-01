@@ -50,6 +50,7 @@ export function capabilitySnapshot(
     | "release"
     | "inspection"
     | "importCancel"
+    | "apps"
   >,
   importsMounted: boolean,
   env: NodeJS.ProcessEnv = process.env,
@@ -93,6 +94,15 @@ export function capabilitySnapshot(
         turn && !!Object.keys(runtime.coding?.workspaces ?? {}).length,
         config.coding.enabled && env.JUNE_ALLOW_NATIVE_CODING === "1",
         "coding proposes a job; owner approval and isolation remain required. inspection: native-coding checks prerequisites without launching work.",
+      ),
+      row(
+        "dynamic-apps",
+        !!runtime.apps,
+        turn && !!runtime.apps,
+        !!config.dynamicApps &&
+          config.coding.enabled &&
+          env.JUNE_ALLOW_NATIVE_CODING === "1",
+        `${config.dynamicApps ? "dynamicApps is configured." : "Not connected: dynamicApps is not configured."} apps build/prepare/inspect uses a separate app host; interaction agents delegate to authorized private workers. Coding and source/audience deployment require separate owner approvals. Public or any-signed-in viewing grants no authoring rights. App-host connectivity, viewer routing and login are not probed.`,
       ),
       row(
         "retained-memory",

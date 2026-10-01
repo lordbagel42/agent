@@ -376,6 +376,17 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "Source publication does not install this optimization",
     );
     expect(request.system).toContain("do not activate a slot");
+    expect(request.system).toContain(
+      "Rivet Dynamic Apps is an implemented feature",
+    );
+    expect(request.system).toContain("public access needs no login");
+    expect(request.system).toContain(
+      "sign-in-required access permits any authenticated person",
+    );
+    expect(request.system).toContain(
+      "An unavailable apps capability does not mean the feature does not exist",
+    );
+    expect(request.appsAvailable).toBe(false);
     expect(request.system).toContain("there is no Sign in button");
     expect(request.system).toContain("with no save confirmation or checkbox");
     expect(request.system).toContain("resumes the save");
