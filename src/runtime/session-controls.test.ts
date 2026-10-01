@@ -219,6 +219,114 @@ it("returns owner report links at origin while keeping guest links and all diagn
   );
 }, 60_000);
 
+it("retries failed snapshot publication without resending uncertain acknowledgments", async () => {
+  const sent: OutboundMessage[] = [];
+  const registry = createJuneRegistry({
+    owner,
+    model: {
+      async reply() {
+        throw new Error("DEBUGSHARE must bypass inference");
+      },
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, threads: false, reactions: false },
+        receive: async () => ({ events: [], response: new Response() }),
+        async send(outbound) {
+          sent.push(structuredClone(outbound));
+          return { status: "unknown", code: "timeout" };
+        },
+      },
+    },
+  });
+  const config = registry.config.use.conversation.config;
+  if (
+    !("createVars" in config) ||
+    !config.createVars ||
+    !("state" in config) ||
+    !config.actions
+  )
+    throw new Error("Missing conversation vars");
+  const snapshot: DebugSnapshot = {
+    id: "11111111-2222-4333-8444-555555555555",
+    sessionId: "session",
+    capturedAt: "2026-01-01T00:00:00Z",
+    revision: "fixture",
+    scope: ["private", "owner"],
+    reason: "fixture",
+    data: {},
+    exclusions: [],
+  };
+  const receipt: SessionCommandReceipt = {
+    snapshot,
+    delivery: {
+      phase: "ready",
+      attempts: 0,
+      message: {
+        id: "ack",
+        address: message("report", "DEBUGSHARE").address,
+        lastInboundAt: 0,
+        content: { type: "text", text: "Snapshot saved" },
+      },
+    },
+  };
+  const scheduled: { delay: number; action: string }[] = [];
+  const work: Promise<unknown>[] = [];
+  const transfers: DebugSnapshotChunk[] = [];
+  let lost = false;
+  const c = {
+    state: {
+      ...structuredClone(config.state),
+      sessionCommands: { report: receipt },
+    },
+    abortSignal: new AbortController().signal,
+    async saveState() {},
+    keepAwake(promise: Promise<unknown>) {
+      work.push(promise);
+    },
+    schedule: {
+      async after(delay: number, action: string) {
+        scheduled.push({ delay, action });
+      },
+    },
+    client: () => ({
+      debugShare: {
+        getOrCreate: () => ({
+          async startChunk(chunk: DebugSnapshotChunk) {
+            transfers.push(chunk);
+            if (!lost) {
+              lost = true;
+              throw new Error("Lost transfer acknowledgment");
+            }
+            return { nextIndex: 1, complete: true };
+          },
+        }),
+      },
+      conversation: { getOrCreate: () => ({ async trackDebugShare() {} }) },
+    }),
+  } as unknown as Parameters<typeof config.actions.resumeSessionCommands>[0];
+  c.vars = await config.createVars(c, undefined);
+  config.actions.resumeSessionCommands(c);
+  await work.shift();
+  expect(sent).toHaveLength(0);
+  expect(scheduled).toEqual([{ delay: 5000, action: "resumeSessionCommands" }]);
+  config.actions.resumeSessionCommands(c);
+  await work.shift();
+  expect(transfers).toHaveLength(2);
+  expect(transfers[1]).toEqual(transfers[0]);
+  expect(receipt.published).toBe(true);
+  expect(receipt.delivery.result).toEqual({
+    status: "unknown",
+    code: "timeout",
+  });
+  expect(sent).toHaveLength(1);
+  config.actions.resumeSessionCommands(c);
+  await work.shift();
+  expect(sent).toHaveLength(1);
+  expect(transfers).toHaveLength(2);
+});
+
 it.for(["DEBUGSHARE", "DEBUG"])(
   "automatically retries a bounded %s owner copy after Slack's deadline without investigation",
   async (command, t) => {

@@ -215,6 +215,9 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "Host-command acceptance means the receipt was saved, not that its reply or DEBUGSHARE transfer finished",
     );
     expect(request.system).toContain(
+      "A publication error schedules another sweep of the same saved receipts after five seconds",
+    );
+    expect(request.system).toContain(
       "keeps its actor awake until actual effects and persistence settle",
     );
     expect(request.system).toContain("PING sends PONG without inference");

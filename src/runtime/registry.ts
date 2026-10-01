@@ -786,10 +786,18 @@ export function createJuneRegistry(deps: Dependencies) {
                 );
               }
             })
-            .catch(() => {
-              // Retain the original receipts for wake/explicit-trigger recovery.
+            .catch(async () => {
               // Do not hand arbitrary provider/RPC errors to keepAwake's logger.
               console.error("session_command_publication_failed");
+              // Retry the saved receipts, not the command or its effects. Chunk
+              // transfer is idempotent; settled/unknown sends stay settled.
+              // Actor wake remains the fallback if shutdown prevents scheduling.
+              if (!signal.aborted)
+                await c.schedule
+                  .after(5000, "resumeSessionCommands")
+                  .catch(() => {
+                    console.error("session_command_retry_schedule_failed");
+                  });
             });
           // Includes raw effects and final persistence, never a timeout race.
           // Every trigger appends a sweep so new receipts cannot miss a running one.
