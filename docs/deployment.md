@@ -753,8 +753,9 @@ exact head, including merged history and merge commits, **not** all branches or
 the number of deployment events. A shallow checkout reports a null/unknown total
 rather than presenting its partial history as a total.
 
-Commit metadata covers the nine most recent commits reachable from that head
-plus the controller's last healthy revision (up to ten unique commits). Inspection
+Commit metadata covers up to ten unique commits, prioritizing the fetched head,
+the controller's last healthy revision and the in-flight candidate, then filling
+the remaining slots with recent commits reachable from that head. Inspection
 with `revision: null` shows the main head's title and description; an exact SHA
 shows that commit's metadata if retained. An empty description is distinguished
 from unavailable metadata. Titles
@@ -769,14 +770,21 @@ inspection, the receipt goes directly to the requesting conversation, including
 channels. June is warned that commit descriptions may contain sensitive details
 and must consider the audience before invoking, preferring a DM for unknown or
 sensitive content under the disclosure guidance below. Guests cannot invoke it.
-It is not added to GitHub check reports or deployment wakeup payloads.
+It is not added to GitHub check reports. Deployment wakeups include metadata only
+for an exact event-revision match, together with its observation timestamp. June
+is instructed to include the commit title alongside the revision when reporting
+a deployment, preserve its case and truncation notice, and explicitly report a
+missing name rather than using the title of a newer main commit.
 
 Metadata is read locally using the controller's existing read-only Git checkout;
 June receives no GitHub credentials or new network capability. Collection happens
-after deployment processing, outside drain/activation/rollback. Failure retains
-the prior snapshot and its original timestamp; after a controller restart it is
-unknown until a successful collection. Snapshot time is a successful fetch time,
-not a fresh observation when June reads the file.
+before cutover and again after deployment processing, outside
+drain/activation/rollback. The pre-cutover snapshot pins the candidate so its title
+is available in the first healthy publication, even if main advanced during
+preparation. Optional collection failure does not block activation; it retains
+the prior snapshot and its original timestamp. After a controller restart,
+metadata is unknown until a successful collection. Snapshot time is a successful
+fetch time, not a fresh observation when June reads the file.
 
 **Activation order:** deploy this compatible app reader first, then separately
 authorize installation of the updated controller and set

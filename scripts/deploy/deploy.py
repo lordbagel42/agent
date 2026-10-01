@@ -566,6 +566,17 @@ class Deployer:
         except Exception:  # noqa: BLE001 - candidate/build output is private
             s.event(target, "failed", "preflight_failed")
             return
+        # Prepare commit names before cutover: June can consume the first
+        # healthy receipt before tick's final metadata refresh. Retain this exact
+        # candidate even if newer main commits arrived during preparation.
+        if s.repository_metadata_feed:
+            try:
+                head, observed_at = self.repository_observation
+                s.repository_snapshot = h.repository_snapshot(
+                    head, previous, observed_at, candidate=target
+                )
+            except Exception:  # noqa: BLE001,S110 - optional; final refresh retries/reports
+                pass
         # Drain changes admission too. A crash must not silently leave the old
         # service fenced without a durable record and explicit reconciliation.
         s.set("intent", target)
@@ -1839,7 +1850,7 @@ class Host:
     def committed_at(self, commit):
         return int(self.git("show", "-s", "--format=%ct", revision(commit))) * 1000
 
-    def repository_snapshot(self, head, active, observed_at):
+    def repository_snapshot(self, head, active, observed_at, *, candidate=None):
         head, active = revision(head), revision(active)
         # Count the complete graph reachable from the fetched main SHA, including
         # merged history but not unrelated refs. A shallow count is not a total.
@@ -1850,7 +1861,8 @@ class Host:
         )
         commits = []
         recent = self.git("rev-list", "--max-count=9", head).splitlines()
-        for commit in dict.fromkeys([head, active, *recent]):
+        pinned = [head, active, *([revision(candidate)] if candidate else [])]
+        for commit in list(dict.fromkeys([*pinned, *recent]))[:10]:
             message = self.git(
                 "show",
                 "-s",

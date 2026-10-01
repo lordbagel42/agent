@@ -88,15 +88,15 @@ it.for([
   },
 );
 
-it.for(["interaction", "execution", "decision"] as const)(
+it.for(["interaction", "execution", "decision", "watch"] as const)(
   "keeps automation knowledge in the %s prompt without inspection enabled",
   (role) => {
     const request = buildModelRequest({
       ...input,
-      ...(role === "decision"
+      ...(role === "decision" || role === "watch"
         ? {
             wakeup: {
-              mode: "decision" as const,
+              ...(role === "decision" ? { mode: "decision" as const } : {}),
               runId: "run",
               jobId: "job",
               instruction: "observe",
@@ -301,6 +301,12 @@ it.for(["interaction", "execution", "decision"] as const)(
     );
     expect(request.system).toContain(
       "report-only backfill does not resume deployment",
+    );
+    expect(request.system).toContain(
+      "include the exact commit title (commit.title) alongside its revision",
+    );
+    expect(request.system).toContain(
+      "never substitute the latest main title for the deployed revision",
     );
     expect(request.system).toContain(
       "Separately configured blue/green deployment",

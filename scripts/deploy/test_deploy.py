@@ -1738,6 +1738,65 @@ class DeploymentSafety(unittest.TestCase):
         ):
             self.fail("second deployer acquired the same lock")
 
+    def test_first_healthy_feed_includes_exact_candidate_title_before_late_metadata(
+        self,
+    ):
+        self.store.repository_metadata_feed = True
+        self.host.commit("src/console/view.ts", "two")
+        self.host.git(
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--amend",
+            "-qm",
+            "fix(fixture): include deploy title",
+        )
+        target = self.host.git("rev-parse", "HEAD")
+
+        def advance_main():
+            for index in range(12):
+                self.host.commit("src/console/view.ts", f"newer {index}")
+
+        self.host.after_prepare = advance_main
+        healthy_feeds = []
+        publish = self.store.publish
+
+        def capture_feed():
+            publish()
+            feed = json.loads(self.store.feed.read_text())
+            if feed["events"] and feed["events"][-1]["status"] == "healthy":
+                healthy_feeds.append(feed)
+
+        with patch.object(self.store, "publish", capture_feed):
+            self.loop.tick()
+        self.assertEqual(self.store.status(target), "healthy")
+        snapshot = healthy_feeds[0].get("repositorySnapshot", {})
+        commits = {item["revision"]: item for item in snapshot.get("commits", [])}
+        self.assertIn(target, commits, "the first healthy event must carry its title")
+        self.assertEqual(commits[target]["title"], "fix(fixture): include deploy title")
+        self.assertIn(self.first, commits)
+        self.assertEqual(snapshot["revision"], self.host.fetch())
+        self.assertNotEqual(snapshot["revision"], target)
+        self.assertEqual(len(commits), 10)
+
+    def test_missing_optional_commit_metadata_does_not_block_deployment(self):
+        self.store.repository_metadata_feed = True
+        target = self.host.commit("src/console/view.ts", "two")
+        with patch.object(
+            self.host,
+            "repository_snapshot",
+            side_effect=RuntimeError("SECRET Git error"),
+        ):
+            self.loop.tick()
+        feed = json.loads(self.store.feed.read_text())
+        self.assertEqual(feed["events"][-1]["status"], "healthy")
+        self.assertEqual(feed["lastHealthyRevision"], target)
+        self.assertFalse(feed["blocked"])
+        self.assertNotIn("repositorySnapshot", feed)
+        self.assertNotIn("SECRET", self.store.feed.read_text())
+
     def test_repeated_reconciliation_clears_new_ambiguity_and_survives_restart(self):
         self.loop.reconcile(self.first)
         original = json.loads(self.store.feed.read_text())["events"]
