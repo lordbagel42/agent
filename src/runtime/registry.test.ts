@@ -2564,6 +2564,51 @@ describe("Rivet conversation workflow", () => {
     }
   });
 
+  it("registers legacy participation after eligibility, never for completed replay", async (t) => {
+    const lifecycle = createLifecycle();
+    const admissions: number[] = [];
+    const modelTargets: (typeof lifecycle.conversations)[] = [];
+    let participations = 0;
+    const sent: OutboundMessage[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      channels: { slack: transport("slack", sent) },
+      lifecycle: {
+        ...lifecycle,
+        async enter(...args) {
+          const release = await lifecycle.enter(...args);
+          admissions.push(lifecycle.conversations.length);
+          return release;
+        },
+        participate(conversation) {
+          participations++;
+          return lifecycle.participate(conversation);
+        },
+      },
+      model: {
+        async reply() {
+          modelTargets.push(lifecycle.conversations);
+          return { text: "One accepted turn." };
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", "raygen"]);
+    await june.send("inbox", { type: "event", event: message });
+    await expect.poll(() => sent.length, { timeout: 5000 }).toBe(1);
+    await expect.poll(() => lifecycle.active).toBe(0);
+    await june.send("inbox", { type: "event", event: message });
+    await expect.poll(() => admissions.length).toBe(2);
+    await expect.poll(() => lifecycle.active).toBe(0);
+    expect(admissions).toEqual([0, 0]);
+    expect(participations).toBe(1);
+    expect(modelTargets).toEqual([
+      [{ address: message.address, direct: true, senderId: "U1" }],
+    ]);
+    expect(lifecycle.conversations).toEqual([]);
+    expect(sent).toHaveLength(1);
+  });
+
   it("latches admission failure without starting a turn or a send", async (t) => {
     let failed = false;
     let calls = 0;

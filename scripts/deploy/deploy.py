@@ -56,6 +56,17 @@ HASH = re.compile(r"^[0-9a-f]{64}$")
 STAGE = re.compile(r"^stage-[a-z0-9_]{8}$")
 THREAD = re.compile(r"^T-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
 ARTIFACT_LIMIT = 2 * 1024**3
+RESUMABLE_PHASES = ("standby_ready", "intake_paused", "drain_settled")
+RETRYABLE_BLOCKS = (
+    "binding_changed",
+    "prior_release_invalid",
+    "standby_unavailable",
+    "intake_not_settled",
+    "cutover_interrupted",
+    "fetch_failed",
+    "insufficient_disk",
+    "drain_busy",
+)
 
 
 class InsufficientDisk(Exception):
@@ -67,6 +78,10 @@ class ActionsDeferred(Exception):
 
 
 class ActionsFailure(Exception):
+    pass
+
+
+class IntakeNotSettled(Exception):
     pass
 
 
@@ -224,6 +239,60 @@ class Store:
         ).fetchone()
         return row[0] if row else None
 
+    def pending(self, commit):
+        row = self.db.execute(
+            "SELECT status,reason FROM events WHERE revision=? AND status!='fetch_failed' ORDER BY sequence DESC LIMIT 1",
+            (commit,),
+        ).fetchone()
+        return (
+            not row
+            or row[0] in ("received", "preparing", "deferred")
+            or (row[0] == "blocked" and row[1] in RETRYABLE_BLOCKS)
+        )
+
+    def checkpoint(self, commit, phase, *, identity=None):
+        raw = self.get("cutover")
+        record = (
+            json.loads(raw)
+            if raw
+            else {
+                "revision": revision(commit),
+                "previous": self.get("active"),
+                "identity": identity,
+                "attempt": time.time_ns(),
+            }
+        )
+        if record["revision"] != commit:
+            raise ValueError("cutover_identity_changed")
+        record["phase"] = phase
+        with self.db:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO state VALUES (?,?)",
+                [
+                    ("intent", commit),
+                    ("cutover", json.dumps(record)),
+                ],
+            )
+        # Fixed fields only: no request bodies, credentials or process output.
+        print(
+            json.dumps(
+                {
+                    "event": "deployment_phase",
+                    "revision": commit,
+                    "attempt": record["attempt"],
+                    "phase": phase,
+                    "monotonicNs": time.monotonic_ns(),
+                }
+            ),
+            flush=True,
+        )
+
+    def clear_cutover(self):
+        with self.db:
+            self.db.execute(
+                "UPDATE state SET value='' WHERE key IN ('intent','cutover')"
+            )
+
     def obsolete(self, keep):
         recent = {
             row[0]
@@ -256,6 +325,8 @@ class Store:
                 )
             if status in ("healthy", "rolled_back", "reconciled"):
                 self.db.execute("UPDATE state SET value='' WHERE key='intent'")
+                self.db.execute("UPDATE state SET value='' WHERE key='cutover'")
+                self.db.execute("UPDATE state SET value='' WHERE key='retry'")
             if status == "reconciled":
                 self.db.execute("UPDATE state SET value='' WHERE key='blocked'")
             # Once automatic recovery is enabled, reconciliation is a fresh
@@ -342,7 +413,40 @@ class Deployer:
         self.recovery = recovery
         self.repository_observation = None
         if store.get("intent") and not store.get("blocked"):
-            store.block(store.get("intent"), "activation_unknown")
+            raw = store.get("cutover")
+            phase = json.loads(raw).get("phase") if raw else None
+            if phase not in RESUMABLE_PHASES:
+                store.block(
+                    store.get("intent"),
+                    "cutover_interrupted"
+                    if phase in ("standby_starting", "pausing", "draining", "resuming")
+                    else "activation_unknown",
+                )
+
+    def recover_cutover(self):
+        h, s = self.host, self.store
+        target = s.get("intent")
+        record = json.loads(s.get("cutover"))
+        try:
+            if (
+                record["revision"] != target
+                or record["previous"] != s.get("active")
+                or record["phase"] not in RESUMABLE_PHASES
+                or not record["identity"]
+                or h.current.resolve() != h.releases / record["previous"]
+                or not h.settled()
+                or h.runtime_identity(record["previous"]) != record["identity"]
+            ):
+                raise ValueError("cutover_identity_unknown")
+        except Exception:  # noqa: BLE001 - unknown identity always blocks, without process output
+            s.block(target, "cutover_interrupted")
+            return
+        # Only acknowledged checkpoints are eligible. A phase preceding an
+        # unacknowledged HTTP/systemd effect never reaches this path. Persist
+        # resuming before issuing DELETE so a lost resume is never retried.
+        self.resume(target)
+        if not s.get("blocked"):
+            self.defer(target, "cutover_interrupted")
 
     def reconcile(self, commit, recovery_thread=None):
         # Root-only observation after an operator fences all prior operations.
@@ -403,11 +507,7 @@ class Deployer:
                             continue
                         raise
                 queued.append(row["revision"])
-        queued = [
-            commit
-            for commit in queued
-            if s.status(commit) in (None, "received", "preparing", "deferred")
-        ]
+        queued = [commit for commit in queued if s.pending(commit)]
         if (
             head != before
             and head not in queued
@@ -438,12 +538,40 @@ class Deployer:
 
     def resume(self, target):
         try:
+            self.store.checkpoint(target, "resuming")
             if not self.host.resume(self.store.get("active")):
                 raise ValueError("not_resumed")
-            self.store.set("intent", "")
+            self.store.clear_cutover()
             self.store.publish_responder()
         except Exception:  # noqa: BLE001 - external errors must become secret-free records
             self.store.block(target, "resume_failed")
+
+    def defer(self, commit, reason):
+        # Durable across poller restarts. Bound both retry frequency and attempts;
+        # never turn an availability failure into a terminal failed candidate.
+        raw = self.store.get("retry")
+        retry = json.loads(raw) if raw else {}
+        attempts = (
+            retry["attempts"] + 1
+            if (retry.get("revision"), retry.get("reason")) == (commit, reason)
+            else 1
+        )
+        self.store.set(
+            "retry",
+            json.dumps(
+                {
+                    "revision": commit,
+                    "reason": reason,
+                    "attempts": attempts,
+                    "after": time.time() + min(60, 5 * 2 ** min(attempts - 1, 4)),
+                }
+            ),
+        )
+        self.store.event(
+            commit, "fetch_failed" if reason == "fetch_failed" else "deferred", reason
+        )
+        if attempts >= 10:
+            self.store.block(commit, reason)
 
     def tick(self):
         self.repository_observation = None
@@ -451,6 +579,11 @@ class Deployer:
             if self.recovery:
                 self.recovery.flush()
             if self.store.get("recovery") or self.store.get("operatorHold"):
+                return
+            if self.store.get("blocked"):
+                return
+            if self.store.get("intent"):
+                self.recover_cutover()
                 return
             self.store.stage_recovery(self.host.recover_stages())
             self.deploy()
@@ -475,8 +608,6 @@ class Deployer:
                     self.store.publish()
                 except Exception:  # noqa: BLE001 - no Git output or errors in the feed
                     print("repository_metadata_failed: will retry", flush=True)
-                    if self.recovery:
-                        self.recovery.record("repository_metadata_failed")
             if self.statuses:
                 self.statuses.flush()
             if self.recovery:
@@ -484,10 +615,23 @@ class Deployer:
 
     def deploy(self):
         h, s = self.host, self.store
+        previous = s.get("active")
+        failure = h.health_failure(previous)
+        if failure:
+            misses = int(s.get("healthFailures") or "0") + 1
+            s.set("healthFailures", str(misses))
+            if failure == "lifecycle_failed" or misses >= 3:
+                s.block(previous, failure)
+            return
+        if s.get("healthFailures"):
+            s.set("healthFailures", "")
+        retry = s.get("retry")
+        if retry and time.time() < json.loads(retry)["after"]:
+            return
         try:
             self.observe()
         except Exception:  # noqa: BLE001 - never log SSH/credential-helper errors
-            s.event(s.get("observed"), "fetch_failed", "fetch_failed")
+            self.defer(s.get("observed"), "fetch_failed")
             return
         # Admission is durable before the receipt. Publish it before waiting for
         # builds or starting preparation, not just after a whole tick completes.
@@ -501,10 +645,10 @@ class Deployer:
         target = queued[-1]
         previous = s.get("active")
         if not h.running(previous) or not h.settled():
-            s.block(target, "current_unhealthy")
+            s.block(previous, "current_unhealthy")
             return
         if h.blue_green and h.current.resolve() != h.releases / previous:
-            s.block(target, "current_unhealthy")
+            s.block(previous, "current_unhealthy")
             return
         # Coalesce only before preparation, never during an in-flight attempt.
         # Bookkeeping failures must abort, not terminally fail the newest head
@@ -545,17 +689,8 @@ class Deployer:
             if s.get("recovery"):
                 return
             candidate = h.prepare(target)
-            prior = h.manifest(previous)
-            rollback_safe = h.rollback_safe(prior, candidate)
-            self.observe()
-            if s.get("blocked"):
-                s.block(target, s.get("blocked"))
-                return
-            if not h.healthy(previous):
-                s.block(target, "current_unhealthy")
-                return
         except InsufficientDisk:
-            s.event(target, "deferred", "insufficient_disk")
+            self.defer(target, "insufficient_disk")
             return
         except ActionsDeferred as error:
             s.event(target, "deferred", str(error))
@@ -565,6 +700,27 @@ class Deployer:
             return
         except Exception:  # noqa: BLE001 - candidate/build output is private
             s.event(target, "failed", "preflight_failed")
+            return
+        try:
+            prior = h.manifest(previous)
+        except Exception:  # noqa: BLE001 - private filesystem/integrity errors become fixed codes
+            s.block(target, "prior_release_invalid")
+            return
+        try:
+            rollback_safe = h.rollback_safe(prior, candidate)
+        except Exception:  # noqa: BLE001 - configuration/process errors must not be disclosed
+            s.block(target, "binding_changed")
+            return
+        try:
+            self.observe()
+        except Exception:  # noqa: BLE001 - repository/credential errors stay private
+            self.defer(target, "fetch_failed")
+            return
+        if s.get("blocked"):
+            s.block(target, s.get("blocked"))
+            return
+        if not h.healthy(previous):
+            s.block(previous, "current_unhealthy")
             return
         # Prepare commit names before cutover: June can consume the first
         # healthy receipt before tick's final metadata refresh. Retain this exact
@@ -579,7 +735,7 @@ class Deployer:
                 pass
         # Drain changes admission too. A crash must not silently leave the old
         # service fenced without a durable record and explicit reconciliation.
-        s.set("intent", target)
+        s.checkpoint(target, "standby_starting", identity=h.runtime_identity(previous))
         # Unlike best-effort recovery reporting, this must succeed before drain.
         s.publish_responder()
         if h.blue_green:
@@ -588,15 +744,35 @@ class Deployer:
                 # for recovery, but never stops or fences the healthy old app.
                 h.prepare_standby(target, previous)
             except Exception:  # noqa: BLE001 - retain unknown candidate identity
-                s.block(target, "preflight_failed")
+                s.block(target, "standby_unavailable")
                 return
+        s.checkpoint(target, "standby_ready")
         try:
             if h.blue_green:
+                s.checkpoint(target, "pausing")
                 h.intake(previous, paused=True)
-            if not h.drain(previous):
-                s.event(target, "deferred", "drain_busy")
+                s.checkpoint(target, "intake_paused")
+            s.checkpoint(target, "draining")
+            drained = h.drain(previous)
+            s.checkpoint(target, "drain_settled")
+            if not drained:
                 self.resume(target)
+                if not s.get("blocked"):
+                    self.defer(target, "drain_busy")
                 return
+        except IntakeNotSettled:
+            # The pause response acknowledged the exact route but an earlier
+            # replay is still running. Resume that same runtime, never stop it.
+            s.checkpoint(target, "intake_paused")
+            self.resume(target)
+            if not s.get("blocked"):
+                self.defer(target, "intake_not_settled")
+            return
+        except Exception:  # noqa: BLE001 - a lost acknowledgment is not a settled request
+            s.block(target, "cutover_interrupted")
+            return
+        reason = "fetch_failed"
+        try:
             # Refresh ancestry after drain. Coalesce descendant arrivals on the
             # next tick; a rewrite still blocks activation and resumes admission.
             self.observe()
@@ -607,29 +783,41 @@ class Deployer:
             if h.blue_green:
                 # Last check while old June can still resume unchanged. Standby
                 # may have died during a long drain, or installation may drift.
+                reason = "standby_unavailable"
                 if not h.standby(target):
                     raise ValueError("candidate_not_standby")
                 # Both releases were verified earlier in this locked attempt
                 # and remain sealed. Recheck the live binding, not their bytes,
                 # while intake is paused. Never reuse these across attempts.
+                reason = "binding_changed"
                 h.rollback_safe(prior, candidate)
-        except Exception:  # noqa: BLE001 - resume even after an ambiguous HTTP error
-            # Only an exact busy response is retryable. Transport, identity,
-            # intake and binding uncertainty must retain operator recovery.
-            s.block(target, "drain_busy")
+        except Exception:  # noqa: BLE001 - resume only after acknowledged drain; no raw errors
             self.resume(target)
+            if not s.get("blocked"):
+                if reason == "fetch_failed":
+                    self.defer(target, reason)
+                else:
+                    s.block(target, reason)
             return
         # The intent is already durable. Never retry an ambiguous stop/start
         # or infer success merely from the current symlink.
-        s.event(target, "activating")
         try:
+            s.checkpoint(target, "stop_requested")
+            # Publish only after leaving every resumable checkpoint. Otherwise
+            # interrupted recovery can clear intent but strand this receipt.
+            s.event(target, "activating")
+            if h.blue_green:
+                h.notify_swap(previous, target, json.loads(s.get("cutover"))["attempt"])
             h.service("stop")
+            s.checkpoint(target, "stopped")
             h.switch(target)
+            s.checkpoint(target, "activating")
             if h.blue_green:
                 h.activate(target)
             else:
                 h.service("start")
             if h.healthy(target):
+                s.checkpoint(target, "active_ready")
                 if h.blue_green:
                     h.intake(target, paused=False)
                 s.event(target, "healthy")
@@ -637,13 +825,20 @@ class Deployer:
             s.event(target, "failed", "health_failed")
             # Never kill a possibly busy candidate just to recover quickly.
             # If it cannot prove quiescence, operator recovery must fence it.
-            if not h.drain(target):
+            s.checkpoint(target, "candidate_draining")
+            try:
+                candidate_drained = h.drain(target)
+            except Exception:  # noqa: BLE001 - any unknown drain forbids stopping the candidate
+                candidate_drained = False
+            if not candidate_drained:
                 s.block(target, "candidate_not_drained")
                 return
+            s.checkpoint(target, "rollback_stop_requested")
             h.service("stop")
             if not rollback_safe:
                 s.block(target, "unsafe_rollback")
                 return
+            s.checkpoint(target, "rolling_back")
             h.switch(previous)
             h.service("start")
             if h.blue_green:
@@ -714,8 +909,7 @@ class Recovery:
         raw = s.get("recovery")
         if not raw:
             event = s.db.execute(
-                "SELECT * FROM events WHERE status IN ('failed','rolled_back','blocked','fetch_failed','deferred') "
-                "AND NOT (status = 'deferred' AND COALESCE(reason,'') IN ('actions_pending','actions_unavailable','drain_busy')) "
+                "SELECT * FROM events WHERE status IN ('failed','rolled_back','blocked') "
                 "AND sequence > COALESCE((SELECT MAX(sequence) FROM events "
                 "WHERE status IN ('healthy','reconciled')),0) ORDER BY sequence DESC LIMIT 1"
             ).fetchone()
@@ -1053,6 +1247,12 @@ class GitHubStatuses(GitHubApp):
     }
     REASONS: ClassVar = {
         "preflight_failed": "Source preparation or preflight failed; individual command results are not recorded. Operator diagnosis required.",
+        "prior_release_invalid": "The previous release failed integrity verification. Operator repair required; the candidate is not failed.",
+        "binding_changed": "Protected runtime configuration or service binding changed. Operator reconciliation required; the candidate is not failed.",
+        "standby_unavailable": "Candidate standby could not be verified. Old June was not stopped; inspect retained slot identity before retrying.",
+        "intake_not_settled": "Intake pause did not settle. Admission was resumed if verified safe; inspect later block/retry evidence.",
+        "cutover_interrupted": "Cutover was interrupted. Only acknowledged pre-stop phases with unchanged process identity can resume automatically; unknown requests stay blocked.",
+        "lifecycle_failed": "The active runtime latched a lifecycle failure. Readiness and drain remain refused; recovery is attributed to the active revision, not a queued candidate.",
         "actions_pending": "Waiting for the exact main revision's GitHub Actions build. June remains on the current release.",
         "actions_unavailable": "Actions evidence or artifact download is unavailable. The controller will retry; no local-build fallback.",
         "actions_build_failed": "The exact main revision's Actions build did not succeed. Publish a forward fix; this tool cannot retry it.",
@@ -1060,7 +1260,7 @@ class GitHubStatuses(GitHubApp):
         "actions_policy_changed": "Actions build policy differs from the operator-reviewed versions. Review and update the protected policy pins, then publish a forward commit; not activated.",
         "actions_build_ready": "The exact main revision's Actions build succeeded. Local artifact verification and activation gates are still required; this is not deployment success.",
         "health_failed": "Candidate failed readiness or process-identity checks. Inspect later rollback/block events.",
-        "drain_busy": "In-flight work could not be safely drained. A deferred event retries without cancelling work; a blocked event requires operator recovery for uncertain drain, intake or identity evidence.",
+        "drain_busy": "In-flight work could not be safely drained. A deferred event uses bounded retries without cancelling work; a blocked event requires operator recovery for exhausted retries or uncertainty recorded by an older controller.",
         "insufficient_disk": "Insufficient disk capacity. Operator must restore capacity; the controller will retry.",
         "resume_failed": "Admission could not be resumed. Operator recovery required.",
         "current_unhealthy": "Current service identity/readiness is unverified. Operator inspection required.",
@@ -1285,8 +1485,6 @@ class GitHubStatuses(GitHubApp):
             self.app_token = None  # Revoked/failed credentials must be minted anew.
             self.retry_at = time.monotonic() + 60
             print("github_status_publish_failed: will retry", flush=True)
-            if self.recovery:
-                self.recovery.record("github_status_publish_failed")
 
 
 class ArtifactRedirect(urllib.request.HTTPRedirectHandler):
@@ -1789,10 +1987,40 @@ class Host:
             credential=self.intake_token,
             data=expected,
         )
-        if any(body.get(key) != value for key, value in expected.items()) or (
-            paused and body.get("settled") is not True
-        ):
+        if any(body.get(key) != value for key, value in expected.items()):
             raise ValueError("intake_not_settled")
+        if paused and body.get("settled") is not True:
+            if body.get("settled") is False:
+                raise IntakeNotSettled()
+            raise ValueError("intake_not_settled")
+
+    def notify_swap(self, previous, commit, attempt):
+        # The app supplied content-free destinations before its acknowledged
+        # drain. Sending belongs to the independent responder, not that app.
+        # This is best-effort and cannot create a deployment/recovery failure.
+        try:
+            targets = getattr(self, "swap_targets", None)
+            if targets is None:
+                return  # Older app: upgrade it before installing this controller.
+            body = self.request(
+                "/operator/deployment/swap-notice",
+                "POST",
+                origin=self.config["blueGreen"]["intakeOrigin"],
+                credential=self.intake_token,
+                data={
+                    "revision": commit,
+                    "attempt": str(attempt),
+                    "from": self.slot(previous),
+                    "to": self.slot(commit),
+                    "targets": targets,
+                },
+                timeout=2,
+            )
+            if body.get("accepted") is not True:
+                raise ValueError("notice_not_accepted")
+            print("slack_swap_notice_queued", flush=True)
+        except Exception:  # noqa: BLE001 - never disclose recipients, credentials or Slack errors
+            print("slack_swap_notice_unconfirmed", flush=True)
 
     def git(self, *args, binary=False, pass_fds=()):
         result = subprocess.run(
@@ -2381,7 +2609,18 @@ class Host:
             for item in self.config["transitions"]
         )
 
-    def request(self, path, method="GET", *, origin=None, credential=None, data=None):
+    def request(
+        self,
+        path,
+        method="GET",
+        *,
+        origin=None,
+        credential=None,
+        data=None,
+        accepted_errors=(),
+        max_bytes=4096,
+        timeout=5,
+    ):
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect()
         )
@@ -2397,13 +2636,17 @@ class Host:
                     headers=headers,
                     data=json.dumps(data).encode() if data is not None else None,
                 ),
-                timeout=5,
+                timeout=timeout,
             ) as response:
-                return json.loads(response.read(4096))
+                return json.loads(response.read(max_bytes))
         except urllib.error.HTTPError as error:
             with error:
                 if (
-                    path == "/operator/deployment/drain"
+                    path
+                    in (
+                        "/operator/deployment/drain",
+                        "/operator/deployment/drain?swapNotice=1",
+                    )
                     and method == "POST"
                     and error.code == 409
                 ):
@@ -2412,7 +2655,29 @@ class Host:
                         # drain() must still validate exact schema, revision and
                         # MainPID. Other 409s (including unsupported config) fail.
                         return body
-            raise ValueError("http_failed") from None
+                if error.code in accepted_errors:
+                    return json.loads(error.read(4096))
+                raise ValueError("http_failed") from None
+
+    def health_failure(self, commit):
+        # A single bounded, read-only probe, including the diagnostic 503 body.
+        # Liveness or a returned body alone never establishes admission/drain.
+        try:
+            body = self.request(
+                "/health", origin=self.origin(commit), accepted_errors=(503,)
+            )
+            if (
+                body.get("name") == "June"
+                and body.get("revision") == commit
+                and self.running(commit)
+            ):
+                if body.get("failure") in ("lease_abort", "explicit_failure"):
+                    return "lifecycle_failed"
+                if body.get("ready") is True:
+                    return None
+        except Exception:  # noqa: BLE001,S110 - no raw HTTP, native error or credential disclosure
+            pass
+        return "current_unhealthy"
 
     def healthy(self, commit):
         end = time.monotonic() + self.config["healthSeconds"]
@@ -2432,17 +2697,24 @@ class Host:
         return False
 
     def drain(self, commit):
+        self.swap_targets = None
         body = self.request(
-            "/operator/deployment/drain", "POST", origin=self.origin(commit)
+            "/operator/deployment/drain?swapNotice=1",
+            "POST",
+            origin=self.origin(commit),
+            max_bytes=32768,
         )
         if (
             not isinstance(body, dict)
-            or set(body) != {"revision", "drained"}
+            or set(body)
+            not in ({"revision", "drained"}, {"revision", "drained", "swapTargets"})
             or body["revision"] != commit
             or type(body["drained"]) is not bool
             or not self.running(commit)
         ):
             raise ValueError("drain_identity_unknown")
+        if body["drained"] and isinstance(body.get("swapTargets"), list):
+            self.swap_targets = body["swapTargets"]
         return body["drained"]
 
     def resume(self, commit):
@@ -2477,6 +2749,46 @@ class Host:
             and pid != "0"
             and Path(f"/proc/{pid}/cwd").resolve() == self.releases / commit
         )
+
+    def runtime_identity(self, commit):
+        properties = (
+            "MainPID",
+            "InvocationID",
+            "ExecMainStartTimestampMonotonic",
+            "ActiveState",
+            "SubState",
+            "ControlPID",
+            "Job",
+        )
+        output = subprocess.check_output(
+            [
+                "systemctl",
+                "show",
+                self.unit(commit),
+                "--property=" + ",".join(properties),
+            ],
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).decode()
+        identity = dict(line.split("=", 1) for line in output.splitlines())
+        if (
+            set(identity) != set(properties)
+            or identity["ActiveState"] != "active"
+            or identity["SubState"] != "running"
+            or identity["ControlPID"] != "0"
+            or identity["Job"] != ""
+            or not identity["MainPID"].isdecimal()
+            or int(identity["MainPID"]) <= 0
+            or not re.fullmatch(r"[0-9a-f]{32}", identity["InvocationID"])
+            or identity["InvocationID"] == "0" * 32
+            or not identity["ExecMainStartTimestampMonotonic"].isdecimal()
+            or int(identity["ExecMainStartTimestampMonotonic"]) <= 0
+            or Path(f"/proc/{identity['MainPID']}/cwd").resolve()
+            != self.releases / commit
+        ):
+            raise ValueError("runtime_identity_unknown")
+        identity["bootId"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        return identity
 
     def settled(self):
         jobs = subprocess.check_output(

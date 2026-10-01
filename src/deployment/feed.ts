@@ -57,6 +57,12 @@ const feedSchema = z.strictObject({
         reason: z
           .enum([
             "preflight_failed",
+            "prior_release_invalid",
+            "binding_changed",
+            "standby_unavailable",
+            "intake_not_settled",
+            "cutover_interrupted",
+            "lifecycle_failed",
             "actions_pending",
             "actions_unavailable",
             "actions_build_failed",
@@ -89,6 +95,18 @@ const reasons: Record<
 > = {
   preflight_failed:
     "Preparation/preflight failed; the feed does not identify the failing operation. Owner/operator diagnosis required; this tool cannot retry.",
+  prior_release_invalid:
+    "The previous release failed integrity verification. Operator repair required; the candidate is not failed.",
+  binding_changed:
+    "Protected runtime configuration or service binding changed. Operator reconciliation required; the candidate is not failed.",
+  standby_unavailable:
+    "Candidate standby could not be verified. Old June was not stopped; inspect retained slot identity before retrying.",
+  intake_not_settled:
+    "Intake pause did not settle. The controller can retry after a verified resume; later blocks require operator recovery.",
+  cutover_interrupted:
+    "Cutover was interrupted. Only acknowledged pre-stop phases with unchanged process identity can resume automatically; unknown requests stay blocked.",
+  lifecycle_failed:
+    "The active runtime latched a lifecycle failure. Readiness and drain remain refused; recovery is attributed to the active revision, not a queued candidate.",
   actions_pending:
     "Waiting for the exact main revision's GitHub Actions build. June remains on the current release.",
   actions_unavailable:
@@ -104,9 +122,9 @@ const reasons: Record<
   health_failed:
     "Candidate failed readiness/identity checks. Inspect later rollback/block events; do not claim it is live.",
   drain_busy:
-    "In-flight work could not be safely drained. Controller defers; inspect again later.",
+    "In-flight work could not be safely drained. After verified resume, the updated controller retries with bounded backoff; ten repeated failures block for recovery. Older installations may open an incident immediately. Inspect the blocked flag; never duplicate a retry.",
   insufficient_disk:
-    "Insufficient host disk capacity. The recovery agent or operator must restore capacity. A retry can use the same commit, but an active recovery incident or operator hold must be resolved first; do not promise an automatic retry.",
+    "Insufficient host disk capacity. The updated controller retries with bounded backoff and escalates ten repeated failures; older installations may open an incident immediately. Capacity must be restored and any recovery/operator hold resolved before deployment can proceed.",
   resume_failed: "Admission could not be resumed. Operator recovery required.",
   current_unhealthy:
     "Current service identity/readiness is unverified. Operator inspection required.",
@@ -121,7 +139,7 @@ const reasons: Record<
   non_fast_forward:
     "Main moved backwards or diverged. Owner/operator must resolve trusted branch history.",
   fetch_failed:
-    "Controller could not fetch trusted main. Operator should inspect repository connectivity/access.",
+    "Controller could not fetch trusted main. The updated controller retries with bounded backoff and escalates ten repeated failures; reporting failures never fence deployment. Inspect the blocked flag and installation provenance before promising retries.",
 };
 
 function phaseLatency(events: DeploymentFeed["events"], revision?: string) {

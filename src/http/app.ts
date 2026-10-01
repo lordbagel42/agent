@@ -190,8 +190,51 @@ export function createHttpApp(deps: HttpDependencies) {
       }
       if (!deployment.supported)
         return c.json({ error: "drain_unsupported_configuration" }, 409);
+      // Capture before fencing: after drain succeeds no turn remains active.
+      // The independent responder sends these notices, never the drained app.
+      const conversations = lifecycle.conversations;
+      const targets = new Map<
+        string,
+        { accountId: string; channel: string; thread_ts?: string }
+      >();
+      for (const identity of deps.owner.identities) {
+        if (identity.channel !== "slack") continue;
+        // Reuse the active unthreaded owner DM when known, avoiding a second
+        // notice addressed to the same DM via its user ID.
+        const dm = conversations.find(
+          (entry) =>
+            entry.direct &&
+            entry.senderId === identity.senderId &&
+            entry.address.channel === "slack" &&
+            entry.address.accountId === identity.accountId &&
+            !entry.address.threadId,
+        );
+        const target = {
+          accountId: identity.accountId,
+          channel: dm?.address.conversationId ?? identity.senderId,
+        };
+        targets.set(JSON.stringify(target), target);
+      }
+      for (const { address } of conversations) {
+        if (address.channel !== "slack") continue;
+        const target = {
+          accountId: address.accountId,
+          channel: address.conversationId,
+          ...(address.threadId ? { thread_ts: address.threadId } : {}),
+        };
+        targets.set(JSON.stringify(target), target);
+      }
       const drained = await lifecycle.drain();
-      return c.json({ revision: deps.revision, drained }, drained ? 200 : 409);
+      return c.json(
+        {
+          revision: deps.revision,
+          drained,
+          ...(drained && c.req.query("swapNotice") === "1"
+            ? { swapTargets: [...targets.values()].slice(0, 100) }
+            : {}),
+        },
+        drained ? 200 : 409,
+      );
     });
   }
   const expected = Buffer.from(`Bearer ${deps.operatorToken}`);
@@ -336,6 +379,7 @@ export function createHttpApp(deps: HttpDependencies) {
         name: "June",
         ready,
         ...(deps.revision ? { revision: deps.revision } : {}),
+        ...(deps.lifecycle?.failure ? { failure: deps.lifecycle.failure } : {}),
       },
       ready ? 200 : 503,
     );

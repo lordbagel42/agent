@@ -76,6 +76,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("revision")
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Run all preflight checks without packaging dependencies",
+    )
     args = parser.parse_args()
     system = platform.freedesktop_os_release()
     if (
@@ -131,7 +136,8 @@ def main():
                     raise ValueError("unsafe_source")
             source.extractall(stage, filter="data")
         subprocess.run(["sh", str(preflight)], cwd=stage, check=True)
-        package(stage, args.output, commit, hashlib.sha256(archive).hexdigest())
+        if not args.check_only:
+            package(stage, args.output, commit, hashlib.sha256(archive).hexdigest())
 
 
 if __name__ == "__main__":

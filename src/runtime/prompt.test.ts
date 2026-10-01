@@ -318,6 +318,20 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "any unresolved recovery record is an ownership fence",
     );
     expect(request.system).toContain("actionsBuild enabled");
+    expect(request.system).toContain("JUNE_ACTIONS_ARTIFACTS=true");
+    expect(request.system).toContain(
+      "Reporting failures never fence deployment",
+    );
+    expect(request.system).toContain("ten repeated failures");
+    expect(request.system).toContain("acknowledged pre-stop checkpoints");
+    expect(request.system).toContain("attributed to the active revision");
+    expect(request.system).toContain(
+      "swapping from blue to green for commit xxyyzz",
+    );
+    expect(request.system).toContain(
+      "idle subscriptions and completed turns are not active participation",
+    );
+    expect(request.system).toContain("Do not duplicate these notices");
     expect(request.system).toContain("no automatic local-build fallback");
     expect(request.system).toContain("a green build do not prove");
     expect(request.system).toContain(

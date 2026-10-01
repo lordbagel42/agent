@@ -559,7 +559,7 @@ describe("webhook and operator HTTP boundary", () => {
       }),
     );
     const drain = (credential: string, method = "POST") =>
-      app.request("/operator/deployment/drain", {
+      app.request("/operator/deployment/drain?swapNotice=1", {
         method,
         headers: { authorization: `Bearer ${credential}` },
       });
@@ -570,14 +570,49 @@ describe("webhook and operator HTTP boundary", () => {
       ready: true,
       revision,
     });
-    const release = await lifecycle.enter(new AbortController().signal);
+    const active = {
+      address: {
+        channel: "slack" as const,
+        accountId: "T1",
+        conversationId: "C2",
+        threadId: "12.34",
+      },
+      direct: false,
+      senderId: "U2",
+    };
+    const release = await lifecycle.enter(new AbortController().signal, active);
+    const duplicate = await lifecycle.enter(
+      new AbortController().signal,
+      active,
+    );
+    const idle = await lifecycle.enter(new AbortController().signal, {
+      ...active,
+      address: { ...active.address, conversationId: "CIDLE" },
+    });
+    idle();
     const pending = drain(deployToken);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect((await app.request(signed())).status).toBe(503);
     expect(submissions).toBe(0);
     expect((await app.request("/health")).status).toBe(503);
     release();
-    expect(await (await pending).json()).toEqual({ revision, drained: true });
+    duplicate();
+    expect(await (await pending).json()).toEqual({
+      revision,
+      drained: true,
+      swapTargets: [
+        { accountId: "T1", channel: "U1" },
+        { accountId: "T1", channel: "C2", thread_ts: "12.34" },
+      ],
+    });
+    expect(
+      await (
+        await app.request("/operator/deployment/drain", {
+          method: "POST",
+          headers: { authorization: `Bearer ${deployToken}` },
+        })
+      ).json(),
+    ).toEqual({ revision, drained: true });
     expect((await drain(deployToken, "DELETE")).status).toBe(200);
     expect((await app.request(signed())).status).toBe(200);
     expect(submissions).toBe(1);
@@ -619,6 +654,15 @@ describe("webhook and operator HTTP boundary", () => {
     expect(reads).toHaveLength(1);
     lifecycle.fail();
     expect((await drain(deployToken)).status).toBe(409);
+    const failedHealth = await app.request("/health");
+    expect(failedHealth.status).toBe(503);
+    expect(await failedHealth.json()).toEqual({
+      name: "June",
+      ready: false,
+      revision,
+      failure: "explicit_failure",
+    });
+    await drain(deployToken, "DELETE");
     expect((await app.request("/health")).status).toBe(503);
   });
 

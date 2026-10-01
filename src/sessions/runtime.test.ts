@@ -12,6 +12,7 @@ import type {
 } from "../core/contracts.js";
 import { slackSource } from "../imports/identity.js";
 import { EvidenceStore } from "../memory/store.js";
+import { createLifecycle, type Lifecycle } from "../runtime/lifecycle.js";
 import { createJuneRegistry } from "../runtime/registry.js";
 import type { SessionArchiveInput } from "./archive.js";
 import {
@@ -37,7 +38,7 @@ const assignment = (id = "a", session = "b"): ActivityAssignment => ({
   kind: "message",
 });
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, lifecycle?: Lifecycle) {
   const store = new EvidenceStore(":memory:", randomBytes(32));
   t.onTestFinished(() => store.close());
   const source = (id: string): MessageEvent => ({
@@ -126,6 +127,7 @@ async function fixture(t: TestContext) {
       activity: createActivityActor({
         owner,
         model,
+        lifecycle,
         channel: { send },
         catalog: () => catalog,
         memory: {
@@ -155,6 +157,74 @@ async function fixture(t: TestContext) {
       client.activity.getOrCreate(sessionActorKey(scopeKey, input.sessionId)),
   };
 }
+
+it("tracks an activity surface without a typing ping until the real turn settles", async (t) => {
+  const lifecycle = createLifecycle();
+  const f = await fixture(t, lifecycle);
+  const answer = Promise.withResolvers<CompanionReply>();
+  f.model.beginReply.mockReturnValue({
+    answer: answer.promise,
+    settlement: Promise.resolve("confirmed_stopped"),
+  });
+  const conversation = {
+    address: {
+      channel: "slack" as const,
+      accountId: "T1",
+      conversationId: "D1",
+      threadId: "1700000000.000001",
+    },
+    senderId: "U1",
+    direct: true,
+  };
+  const input = { ...assignment(), conversation };
+  const activity = f.activity(input);
+  await activity.receive(input);
+  await expect.poll(() => f.model.beginReply.mock.calls.length).toBe(1);
+  expect(lifecycle.conversations).toEqual([conversation]);
+  answer.resolve({ text: "settled" });
+  await expect.poll(() => lifecycle.active).toBe(0);
+  expect(lifecycle.conversations).toEqual([]);
+  expect(f.send).toHaveBeenCalledTimes(1);
+});
+
+it.for(["acknowledged", "cleared"] as const)(
+  "does not announce participation while checking a %s assignment",
+  async (status, t) => {
+    const lifecycle = createLifecycle();
+    const f = await fixture(t, lifecycle);
+    const checking = Promise.withResolvers<void>();
+    const result = Promise.withResolvers<typeof status>();
+    vi.mocked(f.catalog.assignmentStatus)
+      .mockResolvedValueOnce("active") // Receive admission precedes queued work.
+      .mockImplementation(async () => {
+        checking.resolve();
+        return result.promise;
+      });
+    const input = {
+      ...assignment(),
+      conversation: {
+        address: {
+          channel: "slack" as const,
+          accountId: "T1",
+          conversationId: "CSTALE",
+          threadId: "1700000000.000009",
+        },
+        senderId: "U1",
+        direct: false,
+      },
+    };
+    await f.activity(input).receive(input);
+    await checking.promise;
+    const targets = lifecycle.conversations;
+    const draining = lifecycle.drain();
+    expect(lifecycle.active).toBe(1);
+    result.resolve(status);
+    expect(await draining).toBe(true);
+    expect(targets).toEqual([]);
+    expect(lifecycle.conversations).toEqual([]);
+    expect(f.send).not.toHaveBeenCalled();
+  },
+);
 
 it("delivers independently addressed activity replies once and archives receipts without their bodies", async (t) => {
   const f = await fixture(t);

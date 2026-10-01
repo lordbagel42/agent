@@ -20,7 +20,7 @@ import type { EvidenceStore } from "../memory/store.js";
 import { beginModelReply } from "../models/invocation.js";
 import { parseReply } from "../models/provider.js";
 import { type Delivery, deliver } from "../runtime/delivery.js";
-import type { Lifecycle } from "../runtime/lifecycle.js";
+import type { ConversationActivity, Lifecycle } from "../runtime/lifecycle.js";
 import type {
   JuneClientRegistry,
   MemoryReference,
@@ -47,6 +47,8 @@ export interface ActivityAssignment {
   kind: "message" | "notification";
   /** Content-free inbound ping metadata, never inherited by notifications. */
   ping?: MessageEvent;
+  /** Host-selected active surface, independent of typing preferences. */
+  conversation?: ConversationActivity;
 }
 
 interface TurnContext {
@@ -164,7 +166,8 @@ export interface ActivityDependencies {
   agentActive?(clientId: string): boolean;
   webSearch?: WebSearchProvider;
   channel: Pick<ChannelAdapter, "send" | "setTyping">;
-  lifecycle?: Pick<Lifecycle, "enter" | "fail">;
+  lifecycle?: Pick<Lifecycle, "enter" | "fail"> &
+    Partial<Pick<Lifecycle, "participate">>;
   catalog(
     scopeKey: string[],
     client: {
@@ -216,11 +219,15 @@ export function createActivityActor(deps: ActivityDependencies) {
       persist: () => c.saveState({ immediate: true }),
       receiving: Promise.resolve(),
     }),
-    queues: { turns: queue<{ eventId: string }>() },
+    queues: {
+      turns: queue<{ eventId: string }>(),
+    },
     onWake: async (c) => {
       for (const turn of Object.values(c.state.turns))
         if (!turn.acknowledged)
-          await c.queue.send("turns", { eventId: turn.assignment.eventId });
+          await c.queue.send("turns", {
+            eventId: turn.assignment.eventId,
+          });
     },
     actions: {
       readProjection: (
@@ -412,7 +419,9 @@ export function createActivityActor(deps: ActivityDependencies) {
             c.state.turns[assignment.eventId] = { assignment };
           }
           await c.vars.persist();
-          await c.queue.send("turns", { eventId: assignment.eventId });
+          await c.queue.send("turns", {
+            eventId: assignment.eventId,
+          });
         });
         c.vars.receiving = receive.catch(() => {});
         await receive;
@@ -446,7 +455,9 @@ export function createActivityActor(deps: ActivityDependencies) {
         await c.vars.persist();
         for (const id of eventIds)
           if (c.state.turns[id] && !c.state.turns[id]?.acknowledged)
-            await c.queue.send("turns", { eventId: id });
+            await c.queue.send("turns", {
+              eventId: id,
+            });
       },
       status: (c) => ({
         acknowledgedThrough: c.state.acknowledgedThrough,
@@ -471,6 +482,7 @@ export function createActivityActor(deps: ActivityDependencies) {
           });
           if (!message) return;
           const release = await deps.lifecycle?.enter(ctx.abortSignal);
+          let stopParticipation: (() => void) | undefined;
           let stopPing: (() => Promise<void>) | undefined;
           try {
             await loop.step({
@@ -506,6 +518,10 @@ export function createActivityActor(deps: ActivityDependencies) {
                       return;
                     }
                     if (status !== "active") return;
+                    if (assignment.conversation)
+                      stopParticipation = deps.lifecycle?.participate?.(
+                        assignment.conversation,
+                      );
                     const ping = assignment.ping;
                     if (
                       assignment.kind === "message" &&
@@ -1214,6 +1230,7 @@ export function createActivityActor(deps: ActivityDependencies) {
             try {
               await stopPing?.();
             } finally {
+              stopParticipation?.();
               release?.();
             }
           }

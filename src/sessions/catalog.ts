@@ -281,6 +281,7 @@ export function createSessionCatalog(
     }
     const session = sessions.directory.sessions[receipt.sessionId];
     if (!session) throw new Error("Assigned activity unavailable");
+    const source = input.type === "event" ? input.event : input.source;
     sessions.turns[receipt.id] ??= {
       assignment: {
         scopeKey: [...host.key],
@@ -290,6 +291,15 @@ export function createSessionCatalog(
         receivedAt: receipt.receivedAt,
         openedAt: session.openedAt,
         kind: receipt.kind,
+        ...(source.type === "message"
+          ? {
+              conversation: {
+                address: source.address,
+                direct: source.direct,
+                senderId: source.senderId,
+              },
+            }
+          : {}),
         ...(input.type === "event" &&
         input.event.type === "message" &&
         input.event.botMentioned &&

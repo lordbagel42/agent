@@ -1,10 +1,19 @@
+import type { MessageEvent } from "../core/contracts.js";
+
+export type ConversationActivity = Pick<
+  MessageEvent,
+  "address" | "direct" | "senderId"
+>;
+
 /** Process-local admission only. Durable queues stay intact while fenced; this
  * never cancels an effect, clears an uncertain intent, or stops the registry.
  * isSettled checks durable/native work after process-local work is idle. */
 export function createLifecycle(isSettled?: () => Promise<boolean>) {
   let fenced = false;
   let failed = false;
+  let failure: "lease_abort" | "explicit_failure" | undefined;
   let active = 0;
+  const conversations = new Set<ConversationActivity>();
   const waiting = new Set<() => void>();
   let draining: Promise<boolean> | undefined;
   let finishDrain: ((drained: boolean) => void) | undefined;
@@ -18,6 +27,7 @@ export function createLifecycle(isSettled?: () => Promise<boolean>) {
   const fail = (admission?: { admittedAt: number; admissionStack: string }) => {
     const first = !failed;
     failed = true;
+    failure ??= admission ? "lease_abort" : "explicit_failure";
     resume();
     if (first) {
       // Host-generated frames only: never log a thrown error, signal reason,
@@ -26,7 +36,7 @@ export function createLifecycle(isSettled?: () => Promise<boolean>) {
         console.error(
           JSON.stringify({
             event: "lifecycle_failed",
-            kind: admission ? "lease_abort" : "explicit_failure",
+            kind: failure,
             at: Date.now(),
             active,
             stack: new Error().stack?.split("\n").slice(1, 9).join("\n"),
@@ -49,15 +59,41 @@ export function createLifecycle(isSettled?: () => Promise<boolean>) {
       if (active === 0) checkDrain?.();
     };
   };
+  // Metadata only: callers keep their admission lease through eligibility
+  // checks, then register a live surface until that same operation settles.
+  const participate = (conversation: ConversationActivity) => {
+    const entry = {
+      address: { ...conversation.address },
+      direct: conversation.direct,
+      senderId: conversation.senderId,
+    };
+    conversations.add(entry);
+    return () => {
+      conversations.delete(entry);
+    };
+  };
   return {
     get ready() {
       return !fenced && !failed;
     },
+    get failure() {
+      return failure;
+    },
     get active() {
       return active;
     },
+    get conversations() {
+      return [...conversations].map((entry) => ({
+        ...entry,
+        address: { ...entry.address },
+      }));
+    },
+    participate,
     tryEnter,
-    async enter(signal: AbortSignal): Promise<() => void> {
+    async enter(
+      signal: AbortSignal,
+      conversation?: ConversationActivity,
+    ): Promise<() => void> {
       while (fenced) {
         signal.throwIfAborted();
         await new Promise<void>((resolve, reject) => {
@@ -81,6 +117,9 @@ export function createLifecycle(isSettled?: () => Promise<boolean>) {
       signal.throwIfAborted();
       const release = tryEnter();
       if (!release) throw new Error("workflow_unavailable");
+      // Content-free and process-local: no subscriptions, history, or typing
+      // preferences. Only admitted conversation work is a notice destination.
+      const stopParticipation = conversation && participate(conversation);
       // A forced workflow abort may release its callback before a raw effect
       // settles. Never certify that process as naturally drained afterwards.
       const admission = {
@@ -92,6 +131,7 @@ export function createLifecycle(isSettled?: () => Promise<boolean>) {
       signal.addEventListener("abort", abort, { once: true });
       return () => {
         signal.removeEventListener("abort", abort);
+        stopParticipation?.();
         release();
       };
     },

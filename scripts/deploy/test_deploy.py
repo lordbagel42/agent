@@ -34,7 +34,8 @@ if Path("src/console/view.ts").read_text().startswith("bad"):
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_GET(self):
-        body = {"name": "June", "revision": release["revision"], "ready": not Path("src/console/view.ts").read_text().startswith("bad")}
+        body = {"name": "June", "revision": release["revision"], "ready": not Path("src/console/view.ts").read_text().startswith("bad") and not (data / "latch").exists()}
+        if (data / "latch").exists(): body["failure"] = "lease_abort"
         self.send_response(200 if body["ready"] else 503); self.end_headers()
         self.wfile.write(json.dumps(body).encode())
     def do_POST(self):
@@ -101,6 +102,7 @@ class FixtureHost(deploy.Host):
         }
         self.config = {
             "origin": f"http://127.0.0.1:{port}",
+            # Includes Python process startup on shared runners, not just HTTP.
             "healthSeconds": 3,
             "transitions": [],
         }
@@ -192,6 +194,11 @@ class FixtureHost(deploy.Host):
 
     def settled(self):
         return True
+
+    def runtime_identity(self, commit):
+        if not self.running(commit):
+            raise ValueError("runtime_identity_unknown")
+        return {"fixturePid": self.process.pid}
 
 
 class GitHubFixture:
@@ -995,14 +1002,18 @@ class RecoverySafety(unittest.TestCase):
         self.assertEqual(self.store.get("operatorHold"), "legacy-recovery")
         self.assertEqual(self.store.get("recovery"), "")
 
-    def test_fetch_and_deferral_errors_create_one_incident_until_reconciled(self):
+    def test_transient_events_do_not_create_incidents_but_blocks_do(self):
         for status, reason in (
             ("fetch_failed", "fetch_failed"),
             ("deferred", "insufficient_disk"),
-            ("blocked", "drain_busy"),
+            ("deferred", "drain_busy"),
         ):
             with self.subTest(reason=reason):
                 self.store.event("b" * 40, status, reason)
+                with patch.object(deploy.subprocess, "run"):
+                    self.recovery.flush()
+                self.assertEqual(self.store.get("recovery"), "")
+                self.store.block("b" * 40, reason)
                 with patch.object(deploy.subprocess, "run"):
                     self.recovery.flush()
                 self.assertTrue(self.store.get("recovery"))
@@ -1041,16 +1052,13 @@ class RecoverySafety(unittest.TestCase):
             loop.tick()
         self.assertEqual(json.loads(self.store.get("recovery")), incident)
 
-    def test_reporting_error_dispatches_without_rewriting_candidate_history(self):
+    def test_reporting_error_never_fences_or_rewrites_candidate_history(self):
         self.store.event(self.revision, "healthy")
         reporter = deploy.GitHubStatuses(self.store, recovery=self.recovery)
         with patch.object(reporter, "token", side_effect=ValueError("PRIVATE token")):
             reporter.flush()
-        self.assertTrue(self.store.get("recovery"))
-        self.assertEqual(
-            json.loads(self.store.get("recovery"))["reason"],
-            "github_status_publish_failed",
-        )
+        self.assertEqual(self.store.get("recovery"), "")
+        self.assertGreater(reporter.retry_at, time.monotonic())
         self.assertEqual(self.store.status(self.revision), "healthy")
 
     def test_pending_github_status_reports_global_block_not_infinite_progress(self):
@@ -1129,6 +1137,13 @@ class DeploymentSafety(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+    def tick_after_retry(self):
+        retry = json.loads(self.store.get("retry") or "{}")
+        with patch.object(
+            deploy.time, "time", return_value=max(time.time(), retry.get("after", 0))
+        ):
+            self.loop.tick()
+
     def test_failed_preflight_hands_off_and_fences_later_main(self):
         target = self.host.commit("src/console/view.ts", "two")
         self.loop.recovery = deploy.Recovery(self.store)
@@ -1153,9 +1168,8 @@ class DeploymentSafety(unittest.TestCase):
         self.assertEqual(self.store.get("active"), self.first)
         self.assertTrue(self.host.healthy(self.first))
 
-    def test_reporting_failure_before_prepare_fences_the_current_attempt(self):
+    def test_reporting_failure_does_not_prevent_deployment(self):
         target = self.host.commit("src/console/view.ts", "two")
-        pid = self.host.process.pid
         self.loop.recovery = deploy.Recovery(self.store)
         reporter = deploy.GitHubStatuses(self.store, recovery=self.loop.recovery)
         self.loop.statuses = reporter
@@ -1171,15 +1185,48 @@ class DeploymentSafety(unittest.TestCase):
             ),
         ):
             self.loop.tick()
-        self.assertFalse((self.host.releases / target).exists())
-        self.assertEqual(self.host.process.pid, pid)
-        self.assertEqual(self.store.status(target), "received")
+        self.assertEqual(self.store.status(target), "healthy")
         self.assertEqual(self.store.get("intent"), "")
+        self.assertEqual(self.store.get("recovery"), "")
+        self.assertTrue(self.host.healthy(target))
+
+    def test_idle_runtime_latch_is_detected_without_a_push_and_blames_active(self):
+        self.loop.recovery = deploy.Recovery(self.store)
+        self.loop.tick()
+        (self.host.data / "latch").touch()
+        with patch.object(deploy.subprocess, "run"):
+            self.loop.tick()
+        incident = json.loads(self.store.get("recovery"))
+        self.assertEqual(incident["revision"], self.first)
+        self.assertEqual(incident["reason"], "lifecycle_failed")
+        self.assertEqual(self.store.status(self.first), "blocked")
+        self.assertFalse((self.host.data / "drains").exists())
+
+    def test_retry_backoff_survives_restart_then_escalates(self):
+        target = self.host.commit("src/console/view.ts", "two")
+        self.loop.recovery = deploy.Recovery(self.store)
+        with patch.object(self.host, "fetch", side_effect=OSError("PRIVATE")) as fetch:
+            with patch.object(deploy.time, "time", return_value=1000):
+                self.loop.tick()
+                self.assertEqual(fetch.call_count, 1)
+                self.assertEqual(self.store.get("recovery"), "")
+                loop = deploy.Deployer(
+                    self.host, self.store, recovery=self.loop.recovery
+                )
+                loop.tick()
+                self.assertEqual(fetch.call_count, 1)
+            for attempt in range(1, 10):
+                with (
+                    patch.object(deploy.time, "time", return_value=1000 + attempt * 61),
+                    patch.object(deploy.subprocess, "run"),
+                ):
+                    loop.tick()
+            self.assertEqual(fetch.call_count, 10)
+        self.assertEqual(self.store.get("blocked"), "fetch_failed")
         self.assertEqual(
-            json.loads(self.store.get("recovery"))["reason"],
-            "github_status_publish_failed",
+            json.loads(self.store.get("recovery"))["reason"], "fetch_failed"
         )
-        self.assertTrue(self.host.healthy(self.first))
+        self.assertNotEqual(self.store.status(target), "failed")
 
     def test_unclean_stop_blocks_activation_and_rollback_without_switch_or_retry(self):
         for failed_stop in (1, 2):
@@ -1526,7 +1573,7 @@ class DeploymentSafety(unittest.TestCase):
             self.assertEqual(api.runs[41]["status"], "queued")
             self.assertIn("drain_busy", api.runs[41]["output"]["summary"])
             (self.host.data / "busy").unlink()
-            self.loop.tick()
+            self.tick_after_retry()
             writes = len(api.writes)
             self.loop.tick()
             self.assertEqual(len(api.writes), writes)
@@ -1624,7 +1671,7 @@ class DeploymentSafety(unittest.TestCase):
         ):
             self.loop.tick()
             newer = self.host.commit("src/console/view.ts", "queued during low disk")
-            self.loop.tick()
+            self.tick_after_retry()
         self.assertEqual(self.store.status(target), "superseded")
         self.assertEqual(self.store.status(newer), "deferred")
         self.assertEqual(self.store.get("active"), self.first)
@@ -1657,7 +1704,7 @@ class DeploymentSafety(unittest.TestCase):
             ),
             patch.object(self.host, "build", growing_build),
         ):
-            self.loop.tick()
+            self.tick_after_retry()
         self.assertEqual(self.store.status(newer), "deferred")
         self.assertFalse((self.host.releases / newer).exists())
         self.assertEqual(list(self.host.stage_root.glob("stage-*")), [])
@@ -1665,7 +1712,7 @@ class DeploymentSafety(unittest.TestCase):
         with patch.object(
             deploy.shutil, "disk_usage", return_value=disk._replace(free=4 * 1024**3)
         ):
-            self.loop.tick()
+            self.tick_after_retry()
         self.assertEqual(self.store.get("active"), newer)
         self.loop.tick()
         self.assertEqual(self.store.get("active"), newer)
@@ -2047,7 +2094,7 @@ class DeploymentSafety(unittest.TestCase):
         self.store = deploy.Store(self.host.root / "records", feed, self.first)
         self.loop = deploy.Deployer(self.host, self.store)
         newest = self.host.commit("src/console/view.ts", "newer after restart")
-        self.loop.tick()
+        self.tick_after_retry()
         self.assertEqual(self.store.get("active"), newest)
         self.assertEqual(self.store.status(picked), "superseded")
         self.loop.tick()
@@ -2082,7 +2129,7 @@ class DeploymentSafety(unittest.TestCase):
                 if change == "diverge":
                     self.loop.reconcile(running)
                     self.host.commit("src/console/view.ts", f"diverge {boundary}")
-                self.loop.tick()
+                self.tick_after_retry()
                 self.assertEqual(self.store.get("blocked"), "non_fast_forward")
                 self.assertTrue(self.host.running(running))
                 self.assertEqual((self.host.data / "starts").read_text(), starts)
@@ -2113,7 +2160,7 @@ class DeploymentSafety(unittest.TestCase):
         self.store = deploy.Store(self.host.root / "records", feed, self.first)
         self.loop = deploy.Deployer(self.host, self.store)
         (self.host.data / "busy").unlink()
-        self.loop.tick()
+        self.tick_after_retry()
         self.assertEqual(self.store.get("active"), third)
         self.assertEqual(self.store.status(target), "superseded")
         self.assertEqual(self.store.status(newer[0]), "superseded")
@@ -2159,7 +2206,7 @@ class DeploymentSafety(unittest.TestCase):
         self.host.fetch = offline
         self.loop.tick()
         self.host.fetch = fetch
-        self.loop.tick()
+        self.tick_after_retry()
         self.assertEqual(
             (self.host.data / "starts").read_text().splitlines(),
             [self.first, target, self.first],
@@ -2167,7 +2214,7 @@ class DeploymentSafety(unittest.TestCase):
         forward_bad = self.host.commit(
             "src/runtime/registry.ts", "forward-only new journal"
         )
-        self.loop.tick()
+        self.tick_after_retry()
         self.assertEqual(self.store.status(forward_bad), "blocked")
         self.assertEqual(self.store.get("blocked"), "unsafe_rollback")
         self.assertIsNone(self.host.process)
@@ -2178,6 +2225,7 @@ class WarmStandbySafety(unittest.TestCase):
     # is simulated here; TS standby tests exercise the real process/kernel lock.
     setUp = DeploymentSafety.setUp
     tearDown = DeploymentSafety.tearDown
+    tick_after_retry = DeploymentSafety.tick_after_retry
 
     def enable_slots(self):
         host = self.host
@@ -2207,6 +2255,128 @@ class WarmStandbySafety(unittest.TestCase):
         host.standby = lambda commit: True
         host.wait_standby = lambda commit: None
 
+    def test_activating_receipt_cannot_leave_a_resumable_checkpoint(self):
+        self.enable_slots()
+        target = self.host.commit("src/console/view.ts", "receipt interruption")
+        event = self.store.event
+
+        def crash(commit, status, *args, **kwargs):
+            event(commit, status, *args, **kwargs)
+            if status == "activating":
+                raise KeyboardInterrupt()
+
+        with (
+            patch.object(self.store, "event", side_effect=crash),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self.loop.tick()
+        # A receipt must not be able to outlive cleared resumable intent and
+        # silently disappear from pending(). Unknown stop effects stay blocked.
+        self.assertEqual(
+            json.loads(self.store.get("cutover"))["phase"], "stop_requested"
+        )
+        deploy.Deployer(self.host, self.store).tick()
+        self.assertTrue(self.store.get("blocked"))
+        self.assertEqual(self.store.get("intent"), target)
+        self.assertTrue(self.host.healthy(self.first))
+
+    def test_restart_recovers_only_acknowledged_pre_stop_checkpoints(self):
+        for phase in (
+            "standby_ready",
+            "intake_paused",
+            "drain_settled",
+            "pausing",
+            "draining",
+            "stop_requested",
+            "activating",
+        ):
+            with self.subTest(phase=phase):
+                self.enable_slots()
+                target = self.host.commit("src/console/view.ts", phase)
+                self.store.set("blocked", "")
+                self.store.set("intent", "")
+                self.store.set("cutover", "")
+                self.store.set("retry", "")
+                checkpoint = self.store.checkpoint
+
+                def crash(commit, stage, checkpoint=checkpoint, phase=phase, **kwargs):
+                    checkpoint(commit, stage, **kwargs)
+                    if stage == phase:
+                        raise KeyboardInterrupt()
+
+                with (
+                    patch.object(self.store, "checkpoint", side_effect=crash),
+                    self.assertRaises(KeyboardInterrupt),
+                ):
+                    deploy.Deployer(self.host, self.store).tick()
+                with (
+                    patch.object(self.host, "service") as service,
+                    patch.object(self.host, "resume", return_value=True) as resume,
+                ):
+                    deploy.Deployer(self.host, self.store).tick()
+                safe = phase in ("standby_ready", "intake_paused", "drain_settled")
+                self.assertEqual(resume.call_count, int(safe))
+                service.assert_not_called()
+                self.assertEqual(bool(self.store.get("blocked")), not safe)
+                self.assertEqual(self.store.get("intent"), "" if safe else target)
+                if phase == "activating":
+                    # The fixture was stopped before this crash; restore only
+                    # disposable fixture state for teardown, never production.
+                    self.host.switch(self.first)
+                    self.host.service("start")
+                    self.assertTrue(self.host.healthy(self.first))
+
+    def test_pre_stop_recovery_rejects_changed_identity_and_ambiguous_resume(self):
+        self.enable_slots()
+        target = self.host.commit("src/console/view.ts", "two")
+        for changed in (True, False):
+            self.store.set("blocked", "")
+            self.store.set("cutover", "")
+            self.store.checkpoint(
+                target, "drain_settled", identity=self.host.runtime_identity(self.first)
+            )
+            with (
+                patch.object(
+                    self.host,
+                    "runtime_identity",
+                    return_value={"fixturePid": -1}
+                    if changed
+                    else self.host.runtime_identity(self.first),
+                ),
+                patch.object(self.host, "resume", side_effect=TimeoutError()) as resume,
+            ):
+                deploy.Deployer(self.host, self.store).tick()
+                deploy.Deployer(self.host, self.store).tick()
+            self.assertEqual(resume.call_count, 0 if changed else 1)
+            self.assertTrue(self.store.get("blocked"))
+
+    def test_fetch_after_build_is_not_a_failed_candidate(self):
+        self.enable_slots()
+        target = self.host.commit("src/console/view.ts", "two")
+        with patch.object(self.host, "fetch", side_effect=[target, OSError("PRIVATE")]):
+            self.loop.tick()
+        self.assertEqual(self.store.status(target), "preparing")
+        self.assertFalse(self.store.get("blocked"))
+        self.assertFalse(self.store.get("intent"))
+        self.assertEqual(self.trace, [])
+
+    def test_failed_candidate_http_409_never_authorizes_stop(self):
+        self.enable_slots()
+        target = self.host.commit("src/console/view.ts", "bad health")
+        activate = self.host.activate
+
+        def busy_candidate(commit):
+            activate(commit)
+            (self.host.data / "busy").touch()
+
+        with patch.object(self.host, "activate", side_effect=busy_candidate):
+            self.loop.tick()
+        self.assertEqual(self.store.get("blocked"), "candidate_not_drained")
+        self.assertTrue(self.host.running(target))
+        self.assertEqual(
+            (self.host.data / "starts").read_text().splitlines(), [self.first, target]
+        )
+
     def test_failed_standby_keeps_old_process_and_never_pauses_intake(self):
         self.enable_slots()
         pid = self.host.process.pid
@@ -2218,7 +2388,7 @@ class WarmStandbySafety(unittest.TestCase):
         self.assertEqual(self.host.process.pid, pid)
         self.assertTrue(self.host.healthy(self.first))
         self.assertEqual(self.trace, [])
-        self.assertEqual(self.store.get("blocked"), "preflight_failed")
+        self.assertEqual(self.store.get("blocked"), "standby_unavailable")
         # Reopen never retries an unknown launch or stops the old runtime.
         deploy.Deployer(self.host, self.store).tick()
         self.assertEqual(self.host.process.pid, pid)
@@ -2229,8 +2399,11 @@ class WarmStandbySafety(unittest.TestCase):
         self.loop.recovery = deploy.Recovery(self.store)
         target = self.host.commit("src/console/view.ts", "two")
         pid = self.host.process.pid
+        notice = Mock()
+        self.host.notify_swap = notice
         (self.host.data / "busy").touch()
         self.loop.tick()
+        notice.assert_not_called()
         self.assertEqual(self.trace, ["standby", "pause", "forward"])
         self.assertEqual(self.host.process.pid, pid)
         self.assertEqual(self.store.get("intent"), "")
@@ -2238,7 +2411,19 @@ class WarmStandbySafety(unittest.TestCase):
         self.assertEqual(self.store.status(target), "deferred")
         (self.host.data / "busy").unlink()
         self.trace.clear()
-        self.loop.tick()
+
+        def notify(previous, commit, attempt):
+            self.assertEqual((previous, commit), (self.first, target))
+            self.assertIsInstance(attempt, int)
+            self.assertEqual(self.host.process.pid, pid)
+            self.assertEqual(
+                json.loads(self.store.get("cutover"))["phase"], "stop_requested"
+            )
+            self.assertEqual(self.trace, ["standby", "pause"])
+
+        notice.side_effect = notify
+        self.tick_after_retry()
+        notice.assert_called_once()
         self.assertEqual(self.trace, ["standby", "pause", "activate", "forward"])
         self.assertTrue(self.host.healthy(target))
         self.assertEqual(self.store.get("active"), target)
@@ -2262,7 +2447,9 @@ class WarmStandbySafety(unittest.TestCase):
                 target = self.host.commit("src/console/view.ts", f"candidate {index}")
 
                 def uncertain(path, *args, response=response, **kwargs):
-                    if path == "/operator/deployment/drain" and args == ("POST",):
+                    if path == "/operator/deployment/drain?swapNotice=1" and args == (
+                        "POST",
+                    ):
                         if isinstance(response, Exception):
                             raise response
                         return response
@@ -2271,8 +2458,8 @@ class WarmStandbySafety(unittest.TestCase):
                 with patch.object(self.host, "request", side_effect=uncertain):
                     self.loop.tick()
                 self.assertEqual(self.store.status(target), "blocked")
-                self.assertEqual(self.store.get("blocked"), "drain_busy")
-                self.assertEqual(self.store.get("intent"), "")
+                self.assertEqual(self.store.get("blocked"), "cutover_interrupted")
+                self.assertEqual(self.store.get("intent"), target)
                 self.assertEqual(self.host.process.pid, pid)
                 self.assertTrue(self.host.healthy(self.first))
                 self.loop.reconcile(self.first)
@@ -2308,6 +2495,7 @@ class WarmStandbySafety(unittest.TestCase):
         with patch.object(self.host, "drain", side_effect=changed_binding):
             self.loop.tick()
         self.assertEqual(self.store.status(target), "blocked")
+        self.assertEqual(self.store.get("blocked"), "binding_changed")
         self.assertEqual(self.trace, ["standby", "pause", "forward"])
         self.assertEqual(self.host.process.pid, pid)
         self.assertTrue(self.host.healthy(self.first))
@@ -2323,7 +2511,7 @@ class WarmStandbySafety(unittest.TestCase):
         (self.host.releases / target / "src/console/view.ts").write_text("changed")
         self.trace.clear()
         pid = self.host.process.pid
-        self.loop.tick()
+        self.tick_after_retry()
         self.assertEqual(self.store.status(target), "failed")
         self.assertEqual(self.trace, [])
         self.assertEqual(self.host.process.pid, pid)
@@ -2354,7 +2542,8 @@ class WarmStandbySafety(unittest.TestCase):
         target = self.host.commit("src/console/view.ts", "presentation only")
         pid = self.host.process.pid
         self.loop.tick()
-        self.assertEqual(self.store.status(target), "failed")
+        self.assertEqual(self.store.status(target), "blocked")
+        self.assertEqual(self.store.get("blocked"), "binding_changed")
         self.assertEqual(self.trace, [])
         self.assertEqual(self.host.process.pid, pid)
         self.assertTrue(self.host.healthy(self.first))
@@ -2365,7 +2554,7 @@ class WarmStandbySafety(unittest.TestCase):
                 self.enable_slots()
                 target = self.host.commit("src/console/view.ts", boundary)
                 self.store.set("blocked", "")
-                self.store.set("intent", "")
+                self.store.clear_cutover()
                 self.loop = deploy.Deployer(self.host, self.store)
                 with patch.object(
                     self.host, boundary, side_effect=ValueError("uncertain")

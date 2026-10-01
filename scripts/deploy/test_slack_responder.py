@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
-from deploy import Deployer, Store
+from deploy import Deployer, Host, Store
 from slack_responder import CONTROL_PATH, Responder, Server
 
 TARGET = "abc1234" + "9" * 33
@@ -338,6 +338,104 @@ class DurableIntakeTests(unittest.TestCase):
         # Independent connection proves acceptance crossed a commit boundary.
         with closing(sqlite3.connect(self.database)) as connection:
             return connection.execute(f"SELECT * FROM {table}").fetchall()
+
+    def test_swap_notice_auth_destinations_and_claim_survive_restart(self):
+        address = self.serve()
+        path = "/operator/deployment/swap-notice"
+        payload = {
+            "revision": TARGET,
+            "attempt": "123456789",
+            "from": "blue",
+            "to": "green",
+            "targets": [
+                {"accountId": "T1", "channel": "U1"},
+                {"accountId": "T1", "channel": "C1", "thread_ts": "12.34"},
+                {"accountId": "T1", "channel": "C1", "thread_ts": "12.34"},
+                {"accountId": "TOTHER", "channel": "COTHER"},
+            ],
+        }
+        self.responder.send = Mock()
+        raw = json.dumps(payload)
+        self.assertEqual(self.request(address, "POST", path, raw)[0], 401)
+        self.assertEqual(
+            self.request(
+                address,
+                "POST",
+                path,
+                json.dumps({**payload, "from": "green"}),
+                self.auth,
+            )[0],
+            400,
+        )
+        self.assertEqual(self.request(address, "POST", path, raw, self.auth)[0], 202)
+        end = time.monotonic() + 2
+        while self.responder.send.call_count < 2 and time.monotonic() < end:
+            time.sleep(0.01)
+        self.assertEqual(
+            [call.args[0] for call in self.responder.send.call_args_list],
+            [
+                {
+                    "channel": "U1",
+                    "text": "swapping from blue to green for commit abc1234",
+                    "unfurl_links": False,
+                    "unfurl_media": False,
+                },
+                {
+                    "channel": "C1",
+                    "thread_ts": "12.34",
+                    "text": "swapping from blue to green for commit abc1234",
+                    "unfurl_links": False,
+                    "unfurl_media": False,
+                },
+            ],
+        )
+        restarted = Responder(self.config, "/missing-marker", self.database)
+        self.addCleanup(restarted.db.close)
+        self.assertEqual(restarted.claim_swap(self.auth, payload), [])
+        self.assertNotIn("C1", json.dumps(self.rows("handled")))
+
+    def test_swap_notice_ack_does_not_wait_for_slack_and_unknown_send_is_not_retried(
+        self,
+    ):
+        address = self.serve()
+        path = "/operator/deployment/swap-notice"
+        payload = {
+            "revision": TARGET,
+            "attempt": "2",
+            "from": "green",
+            "to": "blue",
+            "targets": [{"accountId": "T1", "channel": "U1"}],
+        }
+        sending, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def send(message):
+            self.assertEqual(
+                message["text"], "swapping from green to blue for commit abc1234"
+            )
+            sending.set()
+            release.wait(3)
+            raise TimeoutError("private Slack failure")
+
+        self.responder.send = Mock(side_effect=send)
+        host = Host.__new__(Host)
+        host.config = {
+            "blueGreen": {"intakeOrigin": f"http://{address[0]}:{address[1]}"}
+        }
+        host.intake_token = self.config["durableQueue"]["token"]
+        host.swap_targets = payload["targets"]
+        host.slot = lambda commit: "green" if commit == OLD else "blue"
+        host.notify_swap(OLD, TARGET, 2)
+        self.assertTrue(sending.wait(1))
+        self.assertEqual(
+            self.request(address, "POST", path, json.dumps(payload), self.auth)[0], 202
+        )
+        self.assertEqual(self.responder.send.call_count, 1)
+        release.set()
+        with patch.object(
+            host, "request", side_effect=TimeoutError("private transport detail")
+        ):
+            host.notify_swap(OLD, TARGET, 2)  # Optional reporting cannot fence cutover.
 
     def test_authenticated_paused_commit_capacity_and_storage_failure(self):
         address = self.serve()

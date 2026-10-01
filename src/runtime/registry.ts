@@ -220,7 +220,8 @@ export interface Dependencies {
   };
   runningRevision?: string;
   lifecycle?: {
-    enter(signal: AbortSignal): Promise<() => void>;
+    enter: import("./lifecycle.js").Lifecycle["enter"];
+    participate?: import("./lifecycle.js").Lifecycle["participate"];
     tryEnter?(): (() => void) | undefined;
     fail(): void;
   };
@@ -1001,7 +1002,7 @@ export function createJuneRegistry(deps: Dependencies) {
           if (command) {
             c.state.sessionCommands ??= {};
             if (!c.state.sessionCommands[id]) {
-              const release = await deps.lifecycle?.enter(c.abortSignal);
+              const release = await deps.lifecycle?.enter(c.abortSignal, event);
               let stopPing: (() => Promise<void>) | undefined;
               try {
                 if (
@@ -1808,6 +1809,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // Host admission is deliberately outside the journal. A deployment
           // drain waits for whole turns, including receipts and final persistence.
           const release = await deps.lifecycle?.enter(ctx.abortSignal);
+          let stopParticipation: (() => void) | undefined;
           let releasePriority: (() => void) | undefined;
           let stopPing: (() => Promise<void>) | undefined;
           let typingCleanup = Promise.resolve();
@@ -2031,7 +2033,20 @@ export function createJuneRegistry(deps: Dependencies) {
               if (proposalContext && !current(audience, proposalContext))
                 return false;
               const reference = state.memoryContexts?.[eventId];
-              return !reference || current(audience, reference);
+              const allowed = !reference || current(audience, reference);
+              const record = eventRecord(state, eventId);
+              // Only a live callback with accepted, unfinished work registers
+              // participation. Cached steps and stale queue deliveries do not.
+              // Keep this inside existing checks: no new journal position/RPC.
+              if (
+                allowed &&
+                record &&
+                !record.done &&
+                event.type === "message" &&
+                !stopParticipation
+              )
+                stopParticipation = deps.lifecycle?.participate?.(event);
+              return allowed;
             };
             // Check inside durable callbacks, including replay. Supersession
             // stops new dispatch, not evidence/accounting for already-started work.
@@ -6395,6 +6410,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 await stopPing?.();
               } finally {
                 releasePriority?.();
+                stopParticipation?.();
                 release?.();
                 if (body.type === "event" && event.type === "message")
                   deps.latency?.mark(event, "released");

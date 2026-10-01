@@ -48,6 +48,12 @@ test("June can inspect Actions waits, build success and failures without claimin
       ["failed", "actions_build_failed", "forward fix"],
       ["failed", "actions_artifact_invalid", "not activated"],
       ["failed", "actions_policy_changed", "operator-reviewed"],
+      ["blocked", "binding_changed", "candidate is not failed"],
+      ["blocked", "prior_release_invalid", "integrity verification"],
+      ["blocked", "standby_unavailable", "Old June was not stopped"],
+      ["deferred", "intake_not_settled", "retry"],
+      ["deferred", "cutover_interrupted", "acknowledged pre-stop"],
+      ["blocked", "lifecycle_failed", "active revision"],
     ] as const) {
       feed.events = [
         {

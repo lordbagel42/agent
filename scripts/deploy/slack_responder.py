@@ -1,7 +1,8 @@
 """Independent private Slack ingress. Install outside June's releases.
 
 Legacy mode stores notice hashes only. Opt-in durable intake stores private raw
-envelopes until app acceptance; it never sends deployment notices.
+envelopes until app acceptance. Only authenticated controller cutovers can request
+swap notices; ordinary traffic in durable mode never triggers notices.
 """
 
 import hashlib
@@ -26,6 +27,7 @@ ID = re.compile(r"[A-Z][A-Z0-9]{1,64}")
 TS = re.compile(r"[0-9]{1,20}\.[0-9]{1,10}")
 MESSAGE_SUBTYPES = (None, "file_share", "me_message", "thread_broadcast")
 CONTROL_PATH = "/operator/deployment/intake"
+SWAP_PATH = "/operator/deployment/swap-notice"
 PAUSE_WAIT = 1.0
 RECEIPT_LIMIT = 100_000
 
@@ -342,6 +344,70 @@ class Responder:
                 )
             return False
 
+    def claim_swap(self, headers, update):
+        """Claim before ACK/send. Unknown outcomes are never retried.
+
+        Only fixed text and validated same-account transport IDs are accepted;
+        the controller cannot turn this into an arbitrary messaging endpoint.
+        """
+        if not self.intake_authorized(headers):
+            return 401, b"", "text/plain"
+        if (
+            not isinstance(update, dict)
+            or set(update) != {"revision", "attempt", "from", "to", "targets"}
+            or not matches(SHA, update.get("revision"))
+            or not isinstance(update.get("attempt"), str)
+            or not re.fullmatch(r"[0-9]{1,24}", update["attempt"])
+            or (update.get("from"), update.get("to"))
+            not in (("blue", "green"), ("green", "blue"))
+            or not isinstance(update.get("targets"), list)
+            or len(update["targets"]) > 100
+        ):
+            return 400, b"", "text/plain"
+        for target in update["targets"]:
+            if (
+                not isinstance(target, dict)
+                or set(target)
+                not in ({"accountId", "channel"}, {"accountId", "channel", "thread_ts"})
+                or not matches(ID, target.get("accountId"))
+                or not matches(ID, target.get("channel"))
+                or ("thread_ts" in target and not matches(TS, target["thread_ts"]))
+            ):
+                return 400, b"", "text/plain"
+        notices = []
+        text = f"swapping from {update['from']} to {update['to']} for commit {update['revision'][:7]}"
+        for target in update["targets"]:
+            if target["accountId"] != self.config["teamId"]:
+                continue
+            key = hashlib.sha256(
+                json.dumps(
+                    [
+                        "swap",
+                        update["revision"],
+                        update["attempt"],
+                        update["from"],
+                        update["to"],
+                        target,
+                    ],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            if not self.handled([key], claim=True):
+                notices.append(
+                    {
+                        "channel": target["channel"],
+                        **(
+                            {"thread_ts": target["thread_ts"]}
+                            if "thread_ts" in target
+                            else {}
+                        ),
+                        "text": text,
+                        "unfurl_links": False,
+                        "unfurl_media": False,
+                    }
+                )
+        return notices
+
     def forward(self, raw, headers):
         connection = http.client.HTTPConnection(
             self.host, self.config.get("upstreamPort", 3080), timeout=2
@@ -579,8 +645,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         status, body, kind = 503, b"", "text/plain"
-        notice = None
-        control = self.path == CONTROL_PATH and self.server.responder.queue is not None
+        notices = []
+        swap = self.path == SWAP_PATH and self.server.responder.queue is not None
+        control = (
+            self.path in (CONTROL_PATH, SWAP_PATH)
+            and self.server.responder.queue is not None
+        )
         try:
             if self.path != "/webhooks/slack" and not control:
                 status = 404
@@ -594,7 +664,7 @@ class Handler(BaseHTTPRequestHandler):
             elif (
                 not 0
                 < int(self.headers["content-length"])
-                <= (4096 if control else MAX_BODY)
+                <= (32768 if swap else 4096 if control else MAX_BODY)
             ):
                 status = 413
             else:
@@ -602,7 +672,11 @@ class Handler(BaseHTTPRequestHandler):
                 if len(raw) != int(self.headers["content-length"]):
                     status = 400
                 else:
-                    if control:
+                    if swap:
+                        result = self.server.responder.claim_swap(
+                            self.headers, json.loads(raw)
+                        )
+                    elif control:
                         update = json.loads(raw)
                         result = (
                             self.server.responder.intake_control(self.headers, update)
@@ -611,8 +685,15 @@ class Handler(BaseHTTPRequestHandler):
                         )
                     else:
                         result = self.server.responder.receive(raw, self.headers)
-                    if isinstance(result, dict):
-                        notice = result
+                    if isinstance(result, list):
+                        notices = result
+                        status, body, kind = (
+                            202,
+                            b'{"accepted":true}',
+                            "application/json",
+                        )
+                    elif isinstance(result, dict):
+                        notices = [result]
                         status = 200
                     else:
                         status, body, kind = result
@@ -621,7 +702,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001 - fail closed without private request logs
             print("slack_responder_unavailable", flush=True)
         self.reply(status, body, kind)
-        if notice is not None:
+        for notice in notices:
             try:
                 self.server.responder.send(notice)
             except Exception:  # noqa: BLE001 - never retry or log private Slack errors

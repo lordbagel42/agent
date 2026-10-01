@@ -13,13 +13,53 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import build_release
 from test_deploy import FixtureHost, deploy
 
 
 class ActionsPreparation(unittest.TestCase):
+    def test_check_only_runs_preflight_without_packaging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = FixtureHost(Path(tmp))
+            commit = host.commit("src/console/view.ts", "one")
+            archive = host.git("archive", "--format=tar", commit, binary=True)
+            for check_only in (True, False):
+                with (
+                    patch.object(
+                        build_release.platform,
+                        "freedesktop_os_release",
+                        return_value={"ID": "debian", "VERSION_ID": "13"},
+                    ),
+                    patch.object(
+                        build_release.platform, "machine", return_value="x86_64"
+                    ),
+                    patch.object(
+                        build_release.subprocess,
+                        "check_output",
+                        side_effect=[
+                            commit.encode(),
+                            b"src/main.ts\0package.json\0",
+                            archive,
+                        ],
+                    ),
+                    patch.object(build_release.subprocess, "run") as preflight,
+                    patch.object(build_release, "package") as package,
+                    patch.object(
+                        build_release.argparse.ArgumentParser,
+                        "parse_args",
+                        return_value=Mock(
+                            revision=commit,
+                            output=Path(tmp) / "release.tar.gz",
+                            check_only=check_only,
+                        ),
+                    ),
+                ):
+                    build_release.main()
+                preflight.assert_called_once()
+                self.assertEqual(package.call_count, 0 if check_only else 1)
+
     def test_prepared_actions_release_passes_existing_local_activation_gates(self):
         with (
             tempfile.TemporaryDirectory() as tmp,

@@ -1,6 +1,38 @@
 import { expect, test, vi } from "vitest";
 import { createLifecycle } from "./lifecycle.js";
 
+test("conversation participation lasts exactly as long as each admitted turn", async () => {
+  const lifecycle = createLifecycle();
+  const conversation = {
+    address: {
+      channel: "slack" as const,
+      accountId: "T1",
+      conversationId: "C1",
+      threadId: "12.34",
+    },
+    direct: false,
+    senderId: "U2",
+  };
+  const signal = new AbortController().signal;
+  const first = await lifecycle.enter(signal, conversation);
+  const second = await lifecycle.enter(signal, conversation);
+  const unrelated = await lifecycle.enter(signal);
+  first();
+  first();
+  expect(lifecycle.conversations).toEqual([conversation]);
+  const snapshot = lifecycle.conversations;
+  const draining = lifecycle.drain();
+  const waiting = lifecycle.enter(signal, conversation);
+  second();
+  unrelated();
+  expect(await draining).toBe(true);
+  expect(lifecycle.conversations).toEqual([]);
+  expect(snapshot).toEqual([conversation]);
+  lifecycle.resume();
+  (await waiting)();
+  expect(lifecycle.conversations).toEqual([]);
+});
+
 test("first failure is attributed without logging abort content or weakening the latch", async () => {
   const log = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
@@ -20,6 +52,7 @@ test("first failure is attributed without logging abort content or weakening the
     expect(JSON.stringify(receipt)).not.toContain("private message");
     lifecycle.resume();
     expect(lifecycle.ready).toBe(false);
+    expect(lifecycle.failure).toBe("lease_abort");
     expect(await lifecycle.drain()).toBe(false);
   } finally {
     log.mockRestore();

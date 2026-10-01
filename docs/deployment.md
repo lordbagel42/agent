@@ -27,7 +27,9 @@ and no service-control step.
 `june/build` success is **not** `june/deploy` success. In-flight builds are not
 cancelled by newer pushes; the local pending queue still coalesces independently.
 
-The producer exports source from Git, never the working tree. It uploads a
+The producer exports source from Git, never the working tree. By default it runs
+all preflight checks without packaging or uploading unused dependencies. With the
+operator-managed repository variable `JUNE_ACTIONS_ARTIFACTS=true`, it uploads a
 seven-day `june-<SHA>` artifact containing only `release.tar.gz`: prepared
 `node_modules` plus a small manifest binding the exact source archive digest,
 revision and runtime platform. Tar preserves executable bits and internal pnpm
@@ -78,6 +80,11 @@ timings and raw logs are not in the controller feed; missing evidence is unknown
 1. Deploy the compatible app reader first using local preparation. Older
    readers reject the new reason codes; do not enable Actions mode first.
 2. Review the workflow, `build_release.py` and `preflight.sh` at an exact commit.
+   With explicit authorization, set `JUNE_ACTIONS_ARTIFACTS=true` before the first
+   push that the Actions consumer will admit. Verify that run actually produced
+   the artifact; check-only success is not artifact availability. Do not disable
+   this variable while any controller consumes Actions artifacts. The workflow
+   and producer changes also require fresh policy pins for existing consumers.
    Record their Git **blob IDs**, not the app commit ID, in root-owned
    `/etc/june/deploy.json`:
 
@@ -151,6 +158,49 @@ not detection of privileged tampering or new disk corruption mid-attempt.
 Installing the updated controller is separate from publishing application code;
 the optimization does not promise zero downtime or a particular deployment time.
 
+### Controller reliability upgrade
+
+Deploy the app's compatible feed reader and runtime instructions **before**
+installing this controller: older strict readers reject `binding_changed`,
+`prior_release_invalid`, `standby_unavailable`, `intake_not_settled`,
+`cutover_interrupted` and `lifecycle_failed`. Publishing source alone installs
+neither the controller nor the post-drain hashing optimization already in main.
+With explicit authorization and coordinated operator ownership, settle the poller
+under the existing operator lock, install the reviewed controller on June **and**
+its matching `deploy.py` beside the runner's `runner.py` (the runner validates the
+recovery prompt against that sibling), refresh installation provenance, and verify
+the loaded process revision and readiness. Do not clear existing recovery/hold
+records merely to install. No installation is implied by these source changes.
+
+The private SQLite `cutover` record stores attempt, target, previous runtime
+identity and phase. Every mutating request has a durable preceding phase; separate
+acknowledged checkpoints are `standby_ready`, `intake_paused` and `drain_settled`.
+After a restart, only those checkpoints may resume the old runtime, and only with
+matching boot ID, systemd InvocationID, MainPID, start time, current release and
+settled manager jobs. `resuming` is written before the request: a lost resume
+acknowledgment never authorizes another one. A checkpoint proves request settlement
+because it is written after the synchronous response, **not** from a subsequent
+health read. Unknown pause/drain requests, changed identity, legacy intent-only
+records and any uncertain stop/activation remain fail-closed for an operator.
+This assumes the same exclusive controller/operator ownership as normal cutover;
+it is not permission to issue concurrent controls. Recovery also requires no
+existing incident or operator hold. In the installed systemd setup, `OnFailure`
+may record an incident before restart; a resumable checkpoint does not clear or
+bypass that incident. Operator reconciliation still owns that case.
+
+Post-build fetch failures remain non-terminal. Binding/previous-release integrity
+failures block for operator reconciliation without permanently failing the queued
+candidate. An acknowledged intake `settled:false` or drain HTTP 409 resumes only
+the old runtime and defers; timeout/lost acknowledgment remains blocked. A failed
+candidate's HTTP 409 or unavailable listener records `candidate_not_drained` and
+never permits a stop. Strict stop evidence, cgroup emptiness and the FD9 owner lock
+are unchanged.
+
+Fixed `deployment_phase` JSON journal entries contain revision, attempt, phase and
+monotonic nanoseconds. They expose no credentials, bodies or arbitrary exceptions.
+These private cutover checkpoints complement build-unit phase markers; they do
+not create new public feed fields or claim an end-to-end timing measurement.
+
 The existing independent `slack_responder.py` has an opt-in `durableQueue` mode.
 Unlike legacy notices, this mode verifies and stores events before ACK, sends no
 "currently deploying" messages, and replays accepted traffic after handoff. It
@@ -160,6 +210,35 @@ Queue defaults are 10,000 events and 64 MiB of raw bodies/content types, not a
 filesystem quota. Capacity/storage failures return 503, never a false ACK.
 Pending events do not expire; completed hash receipts retain at most 48 hours and
 100,000 entries. Secure deletion is enabled, but is not storage-level erasure.
+
+With the updated app, controller and responder installed, blue/green cutover also
+requests a best-effort Slack notice immediately before stopping the old slot:
+`swapping from blue to green for commit xxyyzz`. The direction follows the actual
+slots and the target uses seven SHA characters. The app snapshots admitted
+conversation destinations **before** drain, independent of typing preferences;
+the separate responder DMs the configured owner and sends to those active Slack
+conversations, preserving thread IDs. Finished turns and idle subscriptions are
+excluded. Targets are deduplicated and bounded to 100, owner first; the responder
+only accepts IDs for its configured team. Only transport IDs cross this boundary,
+never conversation bodies. They are not written to the deployment feed or journal.
+
+`POST /operator/deployment/swap-notice` is private and uses the existing intake
+bearer credential; it is not a public webhook or model-callable send tool. The
+responder validates fixed direction/revision fields and claims hashed per-attempt,
+per-destination IDs in SQLite **before** ACK/send. It ACKs without waiting for
+Slack; an unknown send is never automatically retried. A responder crash can lose
+a claimed notice. Claims share the bounded 48-hour notice receipt retention.
+The controller gives acceptance two seconds and never fences deployment on notice
+failure. `slack_swap_notice_queued` means responder acceptance, not Slack delivery;
+`slack_swap_notice_unconfirmed` and `slack_deploy_notice_not_confirmed` are fixed
+private journal diagnostics. A notice announces an attempted swap, not success.
+June uses `release.inspect` for cutover evidence and must not duplicate notices.
+
+Upgrade the app first, then install the reviewed controller and responder under
+the operator lock; older apps omit destinations and older responders reject the
+new private route without blocking deployment. Publishing this code does not
+install any service or establish live notice delivery. No new Slack scope,
+subscription, public route or owner identity configuration is required.
 
 Delivery is at least once, with original event IDs and application deduplication.
 The intake re-signs the unchanged body at delivery time and authenticates to
@@ -519,7 +598,12 @@ system journal under `june-build-stage-<id>.service`, instead of discarded. Use
 raw output never enters the public feed or GitHub statuses. Retention follows the
 host's journal policy, not release or conversation-data retention.
 
-The warm-path **target** is about 30 seconds, not a timeout that bypasses checks.
+Thirty seconds is an aspiration for a future warm path, not the current measured
+budget or a timeout that bypasses checks. The September 30 review observed clean
+deploys taking 11–12.5 minutes; local checks alone took roughly 169 seconds in one
+representative run. The published hashing optimization still requires separate
+controller installation and a fresh live measurement. These reliability changes
+do not establish a 30-second deployment.
 Measure push-to-observation externally and `received` → `healthy` from the event
 timestamps. `elapsedMs` measures observation-to-outcome, not Git commit age:
 commit timestamps can be older or supplied by a different clock. Cold dependency
@@ -562,7 +646,9 @@ upgrade the installed script.
 A new local build requires at least 4 GiB available; a prepared candidate requires
 1 GiB. The 1 GiB reserve is checked again after building, before promotion.
 Insufficient capacity records `deferred/insufficient_disk`, leaves June serving,
-and retries after space is available without requiring another commit. These
+and retries with bounded backoff without requiring another commit. Ten repeated
+failures for the same revision/reason block for recovery; restore capacity and
+resolve that incident/hold before resuming. These
 checks are not a filesystem quota: substantially larger dependency changes still
 require a capacity review. Budget separately for cache growth and legacy artifacts.
 
@@ -682,10 +768,25 @@ after provisioning its dedicated credential and an immutable release marker:
   startup**. `/health` returns `{name:"June", ready:true, revision:<full SHA>}`
   only when runtime and durable workflow checks pass. Never read the moving
   `current` symlink for process identity.
+- A latched lifecycle failure keeps `/health` at 503 and adds only the bounded
+  `failure` code `lease_abort` or `explicit_failure`. It preserves the first cause
+  and survives resume; it is not a native root-cause diagnosis. A responding
+  listener is diagnostic liveness, not readiness or drainability. Private existing
+  logs retain safe attribution; no thrown exception or message body is exported.
+  The controller checks active health on idle polls and before preparation, even
+  during retry backoff. A verified latch blocks immediately against the **active**
+  revision; three consecutive unavailable/unready probes also block that revision.
+  No candidate is marked build-failed for an existing runtime fault. Long
+  synchronous preparation still delays the next probe; this is not an independent
+  continuous health-monitor service.
 - A private, bearer-authenticated `POST /operator/deployment/drain` fences all
-  new ingress/background triggers/worker launches and returns
-  `{revision, drained:true}` only after active work has really settled and intent
-  is durable. HTTP timeout is five seconds; return `drained:false` when busy.
+  new ingress/background triggers/worker launches and returns `{revision, drained:true}`
+  only after active work has really settled and intent is durable. The updated
+  controller opts into `?swapNotice=1`, adding `swapTargets` captured before drain.
+  Old controllers retain their small response; this is not a request to send from
+  the drained app. HTTP timeout is five seconds;
+  return HTTP 409 with `drained:false` and no destinations
+  when busy.
   No timeout/abort race may assert that a native process has stopped.
 - `DELETE /operator/deployment/drain` idempotently resumes admission and returns
   `{revision, drained:false}`. It must invalidate any earlier pending drain so a
@@ -1072,11 +1173,19 @@ The prompt requests no tools; it is not a capability-enforced sandbox. The probe
 does not create a production incident, claim ownership, or change controller records.
 Retain only a bounded identity/result receipt, not the conversation stream.
 
-After a failed preflight, failed readiness/rollback, controller block, fetch
-failure, or capacity deferral, the poller records one private SQLite
-`recovery` incident and fences further work. Unexpected polling errors and
-repository/GitHub reporting errors also create an incident without overwriting
-the candidate's lifecycle history. Install `june-deploy-failed.service` alongside
+After a failed preflight, failed readiness/rollback or controller block, the
+poller records one private SQLite `recovery` incident and fences further work.
+Fetch, capacity and acknowledged busy drain/intake outcomes instead use durable
+backoff: 5, 10, 20, 40, then at most 60 seconds between attempts. Ten repeated
+failures for the same revision/reason become a block and incident. Unknown
+requests and stop/activation outcomes never use this retry policy. Known standby
+releases remain available, but their bytes are reverified on each attempt.
+GitHub reporting retries best-effort after 60 seconds; optional repository metadata
+retains its previous timestamp on failure and retries on later observations.
+Neither reporting path opens an incident or fences deployment. Existing incidents,
+legacy operator holds and unknown launches are never cleared by this policy.
+Unexpected polling errors still create an incident. Install
+`june-deploy-failed.service` alongside
 the poller: systemd's `OnFailure` invokes `--controller-failed` when the controller
 exits unexpectedly, including startup failures. The poller no longer silently
 restart-loops. This handler deliberately bypasses app credentials and release
@@ -1087,13 +1196,15 @@ can guarantee launching an agent when its own dispatch infrastructure is broken.
 
 An exact revision- and MainPID-verified busy drain response is normal waiting:
 `deferred/drain_busy` resumes admission/forwarding, retains pending work and
-retries on a later poll without cancelling workers or launching recovery. Like
+retries within the bounded policy above without cancelling workers. Like
 Actions waiting, it does not create a legacy operator hold on first enablement.
-Transport errors, malformed/mismatched drain responses, intake uncertainty and
-post-drain standby/binding failures instead record `blocked/drain_busy` and
-require recovery; failed resume remains `resume_failed`. There is no deadline
-that permits force-stopping busy work. Existing incidents and holds remain owned
-and require explicit reconciliation; installing this fix does not clear them.
+Transport errors, malformed/mismatched drain responses and intake uncertainty
+instead record `blocked/cutover_interrupted`; post-drain standby/binding failures
+use `standby_unavailable`/`binding_changed`. Failed resume remains `resume_failed`.
+Older controllers used `blocked/drain_busy` for uncertainty; the updated controller
+also uses that block when its busy retries are exhausted. None permits force-stopping
+busy work. Existing incidents and holds require explicit reconciliation; installing
+this fix does not clear them.
 This behavior requires separately installing the updated controller. June can
 distinguish the deferred and blocked outcomes through `release.inspect`, but must
 not duplicate retries or assume source publication activated the policy.
