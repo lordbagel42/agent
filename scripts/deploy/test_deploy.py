@@ -39,7 +39,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(body).encode())
     def do_POST(self):
         with (data / "drains").open("a") as f: f.write(release["revision"] + "\\n")
-        self.send_response(200); self.end_headers()
+        self.send_response(409 if (data / "busy").exists() else 200); self.end_headers()
         self.wfile.write(json.dumps({"revision": release["revision"], "drained": not (data / "busy").exists()}).encode())
     def do_DELETE(self):
         with (data / "resumes").open("a") as f: f.write(release["revision"] + "\\n")
@@ -101,7 +101,7 @@ class FixtureHost(deploy.Host):
         }
         self.config = {
             "origin": f"http://127.0.0.1:{port}",
-            "healthSeconds": 0.6,
+            "healthSeconds": 3,
             "transitions": [],
         }
         self.token = "fixture-only-secret"
@@ -999,7 +999,7 @@ class RecoverySafety(unittest.TestCase):
         for status, reason in (
             ("fetch_failed", "fetch_failed"),
             ("deferred", "insufficient_disk"),
-            ("deferred", "drain_busy"),
+            ("blocked", "drain_busy"),
         ):
             with self.subTest(reason=reason):
                 self.store.event("b" * 40, status, reason)
@@ -1015,6 +1015,16 @@ class RecoverySafety(unittest.TestCase):
                 self.assertEqual(json.loads(self.store.get("recovery")), incident)
                 self.store.event(self.revision, "reconciled")
                 self.store.set("recovery", "")
+
+    def test_busy_deferral_does_not_create_legacy_hold_or_recovery(self):
+        for initialized in ("", "1"):
+            with self.subTest(initialized=initialized):
+                self.store.set("recoveryInitialized", initialized)
+                self.store.event("b" * 40, "deferred", "drain_busy")
+                self.recovery.flush()
+                self.assertEqual(self.store.get("operatorHold"), "")
+                self.assertEqual(self.store.get("recovery"), "")
+                self.assertEqual(self.store.status("b" * 40), "deferred")
 
     def test_unexpected_tick_error_is_private_and_fences_deployment(self):
         host = Mock()
@@ -2216,6 +2226,7 @@ class WarmStandbySafety(unittest.TestCase):
 
     def test_busy_drain_resumes_old_then_cutover_forwards_only_after_health(self):
         self.enable_slots()
+        self.loop.recovery = deploy.Recovery(self.store)
         target = self.host.commit("src/console/view.ts", "two")
         pid = self.host.process.pid
         (self.host.data / "busy").touch()
@@ -2223,6 +2234,8 @@ class WarmStandbySafety(unittest.TestCase):
         self.assertEqual(self.trace, ["standby", "pause", "forward"])
         self.assertEqual(self.host.process.pid, pid)
         self.assertEqual(self.store.get("intent"), "")
+        self.assertEqual(self.store.get("recovery"), "")
+        self.assertEqual(self.store.status(target), "deferred")
         (self.host.data / "busy").unlink()
         self.trace.clear()
         self.loop.tick()
@@ -2232,6 +2245,37 @@ class WarmStandbySafety(unittest.TestCase):
         self.assertEqual(
             (self.host.data / "starts").read_text().splitlines(), [self.first, target]
         )
+
+    def test_uncertain_drain_blocks_instead_of_retrying_as_busy(self):
+        self.enable_slots()
+        pid = self.host.process.pid
+        request = self.host.request
+        for index, response in enumerate(
+            (
+                {"revision": "b" * 40, "drained": False},
+                {"revision": self.first, "drained": 0},
+                {"error": "drain_unsupported_configuration"},
+                TimeoutError("private transport details"),
+            )
+        ):
+            with self.subTest(response=response):
+                target = self.host.commit("src/console/view.ts", f"candidate {index}")
+
+                def uncertain(path, *args, response=response, **kwargs):
+                    if path == "/operator/deployment/drain" and args == ("POST",):
+                        if isinstance(response, Exception):
+                            raise response
+                        return response
+                    return request(path, *args, **kwargs)
+
+                with patch.object(self.host, "request", side_effect=uncertain):
+                    self.loop.tick()
+                self.assertEqual(self.store.status(target), "blocked")
+                self.assertEqual(self.store.get("blocked"), "drain_busy")
+                self.assertEqual(self.store.get("intent"), "")
+                self.assertEqual(self.host.process.pid, pid)
+                self.assertTrue(self.host.healthy(self.first))
+                self.loop.reconcile(self.first)
 
     def test_release_hashing_finishes_before_intake_pauses(self):
         self.enable_slots()
@@ -2263,7 +2307,7 @@ class WarmStandbySafety(unittest.TestCase):
 
         with patch.object(self.host, "drain", side_effect=changed_binding):
             self.loop.tick()
-        self.assertEqual(self.store.status(target), "deferred")
+        self.assertEqual(self.store.status(target), "blocked")
         self.assertEqual(self.trace, ["standby", "pause", "forward"])
         self.assertEqual(self.host.process.pid, pid)
         self.assertTrue(self.host.healthy(self.first))

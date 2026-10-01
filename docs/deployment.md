@@ -1073,7 +1073,7 @@ does not create a production incident, claim ownership, or change controller rec
 Retain only a bounded identity/result receipt, not the conversation stream.
 
 After a failed preflight, failed readiness/rollback, controller block, fetch
-failure, or capacity/drain deferral, the poller records one private SQLite
+failure, or capacity deferral, the poller records one private SQLite
 `recovery` incident and fences further work. Unexpected polling errors and
 repository/GitHub reporting errors also create an incident without overwriting
 the candidate's lifecycle history. Install `june-deploy-failed.service` alongside
@@ -1084,6 +1084,19 @@ verification; it does not bypass trusted installation or durable incident state.
 Missing/corrupt controller configuration, unavailable SQLite/systemd/SSH/Amp, or
 a destroyed installation can still require human recovery. No local controller
 can guarantee launching an agent when its own dispatch infrastructure is broken.
+
+An exact revision- and MainPID-verified busy drain response is normal waiting:
+`deferred/drain_busy` resumes admission/forwarding, retains pending work and
+retries on a later poll without cancelling workers or launching recovery. Like
+Actions waiting, it does not create a legacy operator hold on first enablement.
+Transport errors, malformed/mismatched drain responses, intake uncertainty and
+post-drain standby/binding failures instead record `blocked/drain_busy` and
+require recovery; failed resume remains `resume_failed`. There is no deadline
+that permits force-stopping busy work. Existing incidents and holds remain owned
+and require explicit reconciliation; installing this fix does not clear them.
+This behavior requires separately installing the updated controller. June can
+distinguish the deferred and blocked outcomes through `release.inspect`, but must
+not duplicate retries or assume source publication activated the policy.
 
 It lets any already-running safe rollback finish first. Old failures before the
 latest healthy/reconciled event are not replayed. A separate systemd worker

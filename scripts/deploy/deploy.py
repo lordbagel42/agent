@@ -614,7 +614,9 @@ class Deployer:
                 # while intake is paused. Never reuse these across attempts.
                 h.rollback_safe(prior, candidate)
         except Exception:  # noqa: BLE001 - resume even after an ambiguous HTTP error
-            s.event(target, "deferred", "drain_busy")
+            # Only an exact busy response is retryable. Transport, identity,
+            # intake and binding uncertainty must retain operator recovery.
+            s.block(target, "drain_busy")
             self.resume(target)
             return
         # The intent is already durable. Never retry an ambiguous stop/start
@@ -699,7 +701,7 @@ class Recovery:
             # process holds the lock. Explicitly hand it off before adoption.
             legacy = s.db.execute(
                 "SELECT 1 FROM events WHERE status IN ('failed','rolled_back','blocked','fetch_failed','deferred') "
-                "AND NOT (status = 'deferred' AND COALESCE(reason,'') IN ('actions_pending','actions_unavailable')) "
+                "AND NOT (status = 'deferred' AND COALESCE(reason,'') IN ('actions_pending','actions_unavailable','drain_busy')) "
                 "AND sequence > COALESCE((SELECT MAX(sequence) FROM events "
                 "WHERE status IN ('healthy','reconciled')),0) LIMIT 1"
             ).fetchone()
@@ -713,7 +715,7 @@ class Recovery:
         if not raw:
             event = s.db.execute(
                 "SELECT * FROM events WHERE status IN ('failed','rolled_back','blocked','fetch_failed','deferred') "
-                "AND NOT (status = 'deferred' AND COALESCE(reason,'') IN ('actions_pending','actions_unavailable')) "
+                "AND NOT (status = 'deferred' AND COALESCE(reason,'') IN ('actions_pending','actions_unavailable','drain_busy')) "
                 "AND sequence > COALESCE((SELECT MAX(sequence) FROM events "
                 "WHERE status IN ('healthy','reconciled')),0) ORDER BY sequence DESC LIMIT 1"
             ).fetchone()
@@ -1058,7 +1060,7 @@ class GitHubStatuses(GitHubApp):
         "actions_policy_changed": "Actions build policy differs from the operator-reviewed versions. Review and update the protected policy pins, then publish a forward commit; not activated.",
         "actions_build_ready": "The exact main revision's Actions build succeeded. Local artifact verification and activation gates are still required; this is not deployment success.",
         "health_failed": "Candidate failed readiness or process-identity checks. Inspect later rollback/block events.",
-        "drain_busy": "In-flight work could not be safely drained. The controller will retry without cancelling work.",
+        "drain_busy": "In-flight work could not be safely drained. A deferred event retries without cancelling work; a blocked event requires operator recovery for uncertain drain, intake or identity evidence.",
         "insufficient_disk": "Insufficient disk capacity. Operator must restore capacity; the controller will retry.",
         "resume_failed": "Admission could not be resumed. Operator recovery required.",
         "current_unhealthy": "Current service identity/readiness is unverified. Operator inspection required.",
@@ -2399,7 +2401,17 @@ class Host:
             ) as response:
                 return json.loads(response.read(4096))
         except urllib.error.HTTPError as error:
-            error.close()
+            with error:
+                if (
+                    path == "/operator/deployment/drain"
+                    and method == "POST"
+                    and error.code == 409
+                ):
+                    body = json.loads(error.read(4096))
+                    if isinstance(body, dict) and body.get("drained") is False:
+                        # drain() must still validate exact schema, revision and
+                        # MainPID. Other 409s (including unsupported config) fail.
+                        return body
             raise ValueError("http_failed") from None
 
     def healthy(self, commit):
@@ -2423,11 +2435,15 @@ class Host:
         body = self.request(
             "/operator/deployment/drain", "POST", origin=self.origin(commit)
         )
-        return (
-            body.get("revision") == commit
-            and body.get("drained") is True
-            and self.running(commit)
-        )
+        if (
+            not isinstance(body, dict)
+            or set(body) != {"revision", "drained"}
+            or body["revision"] != commit
+            or type(body["drained"]) is not bool
+            or not self.running(commit)
+        ):
+            raise ValueError("drain_identity_unknown")
+        return body["drained"]
 
     def resume(self, commit):
         body = self.request(
