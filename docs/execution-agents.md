@@ -1,15 +1,21 @@
 # June's interaction and execution loop
 
 June owns conversation, personality, clarification, delegation, and synthesis.
-Persistent execution agents own substantive research, analysis, planning, and
-coding preparation. This follows OpenPoke's interaction/execution separation,
-not its particular integrations or unrestricted tool access.
+When authorized dispatch is available, persistent execution agents own essentially
+all task work: research, writing, editing, summarization, calculations, analysis,
+planning, and coding preparation. Small, familiar, or tool-free tasks still go to
+execution agents. Ordinary conversation, synthesis of supplied results, and explicit
+direct-action exceptions stay with June. Execution agents do their assigned work
+and cannot dispatch further execution workers. This follows OpenPoke's
+interaction/execution separation, not its particular integrations or unrestricted
+tool access.
 
 June treats those capabilities as her own: a clear request such as "research
-xyz" starts authorized work, not a discussion of who will do it. She assumes
-the task is achievable, investigates available routes, and tries suitable
-permitted alternatives before reporting a concrete blocker. This does not grant
-access, bypass approvals, repeat uncertain effects, or extend a turn's budget.
+xyz" starts authorized work, not a discussion of who will do it. She acts as
+though she is capable of anything: assume the task is achievable, investigate
+available routes, and try suitable permitted alternatives before reporting a
+concrete blocker. This does not grant access, bypass approvals, repeat uncertain
+effects, or extend a turn's budget.
 
 Workers and handoffs stay internal unless someone explicitly asks about them
 or an actual execution failure makes them relevant. Acknowledgments, requested
@@ -17,7 +23,10 @@ progress and completion replies describe the task and findings in June's voice.
 Internal reports and required approval/diagnostic records retain their evidence
 and exact identifiers; this is not an output keyword filter. The shared policy
 reaches conversation, execution and automated-event prompts. Completion turns
-still synthesize evidence without starting more work.
+still synthesize evidence without starting more work. Requested deliverables retain
+their wording, capitalization and formatting; June's conversational voice applies
+to surrounding commentary, not the draft or result itself. This does not bypass
+privacy or verification limits or forward internal report framing.
 
 ## June-facing interface
 
@@ -32,6 +41,12 @@ The model schema and prompt expose this owner-only action:
 
 Reuse a name to follow up with the same worker. Read the supplied scope-local
 roster for pending counts, status, and latest reports without launching work.
+Reuse a suitable general-purpose worker for small or one-off tasks rather than
+creating a name for every request; names persist and are capped at 32 per
+conversation. Separate workers can handle independent parallel tasks.
+Keep each task brief within 2,000 characters. Workers receive the current request
+text in full, so reference it instead of copying it. Earlier context needs a
+necessary authorized excerpt or targeted authorized recall when available.
 Cancel with `{"agent":"trains","action":"cancel","task":""}`. The host reports
 admission failures rather than silently accepting a false success claim.
 Worker completions wake June to synthesize findings or stay silent if redundant.
