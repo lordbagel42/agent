@@ -551,6 +551,10 @@ it("routes late workers once to current activity, preserves placement, and binds
       beginReply: (request) => {
         requests.push(request);
         const last = request.messages.at(-1)?.content ?? "";
+        if (last.includes("Automated completion"))
+          expect(request.system).toContain(
+            "Treat completed authorized execution as June's own work",
+          );
         const reply: CompanionReply = last.includes("Automated completion")
           ? {
               text: last.includes("LATE WORKER REPORT")

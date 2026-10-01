@@ -244,3 +244,45 @@ export async function dispatchScopeExecution(
   }
   return outcomes;
 }
+
+/** Render journaled dispatch receipts without exposing routine orchestration. */
+export function executionDispatchText(
+  outcomes: readonly string[],
+  expected: number,
+  acknowledgment: string,
+): string {
+  const accepted = outcomes.filter((outcome) =>
+    outcome.endsWith(": queued"),
+  ).length;
+  if (outcomes.length === expected && accepted === expected)
+    return acknowledgment;
+  const reasons: Record<string, string> = {
+    "cancellation requested":
+      "Cancellation requested. This does not confirm that in-flight work stopped.",
+    "not found":
+      "I couldn't find that task to cancel. Nothing is confirmed stopped.",
+    "forgetting cleanup pending; retry after cleanup or use another worker name":
+      "I couldn't start that task while earlier context is being cleared.",
+    "roster full; reuse an existing worker":
+      "This conversation has reached its task limit; I couldn't start that work.",
+    "busy; four tasks are already pending":
+      "Four tasks are already pending, so I couldn't start that work.",
+    unavailable: "I couldn't start that task.",
+  };
+  const notices = outcomes
+    .filter((outcome) => !outcome.endsWith(": queued"))
+    .map((outcome) => {
+      const [name, status = ""] = outcome.split(": ", 2);
+      const reason = reasons[status];
+      if (!reason) return outcome;
+      return expected > 1 && status !== "cancellation requested"
+        ? `${name}: ${reason}`
+        : reason;
+    });
+  // A mixed result must not repeat a pre-admission claim such as "both started".
+  if (accepted && notices.length)
+    notices.unshift(
+      `${accepted} requested ${accepted === 1 ? "task was" : "tasks were"} accepted.`,
+    );
+  return [...new Set(notices)].join("\n");
+}

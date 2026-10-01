@@ -33,6 +33,61 @@ const input: PromptInput = {
   capabilities: {},
 };
 
+it.for([
+  "base",
+  "interaction",
+  "execution",
+  "notification",
+  "decision",
+] as const)(
+  "carries task ownership through the final %s prompt without granting tools",
+  (role) => {
+    const request = buildModelRequest({
+      ...input,
+      ...(role === "interaction" ||
+      role === "execution" ||
+      role === "notification"
+        ? {
+            agentRole:
+              role === "execution"
+                ? ("execution" as const)
+                : ("interaction" as const),
+          }
+        : {}),
+      ...(role === "notification" || role === "decision"
+        ? {
+            wakeup: {
+              ...(role === "decision" ? { mode: "decision" as const } : {}),
+              runId: "run",
+              jobId: "job",
+              instruction: "Report the relevant change",
+              event: {
+                id: "trigger",
+                source: "github",
+                type: "push",
+                occurredAt: 1,
+                data: {},
+              },
+            },
+          }
+        : {}),
+    });
+    // The interaction prompt replaces the base; the execution prompt wraps it.
+    // Check the final payload so either assembly cannot silently drop the policy.
+    expect(request.system).toContain(
+      "# Own the task; keep orchestration internal",
+    );
+    expect(request.system).toContain("Assume the task is achievable");
+    expect(request.system).toContain(
+      "explicitly asks about them or an actual execution failure",
+    );
+    expect(request.system).toContain("not permission to bypass a denial");
+    if (role === "decision") expect(request.system).toContain("Be selective");
+    expect(request.executionAvailable).toBe(false);
+    expect(request.workspaces).toEqual([]);
+  },
+);
+
 it.for(["interaction", "execution", "decision"] as const)(
   "keeps automation knowledge in the %s prompt without inspection enabled",
   (role) => {

@@ -290,9 +290,9 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
           sandbox: "read-only",
           ephemeral: true,
           baseInstructions:
-            "Generate a structured conversational reply. Never use tools. The supplied conversation system field defines your instructions.",
+            "Generate a structured conversational reply. Never call native Codex tools. The supplied conversation system field defines June's role and permitted JSON response.",
           developerInstructions:
-            "Do not execute actions or consult files, saved memories, or other threads.",
+            "Do not execute native tools or consult files, saved memories, or other threads. June may request permitted host actions as output-schema fields; the host validates and executes those JSON requests separately. Request only actions authorized by the supplied system field and schema; never claim execution without host evidence.",
           environments: [],
           dynamicTools: [],
           selectedCapabilityRoots: [],

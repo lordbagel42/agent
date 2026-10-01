@@ -207,7 +207,20 @@ it("sends host image bytes in native turn inputs without text serialization or p
   await expect(invalid.settlement).resolves.toBe("not_started");
   await provider.reply({ ...request, images });
   await provider.reply(request);
-  const turns = (await calls()).filter((call) => call.method === "turn/start");
+  const recorded = await calls();
+  const starts = recorded.filter((call) => call.method === "thread/start");
+  expect(starts.length).toBeGreaterThan(0);
+  for (const start of starts) {
+    expect(start.params.baseInstructions).toContain(
+      "Never call native Codex tools",
+    );
+    expect(start.params.developerInstructions).toContain(
+      "permitted host actions as output-schema fields",
+    );
+    expect(start.params.approvalPolicy).toBe("never");
+    expect(start.params.sandbox).toBe("read-only");
+  }
+  const turns = recorded.filter((call) => call.method === "turn/start");
   expect(turns).toHaveLength(2);
   expect(turns[0].params.input.slice(1)).toEqual(
     images.map((image) => ({
@@ -218,6 +231,7 @@ it("sends host image bytes in native turn inputs without text serialization or p
   const prompt = turns[0].params.input[0].text;
   expect(prompt).toBe(codexPrompt({ ...request, images }));
   expect(prompt).toContain("Do not use shell");
+  expect(prompt).toContain("permitted host actions as output-schema fields");
   for (const image of images) {
     expect(prompt).toContain(image.evidenceId);
     expect(prompt).not.toContain(Buffer.from(image.data).toString("base64"));

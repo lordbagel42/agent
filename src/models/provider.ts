@@ -948,7 +948,7 @@ function legacyReplyJsonSchema(
             execution: {
               type: ["array", "null"],
               description:
-                "One to four distinct persistent workers. Reuse a stable name for follow-ups. run sends a task; cancel stops pending work. Do not combine with other action directives. Text may acknowledge, not claim completion.",
+                "One to four distinct persistent workers. Reuse a stable name for follow-ups. run sends a task; cancel requests cancellation, not proof of stoppage. Do not combine with other action directives. Text may briefly acknowledge the user's task, without announcing workers or delegation; empty text is fine. Never claim completion from dispatch.",
               items: {
                 type: "object",
                 additionalProperties: false,

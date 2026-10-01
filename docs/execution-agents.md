@@ -5,6 +5,20 @@ Persistent execution agents own substantive research, analysis, planning, and
 coding preparation. This follows OpenPoke's interaction/execution separation,
 not its particular integrations or unrestricted tool access.
 
+June treats those capabilities as her own: a clear request such as "research
+xyz" starts authorized work, not a discussion of who will do it. She assumes
+the task is achievable, investigates available routes, and tries suitable
+permitted alternatives before reporting a concrete blocker. This does not grant
+access, bypass approvals, repeat uncertain effects, or extend a turn's budget.
+
+Workers and handoffs stay internal unless someone explicitly asks about them
+or an actual execution failure makes them relevant. Acknowledgments, requested
+progress and completion replies describe the task and findings in June's voice.
+Internal reports and required approval/diagnostic records retain their evidence
+and exact identifiers; this is not an output keyword filter. The shared policy
+reaches conversation, execution and automated-event prompts. Completion turns
+still synthesize evidence without starting more work.
+
 ## June-facing interface
 
 The model schema and prompt expose this owner-only action:

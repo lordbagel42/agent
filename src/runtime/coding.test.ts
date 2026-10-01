@@ -1997,7 +1997,7 @@ describe("separate coding supervisor", () => {
           : "Separate operator verifier: passed",
       );
       expect(notification.content.text).toContain(
-        "Worker claims (not independently verified)",
+        "Work summary (not independently verified)",
       );
       if (unknown)
         expect(notification.content.text).not.toContain("verifier: passed");

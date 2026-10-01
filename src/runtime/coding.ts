@@ -554,7 +554,7 @@ export function createCodingActor(
                             throw new Error("Remote receipt missing");
                           step.state.workerClaim = result.report;
                           step.state.report =
-                            "Remote Amp returned a final result. Worker claims only; no independent verifier, local artifact, push or deployment evidence.";
+                            "The coding task returned a result, not independently verified. No local artifact, push or deployment evidence.";
                           // Completed means transport returned a result, never verified code.
                           step.state.status = "completed";
                         } catch {
@@ -643,7 +643,7 @@ export function createCodingActor(
                           async () =>
                             runtime.run({
                               cwd: manifest.cwd,
-                              prompt: `You are June's coding worker, not her conversational persona. Work only on this approved local task. Follow repository guidance, preserve others' changes, and run relevant checks. Do not push, deploy, publish, modify shared infrastructure, or access credentials. Report what changed, verification evidence, limitations, and delivery state. Native execution is not a sandbox.\n\nTask:\n${proposal.goal}`,
+                              prompt: `You are June's coding worker, not her conversational persona. Work only on this approved local task. Follow repository guidance, preserve others' changes, and run relevant checks. Do not push, deploy, publish, modify shared infrastructure, or access credentials. Report what changed, verification evidence, limitations, and delivery state. Describe the task outcome, not your role or other agents, unless explicitly asked or an execution failure makes them relevant. Native execution is not a sandbox.\n\nTask:\n${proposal.goal}`,
                               threadId: step.state.threadId,
                               signal,
                               onThread: async (threadId) => {
@@ -771,9 +771,9 @@ export function createCodingActor(
               const text =
                 version < 2
                   ? status === "completed"
-                    ? `Amp reports (not independently verified):\n${report ?? "No report supplied."}`
+                    ? `Work summary (not independently verified):\n${report ?? "No report supplied."}`
                     : `Coding job ${proposal.id.slice(0, 12)} needs review. ${report ?? ""}`
-                  : `Coding job ${proposal.id.slice(0, 12)}: ${status}.\n${report ?? "No verification evidence."}${step.state.appArtifact ? `\nDynamic App ${step.state.appArtifact.appId}: artifact ${step.state.appArtifact.digest}. Job ID ${proposal.id}. Ask June to prepare this app for separate deployment approval.` : ""}\n\nWorker claims (not independently verified):\n${workerClaim?.slice(0, 2200) ?? "No confirmed worker result."}`;
+                  : `Coding job ${proposal.id.slice(0, 12)}: ${status}.\n${report ?? "No verification evidence."}${step.state.appArtifact ? `\nDynamic App ${step.state.appArtifact.appId}: artifact ${step.state.appArtifact.digest}. Job ID ${proposal.id}. Ask June to prepare this app for separate deployment approval.` : ""}\n\nWork summary (not independently verified):\n${workerClaim?.slice(0, 2200) ?? "No confirmed result."}`;
               await step
                 .client<JuneRegistry>()
                 .conversation.getOrCreate(["private", step.key[0] ?? ""])

@@ -21,6 +21,7 @@ import type { ExecutionContext } from "./execution-context.js";
 import { createLatencyDiagnostics } from "./latency.js";
 import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
+import { executionDispatchText } from "./scope-catalog.js";
 
 const notification = vi.hoisted(() => ({
   before: undefined as undefined | (() => Promise<void>),
@@ -398,6 +399,74 @@ it("revokes continuity-derived worker output on restriction but not on idle expi
   expect(workerPrompt).toContain("Do not rerun the task");
 });
 
+it.each([
+  { outcomes: ["research: queued"], expected: 1, text: "", want: "" },
+  {
+    outcomes: ["research: queued"],
+    expected: 1,
+    text: "I'll compare them.",
+    want: "I'll compare them.",
+  },
+  {
+    outcomes: ["research: queued", "sources: unavailable"],
+    expected: 2,
+    text: "Both started.",
+    want: "1 requested task was accepted.\nsources: I couldn't start that task.",
+  },
+  {
+    outcomes: ["research: cancellation requested"],
+    expected: 1,
+    text: "Stopped.",
+    want: "Cancellation requested. This does not confirm that in-flight work stopped.",
+  },
+  {
+    outcomes: ["research: not found"],
+    expected: 1,
+    text: "Stopped.",
+    want: "I couldn't find that task to cancel. Nothing is confirmed stopped.",
+  },
+  {
+    outcomes: ["old: cancellation requested", "replacement: queued"],
+    expected: 2,
+    text: "Stopped that and started the replacement.",
+    want: "1 requested task was accepted.\nCancellation requested. This does not confirm that in-flight work stopped.",
+  },
+  {
+    outcomes: ["sources: roster full; reuse an existing worker"],
+    expected: 1,
+    text: "Started.",
+    want: "This conversation has reached its task limit; I couldn't start that work.",
+  },
+  {
+    outcomes: [
+      "sources: forgetting cleanup pending; retry after cleanup or use another worker name",
+    ],
+    expected: 1,
+    text: "Started.",
+    want: "I couldn't start that task while earlier context is being cleared.",
+  },
+  {
+    outcomes: [
+      "research: queued",
+      "sources: busy; four tasks are already pending",
+    ],
+    expected: 2,
+    text: "Both started.",
+    want: "1 requested task was accepted.\nsources: Four tasks are already pending, so I couldn't start that work.",
+  },
+  {
+    outcomes: ["research: queued"],
+    expected: 2,
+    text: "Both started.",
+    want: "",
+  },
+])(
+  "keeps dispatch receipts internal without hiding failures: $outcomes",
+  ({ outcomes, expected, text, want }) => {
+    expect(executionDispatchText(outcomes, expected, text)).toBe(want);
+  },
+);
+
 it("accepts bounded execution only when granted and excludes every other directive", () => {
   const reply = {
     text: "On it.",
@@ -588,7 +657,10 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
   await send("4", "cancel");
   await expect
     .poll(texts, { timeout: 15000 })
-    .toContain("constructor: cancellation requested");
+    .toContain(
+      "Cancellation requested. This does not confirm that in-flight work stopped.",
+    );
+  expect(texts()).not.toContain("constructor: cancellation requested");
   expect(work).toHaveLength(3);
   expect(
     turns.find((r) => r.messages.at(-1)?.content.includes('"text":"cancel"'))
@@ -600,6 +672,9 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
       .every(
         (r) =>
           r.agentRole === "interaction" &&
+          r.system.includes(
+            "Treat completed authorized execution as June's own work",
+          ) &&
           !r.executionAvailable &&
           !r.modelStatusAvailable &&
           !r.releaseAvailable &&

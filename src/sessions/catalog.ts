@@ -20,14 +20,17 @@ import {
   type GlobalPersonality,
   isPersonalityCommand,
 } from "../runtime/personality.js";
-import { buildModelRequest } from "../runtime/prompt.js";
+import { buildModelRequest, COMPLETION_HELP } from "../runtime/prompt.js";
 import { parseReflectionReviewCommand } from "../runtime/reflection.js";
 import type {
   ConversationState,
   Dependencies,
   MemoryReference,
 } from "../runtime/registry.js";
-import { dispatchScopeExecution } from "../runtime/scope-catalog.js";
+import {
+  dispatchScopeExecution,
+  executionDispatchText,
+} from "../runtime/scope-catalog.js";
 import type { WakeupEvent } from "../wakeups/state.js";
 import { type ArchiveEvidence, produceSessionArchiveTurn } from "./producer.js";
 import type { ActivityAssignment, ActivityCatalog } from "./runtime.js";
@@ -594,6 +597,8 @@ export function createSessionCatalog(
       }),
     };
     context.request.system += `\nActivity session ${assignment.sessionId}. Prior activity transcripts are not loaded; delegate typed archive recall when needed. Scope-wide workers (metadata, no new authority): ${JSON.stringify(roster.map(({ name, pending }) => ({ name, pending })))}. Reuse names for follow-ups. Delegate inspection:"operations" for bounded session and migration status.`;
+    if (input.type === "job_result" || input.type === "execution_result")
+      context.request.system += `\n${COMPLETION_HELP}`;
     const { request: _request, ...saved } = context;
     turn.context = saved;
     await host.persist();
@@ -748,11 +753,11 @@ export function createSessionCatalog(
       );
       output = {
         ...(reply.sendMessages ? { sendMessages: reply.sendMessages } : {}),
-        text:
-          outcomes.length === reply.execution.length &&
-          outcomes.every((value) => value.endsWith(": queued"))
-            ? reply.text
-            : outcomes.join("\n"),
+        text: executionDispatchText(
+          outcomes,
+          reply.execution.length,
+          reply.text,
+        ),
       };
     }
     turn.applied = output;
