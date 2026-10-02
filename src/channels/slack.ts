@@ -178,7 +178,10 @@ async function normalizeEvent(
   ownerUserIds: ReadonlySet<string>,
   participateInOwnerChannels: boolean,
   context: ReturnType<typeof createSlackContext>,
-  threads?: Pick<SlackThreads, "has" | "record">,
+  threads?: Pick<
+    SlackThreads,
+    "has" | "record" | "hasRecentChannelReply" | "recordChannelReply"
+  >,
 ): Promise<ChannelEvent[]> {
   if (!nonEmptyString(payload.event_id) || !isJsonObject(payload.event)) {
     return [];
@@ -301,6 +304,28 @@ async function normalizeEvent(
       event.thread_ts !== event.ts &&
       (event.parent_user_id === botUserId ||
         threads?.has(teamId, botUserId, event.channel, event.thread_ts));
+    let participatingChannel = false;
+    if (
+      owner &&
+      (channelType === "channel" || channelType === "group") &&
+      !nonEmptyString(event.thread_ts) &&
+      !mentioned &&
+      !named &&
+      !debugEligible
+    ) {
+      try {
+        participatingChannel =
+          threads?.hasRecentChannelReply(
+            teamId,
+            botUserId,
+            event.channel,
+            event.ts,
+          ) ?? false;
+      } catch {
+        // Missing participation evidence must not widen admission.
+        console.warn("Could not read Slack channel participation");
+      }
+    }
     if (
       channelType !== "im" &&
       channelType !== "mpim" &&
@@ -308,6 +333,7 @@ async function normalizeEvent(
       !mentioned &&
       !named &&
       !participatingThread &&
+      !participatingChannel &&
       !debugEligible
     ) {
       if (!owner || !participateInOwnerChannels) return [];
@@ -507,7 +533,10 @@ export function createSlackAdapter({
   privateSearch?: SlackPrivateSearchOptions;
   ingressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
-  threads?: Pick<SlackThreads, "has" | "record">;
+  threads?: Pick<
+    SlackThreads,
+    "has" | "record" | "hasRecentChannelReply" | "recordChannelReply"
+  >;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
 }): ChannelAdapter {
@@ -997,16 +1026,29 @@ export function createSlackAdapter({
           }
           successMessageId = responsePayload.ts;
           try {
+            const channel = nonEmptyString(responsePayload.channel)
+              ? responsePayload.channel
+              : message.address.conversationId;
             threads?.record(
               teamId,
               botUserId,
-              nonEmptyString(responsePayload.channel)
-                ? responsePayload.channel
-                : message.address.conversationId,
+              channel,
               message.address.threadId ??
                 message.content.replyTo ??
                 responsePayload.ts,
             );
+            if (
+              !message.address.threadId &&
+              !message.content.replyTo &&
+              /^[CG]/.test(channel)
+            ) {
+              threads?.recordChannelReply(
+                teamId,
+                botUserId,
+                channel,
+                responsePayload.ts,
+              );
+            }
           } catch {
             // Slack already accepted this message. A local write failure must
             // not turn a successful delivery into an uncertain/retryable send.

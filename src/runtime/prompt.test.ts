@@ -130,6 +130,12 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "Failed or truncated context reads are not complete history",
     );
     expect(request.system).toContain(
+      "unmentioned top-level channel follow-ups for 30 minutes",
+    );
+    expect(request.system).toContain(
+      "answer normally without demanding another ping",
+    );
+    expect(request.system).toContain(
       "execution workers report relevant gaps to June rather than questioning the user",
     );
     expect(request.system).toContain(

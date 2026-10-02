@@ -444,7 +444,7 @@ describe("createSlackAdapter", () => {
     ]);
     expect(await reply({ channel: "C_OTHER" })).toEqual([]);
     expect(await reply({ thread_ts: "99.999" })).toEqual([]);
-    expect(await reply({ thread_ts: undefined })).toEqual([]);
+    expect(await reply({ thread_ts: undefined })).toHaveLength(1);
     expect(await reply({ user: "U_GUEST" })).toEqual([]);
     expect(await reply({ text: "## don't read" })).toEqual([]);
     for (const text of ["JUNE, FYI", `<@${botUserId}> FYI`]) {
@@ -518,6 +518,192 @@ describe("createSlackAdapter", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(5);
   });
 
+  it("admits recent owner channel follow-ups across restart without opening other scopes", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "june-slack-followup-"));
+    const file = join(root, "threads.sqlite");
+    let threads = new SlackThreads(file);
+    t.onTestFinished(() => {
+      threads.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        jsonResponse({ ok: true, ts: "1799999900.125000", channel: "C_CHAT" }),
+      );
+    // Delivery may be delayed by intake; admission uses the original Slack ts.
+    const deliveryTime = now + 3_600_000;
+    let adapter = makeAdapter(fetchImpl, { threads, now: () => deliveryTime });
+    let activeTeam = teamId;
+    const receive = async (overrides: Record<string, unknown> = {}) =>
+      (
+        await adapter.receive(
+          signedRequest(
+            eventBody(
+              {
+                type: "message",
+                channel_type: "channel",
+                channel: "C_CHAT",
+                user: "U_HUMAN",
+                ts: "1799999946.125000",
+                text: "and what about the other option?",
+                ...overrides,
+              },
+              { eventTeamId: activeTeam },
+            ),
+            Math.floor(deliveryTime / 1_000),
+          ),
+        )
+      ).events;
+    expect(await receive()).toEqual([]);
+    expect(
+      await adapter.send(
+        textMessage({
+          channel: "slack",
+          accountId: teamId,
+          conversationId: "C_CHAT",
+        }),
+      ),
+    ).toEqual({ status: "sent", messageId: "1799999900.125000" });
+    threads.close();
+    threads = new SlackThreads(file);
+    adapter = makeAdapter(fetchImpl, { threads, now: () => deliveryTime });
+    const admitted = await receive();
+    expect(admitted).toMatchObject([{ direct: false, botMentioned: false }]);
+    expect(admitted[0]?.address.threadId).toBeUndefined();
+    if (!admitted[0]) throw new Error("Expected admitted follow-up");
+    expect(
+      routeEvent(admitted[0], {
+        id: "owner",
+        identities: [
+          { channel: "slack", accountId: teamId, senderId: "U_HUMAN" },
+        ],
+      }),
+    ).toMatchObject({ private: false });
+    for (const overrides of [
+      { channel: "C_OTHER" },
+      { user: "U_GUEST" },
+      { thread_ts: "1799999890.000000" },
+      { text: "## do not read" },
+      { ts: "1799999900.124999" },
+      { ts: "1800001700.125001" },
+    ])
+      expect(await receive(overrides)).toEqual([]);
+    expect(await receive({ channel_type: "group" })).toHaveLength(1);
+    expect(await receive({ ts: "1800001700.125000" })).toHaveLength(1);
+    // An admitted follow-up alone must not refresh the window.
+    expect(await receive({ ts: "1800001701.000000" })).toEqual([]);
+    // A late acknowledgment for an older post must not shorten the window.
+    fetchImpl.mockResolvedValueOnce(
+      jsonResponse({ ok: true, ts: "1799999800.000000", channel: "C_CHAT" }),
+    );
+    await adapter.send(
+      textMessage({
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "C_CHAT",
+      }),
+    );
+    expect(await receive({ ts: "1800001700.125000" })).toHaveLength(1);
+    // A newer post cannot revoke an already-eligible delayed follow-up.
+    fetchImpl.mockResolvedValueOnce(
+      jsonResponse({ ok: true, ts: "1799999960.125000", channel: "C_CHAT" }),
+    );
+    await adapter.send(
+      textMessage({
+        channel: "slack",
+        accountId: teamId,
+        conversationId: "C_CHAT",
+      }),
+    );
+    expect(await receive()).toHaveLength(1);
+    expect(await receive({ ts: "1799999799.000000" })).toEqual([]);
+    expect(await receive({ ts: "1800001760.125000" })).toHaveLength(1);
+    expect(await receive({ ts: "1800001760.125001" })).toEqual([]);
+    adapter = makeAdapter(fetchImpl, {
+      threads,
+      botUserId: "U_OTHER_BOT",
+      now: () => deliveryTime,
+    });
+    expect(await receive()).toEqual([]);
+    adapter = makeAdapter(fetchImpl, {
+      threads,
+      teamId: "T_OTHER",
+      now: () => deliveryTime,
+    });
+    activeTeam = "T_OTHER";
+    expect(await receive()).toEqual([]);
+  });
+
+  it("opens a channel follow-up window only after a confirmed top-level text post", async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "june-slack-confirmed-"));
+    const threads = new SlackThreads(join(root, "threads.sqlite"));
+    t.onTestFinished(() => {
+      threads.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+    const fetchImpl = vi.fn<typeof fetch>();
+    const adapter = makeAdapter(fetchImpl, { threads });
+    for (const kind of [
+      "rejected",
+      "unknown",
+      "malformed",
+      "thread",
+      "replyTo",
+      "reaction",
+      "dm",
+      "sent",
+    ] as const) {
+      const channel = kind === "dm" ? "D_TEST" : `C_${kind}`;
+      const post = textMessage({
+        channel: "slack",
+        accountId: teamId,
+        conversationId: channel,
+        ...(kind === "thread" ? { threadId: "1799999800.000000" } : {}),
+      });
+      if (kind === "replyTo")
+        post.content = {
+          type: "text",
+          text: "reply",
+          replyTo: "1799999800.000000",
+        };
+      if (kind === "reaction")
+        post.content = {
+          type: "reaction",
+          emoji: "eyes",
+          messageId: "1799999800.000000",
+        };
+      if (kind === "unknown")
+        fetchImpl.mockRejectedValueOnce(new Error("lost response"));
+      else
+        fetchImpl.mockResolvedValueOnce(
+          jsonResponse(
+            kind === "rejected"
+              ? { ok: false, error: "not_in_channel" }
+              : {
+                  ok: true,
+                  channel,
+                  ...(kind === "malformed" ? {} : { ts: "1799999900.125000" }),
+                },
+          ),
+        );
+      await adapter.send(post);
+      const { events } = await adapter.receive(
+        signedRequest(
+          eventBody({
+            type: "message",
+            channel_type: "channel",
+            channel,
+            user: "U_HUMAN",
+            ts: "1799999946.125000",
+            text: "follow up",
+          }),
+        ),
+      );
+      expect(events, kind).toHaveLength(kind === "sent" ? 1 : 0);
+    }
+  });
+
   it("preserves successful sends and explicit contact when the thread ledger fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const fetchImpl = vi
@@ -529,7 +715,12 @@ describe("createSlackAdapter", () => {
       throw new Error("ledger unavailable");
     };
     const adapter = makeAdapter(fetchImpl, {
-      threads: { has: unavailable, record: unavailable },
+      threads: {
+        has: unavailable,
+        record: unavailable,
+        hasRecentChannelReply: unavailable,
+        recordChannelReply: unavailable,
+      },
     });
     try {
       expect(await adapter.send(textMessage())).toEqual({
@@ -557,6 +748,19 @@ describe("createSlackAdapter", () => {
         );
         expect(result.events).toHaveLength(1);
       }
+      const result = await adapter.receive(
+        signedRequest(
+          eventBody({
+            type: "message",
+            channel_type: "channel",
+            channel: "C_THREAD",
+            user: "U_HUMAN",
+            ts: "301.234",
+            text: "follow up",
+          }),
+        ),
+      );
+      expect(result.events).toEqual([]);
     } finally {
       warn.mockRestore();
     }
