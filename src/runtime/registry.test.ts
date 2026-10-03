@@ -1282,14 +1282,21 @@ describe("Rivet conversation workflow", () => {
   });
 
   it.for([
-    { direct: true, thread: undefined, choice: undefined, want: undefined },
+    { direct: true, thread: undefined, choice: undefined, want: "123.456" },
+    { direct: false, thread: undefined, choice: null, want: "123.456" },
     { direct: false, thread: undefined, choice: false, want: undefined },
     { direct: false, thread: undefined, choice: true, want: "123.456" },
     { direct: true, thread: "older-root", choice: false, want: undefined },
     { direct: false, thread: "older-root", choice: true, want: "older-root" },
+    {
+      direct: false,
+      thread: "older-root",
+      choice: undefined,
+      want: "older-root",
+    },
     { direct: true, thread: "older-root", choice: null, want: "older-root" },
   ])(
-    "lets June choose Slack reply placement ($direct/$thread/$choice)",
+    "defaults Slack replies to threads with explicit placement overrides ($direct/$thread/$choice)",
     async (scenario, t) => {
       const sent: OutboundMessage[] = [];
       const requests: ModelRequest[] = [];
@@ -1797,7 +1804,13 @@ describe("Rivet conversation workflow", () => {
             messageId: "out1",
           },
         });
-        expect(delivery.message.address).toEqual(source.address);
+        expect(delivery.message.address).toEqual({
+          ...source.address,
+          ...(scenario.channel === "slack" &&
+          delivery.message.content.type === "text"
+            ? { threadId: "123.456" }
+            : {}),
+        });
       }
 
       await june.send("inbox", { type: "event", event: source });
@@ -1910,7 +1923,10 @@ describe("Rivet conversation workflow", () => {
           return {
             status: "private_ready",
             consume(candidate) {
-              expect(candidate).toEqual(source);
+              expect(candidate).toEqual({
+                ...source,
+                address: { ...source.address, threadId: "123.456" },
+              });
               expect(sent).toHaveLength(0);
               return "EPHEMERAL_SEARCH_RESULT_93";
             },
@@ -2709,7 +2725,7 @@ describe("Rivet conversation workflow", () => {
         type: "text",
         text: "The answer is ready.",
       });
-      expect(sent[0]?.address.threadId).toBeUndefined();
+      expect(sent[0]?.address.threadId).toBe("123.456");
       expect(contextLoaded).toBe(true);
       await expect.poll(() => typing).toEqual([true]);
       let drained = false;

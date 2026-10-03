@@ -97,6 +97,8 @@ export interface ActivityCatalog {
     sendMessages?: CompanionReply["sendMessages"];
     reaction?: string;
     question?: CompanionReply["question"];
+    /** Catalog-selected placement; absent on previously saved outputs. */
+    replyAddress?: MessageEvent["address"];
   }>;
   acknowledge(
     assignment: ActivityAssignment,
@@ -1104,6 +1106,8 @@ export function createActivityActor(deps: ActivityDependencies) {
                         );
                         if (!current(assignment, turn.context)) return;
                         const context = turn.context;
+                        const replyAddress =
+                          output.replyAddress ?? context.replyAddress;
                         turn.deliveries = (
                           output.messages ?? [
                             output.question
@@ -1117,7 +1121,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                             attempts: 0,
                             message: {
                               id: randomUUID(),
-                              address: { ...context.replyAddress },
+                              address: { ...replyAddress },
                               lastInboundAt: context.source.occurredAt,
                               content: {
                                 type: "text",
@@ -1126,10 +1130,8 @@ export function createActivityActor(deps: ActivityDependencies) {
                                   ? { replyTo: context.source.messageId }
                                   : {}),
                                 ...(output.question &&
-                                context.replyAddress.channel === "slack" &&
-                                context.replyAddress.conversationId.startsWith(
-                                  "D",
-                                ) &&
+                                replyAddress.channel === "slack" &&
+                                replyAddress.conversationId.startsWith("D") &&
                                 isOwner(context.source, deps.owner) &&
                                 routeEvent(context.source, deps.owner)?.private
                                   ? { question: output.question }

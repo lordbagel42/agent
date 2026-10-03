@@ -29,73 +29,98 @@ import {
 import { SocialPermissions } from "../runtime/social.js";
 import { sessionActorKey } from "./state.js";
 
-it("delivers a conversational question through the activity session lane", async (t) => {
-  const store = new EvidenceStore(":memory:", randomBytes(32));
-  t.onTestFinished(() => store.close());
-  const sent: OutboundMessage[] = [];
-  const question = { prompt: "Which day?", options: ["Tuesday", "Thursday"] };
-  const registry = createJuneRegistry({
-    owner: {
-      id: "owner",
-      identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
-    },
-    sessions: { idleMs: 60000 },
-    model: {
-      beginReply() {
-        return {
-          answer: Promise.resolve({ text: "", question }),
-          settlement: Promise.resolve("confirmed_stopped" as const),
-        };
+it.for([
+  { thread: undefined, choice: undefined, want: "1800000000.000001" },
+  { thread: "1700000000.000007", choice: false, want: undefined },
+  { thread: "1700000000.000007", choice: undefined, want: "1700000000.000007" },
+])(
+  "delivers a conversational question through the activity session lane ($thread/$choice)",
+  async ({ thread, choice, want }, t) => {
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    t.onTestFinished(() => store.close());
+    const sent: OutboundMessage[] = [];
+    const requests: ModelRequest[] = [];
+    const question = { prompt: "Which day?", options: ["Tuesday", "Thursday"] };
+    const registry = createJuneRegistry({
+      owner: {
+        id: "owner",
+        identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
       },
-      async reply() {
-        throw new Error("Use invocation handle");
-      },
-    },
-    memory: {
-      store,
-      source: (event, audience) =>
-        slackSource({
-          workspace: event.address.accountId,
-          channel: event.address.conversationId,
-          ts: event.messageId,
-          author: event.senderId,
-          text: event.text,
-          audiences: [audience],
-          workspaceUrl: "https://fixture.slack.com/",
-        }),
-    },
-    channels: {
-      slack: {
-        channel: "slack",
-        capabilities: { text: true, threads: true, reactions: true },
-        receive: async () => ({ events: [], response: new Response() }),
-        async send(message) {
-          sent.push(JSON.parse(JSON.stringify(message)));
-          return { status: "sent", messageId: "1800000001.000001" };
+      sessions: { idleMs: 60000 },
+      model: {
+        beginReply(request) {
+          requests.push(request);
+          return {
+            answer: Promise.resolve({
+              text: "",
+              question,
+              replyInThread: choice,
+            }),
+            settlement: Promise.resolve("confirmed_stopped" as const),
+          };
+        },
+        async reply() {
+          throw new Error("Use invocation handle");
         },
       },
-    },
-  });
-  const { client } = await setupTest(t, registry);
-  const june = client.conversation.getOrCreate(["private", "owner"]);
-  await june.receive({
-    id: "question",
-    type: "message",
-    messageId: "1800000000.000001",
-    occurredAt: Date.now(),
-    address: { channel: "slack", accountId: "T1", conversationId: "D1" },
-    direct: true,
-    metadata: { channelType: "im" },
-    senderId: "U1",
-    text: "Ask me which day",
-  });
-  await expect.poll(() => sent.length, { timeout: 15000 }).toBe(1);
-  expect(sent[0]?.content).toEqual({
-    type: "text",
-    text: "Which day?\n1. Tuesday\n2. Thursday\nChoose an option or reply in your own words.",
-    question,
-  });
-});
+      memory: {
+        store,
+        source: (event, audience) =>
+          slackSource({
+            workspace: event.address.accountId,
+            channel: event.address.conversationId,
+            ts: event.messageId,
+            author: event.senderId,
+            text: event.text,
+            audiences: [audience],
+            workspaceUrl: "https://fixture.slack.com/",
+          }),
+      },
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, threads: true, reactions: true },
+          receive: async () => ({ events: [], response: new Response() }),
+          async send(message) {
+            sent.push(JSON.parse(JSON.stringify(message)));
+            return { status: "sent", messageId: "1800000001.000001" };
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", "owner"]);
+    await june.receive({
+      id: "question",
+      type: "message",
+      messageId: "1800000000.000001",
+      occurredAt: Date.now(),
+      address: {
+        channel: "slack",
+        accountId: "T1",
+        conversationId: "D1",
+        threadId: thread,
+      },
+      direct: true,
+      metadata: { channelType: "im" },
+      senderId: "U1",
+      text: "Ask me which day",
+    });
+    await expect.poll(() => sent.length, { timeout: 15000 }).toBe(1);
+    expect(sent[0]?.content).toEqual({
+      type: "text",
+      text: "Which day?\n1. Tuesday\n2. Thursday\nChoose an option or reply in your own words.",
+      question,
+    });
+    expect(sent[0]?.address).toEqual({
+      channel: "slack",
+      accountId: "T1",
+      conversationId: "D1",
+      threadId: want,
+    });
+    expect(requests[0]?.replyPlacementAvailable).toBe(true);
+  },
+);
 
 it.for([false, true])(
   "handles event decisions in activities and holds unknown effects (%s)",
@@ -551,10 +576,12 @@ it("routes late workers once to current activity, preserves placement, and binds
       beginReply: (request) => {
         requests.push(request);
         const last = request.messages.at(-1)?.content ?? "";
-        if (last.includes("Automated completion"))
+        if (last.includes("Automated completion")) {
           expect(request.system).toContain(
             "Treat completed authorized execution as June's own work",
           );
+          expect(request.replyPlacementAvailable).toBe(false);
+        }
         const reply: CompanionReply = last.includes("Automated completion")
           ? {
               text: last.includes("LATE WORKER REPORT")
@@ -565,6 +592,7 @@ it("routes late workers once to current activity, preserves placement, and binds
             ? { text: "Fresh answer" }
             : {
                 text: "Working on it.",
+                replyInThread: false,
                 execution: [
                   {
                     agent: last.includes("preview")
@@ -659,7 +687,11 @@ it("routes late workers once to current activity, preserves placement, and binds
       message.content.type === "text" &&
       message.content.text === "SYNTHESIZED LATE REPORT",
   );
-  expect(completed?.address).toEqual(first.address);
+  expect(completed?.address).toEqual({
+    channel: "slack",
+    accountId: "T1",
+    conversationId: "D1",
+  });
   await expect
     .poll(async () => (await june.snapshot()).sessions?.directory.inFlight, {
       timeout: 15000,

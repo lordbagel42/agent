@@ -218,8 +218,16 @@ it.for([
       "explicitly asks about them or an actual execution failure",
     );
     expect(request.system).toContain("not permission to bypass a denial");
+    expect(request.system).toContain(
+      "Slack conversational replies default to threads",
+    );
+    expect(request.system).toContain(
+      "Channel-level replies should be uncommon",
+    );
+    expect(request.system).toContain("Workers cannot change reply placement");
     if (role === "decision") expect(request.system).toContain("Be selective");
     expect(request.executionAvailable).toBe(false);
+    expect(request.replyPlacementAvailable).toBe(false);
     expect(request.workspaces).toEqual([]);
   },
 );

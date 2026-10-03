@@ -1761,6 +1761,11 @@ export function createJuneRegistry(deps: Dependencies) {
             "reflection-review",
             8,
           );
+          // Keep replayed turns at their original destination.
+          const threadedRepliesVersion = await loop.getVersion(
+            "threaded-replies",
+            2,
+          );
           // A parked inbox can use the jury on its first new turn; journals
           // already processing a turn retain the original capability plan.
           const juryVersion = await loop.getVersion("jury-request", 2);
@@ -2559,9 +2564,9 @@ export function createJuneRegistry(deps: Dependencies) {
               let replyAddress =
                 body.type === "execution_result"
                   ? (body.replyAddress ?? event.address)
-                  : version >= 4 &&
-                      version < 6 &&
-                      event.address.channel === "slack"
+                  : event.address.channel === "slack" &&
+                      ((threadedRepliesVersion >= 2 && body.type === "event") ||
+                        (version >= 4 && version < 6))
                     ? {
                         ...event.address,
                         threadId: event.address.threadId ?? event.messageId,
@@ -3380,7 +3385,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                       event,
                                     )
                                   : undefined,
-                                { ...event, address: replyAddress },
+                                threadedRepliesVersion >= 2 &&
+                                  body.type === "event" &&
+                                  phase === "reply"
+                                  ? event
+                                  : { ...event, address: replyAddress },
                                 signal,
                               );
                               deps.latency?.mark(event, "context_started");
@@ -4090,10 +4099,14 @@ export function createJuneRegistry(deps: Dependencies) {
                                       !!deps.dashboardLogin,
                                     replyPlacementAvailable:
                                       body.type === "event" &&
-                                      (version < 4 || version >= 6) &&
+                                      (threadedRepliesVersion >= 2 ||
+                                        version < 4 ||
+                                        version >= 6) &&
                                       phase === "reply" &&
                                       event.address.channel === "slack" &&
-                                      (version >= 6 || !event.address.threadId),
+                                      (threadedRepliesVersion >= 2 ||
+                                        version >= 6 ||
+                                        !event.address.threadId),
                                     memoryAvailable:
                                       plan.memory && !!deps.memory,
                                     reflectionAvailable:
@@ -4119,6 +4132,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                   "context_prompt_ready",
                                 );
                                 if (
+                                  threadedRepliesVersion < 2 &&
                                   version >= 4 &&
                                   version < 6 &&
                                   event.address.channel === "slack"
@@ -4867,7 +4881,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     );
                   }
                   if (
-                    version >= 6 &&
+                    (threadedRepliesVersion >= 2 || version >= 6) &&
                     body.type === "event" &&
                     phase === "reply" &&
                     event.address.channel === "slack" &&
@@ -4882,6 +4896,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       : surface;
                   }
                   if (
+                    threadedRepliesVersion < 2 &&
                     version >= 3 &&
                     version < 4 &&
                     phase === "reply" &&

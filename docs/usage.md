@@ -554,8 +554,12 @@ and the corresponding installed history scopes); an app-mention subscription
 alone cannot deliver unmentioned follow-ups. Guest mention rules are unchanged.
 June chooses reply placement with `replyInThread`: false posts in the
 main DM/channel, true uses the existing thread or starts one on the incoming
-message, and unset preserves incoming placement. Normal DMs and ongoing channel
-conversation should generally stay unthreaded; mentions do not force threads.
+message, and unset/null defaults to that same threaded placement. Threads are
+the default in DMs and channels. Channel-level replies should be uncommon,
+reserved for an explicit request or a clear need to address the main conversation.
+Worker completions keep the destination saved at dispatch, and automated
+notifications keep their host-selected destination. Already-saved deliveries
+and replayed legacy turns are not relocated by this default change.
 Raw messages beginning with `##` are hard-excluded before normal processing,
 including automatic history/context and retained-history imports. Leading
 whitespace is not trimmed. Explicit tool lookups can still retrieve this text.

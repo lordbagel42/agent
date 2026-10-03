@@ -11,6 +11,96 @@ import type { ConversationState } from "../runtime/registry.js";
 import { createSessionCatalog, type SessionHost } from "./catalog.js";
 import { produceSessionArchiveTurn } from "./producer.js";
 
+it("preserves an already-prepared destination when preparation is retried", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const key = ["private", "owner"];
+  const source: MessageEvent = {
+    type: "message",
+    id: "source",
+    messageId: "1800000000.000001",
+    occurredAt: 100,
+    senderId: "U1",
+    direct: true,
+    text: "Hello",
+    address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+  };
+  const id = conversationInputId({ type: "event", event: source });
+  const state: ConversationState = {
+    history: [],
+    events: {},
+    deliveries: {},
+    lastInbound: {},
+    jobs: {},
+    pendingInputs: { [id]: source },
+    ingress: {
+      sequence: 1,
+      receivedThrough: 100,
+      receipts: {
+        [id]: {
+          sequence: 1,
+          kind: "message",
+          lane: "session",
+          receivedAt: 100,
+        },
+      },
+    },
+    migration: {
+      phase: "sessions",
+      scope: JSON.stringify(key),
+      epoch: "a".repeat(64),
+      barrier: "b".repeat(64),
+      legacyInputs: [],
+      archivedInputs: [],
+      barrierObserved: true,
+    },
+  };
+  const host: SessionHost = {
+    state,
+    key,
+    persist: async () => {},
+    personality: async () => defaultGlobalPersonality,
+    worker: () => {
+      throw new Error("No worker expected");
+    },
+    publish: async () => {},
+    enqueue: async () => {},
+    schedule: async () => {},
+    publishNative: async () => {},
+    wakeupContext: async () => null,
+    claimWakeup: async () => false,
+    completeWakeup: async () => {},
+  };
+  const catalog = createSessionCatalog(
+    {
+      owner: {
+        id: "owner",
+        identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
+      },
+      channels: {},
+      model: { reply: async () => ({ text: "" }) },
+      memory: { store, source: () => undefined },
+      sessions: { idleMs: 1000 },
+    },
+    () => true,
+    () => "test",
+  );
+  await catalog.pump(host);
+  const turn = state.sessions?.turns[id];
+  if (!turn) throw new Error("Missing assignment");
+  await catalog.prepare(host, turn.assignment, []);
+  if (!turn.context) throw new Error("Missing prepared context");
+  // Old code saved this before the preparation RPC's response was lost.
+  turn.context.replyAddress = { ...source.address };
+  const resumed = await catalog.prepare(host, turn.assignment, []);
+  if ("control" in resumed) throw new Error("Unexpected suppression");
+  expect(resumed.replyAddress).toEqual(source.address);
+  const applied = await catalog.apply(host, turn.assignment, {
+    text: "Hello back",
+  });
+  expect(applied.replyAddress ?? resumed.replyAddress).toEqual(source.address);
+});
+
 it.for([
   "job_result",
   "wakeup",

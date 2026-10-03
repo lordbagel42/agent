@@ -539,9 +539,15 @@ export function createSessionCatalog(
       ...(decision ? { decision: true as const } : {}),
       ...(original && input?.type === "event" ? { sourceId: original.id } : {}),
       replyAddress:
-        input?.type === "execution_result"
+        turn.context?.replyAddress ??
+        (input?.type === "execution_result"
           ? (input.replyAddress ?? source.address)
-          : source.address,
+          : input.type === "event" && source.address.channel === "slack"
+            ? {
+                ...source.address,
+                threadId: source.address.threadId ?? source.messageId,
+              }
+            : source.address),
       deletionRevision: revision,
       reference,
       // Old or external trigger payloads have no complete host provenance.
@@ -575,6 +581,8 @@ export function createSessionCatalog(
                 input.type === "event" &&
                 turn.capabilities.researchAvailable === true,
               turnTakingAvailable: input?.type === "event",
+              replyPlacementAvailable:
+                input.type === "event" && source.address.channel === "slack",
               typingControlAvailable:
                 input.type === "event" &&
                 source.address.channel === "slack" &&
@@ -708,6 +716,21 @@ export function createSessionCatalog(
     turn.applying ??= reply;
     await host.persist();
     const input = savedInput(host.state, assignment.eventId);
+    let replyAddress = context.replyAddress;
+    if (
+      input?.type === "event" &&
+      context.source.address.channel === "slack" &&
+      reply.replyInThread !== undefined
+    ) {
+      const { threadId: _threadId, ...surface } = context.source.address;
+      replyAddress = reply.replyInThread
+        ? {
+            ...surface,
+            threadId:
+              context.source.address.threadId ?? context.source.messageId,
+          }
+        : surface;
+    }
     if (reply.typingEnabled !== undefined) {
       if (
         typeof reply.typingEnabled !== "boolean" ||
@@ -744,7 +767,7 @@ export function createSessionCatalog(
           audience: audience(host),
           eventId: assignment.eventId,
           event: context.source,
-          replyAddress: context.replyAddress,
+          replyAddress,
           plan: {
             workerCapabilities: turn.capabilities,
             deletionRevision: context.deletionRevision,
@@ -774,10 +797,13 @@ export function createSessionCatalog(
         ),
       };
     }
-    turn.applied = output;
+    turn.applied = {
+      ...output,
+      ...(replyAddress !== context.replyAddress ? { replyAddress } : {}),
+    };
     delete turn.applying;
     await host.persist();
-    return output;
+    return turn.applied;
   }
   async function acknowledge(
     host: SessionHost,

@@ -402,7 +402,7 @@ export interface CompanionReply {
   /** Owner-private persistent schedules and event subscriptions. */
   wakeup?: import("../wakeups/state.js").WakeupAction;
   apps?: import("../apps/client.js").AppsRequest;
-  /** Slack: true selects a thread, false the main conversation; unset preserves input placement. */
+  /** Slack: defaults to the existing/new reply thread; false explicitly selects the main conversation. */
   replyInThread?: boolean;
 }
 
