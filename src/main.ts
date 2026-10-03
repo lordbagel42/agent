@@ -41,6 +41,7 @@ import type {
 import { routeEvent } from "./core/routing.js";
 import { createBitwardenCredentialResolver } from "./credentials/bitwarden.js";
 import { createBitwardenFileSession } from "./credentials/session.js";
+import { startSlotEngine } from "./deployment/engine.js";
 import {
   createDeploymentReader,
   createReleaseTool,
@@ -118,6 +119,7 @@ let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
 const hotProviders: ReturnType<typeof createHotCodexProvider>[] = [];
 let slotActivated = false;
 let telemetry: Telemetry | undefined;
+let failStartup: (() => void) | undefined;
 
 function exitOrRetainOwnership(code: number) {
   if (slotActivated && code !== 0) {
@@ -435,6 +437,7 @@ async function main() {
       ? client.reflection.getOrCreate([config.owner.id]).isSettled()
       : true;
   });
+  failStartup = lifecycle.fail;
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);
   if (operatorToken.length < 32) throw new Error("Short operator token");
@@ -1859,7 +1862,19 @@ async function main() {
       return c.json(agents?.revokeClient(c.req.param("id")));
     });
   }
-  registry.start();
+  if (slot) {
+    startupStage = "owned slot engine recovery";
+    if (runtime.startEngine) {
+      if (!runtime.endpoint) throw new Error("slot_engine_endpoint_missing");
+      await startSlotEngine({
+        endpoint: runtime.endpoint,
+        storagePath: process.env.RIVETKIT_STORAGE_PATH,
+        onFailure: lifecycle.fail,
+      });
+    }
+    startupStage = "slot registry registration";
+    await registry.startAndWait();
+  } else registry.start();
   if (!config.setupMode) {
     startupStage = "authored workflow recovery";
     try {
@@ -2006,6 +2021,8 @@ async function main() {
 await main().catch(async () => {
   // Fail closed: startup may already have spawned children. Keep the ownership
   // descriptor and MainPID alive until the controller stops the entire cgroup.
+  // A timed-out registration may settle later; it must not admit any work.
+  failStartup?.();
   if (slotActivated) setInterval(() => {}, 60_000);
   await Promise.allSettled(hotProviders.map((provider) => provider.close()));
   recordEvent("june.lifecycle", {

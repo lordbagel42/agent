@@ -139,6 +139,29 @@ description before live initialization. The descriptor stays held until process
 exit; it is not an expiring lease. An initialization/shutdown failure retains the
 MainPID/lock rather than releasing ownership while children might remain.
 
+After activation, a locally managed slot starts one pinned Rivet engine itself
+and waits up to 60 seconds for engine health before registering the actor runtime.
+RivetKit 2.3.21's native cold-start path has a fixed ten-second deadline that kills
+an engine still recovering its database WAL. The slot preserves the same database,
+credentials, loopback ports and engine defaults, but owns the longer observation
+window. Engine output remains in private `slot-*.log` files beside the existing
+engine logs. The engine stays in the slot cgroup until the existing ordered stop.
+
+Both native binary resolvers are fenced with the non-executable `/dev/null` after
+the real binary is captured. A failed native reuse probe must fail execution,
+never launch a second engine. This is a version-pinned compatibility workaround,
+not a public Rivet connect-only option; rerun `tests/slot-engine.test.ts` when
+upgrading. Direct prestart does not update Rivet's legacy `runtime.json` PID stamp;
+use the actual slot cgroup and process identity, not that stale stamp.
+Timeout, exit or failed registration latches admission failure and retains
+ownership without killing or retrying the engine. Late health cannot resume
+startup. Only the designated recovery owner may settle that failed invocation.
+Configure the controller's existing `healthSeconds` to 120 under the operator
+lock before deploying this path, allowing engine recovery plus registration and
+application recovery. This is an observation budget, not permission to stop on
+timeout. Standby still opens no live store, and publication does not change the
+installed controller configuration or prove live readiness.
+
 The controller durably records intent before launching standby, verifies it while
 old June remains healthy, pauses only intake **forwarding**, and then drains old
 June. A busy drain resumes the old app and forwarding. Before activation it

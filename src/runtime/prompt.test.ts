@@ -376,6 +376,9 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     );
     expect(request.system).toContain("Only one runtime may own live state");
     expect(request.system).toContain(
+      "A startup timeout or engine exit fails admission and retains ownership",
+    );
+    expect(request.system).toContain(
       "reuses those verified immutable manifests only within that locked attempt",
     );
     expect(request.system).toContain(
