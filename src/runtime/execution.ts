@@ -15,7 +15,7 @@ import type {
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import { parseReply } from "../models/provider.js";
-import { RepositoryTimeoutError } from "../repository/contracts.js";
+import { RepositoryError } from "../repository/contracts.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import { type Delivery, deliver } from "./delivery.js";
 import { runExecutionCapability } from "./execution-capabilities.js";
@@ -349,10 +349,12 @@ export function createExecutionActor(
                         return;
                       const controller = new AbortController();
                       step.vars.controller = controller;
+                      const deadline = performance.now() + 300_000;
+                      const deadlineSignal = AbortSignal.timeout(300_000);
                       const signal = AbortSignal.any([
                         controller.signal,
                         step.abortSignal,
-                        AbortSignal.timeout(300_000),
+                        deadlineSignal,
                       ]);
                       const usable = () => {
                         const source = deps.memory?.source(
@@ -650,6 +652,7 @@ export function createExecutionActor(
                                 personalityVersion: globalPersonality.version,
                                 workspaces: input.workspaces,
                                 signal,
+                                deadline,
                                 valid: usable,
                                 canStartAction: usable,
                                 canDeliver,
@@ -872,8 +875,9 @@ export function createExecutionActor(
                             request.operation?.status === "started"
                               ? "needs_review"
                               : "failed";
-                          request.report =
-                            error instanceof RepositoryTimeoutError
+                          request.report = deadlineSignal.aborted
+                            ? "Execution reached its five-minute deadline. Unfinished work was cancelled; this does not confirm that upstream inference stopped or that the requested capability is absent. Any unfinished started operation remains unconfirmed. No automatic retry was made; another attempt requires a fresh owner request."
+                            : error instanceof RepositoryError
                               ? error.message
                               : "Execution did not produce a confirmed result. No automatic retry was made; ask for another attempt if needed.";
                         }

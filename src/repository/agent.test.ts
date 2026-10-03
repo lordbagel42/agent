@@ -186,12 +186,20 @@ it("loads source without following links, opening host paths, or accepting a par
   ).rejects.toThrow("repository_unsafe_path");
 });
 
-it.for([false, true])(
-  "routes June's repository result without retrying failures (timeout=%s)",
-  async (timeout, t) => {
+it.for([null, "timeout", "deadline", "provider_busy"] as const)(
+  "routes June's repository result without retrying failures (%s)",
+  async (failure, t) => {
     let consultations = 0;
     let workerCalls = 0;
     let completion = "";
+    const deadline = new AbortController();
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    const timer = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockImplementation((ms) =>
+        ms === 300_000 ? deadline.signal : timeout(ms),
+      );
+    t.onTestFinished(() => timer.mockRestore());
     const report = `${"Source detail. ".repeat(270)}The deployment lock serializes activation (scripts/deploy.py:2–3); this does not prove live health.`;
     const repository = createRepositoryAgent({
       revision,
@@ -201,8 +209,12 @@ it.for([false, true])(
         expect(request.agentRole).toBe("repository");
         expect(request.system).toContain("scripts/deploy.py");
         const observation = request.messages.at(-1)?.content ?? "";
-        if (timeout && observation.includes("Untrusted snapshot observation"))
-          throw new ModelError("timeout", false);
+        if (failure && observation.includes("Untrusted snapshot observation")) {
+          if (failure === "deadline") deadline.abort();
+          const error = new ModelError(failure, false);
+          error.message = "PRIVATE provider payload";
+          throw error;
+        }
         return observation.includes("Untrusted snapshot observation")
           ? {
               text: report,
@@ -333,13 +345,18 @@ it.for([false, true])(
     );
     await expect
       .poll(async () => (await worker.summary())?.status, { timeout: 15000 })
-      .toBe(timeout ? "needs_review" : "completed");
-    if (timeout) {
-      expect((await worker.summary())?.report).toContain("timed out");
+      .toBe(failure ? "needs_review" : "completed");
+    if (failure) {
+      const reason =
+        failure === "deadline"
+          ? "five-minute deadline"
+          : failure === "timeout"
+            ? "timed out"
+            : "provider_busy";
+      expect((await worker.summary())?.report).toContain(reason);
       expect((await worker.summary())?.capacity.unknownOutcomes).toBe(1);
-      await expect
-        .poll(() => completion, { timeout: 15000 })
-        .toContain("timed out");
+      await expect.poll(() => completion, { timeout: 15000 }).toContain(reason);
+      expect(completion).not.toContain("PRIVATE");
       expect(workerCalls).toBe(1);
       expect(consultations).toBe(2);
     } else {
@@ -349,6 +366,118 @@ it.for([false, true])(
     }
     for (const system of instructions)
       expect(system.includes("configured model timeout")).toBe(true);
+  },
+);
+
+it("reserves the worker's remaining time for a source report and synthesis", async (t) => {
+  let now = 0;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+  t.onTestFinished(() => clock.mockRestore());
+  let calls = 0;
+  const agent = createRepositoryAgent({
+    load: async () => snapshot(),
+    timeoutMs: 75_000,
+    model: settled(async (request) => {
+      calls++;
+      if (request.repositoryReadAvailable) {
+        now += 70_001;
+        return {
+          text: "",
+          repositoryRead: {
+            action: "read",
+            path: "scripts/deploy.py",
+            query: "",
+            offset: 0,
+          },
+        };
+      }
+      expect(request.messages.at(-1)?.content).toContain("deployment_lock");
+      expect(request.system).toContain("Source inspection is now closed");
+      expect(request.system).toContain("Do not discard established findings");
+      now += 66_726;
+      return {
+        text: "The lock serializes activation (scripts/deploy.py:2–3).",
+      };
+    }),
+  });
+  const signal = new AbortController().signal;
+  const result = await agent.ask(
+    "Inspect deployment",
+    signal,
+    () => true,
+    300_000,
+  );
+  expect(result).toContain("The lock serializes activation");
+  expect(calls).toBe(2);
+  now += 20_018;
+  const followup = await agent.ask(
+    "Inspect a second path",
+    signal,
+    () => true,
+    300_000,
+  );
+  expect(followup).toContain("insufficient execution time");
+  expect(followup).toContain("earlier confirmed");
+  expect(calls).toBe(2);
+});
+
+it.for([false, true])(
+  "declines a consultation that cannot fit its first source read (slow load=%s)",
+  async (slowLoad, t) => {
+    let now = slowLoad ? 0 : 100_000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    t.onTestFinished(() => clock.mockRestore());
+    const load = vi.fn(async () => {
+      now += 70_001;
+      return snapshot();
+    });
+    const reply = vi.fn(async () => ({
+      text: "No source read was available.",
+    }));
+    const agent = createRepositoryAgent({
+      load,
+      model: settled(reply),
+      timeoutMs: 75_000,
+    });
+    const report = await agent.ask(
+      "Inspect deployment",
+      new AbortController().signal,
+      () => true,
+      300_000,
+    );
+    expect(report).toContain("insufficient execution time");
+    expect(reply).not.toHaveBeenCalled();
+    expect(load).toHaveBeenCalledTimes(slowLoad ? 1 : 0);
+  },
+);
+
+it.for([false, true])(
+  "distinguishes an unread source from an empty specialist report (read=%s)",
+  async (read) => {
+    let calls = 0;
+    const agent = createRepositoryAgent({
+      load: async () => snapshot(),
+      model: settled(async () => {
+        calls++;
+        if (read && calls === 1)
+          return {
+            text: "",
+            repositoryRead: {
+              action: "read",
+              path: "scripts/deploy.py",
+              query: "",
+              offset: 0,
+            },
+          };
+        return { text: read ? "" : "Unsupported implementation claim." };
+      }),
+    });
+    await expect(
+      agent.ask("Inspect deployment", new AbortController().signal, () => true),
+    ).rejects.toThrow(
+      read ? "repository_empty_report" : "repository_source_not_read",
+    );
+    expect(calls).toBe(read ? 2 : 1);
   },
 );
 

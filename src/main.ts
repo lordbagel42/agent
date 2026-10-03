@@ -1309,6 +1309,7 @@ async function main() {
         ? createRepositoryAgent({
             model: deepModel ?? model,
             revision: release?.revision,
+            timeoutMs: (config.deepModel ?? config.model).timeoutMs,
           })
         : undefined,
     emojiSearch: config.emojiSearch

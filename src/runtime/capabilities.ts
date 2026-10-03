@@ -208,6 +208,8 @@ export interface CapabilityContext {
   personalityVersion: number | undefined;
   workspaces: string[];
   signal: AbortSignal;
+  /** Host-only enclosing worker deadline in performance.now() milliseconds. */
+  deadline?: number;
   valid(): boolean;
   /** Pre-dispatch admission, separate from validity of settled observations. */
   canStartAction?(): boolean;
@@ -851,6 +853,7 @@ async function dispatchCapability(
           checked.repository,
           signal,
           canStartAction,
+          context.deadline,
         );
         if (!canStartAction()) return { text: "" };
       }
