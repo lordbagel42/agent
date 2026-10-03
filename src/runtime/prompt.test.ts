@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { MessageEvent } from "../core/contracts.js";
+import type { ConversationMessage, MessageEvent } from "../core/contracts.js";
 import { buildModelRequest, type PromptInput } from "./prompt.js";
 
 const event: MessageEvent = {
@@ -16,6 +16,7 @@ const event: MessageEvent = {
 
 const input: PromptInput = {
   event,
+  liveInput: true,
   history: [{ role: "user", content: event.text, source: event }],
   now: new Date("2026-09-27T13:14:15Z"),
   owner: {
@@ -32,6 +33,141 @@ const input: PromptInput = {
   models: { current: { provider: "codex", model: "configured-fast" } },
   capabilities: {},
 };
+
+it("orders Slack context and removes identical local/platform copies before truncation", () => {
+  const row = (
+    id: string,
+    ts: string,
+    role: ConversationMessage["role"],
+    content: string,
+    senderId: string,
+  ): ConversationMessage => ({
+    role,
+    content,
+    source: { ...event, id, messageId: ts, senderId },
+  });
+  const local = row("turn:reply", "1790424122.9", "assistant", "Yes", "");
+  const history = [
+    ...Array.from({ length: 40 }, () => local),
+    row("platform-first", "1790424122.1000002", "user", "Second", "U2"),
+    row("platform-earlier", "1790424122.1000001", "user", "First", "U1"),
+    row("platform-copy", "1790424122.9", "assistant", "Yes", "U_JUNE"),
+    row("platform-repeat", "1790424122.900001", "assistant", "Yes", "U_JUNE"),
+    ...input.history,
+  ];
+  const before = structuredClone(history);
+  const request = buildModelRequest({ ...input, history });
+  const rendered = request.messages.map(({ content }) => JSON.parse(content));
+  expect(rendered.map(({ text }) => text)).toEqual([
+    "First",
+    "Second",
+    "Yes",
+    "Yes",
+    event.text,
+  ]);
+  expect(rendered[2].source.eventId).toBe("platform-copy");
+  expect(rendered[2].source.senderId).toBe("U_JUNE");
+  expect(rendered[1].source.senderIsOwner).toBe(false);
+  expect(history).toEqual(before);
+});
+
+it("preserves delivery summaries and keeps the current input after overlapping sends", () => {
+  const receipt: ConversationMessage = {
+    role: "assistant",
+    content:
+      "[Message 1/2 sent] First part\n[Text delivery unknown; do not repeat] Second part",
+    source: {
+      ...event,
+      id: "turn:reply",
+      senderId: "",
+      messageId: "1790424122.8",
+    },
+  };
+  const reaction: ConversationMessage = {
+    role: "assistant",
+    content: "[Reaction sent: eyes]",
+    source: {
+      ...event,
+      id: "reaction:reply",
+      senderId: "",
+      messageId: "",
+      occurredAt: 1790424122900,
+    },
+  };
+  const request = buildModelRequest({
+    ...input,
+    history: [
+      receipt,
+      reaction,
+      {
+        role: "assistant",
+        content: "First part",
+        source: {
+          ...event,
+          id: "platform-part",
+          senderId: "U_JUNE",
+          messageId: "1790424122.8",
+        },
+      },
+      ...input.history,
+      {
+        role: "assistant",
+        content: "Earlier turn finished late",
+        source: {
+          ...event,
+          id: "late:reply",
+          senderId: "",
+          messageId: "1790424124.1",
+        },
+      },
+    ],
+  });
+  const rendered = request.messages.map(({ content }) => JSON.parse(content));
+  expect(rendered.map(({ text }) => text)).toEqual([
+    receipt.content,
+    "First part",
+    reaction.content,
+    "Earlier turn finished late",
+    event.text,
+  ]);
+  expect(rendered[0].kind).toBe("delivery_summary");
+  expect(rendered[1].kind).toBeUndefined();
+  expect(rendered[2].kind).toBe("delivery_summary");
+  expect(rendered.at(-1).source.eventId).toBe(event.id);
+});
+
+it.for([undefined, "interaction"] as const)(
+  "does not make the original request current in a %s completion without wakeup metadata",
+  (agentRole) => {
+    const history: ConversationMessage[] = [
+      ...input.history,
+      {
+        role: "assistant",
+        content: "Working",
+        source: {
+          ...event,
+          id: "ack",
+          senderId: "",
+          messageId: "1790424124.1",
+        },
+      },
+      {
+        role: "user",
+        content: "Use the corrected brief",
+        source: { ...event, id: "correction", messageId: "1790424125.1" },
+      },
+    ];
+    const request = buildModelRequest({
+      ...input,
+      liveInput: false,
+      agentRole,
+      history,
+    });
+    expect(
+      request.messages.map(({ content }) => JSON.parse(content).text),
+    ).toEqual([event.text, "Working", "Use the corrected brief"]);
+  },
+);
 
 it.for([
   "base",
@@ -128,6 +264,9 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     );
     expect(request.system).toContain(
       "Failed or truncated context reads are not complete history",
+    );
+    expect(request.system).toContain(
+      "delivery_summary is a local receipt, not an additional Slack post",
     );
     expect(request.system).toContain(
       "unmentioned top-level channel follow-ups for 30 minutes",

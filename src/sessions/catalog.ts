@@ -550,6 +550,7 @@ export function createSessionCatalog(
       request: buildModelRequest({
         continuity,
         event: source,
+        liveInput: input.type === "event",
         owner: deps.owner,
         now: new Date(),
         globalPersonality,

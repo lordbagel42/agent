@@ -3409,20 +3409,22 @@ export function createJuneRegistry(deps: Dependencies) {
                                 }));
                                 const learnedPatterns =
                                   deps.memory.store.reviewedPatterns(audience);
+                                // Timestamp ordering can select entries outside the raw
+                                // tail. Track every candidate's deletion dependencies.
                                 const sourceIds = [
                                   ...new Set([
                                     ...(version >= 3
                                       ? (step.state.memoryContexts?.[eventId]
                                           ?.sourceIds ?? [])
                                       : []),
-                                    ...readHistory(step.state)
-                                      .slice(-40)
-                                      .flatMap((entry) => [
+                                    ...readHistory(step.state).flatMap(
+                                      (entry) => [
                                         ...(entry.sourceId
                                           ? [entry.sourceId]
                                           : []),
                                         ...(entry.context?.sourceIds ?? []),
-                                      ]),
+                                      ],
+                                    ),
                                     ...retrieved.sources.map(
                                       (source) => source.id,
                                     ),
@@ -3665,13 +3667,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                   ...(!enriched && initiating
                                     ? [initiating]
                                     : []),
-                                ]
-                                  .slice(-40)
-                                  .map(({ role, content, source }) => ({
-                                    role,
-                                    content,
-                                    ...(source ? { source } : {}),
-                                  }));
+                                ].map(({ role, content, source }) => ({
+                                  role,
+                                  content,
+                                  ...(source ? { source } : {}),
+                                }));
                                 if (deps.memory) {
                                   step.state.memoryContexts ??= {};
                                   step.state.memoryContexts[eventId] ??= {
@@ -3684,13 +3684,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                   reference.contextSourceIds = [
                                     ...new Set([
                                       ...(reference.contextSourceIds ?? []),
-                                      ...readHistory(step.state)
-                                        .slice(-40)
-                                        .flatMap(
-                                          (entry) =>
-                                            entry.context?.contextSourceIds ??
-                                            [],
-                                        ),
+                                      ...readHistory(step.state).flatMap(
+                                        (entry) =>
+                                          entry.context?.contextSourceIds ?? [],
+                                      ),
                                       ...sameSurface.flatMap(
                                         ({ source, content }) => {
                                           if (!source) return [];
@@ -3763,6 +3760,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 };
                                 modelRequest = buildModelRequest({
                                   continuity,
+                                  liveInput: body.type === "event",
                                   ...(plan.workerCapabilities && !decisionTurn
                                     ? { agentRole: "interaction" as const }
                                     : {}),

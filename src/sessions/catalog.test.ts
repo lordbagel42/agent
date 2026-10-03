@@ -224,7 +224,31 @@ it.for([
       expect(turn.control).toBeUndefined();
       return;
     }
-    const prepared = await catalog.prepare(host, turn.assignment, []);
+    const prepared = await catalog.prepare(host, turn.assignment, [
+      {
+        role: "user",
+        content: source.text,
+        source,
+        reference: { sourceIds: [], personality: "test" },
+      },
+      {
+        role: "assistant",
+        content: "Acknowledged earlier request",
+        source: {
+          ...source,
+          id: "ack",
+          senderId: "",
+          messageId: "1800000001.000001",
+        },
+        reference: { sourceIds: [], personality: "test" },
+      },
+      {
+        role: "user",
+        content: "A newer correction",
+        source: { ...source, id: "correction", messageId: "1800000002.000001" },
+        reference: { sourceIds: [], personality: "test" },
+      },
+    ]);
     if (scenario === "silent_execution_result") {
       if (!("control" in prepared)) throw new Error("Expected silent receipt");
       expect(host.publishNative).toHaveBeenCalledWith(
@@ -257,6 +281,16 @@ it.for([
       return;
     }
     if ("control" in prepared) throw new Error("Unexpected suppression");
+    // Notifications reuse source for routing, never as a newly arrived request.
+    expect(
+      prepared.request.messages
+        .slice(0, 3)
+        .map(({ content }) => JSON.parse(content).text),
+    ).toEqual([
+      source.text,
+      "Acknowledged earlier request",
+      "A newer correction",
+    ]);
     expect([
       ...prepared.reference.sourceIds,
       ...(prepared.reference.contextSourceIds ?? []),

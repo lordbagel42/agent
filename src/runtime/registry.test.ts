@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,8 +25,9 @@ import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { UsageLedger } from "../models/usage.js";
 import { ConversationContinuity } from "./continuity.js";
+import { conversationInputId } from "./inbox.js";
 import { createLifecycle } from "./lifecycle.js";
-import { createJuneRegistry } from "./registry.js";
+import { type ConversationState, createJuneRegistry } from "./registry.js";
 
 const owner = {
   id: "raygen",
@@ -77,6 +78,89 @@ function transport(
 }
 
 describe("Rivet conversation workflow", () => {
+  it("tracks dependencies of timestamp-ordered history outside the raw tail", async (t) => {
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    t.onTestFinished(() => store.close());
+    const audience = JSON.stringify(["private", owner.id]);
+    for (const id of ["original", "inherited"])
+      store.appendSource({
+        id,
+        audiences: [audience],
+        platform: "slack",
+        account: "T1",
+        conversation: "D1",
+        author: "U1",
+        observedAt: 1,
+        sourceUrl: `https://fixture.slack.com/archives/D1/${id}`,
+        text: "Unrelated retained evidence",
+      });
+    const reference = {
+      sourceIds: [] as string[],
+      personality: createHash("sha256").update("{}").digest("hex"),
+      deletionTracked: true as const,
+    };
+    const history: ConversationState["history"] = [
+      {
+        id: "newer",
+        role: "user",
+        content: "Chronologically newer evidence",
+        source: { ...message, id: "newer", messageId: "1800000050.000000" },
+        sourceId: "original",
+        context: {
+          ...reference,
+          sourceIds: ["inherited"],
+          contextSourceIds: ["platform-dependency"],
+        },
+      },
+      ...Array.from({ length: 44 }, (_, index) => ({
+        id: `delayed-${index}`,
+        role: "user" as const,
+        content: `Delayed message ${index}`,
+        source: {
+          ...message,
+          id: `delayed-${index}`,
+          messageId: `${1800000000 + index}.000000`,
+        },
+        context: reference,
+      })),
+    ];
+    const requests: ModelRequest[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      memory: { store, source: () => undefined },
+      channels: { slack: transport("slack", []) },
+      model: {
+        async reply(request) {
+          requests.push(request);
+          return { text: "" };
+        },
+      },
+    });
+    const actorConfig = registry.config.use.conversation.config;
+    if (!("state" in actorConfig)) throw new Error("Expected initial state");
+    Object.assign(actorConfig.state, { history });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    const event = {
+      ...message,
+      id: "current",
+      messageId: "1800000060.000000",
+      text: "Continue",
+    };
+    await june.receive(event);
+    const eventId = conversationInputId({ type: "event", event });
+    await expect.poll(() => requests.length, { timeout: 15000 }).toBe(1);
+    expect(requests[0]?.messages).toHaveLength(40);
+    expect(conversationText(requests[0])?.at(-2)?.content).toBe(
+      "Chronologically newer evidence",
+    );
+    const context = (await june.snapshot()).memoryContexts?.[eventId];
+    expect(context?.sourceIds).toEqual(
+      expect.arrayContaining(["original", "inherited"]),
+    );
+    expect(context?.contextSourceIds).toContain("platform-dependency");
+  });
+
   it("keeps directed activity bodies out of later continuity prompts", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];

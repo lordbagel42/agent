@@ -120,6 +120,8 @@ export interface PromptInput {
   /** Overrides capabilities.agentRole when supplied. */
   agentRole?: ModelRequest["agentRole"];
   event: MessageEvent;
+  /** A fresh inbound message, not the source reused for an automated completion. */
+  liveInput?: boolean;
   /** Host-generated trigger; event above is the original registration's scope. */
   wakeup?: WakeupContext;
   /** Already audience-scoped, ordered history, including the current input once.
@@ -177,6 +179,67 @@ function thread(source: Source): string | undefined {
   return source.metadata ? source.metadata.threadTs : source.address.threadId;
 }
 
+function slackTimeline(
+  history: readonly ConversationMessage[],
+  event: MessageEvent,
+): ConversationMessage[] {
+  const result: ConversationMessage[] = [];
+  const run = new Map<string, { entry: ConversationMessage; ts: string }>();
+  const flush = () => {
+    result.push(
+      ...[...run.values()]
+        .sort((a, b) => {
+          const current = (entry: ConversationMessage) =>
+            entry.role === "user" && entry.source?.id === event.id;
+          if (current(a.entry) !== current(b.entry))
+            return current(a.entry) ? 1 : -1;
+          // Compare decimal strings without rounding Slack's opaque IDs.
+          const [as = "", af = ""] = a.ts.split(".");
+          const [bs = "", bf = ""] = b.ts.split(".");
+          return (
+            as
+              .padStart(Math.max(as.length, bs.length), "0")
+              .localeCompare(
+                bs.padStart(Math.max(as.length, bs.length), "0"),
+              ) ||
+            af
+              .padEnd(Math.max(af.length, bf.length), "0")
+              .localeCompare(bf.padEnd(Math.max(af.length, bf.length), "0"))
+          );
+        })
+        .map(({ entry }) => entry),
+    );
+    run.clear();
+  };
+  for (const entry of history) {
+    const source = entry.source;
+    const ts =
+      source && /^\d+\.\d+$/.test(source.messageId)
+        ? source.messageId
+        : source && entry.role === "assistant" && !source.senderId
+          ? `${Math.floor(source.occurredAt / 1000)}.${String(source.occurredAt % 1000).padStart(3, "0")}`
+          : undefined;
+    if (!source || !sameConversation(source, event) || !ts) {
+      // Do not reorder linked-platform history, summaries or tool exchanges.
+      flush();
+      result.push(entry);
+      continue;
+    }
+    // Content is part of the identity: a multipart/uncertain delivery summary
+    // must survive even when its first sent part also appears in Slack context.
+    const key = JSON.stringify([
+      source.messageId || source.id,
+      entry.role,
+      entry.role === "user" ? source.senderId : "",
+      entry.content,
+    ]);
+    if (!run.get(key)?.entry.source?.senderId || source.senderId)
+      run.set(key, { entry, ts });
+  }
+  flush();
+  return result;
+}
+
 function describeSource(source: Source, owner: Owner) {
   const { address, metadata } = source;
   return {
@@ -216,6 +279,7 @@ function describeModel(model: PromptModel | undefined) {
 export function buildModelRequest({
   agentRole: inputAgentRole,
   event,
+  liveInput = false,
   history,
   now,
   owner,
@@ -386,59 +450,70 @@ export function buildModelRequest({
     isOwner(event, owner) &&
     capabilities.repositoryAvailable === true;
 
-  const messages = history
-    .filter(({ role, source, content }) => {
-      if (content.includes(RIVET_REPLY_PREFIX)) return false;
-      if (source?.address.channel === "slack" && content.startsWith("##"))
-        return false;
-      if (!source) return privateTurn;
-      if (privateTurn) {
-        return (
-          isPrivate(source) &&
-          (isOwner(source, owner) ||
-            (role === "assistant" &&
-              (sameConversation(source, event) ||
-                // A linked DM can retain June's output without inventing a bot
-                // ID, but only with verified owner provenance on that surface.
-                history.some(
-                  ({ role, source: origin }) =>
-                    role === "user" &&
-                    origin &&
-                    isPrivate(origin) &&
-                    isOwner(origin, owner) &&
-                    sameConversation(source, origin),
-                ))))
-        );
-      }
-      if (guest && event.direct) {
-        return (
-          source.direct &&
-          sameConversation(source, event) &&
-          (source.senderId === event.senderId || role === "assistant") &&
-          thread(source) === thread(event)
-        );
-      }
-      if (
-        source.direct ||
-        source.metadata?.channelType === "im" ||
-        !sameConversation(source, event)
-      )
-        return false;
-      const currentThread = thread(event);
+  const visibleHistory = history.filter(({ role, source, content }) => {
+    if (content.includes(RIVET_REPLY_PREFIX)) return false;
+    if (source?.address.channel === "slack" && content.startsWith("##"))
+      return false;
+    if (!source) return privateTurn;
+    if (privateTurn) {
       return (
-        thread(source) === currentThread ||
-        (currentThread !== undefined &&
-          (source.messageId === currentThread ||
-            thread(source) === undefined ||
-            thread(source) === source.messageId))
+        isPrivate(source) &&
+        (isOwner(source, owner) ||
+          (role === "assistant" &&
+            (sameConversation(source, event) ||
+              // A linked DM can retain June's output without inventing a bot
+              // ID, but only with verified owner provenance on that surface.
+              history.some(
+                ({ role, source: origin }) =>
+                  role === "user" &&
+                  origin &&
+                  isPrivate(origin) &&
+                  isOwner(origin, owner) &&
+                  sameConversation(source, origin),
+              ))))
       );
-    })
+    }
+    if (guest && event.direct) {
+      return (
+        source.direct &&
+        sameConversation(source, event) &&
+        (source.senderId === event.senderId || role === "assistant") &&
+        thread(source) === thread(event)
+      );
+    }
+    if (
+      source.direct ||
+      source.metadata?.channelType === "im" ||
+      !sameConversation(source, event)
+    )
+      return false;
+    const currentThread = thread(event);
+    return (
+      thread(source) === currentThread ||
+      (currentThread !== undefined &&
+        (source.messageId === currentThread ||
+          thread(source) === undefined ||
+          thread(source) === source.messageId))
+    );
+  });
+  const messages = (
+    liveInput &&
+    event.address.channel === "slack" &&
+    !wakeup &&
+    agentRole !== "execution"
+      ? slackTimeline(visibleHistory, event)
+      : visibleHistory
+  )
     .slice(-40)
     .map(
       ({ role, content, source }): ConversationMessage => ({
         role,
         content: JSON.stringify({
           speaker: role === "assistant" ? "June" : undefined,
+          kind:
+            role === "assistant" && source?.senderId === ""
+              ? "delivery_summary"
+              : undefined,
           source: source ? describeSource(source, owner) : null,
           text: content,
         }),
@@ -1162,6 +1237,8 @@ The private dashboard automates mechanical sign-in steps, not consent. A June si
   // Survive role-specific replacement and apply to automated/completion turns,
   // after the internal operating knowledge that must not become conversation.
   request.system += `\n\n${TASK_OWNERSHIP_HELP}`;
+  request.system +=
+    "\nIn live Slack conversations, the host orders same-conversation messages by their exact Slack timestamps and removes identical local/platform copies before applying the history limit; the current input stays last. Cross-platform history and unscoped summaries remain separate. A message with kind delivery_summary is a local receipt, not an additional Slack post: it may describe several sends, a reaction or an uncertain delivery. Do not count it as another reply or repeat its effects. Use the current event and speaker/thread metadata to resolve who is being addressed, not the number of assistant entries. This does not fetch more history or prove that supplied context is complete, and adds no authority to workers or automated events.";
   // Keep the output decision after role-specific and operational instructions.
   request.system +=
     request.turnTakingAvailable &&
