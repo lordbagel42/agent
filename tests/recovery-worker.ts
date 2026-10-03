@@ -180,6 +180,17 @@ const registry = createJuneRegistry({
     },
   },
   coding,
+  research: process.env.FIXTURE_RESEARCH
+    ? {
+        pollMs: 20,
+        model: {
+          async reply() {
+            process.send?.({ kind: "research-batch" });
+            return new Promise<never>(() => {});
+          },
+        },
+      }
+    : undefined,
 });
 // Pause after a real durable admission save, before queue publication. The next
 // process must recover that input without relying on a repeated webhook.

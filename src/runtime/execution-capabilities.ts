@@ -232,6 +232,8 @@ export async function runExecutionCapability(
       (reply.apps && !["list", "inspect"].includes(reply.apps.action)) ||
       (reply.workflow &&
         !["help", "list", "inspect"].includes(reply.workflow.action)) ||
+      (reply.research &&
+        !["list", "inspect"].includes(reply.research.action)) ||
       reply.jury ||
       reply.e2b ||
       reply.browserTask ||

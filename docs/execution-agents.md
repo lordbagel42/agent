@@ -153,6 +153,78 @@ install, push or deploy anything, or enable dormant coding/reflection integratio
   rules; clearing live state is not secure erasure. Worker history is not encrypted
   by the optional evidence store.
 
+## Private ongoing public research
+
+An explicit ongoing-research request in the verified owner's one-to-one Slack DM
+can create a durable research session. An ordinary one-off research question does
+not authorize this loop. June delegates management to an execution worker, which
+can emit `research` with `start`, `list`, `inspect`, `pause`, `resume`, or `stop`.
+Shared conversations, guests, automated events, completion turns and synthesis
+cannot manage or inspect sessions. Generic instructions reach all prompt paths;
+private goals and findings do not.
+
+```json
+{"text":"","research":{"action":"start","id":null,"goal":"Find official public museum opening hours in the requested area.","connections":["<approved-public-search-connection-id>"],"intervalMinutes":null,"dailyBatches":null,"offset":0}}
+```
+
+Only exact selected connection IDs and already owner-approved `read` contracts
+are available to each batch. Tavily or another public search/extraction MCP can
+use this existing connection mechanism; this feature does not enroll providers,
+grant permissions, or claim a particular live connection exists. Built-in Slack,
+GitHub and Amp connections and their known endpoint aliases are excluded. Owner
+read classification is trusted, not proof an arbitrary remote tool is effect-free
+or public. Configured direct public web search is also available. No messages,
+outreach, writes, private-account browsing, code execution or approval proposals
+are available in the loop.
+
+`start` returns a stable ID. Non-start commands set `goal:null`, `connections:[]`,
+`intervalMinutes:null`, `dailyBatches:null`; they cannot change the saved scope.
+`list` uses `id:null`; the other commands use the returned ID. Start at offset zero
+and follow `nextOffset`. List pages contain five goal previews; inspect pages
+contain a checkpoint and up to ten findings within 8,000 JSON characters.
+The host owns continuation: do not add a duplicate wakeup, cron job or polling
+worker. There are **no background messages or completion notifications**; ask
+June privately for status/results. A management receipt proves only admission,
+not useful research or delivery.
+
+- Host wiring follows `executionEnabled` outside setup mode and uses
+  `deepModel ?? model`. Publication alone does not activate the running process.
+  Disabling pauses existing sessions without discarding their state; re-enabling
+  does not resume them automatically.
+- Defaults are a five-minute interval and 48 attempted batches per 24-hour quota
+  window, starting at admission and reset when a due batch sees an expired window.
+  Pause/resume does not reset the quota. Empty batches exponentially back off up
+  to six hours, never shortening a longer configured interval. Each batch uses
+  at most three MCP reads and one direct search, with a three-minute abort signal.
+- Persist a started marker before provider IO. Keep priority/lifecycle admission
+  until inference settlement. Interrupted, uncertain or invalid-result batches
+  require review; startup recovery does not replay them. Only settled paused
+  sessions can resume; stopped/completed sessions cannot. Pause/stop suppress late
+  findings, request abort and prevent future batches, but cannot undo remote IO.
+  Unknown IO keeps its priority slot and fails process lifecycle readiness.
+  Content-free session identities keep durable drain holds discoverable after
+  restart, disable and forgetting. There is no agent-callable reconciliation or
+  automatic hold release; an operator must investigate unresolved work before
+  deployment recovery. Neither `stop` nor `resume` attests provider retirement.
+- Retain a bounded checkpoint and structured findings: title, detail, optional
+  publicly listed professional email, source URL and observation time. Exact
+  URL/email tokens must occur in a current tool response. This confirms observed
+  text, **not** attribution, factual accuracy, public visibility or deliverability;
+  the model must cite the matching source and express uncertainty. No guessed
+  addresses. Deduplicate email case-insensitively, otherwise by URL/title.
+- Raw MCP responses are transient. Stored findings are capped at 180,000 JSON
+  bytes per session; the library retains at most 32 sessions within 120,000 bytes.
+  Storage exhaustion pauses work. Session state is private Rivet state, not
+  encrypted by the evidence store. Existing journal/backup retention still applies.
+  Source deletion or changed owner authority revokes access and continuation;
+  forgetting clears live session data. Stop is not deletion. Inspected results
+  keep their source dependencies through worker synthesis and forgetting.
+
+Disposable-engine tests cover private delegation, repeated batches, quotas,
+deduplication, paging, cancellation/settlement, deletion and hard-kill recovery.
+MCP transport fixtures cover selected-read enforcement and revocation. These
+checks do not establish live provider quality, configuration or deployment.
+
 ## Session integration contract
 
 `ExecutionContext` carries separate stable `scopeKey`/`audience`, originating

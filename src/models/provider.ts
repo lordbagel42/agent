@@ -35,6 +35,7 @@ import {
   repositoryQuestionSchema,
   repositoryReadSchema,
 } from "../repository/contracts.js";
+import { RESEARCH_HELP, researchCommandSchema } from "../research/contracts.js";
 import {
   globalStyleSchema,
   personalityPreviewSchema,
@@ -374,6 +375,7 @@ const companionReplySchema = z.strictObject({
   jury: juryRequestSchema.optional(),
   e2b: e2bRequestSchema.optional(),
   browserTask: browserCommandSchema.optional(),
+  research: researchCommandSchema.optional(),
   webEmbed: webEmbedSchema.optional(),
   skillCodingProposal: z
     .strictObject({
@@ -453,6 +455,7 @@ export type ReplyCapabilities = Pick<
   | "juryAvailable"
   | "e2bAvailable"
   | "browserTaskAvailable"
+  | "researchAvailable"
   | "webEmbedAvailable"
   | "skillCodingProposalAvailable"
   | "reflectionMemoryAvailable"
@@ -590,6 +593,7 @@ function legacyReplyJsonSchema(
     juryAvailable,
     e2bAvailable,
     browserTaskAvailable,
+    researchAvailable,
     webEmbedAvailable,
     skillCodingProposalAvailable,
     reflectionMemoryAvailable,
@@ -1124,6 +1128,62 @@ function legacyReplyJsonSchema(
                 { type: "null" },
               ],
               description: BROWSER_HELP,
+            },
+          }
+        : {}),
+      ...(researchAvailable
+        ? {
+            research: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                action: {
+                  type: "string",
+                  enum: ["start", "list", "inspect", "pause", "resume", "stop"],
+                },
+                id: {
+                  type: ["string", "null"],
+                  pattern: "^[a-f0-9]{64}$",
+                  description:
+                    "Null for start/list; otherwise an exact returned session ID.",
+                },
+                goal: {
+                  type: ["string", "null"],
+                  description:
+                    "Trimmed public research goal, 1–3000 characters for start; null otherwise.",
+                },
+                connections: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "At most eight distinct exact connection IDs, each 1–256 characters. Empty for non-start actions.",
+                },
+                intervalMinutes: {
+                  type: ["integer", "null"],
+                  description:
+                    "1–1440 for start; null defaults to five minutes. Must be null otherwise.",
+                },
+                dailyBatches: {
+                  type: ["integer", "null"],
+                  description:
+                    "1–200 for start; null defaults to 48 per day. Must be null otherwise.",
+                },
+                offset: {
+                  type: "integer",
+                  description:
+                    "0–1000000. Start at 0; use returned nextOffset to page list/inspect.",
+                },
+              },
+              required: [
+                "action",
+                "id",
+                "goal",
+                "connections",
+                "intervalMinutes",
+                "dailyBatches",
+                "offset",
+              ],
+              description: RESEARCH_HELP,
             },
           }
         : {}),
@@ -1998,6 +2058,7 @@ function legacyReplyJsonSchema(
       ...(juryAvailable ? ["jury"] : []),
       ...(e2bAvailable ? ["e2b"] : []),
       ...(browserTaskAvailable ? ["browserTask"] : []),
+      ...(researchAvailable ? ["research"] : []),
       ...(webEmbedAvailable ? ["webEmbed"] : []),
       ...(skillCodingProposalAvailable && permittedWorkspaces.length > 0
         ? ["skillCodingProposal"]
@@ -2203,6 +2264,7 @@ export function parseReply(
     juryAvailable,
     e2bAvailable,
     browserTaskAvailable,
+    researchAvailable,
     webEmbedAvailable,
     skillCodingProposalAvailable,
     reflectionMemoryAvailable,
@@ -2290,6 +2352,7 @@ export function parseReply(
     "jury",
     "e2b",
     "browserTask",
+    "research",
     "webEmbed",
     "skillCodingProposal",
     "reflectionMemory",
@@ -2391,6 +2454,7 @@ export function parseReply(
     (reply.jury !== undefined && !juryAvailable) ||
     (reply.e2b !== undefined && !e2bAvailable) ||
     (reply.browserTask !== undefined && !browserTaskAvailable) ||
+    (reply.research !== undefined && !researchAvailable) ||
     (reply.webEmbed !== undefined && !webEmbedAvailable) ||
     (reply.skillCodingProposal !== undefined &&
       !skillCodingProposalAvailable) ||
@@ -2460,6 +2524,7 @@ export function parseReply(
     Number(reply.jury !== undefined) +
     Number(reply.e2b !== undefined) +
     Number(reply.browserTask !== undefined) +
+    Number(reply.research !== undefined) +
     Number(reply.webEmbed !== undefined) +
     Number(reply.skillCodingProposal !== undefined) +
     Number(reply.reflectionMemory !== undefined) +
@@ -2524,6 +2589,7 @@ export function parseReply(
       reply.jury !== undefined ||
       reply.e2b !== undefined ||
       reply.browserTask !== undefined ||
+      reply.research !== undefined ||
       reply.webEmbed !== undefined ||
       reply.skillCodingProposal !== undefined ||
       reply.reflectionMemory !== undefined ||

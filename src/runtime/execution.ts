@@ -758,6 +758,20 @@ export function createExecutionActor(
                                             .manage(event, id, value, revision),
                                       }
                                     : undefined,
+                                  research: deps.research
+                                    ? {
+                                        manage: (event, id, value, revision) =>
+                                          client.researchLibrary
+                                            .getOrCreate([deps.owner.id])
+                                            .manage(
+                                              event,
+                                              id,
+                                              value,
+                                              revision,
+                                              [...step.state.evidenceIds],
+                                            ),
+                                      }
+                                    : undefined,
                                   personality: client.personality.getOrCreate([
                                     deps.owner.id,
                                   ]),

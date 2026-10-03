@@ -13,6 +13,141 @@ import type { JuneRegistry } from "../src/runtime/registry.js";
 import { sessionActorKey } from "../src/sessions/state.js";
 import { freeEnginePort, stopTestEngine } from "./rivet.js";
 
+it("recovers private research after a hard kill without replaying an interrupted batch", {
+  timeout: 90000,
+}, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "june-research-crash-"));
+  const port = await freeEnginePort();
+  const children: ChildProcess[] = [];
+  const messages: string[] = [];
+  let output = "";
+  const client = createClient<JuneRegistry>({
+    endpoint: `http://127.0.0.1:${port}`,
+    token: "default",
+    namespace: "default",
+  });
+  t.onTestFinished(async () => {
+    if (t.task.result?.state === "fail") console.error(output);
+    await client.dispose();
+    for (const child of children) {
+      if (child.exitCode !== null || child.signalCode !== null) continue;
+      const exited = once(child, "exit");
+      child.kill("SIGTERM");
+      await exited;
+    }
+    await stopTestEngine(directory, port);
+    await rm(directory, { recursive: true, force: true });
+  });
+  const startHost = (phase: string) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "tests/recovery-worker.ts"],
+      {
+        env: {
+          PATH: process.env.PATH,
+          HOME: directory,
+          RIVETKIT_STORAGE_PATH: directory,
+          RIVET_RUN_ENGINE_PORT: String(port),
+          FIXTURE_PHASE: phase,
+          FIXTURE_RESEARCH: "1",
+        },
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      },
+    );
+    children.push(child);
+    child.on("message", (message) =>
+      messages.push((message as { kind: string }).kind),
+    );
+    child.stdout?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    return child;
+  };
+  const first = startHost("interrupt");
+  await expect
+    .poll(() => messages.filter((kind) => kind === "ready").length, {
+      timeout: 15000,
+    })
+    .toBe(1);
+  const source: MessageEvent = {
+    type: "message",
+    id: "research",
+    messageId: "1.001",
+    occurredAt: Date.now(),
+    senderId: "U1",
+    direct: true,
+    metadata: { channelType: "im" },
+    address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+    text: "Continue public museum research.",
+  };
+  const command = {
+    action: "start",
+    id: null,
+    goal: "Find official public museum opening hours.",
+    connections: [],
+    intervalMinutes: 1,
+    dailyBatches: 2,
+    offset: 0,
+  };
+  const library = client.researchLibrary.getOrCreate(["fixture"]);
+  const { id } = JSON.parse(await library.manage(source, "once", command, 0));
+  await expect
+    .poll(() => messages.filter((kind) => kind === "research-batch").length)
+    .toBe(1);
+  const exited = once(first, "exit");
+  first.kill("SIGKILL");
+  await exited;
+  startHost("recover");
+  await expect
+    .poll(() => messages.filter((kind) => kind === "ready").length, {
+      timeout: 15000,
+    })
+    .toBe(2);
+  await expect
+    .poll(
+      async () => {
+        await library.recover();
+        return true;
+      },
+      { timeout: 30000 },
+    )
+    .toBe(true);
+  const session = client.researchSession.getOrCreate(["fixture", id]);
+  await expect
+    .poll(async () => (await session.inspect()).status, { timeout: 15000 })
+    .toBe("needs_review");
+  expect(await session.inspect()).toMatchObject({
+    batches: 0,
+    windowUsed: 1,
+    reason: "interrupted_batch",
+    findings: [],
+  });
+  expect(await library.isSettled()).toBe(false);
+  await library.manage(source, "once", command, 0);
+  expect(messages.filter((kind) => kind === "research-batch")).toHaveLength(1);
+  await expect(
+    library.manage(
+      source,
+      "resume",
+      {
+        ...command,
+        action: "resume",
+        id,
+        goal: null,
+        intervalMinutes: null,
+        dailyBatches: null,
+      },
+      0,
+    ),
+  ).rejects.toThrow();
+  await library.invalidate(1);
+  await library.recover();
+  expect(await library.isSettled()).toBe(false);
+});
+
 it.for(["before-session", "after-session"])(
   "recovers a hard-killed host (%s) without repeating an ambiguous send or native launch",
   { timeout: 90_000 },

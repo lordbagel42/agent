@@ -720,6 +720,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                               mcpAvailable: false,
                               mcpPermissionAvailable: false,
                               mcpProposalAvailable: false,
+                              researchAvailable: false,
                               webSearchAvailable: false,
                               usageStage: "synthesis",
                               system:

@@ -32,6 +32,11 @@ import type { JevObserver, JevQuestion } from "../models/jev.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type { createJuryTool } from "../reflection/jury.js";
 import {
+  createResearchLibraryActor,
+  createResearchSessionActor,
+  type ResearchDependencies,
+} from "../research/actors.js";
+import {
   createSessionCatalog,
   isControl,
   type SessionCatalogState,
@@ -181,6 +186,7 @@ export interface Dependencies {
   execution?: ExecutionDependencies;
   wakeups?: WakeupDependencies;
   workflows?: WorkflowDependencies;
+  research?: ResearchDependencies;
   models?: PromptInput["models"];
   webSearch?: WebSearchProvider;
   emojiSearch?: EmojiSearchProvider;
@@ -1708,6 +1714,10 @@ export function createJuneRegistry(deps: Dependencies) {
             .client<JuneClientRegistry>()
             .workflowLibrary.getOrCreate([deps.owner.id])
             .invalidate(cleanup.beforeDeletionRevision);
+        await c
+          .client<JuneClientRegistry>()
+          .researchLibrary.getOrCreate([deps.owner.id])
+          .invalidate(cleanup.beforeDeletionRevision);
         c.state.forgetCleanups[key] = { completed: true };
         await c.vars.persist();
       },
@@ -2283,6 +2293,7 @@ export function createJuneRegistry(deps: Dependencies) {
               wakeups?: boolean;
               jev?: boolean;
               workflow?: boolean;
+              research?: boolean;
               jury?: boolean;
               e2b?: boolean;
               webEmbedOrigins?: string[];
@@ -2383,6 +2394,11 @@ export function createJuneRegistry(deps: Dependencies) {
                     ...(version >= 10
                       ? { workflow: scope.private && !!deps.workflows }
                       : {}),
+                    research:
+                      body.type === "event" &&
+                      event.type === "message" &&
+                      isOwnerRivetDm(event, deps.owner) &&
+                      !!deps.research,
                     ...(version >= 12
                       ? { apps: scope.private && !!deps.apps }
                       : {}),
@@ -3834,6 +3850,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                       scope.private &&
                                       !!plan.workflow &&
                                       !!deps.workflows,
+                                    researchAvailable:
+                                      body.type === "event" &&
+                                      phase !== "synthesis" &&
+                                      !!plan.research &&
+                                      !!deps.research,
                                     workflowTools: deps.workflows
                                       ? Object.entries(
                                           deps.workflows.tools,
@@ -4540,6 +4561,35 @@ export function createJuneRegistry(deps: Dependencies) {
                                                   id,
                                                   request,
                                                   revision,
+                                                ),
+                                          }
+                                        : undefined,
+                                      research: deps.research
+                                        ? {
+                                            manage: (
+                                              origin,
+                                              id,
+                                              request,
+                                              revision,
+                                            ) =>
+                                              step
+                                                .client<JuneClientRegistry>()
+                                                .researchLibrary.getOrCreate([
+                                                  deps.owner.id,
+                                                ])
+                                                .manage(
+                                                  origin,
+                                                  id,
+                                                  request,
+                                                  revision,
+                                                  [
+                                                    ...(step.state
+                                                      .memoryContexts?.[eventId]
+                                                      ?.sourceIds ?? []),
+                                                    ...(step.state
+                                                      .memoryContexts?.[eventId]
+                                                      ?.contextSourceIds ?? []),
+                                                  ],
                                                 ),
                                           }
                                         : undefined,
@@ -6500,6 +6550,8 @@ export function createJuneRegistry(deps: Dependencies) {
       execution: createExecutionActor(deps, priority),
       workflowRun: createWorkflowRunActor(deps),
       workflowLibrary: createWorkflowLibraryActor(deps),
+      researchSession: createResearchSessionActor(deps, priority),
+      researchLibrary: createResearchLibraryActor(deps),
       ...(deps.wakeups
         ? {
             wakeups: createWakeupActor({

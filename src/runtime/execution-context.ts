@@ -91,6 +91,7 @@ export function executionCapabilities(
     juryAvailable: privateTurn && !!deps.memory && !!deps.jury,
     e2bAvailable: privateTurn && deps.e2b?.available === true,
     browserTaskAvailable: privateTurn && !!deps.browserCompanion,
+    researchAvailable: isOwnerRivetDm(event, deps.owner) && !!deps.research,
     webEmbedAvailable:
       privateTurn &&
       event.address.channel === "slack" &&

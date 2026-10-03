@@ -424,6 +424,11 @@ async function main() {
     for (const manager of Object.values(isolation)) {
       if (!(await manager.isSettled())) return false;
     }
+    // Research holds survive disabling the integration and forgetting payloads.
+    if (
+      !(await client.researchLibrary.getOrCreate([config.owner.id]).isSettled())
+    )
+      return false;
     // A recovered reflection actor can be locally idle with unresolved work.
     // This read never clears its durable holds or enables automatic deployment.
     return reflection
@@ -1269,6 +1274,14 @@ async function main() {
               : (deepModel ?? model),
           }
         : undefined,
+    research:
+      config.executionEnabled && !config.setupMode
+        ? {
+            model: connections
+              ? connections.wrap(deepModel ?? model)
+              : (deepModel ?? model),
+          }
+        : undefined,
     workflows: config.setupMode
       ? undefined
       : {
@@ -1854,6 +1867,9 @@ async function main() {
         try {
           if ((await registry.routes.health()).ok) {
             await client.workflowLibrary
+              .getOrCreate([config.owner.id])
+              .recover();
+            await client.researchLibrary
               .getOrCreate([config.owner.id])
               .recover();
             break;

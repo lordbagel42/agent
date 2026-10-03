@@ -281,6 +281,8 @@ export interface CompanionReply {
   e2b?: import("../tools/e2b.js").E2BRequest;
   /** Owner-private browser work, owned by the durable execution worker. */
   browserTask?: import("../browser/contracts.js").BrowserCommand;
+  /** Owner Slack IM management of host-owned ongoing public research. */
+  research?: import("../research/contracts.js").ResearchCommand;
   webEmbed?: import("./web-embed.js").WebEmbed;
   /** Owner-authenticated release tracking; never activation or approval authority. */
   release?: { action: "inspect"; revision: string | null };
@@ -451,6 +453,11 @@ export interface ModelRequest {
   mcpPermissionAvailable?: boolean;
   /** Historical receipt reads remain available independently of enabled tools. */
   mcpProposalAvailable?: boolean;
+  /** Host-only read ceiling for MCP wrappers; never serialize into prompts.
+   * Selected connections do not grant tools or bypass current permissions. */
+  mcpReadScope?: { connections: string[] };
+  /** Host-only transient MCP observation; never serialize into prompts/journals. */
+  onMcpObservation?: (text: string) => void;
   latencyAvailable?: boolean;
   telemetryAvailable?: boolean;
   analyticsAvailable?: boolean;
@@ -466,6 +473,7 @@ export interface ModelRequest {
   juryAvailable?: boolean;
   e2bAvailable?: boolean;
   browserTaskAvailable?: boolean;
+  researchAvailable?: boolean;
   webEmbedAvailable?: boolean;
   webEmbedOrigins?: readonly string[];
   skillCodingProposalAvailable?: boolean;

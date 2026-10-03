@@ -570,6 +570,9 @@ export function createSessionCatalog(
               ...turn.capabilities,
               messagingAvailable: !!deps.channels.slack,
               executionAvailable: input?.type === "event" && !!deps.execution,
+              researchAvailable:
+                input.type === "event" &&
+                turn.capabilities.researchAvailable === true,
               turnTakingAvailable: input?.type === "event",
               typingControlAvailable:
                 input.type === "event" &&

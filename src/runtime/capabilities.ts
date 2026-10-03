@@ -134,6 +134,14 @@ export interface CapabilityPorts {
       deletionRevision: number,
     ): Promise<string>;
   };
+  research?: {
+    manage(
+      event: MessageEvent,
+      operationId: string,
+      request: CompanionReply["research"],
+      deletionRevision: number,
+    ): Promise<string>;
+  };
   personality: {
     stage(
       event: MessageEvent,
@@ -906,6 +914,42 @@ async function dispatchCapability(
         ? { replyInThread: generated.replyInThread }
         : {}),
     };
+  } else if (generated.research !== undefined) {
+    let text =
+      "Research management requires a fresh owner Slack DM and the research integration.";
+    if (
+      isOwnerRivetDm(event, deps.owner) &&
+      scope.private &&
+      ownerTurn &&
+      origin === "event" &&
+      phase !== "synthesis" &&
+      modelRequest.researchAvailable &&
+      ports.research
+    ) {
+      try {
+        const checked = parseReply(
+          JSON.stringify(generated),
+          modelRequest.workspaces,
+          modelRequest,
+        );
+        if (canStartAction()) {
+          const { evidenceIds, ...report } = JSON.parse(
+            await ports.research.manage(
+              event,
+              context.operationId ?? eventId,
+              checked.research,
+              context.deletionRevision,
+            ),
+          );
+          await ports.evidence.bindPending([], evidenceIds);
+          if (canStartAction()) text = JSON.stringify(report);
+        }
+      } catch {
+        text =
+          "Research command failed or its receipt is uncertain. Inspect the existing private session before repeating a start; no new progress or completion is claimed.";
+      }
+    }
+    generated = { text };
   } else if (generated.workflow !== undefined) {
     let text =
       "Workflows require an owner-private turn and the workflow integration.";
