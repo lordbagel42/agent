@@ -37,6 +37,21 @@ test("timing observations retain no content or identities, stay bounded, and nev
   expect(snapshot.traces[0]?.receivedAt).toBe(before?.receivedAt);
   expect(snapshot.traces[0]?.deliveries[0]?.platformMs).toBe(876.545);
   expect(JSON.stringify(snapshot)).not.toMatch(/private-|1800000000\.123456/);
+  latency.begin({ ...event, id: "unrelated" });
+  expect(latency.capture([event]).traces.map(({ id }) => id)).toEqual([
+    before?.id,
+  ]);
+  expect(
+    latency.capture([
+      { ...event, address: { ...event.address, accountId: "another-account" } },
+    ]).traces,
+  ).toEqual([]);
+  const captured = latency.capture([event, event]);
+  expect(captured.traces).toHaveLength(1);
+  captured.traces[0]?.observations.splice(0);
+  expect(
+    latency.capture([event]).traces[0]?.observations.length,
+  ).toBeGreaterThan(0);
   snapshot.traces[0]?.observations.splice(0);
   for (let i = 0; i < 150; i++) latency.mark(event, "fast_started");
   expect(latency.snapshot().traces[0]?.observations).toHaveLength(128);

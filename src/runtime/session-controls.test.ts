@@ -1397,6 +1397,10 @@ it("does not export a legacy decision after ordinary memory ingestion prunes its
 it("excludes compacted pre-upgrade notification replies without new flags", () => {
   const source = message("original", "ordinary question");
   const ordinaryId = conversationInputId({ type: "event", event: source });
+  const captureTimings = vi.fn(() => ({
+    coverage: "current-process",
+    traces: [],
+  }));
   const notificationId = conversationInputId({
     type: "wakeup",
     source,
@@ -1435,7 +1439,9 @@ it("excludes compacted pre-upgrade notification replies without new flags", () =
     "",
     "fixture",
     { messages: [{ content: "OLD_PRIVATE_REPLY" }] },
+    captureTimings,
   );
+  expect(captureTimings).toHaveBeenCalledExactlyOnceWith([source]);
   expect(JSON.stringify(snapshot)).toContain("ordinary question");
   expect(JSON.stringify(snapshot)).not.toContain("OLD_PRIVATE_REPLY");
 });

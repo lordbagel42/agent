@@ -6,6 +6,10 @@ import type {
   MessageEvent,
   ModelSettlement,
 } from "../core/contracts.js";
+import {
+  type DebugSiteOutbox,
+  publishDebugSite,
+} from "../diagnostics/outbox.js";
 import { beginModelReply } from "../models/invocation.js";
 import {
   type CompressedJson,
@@ -16,7 +20,11 @@ import {
 } from "./conversation-storage.js";
 import { type Delivery, deliver } from "./delivery.js";
 import { conversationInputId } from "./inbox.js";
-import type { ConversationState, Dependencies } from "./registry.js";
+import type {
+  ConversationState,
+  Dependencies,
+  MemoryReference,
+} from "./registry.js";
 
 export interface DebugSnapshot {
   id: string;
@@ -129,6 +137,11 @@ export function captureDebug(
   reason: string,
   revision?: string,
   modelRequest?: unknown,
+  captureTimings?: (events: MessageEvent[]) => unknown,
+  retention?: {
+    memory: NonNullable<Dependencies["memory"]>;
+    current(reference: MemoryReference): boolean;
+  },
 ): DebugSnapshot {
   state.session ??= { id: randomUUID(), startedAt: 0 };
   const session = state.session;
@@ -162,6 +175,49 @@ export function captureDebug(
         !excluded.has(id),
     ),
   );
+  const audience = JSON.stringify(scope);
+  const deletionRevision = retention?.memory.store.deletionRevision() ?? 0;
+  const retained = (reference: MemoryReference) =>
+    retention?.current(reference) &&
+    (deletionRevision === 0 ||
+      reference.contextSourceIds?.every((id) =>
+        retention.memory.store.sessionContextAvailable(audience, id),
+      ) === true);
+  for (const id of ids) {
+    const event = events[id]?.event ?? state.pendingInputs?.[id];
+    const reference = state.memoryContexts?.[id];
+    const source =
+      event?.type === "message"
+        ? retention?.memory.source(event, audience)
+        : undefined;
+    if (
+      state.forgottenEvents?.includes(id) ||
+      (event?.type === "message" &&
+        event.address.channel === "slack" &&
+        event.text.startsWith("##")) ||
+      (source && retention?.memory.store.isDeleted(source.id)) ||
+      (retention && (reference ? !retained(reference) : deletionRevision > 0))
+    ) {
+      ids.delete(id);
+      excluded.add(id);
+    }
+  }
+  const history = readHistory(state).filter((entry) => {
+    const included =
+      ids.has(entry.id) ||
+      (entry.id.endsWith(":reply") && ids.has(entry.id.slice(0, -6)));
+    if (!included) return false;
+    if (
+      retention &&
+      ((entry.sourceId &&
+        !retention.memory.store.source(audience, entry.sourceId)) ||
+        (entry.context ? !retained(entry.context) : deletionRevision > 0))
+    ) {
+      excluded.add(entry.id);
+      return false;
+    }
+    return true;
+  });
   return {
     id: randomUUID(),
     sessionId: session.id,
@@ -170,11 +226,7 @@ export function captureDebug(
     scope: [...scope],
     reason: String(redactDebug(reason)),
     data: redactDebug({
-      history: readHistory(state).filter(
-        (entry) =>
-          ids.has(entry.id) ||
-          (entry.id.endsWith(":reply") && ids.has(entry.id.slice(0, -6))),
-      ),
+      history,
       events: Object.fromEntries(
         Object.entries(events).filter(([id]) => ids.has(id)),
       ),
@@ -200,11 +252,19 @@ export function captureDebug(
         ),
       ),
       activitySessionId: state.sessions?.directory.activeSessionId,
+      timings: captureTimings?.(
+        [...ids].flatMap((id) => {
+          const event = events[id]?.event ?? state.pendingInputs?.[id];
+          return event?.type === "message" ? [event] : [];
+        }),
+      ),
     }),
     exclusions: [
       "Credentials and configuration are not collected; recognizable tokens and URL query strings are redacted.",
       "Volatile tool results, unrelated conversations, process environment and raw service logs are not collected.",
       "Historical model requests before this feature and provider-internal state are unavailable.",
+      "Timing observations cover only exactly matched retained inputs still in this process's bounded live trace buffer; historical unjoinable logs are excluded.",
+      "Fresh captures revalidate tombstones and provenance; stale or unprovably independent evidence and cached requests are omitted after deletion.",
     ],
   };
 }
@@ -277,7 +337,9 @@ export async function publishDebugSnapshot(
   }
 }
 
-export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
+export function createDebugShareActor(
+  deps: Pick<Dependencies, "debugShare" | "debugSite">,
+) {
   return actor({
     state: {} as {
       snapshot?: DebugSnapshot;
@@ -292,10 +354,12 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
       independentDispatch?: boolean;
       threadId?: string;
       report?: string;
+      website?: DebugSiteOutbox;
     },
     createVars: (c) => ({
       persist: () => c.saveState({ immediate: true }),
       receiving: Promise.resolve(),
+      publishingSite: Promise.resolve(),
       finish: async (snapshot: DebugSnapshot) => {
         if (c.key[0] !== snapshot.id)
           throw new Error("Debug snapshot identity mismatch");
@@ -316,10 +380,23 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
             : deps.debugShare
               ? "queued"
               : "unavailable";
+          if (deps.debugSite)
+            c.state.website = {
+              url: deps.debugSite.url(snapshot.id),
+              status: "pending",
+              attempts: 0,
+              retryAt: Date.now(),
+            };
         }
         delete c.state.upload;
         // Even a duplicate after a lost save acknowledgment needs a barrier.
         await c.saveState({ immediate: true });
+        if (c.state.website?.status === "pending" && deps.debugSite)
+          await c.schedule.at(
+            Math.max(Date.now(), c.state.website.retryAt ?? 0),
+            "publishSite",
+            c.state.website.retryAt ?? 0,
+          );
         if (c.state.status === "queued")
           await c.queue.send("work", { start: true });
       },
@@ -328,8 +405,50 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
     onWake: async (c) => {
       if (c.state.status === "queued")
         await c.queue.send("work", { start: true });
+      if (c.state.website?.status === "pending" && deps.debugSite)
+        await c.schedule.at(
+          Math.max(Date.now(), c.state.website.retryAt ?? 0),
+          "publishSite",
+          c.state.website.retryAt ?? 0,
+        );
     },
     actions: {
+      publishSite: (c, at: number) => {
+        // This independent lane cannot hold the capture ACK or the investigator.
+        c.vars.publishingSite = c.vars.publishingSite
+          .then(async () => {
+            // Check inside the lane: wake repairs can duplicate durable timers,
+            // but only the current generation may publish or schedule a successor.
+            if (
+              !c.state.snapshot ||
+              !c.state.website ||
+              !deps.debugSite ||
+              c.state.website.status !== "pending" ||
+              (c.state.website.retryAt ?? 0) !== at
+            )
+              return;
+            try {
+              await publishDebugSite(
+                c.state.website,
+                c.state.snapshot,
+                deps.debugSite,
+                c.vars.persist,
+              );
+            } catch {
+              console.error("debug_site_publication_failed");
+            }
+            if (c.state.website.status === "pending")
+              await c.schedule.at(
+                Math.max(Date.now() + 1000, c.state.website.retryAt ?? 0),
+                "publishSite",
+                c.state.website.retryAt ?? 0,
+              );
+          })
+          .catch(() => {
+            console.error("debug_site_retry_schedule_failed");
+          });
+        void c.keepAwake(c.vars.publishingSite);
+      },
       start: async (c, snapshot: DebugSnapshot) => {
         const receiving = c.vars.receiving.then(() => c.vars.finish(snapshot));
         c.vars.receiving = receiving.catch(() => {});
@@ -436,6 +555,7 @@ export function createDebugShareActor(deps: Pick<Dependencies, "debugShare">) {
           capturedAt: c.state.snapshot?.capturedAt,
           status: external?.status ?? c.state.status,
           threadId: external?.threadId ?? c.state.threadId,
+          website: c.state.website,
         };
       },
     },

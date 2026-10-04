@@ -125,6 +125,20 @@ const schema = z
         timeoutMs: z.number().int().min(1000).max(3_600_000).default(900_000),
       })
       .optional(),
+    debugSite: z
+      .strictObject({
+        origin: z.url().refine((value) => {
+          const url = new URL(value);
+          return (
+            value === url.origin &&
+            (url.protocol === "https:" ||
+              (url.protocol === "http:" &&
+                ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)))
+          );
+        }, "Use a canonical HTTPS origin or loopback HTTP for local checks"),
+        tokenEnv: envName,
+      })
+      .optional(),
     activitySessions: z
       .strictObject({
         enabled: z.boolean().default(false),

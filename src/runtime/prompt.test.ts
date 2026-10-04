@@ -382,6 +382,23 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "never starts or queues an Amp investigation",
     );
     expect(request.system).toContain("saved means snapshot-only storage");
+    expect(request.system).toContain("separately installed June Debug website");
+    expect(request.system).toContain(
+      "website.status is pending, saved or rejected",
+    );
+    expect(request.system).toContain("Never duplicate the upload");
+    expect(request.system).toContain(
+      "Separate-host installation is needed to survive a host failure",
+    );
+    expect(request.system).toContain(
+      "Fresh diagnostic captures revalidate deletion tombstones",
+    );
+    expect(request.system).toContain(
+      "duplicate wakes do not create new retry chains",
+    );
+    expect(request.system).toContain(
+      "does not purge already-saved captures or downloads",
+    );
     expect(request.system).toContain(
       "interrupted transfers resume the same snapshot",
     );

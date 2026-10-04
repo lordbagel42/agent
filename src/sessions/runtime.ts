@@ -333,33 +333,42 @@ export function createActivityActor(deps: ActivityDependencies) {
       },
       diagnostic: (c, sessionId: string) => {
         if (c.state.binding?.sessionId !== sessionId) return null;
+        const audience = JSON.stringify(c.state.binding.scopeKey);
+        const deletionRevision = deps.memory.store.deletionRevision();
+        // Historical evidence can remain valid after an unrelated deletion;
+        // incomplete platform ancestry needs the original global epoch too.
+        const retained = (context: TurnContext | undefined) =>
+          !!context &&
+          !context.retentionExcluded &&
+          agentActive(context.source) &&
+          deps.memory.current(audience, context.reference) &&
+          (context.deletionRevision === deletionRevision ||
+            context.reference.contextSourceIds?.every((id) =>
+              deps.memory.evidence.contextAvailable(audience, id),
+            ) === true);
         return {
           sessionId,
-          history: c.state.history.map(({ role, content, eventId }) => ({
-            role,
-            content,
-            eventId,
-          })),
-          turns: Object.values(c.state.turns).map((turn) => ({
-            eventId: turn.assignment.eventId,
-            receivedAt: turn.assignment.receivedAt,
-            inference: turn.inference,
-            effects: turn.effects,
-            hold: turn.hold,
-            // Decision/tool continuations are volatile, not diagnostic text.
-            reply: turn.context?.retentionExcluded
-              ? undefined
-              : turn.reply?.text,
-            deliveries: turn.deliveries
-              ?.filter((delivery) => !delivery.ephemeral)
-              .map((delivery) => ({
-                phase: delivery.phase,
-                result: delivery.result,
-                content: turn.context?.retentionExcluded
-                  ? undefined
-                  : delivery.message.content,
-              })),
-          })),
+          deletionRevision,
+          history: c.state.history
+            .filter((entry) => retained(entry.context))
+            .map(({ role, content, eventId }) => ({ role, content, eventId })),
+          turns: Object.values(c.state.turns)
+            .filter((turn) => retained(turn.context))
+            .map((turn) => ({
+              eventId: turn.assignment.eventId,
+              receivedAt: turn.assignment.receivedAt,
+              inference: turn.inference,
+              effects: turn.effects,
+              hold: turn.hold,
+              reply: turn.reply?.text,
+              deliveries: turn.deliveries
+                ?.filter((delivery) => !delivery.ephemeral)
+                .map((delivery) => ({
+                  phase: delivery.phase,
+                  result: delivery.result,
+                  content: delivery.message.content,
+                })),
+            })),
         };
       },
       receive: async (c, assignment: ActivityAssignment) => {

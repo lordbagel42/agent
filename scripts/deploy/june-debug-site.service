@@ -1,0 +1,33 @@
+[Unit]
+Description=June Debug independent private archive
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/june-debug/site.env
+
+[Service]
+Type=exec
+User=june-debug
+Group=june-debug
+EnvironmentFile=/etc/june-debug/site.env
+Environment=PORT=3092
+Environment=JUNE_DEBUG_DATABASE=/var/lib/june-debug/archive.sqlite
+ExecStart=/usr/bin/node /opt/june-debug/current/server.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+StateDirectory=june-debug
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/june-debug
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

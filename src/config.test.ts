@@ -20,6 +20,26 @@ const input = {
 };
 
 describe("configuration boundary", () => {
+  it("opts into the independent debug archive with only a write credential reference", () => {
+    expect(parseConfig(input).debugSite).toBeUndefined();
+    for (const origin of ["https://debug.example", "http://127.0.0.1:3092"]) {
+      const debugSite = { origin, tokenEnv: "JUNE_DEBUG_INGEST_TOKEN" };
+      expect(parseConfig({ ...input, debugSite }).debugSite).toEqual(debugSite);
+    }
+    for (const debugSite of [
+      { origin: "http://debug.example", tokenEnv: "UPLOAD_TOKEN" },
+      { origin: "https://debug.example/path", tokenEnv: "UPLOAD_TOKEN" },
+      { origin: "https://user:secret@debug.example", tokenEnv: "UPLOAD_TOKEN" },
+      {
+        origin: "https://debug.example?token=secret",
+        tokenEnv: "UPLOAD_TOKEN",
+      },
+      { origin: "https://debug.example", tokenEnv: "not an env name" },
+      { origin: "https://debug.example", token: "inline-secret" },
+    ])
+      expect(() => parseConfig({ ...input, debugSite })).toThrow();
+  });
+
   it("refuses browser PIN intake through the durable blue-green Slack queue", () => {
     const browserCompanion = {
       enabled: true,

@@ -6,6 +6,7 @@ import type {
 } from "../core/contracts.js";
 import { correlationId, recordEvent } from "../telemetry/index.js";
 import type { DiagnosticLog } from "./diagnostics.js";
+import { conversationInputId } from "./inbox.js";
 
 const providerStages = [
   "submitted",
@@ -236,6 +237,23 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
       return {
         startedAt,
         traces: [...traces.values()].map(({ trace }) => structuredClone(trace)),
+      };
+    },
+    /** Only the capture's retention-filtered inputs, never the global log.
+     * Historical salted lookups cannot be reconstructed after a restart. */
+    capture(events: MessageEvent[]) {
+      const selected = new Map<string, LatencyTrace & { inputId: string }>();
+      for (const event of events) {
+        const entry = find(event);
+        if (entry)
+          selected.set(entry.trace.id, {
+            ...structuredClone(entry.trace),
+            inputId: conversationInputId({ type: "event", event }),
+          });
+      }
+      return {
+        coverage: "current-process" as const,
+        traces: [...selected.values()],
       };
     },
     /** Current-process snapshot stays separate so live probes cannot silently

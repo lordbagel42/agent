@@ -1,0 +1,35 @@
+{
+  "name": "@raygen/june-debug-site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "format": "biome format --write . && prettier --write '**/*.svelte'",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "lint": "biome check --error-on-warnings . && prettier --check '**/*.svelte' && pnpm typecheck",
+    "check": "pnpm lint && pnpm test",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@internationalized/date": "^3.12.4",
+    "@lucide/svelte": "^1.52.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@tailwindcss/vite": "^4.3.1",
+    "@types/node": "^24.0.0",
+    "bits-ui": "^2.19.5",
+    "clsx": "^2.1.1",
+    "prettier": "^3.8.1",
+    "prettier-plugin-svelte": "^3.4.1",
+    "svelte": "5.57.1",
+    "svelte-check": "^4.4.2",
+    "tailwind-merge": "^3.7.0",
+    "tailwind-variants": "^3.3.1",
+    "tailwindcss": "^4.3.1",
+    "typescript": "5.9.3",
+    "vite": "8.3.2",
+    "vitest": "5.0.2"
+  }
+}

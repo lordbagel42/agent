@@ -470,6 +470,27 @@ it("holds unknown inference and suppresses output invalidated while inference is
   );
 });
 
+it("filters tombstoned activity diagnostics before cleanup but preserves independently proven history", async (t) => {
+  const f = await fixture(t);
+  const first = assignment();
+  const second = assignment("c", "d");
+  for (const input of [first, second]) {
+    await f.activity(input).receive(input);
+    await vi.waitFor(async () =>
+      expect((await f.activity(input).status()).turns[0]?.acknowledged).toBe(
+        true,
+      ),
+    );
+  }
+  f.store.deleteSource("slack:T1:D1:1800000000.000001");
+  const removed = await f.activity(first).diagnostic(first.sessionId);
+  expect(removed).toMatchObject({ history: [], turns: [] });
+  expect(JSON.stringify(removed)).not.toContain("FIRST PRIVATE TURN");
+  const kept = await f.activity(second).diagnostic(second.sessionId);
+  expect(JSON.stringify(kept)).toContain("SECOND PRIVATE TURN");
+  expect(kept?.deletionRevision).toBe(f.store.deletionRevision());
+});
+
 it.for(["unknown", "rejected"] as const)(
   "accounts for a %s multipart prefix without sending its tail",
   async (status, t) => {

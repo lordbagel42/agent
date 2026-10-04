@@ -163,6 +163,14 @@ the `saved` receipt with `inspection:"debug-shares"`; an authorized operator can
 retrieve the body through private Rivet actor-state inspection. Saved snapshots
 survive `CLEARHISTORY`; `saved` does not mean an investigation completed.
 
+With `debugSite` configured, new DEBUG/DEBUGSHARE snapshots also upload to the
+independent [June Debug website](debug-site.md). Owner-DM receipts include the
+private page URL marked upload queued. The site has its own archive and sign-in;
+already-uploaded captures remain readable when June or the main console stops.
+June's private receipt inspection exposes upload status. The host retries the
+same capture; do not issue another DEBUG to retry an upload. Historical captures
+are not backfilled, and source publication does not install or enable the site.
+
 Large retained conversation history and pending snapshots use lossless compressed
 storage, not summaries. Prompts, DEBUG/DEBUGSHARE capture and operator inspection still
 read the original entries. After durable snapshot publication, the conversation

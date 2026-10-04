@@ -50,6 +50,7 @@ import {
   awaitSlotActivation,
   validateSlotLauncher,
 } from "./deployment/standby.js";
+import { createDebugSitePublisher } from "./diagnostics/publisher.js";
 import { createHttpApp, type HttpDependencies } from "./http/app.js";
 import { createImportRoutes } from "./http/imports.js";
 import { createMemoryRoutes } from "./http/memory.js";
@@ -1258,6 +1259,12 @@ async function main() {
       config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
         ? createDebugDispatcher(config.debugShare)
         : undefined,
+    debugSite: config.debugSite
+      ? createDebugSitePublisher({
+          origin: config.debugSite.origin,
+          token: secret(config.debugSite.tokenEnv),
+        })
+      : undefined,
     sessions: config.activitySessions.enabled
       ? { idleMs: config.activitySessions.idleMs }
       : undefined,

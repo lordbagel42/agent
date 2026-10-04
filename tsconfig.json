@@ -17,6 +17,8 @@
     "src/**/*.tsx",
     "tests/**/*.ts",
     "scripts/build-artifacts.ts",
+    "scripts/build-debug-site.ts",
+    "scripts/preview-debug-site.ts",
     "scripts/latency.ts",
     "vitest.config.ts"
   ]

@@ -22,6 +22,8 @@ import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { isOwnerRivetDm, RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
+import type { DebugSitePublisher } from "../diagnostics/contracts.js";
+import type { DebugSiteOutbox } from "../diagnostics/outbox.js";
 import {
   handleMemoryCorrection,
   isMemoryCorrectionCommand,
@@ -173,6 +175,7 @@ export interface Dependencies {
   owner: Owner;
   continuity?: import("./continuity.js").ConversationContinuity;
   debugShare?: DebugInvestigator;
+  debugSite?: DebugSitePublisher;
   /** Host-injected handoff only; not exposed by production config until the
    * activity catalog/control paths are integrated. Accepted session inputs hold
    * durably, never silently fall back to legacy when this switch is absent. */
@@ -603,7 +606,7 @@ export function createJuneRegistry(deps: Dependencies) {
       vars: {
         persist(): Promise<void>;
         schedule(at: number): Promise<unknown>;
-        debugRequest?: unknown;
+        debugRequest?: { value: unknown; deletionRevision: number };
       };
       queue: {
         send(
@@ -618,7 +621,10 @@ export function createJuneRegistry(deps: Dependencies) {
     key: c.key,
     persist: c.vars.persist,
     rememberRequest: (request) => {
-      c.vars.debugRequest = redactDebug(request);
+      c.vars.debugRequest = {
+        value: redactDebug(request),
+        deletionRevision: deps.memory?.store.deletionRevision() ?? 0,
+      };
     },
     typing: (address) => ({
       read: () => client.typing.getOrCreate(typingKey(address)).read(),
@@ -676,7 +682,7 @@ export function createJuneRegistry(deps: Dependencies) {
       notifyDebugShare(id: string, at: number): void;
       publishSessionCommands: () => void;
       schedule(at: number): Promise<unknown>;
-      debugRequest?: unknown;
+      debugRequest?: { value: unknown; deletionRevision: number };
     } => {
       const persist = () => {
         compactConversation(c.state);
@@ -886,6 +892,7 @@ export function createJuneRegistry(deps: Dependencies) {
           capturedAt?: string;
           status?: string;
           threadId?: string;
+          website?: DebugSiteOutbox;
           notification?: SendResult;
         }[]
       > => {
@@ -1024,6 +1031,20 @@ export function createJuneRegistry(deps: Dependencies) {
                     c.abortSignal,
                   );
                 }
+                const activityId =
+                  command.kind === "debug"
+                    ? c.state.sessions?.directory.activeSessionId
+                    : undefined;
+                const activity = activityId
+                  ? await c
+                      .client<JuneClientRegistry>()
+                      .activity.getOrCreate(sessionActorKey(c.key, activityId))
+                      .diagnostic(activityId)
+                  : null;
+                // Capture synchronously after the RPC, rechecking its deletion
+                // epoch so a concurrent tombstone cannot export stale evidence.
+                const deletionRevision =
+                  deps.memory?.store.deletionRevision() ?? 0;
                 const snapshot =
                   command.kind === "debug"
                     ? captureDebug(
@@ -1031,7 +1052,18 @@ export function createJuneRegistry(deps: Dependencies) {
                         c.key,
                         command.reason,
                         deps.runningRevision,
-                        c.vars.debugRequest,
+                        c.vars.debugRequest?.deletionRevision ===
+                          deletionRevision
+                          ? c.vars.debugRequest.value
+                          : undefined,
+                        deps.latency?.capture,
+                        deps.memory
+                          ? {
+                              memory: deps.memory,
+                              current: (reference) =>
+                                current(JSON.stringify(c.key), reference),
+                            }
+                          : undefined,
                       )
                     : undefined;
                 if (snapshot) {
@@ -1048,15 +1080,24 @@ export function createJuneRegistry(deps: Dependencies) {
                   command.snapshotOnly
                 )
                   snapshot.snapshotOnly = true;
-                if (snapshot && c.state.sessions?.directory.activeSessionId) {
-                  const activityId = c.state.sessions.directory.activeSessionId;
-                  const activity = await c
-                    .client<JuneClientRegistry>()
-                    .activity.getOrCreate(sessionActorKey(c.key, activityId))
-                    .diagnostic(activityId);
+                if (snapshot && activityId) {
+                  if (activity) {
+                    // A committed coordinator barrier wins even if the
+                    // subsequent activity cleanup RPC has not completed.
+                    const forgotten = new Set(c.state.forgottenEvents ?? []);
+                    activity.history = activity.history.filter(
+                      (entry) => !forgotten.has(entry.eventId),
+                    );
+                    activity.turns = activity.turns.filter(
+                      (turn) => !forgotten.has(turn.eventId),
+                    );
+                  }
                   snapshot.data = {
                     coordinator: snapshot.data,
-                    activity: redactDebug(activity),
+                    activity:
+                      activity?.deletionRevision === deletionRevision
+                        ? redactDebug(activity)
+                        : null,
                     activityCapturedAt: new Date().toISOString(),
                   };
                 }
@@ -1084,6 +1125,10 @@ export function createJuneRegistry(deps: Dependencies) {
                   snapshot && snapshot.reason.length > 3000
                     ? `${snapshot.reason.slice(0, 3000)} [truncated; full reason in private snapshot]`
                     : snapshot?.reason;
+                const websiteNotice =
+                  snapshot && deps.debugSite
+                    ? `\nPrivate debug page: ${deps.debugSite.url(snapshot.id)}\nIndependent archive upload is queued; the page may not be available yet. Sign in with the debug site's viewer credential.`
+                    : "";
                 c.state.sessionCommands[id] = {
                   ...(snapshot ? { snapshot } : {}),
                   ...(snapshot && ownerAddress
@@ -1097,7 +1142,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             lastInboundAt: event.occurredAt,
                             content: {
                               type: "text" as const,
-                              text: `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\nReporter: ${event.senderId}; conversation: ${event.address.conversationId}${event.address.threadId ? `; thread: ${event.address.threadId}` : ""}\nReason (${snapshot.reporter?.isOwner ? "owner request" : "untrusted"}): ${reasonExcerpt || "Not supplied"}\nPrivate snapshot saved. ${snapshot.snapshotOnly ? "No Amp investigation was started." : deps.debugShare ? "Amp investigation queued." : "Investigation runtime not configured; no agent was started."}`,
+                              text: `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\nReporter: ${event.senderId}; conversation: ${event.address.conversationId}${event.address.threadId ? `; thread: ${event.address.threadId}` : ""}\nReason (${snapshot.reporter?.isOwner ? "owner request" : "untrusted"}): ${reasonExcerpt || "Not supplied"}\nPrivate snapshot saved. ${snapshot.snapshotOnly ? "No Amp investigation was started." : deps.debugShare ? "Amp investigation queued." : "Investigation runtime not configured; no agent was started."}${websiteNotice}`,
                             },
                           },
                         },
@@ -1144,7 +1189,7 @@ export function createJuneRegistry(deps: Dependencies) {
                             : command.kind === "clear"
                               ? "Started a new session. Saved memories and archives are unchanged."
                               : snapshot
-                                ? `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\n${snapshot.snapshotOnly ? "Snapshot saved. No Amp investigation was started." : deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}${ownerAddress ? "\nDiagnostic details are private to the owner; an owner-DM notification is queued." : ""}`
+                                ? `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\n${snapshot.snapshotOnly ? "Snapshot saved. No Amp investigation was started." : deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}${ownerAddress ? "\nDiagnostic details are private to the owner; an owner-DM notification is queued." : ""}${scope.private && isOwner(event, deps.owner) ? websiteNotice : ""}`
                                 : "No diagnostic snapshot was captured.",
                       },
                     },
@@ -4296,8 +4341,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                 body.type === "event" &&
                                 valid(step.state)
                               )
-                                step.vars.debugRequest =
-                                  redactDebug(modelRequest);
+                                step.vars.debugRequest = {
+                                  value: redactDebug(modelRequest),
+                                  deletionRevision:
+                                    deps.memory?.store.deletionRevision() ?? 0,
+                                };
                               deps.latency?.mark(event, "context_ready");
                               if (version >= 2) {
                                 step.state.modelInvocations ??= {};

@@ -1,3 +1,5 @@
+packages:
+  - debug-site
 onlyBuiltDependencies:
   - esbuild
 patchedDependencies:

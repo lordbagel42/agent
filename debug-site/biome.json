@@ -1,0 +1,6 @@
+{
+  "root": false,
+  "extends": "//",
+  "files": { "includes": ["**", "!!**/*.svelte"] },
+  "css": { "parser": { "tailwindDirectives": true } }
+}
