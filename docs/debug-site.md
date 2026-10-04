@@ -130,3 +130,41 @@ This service is read-only to viewers. The upload token can add immutable
 captures but cannot read them, create viewer sessions or overwrite a UUID.
 Existing matching uploads are idempotent; conflicts return 409. No authorization
 is implied by possession of a capture URL.
+
+## Raygen's independent installation
+
+`https://debug.raygen.dev` runs on `amp-runner` (LXC 214, Tower), separately
+from June (LXC 215, Optiplex). The `june-debug-site.service` user is
+`june-debug`; its archive is `/var/lib/june-debug/archive.sqlite`. Its root-owned
+bundle is under `/opt/june-debug/releases`, selected by `current`, with pinned
+Node 24.21.0 under `/opt/node-v24.21.0-linux-x64`. June's deployment controller
+does not own these paths or units.
+
+The existing Cloudflare homelab tunnel and Consul/Traefik route the dedicated
+hostname to `192.168.0.214:3093`. The independently enabled
+`june-debug-proxy.socket`/`.service` forwards to loopback `3092`; it does not
+depend on June. Public DNS and the Consul registration were installed directly
+in the authorized operator window, not adopted into Pulumi state. Preserve
+them when later importing infrastructure management.
+
+Viewer and ingest tokens are distinct random values in root-only
+`/etc/june-debug/site.env` on amp-runner. The owner can retrieve only the viewer
+credential in a private terminal there:
+
+```sh
+sudo -n sed -n 's/^JUNE_DEBUG_VIEWER_TOKEN=//p' /etc/june-debug/site.env
+```
+
+Never paste that output into chat or logs. Only the ingest credential belongs
+in June's root-only slot environment. Enabling it changes June's protected
+runtime binding and requires a new forward release, not rewriting an existing
+release marker. An installation check uses clearly labelled synthetic captures;
+it is not evidence of a real owner DEBUG or permission to launch DEBUGSHARE.
+
+This topology isolates June's process, release, LXC and physical compute host.
+It still shares homelab power/network/Internet and the Cloudflare account,
+tunnel, Traefik and Consul ingress. Failure of that ingress can hide the archive
+even while its service and disk remain healthy. The archive additionally shares
+Tower and the runner LXC with other runner workloads; it is not an off-site
+backup or a dedicated-host security boundary. No automatic archive retention or
+backup was enabled by this installation.
