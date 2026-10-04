@@ -219,10 +219,13 @@ it.for([
     );
     expect(request.system).toContain("not permission to bypass a denial");
     expect(request.system).toContain(
-      "Slack conversational replies default to threads",
+      "Slack conversational replies in one-to-one DMs default to the main conversation",
     );
     expect(request.system).toContain(
-      "Channel-level replies should be uncommon",
+      "Continue an incoming DM thread, and start a new DM thread only when explicitly requested",
+    );
+    expect(request.system).toContain(
+      "Channels and group DMs still default to threads",
     );
     expect(request.system).toContain("Workers cannot change reply placement");
     if (role === "decision") expect(request.system).toContain("Be selective");

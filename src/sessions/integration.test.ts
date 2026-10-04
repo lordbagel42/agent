@@ -30,7 +30,8 @@ import { SocialPermissions } from "../runtime/social.js";
 import { sessionActorKey } from "./state.js";
 
 it.for([
-  { thread: undefined, choice: undefined, want: "1800000000.000001" },
+  { thread: undefined, choice: undefined, want: undefined },
+  { thread: undefined, choice: true, want: "1800000000.000001" },
   { thread: "1700000000.000007", choice: false, want: undefined },
   { thread: "1700000000.000007", choice: undefined, want: "1700000000.000007" },
 ])(

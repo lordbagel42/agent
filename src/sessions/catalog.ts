@@ -542,7 +542,9 @@ export function createSessionCatalog(
         turn.context?.replyAddress ??
         (input?.type === "execution_result"
           ? (input.replyAddress ?? source.address)
-          : input.type === "event" && source.address.channel === "slack"
+          : input.type === "event" &&
+              source.address.channel === "slack" &&
+              !source.direct
             ? {
                 ...source.address,
                 threadId: source.address.threadId ?? source.messageId,

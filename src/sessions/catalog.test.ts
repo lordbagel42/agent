@@ -91,14 +91,15 @@ it("preserves an already-prepared destination when preparation is retried", asyn
   await catalog.prepare(host, turn.assignment, []);
   if (!turn.context) throw new Error("Missing prepared context");
   // Old code saved this before the preparation RPC's response was lost.
-  turn.context.replyAddress = { ...source.address };
+  const savedAddress = { ...source.address, threadId: "older-root" };
+  turn.context.replyAddress = savedAddress;
   const resumed = await catalog.prepare(host, turn.assignment, []);
   if ("control" in resumed) throw new Error("Unexpected suppression");
-  expect(resumed.replyAddress).toEqual(source.address);
+  expect(resumed.replyAddress).toEqual(savedAddress);
   const applied = await catalog.apply(host, turn.assignment, {
     text: "Hello back",
   });
-  expect(applied.replyAddress ?? resumed.replyAddress).toEqual(source.address);
+  expect(applied.replyAddress ?? resumed.replyAddress).toEqual(savedAddress);
 });
 
 it.for([

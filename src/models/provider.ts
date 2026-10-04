@@ -2005,7 +2005,7 @@ function legacyReplyJsonSchema(
             replyInThread: {
               type: ["boolean", "null"],
               description:
-                "Default to threaded Slack replies, including DMs: true or null uses the incoming thread or starts one on the incoming message. false posts in the main DM/channel, even for threaded input; choose it only for an explicit request or a clear need to address the main conversation. Unthreaded replies should be uncommon. May accompany any otherwise valid reply or directive.",
+                "Slack: null or omitted preserves an incoming thread, otherwise posts in the main one-to-one DM or starts a thread in a channel/group DM. true uses the incoming thread or starts one on the incoming message; start a new DM thread only when explicitly requested. false posts in the main DM/channel, even for threaded input. Top-level channel/group-DM replies should be uncommon, reserved for an explicit request or a clear need to address the main conversation. May accompany any otherwise valid reply or directive.",
             },
           }
         : {}),

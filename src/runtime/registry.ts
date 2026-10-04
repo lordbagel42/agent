@@ -1764,7 +1764,7 @@ export function createJuneRegistry(deps: Dependencies) {
           // Keep replayed turns at their original destination.
           const threadedRepliesVersion = await loop.getVersion(
             "threaded-replies",
-            2,
+            3,
           );
           // A parked inbox can use the jury on its first new turn; journals
           // already processing a turn retain the original capability plan.
@@ -2565,7 +2565,9 @@ export function createJuneRegistry(deps: Dependencies) {
                 body.type === "execution_result"
                   ? (body.replyAddress ?? event.address)
                   : event.address.channel === "slack" &&
-                      ((threadedRepliesVersion >= 2 && body.type === "event") ||
+                      ((threadedRepliesVersion >= 2 &&
+                        body.type === "event" &&
+                        (threadedRepliesVersion < 3 || !event.direct)) ||
                         (version >= 4 && version < 6))
                     ? {
                         ...event.address,
