@@ -1,8 +1,8 @@
 # June Debug frontend
 
 This is the standalone private diagnostic archive UI, not a route in June's
-main console. It calls only same-origin `/api/session`, `/api/logout`, and
-`/api/snapshots` endpoints. The independent archive server owns authentication,
+main console. It calls only same-origin `/api/session`, `/api/logout`,
+`/api/passkeys` and `/api/snapshots` endpoints. The independent archive server owns authentication,
 authorization, persistence, security headers, and history-route fallback.
 
 From the repository root (the existing `.npmrc` selects Node 24):
@@ -38,16 +38,22 @@ June dark-neutral tokens in `src/app.css`. Bits UI provides label/tab behavior,
 and Lucide supplies local SVG icons. There are no remotely loaded assets.
 
 - `archive.ts`: in-memory private session/API state, stale-response protection,
-  expiry clearing, safe errors, and authenticated exports.
+  expiry clearing, safe errors, passkey ceremonies, and authenticated exports.
 - `projection.ts`: explicit retained evidence only, supporting flat historical
   snapshots and wrapped coordinator/activity snapshots. Unknown timestamps are
   not replaced by capture time or parsed from opaque IDs.
 - `App.svelte`: history navigation, auth shell, timezone selection, and exports.
-- `CaptureView`, `EvidenceTable`, `JsonViewer`, `ArchiveRail`, and `Login`:
+- `CaptureView`, `EvidenceTable`, `JsonViewer`, `ArchiveRail`, `Login`, and `Passkeys`:
   bounded UI responsibilities. Tables show 40 rows per page, archive pages
   render at most 50 captures, and JSON renders at most 16,000 characters at once.
   Evidence filtering and JSON search cover full retained payloads; the original
   JSON attachment remains available from the capture header.
 
-No replay, investigation, deletion, or permission mutation is exposed. A stored
+Passkey management is an inline settings view, not part of capture evidence.
+The viewer credential bootstraps enrollment and remains the recovery method.
+Adding/removing keys requires a recent sign-in; removal signs out every device.
+Browser cancellation never persists responses, credentials, or captures in local
+storage. See `docs/debug-site.md` for the independent server's security boundary.
+
+No replay, investigation, capture deletion, or June permission mutation is exposed. A stored
 capture is not proof that June is live or that an investigation succeeded.

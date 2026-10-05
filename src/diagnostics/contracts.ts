@@ -11,6 +11,13 @@ export interface DiagnosticIndex {
   nextOffset: number | null;
 }
 
+export interface PasskeySummary {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+}
+
 /** Write-only host capability; it never grants June a viewer credential. */
 export interface DebugSitePublisher {
   url(id: string): string;

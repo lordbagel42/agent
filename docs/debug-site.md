@@ -16,7 +16,8 @@ while June is down, nor recover a snapshot that never finished uploading.
 After an operator configures the service, send `DEBUG a short explanation` to
 June. The owner-DM receipt includes `/s/<UUID>` on the debug origin; reports from
 other surfaces send that link only to the owner DM. The initial receipt says
-upload queued, not available. Sign in with the site's **viewer credential**.
+upload queued, not available. Sign in with a registered **passkey** or the
+site's **viewer credential**.
 If the upload is pending, retry the page rather than issuing another DEBUG.
 `DEBUGSHARE` uploads the same capture independently of its Amp investigation.
 
@@ -51,6 +52,42 @@ wakes from multiplying retry chains. `saved` acknowledges independent storage,
 not present availability. Configuration removal pauses pending uploads. Old captures
 are not backfilled. Neither June nor the website may duplicate an upload, replay
 a message, launch an investigation for DEBUG, or grant repair authority.
+
+## Passkey sign-in and recovery
+
+Sign in with the existing viewer credential, open **Passkeys** in the header,
+name the device or password manager, and select **Add passkey**. Complete the
+browser's device-verification prompt yourself. On later visits, use **Sign in
+with passkey**; capture deep links are preserved through sign-in. Up to 16
+passkeys can be enrolled. Browsers without WebAuthn can still use the viewer
+credential. Both methods require a current browser with Web Locks support so
+concurrent tabs cannot overwrite sign-in cookies or undo a sign-out with a late
+response. The lock covers authentication HTTP requests, not device prompts.
+
+Registration and removal require a browser sign-in within the last five minutes;
+sign out and back in if prompted. Removing a key signs out **all devices** and
+invalidates outstanding ceremonies, including one already being verified. It
+does not delete the local copy in the device/password manager. Keep the viewer
+credential safely available for lost-device recovery. Never give it to June or
+paste it into a conversation. An operator rotating a compromised viewer token
+must also review enrolled keys: token rotation alone does not revoke passkeys.
+
+SimpleWebAuthn verifies signatures, exact configured origin, hostname RP ID and
+required user verification. Discoverable credentials are required; no platform
+attachment is forced, so compatible phones, password managers and security keys
+work. Only public keys, counters and display metadata live in the private SQLite
+archive. Five-minute single-use challenges and eight-hour sessions live in
+process memory with HttpOnly, Secure, SameSite=Strict cookies on HTTPS. Restarting
+this site revokes sessions/challenges, not enrolled keys. No identity provider or
+June service is involved. Changing the canonical hostname requires enrolling new
+passkeys there with the viewer credential; existing keys are origin-bound.
+
+The site adds its passkey tables without changing saved captures. Rollback must
+preserve the live database, not restore an old archive. Installation of the
+updated independent bundle enables support; only the owner's successful browser
+enrollment proves a real passkey exists. Never enroll an operator/agent-owned key
+as a production test. June may explain this workflow, but cannot enroll, remove,
+recover or impersonate the owner's keys.
 
 ## Build and preview locally
 
@@ -126,7 +163,8 @@ an actively modified file as a backup. Disk exhaustion rejects new uploads and
 may require independent service recovery. Restoring old application code must
 not restore old conversation data or delete captures.
 
-This service is read-only to viewers. The upload token can add immutable
+Capture evidence is read-only to viewers; recent authenticated browser sessions
+can manage the owner's passkeys. The upload token can add immutable
 captures but cannot read them, create viewer sessions or overwrite a UUID.
 Existing matching uploads are idempotent; conflicts return 409. No authorization
 is implied by possession of a capture URL.

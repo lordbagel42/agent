@@ -1,17 +1,28 @@
 <script lang="ts">
-  import { Archive, ChevronDown, LockKeyhole, LogOut } from "@lucide/svelte";
+  import {
+    Archive,
+    ChevronDown,
+    Fingerprint,
+    LockKeyhole,
+    LogOut,
+  } from "@lucide/svelte";
   import { onMount } from "svelte";
   import { createArchive } from "$lib/archive.js";
   import ArchiveRail from "$lib/components/ArchiveRail.svelte";
   import CaptureView from "$lib/components/CaptureView.svelte";
   import Loading from "$lib/components/Loading.svelte";
   import Login from "$lib/components/Login.svelte";
+  import Passkeys from "$lib/components/Passkeys.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   const archive = createArchive();
   let railOpen = $state(false);
+  let passkeysOpen = $state(false);
   let zone = $state("local");
   const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const utc = $derived(zone === "utc");
+  $effect(() => {
+    if ($archive.phase !== "ready") passkeysOpen = false;
+  });
   function routeId() {
     const match = /^\/s\/([^/]+)\/?$/.exec(location.pathname);
     try {
@@ -23,6 +34,7 @@
   function navigate(id: string | null) {
     history.pushState(null, "", id ? `/s/${encodeURIComponent(id)}` : "/");
     railOpen = false;
+    passkeysOpen = false;
     void archive.select(id);
   }
   async function download() {
@@ -39,6 +51,7 @@
     void archive.start(routeId());
     const pop = () => {
       railOpen = false;
+      passkeysOpen = false;
       if ($archive.phase === "ready") void archive.select(routeId());
     };
     // A restored browser history document must re-check its private session.
@@ -73,11 +86,23 @@
     ><span>Debug</span></a
   >
   <div class="header-actions">
-    <span class="private-indicator"
+    <span
+      class="private-indicator"
+      class:authenticated={$archive.phase === "ready"}
       ><LockKeyhole size={13} aria-hidden="true" />Private archive</span
     >{#if $archive.phase === "ready"}<Button
         variant="ghost"
-        onclick={() => archive.logout()}><LogOut size={14} />Sign out</Button
+        aria-pressed={passkeysOpen}
+        onclick={() => {
+          passkeysOpen = !passkeysOpen;
+          if (passkeysOpen) void archive.loadPasskeys();
+        }}><Fingerprint size={14} aria-hidden="true" />Passkeys</Button
+      ><Button
+        variant="ghost"
+        onclick={() => {
+          passkeysOpen = false;
+          void archive.logout();
+        }}><LogOut size={14} />Sign out</Button
       >{/if}
   </div>
 </header>
@@ -94,6 +119,7 @@
       notice={$archive.notice}
       signoutError={$archive.actionError}
       onlogin={(token) => archive.login(token, routeId())}
+      onpasskey={() => archive.loginWithPasskey(routeId())}
       onlogout={() => archive.logout()}
     />
   </main>
@@ -104,6 +130,16 @@
     <Button variant="outline" onclick={() => archive.start(routeId())}
       >Retry connection</Button
     >
+  </main>
+{:else if passkeysOpen}
+  <main id="capture-main">
+    <Passkeys
+      state={$archive}
+      onadd={archive.addPasskey}
+      onremove={archive.removePasskey}
+      onrefresh={archive.loadPasskeys}
+      onback={() => (passkeysOpen = false)}
+    />
   </main>
 {:else}
   <div class="app-workspace">

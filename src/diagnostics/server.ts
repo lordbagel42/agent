@@ -1,9 +1,9 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { createDebugAuth } from "./auth.js";
 import {
   DiagnosticConflictError,
   type DiagnosticStore,
@@ -13,7 +13,6 @@ import {
   validateSnapshot,
 } from "./store.js";
 
-const SESSION_MS = 8 * 60 * 60 * 1000;
 const hash = (value: string) => createHash("sha256").update(value).digest();
 
 /** A separate process: no callbacks, clients, sessions or readiness from June. */
@@ -44,11 +43,6 @@ export function createDebugSite(options: {
   )
     throw new Error("Invalid debug site configuration");
   const app = new Hono();
-  const now = options.now ?? Date.now;
-  const secure = origin.protocol === "https:";
-  const cookie = secure ? "__Host-june-debug" : "june-debug-dev";
-  const sessions = new Map<string, number>();
-  const viewer = hash(options.viewerToken);
   const ingest = hash(options.ingestToken);
   const matches = (value: unknown, expected: Buffer) =>
     typeof value === "string" &&
@@ -56,8 +50,6 @@ export function createDebugSite(options: {
     timingSafeEqual(hash(value), expected);
   const bearer = (request: Request) =>
     /^Bearer (.+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
-  let loginWindow = 0;
-  let loginAttempts = 0;
 
   app.use("*", async (c, next) => {
     c.header("Cache-Control", "no-store, private");
@@ -108,79 +100,7 @@ export function createDebugSite(options: {
     },
   );
 
-  const authenticated = (request: Request, session?: string) => {
-    for (const [id, expires] of sessions)
-      if (expires <= now()) sessions.delete(id);
-    if (request.headers.has("authorization"))
-      return matches(bearer(request), viewer);
-    return !!session && sessions.has(session);
-  };
-  app.get("/api/session", (c) =>
-    c.json({ authenticated: authenticated(c.req.raw, getCookie(c, cookie)) }),
-  );
-  app.use("/api/session", async (c, next) => {
-    if (
-      c.req.method === "POST" &&
-      (c.req.header("origin") !== options.origin ||
-        c.req.header("sec-fetch-site") === "cross-site")
-    )
-      return c.json({ error: "origin_rejected" }, 403);
-    await next();
-  });
-  app.post(
-    "/api/session",
-    bodyLimit({
-      maxSize: 8192,
-      onError: (c) => c.json({ error: "request_too_large" }, 413),
-    }),
-    async (c) => {
-      if (now() - loginWindow >= 60_000) {
-        loginWindow = now();
-        loginAttempts = 0;
-      }
-      if (++loginAttempts > 10) {
-        c.header("Retry-After", "60");
-        return c.json({ error: "rate_limited" }, 429);
-      }
-      if (c.req.header("content-type")?.split(";")[0] !== "application/json")
-        return c.json({ error: "json_required" }, 415);
-      const body = await c.req.json().catch(() => null);
-      if (!matches(body?.token, viewer))
-        return c.json({ error: "unauthorized" }, 401);
-      // Prune and revoke an old browser session before admitting a fresh one.
-      authenticated(c.req.raw);
-      const previous = getCookie(c, cookie);
-      if (previous) sessions.delete(previous);
-      if (sessions.size >= 64)
-        return c.json({ error: "session_capacity" }, 503);
-      const id = randomBytes(32).toString("base64url");
-      sessions.set(id, now() + SESSION_MS);
-      setCookie(c, cookie, id, {
-        httpOnly: true,
-        secure,
-        sameSite: "Strict",
-        path: "/",
-        maxAge: SESSION_MS / 1000,
-      });
-      return c.json({ authenticated: true });
-    },
-  );
-  app.post("/api/logout", (c) => {
-    if (
-      c.req.header("origin") !== options.origin ||
-      c.req.header("sec-fetch-site") === "cross-site"
-    )
-      return c.json({ error: "origin_rejected" }, 403);
-    const id = getCookie(c, cookie);
-    if (id) sessions.delete(id);
-    deleteCookie(c, cookie, { path: "/", secure });
-    return c.json({ authenticated: false });
-  });
-  app.use("/api/snapshots*", async (c, next) => {
-    if (!authenticated(c.req.raw, getCookie(c, cookie)))
-      return c.json({ error: "unauthorized" }, 401);
-    await next();
-  });
+  app.route("/api", createDebugAuth(options));
   app.get("/api/snapshots", (c) =>
     c.json(
       options.store.list({

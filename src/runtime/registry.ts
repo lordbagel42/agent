@@ -1127,7 +1127,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     : snapshot?.reason;
                 const websiteNotice =
                   snapshot && deps.debugSite
-                    ? `\nPrivate debug page: ${deps.debugSite.url(snapshot.id)}\nIndependent archive upload is queued; the page may not be available yet. Sign in with the debug site's viewer credential.`
+                    ? `\nPrivate debug page: ${deps.debugSite.url(snapshot.id)}\nIndependent archive upload is queued; the page may not be available yet. Sign in with a registered passkey or the debug site's viewer credential.`
                     : "";
                 c.state.sessionCommands[id] = {
                   ...(snapshot ? { snapshot } : {}),

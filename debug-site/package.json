@@ -16,6 +16,7 @@
     "@biomejs/biome": "2.5.14",
     "@internationalized/date": "^3.12.4",
     "@lucide/svelte": "^1.52.0",
+    "@simplewebauthn/browser": "14.0.0",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tailwindcss/vite": "^4.3.1",
     "@types/node": "^24.0.0",

@@ -1,5 +1,14 @@
+import {
+  startAuthentication,
+  startRegistration,
+  WebAuthnAbortService,
+} from "@simplewebauthn/browser";
 import { writable } from "svelte/store";
-import type { DebugSnapshot, DiagnosticIndex } from "./types.js";
+import type {
+  DebugSnapshot,
+  DiagnosticIndex,
+  PasskeySummary,
+} from "./types.js";
 
 export interface ArchiveState {
   phase: "checking" | "login" | "ready" | "error";
@@ -12,6 +21,10 @@ export interface ArchiveState {
   captureBusy: boolean;
   loginBusy: boolean;
   downloadBusy: boolean;
+  passkeys: PasskeySummary[] | null;
+  passkeyBusy: boolean;
+  passkeyError: string;
+  passkeyNotice: string;
   indexError: boolean;
   captureError: "missing" | "failed" | null;
   notice: string;
@@ -30,6 +43,10 @@ const initial = (): ArchiveState => ({
   captureBusy: false,
   loginBusy: false,
   downloadBusy: false,
+  passkeys: null,
+  passkeyBusy: false,
+  passkeyError: "",
+  passkeyNotice: "",
   indexError: false,
   captureError: null,
   notice: "",
@@ -41,6 +58,27 @@ class HttpError extends Error {
   constructor(readonly status: number) {
     super("Archive request failed");
   }
+}
+
+function passkeyError(error: unknown) {
+  if (error instanceof HttpError) {
+    if (error.status === 426)
+      return "Secure sign-in requires a current browser with Web Locks support. Update your browser and try again.";
+    if (error.status === 403)
+      return "Sign in again before changing passkeys. A sign-in within the last five minutes is required.";
+    if (error.status === 429)
+      return "Too many attempts. Wait a minute and try again.";
+    if (error.status === 409)
+      return "That passkey is already registered, or the 16-passkey limit has been reached.";
+  }
+  if (
+    error instanceof Error &&
+    ["NotAllowedError", "AbortError"].includes(error.name)
+  )
+    return "The passkey prompt was cancelled or timed out. Try again, or use your viewer credential.";
+  if (error instanceof Error && error.name === "InvalidStateError")
+    return "This device already has a passkey for June Debug. Use another device or password manager.";
+  return "The passkey could not be verified. Try again, or use your viewer credential.";
 }
 
 /** In-memory only. Session changes invalidate every outstanding evidence read. */
@@ -58,6 +96,7 @@ export function createArchive(
   }
   function clear(phase: ArchiveState["phase"], notice = "") {
     epoch++;
+    WebAuthnAbortService.cancelCeremony();
     state = { ...initial(), phase, notice };
     store.set(state);
   }
@@ -67,13 +106,24 @@ export function createArchive(
     init: RequestInit = {},
   ) {
     if (generation !== epoch) throw new HttpError(0);
-    const response = await fetcher(path, {
-      ...init,
-      credentials: "same-origin",
-      cache: "no-store",
-      redirect: "error",
-      signal: AbortSignal.timeout(20_000),
-    });
+    const send = () => {
+      if (generation !== epoch) throw new HttpError(0);
+      return fetcher(path, {
+        ...init,
+        credentials: "same-origin",
+        cache: "no-store",
+        redirect: "error",
+        signal: AbortSignal.timeout(20_000),
+      });
+    };
+    let response: Response;
+    if (init.method === "POST" && typeof window !== "undefined") {
+      // All POSTs change authentication state. Serialize their response cookies
+      // across tabs, including the very first browser identity and logout.
+      // Device prompts and evidence reads do not hold this lock.
+      if (!navigator.locks) throw new HttpError(426);
+      response = await navigator.locks.request("june-debug-auth", send);
+    } else response = await send();
     if (response.status === 401 && generation === epoch) {
       clear(
         "login",
@@ -188,9 +238,11 @@ export function createArchive(
           loginBusy: false,
           notice: "",
           loginError:
-            error instanceof HttpError && [401, 403].includes(error.status)
-              ? "That viewer credential was not accepted. Check it and try again."
-              : "Sign-in is unavailable. Try again.",
+            error instanceof HttpError && error.status === 426
+              ? passkeyError(error)
+              : error instanceof HttpError && [401, 403].includes(error.status)
+                ? "That viewer credential was not accepted. Check it and try again."
+                : "Sign-in is unavailable. Try again.",
         });
       }
     }
@@ -221,6 +273,103 @@ export function createArchive(
         });
     }
   }
+  async function loginWithPasskey(id: string | null) {
+    clear("login");
+    const generation = epoch;
+    patch({ loginBusy: true });
+    try {
+      const optionsJSON = await (
+        await request("/api/passkeys/login/options", generation, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        })
+      ).json();
+      if (generation !== epoch) return;
+      const response = await startAuthentication({ optionsJSON });
+      await request("/api/passkeys/login/verify", generation, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(response),
+      });
+      if (generation === epoch) await enter(id);
+    } catch (error) {
+      if (generation === epoch)
+        patch({ loginBusy: false, loginError: passkeyError(error) });
+    }
+  }
+  async function loadPasskeys() {
+    const generation = epoch;
+    patch({ passkeyBusy: true, passkeyError: "" });
+    try {
+      const result = (await (
+        await request("/api/passkeys", generation)
+      ).json()) as { items: PasskeySummary[] };
+      if (generation === epoch) patch({ passkeys: result.items });
+    } catch {
+      if (generation === epoch)
+        patch({ passkeyError: "Passkeys could not be loaded. Try again." });
+    } finally {
+      if (generation === epoch) patch({ passkeyBusy: false });
+    }
+  }
+  async function addPasskey(name: string) {
+    if (state.passkeyBusy) return;
+    const generation = epoch;
+    patch({ passkeyBusy: true, passkeyError: "", passkeyNotice: "" });
+    try {
+      const optionsJSON = await (
+        await request("/api/passkeys/register/options", generation, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        })
+      ).json();
+      if (generation !== epoch) return;
+      const response = await startRegistration({ optionsJSON });
+      await request("/api/passkeys/register/verify", generation, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, response }),
+      });
+      if (generation === epoch) {
+        patch({
+          passkeyNotice:
+            "Passkey added. You can use it the next time you sign in.",
+        });
+        await loadPasskeys();
+      }
+    } catch (error) {
+      if (generation === epoch) patch({ passkeyError: passkeyError(error) });
+    } finally {
+      if (generation === epoch) patch({ passkeyBusy: false });
+    }
+  }
+  async function removePasskey(id: string) {
+    if (state.passkeyBusy) return;
+    const generation = epoch;
+    patch({ passkeyBusy: true, passkeyError: "", passkeyNotice: "" });
+    try {
+      await request(
+        `/api/passkeys/${encodeURIComponent(id)}/delete`,
+        generation,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        },
+      );
+      if (generation === epoch)
+        clear(
+          "login",
+          "Passkey removed. All devices have been signed out. Use a remaining passkey or your viewer credential.",
+        );
+    } catch (error) {
+      if (generation === epoch) patch({ passkeyError: passkeyError(error) });
+    } finally {
+      if (generation === epoch) patch({ passkeyBusy: false });
+    }
+  }
   async function download() {
     const id = state.snapshot?.id;
     if (!id || state.downloadBusy) return null;
@@ -249,6 +398,10 @@ export function createArchive(
     select,
     search,
     login,
+    loginWithPasskey,
+    loadPasskeys,
+    addPasskey,
+    removePasskey,
     logout,
     download,
     clear: () => clear("login"),

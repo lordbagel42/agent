@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   closeSync,
   lstatSync,
@@ -7,14 +8,17 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { WebAuthnCredential } from "@simplewebauthn/server";
 import { z } from "zod";
 import type {
   DebugSitePublisher,
   DiagnosticIndex,
   DiagnosticSummary,
+  PasskeySummary,
 } from "./contracts.js";
 
 type DebugSnapshot = Parameters<DebugSitePublisher["publish"]>[0];
+type StoredPasskey = WebAuthnCredential & PasskeySummary;
 export const MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024;
 export const snapshotIdSchema = z.uuid();
 
@@ -157,7 +161,16 @@ export class DiagnosticStore {
           id TEXT PRIMARY KEY, captured_at INTEGER NOT NULL,
           search TEXT NOT NULL, metadata TEXT NOT NULL,
           bytes INTEGER NOT NULL, snapshot TEXT NOT NULL);
-        CREATE INDEX IF NOT EXISTS snapshots_capture ON snapshots(captured_at DESC, id ASC);`);
+        CREATE INDEX IF NOT EXISTS snapshots_capture ON snapshots(captured_at DESC, id ASC);
+        CREATE TABLE IF NOT EXISTS passkey_owner (
+          id INTEGER PRIMARY KEY CHECK (id = 1), user_id BLOB NOT NULL);
+        CREATE TABLE IF NOT EXISTS passkeys (
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, public_key BLOB NOT NULL,
+          counter INTEGER NOT NULL, transports TEXT NOT NULL,
+          created_at INTEGER NOT NULL, last_used_at INTEGER);`);
+      this.db
+        .prepare("INSERT OR IGNORE INTO passkey_owner VALUES(1,?)")
+        .run(randomBytes(32));
     } catch {
       try {
         this.db?.close();
@@ -259,6 +272,80 @@ export class DiagnosticStore {
           offset + items.length < total ? offset + items.length : null,
       };
     });
+  }
+
+  passkeyUserId(): Uint8Array<ArrayBuffer> {
+    return this.access(
+      (db) =>
+        new Uint8Array(
+          db.prepare("SELECT user_id FROM passkey_owner WHERE id=1").get()
+            ?.user_id as Uint8Array,
+        ),
+    );
+  }
+
+  passkeys(): StoredPasskey[] {
+    return this.access((db) =>
+      db
+        .prepare("SELECT * FROM passkeys ORDER BY created_at,id")
+        .all()
+        .map((row) => ({
+          id: row.id as string,
+          name: row.name as string,
+          publicKey: new Uint8Array(row.public_key as Uint8Array),
+          counter: Number(row.counter),
+          transports: JSON.parse(row.transports as string),
+          createdAt: Number(row.created_at),
+          lastUsedAt:
+            row.last_used_at === null ? null : Number(row.last_used_at),
+        })),
+    );
+  }
+
+  addPasskey(
+    credential: WebAuthnCredential,
+    name: string,
+    at: number,
+  ): boolean {
+    return this.access(
+      (db) =>
+        !!db
+          .prepare(`INSERT INTO passkeys
+      (id,name,public_key,counter,transports,created_at)
+      SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM passkeys)<16
+      ON CONFLICT(id) DO NOTHING`)
+          .run(
+            credential.id,
+            name,
+            credential.publicKey,
+            credential.counter,
+            JSON.stringify(credential.transports ?? []),
+            at,
+          ).changes,
+    );
+  }
+
+  advancePasskey(
+    id: string,
+    previousCounter: number,
+    counter: number,
+    at: number,
+  ): boolean {
+    // A removed key or concurrent counter update must not authenticate after
+    // verification yielded to another request. Zero-counter synced keys work.
+    return this.access(
+      (db) =>
+        !!db
+          .prepare(`UPDATE passkeys SET counter=?,last_used_at=?
+      WHERE id=? AND counter=?`)
+          .run(counter, at, id, previousCounter).changes,
+    );
+  }
+
+  removePasskey(id: string): boolean {
+    return this.access(
+      (db) => !!db.prepare("DELETE FROM passkeys WHERE id=?").run(id).changes,
+    );
   }
 
   close(): void {

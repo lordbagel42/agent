@@ -881,6 +881,114 @@ tbody tr:hover {
   padding-top: 20px;
   border-top: 1px solid var(--line);
 }
+.passkey-signin {
+  width: 100%;
+  min-height: 40px;
+  margin-bottom: 12px;
+}
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 28px;
+  color: var(--muted-text);
+  font-size: 0.79rem;
+}
+.login-divider::before,
+.login-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--line);
+}
+.passkeys-page {
+  max-width: 808px;
+  margin: 32px auto 64px;
+  padding: 0 24px;
+}
+.passkeys-page h1 {
+  margin: 24px 0 12px;
+}
+.passkeys-intro {
+  max-width: 70ch;
+  color: var(--secondary-text);
+  margin-bottom: 28px;
+}
+.passkeys-section {
+  border-top: 1px solid var(--line);
+  margin-top: 28px;
+  padding-top: 24px;
+}
+.passkeys-section h2 {
+  margin-bottom: 12px;
+}
+.passkey-empty,
+.passkey-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 0;
+}
+.passkey-empty > svg,
+.passkey-row > svg {
+  color: var(--muted-text);
+}
+.passkey-empty p,
+.passkey-details p {
+  color: var(--muted-text);
+  font-size: 0.86rem;
+  margin-top: 6px;
+}
+.passkey-details {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.passkey-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.passkey-list li + li {
+  border-top: 1px solid var(--line);
+}
+.passkey-confirm {
+  background: var(--surface);
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  margin-bottom: 16px;
+  font-size: 0.93rem;
+}
+.passkey-confirm p {
+  margin-bottom: 16px;
+}
+.passkey-confirm .inline-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.passkey-confirm [data-slot="button"] {
+  white-space: normal;
+  height: auto;
+}
+.passkey-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
+}
+.passkey-add-row {
+  display: flex;
+  gap: 12px;
+}
+.passkey-add-row input {
+  min-width: 0;
+}
+.passkey-recovery {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
 .loading-state {
   padding: 32px 24px;
 }
@@ -964,6 +1072,19 @@ tbody tr:hover {
   }
   .header-actions {
     gap: 12px;
+  }
+  .private-indicator.authenticated {
+    display: none;
+  }
+  .passkeys-page {
+    margin-top: 20px;
+    padding-inline: 16px;
+  }
+  .passkey-add-row {
+    flex-direction: column;
+  }
+  .passkey-add-row input {
+    font-size: 16px;
   }
   .app-workspace {
     display: flex;
