@@ -420,6 +420,7 @@ export function createInspectionReader(deps: {
   };
   operations?: () => Promise<OutstandingOperationSnapshot>;
   debugShares?: () => Promise<unknown>;
+  sandboxes?: () => Promise<unknown>;
   curiosity?: (audience: string) => Promise<CuriosityProgress>;
   coding?: {
     enabled: boolean;
@@ -461,6 +462,8 @@ export function createInspectionReader(deps: {
     const target = typeof query === "string" ? query : query.target;
     const heading = `${target} metadata snapshot at ${new Date().toISOString()}. Read-only; not recall or proof of complete coverage.`;
     switch (target) {
+      case "sandboxes":
+        return `${heading}\n${JSON.stringify((await deps.sandboxes?.()) ?? { status: "unavailable" })}\nAllocations are not live usage. Activity is bounded to the current process lifetime. Disabled/unavailable does not establish absence of retained disks. No VM was started, stopped, executed or deleted.`;
       case "debug-shares":
         return `${heading}\n${JSON.stringify((await deps.debugShares?.()) ?? { status: "unavailable" })}\nAt most ten private DEBUG/DEBUGSHARE receipts, including reports from other Slack surfaces. Saved means a DEBUG snapshot was stored without starting an investigation. Queued/running is not success; completed means the investigator returned, not that a fix was deployed. Unknown requires operator investigation, not automatic retry. Snapshot bodies are excluded; missing notification outcomes do not prove delivery. Optional website metadata is separate: pending means the host owns upload/retry, saved means the independent archive acknowledged it, rejected needs operator reconciliation. Its URL requires separate viewer sign-in and remains owner-private; absence does not prove the website is installed. Do not duplicate uploads, recapture to retry or infer current site health from a saved receipt. Anyone can submit a fresh plain DEBUGSHARE command, but these details remain owner-private; DEBUG and this inspection do not launch an investigation.`;
       case "capability-matrix":

@@ -54,6 +54,7 @@ import {
 import { createDebugSitePublisher } from "./diagnostics/publisher.js";
 import { createBoxLiteProvider } from "./environments/boxlite.js";
 import { openBoxLiteHost } from "./environments/boxlite-host.js";
+import { inspectSandboxes } from "./environments/inspection.js";
 import { EnvironmentService } from "./environments/service.js";
 import { createHttpApp, type HttpDependencies } from "./http/app.js";
 import { createImportRoutes } from "./http/imports.js";
@@ -1430,6 +1431,7 @@ async function main() {
     inspection: createInspectionReader({
       audience: ownerAudience,
       debugShares: () => june.debugShares(),
+      sandboxes: () => inspectSandboxes(environments, release?.revision),
       memory,
       imports,
       importExtraction,
@@ -1639,6 +1641,7 @@ async function main() {
     owner,
     channels,
     operatorToken,
+    sandboxes: () => inspectSandboxes(environments, release?.revision),
     capabilities,
     browserCompanion,
     browserViewShutdown: browserViewShutdown.signal,

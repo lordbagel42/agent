@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { SpanStatusCode } from "@opentelemetry/api";
 import { type Handler, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -72,6 +72,7 @@ export interface HttpDependencies {
   slackIngressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
   telemetry?: Telemetry;
+  sandboxes?: () => Promise<unknown>;
   wakeups?: WakeupWebhooks & { inspect(): Promise<unknown> };
   github?: GitHubWebhooks;
   console?: {
@@ -245,6 +246,23 @@ export function createHttpApp(deps: HttpDependencies) {
       ? deps.owner.id
       : undefined;
   };
+  if (deps.sandboxes) {
+    const read = deps.sandboxes;
+    // A one-purpose credential; possession never authorizes /operator routes.
+    const snapshotToken = Buffer.from(
+      `Bearer ${createHmac("sha256", deps.operatorToken).update("june:sandboxes:read:v1").digest("base64url")}`,
+    );
+    app.get("/sandboxes/snapshot", async (c) => {
+      c.header("cache-control", "no-store");
+      const supplied = Buffer.from(c.req.header("authorization") ?? "");
+      if (
+        supplied.length !== snapshotToken.length ||
+        !timingSafeEqual(supplied, snapshotToken)
+      )
+        return c.json({ error: "unauthorized" }, 401);
+      return c.json(await read());
+    });
+  }
   const loginLinks = deps.console
     ? (deps.console.loginLinks ?? createConsoleLoginLinks(deps.console.origin))
     : undefined;

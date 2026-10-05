@@ -5,6 +5,7 @@ import {
   EnvironmentCapacityError,
   type EnvironmentProvider,
 } from "./contracts.js";
+import type { SandboxInfo } from "./inspection.js";
 
 type NativeRuntime = InstanceType<typeof JsBoxlite>;
 type NativeBox = NonNullable<Awaited<ReturnType<NativeRuntime["get"]>>>;
@@ -68,6 +69,35 @@ export function createBoxLiteProvider(
     name: "boxlite",
     binding: host.binding,
     persistence: "worker",
+    async inspect() {
+      // listInfo reads metadata. In 0.10.5 box.metrics() may BOOT a stopped VM.
+      // Do not acquire handles, return rootfs paths or expose SDK objects.
+      return (await runtime.listInfo())
+        .flatMap<SandboxInfo>((box) => {
+          const match = /^june-([a-f0-9]{32})-[a-f0-9]{16}$/.exec(
+            box.name ?? "",
+          );
+          if (!match?.[1]) return [];
+          return [
+            {
+              id: box.id,
+              worker: match[1],
+              state: box.state.status.toLowerCase(),
+              running: box.state.running,
+              image:
+                box.image.startsWith("rootfs:") || box.image.startsWith("/")
+                  ? "Managed browser image"
+                  : box.image.slice(0, 256),
+              cpus: box.cpus,
+              memoryMib: box.memoryMib,
+              createdAt: box.createdAt,
+              startedAt: box.startedAt ?? null,
+              outbound: box.network?.outbound.mode ?? "unknown",
+            },
+          ];
+        })
+        .slice(0, 128);
+    },
     async connect(owner) {
       const name = `${prefix(owner)}${policy}`;
       if (pending.has(name)) throw new Error("Environment already admitted");

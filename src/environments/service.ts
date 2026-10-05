@@ -6,6 +6,11 @@ import {
   type EnvironmentResult,
   environmentCommandSchema,
 } from "./contracts.js";
+import {
+  type SandboxActivity,
+  type SandboxSnapshot,
+  workerFingerprint,
+} from "./inspection.js";
 
 interface Lease {
   opening: Promise<Environment>;
@@ -21,6 +26,9 @@ export class EnvironmentService {
   private readonly leases = new Map<string, Lease>();
   private readonly revoked = new Set<string>();
   private closing = false;
+  private readonly activity: SandboxActivity[] = [];
+  private readonly activitySince = new Date().toISOString();
+  private sequence = 0;
   readonly available = true;
 
   constructor(private readonly provider: EnvironmentProvider) {}
@@ -31,6 +39,45 @@ export class EnvironmentService {
 
   isSettled() {
     return this.leases.size === 0;
+  }
+
+  private record(
+    owner: string,
+    kind: SandboxActivity["kind"],
+    result?: EnvironmentResult,
+  ) {
+    this.activity.unshift({
+      sequence: ++this.sequence,
+      at: new Date().toISOString(),
+      worker: workerFingerprint(owner),
+      kind,
+      ...(result?.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
+      ...(result?.code ? { code: result.code } : {}),
+    });
+    this.activity.length = Math.min(this.activity.length, 200);
+  }
+
+  async inspect() {
+    if (!this.provider.inspect) throw new Error("Inventory unavailable");
+    const boxes = await this.provider.inspect();
+    const leases: SandboxSnapshot["leases"] = [...this.leases].map(
+      ([owner, lease]) => ({
+        worker: workerFingerprint(owner),
+        state: lease.failed
+          ? "needs_review"
+          : lease.releasing || lease.stopping
+            ? "stopping"
+            : lease.running
+              ? "executing"
+              : "active",
+      }),
+    );
+    return {
+      boxes,
+      leases,
+      activity: this.activity.map((entry) => ({ ...entry })),
+      activitySince: this.activitySince,
+    };
   }
 
   async run(
@@ -63,12 +110,21 @@ export class EnvironmentService {
         opening: Promise.resolve().then(() => this.provider.connect(owner)),
       };
       this.leases.set(owner, lease);
+      this.record(owner, "opening");
     }
     const current = lease;
     const running = this.execute(current, command.command, signal, authorized);
     current.running = running;
     try {
-      return await running;
+      const result = await running;
+      this.record(
+        owner,
+        result.status === "ok" && result.exitCode === 0
+          ? "command_completed"
+          : "command_failed",
+        result,
+      );
+      return result;
     } finally {
       current.running = undefined;
     }
@@ -158,8 +214,10 @@ export class EnvironmentService {
     try {
       await this.stop(lease);
       this.leases.delete(owner);
+      this.record(owner, "stopped");
     } catch {
       lease.failed = true;
+      this.record(owner, "cleanup_unknown");
       throw new Error("Environment cleanup unconfirmed");
     }
   }
@@ -168,6 +226,7 @@ export class EnvironmentService {
     this.revoked.add(owner);
     await this.release(owner);
     await this.provider.destroy(owner);
+    this.record(owner, "destroyed");
   }
 
   async close(): Promise<void> {

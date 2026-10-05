@@ -326,6 +326,7 @@ export interface CompanionReply {
     | "forgetting"
     | "operations"
     | "debug-shares"
+    | "sandboxes"
     | "capacity"
     | "retention"
     | "capabilities"

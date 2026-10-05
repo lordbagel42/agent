@@ -34,6 +34,8 @@ export interface EnvironmentProvider {
   connect(owner: string): Promise<Environment>;
   destroy(owner: string): Promise<void>;
   close(): Promise<void>;
+  /** Observational metadata only: must not start/attach/recover compute. */
+  inspect?(): Promise<import("./inspection.js").SandboxInfo[]>;
 }
 export interface EnvironmentResult {
   status: "ok" | "error" | "unavailable";

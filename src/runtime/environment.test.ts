@@ -248,6 +248,8 @@ it.for(["interaction", "execution", "automated"] as const)(
     });
     expect(request.system).toContain("BoxLite");
     expect(request.system).toContain("agent-browser");
+    expect(request.system).toContain('inspection:"sandboxes"');
+    expect(request.system).toContain("sandboxes.raygen.dev");
     expect(request.environmentAvailable).toBe(role !== "automated");
     expect(
       Object.hasOwn(replyJsonSchema([], request).properties, "environment"),
