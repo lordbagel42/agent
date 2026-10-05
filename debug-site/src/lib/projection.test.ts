@@ -164,6 +164,48 @@ describe("retained evidence projection", () => {
     });
   });
 
+  it("orders the timeline newest first while keeping ties and untimed evidence in source order", () => {
+    const snapshot = capture({
+      coordinator: {
+        events: {
+          middle: { event: { occurredAt: 2000 } },
+          oldest: { event: { occurredAt: 0 } },
+          newest: { event: { occurredAt: 6000 } },
+        },
+        pending: { tied: { occurredAt: 2000 } },
+        modelInvocations: { untimed: "settled" },
+        history: [
+          { role: "user", content: "First message" },
+          { role: "assistant", content: "Second message" },
+        ],
+      },
+      activity: { turns: [{ eventId: "turn", receivedAt: 5000 }] },
+    });
+    const original = structuredClone(snapshot);
+    const view = projectSnapshot(snapshot);
+
+    expect(view.timeline.map((row) => row.path)).toEqual([
+      "/data/coordinator/events/newest",
+      "/data/activity/turns/0",
+      "/data/coordinator/events/middle",
+      "/data/coordinator/pending/tied",
+      "/data/coordinator/events/oldest",
+      "/data/coordinator/modelInvocations/untimed",
+      "/data/coordinator/history/0",
+      "/data/coordinator/history/1",
+    ]);
+    expect(
+      pageItems(filterRows(view.timeline, "/events/"), 1, 2).items.map(
+        (row) => row.path,
+      ),
+    ).toEqual(["/data/coordinator/events/oldest"]);
+    expect(view.messages.map((row) => row.title)).toEqual([
+      "First message",
+      "Second message",
+    ]);
+    expect(snapshot).toEqual(original);
+  });
+
   it("searches complete retained payloads before pagination, including hostile text as plain data", () => {
     const view = projectSnapshot(
       capture({

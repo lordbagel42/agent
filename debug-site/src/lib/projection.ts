@@ -250,7 +250,7 @@ export function projectSnapshot(snapshot: DebugSnapshot) {
   timeline.sort((left, right) => {
     if (left.time === null) return right.time === null ? 0 : 1;
     if (right.time === null) return -1;
-    return left.time - right.time;
+    return right.time - left.time;
   });
   return {
     timeline,

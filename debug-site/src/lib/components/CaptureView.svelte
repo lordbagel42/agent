@@ -103,8 +103,8 @@
   </Tabs.List>
   <Tabs.Content value="timeline">
     <p class="section-note">
-      Recorded timestamps first; untimed records follow in source order. Markers
-      are not spans or proof of successful work.
+      Newest recorded timestamps first; untimed records follow in source order.
+      Markers are not spans or proof of successful work.
     </p>
     <EvidenceTable rows={view.timeline} label="Timeline" {utc} />
   </Tabs.Content>
