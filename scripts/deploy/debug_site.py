@@ -424,7 +424,7 @@ class Host:
             "WorkingDirectory": str(stage),
             "KillMode": "control-group",
             "RuntimeMaxSec": "900",
-            "MemoryMax": "2G",
+            "MemoryMax": "4G",
             "MemorySwapMax": "0",
             "OOMPolicy": "kill",
             "NoNewPrivileges": "yes",
