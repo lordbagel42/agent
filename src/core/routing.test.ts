@@ -46,6 +46,25 @@ describe("explicit identity linking", () => {
     expect(
       routeEvent({ ...guest, botMentioned: false }, owner),
     ).toBeUndefined();
+    const followup = {
+      ...guest,
+      botMentioned: false,
+      threadFollowup: true,
+      address: { ...guest.address, threadId: "122.100" },
+    };
+    expect(routeEvent(followup, owner)).toEqual({
+      key: ["guest", "slack", "T1", "C1", "122.100", "U2"],
+      private: false,
+    });
+    expect(
+      routeEvent({ ...followup, threadFollowup: undefined }, owner),
+    ).toBeUndefined();
+    expect(
+      routeEvent({ ...followup, address: guest.address }, owner),
+    ).toBeUndefined();
+    expect(
+      routeEvent({ ...followup, messageId: "122.100" }, owner),
+    ).toBeUndefined();
     expect(
       routeEvent(
         { ...guest, botMentioned: false, metadata: { channelType: "mpim" } },

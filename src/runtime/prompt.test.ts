@@ -286,6 +286,12 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "answer normally without demanding another ping",
     );
     expect(request.system).toContain(
+      "Slack thread subscriptions admit follow-up messages from every participant, not only the owner",
+    );
+    expect(request.system).toContain(
+      "Guests retain separate queues and unchanged tool permissions",
+    );
+    expect(request.system).toContain(
       "execution workers report relevant gaps to June rather than questioning the user",
     );
     expect(request.system).toContain(

@@ -17,9 +17,13 @@ channel replies and reactions remain separate and unchanged.
 Owner channel messages containing the whole word “June” (case-insensitive) or a
 direct @mention subscribe June to that thread, even when she chooses silence.
 Threads she starts or posts in are also subscribed. Subscriptions persist across
-restarts and let the owner follow up without another ping. Guest access, `##`
-opt-outs, direct-mention requirements for group pings, and privacy boundaries
-remain unchanged. A name reference does not count as a direct @mention.
+restarts and let every participant follow up without another ping. Guests remain
+in separate guest queues with unchanged tool permissions and receive the same
+bounded same-conversation context as guest pings when context is enabled, never
+owner-private history. Unrelated threads and unmentioned top-level guest messages
+are not admitted by a subscription. `##` opt-outs, direct-mention requirements for
+group pings, and privacy boundaries remain unchanged. A name reference does not
+count as a direct @mention. Previously ignored messages are not replayed.
 
 Outside group DMs, subscribing, being named, or being pinged does not obligate
 June to reply. This uses the existing `message.channels` / `message.groups`

@@ -29,13 +29,25 @@ function adapter(fetch: typeof globalThis.fetch) {
 }
 
 describe("Slack same-surface context", () => {
-  it("gives unmentioned bots and group-DM participants context without admitting channel bystanders", async () => {
+  it("gives admitted participants context without admitting channel bystanders", async () => {
     let groupDm = false;
     const slackFetch: typeof globalThis.fetch = async (url) => {
       if (String(url).endsWith("conversations.info"))
         return Response.json({
           ok: true,
           channel: { id: "C1", is_channel: !groupDm, is_mpim: groupDm },
+        });
+      if (String(url).endsWith("conversations.replies"))
+        return Response.json({
+          ok: true,
+          messages: [
+            {
+              ts: "1799999999.000001",
+              thread_ts: "1799999998.000001",
+              user: "U_JUNE",
+              text: "Use the green slot",
+            },
+          ],
         });
       if (String(url).endsWith("conversations.history"))
         return Response.json({
@@ -56,6 +68,25 @@ describe("Slack same-surface context", () => {
       ["The launch is Friday", "what do you think?"],
     );
     expect(await slack.context?.({ ...bot, senderId: "U_OTHER" })).toEqual([]);
+    const guestThread = {
+      ...event,
+      senderId: "U_OTHER",
+      threadFollowup: true,
+      address: { ...event.address, threadId: "1799999998.000001" },
+    };
+    expect(
+      (await slack.context?.(guestThread))?.map(({ content }) => content),
+    ).toEqual([
+      "The launch is Friday",
+      "Use the green slot",
+      "what do you think?",
+    ]);
+    expect(
+      await slack.context?.({ ...guestThread, threadFollowup: undefined }),
+    ).toEqual([]);
+    expect(
+      await slack.context?.({ ...guestThread, address: event.address }),
+    ).toEqual([]);
     groupDm = true;
     expect(
       (

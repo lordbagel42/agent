@@ -234,19 +234,6 @@ async function normalizeEvent(
     (event.text.startsWith("##") || event.text.includes(RIVET_REPLY_PREFIX))
   )
     return [];
-  // Human guests must explicitly address June outside DMs and group DMs.
-  // Bot messages are ordinary conversational input even without a ping.
-  if (
-    !owner &&
-    !bot &&
-    !mentioned &&
-    !debugEligible &&
-    !(
-      event.type === "message" &&
-      (event.channel_type === "im" || event.channel_type === "mpim")
-    )
-  )
-    return [];
   if (event.type === "message" || event.type === "app_mention") {
     if (
       (event.subtype !== undefined &&
@@ -299,7 +286,7 @@ async function normalizeEvent(
       channelType !== "im" &&
       !mentioned &&
       !named &&
-      owner &&
+      !bot &&
       nonEmptyString(event.thread_ts) &&
       event.thread_ts !== event.ts &&
       (event.parent_user_id === botUserId ||
@@ -394,6 +381,7 @@ async function normalizeEvent(
         direct: channelType === "im",
         text: sessionEligible ? sessionText : event.text,
         botMentioned: mentioned,
+        ...(participatingThread ? { threadFollowup: true } : {}),
         ...(sessionCandidate
           ? { sessionCommandEligible: sessionEligible }
           : {}),

@@ -391,7 +391,7 @@ describe("createSlackAdapter", () => {
     },
   );
 
-  it("admits owner follow-ups in subscribed threads without expanding guest access", async (t) => {
+  it("admits subscribed-thread participants while keeping guests scoped", async (t) => {
     const root = mkdtempSync(join(tmpdir(), "june-slack-threads-"));
     const file = join(root, "threads.sqlite");
     let threads = new SlackThreads(file);
@@ -445,7 +445,38 @@ describe("createSlackAdapter", () => {
     expect(await reply({ channel: "C_OTHER" })).toEqual([]);
     expect(await reply({ thread_ts: "99.999" })).toEqual([]);
     expect(await reply({ thread_ts: undefined })).toHaveLength(1);
-    expect(await reply({ user: "U_GUEST" })).toEqual([]);
+    for (const user of ["U_GUEST", "U_ANOTHER"]) {
+      const [guest] = await reply({ user });
+      expect(guest).toMatchObject({
+        senderId: user,
+        botMentioned: false,
+        threadFollowup: true,
+      });
+      expect(
+        guest &&
+          routeEvent(guest, {
+            id: "owner",
+            identities: [
+              { channel: "slack", accountId: teamId, senderId: "U_HUMAN" },
+            ],
+          }),
+      ).toEqual({
+        key: ["guest", "slack", teamId, "C_THREAD", "100.123", user],
+        private: false,
+      });
+      for (const changes of [
+        { channel: "C_OTHER" },
+        { thread_ts: "99.999" },
+        { thread_ts: undefined },
+        { thread_ts: "101.456" },
+        { text: "## don't read" },
+      ]) {
+        // Payload-supplied flags must not substitute for host participation evidence.
+        expect(await reply({ user, threadFollowup: true, ...changes })).toEqual(
+          [],
+        );
+      }
+    }
     expect(await reply({ text: "## don't read" })).toEqual([]);
     for (const text of ["JUNE, FYI", `<@${botUserId}> FYI`]) {
       const rootTs = text.startsWith("JUNE") ? "55.555" : "44.444";
@@ -457,7 +488,9 @@ describe("createSlackAdapter", () => {
       threads = new SlackThreads(file);
       adapter = makeAdapter(fetchImpl, { threads });
       expect(await reply({ thread_ts: rootTs })).toHaveLength(1);
-      expect(await reply({ thread_ts: rootTs, user: "U_GUEST" })).toEqual([]);
+      expect(await reply({ thread_ts: rootTs, user: "U_GUEST" })).toHaveLength(
+        1,
+      );
       expect(await reply({ thread_ts: rootTs, channel: "C_OTHER" })).toEqual(
         [],
       );
@@ -788,7 +821,9 @@ describe("createSlackAdapter", () => {
       ).events;
     expect(await reply({})).toHaveLength(1);
     expect(await reply({ parent_user_id: "U_OTHER" })).toEqual([]);
-    expect(await reply({ user: "U_GUEST" })).toEqual([]);
+    expect(await reply({ user: "U_GUEST" })).toMatchObject([
+      { threadFollowup: true, botMentioned: false },
+    ]);
     expect(await reply({ thread_ts: undefined })).toEqual([]);
     expect(await reply({ thread_ts: "201.234" })).toEqual([]);
     expect(await reply({ text: "## ignored" })).toEqual([]);

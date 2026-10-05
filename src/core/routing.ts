@@ -39,6 +39,11 @@ export function routeEvent(
       (!event.direct &&
         event.metadata?.channelType !== "mpim" &&
         !event.botMentioned &&
+        !(
+          event.threadFollowup === true &&
+          address.threadId &&
+          address.threadId !== event.messageId
+        ) &&
         !debug &&
         !event.senderId.startsWith("bot:"))
     )
