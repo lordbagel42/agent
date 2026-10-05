@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import stat
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ from pathlib import Path
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 THREAD = re.compile(r"T-[0-9a-f-]{36}", re.IGNORECASE)
 LIMIT = 64 * 1024 * 1024
+READY_TIMEOUT = 30
 
 
 def read_private(path, limit=LIMIT, owner=None):
@@ -69,69 +71,108 @@ def save_receipt(directory, receipt):
         Path(temporary).unlink(missing_ok=True)
 
 
+def dispatch_due(directory, identity):
+    try:
+        receipt = json.loads(
+            read_private(directory / f"{identity}.receipt.json", limit=4096)
+        )
+    except FileNotFoundError:
+        return True
+    if receipt["id"] != identity:
+        raise ValueError("invalid_debug_receipt")
+    return receipt["status"] == "queued" and receipt["retryAt"] <= time.time() * 1000
+
+
+def wait_ready(stream, expected):
+    # A partial line must not defeat the deadline. Read no bytes beyond READY;
+    # the buffered stream reader below owns subsequent Amp records.
+    deadline = time.monotonic() + READY_TIMEOUT
+    received = b""
+    while len(received) < len(expected):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([stream], [], [], remaining)[0]:
+            raise TimeoutError("debug_runner_not_ready")
+        chunk = os.read(stream.fileno(), len(expected) - len(received))
+        received += chunk
+        if not chunk or not expected.startswith(received):
+            raise ValueError("invalid_debug_readiness")
+
+
 def dispatch(directory, path, ssh):
     identity = path.stem
-    receipt_path = directory / f"{identity}.receipt.json"
-    if receipt_path.exists():
+    if not dispatch_due(directory, identity):
         return
-    receipt = {"id": identity, "status": "running"}
-    # A durable launch intent is the fence. Neither daemon restarts nor a lost
-    # transport response can authorize another external launch for this UUID.
+    receipt = {
+        "id": identity,
+        "status": "queued",
+        "retryAt": int(time.time() * 1000) + 30000,
+    }
+    # Queued means no snapshot bytes have been authorized for transport. This
+    # retry checkpoint survives dispatcher restarts and does not consume admission.
     save_receipt(directory, receipt)
     try:
         data = read_private(path)
         if json.loads(data).get("id") != identity:
             raise ValueError("debug_identity_mismatch")
         digest = hashlib.sha256(data).hexdigest()
-        # Use a file for stdin, avoiding pipe deadlock for large snapshots.
-        with tempfile.TemporaryFile() as incoming:
-            incoming.write(data)
-            incoming.seek(0)
-            with subprocess.Popen(
-                [*ssh, f"june-debugshare {identity} {digest}"],
-                stdin=incoming,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
-            ) as process:
+        command = f"june-debugshare-ready {identity} {digest}"
+        with subprocess.Popen(
+            [*ssh, command],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+        ) as process:
+            try:
+                wait_ready(process.stdout, f"{command}\n".encode())
+                # Never send even buffered bytes before this durable fence. A
+                # crash after it is ambiguous, even if Amp emits no thread ID.
+                receipt = {"id": identity, "status": "running"}
+                save_receipt(directory, receipt)
+                # The endpoint consumes all input before starting Amp, so large
+                # snapshots cannot deadlock against Amp's stdout stream.
+                process.stdin.write(data)
+                process.stdin.close()
                 succeeded = False
-                try:
-                    while line := process.stdout.readline(1_048_577):
-                        if len(line) > 1_048_576:
-                            raise ValueError("debug_stream_record_too_large")
-                        message = json.loads(line)
-                        if not isinstance(message, dict):
-                            raise TypeError("invalid_debug_stream")
+                while line := process.stdout.readline(1_048_577):
+                    if len(line) > 1_048_576:
+                        raise ValueError("debug_stream_record_too_large")
+                    message = json.loads(line)
+                    if not isinstance(message, dict):
+                        raise TypeError("invalid_debug_stream")
+                    if (
+                        message.get("type") == "system"
+                        and message.get("subtype") == "init"
+                    ):
+                        thread = message.get("session_id")
                         if (
-                            message.get("type") == "system"
-                            and message.get("subtype") == "init"
+                            "threadId" in receipt
+                            or not isinstance(thread, str)
+                            or not THREAD.fullmatch(thread)
                         ):
-                            thread = message.get("session_id")
-                            if (
-                                "threadId" in receipt
-                                or not isinstance(thread, str)
-                                or not THREAD.fullmatch(thread)
-                            ):
-                                raise ValueError("invalid_debug_thread")
-                            receipt["threadId"] = thread
-                            save_receipt(directory, receipt)
-                        if message.get("type") == "result":
-                            if (
-                                not receipt.get("threadId")
-                                or message.get("session_id") != receipt["threadId"]
-                            ):
-                                raise ValueError("invalid_debug_result")
-                            succeeded = message.get("is_error") is False
-                    receipt["status"] = (
-                        "completed" if process.wait() == 0 and succeeded else "unknown"
-                    )
-                except BaseException:
-                    # Only stop our transport, never assume the remote agent stopped.
-                    process.kill()
-                    process.wait()
-                    raise
-    except Exception:  # noqa: BLE001 - uncertain effects must retain the launch fence
-        receipt["status"] = "unknown"
+                            raise ValueError("invalid_debug_thread")
+                        receipt["threadId"] = thread
+                        save_receipt(directory, receipt)
+                    if message.get("type") == "result":
+                        if (
+                            not receipt.get("threadId")
+                            or message.get("session_id") != receipt["threadId"]
+                        ):
+                            raise ValueError("invalid_debug_result")
+                        succeeded = message.get("is_error") is False
+                receipt["status"] = (
+                    "completed" if process.wait() == 0 and succeeded else "unknown"
+                )
+            except BaseException:
+                # Only stop our transport, never assume the remote agent stopped.
+                process.kill()
+                process.wait()
+                raise
+    except Exception:  # noqa: BLE001 - no transport errors or private payloads in receipts
+        if receipt["status"] != "queued":
+            receipt["status"] = "unknown"
+        else:
+            receipt["retryAt"] = int(time.time() * 1000) + 30000
     save_receipt(directory, receipt)
 
 
@@ -147,7 +188,7 @@ def main():
         or any(not isinstance(arg, str) or not arg for arg in ssh)
     ):
         raise ValueError("invalid_debug_ssh")
-    # One independent dispatcher; restarting it never replays launch intents.
+    # One independent dispatcher; queued retries resume, launch intents never replay.
     with open(directory / ".dispatcher.lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         for path in directory.glob("*.receipt.json"):
@@ -171,7 +212,7 @@ def main():
                 if (
                     UUID.fullmatch(path.stem)
                     and path.stem not in workers
-                    and not (directory / f"{path.stem}.receipt.json").exists()
+                    and dispatch_due(directory, path.stem)
                 ):
                     # One observer per UUID, not one investigation at a time.
                     # Track the worker before the next scan, even if it has not

@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -79,10 +80,12 @@ def prompt(identity, snapshot, owner_report=False):
 
 
 def prepare(original, config, incoming):
-    match = re.fullmatch(r"june-debugshare ([0-9a-f-]{36}) ([0-9a-f]{64})", original)
-    if not match or not dispatch.UUID.fullmatch(match[1]):
+    match = re.fullmatch(
+        r"june-debugshare(-ready)? ([0-9a-f-]{36}) ([0-9a-f]{64})", original
+    )
+    if not match or not dispatch.UUID.fullmatch(match[2]):
         raise ValueError("invalid_debug_command")
-    identity, digest = match.groups()
+    handshake, identity, digest = match.groups()
     cli, directory = config["command"], config["runnerDirectory"]
     if (
         not isinstance(cli, list)
@@ -94,6 +97,23 @@ def prepare(original, config, incoming):
     ):
         raise ValueError("invalid_debug_config")
     root = dispatch.private_directory(config["snapshotDirectory"])
+    if handshake:
+        # This read-only CLI command queries the selected local runner's control
+        # socket. A stopped/unresponsive runner must not consume UUID admission.
+        # It is a point-in-time check, not a reservation or server-health proof.
+        subprocess.run(
+            [*cli, "runner", "dirs", "list", "--runner-id", "homelab-amp"],
+            cwd=directory,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=runner.environment(),
+            timeout=15,
+            check=True,
+        )
+        print(original, flush=True)
+    # READY alone authorizes nothing. EOF, partial data or a changed digest can
+    # never admit a UUID; only the dispatcher supplies the complete snapshot.
     data = incoming.read(dispatch.LIMIT + 1)
     if (
         len(data) > dispatch.LIMIT

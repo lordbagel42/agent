@@ -475,6 +475,16 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "without waiting for earlier investigations to finish",
     );
     expect(request.system).toContain(
+      "durably queued and retries after 30 seconds, without an attempt limit",
+    );
+    expect(request.system).toContain(
+      "Queued retries survive June and dispatcher restarts",
+    );
+    expect(request.system).toContain(
+      "a failure after launch intent, even without a thread ID, remains unknown",
+    );
+    expect(request.system).toContain("the dispatcher owns retries");
+    expect(request.system).toContain(
       "the host replies with the Amp thread link",
     );
     expect(request.system).toContain(

@@ -90,26 +90,26 @@ def main():
     execute(argv, config["runnerDirectory"])
 
 
-def execute(argv, directory):
+def environment():
+    # No SSH-supplied environment reaches Amp. Credentials remain in its own home.
     user = pwd.getpwuid(os.getuid())
+    return {
+        "HOME": user.pw_dir,
+        "USER": user.pw_name,
+        "LOGNAME": user.pw_name,
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+    }
+
+
+def execute(argv, directory):
     os.chdir(directory)
     # Amp accepts piped input alongside --execute. SSH stdin is not prompt data.
     fd = os.open(os.devnull, os.O_RDONLY)
     os.dup2(fd, 0, inheritable=True)
     if fd != 0:
         os.close(fd)
-    # No SSH-supplied environment reaches Amp. Credentials remain in its own home.
-    os.execve(
-        argv[0],
-        argv,
-        {
-            "HOME": user.pw_dir,
-            "USER": user.pw_name,
-            "LOGNAME": user.pw_name,
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
-            "LANG": "C.UTF-8",
-        },
-    )
+    os.execve(argv[0], argv, environment())
 
 
 if __name__ == "__main__":

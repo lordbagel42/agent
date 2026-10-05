@@ -8,7 +8,8 @@ import type { DebugInvestigator } from "./session-controls.js";
 const idSchema = z.string().uuid();
 const receiptSchema = z.strictObject({
   id: idSchema,
-  status: z.enum(["running", "completed", "unknown"]),
+  status: z.enum(["queued", "running", "completed", "unknown"]),
+  retryAt: z.number().int().nonnegative().optional(),
   threadId: z
     .string()
     .regex(/^T-[a-f0-9-]{36}$/i)

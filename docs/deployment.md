@@ -1425,21 +1425,41 @@ Focused local safety check (no live Slack calls):
 DEBUGSHARE uses its own independently installed service and restricted SSH key,
 not June's local SDK, ordinary Amp jobs, or the recovery incident ledger. June
 publishes an immutable UUID-named snapshot into a private shared inbox. The
-dispatcher persists launch intent before SSH; the runner durably admits each
-UUID once before starting Amp. Loss of either process/receipt is unknown, never
-permission to launch twice. Each distinct UUID gets its own concurrent dispatcher
-worker on the next two-second inbox scan; ten shares can start ten investigations
-without waiting for any to finish. The single dispatcher lock prevents competing
-daemons, not parallel investigations. Each worker publishes its thread ID as soon
-as Amp emits it, independently of completion. Snapshot transfer and Amp startup
-still take time; the initial queued acknowledgment is not a launch receipt.
+dispatcher persists a `queued` receipt with a `retryAt` Unix-millisecond deadline
+before connecting. SSH failure or a stopped/unresponsive local Amp runner leaves
+the same request queued; it retries after 30 seconds with no attempt limit,
+including after dispatcher or June restarts. No snapshot bytes are sent until the
+endpoint confirms readiness and the dispatcher durably records `running` launch
+intent. The endpoint queries `amp runner dirs list --runner-id homelab-amp` under
+the same sanitized account environment as execution, with a 15-second timeout;
+the dispatcher bounds the full readiness handshake, including partial responses,
+to 30 seconds. This local control-socket check is not proof of Amp-server
+connectivity or a reservation. A later failure remains uncertain, even without a
+thread ID. Neither side retries a committed launch automatically.
+
+The runner durably admits each UUID once before starting Amp. Each distinct UUID
+gets its own concurrent dispatcher worker on the next two-second inbox scan when
+its retry deadline is due; ten shares can start ten investigations without waiting
+for any to finish. The single dispatcher lock prevents competing daemons, not
+parallel investigations. Each worker publishes its thread ID as soon as Amp emits
+it, independently of completion. Snapshot transfer and Amp startup still take
+time; the initial queued acknowledgment is not a launch receipt.
 Deployment locks and operator/recovery ownership still serialize live mutations.
-Restarting June does not stop investigations. Restarting the dispatcher marks
-interrupted observations unknown and never replays them; an Amp thread may still
-be running. Do not delete admission records to retry. Updating this standalone
-dispatcher requires an authorized installation/restart outside app deployment;
-coordinate the cutover around active transports rather than interrupting them
-merely to enable parallel launches.
+Restarting June does not stop investigations. Restarting the dispatcher resumes
+queued retries but marks interrupted `running` observations unknown and never
+replays them; an Amp thread may still be running. Historical unknown receipts are
+not automatically requeued. Do not delete receipts or admission records to retry.
+Updating this standalone dispatcher requires an authorized installation/restart
+outside app deployment; coordinate the cutover around active transports rather
+than interrupting them merely to enable retries.
+
+For a retry-capable rollout, update the application receipt reader and install
+the matching runner scripts before enabling the new dispatcher. The endpoint
+retains the old command for in-flight/older dispatchers. The new dispatcher uses
+only the readiness command: an old endpoint rejects it and leaves the request
+queued, never falling back to an unsafe launch. Rolling the dispatcher back to
+an older version strands queued receipts until it is upgraded again; it does not
+authorize replay. Installing source is not runtime activation.
 
 Installation is a separate authorized, coordinated operation, not a consequence
 of pushing source. Preserve existing recovery and ordinary-job keys/config:
@@ -1472,9 +1492,12 @@ of pushing source. Preserve existing recovery and ordinary-job keys/config:
    and `deploy.py` together root-owned outside releases. The dedicated SSH key
    must have `restrict`, the expected source restriction, and forced command
    `/usr/bin/python3 -I /usr/local/lib/june-deploy/debugshare_runner.py`.
-   That endpoint only accepts `june-debugshare UUID SHA256`, with the snapshot
-   on stdin (maximum 64 MiB). No caller-selected prompt, executable, directory,
-   or arbitrary shell is accepted. Store snapshots outside Git in a canonical
+   That endpoint accepts `june-debugshare-ready UUID SHA256`, echoes that exact
+   command plus newline after its read-only runner check, then reads the snapshot
+   on stdin through EOF (maximum 64 MiB). Empty, partial or digest-invalid input
+   cannot admit a UUID or launch Amp. The legacy `june-debugshare UUID SHA256`
+   remains supported without a handshake for older dispatchers. No caller-selected
+   prompt, executable, directory, or arbitrary shell is accepted. Store snapshots outside Git in a canonical
    mode-0700 directory owned by the authenticated Amp account. Install root-owned
    `/etc/june-debugshare/runner.json`:
 

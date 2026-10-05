@@ -209,9 +209,15 @@ destructive data operations, or credential/permission expansion.
 
 Without the application gate the snapshot is saved but no request is dispatched.
 Queued does not establish that the independent service is installed or running.
-June restarts do not cancel investigations. The dispatcher and runner each fence
-duplicate launches; ambiguous launches are never automatically retried. Old
-local-runtime running/unknown receipts are not migrated into new investigations.
+With the updated dispatcher and runner endpoint installed, requests remain durably
+queued while SSH or the local Amp runner is unavailable before launch authorization.
+The dispatcher retries the same UUID after 30 seconds without an attempt limit,
+and resumes queued retries after restarting. June restarts or observer timeouts
+do not cancel queued requests or investigations. The readiness check is not a
+guarantee of Amp-server connectivity or continued availability. After launch intent
+is committed, ambiguous outcomes still require operator reconciliation rather
+than automatic relaunch. Both sides fence duplicate launches; old running/unknown
+receipts are not requeued. Do not issue another DEBUGSHARE to retry pending work.
 For new enabled requests, June follows the queued acknowledgment with the Amp
 thread link as soon as its receipt supplies the thread ID. Owner-submitted reports
 return the link to the original conversation/thread, including shared channels;

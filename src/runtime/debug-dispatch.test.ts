@@ -102,6 +102,16 @@ it("exposes late independent receipts through actor inspection after observation
   await publishDebugSnapshot(snapshot, (chunk) => actor.startChunk(chunk));
   await expect.poll(() => run.mock.settledResults[0]?.type).toBe("rejected");
   expect((await actor.inspect()).status).toBe("queued");
+  await writeFile(
+    join(directory, `${snapshot.id}.receipt.json`),
+    JSON.stringify({
+      id: snapshot.id,
+      status: "queued",
+      retryAt: Date.now() + 30_000,
+    }),
+    { mode: 0o600 },
+  );
+  expect((await actor.inspect()).status).toBe("queued");
   const threadId = `T-${randomUUID()}`;
   await writeFile(
     join(directory, `${snapshot.id}.receipt.json`),

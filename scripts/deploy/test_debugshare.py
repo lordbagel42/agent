@@ -130,66 +130,186 @@ class DebugShare(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 runner.prepare(command, config, io.BytesIO(data))
 
-    def test_local_launch_fence_unknown_and_metadata_only_receipts(self):
-        for mode in ("complete", "lost", "mismatch"):
+    def test_offline_transport_and_runner_retry_the_same_request_after_restart(self):
+        # Exercise the actual endpoint and admission, replacing only SSH and Amp.
+        transport = """
+import importlib.util, json, os, pathlib, sys
+sys.dont_write_bytecode = True
+root = pathlib.Path(sys.argv[1])
+if (root / 'ssh-offline').exists():
+    raise SystemExit(255)
+spec = importlib.util.spec_from_file_location('endpoint', sys.argv[2])
+endpoint = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(endpoint)
+read = endpoint.dispatch.read_private
+config = json.dumps({'command': [str(root / 'amp')],
+                    'runnerDirectory': str(root),
+                    'snapshotDirectory': str(root / 'snapshots')}).encode()
+endpoint.dispatch.read_private = lambda path, **kw: (
+    config if path == '/etc/june-debugshare/runner.json' else read(path, **kw))
+os.environ['SSH_ORIGINAL_COMMAND'] = sys.argv[3]
+endpoint.main()
+"""
+        amp = (
+            f"#!{sys.executable}\n"
+            + """
+import json, pathlib, sys
+root = pathlib.Path.cwd()
+if sys.argv[1:] == ['runner', 'dirs', 'list', '--runner-id', 'homelab-amp']:
+    if (root / 'runner-offline').exists():
+        raise SystemExit(1)
+    print(str(root))
+    raise SystemExit(0)
+assert sys.argv[1:9] == ['--mode', 'ultra', '--features', 'fast',
+                          '--executor', 'runner:homelab-amp', '--runner-dir', str(root)]
+with (root / 'launch').open('x'):
+    pass
+thread = 'T-12345678-1234-4234-8234-123456789abc'
+print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': thread}), flush=True)
+if (root / 'lost-result').exists():
+    raise SystemExit(1)
+print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False}), flush=True)
+"""
+        )
+        for outage in ("ssh-offline", "runner-offline", "lost-result"):
+            with self.subTest(outage=outage), tempfile.TemporaryDirectory() as root:
+                directory = Path(root)
+                (directory / "snapshots").mkdir(mode=0o700)
+                cli = directory / "amp"
+                cli.write_text(amp)
+                cli.chmod(0o700)
+                failure = directory / outage
+                failure.touch()
+                path = directory / f"{IDENTITY}.json"
+                data = json.dumps({"id": IDENTITY, "data": "private 🌻" * 200_000})
+                path.write_text(data)
+                path.chmod(0o600)
+                ssh = [
+                    sys.executable,
+                    "-c",
+                    transport,
+                    root,
+                    str(Path(runner.__file__)),
+                ]
+                receipt_path = directory / f"{IDENTITY}.receipt.json"
+                with patch.object(dispatch.time, "time", return_value=100):
+                    dispatch.dispatch(directory, path, ssh)
+                receipt = json.loads(receipt_path.read_text())
+                if outage == "lost-result":
+                    self.assertEqual(
+                        receipt,
+                        {
+                            "id": IDENTITY,
+                            "status": "unknown",
+                            "threadId": THREAD,
+                        },
+                    )
+                else:
+                    self.assertEqual(
+                        receipt,
+                        {
+                            "id": IDENTITY,
+                            "status": "queued",
+                            "retryAt": 130000,
+                        },
+                    )
+                    self.assertFalse((directory / "launch").exists())
+                    self.assertEqual(list((directory / "snapshots").iterdir()), [])
+                failure.unlink()
+                # A fresh module has no in-memory retry state, like a daemon restart.
+                resumed = runner.load("debugshare")
+                with patch.object(resumed.time, "time", return_value=129.999):
+                    resumed.dispatch(directory, path, ssh)
+                self.assertEqual(json.loads(receipt_path.read_text()), receipt)
+                with patch.object(resumed.time, "time", return_value=130):
+                    resumed.dispatch(directory, path, ssh)
+                final = json.loads(receipt_path.read_text())
+                self.assertEqual(
+                    final,
+                    {
+                        "id": IDENTITY,
+                        "status": "unknown" if outage == "lost-result" else "completed",
+                        "threadId": THREAD,
+                    },
+                )
+                # Terminal/uncertain launches never retry, even after recovery.
+                with patch.object(resumed.time, "time", return_value=1000):
+                    resumed.dispatch(directory, path, ssh)
+                self.assertEqual(json.loads(receipt_path.read_text()), final)
+                self.assertEqual(
+                    (directory / "snapshots" / IDENTITY / "snapshot.json").read_text(),
+                    data,
+                )
+
+    def test_readiness_failures_retry_but_launch_fence_failures_never_replay(self):
+        transport = """
+import json, pathlib, select, sys, time
+root, mode, command = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+identity = command.split()[1]
+receipt = root / (identity + '.receipt.json')
+assert json.loads(receipt.read_text())['status'] == 'queued'
+assert not select.select([sys.stdin], [], [], 0.05)[0], 'payload sent before READY'
+(root / 'attempt').touch()
+assert 'PRIVATE' not in command
+if mode == 'old-endpoint':
+    raise SystemExit(1)
+if mode == 'partial-ready':
+    print(command[:10], end='', flush=True)
+    time.sleep(10)
+print(command, flush=True)
+data = sys.stdin.read()
+if not data:
+    raise SystemExit(1)
+assert json.loads(receipt.read_text())['status'] == 'running'
+assert json.loads(data)['id'] == identity
+(root / 'received').write_text(data)
+if mode == 'lost':
+    raise SystemExit(1)
+thread = 'T-' + identity
+print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': thread}), flush=True)
+print(json.dumps({'type': 'result', 'session_id': 'T-wrong' if mode == 'mismatch' else thread,
+                  'is_error': False, 'result': 'PRIVATE_REPORT'}), flush=True)
+"""
+        for mode, expected in (
+            ("old-endpoint", "queued"),
+            ("partial-ready", "queued"),
+            ("fence-failure", "unknown"),
+            ("lost", "unknown"),
+            ("mismatch", "unknown"),
+            ("complete", "completed"),
+        ):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
                 directory = Path(root)
                 path = directory / f"{IDENTITY}.json"
                 data = json.dumps({"id": IDENTITY, "data": "PRIVATE_SNAPSHOT"}).encode()
                 path.write_bytes(data)
                 path.chmod(0o600)
-                messages = [
-                    {"type": "system", "subtype": "init", "session_id": THREAD},
-                    {
-                        "type": "result",
-                        "session_id": THREAD if mode != "mismatch" else "T-wrong",
-                        "is_error": False,
-                        "result": "PRIVATE_REPORT",
-                    },
-                ]
+                save_receipt = dispatch.save_receipt
 
-                class Process:
-                    stdout = io.BytesIO(
-                        b"\n".join(json.dumps(m).encode() for m in messages) + b"\n"
-                    )
+                def save(directory, receipt, mode=mode, save_receipt=save_receipt):
+                    save_receipt(directory, receipt)
+                    if mode == "fence-failure" and receipt["status"] == "running":
+                        raise OSError("failed after persisting launch intent")
 
-                    def __enter__(self):
-                        return self
-
-                    def __exit__(self, *_):
-                        return False
-
-                    def wait(self):
-                        return 0
-
-                    def kill(self):
-                        pass
-
-                def start(argv, directory=directory, data=data, mode=mode, **kwargs):
-                    self.assertEqual(
-                        json.loads(
-                            (directory / f"{IDENTITY}.receipt.json").read_text()
-                        )["status"],
-                        "running",
-                    )
-                    self.assertEqual(kwargs["stdin"].read(), data)
-                    self.assertNotIn("PRIVATE_SNAPSHOT", " ".join(argv))
-                    if mode == "lost":
-                        raise OSError("uncertain launch")
-                    return Process()
-
-                with patch.object(
-                    dispatch.subprocess, "Popen", side_effect=start
-                ) as launch:
-                    dispatch.dispatch(directory, path, ["/fixture/ssh"])
-                    dispatch.dispatch(directory, path, ["/fixture/ssh"])
-                    self.assertEqual(launch.call_count, 1)
-                receipt = (directory / f"{IDENTITY}.receipt.json").read_text()
+                ssh = [sys.executable, "-c", transport, root, mode]
+                with (
+                    patch.object(dispatch, "save_receipt", side_effect=save),
+                    patch.object(dispatch, "READY_TIMEOUT", 0.5),
+                ):
+                    dispatch.dispatch(directory, path, ssh)
+                self.assertTrue((directory / "attempt").exists())
+                receipt_path = directory / f"{IDENTITY}.receipt.json"
+                receipt = receipt_path.read_text()
                 self.assertNotIn("PRIVATE", receipt)
+                self.assertEqual(json.loads(receipt)["status"], expected)
                 self.assertEqual(
-                    json.loads(receipt)["status"],
-                    "completed" if mode == "complete" else "unknown",
+                    (directory / "received").exists(),
+                    mode in ("lost", "mismatch", "complete"),
                 )
+                (directory / "attempt").unlink()
+                dispatch.dispatch(directory, path, ssh)
+                self.assertFalse((directory / "attempt").exists())
+                self.assertEqual(receipt_path.read_text(), receipt)
 
     def test_ten_threads_start_before_any_finishes_and_receipts_prevent_replay(self):
         # Real subprocess streams stand in for SSH/Amp, blocked until released.
@@ -197,6 +317,7 @@ class DebugShare(unittest.TestCase):
 import json, pathlib, sys, time
 root = pathlib.Path(sys.argv[1])
 identity = sys.argv[2].split()[1]
+print(sys.argv[2], flush=True)
 with (root / (identity + '.launch')).open('x'):
     pass
 assert json.load(sys.stdin)['id'] == identity
@@ -222,6 +343,9 @@ print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False}), f
             for identity in [*identities[:9], stale]:
                 request(identity)
             dispatch.save_receipt(directory, {"id": stale, "status": "running"})
+            dispatch.save_receipt(
+                directory, {"id": identities[8], "status": "queued", "retryAt": 0}
+            )
             config = json.dumps({"directory": root, "ssh": ["/usr/bin/ssh"]})
             read_private, popen = dispatch.read_private, dispatch.subprocess.Popen
             save_receipt = dispatch.save_receipt
@@ -246,7 +370,7 @@ print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False}), f
                 )
 
             def save(directory, receipt):
-                if receipt["id"] == identities[0] and "threadId" not in receipt:
+                if receipt["id"] == identities[0] and receipt["status"] == "queued":
                     fence_attempts.append(receipt["id"])
                     release_fence.wait()
                 save_receipt(directory, receipt)
