@@ -685,6 +685,42 @@ children alive: that also leaves Rivet/other children behind. Drain workers to
 completion, or independently move their lifecycle into a persistent worker
 service before claiming uninterrupted in-flight native execution.
 
+### Runtime preferences are application state
+
+`settings.sqlite` under `RIVETKIT_STORAGE_PATH` is private mutable application
+state, not part of the immutable release or host configuration binding. The app
+opens it only after acquiring active-runtime ownership; standby must not create,
+read or migrate it. Do not add this mutable database to release sealing, copy it
+into artifacts or restore it during code rollback. No new host permission or
+controller installation is required when the existing application storage path
+is writable. Execution workers expose the [settings interface](usage.md#junes-runtime-preferences);
+there is no new administrative HTTP writer or automatic restart hook.
+
+Each activation validates the complete overlay against the unoverridden parsed
+operator configuration plus immutable runtime binding. A baseline/binding change
+atomically invalidates all overrides and advances the version. Revision alone
+does not invalidate preferences. The database retains only the current set, not
+historical sets to resurrect on rollback. June distinguishes effective versus
+desired values, loaded/current versions and pending activation. Existing workers
+keep their loaded providers and captured permission ceiling until retired.
+
+A syntactically valid model name can still be unavailable from its provider, or
+saved state can be invalid. Startup fails closed on invalid storage; there is no
+automatic fallback that hides the problem. If June cannot use her own reset
+action, the designated operator must first acquire the deployment lock, respect
+recovery/hold ownership, stop/settle the poller and establish the appropriate
+hold. Drain and safely stop the owning runtime using the procedures below;
+never force-stop unknown work. With no process owning the settings database,
+preserve a private SQLite backup (including committed WAL contents), inspect the
+single `settings` row, and clear only the faulty override keys. For a contract-1
+row, update its JSON `overrides` and increment `version` in one SQLite transaction;
+retain `baseline`, `contract` and `invalidation`. Empty `overrides` resets all
+preferences to operator configuration. Do not delete storage or touch conversation
+journals. Unknown/corrupt contracts need explicit repair, not an invented record.
+Activate the repaired configuration under the same ownership, verify loaded
+revision/readiness and effective settings, then release only your own hold and
+restore polling. The app cannot perform or authorize these operator steps.
+
 ### Stop June before stopping its engine
 
 The app unit must run the root-owned installed controller's stop helper as its

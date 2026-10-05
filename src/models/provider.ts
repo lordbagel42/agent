@@ -46,6 +46,7 @@ import {
   personalityPreviewSchema,
 } from "../runtime/personality.js";
 import { personalityEvaluateSchema } from "../runtime/personality-evaluation-preview.js";
+import { SETTINGS_HELP, settingsCommandSchema } from "../settings/contracts.js";
 import { telemetryQuerySchema } from "../telemetry/index.js";
 import { E2B_HELP, e2bRequestSchema } from "../tools/e2b.js";
 import { emojiSearchSchema } from "../tools/emoji-search.js";
@@ -139,6 +140,7 @@ const recallTimestampSchema = z
   .transform((value) => value ?? undefined);
 
 const companionReplySchema = z.strictObject({
+  settings: settingsCommandSchema.optional(),
   agentWebhook: agentWebhookSchema.optional(),
   ampThread: ampThreadSchema.optional(),
   text: z.string(),
@@ -433,6 +435,7 @@ function isJsonObject(value: unknown): value is JsonObject {
 
 export type ReplyCapabilities = Pick<
   ModelRequest,
+  | "settingsAvailable"
   | "agentRole"
   | "agentConversation"
   | "agentWebhooksAvailable"
@@ -536,6 +539,7 @@ function rolePermitsField(
   role: ModelRequest["agentRole"],
   key: string,
 ): boolean {
+  if (key === "settings") return role === "execution";
   if (role === "repository") return key === "text" || key === "repositoryRead";
   if (key === "repositoryRead") return false;
   if (key === "repository") return role === "execution";
@@ -675,6 +679,33 @@ function legacyReplyJsonSchema(
           "maxItems",
           "pattern",
           "format",
+        ] as const) {
+          const limit = jsonSchema[key];
+          if (limit !== undefined) {
+            jsonSchema.description =
+              `${jsonSchema.description ?? ""} ${key}: ${limit}.`.trim();
+            delete jsonSchema[key];
+          }
+        }
+      },
+    },
+  );
+  const { $schema: _settingsSchema, ...settingsSchema } = z.toJSONSchema(
+    settingsCommandSchema,
+    {
+      target: "draft-7",
+      override({ jsonSchema }) {
+        if (jsonSchema.oneOf) {
+          jsonSchema.anyOf = jsonSchema.oneOf;
+          delete jsonSchema.oneOf;
+        }
+        // Keep strict local validation, but use the shared provider subset.
+        for (const key of [
+          "minimum",
+          "maximum",
+          "minItems",
+          "maxItems",
+          "pattern",
         ] as const) {
           const limit = jsonSchema[key];
           if (limit !== undefined) {
@@ -2076,8 +2107,19 @@ function legacyReplyJsonSchema(
             },
           }
         : {}),
+      ...(replyCapabilities(capabilities).settingsAvailable
+        ? {
+            settings: {
+              anyOf: [settingsSchema, { type: "null" }],
+              description: SETTINGS_HELP,
+            },
+          }
+        : {}),
     },
     required: [
+      ...(replyCapabilities(capabilities).settingsAvailable
+        ? ["settings"]
+        : []),
       ...(replyCapabilities(capabilities).agentWebhooksAvailable
         ? ["agentWebhook"]
         : []),
@@ -2380,6 +2422,7 @@ export function parseReply(
 
   const normalized = { ...value };
   for (const key of [
+    "settings",
     "messages",
     "sendMessages",
     "question",
@@ -2495,6 +2538,8 @@ export function parseReply(
     throw new ModelError("invalid_response", false);
   }
   if (
+    (reply.settings !== undefined &&
+      !replyCapabilities(capabilities).settingsAvailable) ||
     (reply.codingJob !== undefined && !codingJobsAvailable) ||
     (reply.search !== undefined && !searchAvailable) ||
     (reply.readImage !== undefined && !readImageAvailable) ||
@@ -2563,6 +2608,7 @@ export function parseReply(
     throw new ModelError("invalid_response", false);
   }
   const directiveCount =
+    Number(reply.settings !== undefined) +
     Number(reply.codingJob !== undefined) +
     Number(reply.workflow !== undefined) +
     Number(reply.javascript !== undefined) +
@@ -2632,7 +2678,8 @@ export function parseReply(
     directiveCount > 1 ||
     (directiveCount > 0 &&
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
-    ((reply.agentWebhook !== undefined ||
+    ((reply.settings !== undefined ||
+      reply.agentWebhook !== undefined ||
       reply.codingJob !== undefined ||
       reply.workflow !== undefined ||
       reply.javascript !== undefined ||

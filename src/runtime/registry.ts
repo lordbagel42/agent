@@ -171,6 +171,7 @@ import {
 } from "./typing.js";
 
 export interface Dependencies {
+  settings?: import("../settings/store.js").SettingsStore;
   agents?: import("../agent/service.js").AgentService;
   owner: Owner;
   continuity?: import("./continuity.js").ConversationContinuity;
@@ -4001,6 +4002,13 @@ export function createJuneRegistry(deps: Dependencies) {
                                       phase !== "synthesis" &&
                                       scope.private &&
                                       !!deps.inspection,
+                                    settingsAvailable:
+                                      body.type === "event" &&
+                                      phase !== "synthesis" &&
+                                      scope.private &&
+                                      ownerTurn &&
+                                      !!plan.execution &&
+                                      !!deps.settings,
                                     appsAvailable:
                                       version >= 12 &&
                                       plan.apps === true &&

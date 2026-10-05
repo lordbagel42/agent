@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { open, readFile, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -103,6 +104,7 @@ import {
 import { createRivetReader } from "./runtime/rivet-inspection.js";
 import { SocialPermissions } from "./runtime/social.js";
 import { sessionActorKey } from "./sessions/state.js";
+import { SettingsStore } from "./settings/store.js";
 import {
   initializeTelemetry,
   recordEvent,
@@ -175,11 +177,11 @@ function memoryKey(name: string) {
 
 async function main() {
   process.umask(0o077);
-  const config = parseConfig(
-    JSON.parse(
-      await readFile(process.env.JUNE_CONFIG ?? "config.local.json", "utf8"),
-    ),
-  );
+  const configPath = resolve(process.env.JUNE_CONFIG ?? "config.local.json");
+  const configBytes = await readFile(configPath, "utf8");
+  const config = parseConfig(JSON.parse(configBytes));
+  // Fingerprint operator inputs before slot-specific listener rewriting.
+  const settingsBaseline = structuredClone(config);
   const owner: Owner = {
     ...config.owner,
     identities: [
@@ -241,8 +243,27 @@ async function main() {
     await awaitSlotActivation({ ...slot, revision: release.revision, token });
     slotActivated = true;
   }
-  startupStage = "OpenTelemetry";
+  startupStage = "private runtime preferences";
   process.env.RIVETKIT_STORAGE_PATH ??= resolve(".data");
+  const settings = new SettingsStore({
+    path: join(process.env.RIVETKIT_STORAGE_PATH, "settings.sqlite"),
+    base: settingsBaseline,
+    binding: release?.binding,
+    revision: release?.revision,
+    isBaselineCurrent: () => {
+      try {
+        return readFileSync(configPath, "utf8") === configBytes;
+      } catch {
+        return false;
+      }
+    },
+  });
+  Object.assign(
+    config,
+    settings.effective,
+    slot ? { host: slot.host, port: slot.port } : {},
+  );
+  startupStage = "OpenTelemetry";
   telemetry = initializeTelemetry({
     path: join(process.env.RIVETKIT_STORAGE_PATH, "diagnostics", "otel.sqlite"),
     revision: release?.revision,
@@ -1289,6 +1310,7 @@ async function main() {
       })
     : undefined;
   const dependencies: Dependencies = {
+    settings,
     artifacts,
     owner,
     agents,
@@ -2041,6 +2063,7 @@ async function main() {
       memory?.store.close();
       social?.close();
       slackThreads?.close();
+      settings.close();
       diagnosticLog?.lifecycle("shutdown_resources_close_returned");
       // Rivet's own signal handler terminates after draining. With custom signal
       // handling we own that final step too; native runtime handles may remain.

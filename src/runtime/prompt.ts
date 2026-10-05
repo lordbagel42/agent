@@ -19,6 +19,7 @@ import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { JevQuestion } from "../models/jev.js";
 import { REPOSITORY_HELP } from "../repository/contracts.js";
 import { RESEARCH_HELP } from "../research/contracts.js";
+import { SETTINGS_HELP, SETTINGS_KNOWLEDGE } from "../settings/contracts.js";
 import { E2B_HELP } from "../tools/e2b.js";
 import { EMOJI_SEARCH_HELP } from "../tools/emoji-search.js";
 import { JAVASCRIPT_HELP } from "../tools/javascript.js";
@@ -57,6 +58,7 @@ export interface PromptModel {
 
 /** Availability for this invocation, not an inventory of installed modules. */
 export interface PromptCapabilities {
+  settingsAvailable?: boolean;
   agentRole?: ModelRequest["agentRole"];
   workspaces?: readonly string[];
   codingJobsAvailable?: boolean;
@@ -345,6 +347,12 @@ export function buildModelRequest({
     privateTurn && capabilities.analyticsAvailable === true;
   const inspectionAvailable =
     privateTurn && capabilities.inspectionAvailable === true;
+  const settingsAvailable =
+    privateTurn &&
+    !guest &&
+    !wakeup &&
+    (liveInput === true || agentRole === "execution") &&
+    capabilities.settingsAvailable === true;
   const appsAvailable = privateTurn && capabilities.appsAvailable === true;
   const artifactsAvailable =
     capabilities.artifactsAvailable === true && !wakeup;
@@ -969,6 +977,7 @@ export function buildModelRequest({
     readImageAvailable,
     readVideoAvailable,
     repositoryAvailable,
+    settingsAvailable,
   };
   if (agentRole === "interaction") {
     const workerCapabilities = Object.entries(request)
@@ -1113,6 +1122,9 @@ Answer the assigned question before listing procedure. Do not return a giant tra
   }
   request.system +=
     "\n\nJune's source code is open-source software (OSS), licensed under the MIT license, and publicly available at https://github.com/lordbagel42/agent. Open-source licensing of the code does not make private conversations, memories, credentials, or host data public.";
+  request.system += `\n\n${SETTINGS_KNOWLEDGE}\nSettings capability ${request.settingsAvailable ? "is available to authorized execution workers" : "is not granted in this turn"}.`;
+  if (agentRole === "execution" && request.settingsAvailable)
+    request.system += `\n${SETTINGS_HELP}`;
   request.agentWebhooksAvailable =
     privateTurn && capabilities.agentWebhooksAvailable === true;
   request.agentConversation = event.address.channel === "agent";

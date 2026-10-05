@@ -5,6 +5,8 @@ import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
+import { parseConfig } from "../src/config.js";
+import { SettingsStore } from "../src/settings/store.js";
 import { freeEnginePort, stopTestEngine } from "./rivet.js";
 
 const operatorToken = "fixture-operator-token-32-characters-long";
@@ -43,7 +45,12 @@ describe("runnable June host", () => {
     const enginePort = await freeEnginePort();
     const port = await freeEnginePort();
     const path = join(directory, "config.json");
-    await writeFile(path, JSON.stringify({ ...config, port }));
+    const baseline = {
+      ...config,
+      port,
+      console: { origin: `http://127.0.0.1:${port}` },
+    };
+    await writeFile(path, JSON.stringify(baseline));
     const children: ChildProcess[] = [];
     let output = "";
     t.onTestFinished(async () => {
@@ -100,6 +107,21 @@ describe("runnable June host", () => {
       )
       .toEqual({ name: "June", ready: true });
     expect((await request("/operator/conversation")).status).toBe(401);
+    const preferences = new SettingsStore({
+      path: join(directory, "settings.sqlite"),
+      base: parseConfig(baseline),
+    });
+    preferences.run({
+      action: "update",
+      expectedVersion: 0,
+      changes: [{ key: "model.model", value: "saved-fixture" }],
+    });
+    preferences.close();
+    const beforeActivation = await (
+      await request("/console", { headers })
+    ).text();
+    expect(beforeActivation).toContain("openai · fixture");
+    expect(beforeActivation).not.toContain("saved-fixture");
     const body = JSON.stringify({
       object: "whatsapp_business_account",
       entry: [
@@ -170,6 +192,9 @@ describe("runnable June host", () => {
         { timeout: 30_000 },
       )
       .toBe(200);
+    expect(await (await request("/console", { headers })).text()).toContain(
+      "openai · saved-fixture",
+    );
     expect((await request("/operator/logs", { headers })).status).toBe(200);
     expect(await (await request("/operator/logs", { headers })).json()).toEqual(
       { unavailable: true },

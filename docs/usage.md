@@ -93,6 +93,47 @@ into June or tested with a real account.
 - Optional owner-private, read-only browser console using the existing operator
   credential. It cannot approve actions or change configuration.
 
+## June's runtime preferences
+
+Ask June in an owner-private conversation to inspect or change her settings.
+With execution workers enabled, she delegates to a worker with the `settings`
+action. `inspect` lists all supported preference keys, protocol/subsystem
+applicability, constraints, operator baseline, this process's effective values,
+saved desired values, version and pending activation. Null means the field is
+unset (provider defaults may apply), not a verified provider default. Protected
+configuration groups are named without exposing their values or credentials.
+
+```json
+{"text":"","settings":{"action":"inspect"}}
+{"text":"","settings":{"action":"update","expectedVersion":0,"changes":[{"key":"model.timeoutMs","value":45000}]}}
+{"text":"","settings":{"action":"reset","expectedVersion":1,"keys":["model.timeoutMs"]}}
+```
+
+Use the inspected version, not the example versions. Writes are atomic and
+validated against the complete configuration; stale versions require inspection
+before another write. An uncertain receipt is not permission to repeat it. A
+write ends that worker's action sequence. No extra owner confirmation is needed
+for these preferences, but guests, shared conversations, scheduled/automated
+events and completion turns cannot use this global control.
+
+The catalogue covers configured companion/deep/continuity/reflection models,
+reasoning effort, Codex service tier, output limits, ordinary request timeouts,
+continuity/activity idle time and reflection cadence. It does **not** enable
+missing subsystems or edit credentials, identities, endpoints, storage paths,
+feature gates, permission lists, safety/admission budgets, native coding limits,
+or deployment/recovery controls. DEBUGSHARE/recovery Ultra/Fast and ordinary Amp
+job modes are unchanged. Personality and typing keep their existing controls.
+
+Saved preferences apply only on the next **authorized activation**, after the
+standby ownership barrier and before services are constructed. They do not
+hot-reload, restart, deploy, cancel work or send background notifications. An
+operator configuration/runtime-binding change invalidates the entire override
+set; returning to an older baseline never resurrects it. A source-only release
+with the same baseline preserves preferences. Model-name validation does not
+prove provider availability. See [deployment recovery](deployment.md#runtime-preferences-are-application-state)
+if a saved selection makes June unavailable. Inspect again after activation;
+never describe a saved desired value as already running.
+
 ## Session controls
 
 Send `CLEARHISTORY` as a fresh, plain owner Slack message. The host creates a

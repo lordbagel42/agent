@@ -30,6 +30,7 @@ export function executionCapabilities(
   if (!scope || !isOwner(event, deps.owner)) return {};
   const privateTurn = scope.private;
   return {
+    settingsAvailable: privateTurn && !!deps.settings,
     agentWebhooksAvailable: privateTurn && !!deps.agents,
     workspaces:
       privateTurn && deps.coding ? Object.keys(deps.coding.workspaces) : [],
