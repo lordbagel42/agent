@@ -361,3 +361,24 @@ A pulsing 8px muted dot sits beside a Soft Text status line ("Opening GitHub…"
 - **Don't** use shadows or gradients for depth.
 - **Don't** color configuration states as health; configured, observed and recorded stay neutral.
 - **Don't** state absence as fact when a source is unreported or history is limited to recent requests.
+
+## Sandbox dashboard (independent surface)
+
+`sandboxes-site` is an Operate surface with an explicitly E2B-inspired world,
+separate from the console above: #0a0a0a ground, #101010 sidebar, #292929 rules,
+#ededed foreground, #999 supporting text and #ff970a active navigation. Light
+mode uses #fcfcfc / #f8f8f8 surfaces and #656565 supporting text. Geist and Geist
+Mono are self-hosted; monospace is reserved for identifiers and allocations.
+
+The 224px sidebar and 64px breadcrumb header lead into a dense inventory with
+search/state filters. Counts stay inline, not metric cards. Sandbox details use
+underlined tabs, an allocation strip and full-width metadata rows. Below 760px,
+navigation collapses behind a labelled menu, facts stack and tables scroll inside
+their own container. Primitives are shadcn-svelte nova, adjusted to Bits UI 2
+attributes. Neutral outlined refresh/navigation controls keep orange for selection.
+
+Disabled, unavailable, empty and filtered inventory are separate states. Green
+running dots supplement explicit SDK state, never imply independent verification.
+No fabricated utilization charts, terminal or lifecycle controls. Reduced-motion
+preferences disable the refresh spin and component transitions. Raster design
+references are not shipped; the favicon is geometric SVG, not generated imagery.

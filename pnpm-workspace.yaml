@@ -1,5 +1,6 @@
 packages:
   - debug-site
+  - sandboxes-site
 onlyBuiltDependencies:
   - esbuild
 patchedDependencies:

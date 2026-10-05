@@ -1,0 +1,40 @@
+[Unit]
+Description=June private sandbox dashboard
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/june-sandboxes/current
+ExecStart=/opt/node-v24.21.0/bin/node build/index.js
+Environment=NODE_ENV=production
+Environment=HOST=0.0.0.0
+Environment=PORT=3094
+Environment=ORIGIN=https://sandboxes.raygen.dev
+Environment=BODY_SIZE_LIMIT=8192
+EnvironmentFile=/etc/june-sandboxes/release.env
+LoadCredential=sandboxes.json:/etc/june-sandboxes/credentials.json
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+InaccessiblePaths=/etc/june /var/lib/june /var/lib/june-deploy
+IPAddressDeny=any
+IPAddressAllow=localhost
+IPAddressAllow=192.168.0.203/32
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
