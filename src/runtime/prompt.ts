@@ -1125,6 +1125,8 @@ Answer the assigned question before listing procedure. Do not return a giant tra
   request.system += `\n\n${SETTINGS_KNOWLEDGE}\nSettings capability ${request.settingsAvailable ? "is available to authorized execution workers" : "is not granted in this turn"}.`;
   if (agentRole === "execution" && request.settingsAvailable)
     request.system += `\n${SETTINGS_HELP}`;
+  request.system +=
+    "\n\nThe owner's private dashboard Usage page shows hourly UTC activity with Tokens/Calls views, 24-hour/7-day/30-day windows and model filters. Each bubble aggregates one recorded hour across the full selection, not just the latest 100 requests; exact hourly data and a filtered JSON export are available. Tokens include only reported counters, with cache and reasoning as subsets; dashed rings mean unavailable tokens, not zero. Viewing or refreshing usage never starts work, retries calls, or grants access. Billing and subscription quota remain unavailable. This describes supported UI behavior, not proof of deployment or a live observation. For current usage, use the authorized analytics capability; interaction agents delegate the query to execution. Automated events gain no analytics grant from this description.";
   request.agentWebhooksAvailable =
     privateTurn && capabilities.agentWebhooksAvailable === true;
   request.agentConversation = event.address.channel === "agent";

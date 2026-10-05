@@ -71,10 +71,16 @@ typography:
     lineHeight: 1.5
   figure:
     fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
-    fontSize: "28px"
+    fontSize: "26px"
     fontWeight: 600
     lineHeight: 1.2
     letterSpacing: "-0.02em"
+    fontFeature: "tnum"
+  figure-small:
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif"
+    fontSize: "18px"
+    fontWeight: 500
+    lineHeight: 1.5
     fontFeature: "tnum"
   mono:
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace"
@@ -238,7 +244,7 @@ A restrained achromatic ground with one light action accent, one focus blue, thr
 - **Settled Green** (#86ceaa, fill #15241c, line #2c4d3b): saved, succeeded, reads allowed, live.
 - **Attention Amber** (#e3bd78, fill #282116, line #54442a): awaiting approval, expired, unknown outcome, failed discovery, private input.
 - **Stop Rose** (#eea09a, fill #2a1c1b, line #5a3532): failed, rejected, disconnected and destructive actions.
-- **Data Mint** (#8cdbc2) and **Data Violet** (#b5a0ee): usage data only. They mark the input and output series of the consumption chart beside a text legend, and Data Mint draws call-count sparklines next to their numbers.
+- Usage bubbles reuse **Settled Green** at 15% fill and 75% stroke opacity as a data series, not a health indicator. Area represents the selected metric; a text legend explains the encoding. Dashed neutral rings distinguish unavailable counters from reported-zero crosses.
 
 ### Named Rules
 **The Text-First Status Rule.** Every state is written in words: in a badge, a heading, a notice or the row itself. Tone color only supplements it, and configuration states such as configured, observed or recorded stay neutral.
@@ -264,15 +270,15 @@ A restrained achromatic ground with one light action accent, one focus blue, thr
 - **Button** (600, 13px, 1.3): every button label.
 - **Label** (500, 12px): status badges (on a 20px line box) and table headers.
 - **Caption** (400, 12px, 1.5): fact labels, hints, section notes, row meta and the footer.
-- **Figure** (600, 28px, 1.2, -0.02em, tabular numerals): usage totals only; 22px at 720px and below.
-- **Mono** (400, 12.5px): inline code and table data cells; code blocks set 12px at 1.7, and usage metric values 15px with tabular numerals.
+- **Figure** (600, 26px, 1.2, -0.02em, tabular numerals): usage totals only; 22px at 720px and below. Supporting usage facts use 18px system sans.
+- **Mono** (400, 12.5px): inline code and table data cells; code blocks set 12px at 1.7.
 
 ### Named Rules
 **The One Family Rule.** System sans carries every heading, label, button and sentence. Monospace is for code and data that must be read exactly, never a "technical" costume.
 
 ## Layout
 
-The main column is at most 1120px wide, with 32px top and 24px side padding (24px and 16px at 720px and below). Single-task pages (sign-in, continuation, errors, sign-out) narrow to 520px. The page header holds an optional breadcrumb, the headline with an optional status badge, a short lede, and right-aligned page actions or meta, 24px above the first section. Sections sit 32px apart, with their heading 10px above the content, so there is more space above a heading than below it. Two-column grids use a 24px gap and stack at 720px and below. On the usage page, the chart, spend and metric panels stack at 960px and below, and the four usage figures become two columns at 720px and below.
+The main column is at most 1120px wide, with 32px top and 24px side padding (24px and 16px at 720px and below). Single-task pages (sign-in, continuation, errors, sign-out) narrow to 520px. The page header holds an optional breadcrumb, the headline with an optional status badge, a short lede, and right-aligned page actions or meta, 24px above the first section. Sections sit 32px apart, with their heading 10px above the content, so there is more space above a heading than below it. Two-column grids use a 24px gap and stack at 720px and below. Usage leads with a full-width hourly bubble chart, followed by a single summary panel and recent requests. Its four facts become two columns and its provider/model/stage rows become one column at 720px and below.
 
 At 720px and below, the primary navigation becomes a full-width second row of equal 44px segments instead of a scrolling tab strip. Buttons grow to 44px touch height, and rows with actions stack those actions under their text; badge-only rows keep the badge on the right. At 400px and below the Owner label hides, leaving Sign out. Wide tables and the usage chart scroll inside their panel, so the page itself never overflows horizontally.
 
@@ -288,7 +294,7 @@ The system is flat. Depth comes from tonal layering (#111111 ground, #181818 sur
 
 ## Shapes
 
-Corners are gently rounded and consistent. Controls, notices and code blocks use 6px; containers (lists, fact grids, cards, disclosures, usage panels and figure tiles) use 8px. Status badges are pills (999px), thin usage meters and sparklines round their ends fully, and chart columns and legend keys round 2px. Container outlines are a uniform 1px on all sides, and dividers inside them are single 1px hairlines. The only heavier line is the current tab's 2px bottom indicator.
+Corners are gently rounded and consistent. Controls, notices and code blocks use 6px; containers (lists, fact grids, cards, disclosures and usage panels) use 8px. Status badges are pills (999px). Usage chart marks are circles with 1.3px outlines. Container outlines are a uniform 1px on all sides, and dividers inside them are single 1px hairlines. The current tab uses a 2px bottom indicator.
 
 ### Named Rules
 **The Two Radii Rule.** Controls take 6px and containers 8px. Only badges and thin data bars round fully.
@@ -314,7 +320,7 @@ Corners are gently rounded and consistent. Controls, notices and code blocks use
 - **Background:** Panel Charcoal (#181818) on the Console Night ground.
 - **Shadow Strategy:** none; see Elevation & Depth.
 - **Border:** 1px Hairline outline, with 1px Hairline dividers inside.
-- **Internal Padding:** cards 20px, list rows 14px × 16px, fact cells and disclosure summaries 12px × 16px, usage figure tiles 16px.
+- **Internal Padding:** cards 20px, list rows 14px × 16px, fact cells and disclosure summaries 12px × 16px. Usage summary sections have 24px side padding (16px on mobile), separated by dividers rather than nested cards.
 - **Lists:** linked rows raise to #202020 on hover, underline their title and show a drawn chevron. Their focus ring is inset (a -3px offset), so the list's clipped edges never hide it.
 - **Fact grids:** key/value cells with 12px muted labels, flowing into columns of at least 200px.
 - **Cards:** hold one task or decision, such as a review decision, the disconnect zone or the live viewer. A card never contains a notice or another card.

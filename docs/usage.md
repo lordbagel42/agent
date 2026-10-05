@@ -1735,10 +1735,28 @@ does not register tools, establish provider health, or expand execution gates.
 ### Usage
 
 `/console/usage` is an owner-session-only dashboard with rolling 24-hour, 7-day,
-and 30-day windows, model filtering, UTC input/output charts, cache and reasoning
-breakdowns, stage attribution, latency percentiles, measurement coverage, and the
-latest 100 attempts. `/console/usage/export` exports the same filtered snapshot
-and aggregates as JSON; both routes are private and no-store.
+and 30-day windows and model filtering. The chart-first layout keeps the shared
+console navigation. Tokens/Calls controls switch the bubble chart and provider,
+model and stage breakdowns together. Each bubble is one UTC hour across the full
+filtered window, with area proportional to reported tokens or calls within that
+selection. Dashed rings mean unavailable token counts; crosses mean reported
+zero. Empty space does not establish zero usage or continuous observation.
+
+Hourly data exposes exact counters, including partial boundary hours. Recent
+requests show the latest 100 attempts; expand a token total for input, output,
+cache and reasoning details. Measurement details retain latency percentiles,
+coverage and billing limitations. All controls work without application scripts.
+`/console/usage/export` exports the same filtered snapshot, including hourly
+`activity` aggregates as UTC epoch-hour labels; both routes are private and
+no-store. June's existing owner-private `analytics` capability remains available
+for bounded current totals; dashboard browsing never starts a model call.
+
+For a read-only synthetic preview, run `pnpm exec tsx scripts/preview-usage.ts`.
+It listens on loopback port 4271 (or `$PORT`) and loads no June configuration,
+credentials, provider clients or production data. `/console/usage` is populated,
+`/empty/usage` is empty, and `/denied/usage` exercises authentication denial.
+Select `demo-unreported` to inspect calls with missing counters. Only synthetic
+previews may be shared; the preview's fixture identity is not production auth.
 
 The host creates `usage.sqlite` inside `RIVETKIT_STORAGE_PATH`, with private file
 permissions. This additive SQLite/WAL ledger is independent of forward-only

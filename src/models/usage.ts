@@ -133,6 +133,8 @@ export interface UsageSnapshot {
   byStage: UsageGroup[];
   byProvider: UsageGroup[];
   timeline: UsageGroup[];
+  /** UTC epoch-hour aggregates over the full window, not the recent-call sample. */
+  activity: UsageGroup[];
   recent: UsageRow[];
   p50: number | null;
   p95: number | null;
@@ -292,6 +294,9 @@ export class UsageLedger {
       byProvider: groups("provider"),
       timeline: groups(
         `CAST(started / ${days === 1 ? 3_600_000 : 86_400_000} AS INTEGER)`,
+      ),
+      activity: groups("CAST(started / 3600000 AS INTEGER)").sort(
+        (a, b) => Number(a.label) - Number(b.label),
       ),
       recent: this.db
         .prepare(

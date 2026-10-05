@@ -267,6 +267,11 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     });
     expect(request.system).toContain("APPROVED_CONTINUITY_EXCERPT");
     // Check the final role-specific payload, not just the shared identity array.
+    expect(request.system).toContain("hourly UTC activity with Tokens/Calls");
+    expect(request.system).toContain(
+      "Automated events gain no analytics grant from this description",
+    );
+    expect(request.analyticsAvailable).toBe(false);
     expect(request.system).toContain(
       "A genuine question counts as something useful to add",
     );

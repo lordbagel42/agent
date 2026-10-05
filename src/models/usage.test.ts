@@ -7,6 +7,75 @@ import { createConsoleRoutes } from "../console/routes.js";
 import { createModelProvider } from "./provider.js";
 import { tokenUsage, UsageLedger } from "./usage.js";
 
+test("hourly activity covers the full filtered window, including calls beyond the recent limit", async () => {
+  const root = mkdtempSync(join(tmpdir(), "june-usage-hours-"));
+  const ledger = new UsageLedger(join(root, "usage.sqlite"));
+  const now = Date.parse("2026-10-05T12:30:00Z");
+  const clock = vi.spyOn(Date, "now");
+  const record = async (
+    started: number,
+    model: string,
+    input: number | null,
+    output: number | null,
+  ) => {
+    clock.mockReturnValue(started);
+    await ledger.track(
+      { provider: "openai", model, stage: "fast" },
+      async (report) => {
+        report({
+          input,
+          output,
+          cached: null,
+          cacheWrite: null,
+          reasoning: null,
+        });
+      },
+    );
+  };
+  try {
+    const from = now - 7 * 86_400_000;
+    await record(from - 1, "selected", 999, 999);
+    for (let i = 0; i < 101; i++) await record(from + i, "selected", 1, 2);
+    await record(from + 3_600_000, "selected", 13, null);
+    await record(from + 3_600_000, "other", 31, 7);
+    await record(now, "selected", null, null);
+    await record(now + 1, "selected", 999, 999);
+    const snapshot = ledger.snapshot(7, "selected", now);
+    expect(snapshot.recent).toHaveLength(100);
+    expect(snapshot.activity).toEqual([
+      expect.objectContaining({
+        label: Math.floor(from / 3_600_000),
+        calls: 101,
+        measured: 101,
+        input: 101,
+        output: 202,
+      }),
+      expect.objectContaining({
+        label: Math.floor(from / 3_600_000) + 1,
+        calls: 1,
+        measured: 0,
+        input: 13,
+        output: null,
+      }),
+      expect.objectContaining({
+        label: Math.floor(now / 3_600_000),
+        calls: 1,
+        measured: 0,
+        input: null,
+        output: null,
+      }),
+    ]);
+    expect(ledger.snapshot(1, "other", now).activity).toEqual([]);
+    expect(ledger.snapshot(30, "other", now).activity).toEqual([
+      expect.objectContaining({ calls: 1, input: 31, output: 7 }),
+    ]);
+  } finally {
+    clock.mockRestore();
+    ledger.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("HTTP outcomes include reply validation without losing consumed tokens", async () => {
   const root = mkdtempSync(join(tmpdir(), "june-usage-outcomes-"));
   const ledger = new UsageLedger(join(root, "usage.sqlite"));
@@ -200,6 +269,25 @@ test("usage persists only allowlisted counters and remains owner-only in HTML an
     ).text();
     expect(html).toContain("<h1>Usage</h1>");
     expect(html).not.toContain(sentinel);
+    const callsHtml = await (
+      await app.request(
+        "/console/usage?days=1&model=fixture-model&metric=calls",
+        {
+          headers: { "test-owner": "yes" },
+        },
+      )
+    ).text();
+    expect(callsHtml).toContain('data-metric="calls"');
+    expect(callsHtml).toContain('name="metric" value="calls"');
+    expect(callsHtml).toContain(
+      "/console/usage?days=30&amp;model=fixture-model&amp;metric=calls",
+    );
+    expect(callsHtml).toContain(
+      "/console/usage?days=1&amp;model=fixture-model&amp;metric=tokens",
+    );
+    expect(callsHtml).toContain(
+      "/console/usage/export?days=1&amp;model=fixture-model",
+    );
     expect(ledger.snapshot(7, "not-recorded").total).toMatchObject({
       calls: 0,
       measured: 0,

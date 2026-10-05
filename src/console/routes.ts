@@ -120,6 +120,7 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
       usagePage(snapshot, c.get("nonce"), base, {
         connectionsAvailable: deps.connectionsAvailable,
         signOut: deps.security.signOutPath,
+        metric: c.req.query("metric") === "calls" ? "calls" : "tokens",
       }),
     );
   });

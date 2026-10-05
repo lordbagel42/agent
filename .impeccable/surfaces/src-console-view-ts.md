@@ -40,6 +40,22 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the
 finish review, the verdict, DESIGN.md, and every shipping raster carrying its
 provenance
 
+## Usage direction · 2026-10-05
+
+Owner-pinned reference: Amp's Usage dashboard. Keep June's shared top navigation,
+neutral palette, system type and private server-rendered surface. Lead with a
+full-width green hourly bubble chart, compact Tokens/Calls and 24h/7d/30d links,
+then one divided summary and recent requests. Do not copy Amp billing controls:
+June has no billing source. Unknown counters and partial coverage stay explicit.
+
+The signature interaction is native filtering without application scripts;
+exact hourly data and per-request counters use disclosures. Green represents
+data, not health. Mobile scrolls only the chart and tables and stacks breakdowns.
+The supplied reference fixes the direction; the generated concept is exploratory,
+not a pixel-exact contract or verification evidence. Validate rendered desktop,
+mobile, filtered, unknown and empty states using synthetic data only. No shipping
+raster assets are required. Preserve the console-wide rules above.
+
 ## Verification constraints
 
 Only synthetic data may appear in previews. Amp's media viewer returned an upload
