@@ -67,6 +67,67 @@ config. It still needs normal model configuration and **must not** use setup
 mode: setup mode cannot accept messages. Memory/coding/import integrations retain
 their existing explicit configuration and host opt-ins.
 
+### Blue/green HTTPS ingress
+
+`scripts/deploy/june-mcp-proxy.cfg` and `june-mcp-proxy.service` provide an
+independent HAProxy 3.0+ ingress for the existing blue/green topology. The example
+accepts only POST `https://june-mcp.raygen.dev/mcp`, via private LAN port 3085.
+Adapt the exact hostname/address together with `agentMcp.origin` when deploying
+elsewhere. Source publication does not install or enable this service.
+
+The proxy probes loopback ports 3081/3082 at `/health`, accepting HTTP 200, and
+forwards only while exactly one backend is considered available. June's runtime
+lock prevents both slots from accessing state, and standby/draining health is
+503. Health observations can lag a transition by one probe; startup/cutover can
+therefore return a temporary failure. The proxy never activates or restarts a
+slot and never retries a connection or request. A failed response is not proof
+that an MCP mutation did not run: inspect the original receipt/idempotency key.
+There is no durable ingress queue for MCP requests.
+
+Host, Origin, Authorization and MCP headers reach June unchanged. June still
+authenticates every request; the proxy stores no credentials or message bodies
+and has no request logging. Exact URL/method checks reject admin paths, encoded
+paths, query strings and GET/SSE. All responses are marked `no-store`. Keep
+authorization headers and bodies out of the upstream tunnel/Traefik logs too.
+
+Within an explicitly authorized, coordinated operator window:
+
+1. Follow [deployment ownership](deployment.md#automatic-amp-recovery-handoff):
+   wait for any existing owner's explicit handoff, acquire the outer operator
+   lock, stop/settle the poller, and establish your own hold before mutations.
+2. Privately provision a distinct client token and storage key. Preserve all
+   unrelated configuration and slot environment values. Add `agentMcp` and its
+   credentials to the actual `/etc/june/config.json` and `/etc/june/slot.env`.
+   The private state directory must satisfy the ownership/mode rules above.
+3. Config and slot environment changes alter the protected runtime binding.
+   Prepare a **new forward release** against it, then perform the coordinated
+   standby/drain/strict-stop/activation migration and reconcile verified
+   readiness/intake. Do not rewrite old release markers or let an ordinary
+   rollout attempt to cross incompatible bindings. Never restore old messages.
+4. Install HAProxy without starting an unrelated default listener. Install the
+   config as root-owned `0644` `/etc/june-mcp-proxy/haproxy.cfg`, its parent
+   `0755`, and the dedicated systemd unit. The unprivileged dynamic service user
+   needs no access to June's configuration, credentials or private state.
+5. Route only the exact hostname, path `/mcp` and POST method through the
+   existing HTTPS tunnel/Traefik to `192.168.0.215:3085`. Preserve other routes
+   and Host; do not expose either slot, `/health`, `/operator`, or `/console`.
+6. Verify unauthenticated rejection, authenticated initialization/tool discovery
+   and `get_status`, then one explicitly authorized synthetic conversation using
+   a stable idempotency key and polling. Inspect the actual loaded revision and
+   intake readiness before releasing only your hold and restoring the poller.
+
+Add the bearer connection to the owner's **personal** Amp MCP settings, never
+the workspace. Enroll its token through Amp's private secret input/settings,
+not chat, URLs, or command arguments. The caller receives owner-level access,
+not an isolated test conversation. Polling June's reply is supported; a tracked
+human-question/answer relay and verified Amp callback receiver are not implied.
+
+The disposable proxy check uses real HAProxy and loopback fixture slots:
+
+```sh
+HAPROXY=/usr/sbin/haproxy python3 scripts/deploy/test_mcp_proxy.py
+```
+
 ## Tools and message lifecycle
 
 | Tool | Purpose |
