@@ -175,6 +175,7 @@ export interface Dependencies {
   owner: Owner;
   continuity?: import("./continuity.js").ConversationContinuity;
   debugShare?: DebugInvestigator;
+  ampThreads?: ReturnType<typeof import("./amp-threads.js").createAmpThreads>;
   debugSite?: DebugSitePublisher;
   /** Host-injected handoff only; not exposed by production config until the
    * activity catalog/control paths are integrated. Accepted session inputs hold
@@ -3885,6 +3886,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                       phase !== "synthesis" &&
                                       isOwner(event, deps.owner) &&
                                       !!deps.repository,
+                                    ampThreadsAvailable:
+                                      body.type === "event" &&
+                                      phase !== "synthesis" &&
+                                      isOwnerRivetDm(event, deps.owner) &&
+                                      !!deps.ampThreads,
                                     typingControlAvailable:
                                       body.type === "event" &&
                                       event.address.channel === "slack" &&

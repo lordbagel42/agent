@@ -1,4 +1,4 @@
-"""Independent DEBUGSHARE dispatcher. Never imports June or ordinary job policy."""
+"""Independent DEBUGSHARE/owner-task dispatcher. Never imports June or job policy."""
 
 import fcntl
 import hashlib
@@ -74,7 +74,7 @@ def save_receipt(directory, receipt):
 def dispatch_due(directory, identity):
     try:
         receipt = json.loads(
-            read_private(directory / f"{identity}.receipt.json", limit=4096)
+            read_private(directory / f"{identity}.receipt.json", limit=65536)
         )
     except FileNotFoundError:
         return True
@@ -99,7 +99,7 @@ def wait_ready(stream, expected):
 
 
 def dispatch(directory, path, ssh):
-    identity = path.stem
+    identity = path.stem.removesuffix(".task")
     if not dispatch_due(directory, identity):
         return
     receipt = {
@@ -112,10 +112,19 @@ def dispatch(directory, path, ssh):
     save_receipt(directory, receipt)
     try:
         data = read_private(path)
-        if json.loads(data).get("id") != identity:
+        payload = json.loads(data)
+        if payload.get("id") != identity:
             raise ValueError("debug_identity_mismatch")
+        if payload.get("kind") not in (None, "amp-task"):
+            raise ValueError("invalid_dispatch_kind")
+        task = payload.get("kind") == "amp-task"
+        if task != path.name.endswith(".task.json"):
+            raise ValueError("invalid_dispatch_path")
         digest = hashlib.sha256(data).hexdigest()
-        command = f"june-debugshare-ready {identity} {digest}"
+        # Distinct wire command fails closed against an older diagnostic endpoint.
+        command = (
+            f"june-{'amp-task' if task else 'debugshare'}-ready {identity} {digest}"
+        )
         with subprocess.Popen(
             [*ssh, command],
             stdin=subprocess.PIPE,
@@ -134,6 +143,7 @@ def dispatch(directory, path, ssh):
                 process.stdin.write(data)
                 process.stdin.close()
                 succeeded = False
+                result = None
                 while line := process.stdout.readline(1_048_577):
                     if len(line) > 1_048_576:
                         raise ValueError("debug_stream_record_too_large")
@@ -160,9 +170,21 @@ def dispatch(directory, path, ssh):
                         ):
                             raise ValueError("invalid_debug_result")
                         succeeded = message.get("is_error") is False
+                        if (
+                            task
+                            and succeeded
+                            and isinstance(message.get("result"), str)
+                        ):
+                            encoded = message["result"].encode("utf-8")
+                            result = {
+                                "text": encoded[:8000].decode("utf-8", errors="ignore"),
+                                "truncated": len(encoded) > 8000,
+                            }
                 receipt["status"] = (
                     "completed" if process.wait() == 0 and succeeded else "unknown"
                 )
+                if receipt["status"] == "completed" and result is not None:
+                    receipt["result"] = result
             except BaseException:
                 # Only stop our transport, never assume the remote agent stopped.
                 process.kill()
@@ -192,7 +214,7 @@ def main():
     with open(directory / ".dispatcher.lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         for path in directory.glob("*.receipt.json"):
-            receipt = json.loads(read_private(path, limit=4096))
+            receipt = json.loads(read_private(path, limit=65536))
             if (
                 not UUID.fullmatch(receipt["id"])
                 or path.name != f"{receipt['id']}.receipt.json"
@@ -209,10 +231,11 @@ def main():
                 if worker.is_alive()
             }
             for path in sorted(directory.glob("*.json")):
+                identity = path.stem.removesuffix(".task")
                 if (
-                    UUID.fullmatch(path.stem)
-                    and path.stem not in workers
-                    and dispatch_due(directory, path.stem)
+                    UUID.fullmatch(identity)
+                    and identity not in workers
+                    and dispatch_due(directory, identity)
                 ):
                     # One observer per UUID, not one investigation at a time.
                     # Track the worker before the next scan, even if it has not
@@ -222,7 +245,7 @@ def main():
                         target=dispatch, args=(directory, path, ssh), daemon=True
                     )
                     worker.start()
-                    workers[path.stem] = worker
+                    workers[identity] = worker
             time.sleep(2)
 
 

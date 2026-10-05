@@ -24,6 +24,106 @@ THREAD = "T-12345678-1234-4234-8234-123456789abc"
 
 
 class DebugShare(unittest.TestCase):
+    def test_owner_tasks_use_separate_admission_and_never_repair_authority(self):
+        for is_owner in (False, True):
+            with self.subTest(is_owner=is_owner), tempfile.TemporaryDirectory() as root:
+                data = json.dumps(
+                    {
+                        "kind": "amp-task",
+                        "id": IDENTITY,
+                        "title": "Compare two parsers",
+                        "prompt": "PRIVATE_TASK $(id)",
+                        "ownerRequest": "Spawn Amp to compare two parsers",
+                        "reporter": {
+                            "channel": "slack",
+                            "accountId": "T1",
+                            "senderId": "U1",
+                            "isOwner": is_owner,
+                        },
+                    }
+                ).encode()
+                config = {
+                    "command": ["/opt/amp"],
+                    "runnerDirectory": "/work/june",
+                    "snapshotDirectory": root,
+                }
+                digest = hashlib.sha256(data).hexdigest()
+                # No diagnostic-command downgrade, even with a valid owner envelope.
+                with self.assertRaises(ValueError):
+                    runner.prepare(
+                        f"june-debugshare {IDENTITY} {digest}", config, io.BytesIO(data)
+                    )
+                command = f"june-amp-task-ready {IDENTITY} {digest}"
+                with patch.object(runner.subprocess, "run"):
+                    if not is_owner:
+                        with self.assertRaises(ValueError):
+                            runner.prepare(command, config, io.BytesIO(data))
+                        self.assertEqual(list(Path(root).iterdir()), [])
+                        continue
+                    argv = runner.prepare(command, config, io.BytesIO(data))
+                    self.assertEqual(
+                        argv[1:5], ["--mode", "high", "--features", "fast"]
+                    )
+                    self.assertEqual(argv[-3], "Compare two parsers")
+                    self.assertIn("ownerRequest", argv[-1])
+                    self.assertIn("not a DEBUGSHARE", argv[-1])
+                    self.assertNotIn(
+                        "standing incident-scoped repair authority", argv[-1]
+                    )
+                    self.assertNotIn("PRIVATE_TASK", argv[-1])
+                    self.assertNotIn("$(id)", argv[-1])
+                    with self.assertRaises(FileExistsError):
+                        runner.prepare(command, config, io.BytesIO(data))
+
+    def test_task_dispatch_keeps_bounded_results_private_and_never_downgrades(self):
+        transport = """
+import json, pathlib, sys
+root, mode, command = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+assert command.startswith('june-amp-task-ready ' if mode != 'debug' else 'june-debugshare-ready ')
+if mode == 'old-endpoint':
+    raise SystemExit(1)
+print(command, flush=True)
+data = json.load(sys.stdin)
+thread = 'T-12345678-1234-4234-8234-123456789abc'
+print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': thread}), flush=True)
+print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False,
+                  'result': 'a' * 7999 + '🌻' + 'PRIVATE_TAIL'}), flush=True)
+raise SystemExit(1 if mode == 'lost-exit' else 0)
+"""
+        for mode in ("task", "debug", "old-endpoint", "lost-exit"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
+                directory = Path(root)
+                path = (
+                    directory / f"{IDENTITY}{'.task' if mode != 'debug' else ''}.json"
+                )
+                payload = {"id": IDENTITY}
+                if mode != "debug":
+                    payload["kind"] = "amp-task"
+                path.write_text(json.dumps(payload))
+                path.chmod(0o600)
+                ssh = [sys.executable, "-c", transport, root, mode]
+                dispatch.dispatch(directory, path, ssh)
+                receipt_path = directory / f"{IDENTITY}.receipt.json"
+                receipt = json.loads(dispatch.read_private(receipt_path, limit=65536))
+                self.assertEqual(receipt_path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(
+                    receipt["status"],
+                    {
+                        "task": "completed",
+                        "debug": "completed",
+                        "old-endpoint": "queued",
+                        "lost-exit": "unknown",
+                    }[mode],
+                )
+                if mode == "task":
+                    self.assertEqual(
+                        receipt["result"], {"text": "a" * 7999, "truncated": True}
+                    )
+                else:
+                    self.assertNotIn("result", receipt)
+                self.assertNotIn("PRIVATE_TAIL", receipt_path.read_text())
+                self.assertFalse(dispatch.dispatch_due(directory, IDENTITY))
+
     def test_only_host_authenticated_owner_reason_is_trusted_across_surfaces(self):
         owner = {
             "channel": "slack",
@@ -320,7 +420,9 @@ identity = sys.argv[2].split()[1]
 print(sys.argv[2], flush=True)
 with (root / (identity + '.launch')).open('x'):
     pass
-assert json.load(sys.stdin)['id'] == identity
+payload = json.load(sys.stdin)
+assert payload['id'] == identity
+assert sys.argv[2].startswith('june-amp-task-ready ' if payload.get('kind') == 'amp-task' else 'june-debugshare-ready ')
 thread = 'T-' + identity
 print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': thread}), flush=True)
 while not (root / 'release').exists():
@@ -336,9 +438,14 @@ print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False}), f
 
             def request(identity):
                 path = directory / ".request"
-                path.write_text(json.dumps({"id": identity}))
+                task = identity == identities[8]
+                path.write_text(
+                    json.dumps(
+                        {"id": identity, **({"kind": "amp-task"} if task else {})}
+                    )
+                )
                 path.chmod(0o600)
-                path.replace(directory / f"{identity}.json")
+                path.replace(directory / f"{identity}{'.task' if task else ''}.json")
 
             for identity in [*identities[:9], stale]:
                 request(identity)

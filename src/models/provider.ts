@@ -40,6 +40,7 @@ import {
   repositoryReadSchema,
 } from "../repository/contracts.js";
 import { RESEARCH_HELP, researchCommandSchema } from "../research/contracts.js";
+import { AMP_THREAD_HELP, ampThreadSchema } from "../runtime/amp-threads.js";
 import {
   globalStyleSchema,
   personalityPreviewSchema,
@@ -139,6 +140,7 @@ const recallTimestampSchema = z
 
 const companionReplySchema = z.strictObject({
   agentWebhook: agentWebhookSchema.optional(),
+  ampThread: ampThreadSchema.optional(),
   text: z.string(),
   sendMessages: sendMessagesSchema.optional(),
   question: questionSchema.optional(),
@@ -440,6 +442,7 @@ export type ReplyCapabilities = Pick<
   | "escalationAvailable"
   | "webSearchAvailable"
   | "releaseAvailable"
+  | "ampThreadsAvailable"
   | "modelStatusAvailable"
   | "mcpAvailable"
   | "mcpPermissionAvailable"
@@ -538,6 +541,7 @@ function rolePermitsField(
   if (key === "repository") return role === "execution";
   if (key === "browserTask") return role === "execution";
   if (key === "environment") return role === "execution";
+  if (key === "ampThread") return role === "execution";
   if (key === "readImage" || key === "readVideo") return role === "execution";
   if (role === "interaction") {
     return [
@@ -580,6 +584,7 @@ function legacyReplyJsonSchema(
     escalationAvailable,
     webSearchAvailable,
     releaseAvailable,
+    ampThreadsAvailable,
     modelStatusAvailable,
     mcpAvailable,
     mcpPermissionAvailable,
@@ -1035,6 +1040,35 @@ function legacyReplyJsonSchema(
           }
         : {}),
       ...(wakeupAvailable ? { wakeup: wakeupSchema } : {}),
+      ...(ampThreadsAvailable
+        ? {
+            ampThread: {
+              anyOf: [
+                { type: "null" },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    action: { type: "string", enum: ["create"] },
+                    title: { type: "string" },
+                    prompt: { type: "string" },
+                  },
+                  required: ["action", "title", "prompt"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    action: { type: "string", enum: ["inspect"] },
+                    id: { type: "string" },
+                  },
+                  required: ["action", "id"],
+                },
+              ],
+              description: AMP_THREAD_HELP,
+            },
+          }
+        : {}),
       ...(releaseAvailable
         ? {
             release: {
@@ -2065,6 +2099,7 @@ function legacyReplyJsonSchema(
       ...(repositoryReadAvailable ? ["repositoryRead"] : []),
       ...(executionAvailable ? ["execution"] : []),
       ...(releaseAvailable ? ["release"] : []),
+      ...(ampThreadsAvailable ? ["ampThread"] : []),
       ...(modelStatusAvailable ? ["modelStatus"] : []),
       ...(mcpAvailable ? ["mcp", "mcpCatalog"] : []),
       ...(mcpPermissionAvailable ? ["mcpPermission"] : []),
@@ -2278,6 +2313,7 @@ export function parseReply(
     escalationAvailable,
     webSearchAvailable,
     releaseAvailable,
+    ampThreadsAvailable,
     modelStatusAvailable,
     mcpAvailable,
     mcpPermissionAvailable,
@@ -2349,6 +2385,7 @@ export function parseReply(
     "question",
     "interrupt",
     "agentWebhook",
+    "ampThread",
     "typingEnabled",
     "workflow",
     "javascript",
@@ -2466,6 +2503,7 @@ export function parseReply(
     (reply.escalate !== undefined && !escalationAvailable) ||
     (reply.webSearch !== undefined && !webSearchAvailable) ||
     (reply.release !== undefined && !releaseAvailable) ||
+    (reply.ampThread !== undefined && !ampThreadsAvailable) ||
     (reply.modelStatus !== undefined && !modelStatusAvailable) ||
     (reply.social !== undefined && !socialAvailable) ||
     (reply.mcp !== undefined && !mcpAvailable) ||
@@ -2544,6 +2582,7 @@ export function parseReply(
     Number(reply.slackHistory !== undefined) +
     Number(reply.webSearch !== undefined) +
     Number(reply.release !== undefined) +
+    Number(reply.ampThread !== undefined) +
     Number(reply.social !== undefined) +
     Number(reply.latency !== undefined) +
     Number(reply.telemetry !== undefined) +
@@ -2607,6 +2646,7 @@ export function parseReply(
       reply.modelStatus === true ||
       reply.webSearch !== undefined ||
       reply.release !== undefined ||
+      reply.ampThread !== undefined ||
       reply.social !== undefined ||
       reply.mcp !== undefined ||
       reply.mcpPermission !== undefined ||

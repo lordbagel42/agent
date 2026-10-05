@@ -265,6 +265,7 @@ export async function runExecutionCapability(
       reply.reflectionReview ||
       reply.reflectionPersonalitySuggestion ||
       reply.importCancel !== undefined ||
+      reply.ampThread ||
       (reply.apps && !["list", "inspect"].includes(reply.apps.action)) ||
       (reply.workflow &&
         !["help", "list", "inspect"].includes(reply.workflow.action)) ||

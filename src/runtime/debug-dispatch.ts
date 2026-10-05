@@ -10,6 +10,9 @@ const receiptSchema = z.strictObject({
   id: idSchema,
   status: z.enum(["queued", "running", "completed", "unknown"]),
   retryAt: z.number().int().nonnegative().optional(),
+  result: z
+    .strictObject({ text: z.string().max(8000), truncated: z.boolean() })
+    .optional(),
   threadId: z
     .string()
     .regex(/^T-[a-f0-9-]{36}$/i)
@@ -17,11 +20,15 @@ const receiptSchema = z.strictObject({
 });
 
 /** Only publishes private files and observes receipts. Never launches Amp. */
-export function createDebugDispatcher(settings: {
-  directory: string;
-  timeoutMs: number;
-}): DebugInvestigator {
-  const inspect: NonNullable<DebugInvestigator["inspect"]> = async (id) => {
+export function createAmpInbox(
+  settings: { directory: string },
+  kind: "debugshare" | "amp-task" = "debugshare",
+) {
+  // Old dispatchers only admit UUID.json: they must never interpret a task as repair.
+  const suffix = kind === "amp-task" ? ".task.json" : ".json";
+  const inspect = async (
+    id: string,
+  ): Promise<z.infer<typeof receiptSchema> | undefined> => {
     idSchema.parse(id);
     try {
       const receipt = receiptSchema.parse(
@@ -36,21 +43,19 @@ export function createDebugDispatcher(settings: {
       return receipt;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      const request = await stat(join(settings.directory, `${id}.json`)).catch(
-        (error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw error;
-          return undefined;
-        },
-      );
-      return request ? { status: "queued" } : undefined;
+      const request = await stat(
+        join(settings.directory, `${id}${suffix}`),
+      ).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return undefined;
+      });
+      return request ? { id, status: "queued" as const } : undefined;
     }
   };
   return {
-    resumeSafe: true,
     inspect,
-    async run(snapshot, signal, onThread) {
+    async publish(snapshot: { id: string }, current = () => true) {
       idSchema.parse(snapshot.id);
-      signal.throwIfAborted();
       const metadata = await stat(settings.directory);
       if (
         (await realpath(settings.directory)) !== settings.directory ||
@@ -62,13 +67,14 @@ export function createDebugDispatcher(settings: {
       const bytes = JSON.stringify(snapshot);
       if (Buffer.byteLength(bytes) > 64 * 1024 * 1024)
         throw new Error("Debug snapshot exceeds transport limit");
-      const target = join(settings.directory, `${snapshot.id}.json`);
+      const target = join(settings.directory, `${snapshot.id}${suffix}`);
       const temporary = join(settings.directory, `.${randomUUID()}.tmp`);
       const file = await open(temporary, "wx", 0o600);
       try {
         await file.writeFile(bytes);
         await file.sync();
         await file.close();
+        if (!current()) throw new Error("Amp publication invalidated");
         try {
           await link(temporary, target);
         } catch (error) {
@@ -86,6 +92,27 @@ export function createDebugDispatcher(settings: {
         await file.close();
         await unlink(temporary);
       }
+    },
+  };
+}
+
+export function createDebugDispatcher(settings: {
+  directory: string;
+  timeoutMs: number;
+}): DebugInvestigator {
+  const inbox = createAmpInbox(settings);
+  return {
+    resumeSafe: true,
+    // Keep the diagnostic observer's existing metadata contract.
+    async inspect(id) {
+      const receipt = await inbox.inspect(id);
+      if (!receipt) return;
+      const { id: _id, result: _result, ...metadata } = receipt;
+      return metadata;
+    },
+    async run(snapshot, signal, onThread) {
+      signal.throwIfAborted();
+      await inbox.publish(snapshot);
       // Losing this observer does not stop the independent service or its agent.
       const observation = AbortSignal.any([
         signal,
@@ -94,7 +121,7 @@ export function createDebugDispatcher(settings: {
       let threadId: string | undefined;
       for (;;) {
         observation.throwIfAborted();
-        const receipt = await inspect(snapshot.id);
+        const receipt = await inbox.inspect(snapshot.id);
         if (!receipt) throw new Error("Debug request disappeared");
         if (receipt.threadId && receipt.threadId !== threadId) {
           threadId = receipt.threadId;

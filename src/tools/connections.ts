@@ -1002,6 +1002,7 @@ export class McpConnections {
               repositoryAvailable: false,
               repositoryReadAvailable: false,
               researchAvailable: false,
+              ampThreadsAvailable: false,
               javascriptAvailable: false,
               emojiSearchAvailable: false,
               readImageAvailable: false,

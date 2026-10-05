@@ -1420,6 +1420,40 @@ Focused local safety check (no live Slack calls):
 (umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_slack_responder.py)
 ```
 
+## Owner-requested Amp threads
+
+The `ampThread` capability reuses the independently installed DEBUGSHARE service,
+private inbox and restricted SSH transport below. It needs no Amp OAuth or new
+credentials. The existing `debugShare` configuration and `JUNE_ALLOW_DEBUGSHARE=1`
+enable the application capability for live owner Slack DMs; execution workers
+receive a host-checked grant. Guest, shared, automated and completion turns do not.
+
+Ordinary requests use immutable `<UUID>.task.json` files with `kind: "amp-task"`,
+an original owner message, a task brief and host-authenticated reporter metadata.
+Their separate `june-amp-task-ready UUID SHA256` command prevents interpreting
+them as diagnostic repairs. Old dispatchers ignore the filename; old endpoints
+reject the command before receiving payloads. Both cases preserve pending work
+without falling back to diagnostic authority. The runner validates owner
+provenance, uses High/Fast, fixes the executable/directory itself and instructs
+Amp to follow only the original request's authority. DEBUGSHARE stays Ultra/Fast.
+
+Install the matching runner scripts, then coordinate a dispatcher update/restart
+around active transports under the usual operator lock/ownership rules, and
+activate the application revision. This is a separately authorized live change,
+not an effect of source publication. Rollback to an old dispatcher is unsafe
+once larger task-result receipts exist: its smaller receipt reader cannot read
+them. Use a compatible forward fix rather than deleting receipts or task files.
+
+The dispatcher retains at most 8,000 UTF-8 bytes of a successful ordinary task's
+final response in its private mode-0600 receipt, with a truncation flag. It does
+not retain stream transcripts or diagnostic findings. Success requires a matching
+thread/result and zero process exit; uncertain launches never replay. June can
+inspect these receipts by request UUID without relaunching. Requests survive
+foreground cancellation/restarts; ordinary tasks have no automatic completion
+notification or remote cancel/resume API. Verify an explicitly owner-authorized
+task through June's execution path and inspect its actual thread/result, without
+logging private bodies or starting a repair assignment as a self-test.
+
 ## DEBUGSHARE investigations
 
 DEBUGSHARE uses its own independently installed service and restricted SSH key,
@@ -1496,8 +1530,10 @@ of pushing source. Preserve existing recovery and ordinary-job keys/config:
    command plus newline after its read-only runner check, then reads the snapshot
    on stdin through EOF (maximum 64 MiB). Empty, partial or digest-invalid input
    cannot admit a UUID or launch Amp. The legacy `june-debugshare UUID SHA256`
-   remains supported without a handshake for older dispatchers. No caller-selected
-   prompt, executable, directory, or arbitrary shell is accepted. Store snapshots outside Git in a canonical
+   remains supported without a handshake for older dispatchers. The diagnostic
+   command accepts no caller-selected launch prompt; ordinary task briefs use the
+   separate validated envelope above. Neither accepts a caller-selected executable,
+   directory, or arbitrary shell. Store snapshots outside Git in a canonical
    mode-0700 directory owned by the authenticated Amp account. Install root-owned
    `/etc/june-debugshare/runner.json`:
 
@@ -1547,8 +1583,9 @@ unrelated recovery incident. Oracle review is required and permitted, but a
 duplicate investigator is not. Verification of the triggering fault, readiness and
 loaded process revision precedes release of only its own hold and poller recovery.
 
-The inbox contains private exported snapshots and metadata-only receipts, not
-stream transcripts. Runner snapshots and admission directories are also private
+Diagnostic inbox entries contain private exported snapshots and metadata-only
+receipts, not stream transcripts. Ordinary task receipts separately retain the
+bounded final response described above. Runner snapshots and admission directories are also private
 durable exports; forgetting ordinary memory does not erase them or Amp threads.
 Completed means the CLI returned successfully, not that a fix was independently
 verified or deployed. Old running/unknown local investigations are not replayed

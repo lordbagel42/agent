@@ -542,6 +542,7 @@ test("research execution observes at most three reads and final synthesis has no
       async reply(request) {
         if (request.usageStage === "synthesis") {
           expect(f.observations).toHaveLength(3);
+          expect(request.ampThreadsAvailable).toBe(false);
           expect(request.researchAvailable).toBe(false);
           expect(request.telemetryAvailable).toBe(false);
           expect(request.javascriptAvailable).toBe(false);
@@ -549,6 +550,7 @@ test("research execution observes at most three reads and final synthesis has no
           expect(request.repositoryReadAvailable).toBe(false);
           const schema = replyJsonSchema([], request);
           for (const key of [
+            "ampThread",
             "mcp",
             "mcpCatalog",
             "mcpPermission",
@@ -568,6 +570,7 @@ test("research execution observes at most three reads and final synthesis has no
     .reply({
       ...f.request,
       agentRole: "execution",
+      ampThreadsAvailable: true,
       researchAvailable: true,
       javascriptAvailable: true,
       telemetryAvailable: true,

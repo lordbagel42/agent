@@ -582,6 +582,9 @@ export function createSessionCatalog(
               researchAvailable:
                 input.type === "event" &&
                 turn.capabilities.researchAvailable === true,
+              ampThreadsAvailable:
+                input.type === "event" &&
+                turn.capabilities.ampThreadsAvailable === true,
               turnTakingAvailable: input?.type === "event",
               replyPlacementAvailable:
                 input.type === "event" && source.address.channel === "slack",

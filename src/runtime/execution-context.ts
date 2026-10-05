@@ -57,6 +57,7 @@ export function executionCapabilities(
     repositoryAvailable: !!deps.repository,
     releaseAvailable: !!deps.release,
     modelStatusAvailable: privateTurn && !!deps.modelStatus,
+    ampThreadsAvailable: isOwnerRivetDm(event, deps.owner) && !!deps.ampThreads,
     mcpAvailable: privateTurn && deps.mcpAvailable === true,
     latencyAvailable: privateTurn && !!deps.latency,
     telemetryAvailable: privateTurn && !!deps.telemetry,

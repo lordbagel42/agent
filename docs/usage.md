@@ -179,6 +179,32 @@ can inspect these through her existing private debug-share inspection capability
 This storage migration requires a compatible forward release: do not roll back
 to code that cannot read compressed history or pending snapshots.
 
+### Ask June to start an Amp thread
+
+In your one-to-one Slack DM, ask June to spawn an Amp thread and describe the
+task. She uses the existing independent DEBUGSHARE transport, not Amp OAuth,
+Puck, or the coding-job `!approve` flow. Ordinary tasks run on `homelab-amp` in
+High with Fast. They do not inherit diagnostic repair or deployment authority.
+
+June returns the thread link if it arrives within her brief observation window;
+otherwise she returns the durable queued request ID. Ask her to inspect that
+same request later for its link, status, and final response (up to 8,000 UTF-8
+bytes, with truncation identified). There is no automatic completion message or
+cancel/resume operation for this path. A returned Amp turn may contain a question
+or blocker; `completed` does not independently verify the requested outcome.
+
+Only the task brief and initiating owner message are exported, not a diagnostic
+snapshot or unrelated conversation history. Requests and results remain private
+durable exports; forgetting June's memory does not delete them or Amp threads.
+Guest, shared-conversation and automated requests cannot use this capability.
+Queued requests survive restarts and retry before launch authorization. Never
+create another task to retry an uncertain launch.
+
+This requires the same configuration below plus separately installing the updated
+application, dispatcher and runner endpoint. Older dispatchers ignore ordinary
+task files rather than treating them as DEBUGSHARE reports. Source publication
+alone does not activate the feature. See [deployment.md](deployment.md#owner-requested-amp-threads).
+
 Automatic Amp investigation requires operator configuration:
 
 ```json

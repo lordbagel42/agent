@@ -79,6 +79,7 @@ import {
 } from "./reflection/evaluator.js";
 import { createJuryTool } from "./reflection/jury.js";
 import { createRepositoryAgent } from "./repository/agent.js";
+import { createAmpThreads } from "./runtime/amp-threads.js";
 import {
   ConversationContinuity,
   createPrivacyFilter,
@@ -1295,6 +1296,10 @@ async function main() {
     debugShare:
       config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
         ? createDebugDispatcher(config.debugShare)
+        : undefined,
+    ampThreads:
+      config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
+        ? createAmpThreads({ ...config.debugShare, owner })
         : undefined,
     debugSite: config.debugSite
       ? createDebugSitePublisher({

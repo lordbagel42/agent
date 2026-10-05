@@ -288,6 +288,8 @@ export interface CompanionReply {
   webEmbed?: import("./web-embed.js").WebEmbed;
   /** Owner-authenticated release tracking; never activation or approval authority. */
   release?: { action: "inspect"; revision: string | null };
+  /** Owner-requested Amp work through the independent host dispatcher, not OAuth. */
+  ampThread?: import("../runtime/amp-threads.js").AmpThreadCommand;
   /** Owner-private read-only inspection of model runtime health. */
   modelStatus?: boolean;
   /** One owner-private MCP call; host resolves credentials and permissions. */
@@ -449,6 +451,7 @@ export interface ModelRequest {
   escalationAvailable?: boolean;
   webSearchAvailable?: boolean;
   releaseAvailable?: boolean;
+  ampThreadsAvailable?: boolean;
   modelStatusAvailable?: boolean;
   mcpAvailable?: boolean;
   /** Set by the owner-private MCP wrapper, independently of enabled tools. */
