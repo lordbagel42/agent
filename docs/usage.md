@@ -232,6 +232,11 @@ or deployed. Source publication does not establish live notification delivery.
 
 ## Optional E2B execution
 
+For reusable per-worker shell/browser workspaces, use the provider-neutral
+[command environments](execution-agents.md#per-worker-command-environments):
+BoxLite is the default workspace provider. The one-shot E2B tool below remains
+available independently; E2B is not yet a workspace provider.
+
 Prefer June's local QuickJS `javascript` sandbox for calculations and data
 processing whenever it can do the job: it is cheaper and keeps the computation
 local. E2B is an alternative for Python, Node.js, Bash, preinstalled libraries,

@@ -279,6 +279,8 @@ export interface CompanionReply {
   webSearch?: string;
   /** Opt-in owner-private disposable external code execution. */
   e2b?: import("../tools/e2b.js").E2BRequest;
+  /** Commands in this execution worker's host-selected isolated environment. */
+  environment?: import("../environments/contracts.js").EnvironmentCommand;
   /** Owner-private browser work, owned by the durable execution worker. */
   browserTask?: import("../browser/contracts.js").BrowserCommand;
   /** Owner Slack IM management of host-owned ongoing public research. */
@@ -472,6 +474,7 @@ export interface ModelRequest {
   reflectionRequestAvailable?: boolean;
   juryAvailable?: boolean;
   e2bAvailable?: boolean;
+  environmentAvailable?: boolean;
   browserTaskAvailable?: boolean;
   researchAvailable?: boolean;
   webEmbedAvailable?: boolean;

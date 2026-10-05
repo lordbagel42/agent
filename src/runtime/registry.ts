@@ -195,6 +195,7 @@ export interface Dependencies {
   emojiSearch?: EmojiSearchProvider;
   repository?: import("../repository/agent.js").RepositoryAgent;
   e2b?: E2BProvider;
+  environments?: import("../environments/service.js").EnvironmentService;
   browserCompanion?: import("../browser/companion.js").BrowserCompanion;
   jev?: { observe: JevObserver; question: JevQuestion };
   mcpAvailable?: boolean;
@@ -4118,6 +4119,11 @@ export function createJuneRegistry(deps: Dependencies) {
                                       phase !== "synthesis" &&
                                       scope.private &&
                                       !!deps.browserCompanion,
+                                    environmentAvailable:
+                                      body.type === "event" &&
+                                      phase !== "synthesis" &&
+                                      scope.private &&
+                                      deps.environments?.available === true,
                                     personalityPreviewAvailable:
                                       body.type === "event" &&
                                       phase !== "synthesis" &&

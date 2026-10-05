@@ -20,6 +20,35 @@ const input = {
 };
 
 describe("configuration boundary", () => {
+  it("defaults configured agent environments to BoxLite without silently enabling them or E2B", () => {
+    expect(parseConfig(input).environments).toBeUndefined();
+    const environments = {
+      directory: "/private/vms",
+      rootfsPath: "/private/image",
+    };
+    expect(parseConfig({ ...input, environments }).environments).toMatchObject({
+      enabled: false,
+      provider: "boxlite",
+      allowedHosts: [],
+    });
+    expect(parseConfig({ ...input, e2b: {} }).e2b).toEqual({
+      apiKeyEnv: "E2B_API_KEY",
+    });
+    for (const invalid of [
+      { ...environments, directory: "relative" },
+      { directory: "/private/vms", enabled: true },
+      { ...environments, allowedHosts: ["*"] },
+      { directory: "/private/vms", provider: "e2b", template: "browser" },
+      {
+        ...environments,
+        provider: "e2b",
+        template: "browser",
+        allowedHosts: ["example.com"],
+      },
+    ])
+      expect(() => parseConfig({ ...input, environments: invalid })).toThrow();
+  });
+
   it("opts into the independent debug archive with only a write credential reference", () => {
     expect(parseConfig(input).debugSite).toBeUndefined();
     for (const origin of ["https://debug.example", "http://127.0.0.1:3092"]) {

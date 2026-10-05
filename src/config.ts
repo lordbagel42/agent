@@ -405,6 +405,27 @@ const schema = z
     e2b: z
       .strictObject({ apiKeyEnv: envName.default("E2B_API_KEY") })
       .optional(),
+    environments: z
+      .strictObject({
+        enabled: z.boolean().default(false),
+        provider: z.literal("boxlite").default("boxlite"),
+        directory: absolutePath,
+        image: nonempty.regex(/^[^\s@]+@sha256:[a-f0-9]{64}$/).optional(),
+        rootfsPath: absolutePath.optional(),
+        allowedHosts: z
+          .array(
+            z
+              .string()
+              .regex(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/),
+          )
+          .max(32)
+          .default([]),
+      })
+      .refine(
+        (value) => !!value.image !== !!value.rootfsPath,
+        "BoxLite needs exactly one immutable image or OCI layout",
+      )
+      .optional(),
     slack: z
       .strictObject({
         teamId: nonempty,

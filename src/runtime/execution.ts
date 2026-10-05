@@ -14,6 +14,7 @@ import type {
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
+import { ENVIRONMENT_KNOWLEDGE } from "../environments/contracts.js";
 import { parseReply } from "../models/provider.js";
 import { RepositoryError } from "../repository/contracts.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
@@ -83,6 +84,8 @@ interface ExecutionState {
   evidenceIds: string[];
   sourceIds?: string[];
   activeRequest?: string;
+  /** Retain the original storage binding until workspace destruction is verified. */
+  environmentBinding?: string;
 }
 
 /** A durable task owner using host-checked tools; coding still needs approval. */
@@ -273,8 +276,8 @@ export function createExecutionActor(
         return true;
       },
       cancel: async (c, id: string, revoke = false) => {
-        if (c.state.cancellations.includes(id)) return;
-        c.state.cancellations.push(id);
+        if (c.state.cancellations.includes(id) && !revoke) return;
+        if (!c.state.cancellations.includes(id)) c.state.cancellations.push(id);
         if (revoke) c.state.revoked = true;
         for (const request of Object.values(c.state.requests)) {
           if (request.status === "queued" || request.status === "running") {
@@ -292,6 +295,15 @@ export function createExecutionActor(
         if (revoke) c.state.history = [];
         await c.vars.persist();
         c.vars.controller?.abort();
+        if (revoke && c.state.environmentBinding) {
+          if (deps.environments?.binding !== c.state.environmentBinding)
+            throw new Error(
+              "Environment deletion needs the original provider storage",
+            );
+          await deps.environments.revoke(JSON.stringify(c.key));
+          delete c.state.environmentBinding;
+          await c.vars.persist();
+        }
       },
     },
     run: workflow(
@@ -428,6 +440,7 @@ export function createExecutionActor(
                               CONVERSATIONAL_CURIOSITY_HELP,
                               EXECUTION_NOTIFICATION_HELP,
                               TASK_OWNERSHIP_HELP,
+                              ENVIRONMENT_KNOWLEDGE,
                             ].join("\n\n"),
                             messages: step.state.history
                               .slice(-40)
@@ -536,6 +549,18 @@ export function createExecutionActor(
                               id: operationId,
                               status: "started",
                             };
+                            if (reply.environment?.action === "exec") {
+                              const binding = deps.environments?.binding;
+                              if (
+                                !binding ||
+                                (step.state.environmentBinding &&
+                                  step.state.environmentBinding !== binding)
+                              )
+                                throw new Error(
+                                  "Environment storage changed; reconciliation required",
+                                );
+                              step.state.environmentBinding = binding;
+                            }
                             await step.vars.persist();
                             if (!usable())
                               throw new Error("Execution invalidated");
@@ -645,6 +670,7 @@ export function createExecutionActor(
                                 audience: context.audience,
                                 eventId: context.originEventId,
                                 operationId,
+                                environmentOwner: JSON.stringify(step.key),
                                 origin: "event",
                                 phase: "reply",
                                 ownerTurn: true,
@@ -883,6 +909,16 @@ export function createExecutionActor(
                         }
                       } finally {
                         try {
+                          try {
+                            await deps.environments?.release(
+                              JSON.stringify(step.key),
+                            );
+                          } catch {
+                            request.status = "needs_review";
+                            request.report =
+                              "Environment cleanup is unconfirmed. No command was retried; operator reconciliation is required.";
+                            deps.lifecycle?.fail();
+                          }
                           delete step.vars.controller;
                           delete step.state.activeRequest;
                           await step.vars.persist();

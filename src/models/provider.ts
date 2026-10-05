@@ -26,6 +26,10 @@ import { slackHistorySchema } from "../core/slack-history.js";
 import { socialActionSchema } from "../core/social.js";
 import { WEB_EMBED_HELP, webEmbedSchema } from "../core/web-embed.js";
 import {
+  ENVIRONMENT_HELP,
+  environmentCommandSchema,
+} from "../environments/contracts.js";
+import {
   globalProposalInputSchema,
   reflectionPersonalitySuggestionSchema,
 } from "../reflection/global-proposal.js";
@@ -374,6 +378,7 @@ const companionReplySchema = z.strictObject({
     .optional(),
   jury: juryRequestSchema.optional(),
   e2b: e2bRequestSchema.optional(),
+  environment: environmentCommandSchema.optional(),
   browserTask: browserCommandSchema.optional(),
   research: researchCommandSchema.optional(),
   webEmbed: webEmbedSchema.optional(),
@@ -454,6 +459,7 @@ export type ReplyCapabilities = Pick<
   | "reflectionRequestAvailable"
   | "juryAvailable"
   | "e2bAvailable"
+  | "environmentAvailable"
   | "browserTaskAvailable"
   | "researchAvailable"
   | "webEmbedAvailable"
@@ -531,6 +537,7 @@ function rolePermitsField(
   if (key === "repositoryRead") return false;
   if (key === "repository") return role === "execution";
   if (key === "browserTask") return role === "execution";
+  if (key === "environment") return role === "execution";
   if (key === "readImage" || key === "readVideo") return role === "execution";
   if (role === "interaction") {
     return [
@@ -592,6 +599,7 @@ function legacyReplyJsonSchema(
     reflectionRequestAvailable,
     juryAvailable,
     e2bAvailable,
+    environmentAvailable,
     browserTaskAvailable,
     researchAvailable,
     webEmbedAvailable,
@@ -1776,6 +1784,31 @@ function legacyReplyJsonSchema(
             },
           }
         : {}),
+      ...(environmentAvailable
+        ? {
+            environment: {
+              anyOf: [
+                { type: "null" },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: { action: { type: "string", enum: ["status"] } },
+                  required: ["action"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    action: { type: "string", enum: ["exec"] },
+                    command: { type: "string" },
+                  },
+                  required: ["action", "command"],
+                },
+              ],
+              description: ENVIRONMENT_HELP,
+            },
+          }
+        : {}),
       ...(e2bAvailable
         ? {
             e2b: {
@@ -2057,6 +2090,7 @@ function legacyReplyJsonSchema(
       ...(reflectionRequestAvailable ? ["reflectionRequest"] : []),
       ...(juryAvailable ? ["jury"] : []),
       ...(e2bAvailable ? ["e2b"] : []),
+      ...(environmentAvailable ? ["environment"] : []),
       ...(browserTaskAvailable ? ["browserTask"] : []),
       ...(researchAvailable ? ["research"] : []),
       ...(webEmbedAvailable ? ["webEmbed"] : []),
@@ -2263,6 +2297,7 @@ export function parseReply(
     reflectionRequestAvailable,
     juryAvailable,
     e2bAvailable,
+    environmentAvailable,
     browserTaskAvailable,
     researchAvailable,
     webEmbedAvailable,
@@ -2351,6 +2386,7 @@ export function parseReply(
     "reflectionRequest",
     "jury",
     "e2b",
+    "environment",
     "browserTask",
     "research",
     "webEmbed",
@@ -2453,6 +2489,7 @@ export function parseReply(
     (reply.reflectionRequest !== undefined && !reflectionRequestAvailable) ||
     (reply.jury !== undefined && !juryAvailable) ||
     (reply.e2b !== undefined && !e2bAvailable) ||
+    (reply.environment !== undefined && !environmentAvailable) ||
     (reply.browserTask !== undefined && !browserTaskAvailable) ||
     (reply.research !== undefined && !researchAvailable) ||
     (reply.webEmbed !== undefined && !webEmbedAvailable) ||
@@ -2523,6 +2560,7 @@ export function parseReply(
     Number(reply.reflectionRequest !== undefined) +
     Number(reply.jury !== undefined) +
     Number(reply.e2b !== undefined) +
+    Number(reply.environment !== undefined) +
     Number(reply.browserTask !== undefined) +
     Number(reply.research !== undefined) +
     Number(reply.webEmbed !== undefined) +
@@ -2588,6 +2626,7 @@ export function parseReply(
       reply.reflectionRequest !== undefined ||
       reply.jury !== undefined ||
       reply.e2b !== undefined ||
+      reply.environment !== undefined ||
       reply.browserTask !== undefined ||
       reply.research !== undefined ||
       reply.webEmbed !== undefined ||

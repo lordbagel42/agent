@@ -143,6 +143,10 @@ importers:
       vitest:
         specifier: 5.0.2
         version: 5.0.2(@opentelemetry/api@1.9.1)(@types/node@24.19.0)(vite@8.3.2(@types/node@24.19.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+    optionalDependencies:
+      '@boxlite-ai/boxlite':
+        specifier: 0.10.5
+        version: 0.10.5(playwright-core@1.63.0)
 
   debug-site:
     devDependencies:
@@ -549,6 +553,35 @@ packages:
 
   '@borewit/text-codec@0.2.2':
     resolution: {integrity: sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ==}
+
+  '@boxlite-ai/boxlite-darwin-arm64@0.10.5':
+    resolution: {integrity: sha512-q3VOPUHBx23h0ub3un+/vSE0aAsoZtnbuik8uhqq8Dm4Be8HYOwJH7IMi+pc5aA5fIERXcpJuIhmjkg5TIQBNA==}
+    engines: {node: '>=18.0.0'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@boxlite-ai/boxlite-linux-arm64-gnu@0.10.5':
+    resolution: {integrity: sha512-okyNwKyeM+/sQNiA75OPa2/+pKNAz6c3/s31exYleDDxoA54vWFBY8q80pemWF8YI7Y2lu6b/tWkaLnxaHhcOA==}
+    engines: {node: '>=18.0.0'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@boxlite-ai/boxlite-linux-x64-gnu@0.10.5':
+    resolution: {integrity: sha512-82AfBpnUQVNvPDKfLCtdl3VCkXxz5p5jRhytyYSDgCLGlvrMdQXojqrFvSQsvIXBn2737NRr3e1rAijIDLYazQ==}
+    engines: {node: '>=18.0.0'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@boxlite-ai/boxlite@0.10.5':
+    resolution: {integrity: sha512-xz6Dfm6iK3at+YuXJGdGxmFHpbAX6l2wW5nLEuuFZLNf8GwII9WmnijZlhZv2+T79V8miRj5JxZN+xSYs9AAig==}
+    engines: {node: '>=18.0.0'}
+    peerDependencies:
+      playwright-core: '>=1.58.0'
+    peerDependenciesMeta:
+      playwright-core:
+        optional: true
 
   '@braintree/sanitize-url@6.0.2':
     resolution: {integrity: sha512-Tbsj02wXCbqGmzdnXNk0SOF19ChhRU70BsroIi4Pm6Ehp56in6vch94mfbdQ17DozxkL3BAVjbZ4Qc1a0HFRAg==}
@@ -6013,6 +6046,23 @@ snapshots:
     optional: true
 
   '@borewit/text-codec@0.2.2': {}
+
+  '@boxlite-ai/boxlite-darwin-arm64@0.10.5':
+    optional: true
+
+  '@boxlite-ai/boxlite-linux-arm64-gnu@0.10.5':
+    optional: true
+
+  '@boxlite-ai/boxlite-linux-x64-gnu@0.10.5':
+    optional: true
+
+  '@boxlite-ai/boxlite@0.10.5(playwright-core@1.63.0)':
+    optionalDependencies:
+      '@boxlite-ai/boxlite-darwin-arm64': 0.10.5
+      '@boxlite-ai/boxlite-linux-arm64-gnu': 0.10.5
+      '@boxlite-ai/boxlite-linux-x64-gnu': 0.10.5
+      playwright-core: 1.63.0
+    optional: true
 
   '@braintree/sanitize-url@6.0.2': {}
 

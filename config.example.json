@@ -17,6 +17,13 @@
     "apiKeyEnv": "MODEL_API_KEY"
   },
   "executionEnabled": true,
+  "environments": {
+    "enabled": false,
+    "provider": "boxlite",
+    "directory": "/var/lib/june-environments",
+    "rootfsPath": "/var/lib/june-images/browser-v1",
+    "allowedHosts": []
+  },
   "browserCompanion": {
     "enabled": false,
     "directory": "/var/lib/june-browser/ledger",

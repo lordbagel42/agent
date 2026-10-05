@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { open, readFile, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,9 @@ import {
   validateSlotLauncher,
 } from "./deployment/standby.js";
 import { createDebugSitePublisher } from "./diagnostics/publisher.js";
+import { createBoxLiteProvider } from "./environments/boxlite.js";
+import { openBoxLiteHost } from "./environments/boxlite-host.js";
+import { EnvironmentService } from "./environments/service.js";
 import { createHttpApp, type HttpDependencies } from "./http/app.js";
 import { createImportRoutes } from "./http/imports.js";
 import { createMemoryRoutes } from "./http/memory.js";
@@ -422,8 +425,10 @@ async function main() {
     };
   }
   let browserCompanion: BrowserCompanion | undefined;
+  let environments: EnvironmentService | undefined;
   const lifecycle = createLifecycle(async () => {
     if (browserCompanion && !browserCompanion.isSettled()) return false;
+    if (environments && !environments.isSettled()) return false;
     for (const manager of Object.values(isolation)) {
       if (!(await manager.isSettled())) return false;
     }
@@ -716,6 +721,38 @@ async function main() {
     startupStage = "E2B: requires JUNE_ALLOW_E2B=1 after cost/privacy review";
     if (process.env.JUNE_ALLOW_E2B !== "1") throw new Error("E2B not allowed");
     e2b = createE2BProvider({ apiKey: process.env[config.e2b.apiKeyEnv] });
+  }
+  if (
+    config.environments?.enabled &&
+    !config.setupMode &&
+    config.executionEnabled
+  ) {
+    startupStage =
+      "agent environments: requires JUNE_ALLOW_AGENT_ENVIRONMENTS=1 and reviewed host/image/network policy";
+    if (process.env.JUNE_ALLOW_AGENT_ENVIRONMENTS !== "1")
+      throw new Error("Agent environments not allowed");
+    const options = config.environments;
+    await privateDirectory(options.directory);
+    startupStage =
+      "BoxLite: Linux x64/arm64, writable /dev/kvm, optional native SDK and reviewed image required";
+    if (
+      process.platform !== "linux" ||
+      !["x64", "arm64"].includes(process.arch)
+    )
+      throw new Error("BoxLite platform unsupported");
+    const kvm = await open("/dev/kvm", "r+");
+    await kvm.close();
+    const { JsBoxlite } = await import("@boxlite-ai/boxlite");
+    startupStage =
+      "BoxLite: exclusive managed home and verified cgroup containment required; reconcile any june-active crash fence";
+    const host = await openBoxLiteHost(options.directory);
+    environments = new EnvironmentService(
+      createBoxLiteProvider(
+        new JsBoxlite({ homeDir: options.directory }),
+        options,
+        host,
+      ),
+    );
   }
   let jev: Dependencies["jev"];
   if (config.jev && !config.setupMode) {
@@ -1502,6 +1539,7 @@ async function main() {
     reflection,
     jury,
     e2b,
+    environments,
     coding,
   };
   const registry = createJuneRegistry(dependencies);
@@ -1989,6 +2027,7 @@ async function main() {
       await agents?.close();
       artifacts?.store.close();
       await browserCompanion?.close();
+      await environments?.close();
       await browser?.close();
       await connections?.close();
       capabilities?.close();

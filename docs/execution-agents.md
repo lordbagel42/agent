@@ -84,6 +84,188 @@ cancellation apply. The owner must separately send `!approve ID` as an ordinary
 private message before local execution. This bridge cannot approve, run, resume,
 install, push or deploy anything, or enable dormant coding/reflection integrations.
 
+## Per-worker command environments
+
+`environment` gives each authorized owner-private execution worker its own
+command workspace. The model loop remains in June; shell commands run in the
+isolated environment. BoxLite is the default workspace provider; E2B remains
+available through its independent one-shot tool. Neither is enabled just by
+publishing this code. No automatic provider fallback, VM provisioning, or live
+configuration change is implied.
+
+June delegates through the existing roster. Granted workers can emit:
+
+```json
+{"text":"","environment":{"action":"status"}}
+{"text":"","environment":{"action":"exec","command":"printf 'hello' > greeting.txt; cat greeting.txt"}}
+```
+
+The host chooses the VM from the authenticated actor key, not a model-provided
+ID. A worker reuses its VM across commands. Commands use non-root Bash in
+`/workspace`; each invocation starts a new shell. Use files and explicit `cd`,
+not shell variables, for continuity. BoxLite retains the worker's disk across
+assignments but stops compute before completion is recorded. Revocation requests
+destruction of all its policy generations after confirmed teardown. Background
+processes do not survive assignment completion.
+
+The supplied image preloads **Vercel agent-browser 0.38.2, Chromium, Node 24,
+Python, Git, curl, jq and ripgrep**. Use a unique browser `--session` for the
+task, inspect `snapshot -i` before interacting, and close only that session.
+Read the bundled CLI guide in bounded sections rather than overflowing the
+tool's output budget. Offline local pages work without network access. VM files
+and screenshots are not automatically delivered to the user, and this is not
+the separate browser companion's live-view/PIN workflow.
+
+Interaction, execution and automated-event prompts carry this knowledge;
+repository/research specialists and text-only workflow steps are told about it
+without gaining a shell. Guests, shared channels, automated events, synthesis
+and legacy requests lacking the saved grant cannot use it. Commands do not grant
+host access, credentials, coding approval, publication or deployment authority.
+QuickJS remains preferable for small pure calculations. The existing one-shot
+`e2b` action is unchanged and independent of this provider selection.
+
+### Build and validate the browser image
+
+On a disposable image builder, from the repository root:
+
+```sh
+docker build -t june-environment:reviewed src/environments/image
+docker run --rm --network none --shm-size=256m --memory=2g --cpus=2 \
+  --pids-limit=128 june-environment:reviewed june-environment-smoke
+```
+
+The smoke check verifies non-root execution, writable workspace, Python, Node,
+Git, Chromium, a real agent-browser click and screenshot. An optional absolute
+argument saves the screenshot outside its temporary directory. A container pass
+is **not** a BoxLite boot/teardown test. Build for the execution host's architecture;
+publish only with registry authorization. Configure the resulting **digest-pinned**
+image reference, not the mutable build tag. Alternatively export an OCI layout:
+
+```sh
+docker buildx build --platform linux/amd64 \
+  --output type=oci,dest=/tmp/june-browser.oci.tar src/environments/image
+mkdir /tmp/june-browser-oci
+tar -xf /tmp/june-browser.oci.tar -C /tmp/june-browser-oci
+```
+
+`rootfsPath` means an **OCI layout directory** containing `oci-layout`, `index.json`
+and `blobs`, not `docker save` output or an unpacked Linux root. Provision it at
+an immutable, versioned path readable by June, outside Git and separate from VM
+state. Never overwrite that directory in place: BoxLite caches layers and retained
+disks by declared image identity. The build fetches packages; guest boot does not
+install packages or download a browser. Rebuild/review regularly for security
+updates; a pinned browser CLI is not an indefinite browser-security guarantee.
+
+### Operator activation is separate
+
+After host, retention and network review, provision a new empty canonical mode-0700
+directory owned by June, outside any Git checkout, and an immutable image/layout.
+The disabled example is:
+
+```json
+"environments": {
+  "enabled": false,
+  "provider": "boxlite",
+  "directory": "/var/lib/june-environments",
+  "rootfsPath": "/var/lib/june-images/browser-v1",
+  "allowedHosts": []
+}
+```
+
+Set `enabled: true` **and** `JUNE_ALLOW_AGENT_ENVIRONMENTS=1` only in a separately
+authorized deployment/configuration window. Execution workers must be enabled
+and setup mode off. Linux x64/arm64 with usable read/write `/dev/kvm`, the optional
+pinned native SDK, and BoxLite's Linux jailer prerequisites are required. A VM
+host needs working nested virtualization, not merely a device pathname.
+
+The service must also support BoxLite's dedicated cgroup-v2 placement and allow
+targeted reads of its launcher `/proc` identity and cgroup. BoxLite 0.10.5 uses
+`/sys/fs/cgroup/boxlite/<id>` for root or the matching systemd user-service base
+for non-root; setup and joining are best-effort upstream. June requires actual
+membership before admitting a command, and observes the **same cgroup subtree
+empty** after SDK stop before freeing capacity. Missing permissions, failed
+placement, replaced/missing groups or remaining compute fail closed. Do not run
+June as root or relax its sandbox to work around this; provision and validate a
+dedicated execution account/cgroup policy under operator control. No other
+process may manage these boxes or migrate their host processes.
+
+`june-active` is a durable exclusive crash fence in the VM directory, created
+before native SDK construction. It is removed only after verified environment
+teardown and runtime shutdown. **Any ungraceful host exit requires operator
+reconciliation before restart**, even if no command was recorded. Do not delete
+the marker based on PID age, SDK `Stopped` status, or absence of a PID file;
+independently establish that all prior compute is gone while holding exclusive
+operator ownership. Retain disks and uncertain execution receipts. Never start a
+second provider, change directories, or restore old conversation state to bypass
+the fence. This intentionally conservative policy has no automatic crash recovery.
+Shutdown/configuration changes must follow [deployment coordination](deployment.md).
+
+The host persists a storage identity in `june-managed-v1`; workers save that
+binding before their first command. Disabling or replacing that provider cannot
+silently complete forgetting: the original storage must be available for verified
+deletion. `june-boxes/<box-id>` records hashed ownership before VM boot, separately
+from SDK metadata. SDK removal can succeed while leaving disk files; June checks
+absence of `boxes/<box-id>` before retiring the record. Failed deletion retains
+its concrete target across restart for operator reconciliation, not automatic
+filesystem removal. No clone, export, snapshot, host-volume or external box
+management is supported. Shared immutable image caches are not task data;
+path deletion is not secure erasure of backups or underlying storage blocks.
+
+Networking defaults **off**, with no host mounts, injected host environment,
+secrets or exposed ports. `allowedHosts` enables outbound BoxLite hostname
+routing only for reviewed domains; empty means explicitly disabled, not an empty
+allowlist on an enabled network. Hostname filters are not a complete exfiltration
+boundary (notably DNS); use independent egress controls when enabling networking,
+and never place credentials or unrelated private context in these environments.
+Guest network policy does not govern the host's initial image-registry fetch.
+
+Limits: four active environments process-wide (the existing priority queue may
+admit fewer), 30 seconds per command including first boot, 24 KB UTF-8 command,
+8 KB combined retained stdout/stderr, and BoxLite defaults of two vCPUs, 2 GiB RAM
+and an 8 GiB guest disk. The provider refuses new boxes at its retained-box cap
+of 128; there is no automatic disk eviction. Provision a separate host storage
+quota and monitor image caches/retained disks. Output limits bound retained text,
+not native SDK transport buffers. Timeout/output/transport failures end tool use
+for the assignment; late operations must settle and cleanup must be verified.
+Unknown cleanup retains capacity and blocks safe drain. No uncertain command is
+automatically replayed. Positive exit codes remain available for diagnosis;
+negative SDK outcomes (including its synthetic `-1` on transport failure) are
+treated as unknown, not a confirmed process exit.
+
+The existing [one-shot E2B tool](usage.md#optional-e2b-execution) is unchanged and
+can still be configured independently. `environments.provider: "e2b"` is refused:
+the reviewed API acknowledges asynchronous deletion before guest termination,
+so it cannot meet this workspace provider's strong teardown/drain contract.
+Neither a successful DELETE, missing listing nor elapsed TTL establishes that
+contract. A future adapter needs a verified completion guarantee or a separately
+reviewed weaker lifecycle/accounting policy. Never use E2B to bypass uncertain
+local cleanup.
+
+Before live enablement, use disposable state on the intended KVM host: run the
+smoke check through a real worker, isolate different values in two workers,
+verify same-worker disk retention with no surviving background process, then
+exercise cancellation, output overflow, revocation, clean restart and the crash
+fence. Fixtures and Docker checks do not establish those native guarantees or
+production performance. Observe June's receipts and loaded revision separately.
+
+### Replacing the provider
+
+`EnvironmentProvider` owns connect/destroy/close; `Environment` owns exec/stop.
+The shared service owns authorization revalidation, output limits, capacity and
+cleanup accounting. A new provider must preserve worker ownership, accurate
+persistence semantics, a durable storage binding and confirmed teardown/deletion;
+SDK objects, host paths, provider credentials and model-selected VM IDs never
+cross into the tool schema.
+
+[Cloudflare Computer](https://developers.cloudflare.com/changelog/post/2026-08-03-cloudflare-computer/)
+is a researched future option, **not an implemented provider**. Its early-preview
+`@cloudflare/computer` workspace uses SQLite in a Durable Object and offers
+`read`/`write`/`edit`/`ls`/`exec`, with just-bash/Dynamic Worker isolates or a full
+Linux Container backend mounted through FUSE. Native agent-browser/Chromium needs
+the container backend. A future adapter needs remote authentication, ownership,
+timeouts, cleanup and storage-contract validation; it is not a drop-in local
+BoxLite replacement. No Cloudflare resources are provisioned by this feature.
+
 ## Boundaries and recovery
 
 - Each request reads June's approved global public-safe personality once and uses

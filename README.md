@@ -160,6 +160,7 @@ model setup requirements and limitations.
 | `MODEL_API_KEY` | Example API-model credential; the name is configurable. |
 | `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN` | Slack webhook verification and bot access. |
 | `JUNE_ALLOW_NATIVE_CODING` | Explicit native-execution gate; off by default. |
+| `JUNE_ALLOW_AGENT_ENVIRONMENTS` | Opt-in [per-worker BoxLite command environments](docs/execution-agents.md#per-worker-command-environments), with agent-browser preloaded. |
 | `JUNE_ALLOW_MEMORY`, `JUNE_ALLOW_MEMORY_MODELS` | Separate retention and model-processing gates. |
 | `JUNE_ALLOW_HISTORY_IMPORTS` | Additional history-import gate; not account consent. |
 | `RIVETKIT_STORAGE_PATH` | Persistent engine storage; defaults under `.data`. |

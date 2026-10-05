@@ -90,6 +90,7 @@ export function executionCapabilities(
       privateTurn && !!deps.memory && !!deps.reflection && !!deps.coding,
     juryAvailable: privateTurn && !!deps.memory && !!deps.jury,
     e2bAvailable: privateTurn && deps.e2b?.available === true,
+    environmentAvailable: privateTurn && deps.environments?.available === true,
     browserTaskAvailable: privateTurn && !!deps.browserCompanion,
     researchAvailable: isOwnerRivetDm(event, deps.owner) && !!deps.research,
     webEmbedAvailable:

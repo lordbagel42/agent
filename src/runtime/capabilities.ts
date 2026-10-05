@@ -201,6 +201,8 @@ export interface CapabilityContext {
   /** Conversation event identity for provenance, not a tool deduplication key. */
   eventId: string;
   operationId?: string;
+  /** Authenticated actor key supplied by the execution host, never by a model. */
+  environmentOwner?: string;
   origin: "event" | "wakeup" | "execution_result" | "job_result";
   phase: "reply" | "deep" | "synthesis";
   ownerTurn: boolean;
