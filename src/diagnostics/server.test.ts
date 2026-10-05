@@ -56,6 +56,38 @@ function fixture() {
   return { store, options, file, request, upload };
 }
 
+it("reports deployment receipts separately from site readiness without exposing archive data", async () => {
+  const { options, upload } = fixture();
+  await upload();
+  const receipt = {
+    version: 1 as const,
+    controllerRevision: "1".repeat(40),
+    phase: "failed" as const,
+    checkedAt: 1,
+    targetRevision: "2".repeat(40),
+    activeRevision: "3".repeat(40),
+    reason: "preflight_failed" as const,
+  };
+  const withStatus = createDebugSite({
+    ...options,
+    revision: "4".repeat(40),
+    deployment: async () => receipt,
+  });
+  const response = await withStatus.request(`${origin}/health`);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    ready: true,
+    revision: "4".repeat(40),
+    deployment: receipt,
+  });
+  const missing = createDebugSite({ ...options, deployment: async () => null });
+  expect(await (await missing.request(`${origin}/health`)).json()).toEqual({
+    ready: true,
+    revision: "development",
+    deployment: null,
+  });
+});
+
 it("separates upload and viewer authority and serves an archive after the producer is gone", async () => {
   const { request, upload, store, options, file } = fixture();
   expect((await upload(snapshot, viewerToken)).status).toBe(401);
@@ -232,6 +264,7 @@ it("reports its own revision and requires readable UI assets for readiness", asy
   expect(await (await app.request(`${origin}/health`)).json()).toEqual({
     ready: true,
     revision: "built-revision",
+    deployment: null,
   });
   writeFileSync(
     join(options.assets, "index.html"),

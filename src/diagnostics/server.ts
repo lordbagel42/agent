@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { createDebugAuth } from "./auth.js";
+import type { DebugSiteDeploymentStatus } from "./deployment.js";
 import {
   DiagnosticConflictError,
   type DiagnosticStore,
@@ -23,6 +24,7 @@ export function createDebugSite(options: {
   store: DiagnosticStore;
   assets: string;
   revision?: string;
+  deployment?: () => Promise<DebugSiteDeploymentStatus | null>;
   now?: () => number;
 }) {
   const origin = new URL(options.origin);
@@ -128,7 +130,11 @@ export function createDebugSite(options: {
       /(?:src|href)="\/assets\/([A-Za-z0-9_-]+\.(?:js|css))"/g,
     ))
       if (match[1]) await readFile(join(options.assets, "assets", match[1]));
-    return c.json({ ready: true, revision: options.revision ?? "development" });
+    return c.json({
+      ready: true,
+      revision: options.revision ?? "development",
+      deployment: (await options.deployment?.()) ?? null,
+    });
   });
   app.get("/assets/:file", async (c) => {
     const file = c.req.param("file");

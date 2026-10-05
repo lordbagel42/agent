@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
+import { createDebugSiteDeploymentReader } from "./deployment.js";
 import { createDebugSite } from "./server.js";
 import { DiagnosticStore } from "./store.js";
 
@@ -33,6 +34,9 @@ const app = createDebugSite({
   store,
   assets: fileURLToPath(new URL("./public", import.meta.url)),
   revision: process.env.JUNE_DEBUG_BUILD_REVISION,
+  deployment: createDebugSiteDeploymentReader({
+    file: "/var/lib/june-debug-deploy/public/status.json",
+  }),
 });
 const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, () =>
   console.info("june_debug_ready"),
