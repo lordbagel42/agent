@@ -197,6 +197,9 @@ it("reads a real actor through June only in the owner DM without retaining or re
     fetch: async (input, init) => {
       expect(init?.method).toBe("GET");
       paths.push(new URL(String(input)).pathname);
+      const url = new URL(String(input));
+      if (url.searchParams.get("table") === "debug_body_parts")
+        expect(url.searchParams.get("limit")).toBe("25");
       const response = await fetch(input, init);
       expect(
         response.ok,
@@ -352,6 +355,26 @@ it("reads a real actor through June only in the owner DM without retaining or re
       new AbortController().signal,
     ),
   ).rejects.toThrow("table_not_allowed");
+  // The same owner-only read capability can retrieve the new diagnostic tables;
+  // guest capture admission does not grant the guest private inspector access.
+  await other.receive({
+    ...guest,
+    id: "diagnostic-fixture",
+    messageId: "diagnostic-fixture",
+    text: "DEBUG private fixture",
+    sessionCommandEligible: true,
+  });
+  for (const [table, column] of [
+    ["debug_body_manifests", "manifest"],
+    ["debug_body_parts", "data"],
+  ] as const) {
+    const result = await read(
+      event,
+      { ...request, target: "database-rows", actorId, table },
+      new AbortController().signal,
+    );
+    expect(JSON.parse(result).jsonFragment).toContain(column);
+  }
   const before = paths.length;
   for (const denied of [
     { ...event, senderId: "U2" },

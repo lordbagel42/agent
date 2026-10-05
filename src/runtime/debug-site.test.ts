@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import type { RawAccess } from "rivetkit/db";
 import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type { MessageEvent, OutboundMessage } from "../core/contracts.js";
@@ -6,6 +8,7 @@ import { routeEvent } from "../core/routing.js";
 import { DebugSitePublishError } from "../diagnostics/publisher.js";
 import { EvidenceStore } from "../memory/store.js";
 import { initialSessionDirectory } from "../sessions/state.js";
+import { initializeDebugBodies } from "./debug-bodies.js";
 import { conversationInputId } from "./inbox.js";
 import { createJuneRegistry } from "./registry.js";
 import {
@@ -446,7 +449,15 @@ it("fences duplicate wake timers inside the publication lane during an outage", 
   };
   const scheduled: { at: number; action: string; expected: number }[] = [];
   const work: Promise<unknown>[] = [];
+  const sqlite = new DatabaseSync(":memory:");
+  t.onTestFinished(() => sqlite.close());
+  const db = {
+    execute: async (sql: string, ...args: SQLInputValue[]) =>
+      sqlite.prepare(sql).all(...args),
+  } as RawAccess;
+  await initializeDebugBodies(db);
   const c = {
+    db,
     key: [snapshot.id],
     state: {},
     async saveState() {},
@@ -488,7 +499,11 @@ it("fences duplicate wake timers inside the publication lane during an outage", 
   config.actions.publishSite(c, scheduled.shift()?.expected ?? 0);
   await Promise.all(work.splice(0));
   expect(publish).toHaveBeenCalledTimes(3);
-  expect(publish.mock.calls.every(([value]) => value === snapshot)).toBe(true);
+  expect(publish.mock.calls.map(([value]) => value)).toEqual([
+    snapshot,
+    snapshot,
+    snapshot,
+  ]);
   expect(c.state.website).toMatchObject({ status: "saved", attempts: 3 });
   expect(scheduled).toEqual([]);
 });

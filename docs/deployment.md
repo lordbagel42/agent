@@ -817,6 +817,14 @@ marker. Migration must also drain old paid/native calls; legacy in-flight model
 replay can repeat a call. Never use old database snapshots to make a downgrade
 appear healthy.
 
+Diagnostic `snapshotRef`/SQLite bodies and `modelInvocationsArchive` are also
+forward-only storage changes. Older readers ignore these references and replay
+markers. The source compatibility digest changes automatically; do not authorize
+a rollback transition to a reader without both formats. Startup migrates retained
+inline captures and compresses markers losslessly, without clearing journals,
+settling uncertain work or restoring conversation data. Keep recovery fenced
+until the affected workflow, actual process revision and readiness are verified.
+
 ## Application lifecycle and private status
 
 `main.ts` wires the lifecycle fence for HTTP requests and conversation turns.

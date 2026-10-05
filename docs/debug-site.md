@@ -63,6 +63,24 @@ not present availability. Configuration removal pauses pending uploads. Old capt
 are not backfilled. Neither June nor the website may duplicate an upload, replay
 a message, launch an investigation for DEBUG, or grant repair authority.
 
+June stores diagnostic bodies in actor-local SQLite, not workflow state. Each
+32 KiB part commits before an immutable SHA-256/length manifest; the source
+command receipt is acknowledged only after that manifest. Retries reuse the
+same UUID and bytes. Wake-up migrates legacy inline/compressed snapshots and
+partial transfers losslessly before workflow replay, without launching work
+from the migration itself. Delivery and uncertain-launch fences are unchanged.
+No automatic cleanup deletes these bodies or incomplete orphan parts.
+
+June's existing owner-private Rivet `database-schema`/`database-rows` inspection
+can read source conversation tables `debug_body_manifests` and
+`debug_body_parts`. Match the manifest's `sha256`, order parts by `part_index`,
+decode base64, and verify byte length and SHA-256 before parsing JSON. Destination
+debugShare actors use the same tables under existing operator access. Metadata
+inspection remains body-free; never publish private chunks in chat or logs.
+Previously published captures whose source bodies were retired remain at the
+destination or acknowledged independent archive. This app-storage change needs
+a June forward release, not a debug website deployment or new permissions.
+
 ## Passkey sign-in and recovery
 
 Sign in with the existing viewer credential, open **Passkeys** in the header,

@@ -6,6 +6,7 @@ import {
   eventRecord,
   readDeliveries,
   readEvents,
+  readModelInvocations,
 } from "../runtime/conversation-storage.js";
 import type { Delivery } from "../runtime/delivery.js";
 import type { ConversationIngress } from "../runtime/inbox.js";
@@ -47,6 +48,7 @@ export interface LegacyDrainState {
   pendingNotifications?: Record<string, unknown>;
   ingress?: { receipts: Record<string, { lane?: "legacy" | "session" }> };
   modelInvocations?: Record<string, "started" | "settled" | "uncertain">;
+  modelInvocationsArchive?: CompressedJson;
   webInvocations?: Record<string, "started" | "settled" | "uncertain">;
   deliveries: Record<string, Delivery>;
 }
@@ -233,7 +235,8 @@ export function inspectLegacyDrain(
     untrackedTurnEffects: 0,
     unfinishedInputs: 0,
     unarchivedInputs: 0,
-    modelSettlementUnproven: Object.keys(state.modelInvocations ?? {}).length,
+    modelSettlementUnproven: Object.keys(readModelInvocations(state) ?? {})
+      .length,
     webSettlementUnproven: Object.keys(state.webInvocations ?? {}).length,
     unresolvedDeliveries: 0,
   };

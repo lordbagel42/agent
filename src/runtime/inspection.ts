@@ -23,7 +23,11 @@ import {
 } from "../reflection/domain.js";
 import type { inspectLegacyDrain } from "../sessions/migration.js";
 import type { McpConnections } from "../tools/connections.js";
-import { type CompressedJson, readDeliveries } from "./conversation-storage.js";
+import {
+  type CompressedJson,
+  readDeliveries,
+  readModelInvocations,
+} from "./conversation-storage.js";
 import type { Delivery } from "./delivery.js";
 import { executionLimits } from "./execution.js";
 import { proposeImportApproval } from "./import-approval.js";
@@ -288,6 +292,7 @@ type InvocationMarkers = Record<string, "started" | "settled" | "uncertain">;
 /** Project durable markers only; never prune, settle, release or replay work. */
 export function outstandingOperationMetadata(state: {
   modelInvocations?: InvocationMarkers;
+  modelInvocationsArchive?: CompressedJson;
   webInvocations?: InvocationMarkers;
   deliveries: Record<string, Delivery>;
   deliveriesArchive?: CompressedJson;
@@ -321,7 +326,7 @@ export function outstandingOperationMetadata(state: {
       });
   };
   for (const [kind, markers] of [
-    ["model", state.modelInvocations],
+    ["model", readModelInvocations(state)],
     ["web", state.webInvocations],
   ] as const)
     for (const [key, marker] of Object.entries(markers ?? {})) {
@@ -346,7 +351,9 @@ export function outstandingOperationMetadata(state: {
     operations,
     omitted: total - operations.length,
     recorded: {
-      model: state.modelInvocations !== undefined,
+      model:
+        state.modelInvocations !== undefined ||
+        state.modelInvocationsArchive !== undefined,
       web: state.webInvocations !== undefined,
     },
   };

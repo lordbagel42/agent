@@ -267,7 +267,8 @@ export function createRivetReader(options: {
               throw new Error("table_not_allowed");
             data = await inspector("database/rows", {
               table: request.table as string,
-              limit: "50",
+              // 50 base64-encoded 32 KiB diagnostic parts exceed MAX_BYTES.
+              limit: request.table === "debug_body_parts" ? "25" : "50",
               offset: String(request.offset),
             });
           }

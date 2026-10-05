@@ -1,8 +1,10 @@
 import { expect, test } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
+import { inspectLegacyDrain } from "../sessions/migration.js";
 import {
   commandSnapshot,
   compactConversation,
+  conversationSnapshot,
   deliveryRecord,
   editDelivery,
   editEvent,
@@ -11,6 +13,7 @@ import {
   readDeliveries,
   readEvents,
   readHistory,
+  readModelInvocations,
 } from "./conversation-storage.js";
 import { deliver } from "./delivery.js";
 import { conversationInputId } from "./inbox.js";
@@ -64,6 +67,53 @@ test("compressed history preserves order, provenance and edits through restart a
   });
   resetConversation(state, 10);
   expect(readHistory(state)).toEqual([]);
+});
+
+test("compressed model markers keep replay and migration fences after demotion and clear", () => {
+  const state: ConversationState = {
+    history: [],
+    events: {},
+    deliveries: {},
+    jobs: {},
+    lastInbound: {},
+    modelInvocations: Object.fromEntries(
+      Array.from({ length: 800 }, (_, index) => [
+        JSON.stringify([
+          "private",
+          `event-${index}-${"x".repeat(90)}`,
+          "reply",
+        ]),
+        "settled" as const,
+      ]),
+    ),
+  };
+  const expected = structuredClone(state.modelInvocations ?? {});
+  const key = Object.keys(expected)[17] as string;
+  if (!state.modelInvocations) throw new Error("Missing fixture markers");
+  state.modelInvocations.pending = "started";
+  expected.pending = "started";
+  compactConversation(state);
+  expect(state.modelInvocationsArchive).toBeDefined();
+  expect(state.modelInvocations).toEqual({ pending: "started" });
+  expect(readModelInvocations(state)).toEqual(expected);
+  expect(
+    inspectLegacyDrain(state, ["private", "owner"]).counts
+      .modelSettlementUnproven,
+  ).toBe(801);
+  state.modelInvocations[key] = "uncertain";
+  expected[key] = "uncertain";
+  compactConversation(state);
+  const reopened: ConversationState = JSON.parse(JSON.stringify(state));
+  resetConversation(reopened, 10);
+  expect(conversationSnapshot(reopened).modelInvocations).toEqual(expected);
+  expect(outstandingOperationMetadata(reopened).counts.model).toEqual({
+    started: 1,
+    uncertain: 1,
+  });
+  expect(
+    inspectLegacyDrain(reopened, ["private", "owner"]).counts
+      .modelSettlementUnproven,
+  ).toBe(801);
 });
 
 test("pending snapshots survive a lost publication acknowledgment and restart", async () => {

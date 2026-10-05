@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { actor, type Client, queue, type Registry, setup } from "rivetkit";
+import { db } from "rivetkit/db";
 import { workflow } from "rivetkit/workflow";
 import type { createAppsClient } from "../apps/client.js";
 import type {
@@ -87,6 +88,7 @@ import {
 } from "./coding.js";
 import {
   type CompressedJson,
+  commandSnapshot,
   compactConversation,
   conversationSnapshot,
   deliveryRecord,
@@ -97,7 +99,9 @@ import {
   readDeliveries,
   readEvents,
   readHistory,
+  readModelInvocations,
 } from "./conversation-storage.js";
+import { DebugBodies, initializeDebugBodies } from "./debug-bodies.js";
 import { type Delivery, deliver } from "./delivery.js";
 import {
   createExecutionActor,
@@ -334,6 +338,7 @@ export interface ConversationState extends ScopeCatalog {
   memoryContexts?: Record<string, MemoryReference>;
   forgottenEvents?: string[];
   modelInvocations?: Record<string, "started" | "settled" | "uncertain">;
+  modelInvocationsArchive?: CompressedJson;
   webInvocations?: Record<string, "started" | "settled" | "uncertain">;
   deletionRevision?: number;
   /** JSON-encoded source IDs avoid special object-property names. */
@@ -660,6 +665,7 @@ export function createJuneRegistry(deps: Dependencies) {
     },
   });
   const conversation = actor({
+    db: db({ onMigrate: initializeDebugBodies }),
     state: {
       history: [],
       events: {},
@@ -682,6 +688,7 @@ export function createJuneRegistry(deps: Dependencies) {
     ): {
       persist: () => Promise<void>;
       receiving: Promise<void>;
+      debugBodies: DebugBodies;
       notifyDebugShare(id: string, at: number): void;
       publishSessionCommands: () => void;
       schedule(at: number): Promise<unknown>;
@@ -696,9 +703,11 @@ export function createJuneRegistry(deps: Dependencies) {
       const signal = c.abortSignal;
       let notifyingDebug = Promise.resolve();
       let publishing = Promise.resolve();
+      const debugBodies = new DebugBodies(c.db);
       return {
         persist,
         receiving: Promise.resolve(),
+        debugBodies,
         notifyDebugShare: (id, at) => {
           notifyingDebug = notifyingDebug
             .then(async () => {
@@ -799,6 +808,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       });
                   },
                   signal,
+                  (ref) => debugBodies.read(ref),
                 );
               }
             })
@@ -829,7 +839,18 @@ export function createJuneRegistry(deps: Dependencies) {
     },
     onWake: async (c) => {
       // Legacy oversized state must fit the first atomic workflow flush.
-      // This deterministic normalization needs no startup save or RPC.
+      // Commit bodies before dropping inline copies. Never save immediately or
+      // publish through self-RPC during startup: neither can complete here.
+      for (const [id, receipt] of Object.entries(
+        c.state.sessionCommands ?? {},
+      )) {
+        const snapshot = commandSnapshot(receipt);
+        if (!snapshot) continue;
+        receipt.snapshotRef = await c.vars.debugBodies.put(id, snapshot);
+        receipt.snapshotId = snapshot.id;
+        delete receipt.snapshot;
+        delete receipt.snapshotCompressed;
+      }
       compactConversation(c.state);
       // Runs before workflow replay. Enqueue is durable; duplicates are harmless.
       // Do not await an immediate save here: native startup cannot service it.
@@ -1034,8 +1055,14 @@ export function createJuneRegistry(deps: Dependencies) {
                     c.abortSignal,
                   );
                 }
-                const activityId =
+                // A committed body can precede the command receipt after a
+                // crash. Reuse its exact identity/provenance, never recapture.
+                const savedSnapshot =
                   command.kind === "debug"
+                    ? await c.vars.debugBodies.get(id)
+                    : undefined;
+                const activityId =
+                  command.kind === "debug" && !savedSnapshot
                     ? c.state.sessions?.directory.activeSessionId
                     : undefined;
                 const activity = activityId
@@ -1050,7 +1077,8 @@ export function createJuneRegistry(deps: Dependencies) {
                   deps.memory?.store.deletionRevision() ?? 0;
                 const snapshot =
                   command.kind === "debug"
-                    ? captureDebug(
+                    ? (savedSnapshot ??
+                      captureDebug(
                         c.state,
                         c.key,
                         command.reason,
@@ -1067,9 +1095,9 @@ export function createJuneRegistry(deps: Dependencies) {
                                 current(JSON.stringify(c.key), reference),
                             }
                           : undefined,
-                      )
+                      ))
                     : undefined;
-                if (snapshot) {
+                if (snapshot && !savedSnapshot) {
                   snapshot.reporter = {
                     channel: "slack",
                     accountId: event.address.accountId,
@@ -1079,6 +1107,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 }
                 if (
                   snapshot &&
+                  !savedSnapshot &&
                   command.kind === "debug" &&
                   command.snapshotOnly
                 )
@@ -1104,6 +1133,9 @@ export function createJuneRegistry(deps: Dependencies) {
                     activityCapturedAt: new Date().toISOString(),
                   };
                 }
+                const snapshotRef = snapshot
+                  ? await c.vars.debugBodies.put(id, snapshot)
+                  : undefined;
                 if (command.kind === "clear") {
                   deps.continuity?.clear();
                   resetConversation(c.state, receivedAt);
@@ -1133,7 +1165,9 @@ export function createJuneRegistry(deps: Dependencies) {
                     ? `\nPrivate debug page: ${deps.debugSite.url(snapshot.id)}\nIndependent archive upload is queued; the page may not be available yet. Sign in with a registered passkey or the debug site's viewer credential.`
                     : "";
                 c.state.sessionCommands[id] = {
-                  ...(snapshot ? { snapshot } : {}),
+                  ...(snapshotRef
+                    ? { snapshotRef, snapshotId: snapshotRef.id }
+                    : {}),
                   ...(snapshot && ownerAddress
                     ? {
                         ownerDelivery: {
@@ -3355,8 +3389,9 @@ export function createJuneRegistry(deps: Dependencies) {
                                 };
                               if (version >= 2) {
                                 step.state.modelInvocations ??= {};
-                                const previous =
-                                  step.state.modelInvocations[invocation];
+                                const previous = readModelInvocations(
+                                  step.state,
+                                )?.[invocation];
                                 if (previous) {
                                   if (
                                     previous === "started" ||
@@ -5036,9 +5071,10 @@ export function createJuneRegistry(deps: Dependencies) {
                         index,
                       ]);
                       step.state.modelInvocations ??= {};
-                      if (step.state.modelInvocations[invocation]) {
+                      if (readModelInvocations(step.state)?.[invocation]) {
                         if (
-                          step.state.modelInvocations[invocation] === "started"
+                          readModelInvocations(step.state)?.[invocation] ===
+                          "started"
                         )
                           step.state.modelInvocations[invocation] = "uncertain";
                         const record = editEvent(step.state, eventId);
@@ -6429,7 +6465,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       "extract",
                     ]);
                     step.state.modelInvocations ??= {};
-                    if (step.state.modelInvocations[invocation]) return;
+                    if (readModelInvocations(step.state)?.[invocation]) return;
                     const reflection =
                       plan.reflection && deps.reflection
                         ? step
@@ -6494,7 +6530,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   .filter(([id]) => id.startsWith(`${eventId}:`))
                   .map(([, delivery]) => delivery.result?.status);
                 const uncertain = Object.entries(
-                  step.state.modelInvocations ?? {},
+                  readModelInvocations(step.state) ?? {},
                 ).some(
                   ([id, status]) =>
                     id.includes(eventId) && status !== "settled",

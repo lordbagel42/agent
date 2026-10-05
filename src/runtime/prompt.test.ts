@@ -371,6 +371,9 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain(
       "operations inspection still read the complete retained records",
     );
+    expect(request.system).toContain(
+      "counts as unproven provider settlement for legacy migration",
+    );
     expect(request.system).toContain("CLEARHISTORY");
     expect(request.system).toContain(
       "excerpts older than the host's reset timestamp",
@@ -382,6 +385,13 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "never starts or queues an Amp investigation",
     );
     expect(request.system).toContain("saved means snapshot-only storage");
+    expect(request.system).toContain(
+      "Diagnostic bodies and in-progress upload chunks live in actor-local SQLite",
+    );
+    expect(request.system).toContain("debug_body_manifests");
+    expect(request.system).toContain(
+      "before their manifest and command acknowledgment",
+    );
     expect(request.system).toContain("separately installed June Debug website");
     expect(request.system).toContain(
       "Conversation page shows retained history",

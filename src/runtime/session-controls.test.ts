@@ -1,4 +1,5 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import type { Client } from "rivetkit/client";
 import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
@@ -11,6 +12,7 @@ import type {
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { EvidenceStore } from "../memory/store.js";
+import { DEBUG_CHUNK_BYTES } from "./debug-bodies.js";
 import { conversationInputId } from "./inbox.js";
 import { createInspectionReader } from "./inspection.js";
 import { createLifecycle } from "./lifecycle.js";
@@ -45,6 +47,203 @@ const message = (id: string, text: string): MessageEvent => ({
   direct: true,
   sessionCommandEligible: true,
 });
+
+it.for(["fresh", "legacy", "manifest-only"] as const)(
+  "keeps large %s diagnostic bodies out of both workflow checkpoints",
+  async (mode, t) => {
+    const lifecycle = createLifecycle();
+    const captures: DebugSnapshot[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      lifecycle,
+      channels: {},
+      model: { reply: async () => ({ text: "" }) },
+      debugShare: {
+        run: async (snapshot) => {
+          captures.push(snapshot);
+          return { threadId: "T-large-fixture", report: "complete" };
+        },
+      },
+    });
+    const config = registry.config.use.conversation.config;
+    if (!("state" in config) || !("createVars" in config))
+      throw new Error("Missing conversation state/vars");
+    // Poorly compressible content makes a compressed inline capture exceed the
+    // real native checkpoint budget. No production data or providers are used.
+    const modelRequest = { fixture: randomBytes(400_000).toString("base64") };
+    const createVars = config.createVars;
+    if (!createVars) throw new Error("Missing conversation vars");
+    config.createVars = async (c, input) => ({
+      ...(await createVars(c, input)),
+      debugRequest: { value: modelRequest, deletionRevision: 0 },
+    });
+    const retained = "retained original evidence";
+    const old = message("large-history", retained);
+    const oldId = conversationInputId({ type: "event", event: old });
+    Object.assign(config.state, {
+      history: [{ id: oldId, role: "user", content: retained }],
+      events: { [oldId]: { event: old, done: true } },
+    });
+    const input = message("large-capture", "DEBUGSHARE retained evidence");
+    const inputId = conversationInputId({ type: "event", event: input });
+    const original = captureDebug(
+      config.state,
+      ["private", owner.id],
+      "original reason",
+      "original revision",
+      modelRequest,
+    );
+    if (mode === "legacy") {
+      const bytes = Buffer.from(JSON.stringify(original));
+      config.state.sessionCommands = {
+        [inputId]: {
+          snapshotCompressed: {
+            bytes: bytes.length,
+            gzip: gzipSync(bytes).toString("base64"),
+          },
+          snapshotId: original.id,
+          delivery: {
+            phase: "settled",
+            attempts: 1,
+            result: { status: "unknown", code: "lost_ack" },
+            message: {
+              id: "original-ack",
+              address: input.address,
+              lastInboundAt: 0,
+              content: { type: "text", text: "already attempted" },
+            },
+          },
+        },
+      };
+    } else if (mode === "manifest-only") {
+      const onWake = config.onWake;
+      config.onWake = async (c) => {
+        await onWake?.(c);
+        await c.vars.debugBodies.put(inputId, original);
+      };
+    }
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    await june.receive(input);
+    await expect.poll(() => captures.length, { timeout: 20_000 }).toBe(1);
+    const captured = captures[0];
+    expect(captured?.data).toMatchObject({
+      history: [{ id: oldId, content: retained }],
+      modelRequest,
+    });
+    if (mode !== "fresh") expect(captured).toEqual(original);
+    await june.receive(input);
+    await june.receive(message("after-capture", "continue"));
+    await expect
+      .poll(
+        async () =>
+          Object.values((await june.snapshot()).events).some(
+            (record) => record.event.id === "after-capture" && record.done,
+          ),
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+    expect(captures).toHaveLength(1);
+    expect(lifecycle.ready).toBe(true);
+    expect(
+      await client.debugShare.get([captured?.id as string]).inspect(),
+    ).toMatchObject({
+      status: "completed",
+    });
+  },
+);
+
+it.for(["running", "unknown", "completed", "partial"] as const)(
+  "relocates legacy destination %s state without losing bodies or ownership",
+  async (mode, t) => {
+    const snapshot: DebugSnapshot = {
+      id: "11111111-2222-4333-8444-555555555555",
+      sessionId: "original-session",
+      capturedAt: "2026-01-01T00:00:00Z",
+      revision: "original-revision",
+      scope: ["private", "owner"],
+      reason: "original reason",
+      data: { fixture: randomBytes(80_000).toString("base64") },
+      exclusions: [],
+    };
+    const captures: DebugSnapshot[] = [];
+    const registry = createJuneRegistry({
+      owner,
+      channels: {},
+      model: { reply: async () => ({ text: "" }) },
+      debugShare: {
+        run: async (body) => {
+          captures.push(body);
+          return { threadId: "T-new", report: "complete" };
+        },
+      },
+    });
+    const config = registry.config.use.debugShare.config;
+    if (!("state" in config)) throw new Error("Missing destination state");
+    const bytes = Buffer.from(JSON.stringify(snapshot));
+    const website = {
+      url: "https://debug.example.invalid/s/original",
+      status: "pending" as const,
+      attempts: 3,
+      retryAt: Date.now() + 60_000,
+    };
+    Object.assign(
+      config.state,
+      mode === "partial"
+        ? {
+            upload: {
+              sha256: createHash("sha256").update(bytes).digest("hex"),
+              totalBytes: bytes.length,
+              parts: [bytes.subarray(0, DEBUG_CHUNK_BYTES).toString("base64")],
+            },
+          }
+        : {
+            snapshot,
+            status: mode,
+            independentDispatch: true,
+            threadId: "T-existing",
+            website,
+          },
+    );
+    let recovered: DebugSnapshot | undefined;
+    const onWake = config.onWake;
+    config.onWake = async (c) => {
+      await onWake?.(c);
+      expect(c.state.snapshot).toBeUndefined();
+      expect(c.state.upload?.parts).toBeUndefined();
+      if (mode === "partial") {
+        expect(c.state.upload?.nextIndex).toBe(1);
+      } else {
+        expect(c.state.independentDispatch).toBe(true);
+        expect(c.state.website).toEqual(website);
+        recovered = await c.vars.bodies.get("snapshot");
+      }
+    };
+    const { client } = await setupTest(t, registry);
+    const share = client.debugShare.getOrCreate([snapshot.id]);
+    await share.inspect();
+    await publishDebugSnapshot(snapshot, (chunk) => share.startChunk(chunk));
+    await publishDebugSnapshot(snapshot, (chunk) => share.startChunk(chunk));
+    if (mode === "partial") {
+      await expect.poll(() => captures.length).toBe(1);
+      expect(captures).toEqual([snapshot]);
+      await expect
+        .poll(() => share.inspect())
+        .toMatchObject({
+          status: "completed",
+        });
+    } else {
+      expect(recovered).toEqual(snapshot);
+      expect(captures).toEqual([]);
+      expect(await share.inspect()).toMatchObject({
+        id: snapshot.id,
+        status: mode,
+        threadId: "T-existing",
+        website,
+      });
+    }
+  },
+);
 
 it("returns owner report links at origin while keeping guest links and all diagnostic details private", async (t) => {
   const sent: OutboundMessage[] = [];
@@ -821,10 +1020,18 @@ it.for([
     debugConfig.onSleep = () => {
       snapshotSlept = true;
     };
-    debugConfig.onStateChange = (c) => {
-      const snapshot = c.state.snapshot;
-      if (snapshot && !snapshots.some((saved) => saved.id === snapshot.id))
-        snapshots.push(JSON.parse(JSON.stringify(snapshot)));
+    if (!("createVars" in debugConfig) || !debugConfig.createVars)
+      throw new Error("Missing debug vars");
+    const createVars = debugConfig.createVars;
+    debugConfig.createVars = async (c, input) => {
+      const vars = await createVars(c, input);
+      const finish = vars.finish;
+      vars.finish = async (snapshot) => {
+        await finish(snapshot);
+        if (!snapshots.some((saved) => saved.id === snapshot.id))
+          snapshots.push(JSON.parse(JSON.stringify(snapshot)));
+      };
+      return vars;
     };
     const { client } = await setupTest(t, registry);
     const june = client.conversation.getOrCreate(["private", "owner"]);
@@ -1241,6 +1448,9 @@ it("owns queued DEBUGSHARE notifications beyond action and idle deadlines", asyn
   void triggered.catch(() => {});
   await expect.poll(() => links.length, { timeout: 15000 }).toBe(1);
   await triggered;
+  // Only sleep during the blocked send violates ownership; a preceding idle
+  // sleep/wake between the receipt read and notification admission is allowed.
+  asleep = false;
   // Only host-side observations during this wait: RPC polling could mask sleep.
   await new Promise((resolve) => setTimeout(resolve, 3000));
   expect(asleep).toBe(false);

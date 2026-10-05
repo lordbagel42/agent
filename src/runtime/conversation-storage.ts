@@ -59,6 +59,21 @@ export function commandSnapshot(
   );
 }
 
+/** Settled markers still fence replay and are not provider-settlement proof. */
+export function readModelInvocations(state: {
+  modelInvocations?: ConversationState["modelInvocations"];
+  modelInvocationsArchive?: CompressedJson;
+}) {
+  return state.modelInvocationsArchive
+    ? {
+        ...expand<NonNullable<ConversationState["modelInvocations"]>>(
+          state.modelInvocationsArchive,
+        ),
+        ...state.modelInvocations,
+      }
+    : state.modelInvocations;
+}
+
 /** Complete read projections. Archived records are not mutable actor state. */
 export function readEvents<T>(state: {
   events: Record<string, T>;
@@ -120,12 +135,16 @@ export function conversationSnapshot(
   const {
     eventsArchive: _events,
     deliveriesArchive: _deliveries,
+    modelInvocationsArchive: _models,
     ...rest
   } = state;
   return {
     ...rest,
     events: readEvents(state),
     deliveries: readDeliveries(state),
+    ...(readModelInvocations(state)
+      ? { modelInvocations: readModelInvocations(state) }
+      : {}),
   };
 }
 
@@ -134,6 +153,22 @@ export function compactConversation(state: ConversationState) {
   if (Buffer.byteLength(JSON.stringify(state.history)) > 64 * 1024) {
     state.historyArchive = compress(readHistory(state));
     state.history = [];
+  }
+  // These scalar replay markers have no retained mutable callback object.
+  // Live overlays can demote archived settled markers to uncertain on replay.
+  // Never discard a key or interpret "settled" as a natural-drain certificate.
+  const settledModels = Object.fromEntries(
+    Object.entries(readModelInvocations(state) ?? {}).filter(
+      ([, marker]) => marker === "settled",
+    ),
+  );
+  if (
+    state.modelInvocationsArchive ||
+    Buffer.byteLength(JSON.stringify(settledModels)) > 64 * 1024
+  ) {
+    state.modelInvocationsArchive = compress(settledModels);
+    for (const id of Object.keys(settledModels))
+      delete state.modelInvocations?.[id];
   }
   // Leave unfinished turns and their deliveries in place: asynchronous callbacks
   // can still own their objects. Storage classification is not drain evidence.

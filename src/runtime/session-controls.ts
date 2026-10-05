@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { actor, queue } from "rivetkit";
+import { db } from "rivetkit/db";
 import { workflow } from "rivetkit/workflow";
 import type {
   Address,
@@ -17,7 +18,14 @@ import {
   readDeliveries,
   readEvents,
   readHistory,
+  readModelInvocations,
 } from "./conversation-storage.js";
+import {
+  DEBUG_CHUNK_BYTES,
+  DebugBodies,
+  type DebugBodyRef,
+  initializeDebugBodies,
+} from "./debug-bodies.js";
 import { type Delivery, deliver } from "./delivery.js";
 import { conversationInputId } from "./inbox.js";
 import type {
@@ -68,6 +76,7 @@ export interface SessionCommandReceipt {
   snapshot?: DebugSnapshot;
   snapshotId?: string;
   snapshotCompressed?: CompressedJson;
+  snapshotRef?: DebugBodyRef;
   delivery: Delivery;
   /** Private owner copy for reports originating outside the owner DM. */
   ownerDelivery?: Delivery;
@@ -242,7 +251,7 @@ export function captureDebug(
       ),
       modelRequest: excluded.size ? undefined : modelRequest,
       modelInvocations: Object.fromEntries(
-        Object.entries(state.modelInvocations ?? {}).filter(([id]) =>
+        Object.entries(readModelInvocations(state) ?? {}).filter(([id]) =>
           [...ids].some((eventId) => id.includes(eventId)),
         ),
       ),
@@ -295,9 +304,6 @@ export function resetConversation(state: ConversationState, at: number) {
   }
 }
 
-// Base64 plus RPC framing stays below Rivet's 64 KiB incoming-message limit.
-const DEBUG_CHUNK_BYTES = 32 * 1024;
-
 export interface DebugSnapshotChunk {
   id: string;
   sha256: string;
@@ -341,9 +347,16 @@ export function createDebugShareActor(
   deps: Pick<Dependencies, "debugShare" | "debugSite">,
 ) {
   return actor({
+    db: db({ onMigrate: initializeDebugBodies }),
     state: {} as {
       snapshot?: DebugSnapshot;
-      upload?: { sha256: string; totalBytes: number; parts: string[] };
+      snapshotRef?: DebugBodyRef;
+      upload?: {
+        sha256: string;
+        totalBytes: number;
+        parts?: string[];
+        nextIndex?: number;
+      };
       status?:
         | "saved"
         | "queued"
@@ -356,53 +369,75 @@ export function createDebugShareActor(
       report?: string;
       website?: DebugSiteOutbox;
     },
-    createVars: (c) => ({
-      persist: () => c.saveState({ immediate: true }),
-      receiving: Promise.resolve(),
-      publishingSite: Promise.resolve(),
-      finish: async (snapshot: DebugSnapshot) => {
-        if (c.key[0] !== snapshot.id)
-          throw new Error("Debug snapshot identity mismatch");
-        const bytes = Buffer.from(JSON.stringify(snapshot));
-        if (
-          (c.state.snapshot &&
-            JSON.stringify(c.state.snapshot) !== bytes.toString()) ||
-          (c.state.upload &&
-            (c.state.upload.totalBytes !== bytes.length ||
-              c.state.upload.sha256 !==
-                createHash("sha256").update(bytes).digest("hex")))
-        )
-          throw new Error("Debug snapshot conflict");
-        if (!c.state.snapshot) {
-          c.state.snapshot = snapshot;
-          c.state.status = snapshot.snapshotOnly
+    createVars: (c) => {
+      const bodies = new DebugBodies(c.db);
+      const remember = (ref: DebugBodyRef) => {
+        c.state.snapshotRef = ref;
+        if (!c.state.status) {
+          c.state.status = ref.snapshotOnly
             ? "saved"
             : deps.debugShare
               ? "queued"
               : "unavailable";
           if (deps.debugSite)
             c.state.website = {
-              url: deps.debugSite.url(snapshot.id),
+              url: deps.debugSite.url(ref.id),
               status: "pending",
               attempts: 0,
               retryAt: Date.now(),
             };
         }
-        delete c.state.upload;
-        // Even a duplicate after a lost save acknowledgment needs a barrier.
-        await c.saveState({ immediate: true });
-        if (c.state.website?.status === "pending" && deps.debugSite)
-          await c.schedule.at(
-            Math.max(Date.now(), c.state.website.retryAt ?? 0),
-            "publishSite",
-            c.state.website.retryAt ?? 0,
-          );
-        if (c.state.status === "queued")
-          await c.queue.send("work", { start: true });
-      },
-    }),
+      };
+      return {
+        bodies,
+        remember,
+        persist: () => c.saveState({ immediate: true }),
+        receiving: Promise.resolve(),
+        publishingSite: Promise.resolve(),
+        finish: async (snapshot: DebugSnapshot) => {
+          if (c.key[0] !== snapshot.id)
+            throw new Error("Debug snapshot identity mismatch");
+          const bytes = Buffer.from(JSON.stringify(snapshot));
+          if (
+            c.state.upload &&
+            (c.state.upload.totalBytes !== bytes.length ||
+              c.state.upload.sha256 !==
+                createHash("sha256").update(bytes).digest("hex"))
+          )
+            throw new Error("Debug snapshot conflict");
+          remember(await bodies.put("snapshot", snapshot));
+          delete c.state.upload;
+          // Even a duplicate after a lost save acknowledgment needs a barrier.
+          await c.saveState({ immediate: true });
+          if (c.state.website?.status === "pending" && deps.debugSite)
+            await c.schedule.at(
+              Math.max(Date.now(), c.state.website.retryAt ?? 0),
+              "publishSite",
+              c.state.website.retryAt ?? 0,
+            );
+          if (c.state.status === "queued")
+            await c.queue.send("work", { start: true });
+        },
+      };
+    },
     queues: { work: queue<{ start: true }>() },
     onWake: async (c) => {
+      // Relocate legacy bodies before the native workflow's first checkpoint.
+      // A manifest committed before an interrupted state ACK is also recoverable.
+      const ref = c.state.snapshot
+        ? await c.vars.bodies.put("snapshot", c.state.snapshot)
+        : await c.vars.bodies.reference("snapshot");
+      if (ref) {
+        c.vars.remember(ref);
+        delete c.state.snapshot;
+        delete c.state.upload;
+      } else if (c.state.upload?.parts) {
+        const upload = c.state.upload;
+        for (const [index, part] of (upload.parts ?? []).entries())
+          await c.vars.bodies.writePart(upload.sha256, index, part);
+        upload.nextIndex = upload.parts?.length ?? 0;
+        delete upload.parts;
+      }
       if (c.state.status === "queued")
         await c.queue.send("work", { start: true });
       if (c.state.website?.status === "pending" && deps.debugSite)
@@ -420,7 +455,7 @@ export function createDebugShareActor(
             // Check inside the lane: wake repairs can duplicate durable timers,
             // but only the current generation may publish or schedule a successor.
             if (
-              !c.state.snapshot ||
+              !c.state.snapshotRef ||
               !c.state.website ||
               !deps.debugSite ||
               c.state.website.status !== "pending" ||
@@ -430,7 +465,7 @@ export function createDebugShareActor(
             try {
               await publishDebugSite(
                 c.state.website,
-                c.state.snapshot,
+                await c.vars.bodies.read(c.state.snapshotRef),
                 deps.debugSite,
                 c.vars.persist,
               );
@@ -481,58 +516,39 @@ export function createDebugShareActor(
           )
             throw new Error("Invalid debug snapshot chunk");
           const count = Math.ceil(chunk.totalBytes / DEBUG_CHUNK_BYTES);
-          if (c.state.snapshot) {
-            const bytes = Buffer.from(JSON.stringify(c.state.snapshot));
+          if (c.state.snapshotRef) {
+            const ref = c.state.snapshotRef;
             if (
-              bytes.length !== chunk.totalBytes ||
-              createHash("sha256").update(bytes).digest("hex") !==
-                chunk.sha256 ||
-              !bytes
-                .subarray(
-                  chunk.index * DEBUG_CHUNK_BYTES,
-                  (chunk.index + 1) * DEBUG_CHUNK_BYTES,
-                )
-                .equals(part)
+              ref.totalBytes !== chunk.totalBytes ||
+              ref.sha256 !== chunk.sha256 ||
+              (await c.vars.bodies.part(ref.sha256, chunk.index)) !== chunk.data
             )
               throw new Error("Debug snapshot conflict");
-            await c.vars.finish(c.state.snapshot);
+            await c.vars.finish(await c.vars.bodies.read(ref));
             return { nextIndex: count, complete: true };
           }
           const upload = c.state.upload ?? {
             sha256: chunk.sha256,
             totalBytes: chunk.totalBytes,
-            parts: [],
+            nextIndex: 0,
           };
+          const nextIndex = upload.nextIndex ?? 0;
           if (
             upload.sha256 !== chunk.sha256 ||
             upload.totalBytes !== chunk.totalBytes ||
-            chunk.index > upload.parts.length ||
-            (chunk.index < upload.parts.length &&
-              upload.parts[chunk.index] !== chunk.data)
+            chunk.index > nextIndex
           )
             throw new Error("Debug snapshot conflict");
-          const parts =
-            chunk.index === upload.parts.length
-              ? [...upload.parts, chunk.data]
-              : upload.parts;
-          if (parts.length === count) {
-            const bytes = Buffer.concat(
-              parts.map((part) => Buffer.from(part, "base64")),
-            );
-            if (
-              bytes.length !== upload.totalBytes ||
-              createHash("sha256").update(bytes).digest("hex") !== upload.sha256
-            )
-              throw new Error("Debug snapshot digest mismatch");
-            const snapshot = JSON.parse(
-              new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-            );
+          await c.vars.bodies.writePart(chunk.sha256, chunk.index, chunk.data);
+          const savedIndex = Math.max(nextIndex, chunk.index + 1);
+          if (savedIndex === count) {
+            const snapshot = await c.vars.bodies.read(upload);
             await c.vars.finish(snapshot);
             return { nextIndex: count, complete: true };
           }
-          c.state.upload = { ...upload, parts };
+          c.state.upload = { ...upload, nextIndex: savedIndex };
           await c.vars.persist();
-          return { nextIndex: parts.length, complete: false };
+          return { nextIndex: savedIndex, complete: false };
         });
         c.vars.receiving = receiving.then(
           () => {},
@@ -543,16 +559,16 @@ export function createDebugShareActor(
       inspect: async (c) => {
         const external =
           c.state.independentDispatch &&
-          c.state.snapshot &&
+          c.state.snapshotRef &&
           deps.debugShare?.inspect
             ? await deps.debugShare
-                .inspect(c.state.snapshot.id)
+                .inspect(c.state.snapshotRef.id)
                 .catch(() => undefined)
             : undefined;
         return {
-          id: c.state.snapshot?.id,
-          sessionId: c.state.snapshot?.sessionId,
-          capturedAt: c.state.snapshot?.capturedAt,
+          id: c.state.snapshotRef?.id,
+          sessionId: c.state.snapshotRef?.sessionId,
+          capturedAt: c.state.snapshotRef?.capturedAt,
           status: external?.status ?? c.state.status,
           threadId: external?.threadId ?? c.state.threadId,
           website: c.state.website,
@@ -567,8 +583,8 @@ export function createDebugShareActor(
           timeout: 0,
           run: async (step) => {
             if (
-              !step.state.snapshot ||
-              step.state.snapshot.snapshotOnly ||
+              !step.state.snapshotRef ||
+              step.state.snapshotRef.snapshotOnly ||
               !deps.debugShare
             )
               return;
@@ -592,7 +608,7 @@ export function createDebugShareActor(
             await step.vars.persist();
             try {
               const result = await deps.debugShare.run(
-                JSON.parse(JSON.stringify(step.state.snapshot)),
+                await step.vars.bodies.read(step.state.snapshotRef),
                 step.abortSignal,
                 async (id) => {
                   step.state.threadId = id;
@@ -629,6 +645,7 @@ export function createPingActor(deps: Dependencies) {
           receipt.snapshot ||
           receipt.snapshotCompressed ||
           receipt.snapshotId ||
+          receipt.snapshotRef ||
           c.key[0] !== receipt.delivery.message.id
         )
           throw new Error("Ping receipt identity mismatch");
@@ -755,11 +772,18 @@ export async function publishSessionCommand(
   persist: () => Promise<void>,
   publish: (snapshot: DebugSnapshot) => Promise<void>,
   signal: AbortSignal,
+  load?: (ref: DebugBodyRef) => Promise<DebugSnapshot>,
 ) {
   const release = await deps.lifecycle?.enter(signal);
   let settlement: Promise<ModelSettlement> | undefined;
   try {
-    const snapshot = !receipt.published && commandSnapshot(receipt);
+    if (!receipt.published && receipt.snapshotRef && !load)
+      throw new Error("Debug snapshot loader required");
+    const snapshot =
+      !receipt.published &&
+      (receipt.snapshotRef && load
+        ? await load(receipt.snapshotRef)
+        : commandSnapshot(receipt));
     if (snapshot) {
       await publish(snapshot);
       receipt.published = true;
