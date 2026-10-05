@@ -8,11 +8,13 @@
   let {
     state: archiveState,
     utc,
+    page,
     onsearch,
     onselect,
   }: {
     state: ArchiveState;
     utc: boolean;
+    page: "evidence" | "conversation";
     onsearch: (query: string, offset: number) => void;
     onselect: (id: string) => void;
   } = $props();
@@ -106,7 +108,7 @@
   <nav class="capture-list" aria-label="Recent captures">
     {#each items as item (item.id)}
       <a
-        href={`/s/${encodeURIComponent(item.id)}`}
+        href={`/s/${encodeURIComponent(item.id)}${page === "conversation" ? "/conversation" : ""}`}
         class:current={archiveState.selectedId === item.id}
         aria-current={archiveState.selectedId === item.id ? "page" : undefined}
         onclick={(event) => {

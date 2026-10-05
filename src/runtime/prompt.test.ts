@@ -383,6 +383,12 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     );
     expect(request.system).toContain("saved means snapshot-only storage");
     expect(request.system).toContain("separately installed June Debug website");
+    expect(request.system).toContain(
+      "Conversation page shows retained history",
+    );
+    expect(request.system).toContain(
+      "append /conversation to its /s/<UUID> URL",
+    );
     expect(request.system).toContain("supports owner passkey sign-in");
     expect(request.system).toContain(
       "Removal signs out all devices and invalidates pending sign-ins",

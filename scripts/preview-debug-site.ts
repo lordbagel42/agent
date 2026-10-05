@@ -44,12 +44,23 @@ const snapshot: DebugSnapshot = {
     coordinator: {
       events: { [inputId]: { event, done: false } },
       history: [
-        { id: inputId, role: "user", content: event.text },
+        { id: inputId, role: "user", content: event.text, source: event },
         {
           id: `${inputId}:reply`,
           role: "assistant",
           content:
             "The saved receipt records an uncertain send. It should not be repeated without reconciling the outcome.",
+        },
+        {
+          id: "synthetic-followup",
+          role: "user",
+          content: "What should I look for in the receipt?",
+        },
+        {
+          id: "synthetic-followup:reply",
+          role: "assistant",
+          content:
+            "Check the result, not just the phase. This synthetic receipt has:\n\nphase: settled\nresult.status: unknown\nresult.code: transport_interrupted\n\nThat does not confirm delivery. The original payload is available in Evidence → Deliveries.",
         },
       ],
       modelInvocations: { [`${inputId}:fast`]: "settled" },
@@ -120,7 +131,14 @@ const snapshot: DebugSnapshot = {
     },
     activity: {
       sessionId: "activity-demo",
-      history: [],
+      history: [
+        { eventId: inputId, role: "user", content: event.text },
+        {
+          eventId: inputId,
+          role: "assistant",
+          content: "[Synthetic delivery summary: outcome unknown.]",
+        },
+      ],
       turns: [
         {
           eventId: inputId,

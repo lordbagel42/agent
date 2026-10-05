@@ -29,6 +29,16 @@ reason, session, revision and scope), not every message body. Export JSON return
 the full immutable snapshot. All content is point-in-time evidence, not live
 health, cost, verified success or an inferred root cause.
 
+Open **Conversation** on a capture for a read-only transcript at
+`/s/<UUID>/conversation`. Choose coordinator or activity history; they may
+overlap and are never merged or deduplicated. Records stay in retained order,
+with source timestamps only when explicitly present. Assistant records can
+include delivery summaries, not just words sent to the user. **Inspect record**
+opens the original payload and JSON path. Search covers full records before
+pagination; long text is visibly shortened with the complete record available
+in the inspector and export. The **Evidence** page retains the full diagnostics.
+Conversation links use the same sign-in and privacy rules as other captures.
+
 Capture obeys existing retention/privacy rules. Timing logs cover exactly
 matched retained inputs in the current process's 128-trace buffer, not global
 logs or unjoinable historical traces. Raw service logs, provider-internal traffic,

@@ -201,22 +201,30 @@ it("rejects malformed/oversized/conflicting uploads and exports exact JSON only 
   ).toBe(404);
 });
 
-it("serves only built assets and a data-free shell with a restrictive CSP", async () => {
-  const { request, upload } = fixture();
-  await upload();
-  const response = await request(`/s/${snapshot.id}`);
-  expect(response.status).toBe(200);
-  const html = await response.text();
-  expect(html).toContain("June Debug");
-  expect(html).not.toContain(snapshot.reason);
-  expect(html).not.toContain("synthetic private evidence");
-  const policy = response.headers.get("content-security-policy") ?? "";
-  expect(policy).toContain("script-src 'self'");
-  expect(policy).not.toContain("unsafe-inline");
-  expect(policy).toContain("frame-ancestors 'none'");
-  expect((await request("/assets/secret.sqlite")).status).toBe(404);
-  expect((await request("/api/does-not-exist")).status).toBe(404);
-});
+it.each(["", "/conversation"])(
+  "serves a data-free capture shell at /s/:id%s with a restrictive CSP",
+  async (page) => {
+    const { request, upload } = fixture();
+    await upload();
+    const response = await request(`/s/${snapshot.id}${page}`);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("June Debug");
+    expect(html).not.toContain(snapshot.reason);
+    expect(html).not.toContain("synthetic private evidence");
+    const policy = response.headers.get("content-security-policy") ?? "";
+    expect(policy).toContain("script-src 'self'");
+    expect(policy).not.toContain("unsafe-inline");
+    expect(policy).toContain("frame-ancestors 'none'");
+    expect((await request("/assets/secret.sqlite")).status).toBe(404);
+    expect((await request("/api/does-not-exist")).status).toBe(404);
+    expect((await request(`/s/not-a-uuid${page}`)).status).toBe(404);
+    expect((await request(`/s/${snapshot.id}${page}/unknown`)).status).toBe(
+      404,
+    );
+    expect((await request(`/api/snapshots/${snapshot.id}`)).status).toBe(401);
+  },
+);
 
 it("reports its own revision and requires readable UI assets for readiness", async () => {
   const { options } = fixture();

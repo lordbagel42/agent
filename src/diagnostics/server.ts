@@ -148,8 +148,11 @@ export function createDebugSite(options: {
   app.get("/", async (c) =>
     c.html(await readFile(join(options.assets, "index.html"), "utf8")),
   );
-  app.get("/s/:id", async (c) => {
-    if (!snapshotIdSchema.safeParse(c.req.param("id")).success)
+  app.get("/s/:id/:page?", async (c) => {
+    if (
+      !snapshotIdSchema.safeParse(c.req.param("id")).success ||
+      (c.req.param("page") && c.req.param("page") !== "conversation")
+    )
       return c.notFound();
     return c.html(await readFile(join(options.assets, "index.html"), "utf8"));
   });

@@ -18,21 +18,30 @@
   let railOpen = $state(false);
   let passkeysOpen = $state(false);
   let zone = $state("local");
+  let capturePage = $state<"evidence" | "conversation">("evidence");
   const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const utc = $derived(zone === "utc");
   $effect(() => {
     if ($archive.phase !== "ready") passkeysOpen = false;
   });
   function routeId() {
-    const match = /^\/s\/([^/]+)\/?$/.exec(location.pathname);
+    const match = /^\/s\/([^/]+)(\/conversation)?\/?$/.exec(location.pathname);
+    capturePage = match?.[2] ? "conversation" : "evidence";
     try {
       return match?.[1] ? decodeURIComponent(match[1]) : null;
     } catch {
       return "invalid-capture-id";
     }
   }
-  function navigate(id: string | null) {
-    history.pushState(null, "", id ? `/s/${encodeURIComponent(id)}` : "/");
+  function navigate(id: string | null, page = capturePage) {
+    capturePage = id ? page : "evidence";
+    history.pushState(
+      null,
+      "",
+      id
+        ? `/s/${encodeURIComponent(id)}${capturePage === "conversation" ? "/conversation" : ""}`
+        : "/",
+    );
     railOpen = false;
     passkeysOpen = false;
     void archive.select(id);
@@ -161,6 +170,7 @@
       <ArchiveRail
         state={$archive}
         {utc}
+        page={capturePage}
         onsearch={(query, offset) => archive.search(query, offset)}
         onselect={navigate}
       />
@@ -198,9 +208,11 @@
         {#key $archive.snapshot.id}<CaptureView
             snapshot={$archive.snapshot}
             {utc}
+            page={capturePage}
             downloading={$archive.downloadBusy}
             actionError={$archive.actionError}
             ondownload={download}
+            onpage={(page) => navigate($archive.snapshot!.id, page)}
           />{/key}
       {:else}
         <div class="empty-state">
