@@ -76,6 +76,42 @@ function dependencies(
 }
 
 describe("webhook and operator HTTP boundary", () => {
+  it("accepts explicit DEBUGSHARE resolutions only with operator authentication and admission", async () => {
+    const id = "12345678-1234-4234-8234-123456789abc";
+    const resolveDebugShare = vi.fn(async () => true);
+    const lifecycle = createLifecycle();
+    const app = createHttpApp(dependencies({ resolveDebugShare, lifecycle }));
+    const post = (body: unknown, credential = token) =>
+      app.request("/operator/debug-shares/resolve", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${credential}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    const body = { id, confirmedResolved: true };
+    expect((await post(body, "wrong")).status).toBe(401);
+    for (const invalid of [
+      { id },
+      { id, confirmedResolved: false },
+      { ...body, id: "../invalid" },
+      { ...body, reason: "private" },
+    ])
+      expect((await post(invalid)).status).toBe(400);
+    expect(resolveDebugShare).not.toHaveBeenCalled();
+    const response = await post(body);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ id, resolved: true });
+    expect(resolveDebugShare).toHaveBeenCalledExactlyOnceWith(id);
+    resolveDebugShare.mockResolvedValue(false);
+    expect((await post(body)).status).toBe(404);
+    await lifecycle.drain();
+    expect((await post(body)).status).toBe(503);
+    expect(resolveDebugShare).toHaveBeenCalledTimes(2);
+  });
+
   it("authenticates private intake separately without bypassing Slack signatures, routing or durable ACK", async () => {
     const intakeToken = "separate-intake-token-32-characters-long";
     const deployment = {

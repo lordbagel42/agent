@@ -42,6 +42,10 @@ import {
 import { RESEARCH_HELP, researchCommandSchema } from "../research/contracts.js";
 import { AMP_THREAD_HELP, ampThreadSchema } from "../runtime/amp-threads.js";
 import {
+  DEBUG_RESOLUTION_HELP,
+  debugShareResolutionSchema,
+} from "../runtime/debug-dispatch.js";
+import {
   globalStyleSchema,
   personalityPreviewSchema,
 } from "../runtime/personality.js";
@@ -141,6 +145,7 @@ const recallTimestampSchema = z
 
 const companionReplySchema = z.strictObject({
   settings: settingsCommandSchema.optional(),
+  debugShareResolve: debugShareResolutionSchema.optional(),
   agentWebhook: agentWebhookSchema.optional(),
   ampThread: ampThreadSchema.optional(),
   text: z.string(),
@@ -437,6 +442,7 @@ function isJsonObject(value: unknown): value is JsonObject {
 export type ReplyCapabilities = Pick<
   ModelRequest,
   | "settingsAvailable"
+  | "debugShareResolveAvailable"
   | "agentRole"
   | "agentConversation"
   | "agentWebhooksAvailable"
@@ -540,7 +546,8 @@ function rolePermitsField(
   role: ModelRequest["agentRole"],
   key: string,
 ): boolean {
-  if (key === "settings") return role === "execution";
+  if (key === "settings" || key === "debugShareResolve")
+    return role === "execution";
   if (role === "repository") return key === "text" || key === "repositoryRead";
   if (key === "repositoryRead") return false;
   if (key === "repository") return role === "execution";
@@ -2117,8 +2124,30 @@ function legacyReplyJsonSchema(
             },
           }
         : {}),
+      ...(replyCapabilities(capabilities).debugShareResolveAvailable
+        ? {
+            debugShareResolve: {
+              anyOf: [
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    id: { type: "string" },
+                    confirmedResolved: { type: "boolean", enum: [true] },
+                  },
+                  required: ["id", "confirmedResolved"],
+                },
+                { type: "null" },
+              ],
+              description: DEBUG_RESOLUTION_HELP,
+            },
+          }
+        : {}),
     },
     required: [
+      ...(replyCapabilities(capabilities).debugShareResolveAvailable
+        ? ["debugShareResolve"]
+        : []),
       ...(replyCapabilities(capabilities).settingsAvailable
         ? ["settings"]
         : []),
@@ -2425,6 +2454,7 @@ export function parseReply(
   const normalized = { ...value };
   for (const key of [
     "settings",
+    "debugShareResolve",
     "messages",
     "sendMessages",
     "question",
@@ -2542,6 +2572,8 @@ export function parseReply(
   if (
     (reply.settings !== undefined &&
       !replyCapabilities(capabilities).settingsAvailable) ||
+    (reply.debugShareResolve !== undefined &&
+      !replyCapabilities(capabilities).debugShareResolveAvailable) ||
     (reply.codingJob !== undefined && !codingJobsAvailable) ||
     (reply.search !== undefined && !searchAvailable) ||
     (reply.readImage !== undefined && !readImageAvailable) ||
@@ -2611,6 +2643,7 @@ export function parseReply(
   }
   const directiveCount =
     Number(reply.settings !== undefined) +
+    Number(reply.debugShareResolve !== undefined) +
     Number(reply.codingJob !== undefined) +
     Number(reply.workflow !== undefined) +
     Number(reply.javascript !== undefined) +
@@ -2681,6 +2714,7 @@ export function parseReply(
     (directiveCount > 0 &&
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
     ((reply.settings !== undefined ||
+      reply.debugShareResolve !== undefined ||
       reply.agentWebhook !== undefined ||
       reply.codingJob !== undefined ||
       reply.workflow !== undefined ||

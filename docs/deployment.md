@@ -1539,6 +1539,46 @@ queued, never falling back to an unsafe launch. Rolling the dispatcher back to
 an older version strands queued receipts until it is upgraded again; it does not
 authorize replay. Installing source is not runtime activation.
 
+New DEBUGSHARE reports outside the owner's one-on-one DMs receive a generic
+`DEBUGSHARE <UUID> was resolved.` reply in their originating Slack thread. For a
+top-level command, the reply threads under that command. Channels, group DMs and
+guest DMs are included; owner DMs and their threads are excluded. The investigator
+must end its successful final response with the exact standalone line
+`DEBUGSHARE <UUID> RESOLVED` only after verifying the reported issue is fixed,
+including live activation when required. The dispatcher records only
+`resolved: true`, not the private report. `completed` alone still means only that
+Amp returned. Failed/uncertain transports and absent or mismatched attestations
+never announce resolution.
+
+When an investigation returns unresolved and is fixed in a later continuation,
+record the verified resolution with operator-authenticated
+`POST /operator/debug-shares/resolve` and JSON
+`{"id":"<DEBUGSHARE UUID>","confirmedResolved":true}`. Use existing private
+operator credentials; do not place credentials or findings in URLs, output or
+logs. The route is available only while DEBUGSHARE is configured and enabled and
+respects deployment admission. June can make the same attestation through
+`debugShareResolve` in an authorized owner-private execution turn on the owner's
+explicit request. Guest/shared, automated, synthesis and ungranted turns cannot
+use it. Neither interface performs or authorizes repair work. Repeated calls
+record the same private immutable `<UUID>.resolution.json`; this survives later
+dispatcher receipt writes and process restarts without changing launch status
+or starting another investigation. Missing requests and DEBUG/ordinary Amp tasks
+cannot be resolved through this route. An accepted attestation is not a delivery
+receipt. Never edit launch receipts or rerun the investigator to mark resolution.
+
+The existing serialized notification poll continues after link delivery and
+unresolved completion, slowing to once a minute until resolution arrives and
+notification retries settle. Resolution has a separate
+durable delivery receipt: retryable rejections honor Slack's deadline with at
+most three attempts; unknown sends are not repeated. June's owner-private
+`inspection:"debug-shares"` exposes `resolved` and `resolutionNotification`
+independently. Missing outcomes do not prove delivery. Notices contain no private
+findings or links. DEBUG and historical reports are not backfilled, and no second
+agent or model generates the notice. Install the app receipt reader before the
+updated standalone dispatcher, and update the runner prompt as part of the same
+authorized rollout. Older running investigators do not receive new instructions;
+do not restart transports or replay investigations to obtain an attestation.
+
 Installation is a separate authorized, coordinated operation, not a consequence
 of pushing source. Preserve existing recovery and ordinary-job keys/config:
 

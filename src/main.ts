@@ -1642,6 +1642,7 @@ async function main() {
     channels,
     operatorToken,
     sandboxes: () => inspectSandboxes(environments, release?.revision),
+    resolveDebugShare: dependencies.debugShare?.resolve,
     capabilities,
     browserCompanion,
     browserViewShutdown: browserViewShutdown.signal,

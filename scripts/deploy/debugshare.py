@@ -144,6 +144,7 @@ def dispatch(directory, path, ssh):
                 process.stdin.close()
                 succeeded = False
                 result = None
+                resolved = False
                 while line := process.stdout.readline(1_048_577):
                     if len(line) > 1_048_576:
                         raise ValueError("debug_stream_record_too_large")
@@ -170,6 +171,15 @@ def dispatch(directory, path, ssh):
                         ):
                             raise ValueError("invalid_debug_result")
                         succeeded = message.get("is_error") is False
+                        # Completion alone is not a fix. Retain only the explicit
+                        # UUID-bound attestation, never diagnostic report text.
+                        resolved = (
+                            not task
+                            and succeeded
+                            and isinstance(message.get("result"), str)
+                            and message["result"].rstrip().split("\n")[-1]
+                            == f"DEBUGSHARE {identity} RESOLVED"
+                        )
                         if (
                             task
                             and succeeded
@@ -185,6 +195,8 @@ def dispatch(directory, path, ssh):
                 )
                 if receipt["status"] == "completed" and result is not None:
                     receipt["result"] = result
+                if receipt["status"] == "completed" and resolved:
+                    receipt["resolved"] = True
             except BaseException:
                 # Only stop our transport, never assume the remote agent stopped.
                 process.kill()

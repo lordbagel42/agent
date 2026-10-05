@@ -548,6 +548,14 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain(
       "do not duplicate the link reply or owner ping",
     );
+    expect(request.system).toContain('"DEBUGSHARE <UUID> was resolved."');
+    expect(request.system).toContain(
+      "owner DMs, including their threads, are excluded",
+    );
+    expect(request.system).toContain("Do not duplicate notices");
+    expect(request.system).toContain("unresolved completion");
+    expect(request.system).toContain("once a minute for late resolution");
+    expect(request.system).toContain("debugShareResolve execution capability");
     expect(request.system).toContain("notification delivery outcomes");
     expect(request.system).toContain(
       "DEBUGSHARE notification triggers return before delivery settles",

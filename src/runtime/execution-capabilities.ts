@@ -38,6 +38,35 @@ export async function runExecutionCapability(
     terminal: true,
   });
   if (!current()) throw new Error("Execution invalidated");
+  if (reply.debugShareResolve) {
+    if (
+      !input.debugShareResolveAvailable ||
+      input.agentRole !== "execution" ||
+      !context.ownerTurn ||
+      !context.scope.private ||
+      !isOwner(event, deps.owner) ||
+      !routeEvent(event, deps.owner)?.private ||
+      context.origin !== "event" ||
+      context.phase === "synthesis" ||
+      context.canStartAction?.() === false ||
+      !deps.debugShare?.resolve
+    )
+      throw new Error("DEBUGSHARE resolution unavailable");
+    const command = parseReply(
+      JSON.stringify(reply),
+      input.workspaces,
+      input,
+    ).debugShareResolve;
+    if (!command) throw new Error("Invalid resolution command");
+    const resolved = await deps.debugShare.resolve(
+      command.id,
+      () => current() && context.canStartAction?.() !== false,
+    );
+    return {
+      text: `DEBUGSHARE resolution receipt: ${JSON.stringify({ id: command.id, resolved })}. This is not a Slack delivery receipt.`,
+      terminal: true,
+    };
+  }
   if (reply.settings) {
     if (
       !input.settingsAvailable ||

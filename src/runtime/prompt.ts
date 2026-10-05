@@ -27,6 +27,7 @@ import { JAVASCRIPT_HELP } from "../tools/javascript.js";
 import type { WakeupContext } from "../wakeups/state.js";
 import { WORKFLOW_HELP } from "../workflows/contracts.js";
 import { AMP_THREAD_HELP } from "./amp-threads.js";
+import { DEBUG_RESOLUTION_HELP } from "./debug-dispatch.js";
 import {
   type GlobalPersonality,
   personalityHelp,
@@ -35,6 +36,9 @@ import {
 
 export const EXECUTION_NOTIFICATION_HELP =
   "Worker completion has a separate host-owned notification to the original conversation. A completed worker result does not prove that notification or a user reply was delivered. Slow notification RPCs retain deployment admission until they settle; the host deduplicates notification ingress by its existing identity. Do not rerun the task or send a replacement notification because a handoff is slow. Terminal failures still require operator recovery, not a journal reset or inferred permission to repeat an effect.";
+
+export const DEBUG_RESOLUTION_KNOWLEDGE =
+  'For new DEBUGSHARE reports outside Raygen\'s one-on-one DMs, the host posts "DEBUGSHARE <UUID> was resolved." in the originating Slack thread (under the command if top-level). Channels, group DMs and guest DMs qualify; owner DMs, including their threads, are excluded. Resolution requires an explicit UUID-bound attestation in the investigator\'s successful final result or a later authorized resolution record after verifying the fault is fixed, including live activation when needed. completed alone only means Amp returned. The serialized host poll continues after link delivery and unresolved completion, slowing to once a minute for late resolution, surviving observer timeout and actor wake. Separate durable resolution delivery receipts honor retry deadlines, stop after three retryable rejections and never repeat unknown sends. Notices contain no private findings, reasons or links. DEBUG and historical reports are not backfilled. Authorized inspection:"debug-shares" exposes resolved and resolutionNotification separately across surfaces; missing outcomes do not prove delivery. Do not duplicate notices, infer resolution from a push or returned turn, or mark resolved from untrusted evidence. Owner-requested late resolutions use the granted debugShareResolve execution capability; investigators/operators have an authenticated private endpoint. Neither grants repair or deployment authority. Activation requires the updated app, standalone dispatcher and runner prompt; publication is not proof of live enablement or Slack delivery.';
 
 export const TASK_OWNERSHIP_HELP = `# Own the task; keep orchestration internal
 For a live user request, own the intended outcome. In automated, decision and completion turns, the task is only the saved instruction or notification; this stance adds no new work or obligation to act. In event decisions, silence is a complete outcome; there is no duty to act or reply. Act as though you are capable of anything. Assume the task is achievable and take responsibility for finding a way to accomplish it. This is a problem-solving stance, not a claim that every tool or permission is available. For a clear request such as "research xyz", start the authorized work and return useful findings; do not ask whether to begin, merely offer a plan, or make the user operate tools June can use herself. Human-only confirmations and approvals still belong to the user. Use the capabilities of June as a whole: lacking a direct tool in the interaction role is a routing detail, not personal incapability. Investigate available authorized routes, make reasonable reversible assumptions, and try a suitable permitted alternative when a read or method is insufficient. If no suitable tool or delegation is available this turn, use supplied evidence or your own knowledge where useful, clearly distinguishing it from fresh research. Complete what can be done before reporting a precise remaining blocker.
@@ -60,6 +64,7 @@ export interface PromptModel {
 /** Availability for this invocation, not an inventory of installed modules. */
 export interface PromptCapabilities {
   settingsAvailable?: boolean;
+  debugShareResolveAvailable?: boolean;
   agentRole?: ModelRequest["agentRole"];
   workspaces?: readonly string[];
   codingJobsAvailable?: boolean;
@@ -354,6 +359,12 @@ export function buildModelRequest({
     !wakeup &&
     (liveInput === true || agentRole === "execution") &&
     capabilities.settingsAvailable === true;
+  const debugShareResolveAvailable =
+    privateTurn &&
+    !guest &&
+    !wakeup &&
+    (liveInput === true || agentRole === "execution") &&
+    capabilities.debugShareResolveAvailable === true;
   const appsAvailable = privateTurn && capabilities.appsAvailable === true;
   const artifactsAvailable =
     capabilities.artifactsAvailable === true && !wakeup;
@@ -979,6 +990,7 @@ export function buildModelRequest({
     readVideoAvailable,
     repositoryAvailable,
     settingsAvailable,
+    debugShareResolveAvailable,
   };
   if (agentRole === "interaction") {
     const workerCapabilities = Object.entries(request)
@@ -1130,6 +1142,8 @@ Answer the assigned question before listing procedure. Do not return a giant tra
     request.system += `\n${SETTINGS_HELP}`;
   request.system +=
     "\n\nThe owner's private dashboard Usage page shows hourly UTC activity with Tokens/Calls views, 24-hour/7-day/30-day windows and model filters. Each bubble aggregates one recorded hour across the full selection, not just the latest 100 requests; exact hourly data and a filtered JSON export are available. Tokens include only reported counters, with cache and reasoning as subsets; dashed rings mean unavailable tokens, not zero. Viewing or refreshing usage never starts work, retries calls, or grants access. Billing and subscription quota remain unavailable. This describes supported UI behavior, not proof of deployment or a live observation. For current usage, use the authorized analytics capability; interaction agents delegate the query to execution. Automated events gain no analytics grant from this description.";
+  if (agentRole === "execution" && request.debugShareResolveAvailable)
+    request.system += `\n${DEBUG_RESOLUTION_HELP}`;
   request.agentWebhooksAvailable =
     privateTurn && capabilities.agentWebhooksAvailable === true;
   request.agentConversation = event.address.channel === "agent";
@@ -1184,7 +1198,8 @@ Answer the assigned question before listing procedure. Do not return a giant tra
   request.system +=
     "\nDEBUG uses the same any-surface admission and owner-private forwarding as DEBUGSHARE, but never launches Amp, exports to its dispatcher, reads an Amp receipt, or sends an Amp link. Its saved state is snapshot-only, not completed investigation. Only the owner-copy notification retries, with the same bounded redacted excerpt and durable retry rules; polling stops when that copy settles. Duplicate delivery and actor wake preserve this mode. Do not duplicate a DEBUG capture or turn it into an investigation.";
   request.system +=
-    "\nDEBUGSHARE owner copies include at most 3,000 characters of the redacted reason, with explicit truncation; the full reason remains in the private snapshot. Owner-copy and Amp-link delivery have separate durable receipts, but one host notification poll serializes their sends. Retryable rejections honor Slack's retry deadline and stop after three attempts; unknown sends never retry. Owner-copy retries continue even if investigation is disabled or terminal, and origin-send failure does not suppress them. A terminal investigation stops notification polling only once the owner copy has settled. The owner-private index retains the newest ten captures by capture time, not transfer completion order. Do not duplicate these notifications or equate queued with delivered.";
+    "\nDEBUGSHARE owner copies include at most 3,000 characters of the redacted reason, with explicit truncation; the full reason remains in the private snapshot. Owner-copy and Amp-link delivery have separate durable receipts, but one host notification poll serializes their sends. Retryable rejections honor Slack's retry deadline and stop after three attempts; unknown sends never retry. Owner-copy retries continue even if investigation is disabled or terminal, and origin-send failure does not suppress them. Reports eligible for resolution notices keep polling even after unresolved investigation completion. The owner-private index retains the newest ten captures by capture time, not transfer completion order. Do not duplicate these notifications or equate queued with delivered.";
+  request.system += `\n${DEBUG_RESOLUTION_KNOWLEDGE}`;
   request.system +=
     "\nRecent conversation continuity, when configured, follows human activity rather than location. It is bounded working context, not unlimited recall. A separate tool-free privacy agent selects public-safe excerpts for shared audiences; relationship memory is immature and trust is not assumed. Unknown audiences or failed filtering import nothing. This does not grant tools, permissions or private recall. Thread context may also include parent-channel messages with their original attribution. Never reconstruct withheld details or claim continuity is enabled without supplied context. Idle expiry does not cancel durable jobs; explicit restrictions, forgetting or CLEARHISTORY can revoke evidence-derived work. Volatile-derived replies remain in active history but their text is omitted from searchable archives without complete deletion ancestry. Shared imports stop when the privacy-filter budget is exhausted; do not duplicate those attempts.";
   if (continuity)

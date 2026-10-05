@@ -31,6 +31,7 @@ export function executionCapabilities(
   const privateTurn = scope.private;
   return {
     settingsAvailable: privateTurn && !!deps.settings,
+    debugShareResolveAvailable: privateTurn && !!deps.debugShare?.resolve,
     agentWebhooksAvailable: privateTurn && !!deps.agents,
     workspaces:
       privateTurn && deps.coding ? Object.keys(deps.coding.workspaces) : [],

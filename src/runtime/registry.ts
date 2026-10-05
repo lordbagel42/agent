@@ -137,6 +137,7 @@ import {
   buildModelRequest,
   COMPLETION_HELP,
   CONVERSATIONAL_CURIOSITY_HELP,
+  DEBUG_RESOLUTION_KNOWLEDGE,
   type PromptInput,
   TASK_OWNERSHIP_HELP,
 } from "./prompt.js";
@@ -719,13 +720,17 @@ export function createJuneRegistry(deps: Dependencies) {
               try {
                 // Schedule before external work. The timestamp fences duplicate
                 // wakeups; startup repairs an interrupted scheduling acknowledgment.
-                const next = Date.now() + 5000;
+                const next =
+                  Date.now() +
+                  (receipt.debugLink.awaitingResolution ? 60_000 : 5000);
                 receipt.debugLink.pollAt = next;
                 await persist();
                 await c.schedule.at(next, "notifyDebugShare", id, next);
                 const snapshotId = receipt.snapshotId ?? receipt.snapshot?.id;
                 if (!receipt.published || !snapshotId) return;
-                let status: { status?: string; threadId?: string } | undefined;
+                let status:
+                  | { status?: string; threadId?: string; resolved?: true }
+                  | undefined;
                 try {
                   const external =
                     !receipt.debugLink.ownerOnly && deps.debugShare?.resumeSafe
@@ -747,16 +752,34 @@ export function createJuneRegistry(deps: Dependencies) {
                   status?.threadId,
                   deps,
                   persist,
+                  status?.resolved === true,
                 );
+                if (receipt.debugResolution?.result)
+                  await c
+                    .client<JuneClientRegistry>()
+                    .debugShare.getOrCreate([snapshotId])
+                    .recordResolutionNotification(
+                      receipt.debugResolution.result,
+                    );
                 if (
                   !pending &&
-                  (status?.threadId ||
-                    status?.status === "unknown" ||
-                    status?.status === "unavailable" ||
-                    status?.status === "saved" ||
-                    status?.status === "completed")
+                  (receipt.debugResolution?.phase === "settled" ||
+                    status?.threadId ||
+                    ["unknown", "unavailable", "saved", "completed"].includes(
+                      status?.status ?? "",
+                    ))
                 ) {
-                  delete receipt.debugLink.pollAt;
+                  if (
+                    !receipt.debugResolution ||
+                    receipt.debugResolution.phase === "settled"
+                  ) {
+                    delete receipt.debugLink.pollAt;
+                  } else if (
+                    status?.status !== "running" &&
+                    status?.status !== "queued"
+                  ) {
+                    receipt.debugLink.awaitingResolution = true;
+                  }
                   await persist();
                 }
               } finally {
@@ -916,8 +939,10 @@ export function createJuneRegistry(deps: Dependencies) {
           capturedAt?: string;
           status?: string;
           threadId?: string;
+          resolved?: true;
           website?: DebugSiteOutbox;
           notification?: SendResult;
+          resolutionNotification?: SendResult;
         }[]
       > => {
         if (
@@ -1167,6 +1192,30 @@ export function createJuneRegistry(deps: Dependencies) {
                 c.state.sessionCommands[id] = {
                   ...(snapshotRef
                     ? { snapshotRef, snapshotId: snapshotRef.id }
+                    : {}),
+                  ...(snapshot &&
+                  !snapshot.snapshotOnly &&
+                  deps.debugShare &&
+                  !scope.private
+                    ? {
+                        debugResolution: {
+                          phase: "ready" as const,
+                          attempts: 0,
+                          message: {
+                            id: randomUUID(),
+                            address: {
+                              ...event.address,
+                              threadId:
+                                event.address.threadId ?? event.messageId,
+                            },
+                            lastInboundAt: event.occurredAt,
+                            content: {
+                              type: "text" as const,
+                              text: `DEBUGSHARE ${snapshot.id} was resolved.`,
+                            },
+                          },
+                        },
+                      }
                     : {}),
                   ...(snapshot && ownerAddress
                     ? {
@@ -3581,7 +3630,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 searchAvailable,
                                 // Memory is constructed here, never returned to the journal.
                               };
-                              modelRequest.system += `\n\n${CONVERSATIONAL_CURIOSITY_HELP}\n\n${TASK_OWNERSHIP_HELP}`;
+                              modelRequest.system += `\n\n${CONVERSATIONAL_CURIOSITY_HELP}\n\n${TASK_OWNERSHIP_HELP}\n\n${DEBUG_RESOLUTION_KNOWLEDGE}`;
                               let executionCapacity: CapacityContext["execution"] =
                                 {
                                   enabled: !!deps.execution,
@@ -4044,6 +4093,13 @@ export function createJuneRegistry(deps: Dependencies) {
                                       ownerTurn &&
                                       !!plan.execution &&
                                       !!deps.settings,
+                                    debugShareResolveAvailable:
+                                      body.type === "event" &&
+                                      phase !== "synthesis" &&
+                                      scope.private &&
+                                      ownerTurn &&
+                                      !!plan.execution &&
+                                      !!deps.debugShare?.resolve,
                                     appsAvailable:
                                       version >= 12 &&
                                       plan.apps === true &&

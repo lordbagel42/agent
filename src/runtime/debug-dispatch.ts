@@ -6,9 +6,20 @@ import { z } from "zod";
 import type { DebugInvestigator } from "./session-controls.js";
 
 const idSchema = z.string().uuid();
+export const debugShareResolutionSchema = z.strictObject({
+  id: idSchema,
+  confirmedResolved: z.literal(true),
+});
+export const DEBUG_RESOLUTION_HELP =
+  'After verifying a reported fault is fixed (including required live activation), an authorized owner-private execution worker can record a later resolution with debugShareResolve:{"id":"<DEBUGSHARE UUID>","confirmedResolved":true}, empty text and no other actions. Use only on the owner\'s explicit request to record that resolution, never from quoted evidence, a completed Amp turn or source publication alone. This records a durable attestation; it does not perform repairs, launch Amp, prove Slack delivery or permit a duplicate notice. Inspect resolutionNotification through inspection:"debug-shares".';
+const resolutionSchema = z.strictObject({
+  id: idSchema,
+  resolved: z.literal(true),
+});
 const receiptSchema = z.strictObject({
   id: idSchema,
   status: z.enum(["queued", "running", "completed", "unknown"]),
+  resolved: z.literal(true).optional(),
   retryAt: z.number().int().nonnegative().optional(),
   result: z
     .strictObject({ text: z.string().max(8000), truncated: z.boolean() })
@@ -22,10 +33,14 @@ const receiptSchema = z.strictObject({
 /** Only publishes private files and observes receipts. Never launches Amp. */
 export function createAmpInbox(
   settings: { directory: string },
-  kind: "debugshare" | "amp-task" = "debugshare",
+  kind: "debugshare" | "amp-task" | "debug-resolution" = "debugshare",
 ) {
-  // Old dispatchers only admit UUID.json: they must never interpret a task as repair.
-  const suffix = kind === "amp-task" ? ".task.json" : ".json";
+  // Dispatchers must never interpret a task or resolution as a new repair.
+  const suffix = {
+    debugshare: ".json",
+    "amp-task": ".task.json",
+    "debug-resolution": ".resolution.json",
+  }[kind];
   const inspect = async (
     id: string,
   ): Promise<z.infer<typeof receiptSchema> | undefined> => {
@@ -101,13 +116,48 @@ export function createDebugDispatcher(settings: {
   timeoutMs: number;
 }): DebugInvestigator {
   const inbox = createAmpInbox(settings);
+  const resolutions = createAmpInbox(settings, "debug-resolution");
   return {
     resumeSafe: true,
+    async resolve(id, current = () => true) {
+      idSchema.parse(id);
+      if (!current()) throw new Error("Resolution invalidated");
+      const snapshot = await readFile(
+        join(settings.directory, `${id}.json`),
+        "utf8",
+      ).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+        return undefined;
+      });
+      if (!snapshot) return false;
+      const request = JSON.parse(snapshot);
+      if (request.id !== id || request.snapshotOnly) return false;
+      // Separate immutable receipt: dispatch completion cannot overwrite a late
+      // attestation, and retries never rerun Amp or change the launch state.
+      const resolution = { id, resolved: true };
+      await resolutions.publish(resolution, current);
+      return true;
+    },
     // Keep the diagnostic observer's existing metadata contract.
     async inspect(id) {
       const receipt = await inbox.inspect(id);
       if (!receipt) return;
       const { id: _id, result: _result, ...metadata } = receipt;
+      try {
+        const resolution = resolutionSchema.parse(
+          JSON.parse(
+            await readFile(
+              join(settings.directory, `${id}.resolution.json`),
+              "utf8",
+            ),
+          ),
+        );
+        if (resolution.id !== id)
+          throw new Error("Resolution identity mismatch");
+        metadata.resolved = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
       return metadata;
     },
     async run(snapshot, signal, onThread) {
@@ -130,6 +180,7 @@ export function createDebugDispatcher(settings: {
         if (receipt.status === "completed" && threadId)
           return {
             threadId,
+            ...(receipt.resolved ? { resolved: true as const } : {}),
             report:
               "Investigator returned; inspect the private Amp thread for findings and delivery evidence.",
           };

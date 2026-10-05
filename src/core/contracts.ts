@@ -237,6 +237,7 @@ export interface ExecutionCommand {
 
 export interface CompanionReply {
   settings?: import("../settings/contracts.js").SettingsCommand;
+  debugShareResolve?: { id: string; confirmedResolved: true };
   artifact?: import("../artifacts/contracts.js").ArtifactCommand;
   /** Host-only output, never accepted from model JSON. */
   artifactPresentation?: import("../artifacts/contracts.js").ArtifactPresentation;
@@ -431,6 +432,7 @@ export interface ModelImageInput {
 
 export interface ModelRequest {
   settingsAvailable?: boolean;
+  debugShareResolveAvailable?: boolean;
   agentConversation?: boolean;
   agentWebhooksAvailable?: boolean;
   artifactsAvailable?: boolean;

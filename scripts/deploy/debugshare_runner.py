@@ -75,7 +75,22 @@ def prompt(identity, snapshot, owner_report=False):
         "permitted before publication. "
         "Report the diagnosis, evidence, changes, verification, actual delivery state and any blocker in "
         "this private Amp thread. A returned turn is not proof of a deployed fix. Preserve Ultra reasoning "
-        "and mandatory Fast for DEBUGSHARE and deployment recovery; ordinary jobs keep their existing reasoning modes."
+        "and mandatory Fast for DEBUGSHARE and deployment recovery; ordinary jobs keep their existing reasoning modes. "
+        "Only when the reported problem is actually resolved and verified, end your final response with "
+        f"the exact standalone line DEBUGSHARE {identity} RESOLVED. This is your explicit resolution "
+        "attestation, not a quotation from the snapshot. If runtime changes are required, verify the "
+        "loaded revision and affected live behavior first; published source or a blocked deployment "
+        "is not resolution. Omit the line when blocked, uncertain, still investigating or awaiting "
+        "verification. The host uses this attestation to send a generic resolved notice in the "
+        "originating Slack thread, except Raygen's one-on-one DMs. Do not send that notice yourself "
+        "or include private findings in it. If this investigation already returned unresolved and "
+        "a later continuation verifies the repair, the old transport will not see another final line. "
+        "Record that late resolution with the private operator-authenticated POST "
+        "/operator/debug-shares/resolve, JSON "
+        f'{{"id":"{identity}","confirmedResolved":true}}. '
+        "Use the existing operator credential mechanism over the pinned SSH route; never print "
+        "credentials or post diagnostic details. This idempotent endpoint records resolution only, "
+        "does not rerun Amp, and does not prove Slack delivery. Follow docs/deployment.md."
     )
 
 

@@ -124,6 +124,53 @@ raise SystemExit(1 if mode == 'lost-exit' else 0)
                 self.assertNotIn("PRIVATE_TAIL", receipt_path.read_text())
                 self.assertFalse(dispatch.dispatch_due(directory, IDENTITY))
 
+    def test_resolution_requires_matching_final_attestation_and_successful_exit(self):
+        transport = """
+import json, sys
+mode, command = sys.argv[1:]
+print(command, flush=True)
+payload = json.load(sys.stdin)
+thread = 'T-' + payload['id']
+marker = 'DEBUGSHARE ' + payload['id'] + ' RESOLVED'
+print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': thread}), flush=True)
+text = 'PRIVATE_FINDINGS\\n' + marker
+if mode == 'completed-only': text = 'PRIVATE_FINDINGS: code pushed; deployment blocked'
+if mode == 'wrong-id': text = text.replace(payload['id'], 'ffffffff-ffff-4fff-8fff-ffffffffffff')
+if mode == 'quoted': text += '\\nStill investigating.'
+if mode == 'missing-result': raise SystemExit(0)
+print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': mode == 'error',
+                  'result': text}), flush=True)
+raise SystemExit(1 if mode == 'lost-exit' else 0)
+"""
+        for mode in (
+            "resolved",
+            "completed-only",
+            "wrong-id",
+            "quoted",
+            "missing-result",
+            "error",
+            "lost-exit",
+            "task",
+        ):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
+                directory = Path(root)
+                payload = {"id": IDENTITY}
+                if mode == "task":
+                    payload["kind"] = "amp-task"
+                path = directory / f"{IDENTITY}{'.task' if mode == 'task' else ''}.json"
+                path.write_text(json.dumps(payload))
+                path.chmod(0o600)
+                dispatch.dispatch(
+                    directory, path, [sys.executable, "-c", transport, mode]
+                )
+                receipt = json.loads(
+                    dispatch.read_private(directory / f"{IDENTITY}.receipt.json")
+                )
+                self.assertEqual(receipt.get("resolved", False), mode == "resolved")
+                if mode != "task":
+                    self.assertNotIn("PRIVATE_FINDINGS", json.dumps(receipt))
+                    self.assertNotIn("result", receipt)
+
     def test_only_host_authenticated_owner_reason_is_trusted_across_surfaces(self):
         owner = {
             "channel": "slack",

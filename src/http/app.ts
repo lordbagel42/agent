@@ -35,6 +35,7 @@ import {
 } from "../deployment/feed.js";
 import { OpaqueActionLinks } from "../links/opaque.js";
 import { createActionLinkRoutes } from "../links/routes.js";
+import { debugShareResolutionSchema } from "../runtime/debug-dispatch.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
 import { sessionCommand } from "../runtime/session-controls.js";
@@ -89,6 +90,7 @@ export interface HttpDependencies {
   inspectJobDiff?(id: string): Promise<WorktreeDiffSummary | null>;
   resumeJob(id: string, commandId: string): Promise<boolean>;
   cancelJob?(id: string): Promise<boolean>;
+  resolveDebugShare?(id: string): Promise<boolean>;
 }
 
 type HttpEnvironment = {
@@ -571,6 +573,19 @@ export function createHttpApp(deps: HttpDependencies) {
   if (deps.slackIngressDiagnostics) {
     const diagnostics = deps.slackIngressDiagnostics;
     app.get("/operator/ingress/slack", (c) => c.json(diagnostics.snapshot()));
+  }
+  if (deps.resolveDebugShare) {
+    const resolve = deps.resolveDebugShare;
+    app.post("/operator/debug-shares/resolve", async (c) => {
+      const input = debugShareResolutionSchema.safeParse(
+        await c.req.json().catch(() => null),
+      );
+      if (!input.success)
+        return c.json({ error: "explicit_resolution_required" }, 400);
+      return (await resolve(input.data.id))
+        ? c.json({ id: input.data.id, resolved: true })
+        : c.json({ error: "debugshare_not_found" }, 404);
+    });
   }
   app.get("/operator/jobs/:id", async (c) => {
     const id = c.req.param("id");

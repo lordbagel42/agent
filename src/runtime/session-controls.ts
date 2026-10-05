@@ -6,6 +6,7 @@ import type {
   Address,
   MessageEvent,
   ModelSettlement,
+  SendResult,
 } from "../core/contracts.js";
 import {
   type DebugSiteOutbox,
@@ -58,10 +59,13 @@ export interface DebugSnapshot {
 export interface DebugInvestigator {
   /** Repeating run only submits/observes the same durable request, never relaunches. */
   resumeSafe?: boolean;
+  /** Privileged attestation after verification, independent of launch completion. */
+  resolve?(id: string, current?: () => boolean): Promise<boolean>;
   inspect?(id: string): Promise<
     | {
         status: "queued" | "running" | "completed" | "unknown";
         threadId?: string;
+        resolved?: true;
       }
     | undefined
   >;
@@ -69,7 +73,7 @@ export interface DebugInvestigator {
     snapshot: DebugSnapshot,
     signal: AbortSignal,
     onThread: (id: string) => Promise<void>,
-  ): Promise<{ threadId: string; report: string }>;
+  ): Promise<{ threadId: string; report: string; resolved?: true }>;
 }
 
 export interface SessionCommandReceipt {
@@ -80,10 +84,14 @@ export interface SessionCommandReceipt {
   delivery: Delivery;
   /** Private owner copy for reports originating outside the owner DM. */
   ownerDelivery?: Delivery;
+  /** New DEBUGSHARE reports outside owner DMs only; send after explicit resolution. */
+  debugResolution?: Delivery;
   published?: boolean;
-  /** Durable owner-copy/link polling; only new requests opt in, never backfill. */
+  /** Durable notification polling; only new requests opt in, never backfill. */
   debugLink?: {
     pollAt?: number;
+    /** Keep a slower poll after an unresolved investigator returns. */
+    awaitingResolution?: boolean;
     address?: Address;
     delivery?: Delivery;
     /** New owner reports return only their link to the originating surface. */
@@ -367,6 +375,8 @@ export function createDebugShareActor(
       independentDispatch?: boolean;
       threadId?: string;
       report?: string;
+      resolved?: true;
+      resolutionNotification?: SendResult;
       website?: DebugSiteOutbox;
     },
     createVars: (c) => {
@@ -556,6 +566,10 @@ export function createDebugShareActor(
         );
         return receiving;
       },
+      recordResolutionNotification: async (c, result: SendResult) => {
+        c.state.resolutionNotification = result;
+        await c.vars.persist();
+      },
       inspect: async (c) => {
         const external =
           c.state.independentDispatch &&
@@ -571,6 +585,8 @@ export function createDebugShareActor(
           capturedAt: c.state.snapshotRef?.capturedAt,
           status: external?.status ?? c.state.status,
           threadId: external?.threadId ?? c.state.threadId,
+          resolved: external ? external.resolved : c.state.resolved,
+          resolutionNotification: c.state.resolutionNotification,
           website: c.state.website,
         };
       },
@@ -617,6 +633,7 @@ export function createDebugShareActor(
               );
               step.state.threadId = result.threadId;
               step.state.report = String(redactDebug(result.report));
+              step.state.resolved = result.resolved;
               step.state.status = "completed";
             } catch {
               step.state.status = "unknown";
@@ -695,10 +712,11 @@ export async function publishDebugNotifications(
   threadId: string | undefined,
   deps: Dependencies,
   persist: () => Promise<void>,
+  resolved = false,
 ) {
   const link = receipt.debugLink;
   if (!link) return false;
-  // One serialized notifier owns both sends. Origin publication never touches
+  // One serialized notifier owns all notices. Origin publication never touches
   // these deliveries, so concurrent retries cannot turn a live send into unknown.
   const sendNotification = async (delivery: Delivery) => {
     if (
@@ -763,7 +781,17 @@ export async function publishDebugNotifications(
     };
     await persist();
   }
-  return link.delivery ? sendNotification(link.delivery) : false;
+  if (link.delivery && (await sendNotification(link.delivery))) return true;
+  // A persisted attempt was already authorized by an attestation. A failed
+  // status read must not retire its retryable rejection or reset its deadline.
+  if (
+    receipt.debugResolution &&
+    (resolved || receipt.debugResolution.attempts > 0)
+  ) {
+    if (receipt.delivery.phase !== "settled") return true;
+    return sendNotification(receipt.debugResolution);
+  }
+  return false;
 }
 
 export async function publishSessionCommand(

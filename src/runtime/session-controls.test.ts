@@ -418,6 +418,253 @@ it("returns owner report links at origin while keeping guest links and all diagn
   );
 }, 60_000);
 
+it.for([
+  {
+    channel: "D1",
+    sender: "U1",
+    type: "im",
+    thread: undefined,
+    expected: false,
+  },
+  {
+    channel: "D1",
+    sender: "U1",
+    type: "im",
+    thread: "10.1",
+    expected: false,
+  },
+  {
+    channel: "C1",
+    sender: "U1",
+    type: "channel",
+    thread: "11.2",
+    expected: true,
+  },
+  {
+    channel: "G1",
+    sender: "U1",
+    type: "mpim",
+    thread: undefined,
+    expected: true,
+  },
+  {
+    channel: "D2",
+    sender: "U2",
+    type: "im",
+    thread: undefined,
+    expected: true,
+  },
+  {
+    channel: "C2",
+    sender: "U2",
+    type: "channel",
+    thread: undefined,
+    expected: true,
+  },
+] as const)(
+  "announces a late resolution only at the eligible origin: %j",
+  async (fixture, t) => {
+    const sent: OutboundMessage[] = [];
+    let finished = false;
+    const registry = createJuneRegistry({
+      owner,
+      model: {
+        reply: async () => {
+          throw new Error("No inference for DEBUGSHARE");
+        },
+      },
+      debugShare: {
+        resumeSafe: true,
+        run: async () => {
+          throw new Error("Observer timed out");
+        },
+        inspect: async () => ({
+          status: "completed",
+          threadId: "T-11111111-2222-3333-4444-555555555555",
+          ...(finished ? { resolved: true as const } : {}),
+        }),
+      },
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, threads: true, reactions: true },
+          receive: async () => ({ events: [], response: new Response() }),
+          send: async (outbound) => {
+            sent.push(JSON.parse(JSON.stringify(outbound)));
+            return { status: "sent", messageId: "999.999" };
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const report = {
+      ...message("200.1", "DEBUGSHARE PRIVATE_REASON"),
+      senderId: fixture.sender,
+      direct: fixture.type === "im",
+      address: {
+        channel: "slack" as const,
+        accountId: "T1",
+        conversationId: fixture.channel,
+        ...(fixture.thread ? { threadId: fixture.thread } : {}),
+      },
+      metadata: { channelType: fixture.type },
+    };
+    const scope = routeEvent(report, owner);
+    if (!scope) throw new Error("Missing route");
+    const june = client.conversation.getOrCreate(scope.key);
+    await june.receive(report);
+    await expect
+      .poll(
+        () =>
+          sent.filter((out) =>
+            JSON.stringify(out.content).includes(
+              "https://ampcode.com/threads/",
+            ),
+          ).length,
+        { timeout: 15000 },
+      )
+      .toBe(1);
+    const resolutions = () =>
+      sent.filter(
+        (out) =>
+          out.content.type === "text" &&
+          out.content.text.endsWith(" was resolved."),
+      );
+    expect(resolutions()).toEqual([]);
+    // A delivered Amp link must not retire the poll before resolution arrives.
+    const id = conversationInputId({ type: "event", event: report });
+    const receipt = (await june.snapshot()).sessionCommands?.[id];
+    expect(!!receipt?.debugResolution).toBe(fixture.expected);
+    finished = true;
+    // Advance the saved poll without waiting for the slow, post-completion cadence.
+    if (fixture.expected) {
+      const at = receipt?.debugLink?.pollAt;
+      if (at === undefined) throw new Error("Resolution poll retired early");
+      await june.notifyDebugShare(id, at);
+    }
+    const count = fixture.expected ? 1 : 0;
+    await expect
+      .poll(() => resolutions().length, { timeout: 15000 })
+      .toBe(count);
+    const ownerJune = client.conversation.getOrCreate(["private", owner.id]);
+    await expect
+      .poll(
+        async () =>
+          (await ownerJune.debugShares()).filter(
+            (entry) => entry.resolutionNotification?.status === "sent",
+          ).length,
+      )
+      .toBe(count);
+    const inspect = createInspectionReader({
+      audience: JSON.stringify(["private", owner.id]),
+      selections: {},
+      debugShares: () => ownerJune.debugShares(),
+    });
+    const status = await inspect("debug-shares", message("inspect", "status"));
+    expect(status).toContain('"resolved":true');
+    if (fixture.expected)
+      expect(status).toContain('"resolutionNotification":{"status":"sent"');
+    expect(status).not.toContain("PRIVATE_REASON");
+    if (fixture.expected)
+      expect(resolutions()[0]?.address).toEqual({
+        channel: "slack",
+        accountId: "T1",
+        conversationId: fixture.channel,
+        threadId: fixture.thread ?? "200.1",
+      });
+    for (const out of resolutions()) {
+      expect(out.content).toEqual({
+        type: "text",
+        text: expect.stringMatching(
+          /^DEBUGSHARE [0-9a-f-]{36} was resolved\.$/,
+        ),
+      });
+    }
+    await june.receive(report);
+    await june.resumeSessionCommands();
+    expect(resolutions()).toHaveLength(count);
+  },
+);
+
+it.for(["sent", "unknown", "retry"] as const)(
+  "persists resolution %s receipts without treating completion alone as resolution",
+  async (outcome) => {
+    const sent: OutboundMessage[] = [];
+    const notification = {
+      id: "resolution",
+      address: {
+        channel: "slack" as const,
+        accountId: "T1",
+        conversationId: "C1",
+        threadId: "123.4",
+      },
+      content: {
+        type: "text" as const,
+        text: "DEBUGSHARE fixture was resolved.",
+      },
+      lastInboundAt: 0,
+    };
+    const receipt: SessionCommandReceipt = {
+      delivery: {
+        phase: "settled",
+        attempts: 1,
+        message: notification,
+        result: { status: "sent", messageId: "ack" },
+      },
+      debugLink: {},
+      debugResolution: { phase: "ready", attempts: 0, message: notification },
+    };
+    const deps: Dependencies = {
+      owner,
+      model: { reply: async () => ({ text: "unused" }) },
+      channels: {
+        slack: {
+          channel: "slack",
+          capabilities: { text: true, threads: true, reactions: true },
+          receive: async () => ({ events: [], response: new Response() }),
+          send: async (outbound) => {
+            sent.push(structuredClone(outbound));
+            if (outcome === "unknown")
+              return { status: "unknown", code: "timeout" };
+            if (outcome === "retry" && sent.length === 1)
+              return {
+                status: "rejected",
+                code: "rate_limited",
+                retryable: true,
+                retryAfterMs: 60000,
+              };
+            return { status: "sent", messageId: "sent" };
+          },
+        },
+      },
+    };
+    const persist = async () => {};
+    await publishDebugNotifications(receipt, undefined, deps, persist);
+    expect(sent).toEqual([]);
+    await publishDebugNotifications(receipt, undefined, deps, persist, true);
+    expect(sent).toEqual([notification]);
+    const restored = structuredClone(receipt);
+    // A subsequent inspection failure must preserve the pending retry, without
+    // authorizing an unattempted notice or resending before Slack's deadline.
+    expect(
+      await publishDebugNotifications(
+        restored,
+        undefined,
+        deps,
+        persist,
+        false,
+      ),
+    ).toBe(outcome === "retry");
+    expect(sent).toHaveLength(1);
+    if (outcome === "retry" && restored.debugResolution) {
+      restored.debugResolution.outcomeObservedAt = 0;
+      await publishDebugNotifications(restored, undefined, deps, persist, true);
+      expect(sent).toEqual([notification, notification]);
+      expect(restored.debugResolution.result?.status).toBe("sent");
+    }
+  },
+);
+
 it("retries failed snapshot publication without resending uncertain acknowledgments", async () => {
   const sent: OutboundMessage[] = [];
   const registry = createJuneRegistry({
