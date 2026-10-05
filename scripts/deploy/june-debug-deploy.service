@@ -1,0 +1,26 @@
+[Unit]
+Description=June Debug independent trusted-main update
+Wants=network-online.target
+After=network-online.target systemd-tmpfiles-setup.service
+ConditionPathExists=/etc/june-debug/deploy.json
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -I /usr/local/lib/june-debug-deploy/debug_site.py
+TimeoutStartSec=20min
+KillMode=control-group
+UMask=0077
+Nice=10
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/june-debug /var/lib/june-debug-deploy /run/lock/june-debug-install.lock
+InaccessiblePaths=/var/lib/june-debug
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

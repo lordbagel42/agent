@@ -1,0 +1,12 @@
+[Unit]
+Description=Check trusted main for independent June Debug updates
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=60s
+RandomizedDelaySec=10s
+AccuracySec=1s
+Unit=june-debug-deploy.service
+
+[Install]
+WantedBy=timers.target

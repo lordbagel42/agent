@@ -197,6 +197,113 @@ captures but cannot read them, create viewer sessions or overwrite a UUID.
 Existing matching uploads are idempotent; conflicts return 409. No authorization
 is implied by possession of a capture URL.
 
+## Independent automatic updates
+
+`scripts/deploy/debug_site.py` is an independently installed trusted-main poller,
+not part of June's controller. The optional `june-debug-deploy.timer` checks public
+`lordbagel42/agent` main about once a minute after the previous poll finishes.
+Only `enabled:true` in root-owned `/etc/june-debug/deploy.json` admits updates.
+Publishing source alone installs or enables nothing.
+
+The installed policy builds a Git archive as a separate unprivileged user, with
+frozen dependencies, lifecycle hooks disabled, formatter/linter/type checks,
+focused tests and a disposable-database smoke test of the actual bundle. It
+seals a root-owned immutable release, atomically switches `current`, restarts
+only `june-debug-site.service`, and requires the exact revision and same process
+invocation to remain ready for five seconds. The website briefly restarts and
+existing browser sessions expire; archive contents and enrolled passkeys remain.
+Unchanged build inputs skip activation without relabelling the running revision.
+All `src`, frontend, dependency and build-config inputs are compared conservatively.
+
+A failed candidate is not automatically retried; publish a forward fix. Fetch
+failures retry on subsequent polls. A confirmed activation failure rolls back
+**code only**, with the same readiness checks. Interrupted effects, a surviving
+build cgroup, non-forward history, changed service configuration or changed
+storage policy fence further effects for operator review. Storage pins cover
+`src/diagnostics/store.ts` and optional `src/diagnostics/operations.ts`; they are
+conservative review gates, not a proof that arbitrary trusted-main code cannot
+change data. Moving storage responsibilities requires reviewing these pins too.
+The controller/preflight never update themselves from main. No automatic release,
+failed-build, cache or archive deletion is performed; monitor disk usage.
+
+`/health` reports the loaded website revision separately from an optional,
+bounded `deployment` receipt containing only phases, fixed reasons, revisions
+and a timestamp. Missing/unreadable receipts do not fail website health. They
+contain no archive data, credentials or build output. Historical receipts do
+not prove timer enablement/liveness; use systemd for that. June's owner-private
+`inspection:"debug-site-deployment"` integration reads only this credential-free
+endpoint at `config.debugSite.origin`; interaction agents delegate. Installation
+of the website/controller does not activate new inspection code in June. The
+inspection grants no deploy/retry/restart authority. There are no automatic Slack
+notifications or repair-thread launches for debug-site updates.
+
+### Operator installation and recovery
+
+Obtain standalone-site authorization and sole ownership first. Use the existing
+`/run/lock/june-debug-install.lock` for installation, configuration, manual
+activation and recovery; never replace its inode. Stop the **timer only**, let
+an active poll/build settle, and then acquire the lock. Do not stop June or its
+controller/dispatcher. The commands below are installation requirements, not an
+instruction to run them against another deployment.
+
+1. This policy targets Linux/systemd with cgroup v2, Python 3.12+, Git, pinned
+   Node `/opt/node-v24.21.0-linux-x64`, pnpm 10.33.0 and the existing layout above.
+   Create a separate `june-debug-build` system user/group with no login. Neither
+   the builder nor site user may own controller policy or release directories.
+2. Create root-owned `/opt/june-debug/build` and `releases` (0755), plus the
+   builder-owned `/var/cache/june-debug-build` (0700). Provision a read-only
+   Corepack cache at `/opt/june-debug/corepack` containing verified pnpm 10.33.0.
+   Builds have no personal GitHub credentials or live archive/config access;
+   public Git/npm networking remains available. No archive credentials are
+   passed to build processes.
+3. Create `/var/lib/june-debug-deploy` root:`june-debug` mode 0710 and its `public`
+   directory root:`june-debug` mode 0750. Initialize a root-only bare Git repository
+   at `source.git` there. The controller writes root-only `state.json` and an
+   atomic root:`june-debug` 0640 `public/status.json`. Do not grant the website
+   write access. All parents must be canonical and protected from untrusted writes.
+4. Install reviewed `debug_site.py` and `debug-site-preflight.sh` root-owned,
+   non-writable by other users, into `/usr/local/lib/june-debug-deploy`. Add its
+   root-owned `manifest.json` with `revision` set to that reviewed exact commit
+   and `sha256` mapping both filenames to their installed file SHA-256 values.
+   Never generate this provenance from unreviewed/mixed checkout contents.
+5. Install root-only `/etc/june-debug/deploy.json`:
+
+   ```json
+   {
+     "enabled": false,
+     "storagePins": {
+       "src/diagnostics/store.ts": "<reviewed Git blob ID>",
+       "src/diagnostics/operations.ts": null
+     }
+   }
+   ```
+
+   Use `git rev-parse <healthy-revision>:<path>` for each existing storage file;
+   `null` means the file is absent at that revision. These are **blob IDs**, not
+   commit IDs. The policy must match the manually verified healthy release.
+6. Install the service/timer in `/etc/systemd/system` and
+   `june-debug-deploy.conf` in `/etc/tmpfiles.d`. Run tmpfiles creation for that
+   rule to create the 0600 lock both now and at boot; then reload systemd. Verify
+   the sandbox, a real isolated build, and a collected empty build cgroup before
+   enabling updates. Never weaken archive/credential permissions for a build.
+7. With the poller settled, invoke the installed controller's
+   `--bootstrap <verified-healthy-revision>` (it acquires the same lock itself).
+   This writes an integrity marker only if absent, verifies live identity, and
+   reconciles state. Independently verify provenance before first bootstrapping
+   a manually installed bundle; bootstrap is not a source-to-bundle attestation.
+   Set `enabled:true` under the lock and enable/start the timer. Observe an
+   actual update and a subsequent unchanged poll, exact `/health`, MainPID and
+   InvocationID, archive/credential permissions, and public authentication.
+
+For `blocked`, disable/stop the timer, inspect protected state and the exact
+`june-debug-build-stage-*.service` journal, and settle any surviving build or
+service job before changing code/policy. Never clear a fence to replay an
+uncertain effect. A storage-policy change requires a reviewed manual forward
+install on the existing archive and fresh pins, followed by bootstrap from that
+healthy release. Existing release markers are immutable; do not rewrite an old
+marker to claim new compatibility. Preserve archive/passkeys/credentials and
+any independently running investigations. Resume only after reconciliation.
+
 ## Raygen's independent installation
 
 `https://debug.raygen.dev` runs on `amp-runner` (LXC 214, Tower), separately
