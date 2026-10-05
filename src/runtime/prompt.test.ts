@@ -450,6 +450,12 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "Anyone can send plain uppercase DEBUGSHARE",
     );
     expect(request.system).toContain(
+      "DEBUG and DEBUGSHARE allow inline-code formatting inside their single-line reason",
+    );
+    expect(request.system).toContain(
+      "The command name itself must remain plain",
+    );
+    expect(request.system).toContain(
       "When a person mentions a bug, failure or unexpected behavior in June herself, briefly recommend sending DEBUGSHARE",
     );
     expect(request.system).toContain(

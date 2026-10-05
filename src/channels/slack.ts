@@ -46,8 +46,9 @@ function nonEmptyString(value: unknown): value is string {
 }
 
 /** Slack's fallback text alone does not prove the composer wasn't a quote.
- * Commands allow only ordinary rich-text sections, never quotes/code/lists or
- * attachment fallbacks. Historical/context readers never set this marker. */
+ * Commands allow only ordinary rich-text sections, never quotes/code blocks,
+ * lists or attachment fallbacks. Diagnostic reasons may contain inline code,
+ * but the command itself must stay plain. Historical readers never set this. */
 export function isPlainSlackCommand(
   event: JsonObject,
   botUserId?: string,
@@ -56,11 +57,20 @@ export function isPlainSlackCommand(
     (event.type !== "message" &&
       !(botUserId && event.type === "app_mention")) ||
     typeof event.text !== "string" ||
-    event.text.includes("`") ||
     event.subtype !== undefined ||
     isBotEvent(event) ||
     event.attachments !== undefined ||
     event.files !== undefined
+  )
+    return false;
+  const prefix = botUserId ? `<@${botUserId}> ` : "";
+  const command = event.text.startsWith(prefix)
+    ? event.text.slice(prefix.length)
+    : event.text;
+  const diagnosticReason = /^DEBUG(?:SHARE)? /.test(command);
+  if (
+    event.text.includes("`") &&
+    (!diagnosticReason || event.text.includes("```"))
   )
     return false;
   if (event.blocks === undefined) return true;
@@ -86,7 +96,12 @@ export function isPlainSlackCommand(
           (botUserId &&
             element.type === "user" &&
             element.user_id === botUserId)) &&
-        (!isJsonObject(element.style) || element.style.code !== true),
+        (!isJsonObject(element.style) ||
+          element.style.code !== true ||
+          (diagnosticReason &&
+            element.type === "text" &&
+            typeof element.text === "string" &&
+            !element.text.includes("`"))),
     )
   )
     return false;
@@ -94,10 +109,16 @@ export function isPlainSlackCommand(
   const fallback = event.text.replace(/&(?:amp|lt|gt);/g, (entity) =>
     entity === "&amp;" ? "&" : entity === "&lt;" ? "<" : ">",
   );
+  // Retain inline-code delimiters when matching the fallback: a styled command
+  // cannot masquerade as the plain diagnostic prefix checked above.
   return (
     section.elements
       .map((element) =>
-        element.type === "user" ? `<@${element.user_id}>` : element.text,
+        element.type === "user"
+          ? `<@${element.user_id}>`
+          : isJsonObject(element.style) && element.style.code === true
+            ? `\`${element.text}\``
+            : element.text,
       )
       .join("") === fallback
   );

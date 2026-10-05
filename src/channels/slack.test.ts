@@ -141,6 +141,108 @@ describe("createSlackAdapter", () => {
     },
   );
 
+  it.for(["DEBUG", "DEBUGSHARE"])(
+    "admits %s with inline code only in its diagnostic reason",
+    async (command) => {
+      const adapter = makeAdapter();
+      const reason = "inspect `fixture-id` before & after";
+      const elements = [
+        { type: "text", text: `${command} inspect ` },
+        { type: "text", text: "fixture-id", style: { code: true } },
+        { type: "text", text: " before & after" },
+      ];
+      for (const mention of ["none", "leading", "trailing"]) {
+        const text =
+          mention === "leading"
+            ? `<@U_BOT> ${command} ${reason}`
+            : `${command} ${reason}${mention === "trailing" ? " <@U_BOT>" : ""}`;
+        const visible =
+          mention === "leading"
+            ? [
+                { type: "user", user_id: "U_BOT" },
+                { type: "text", text: " " },
+                ...elements,
+              ]
+            : [
+                ...elements,
+                ...(mention === "trailing"
+                  ? [
+                      { type: "text", text: " " },
+                      { type: "user", user_id: "U_BOT" },
+                    ]
+                  : []),
+              ];
+        const blocks = [
+          {
+            type: "rich_text",
+            elements: [{ type: "rich_text_section", elements: visible }],
+          },
+        ];
+        const event = {
+          type: "message",
+          channel_type: mention === "none" ? "im" : "channel",
+          channel: mention === "none" ? "D1" : "C1",
+          user: mention === "none" ? "U_HUMAN" : "U_GUEST",
+          ts: "123.456",
+          text: text.replace("&", "&amp;"),
+          blocks,
+        };
+        for (const changes of [{}, { blocks: undefined }]) {
+          const { events } = await adapter.receive(
+            signedRequest(eventBody({ ...event, ...changes })),
+          );
+          expect(events).toHaveLength(1);
+          expect(sessionCommand(events[0] as MessageEvent)).toEqual({
+            kind: "debug",
+            reason: "inspect `fixture-id` before &amp; after",
+            snapshotOnly: command === "DEBUG",
+          });
+        }
+        for (const changes of [
+          { attachments: [] },
+          { files: [] },
+          { bot_id: "B_OTHER" },
+          { subtype: "message_changed" },
+          { text: text.replace("fixture-id", "different-id") },
+          { text: `\`${command}\` ${reason}`, blocks: undefined },
+          { text: `${command} \`\`\`fixture-id\`\`\``, blocks: undefined },
+          { text: `${command}\n${reason}`, blocks: undefined },
+          ...["rich_text_quote", "rich_text_preformatted"].map((type) => ({
+            blocks: [
+              { type: "rich_text", elements: [{ type, elements: visible }] },
+            ],
+          })),
+          {
+            blocks: [
+              {
+                type: "rich_text",
+                elements: [
+                  {
+                    type: "rich_text_section",
+                    elements: [
+                      {
+                        type: "text",
+                        text: `${command} inspect `,
+                        style: { code: true },
+                      },
+                      ...elements.slice(1),
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ]) {
+          const { events } = await adapter.receive(
+            signedRequest(eventBody({ ...event, ...changes })),
+          );
+          const normalized = events[0] as MessageEvent | undefined;
+          if (normalized) expect(sessionCommand(normalized)).toBeUndefined();
+        }
+      }
+    },
+  );
+
   it("admits mentioned session controls only from plain authenticated owner input", async () => {
     const adapter = makeAdapter();
     for (const command of [
