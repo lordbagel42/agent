@@ -50,7 +50,6 @@
         "remote_files:share",
         "lists:read",
         "lists:write",
-        "links:write",
         "users:read.email",
         "users.profile:read",
         "users:write",

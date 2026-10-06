@@ -56,9 +56,13 @@ When Slack and private MCP storage are configured, startup enrolls the fixed
 host-owned bot catalog. Initial trusted reads are enabled and all mutations
 require exact-argument owner approval. June cannot change permissions. Owner
 disable/disconnect decisions survive restarts. Changed tool contracts are disabled
-until reviewed again. Catalog registration does not establish live health or
-installed scopes; every invocation verifies bot identity and, for org installs,
-workspace assignment. Slack still enforces resource access and workspace policy.
+until reviewed again. Existing installations must review newly added tools such
+as `canvases.getContent`; changing the catalog also changes the method enum in
+`slack.capabilities`, so review that tool again if disabled. Unchanged tool
+permissions survive, but the catalog revision invalidates pending approvals.
+Catalog registration does not establish live health or installed scopes; every
+invocation verifies bot identity and, for org installs, workspace assignment.
+Slack still enforces resource access and workspace policy.
 
 To reconnect after explicitly disconnecting the bot, use the existing **Add
 connection** form with URL `https://slack.com/api/`, a descriptive name and no
@@ -99,19 +103,24 @@ Use these with `pins.add` or `pins.remove`. For `canvases.edit`:
 }
 ```
 
-Slack supports one canvas change operation per call. Use
-`canvases.sections.lookup` for section IDs before targeted replacements.
+Read an existing canvas with `canvases.getContent` and
+`{"canvas_id":"F123","content_type":"markdown"}` before editing its contents.
+This needs `canvases:read` and the bot's access to that canvas; read results are
+bounded, so truncation must not be mistaken for the entire document. Slack
+supports one canvas change operation per call. Use `canvases.sections.lookup`
+for section IDs before targeted replacements.
 Whole-canvas replacement and deletion are destructive; do not infer consent from
 a request to append. Canvas access and paid-plan restrictions still apply.
 
 The allowlisted catalog covers pins, canvases and access, bookmarks, messages
-(including edits/deletions, scheduling, ephemeral replies, streaming and unfurls),
+(including edits/deletions, scheduling, ephemeral replies and streaming),
 reactions, conversations and membership, files, lists, users/profiles/presence,
 custom emoji lookup, team information, DND lookup, user groups, call metadata and
 Block Kit views. View methods require valid Slack interaction IDs where required;
 these tools do not invent interactive event handling. Call methods manage metadata,
 not audio/video. Admin APIs, token management, user-only methods, arbitrary HTTP
 requests and automatic cross-identity fallbacks are deliberately excluded.
+Custom `chat.unfurl` is also excluded: never request `links:write`.
 
 `files.uploadContent` combines Slack's upload allocation, binary transfer and
 completion under one approval. Required `filename` and `content` are strings;
@@ -129,6 +138,26 @@ credential rules as remote MCP. Mutations return an approval receipt, not their
 raw response; use an authorized read to look up created resources afterward.
 Uncertain mutations are never automatically retried, including partial uploads.
 Thread-stop and group-ping rules still apply.
+
+### Verify through June, not just the manifest
+
+In an owner-private conversation, ask June to check `slack.capabilities` for
+`pins.add` and `canvases.edit`. Her interaction agent delegates to an authorized
+execution worker; a missing direct interaction tool is not missing support.
+The checks need `pins:write` and `canvases:write` respectively. Missing scopes
+require a separately authorized installation update, not merely a manifest edit.
+Disabled catalog tools require owner review in Connections, not a new Slack scope.
+
+For a live test, choose a disposable message and canvas the bot can access. Ask
+June to prepare the exact pin or append, approve it, then ask her to inspect the
+receipt and verify with `pins.list` or `canvases.getContent`. A prepared proposal,
+cached connection or local mock test does not prove the live operation succeeded.
+Slack error responses and lost write responses conservatively remain `unknown`;
+inspect the external state before considering another action. No automatic
+background test or retry runs, and dashboard approval does not automatically
+notify June. Channel/group-DM requests cannot use this private catalog; send the
+target link in the owner's DM instead. Automated events retain their existing
+standing-read/proposal limits, with no new authority from these instructions.
 
 ## Conversational Block Kit questions
 

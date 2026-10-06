@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import type { ModelRequest } from "../src/core/contracts.js";
 import { McpConnections } from "../src/tools/connections.js";
 import { SlackBotAdapter, slackBotTools } from "../src/tools/slack-bot.js";
+
+test("the bot catalog and installation template do not request link unfurl access", async () => {
+  const manifest = JSON.parse(
+    await readFile(new URL("../manifest.json", import.meta.url), "utf8"),
+  );
+  expect(Object.values(manifest.oauth_config.scopes).flat()).not.toContain(
+    "links:write",
+  );
+  expect(slackBotTools.some((tool) => tool.name === "chat.unfurl")).toBe(false);
+});
 
 test("changing the host bot identity revokes saved grants and pending proposals", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-bot-identity-"));
@@ -61,7 +71,7 @@ test("changing the host bot identity revokes saved grants and pending proposals"
   }
 });
 
-test("June discovers bot tools, proposes pins and canvas edits, and executes only confirmed exact arguments", async () => {
+test("June reads canvases, proposes pins and canvas edits, and executes only confirmed exact arguments", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-slack-bot-"));
   const calls: { url: string; body: unknown; authorization: string | null }[] =
     [];
@@ -85,6 +95,8 @@ test("June discovers bot tools, proposes pins and canvas edits, and executes onl
             : body,
           authorization: new Headers(init?.headers).get("authorization"),
         });
+        if (String(url).endsWith("/canvases.getContent"))
+          return Response.json({ ok: true, content: "## Status\nDraft." });
         return Response.json({ ok: true, team_id: "T123", user_id: "U123" });
       },
     },
@@ -139,6 +151,39 @@ test("June discovers bot tools, proposes pins and canvas edits, and executes onl
     expect(() =>
       store.permit(latest.id, latest.revision, "pins.add", "read"),
     ).toThrow();
+    let readRound = 0;
+    const readReply = await store
+      .wrap({
+        reply: async (input) => {
+          if (readRound++ === 0)
+            return {
+              text: "",
+              mcp: {
+                connection: "slack-bot",
+                tool: "canvases.getContent",
+                argumentsJson: '{"canvas_id":"F123","content_type":"markdown"}',
+              },
+            };
+          const observation = input.system.match(
+            /Private MCP observation[^\n]*?: (.+)\. Up to/,
+          );
+          assert(observation?.[1]);
+          expect(JSON.parse(JSON.parse(observation[1]).text)).toEqual({
+            ok: true,
+            content: "## Status\nDraft.",
+          });
+          expect(input.system).not.toContain("xoxb-test-only");
+          return { text: "The canvas currently says Draft." };
+        },
+      })
+      .reply({ ...request, agentRole: "execution" });
+    expect(readReply.text).toBe("The canvas currently says Draft.");
+    expect(calls.at(-1)?.url).toBe("https://slack.com/api/canvases.getContent");
+    expect(calls.at(-1)?.body).toEqual({
+      canvas_id: "F123",
+      content_type: "markdown",
+    });
+    expect(store.proposals()).toHaveLength(1);
     const canvasArgs = {
       canvas_id: "F123",
       changes: [

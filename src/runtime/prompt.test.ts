@@ -334,6 +334,14 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain(
       "Do not perform the cutover or consent yourself",
     );
+    expect(request.system).toContain('"slack-bot"');
+    expect(request.system).toContain("pins.add");
+    expect(request.system).toContain("canvases.getContent");
+    expect(request.system).toContain("canvases.edit");
+    expect(request.system).toContain("slack.capabilities");
+    expect(request.system).toContain("exact-argument owner approval");
+    expect(request.system).toContain("never request links:write");
+    expect(request.mcpAvailable).toBe(false);
     expect(request.system).toContain(
       "semoji service (https://github.com/lordbagel42/semoji) owns Cloudflare Workers",
     );
