@@ -49,10 +49,17 @@ it("exposes read-only issue metadata to the existing authorized inspection workf
     selections: {},
     debugIssues: async () => ({
       enabled: true,
+      credentials: { state: "waiting" },
       items: [{ number: 37, state: "open", job: { phase: "unknown" } }],
     }),
   });
   expect(await read("debug-issues")).toContain('"phase":"unknown"');
+  expect(await read("debug-issues")).toContain(
+    '"credentials":{"state":"waiting"}',
+  );
+  expect(await read("debug-issues")).toContain(
+    "credential receipt is not proof of GitHub access",
+  );
   expect(
     await createInspectionReader({ audience: "private", selections: {} })(
       "debug-issues",

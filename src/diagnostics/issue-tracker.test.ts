@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import type { GitHubIssue, IssueGitHub } from "./github-issues.js";
+import { IssueCredentialUnavailable } from "./issue-credentials.js";
 import { IssueTracker } from "./issue-tracker.js";
 import { DiagnosticStore } from "./store.js";
 
@@ -27,6 +28,7 @@ function fixture(enabledAt = start) {
   let loseComment = false;
   let loseClose = false;
   let published = false;
+  let unavailable: "create" | "comment" | "close" | undefined;
   function add(number: number, authorId = 42, created = start + 1000) {
     const issue: GitHubIssue = {
       number,
@@ -52,6 +54,7 @@ function fixture(enabledAt = start) {
     get: async (number) => structuredClone(get(number)),
     ownerId: async () => 42,
     create: async (title, body) => {
+      if (unavailable === "create") throw new IssueCredentialUnavailable();
       const issue = add(100 + remote.length, 91);
       Object.assign(issue, { title, body });
       if (loseCreate) throw new Error("lost create response");
@@ -59,12 +62,14 @@ function fixture(enabledAt = start) {
     },
     comments: async () => structuredClone(comments),
     comment: async (_number, body) => {
+      if (unavailable === "comment") throw new IssueCredentialUnavailable();
       const comment = { id: comments.length + 1, body };
       comments.push(comment);
       if (loseComment) throw new Error("lost comment response");
       return comment;
     },
     close: async (number) => {
+      if (unavailable === "close") throw new IssueCredentialUnavailable();
       const issue = get(number);
       issue.state = "closed";
       issue.stateReason = "completed";
@@ -99,8 +104,47 @@ function fixture(enabledAt = start) {
     publish: () => {
       published = true;
     },
+    expire: (stage: typeof unavailable) => {
+      unavailable = stage;
+    },
   };
 }
+
+it.each(["create", "comment", "close"] as const)(
+  "leaves %s retryable only when credentials prove no HTTP dispatch",
+  async (stage) => {
+    const f = fixture();
+    f.add(7);
+    f.publish();
+    f.expire(stage);
+    if (stage === "create") {
+      await f.tracker.run({ action: "track", source, snapshotOnly: true });
+      await f.tracker.sync();
+      expect(f.tracker.index().pending).toEqual([
+        { source, status: "pending" },
+      ]);
+      f.expire(undefined);
+      await f.tracker.sync();
+      expect(f.tracker.index().pending).toEqual([]);
+      expect(f.remote).toHaveLength(2);
+    } else {
+      const input = {
+        action: "complete" as const,
+        number: 7,
+        key,
+        body: "Verified code shipped",
+        commit: "a".repeat(40),
+      };
+      expect(await f.tracker.run(input)).toMatchObject({
+        phase: stage === "comment" ? "pending" : "commented",
+      });
+      f.expire(undefined);
+      expect(await f.tracker.run(input)).toMatchObject({ status: "done" });
+      expect(f.comments).toHaveLength(1);
+      expect(f.remote[0]?.state).toBe("closed");
+    }
+  },
+);
 
 it("reconciles lost issue creation by source without queuing a second investigator", async () => {
   const f = fixture();

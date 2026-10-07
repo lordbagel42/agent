@@ -7,6 +7,10 @@ import { createDebugAuth } from "./auth.js";
 import type { DebugSiteDeploymentStatus } from "./deployment.js";
 import { createIssueApi } from "./issue-api.js";
 import {
+  type IssueCredentials,
+  readIssueCredential,
+} from "./issue-credentials.js";
+import {
   type IssueIndex,
   type IssueTracker,
   issueActions,
@@ -41,6 +45,7 @@ export function createDebugSite(options: {
   revision?: string;
   deployment?: () => Promise<DebugSiteDeploymentStatus | null>;
   issues?: { token: string; operatorToken?: string; tracker: IssueTracker };
+  issueCredentials?: { token: string; value: IssueCredentials };
   now?: () => number;
 }) {
   const origin = new URL(options.origin);
@@ -50,9 +55,11 @@ export function createDebugSite(options: {
     ...(options.operationsToken === undefined ? [] : [options.operationsToken]),
     ...(options.issues ? [options.issues.token] : []),
     ...(options.issues?.operatorToken ? [options.issues.operatorToken] : []),
+    ...(options.issueCredentials ? [options.issueCredentials.token] : []),
   ];
   if (
     origin.origin !== options.origin ||
+    (options.issueCredentials && !options.issues) ||
     (origin.protocol !== "https:" &&
       !(
         origin.protocol === "http:" &&
@@ -104,6 +111,27 @@ export function createDebugSite(options: {
   });
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
+  if (options.issueCredentials) {
+    const { token, value } = options.issueCredentials;
+    const refresh = hash(token);
+    app.all("/api/issue-github-token", async (c) => {
+      if (!matches(bearer(c.req.raw), refresh))
+        return c.json({ error: "unauthorized" }, 401);
+      if (c.req.method !== "POST")
+        return c.json({ error: "method_not_allowed" }, 405);
+      if (c.req.header("origin"))
+        return c.json({ error: "origin_not_allowed" }, 403);
+      if (c.req.header("content-type")?.split(";")[0] !== "application/json")
+        return c.json({ error: "json_required" }, 415);
+      try {
+        value.accept(await readIssueCredential(c.req.raw));
+        return c.body(null, 204);
+      } catch {
+        // Never echo grant data, validation details or provider errors.
+        return c.json({ error: "issue_credential_invalid" }, 400);
+      }
+    });
+  }
   const issueIndex = (source?: string): IssueIndex =>
     options.issues?.tracker.index(source) ?? {
       enabled: false,

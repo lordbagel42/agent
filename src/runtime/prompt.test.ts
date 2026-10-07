@@ -274,6 +274,11 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain("distinct reconciliation credential");
     expect(request.system).toContain("companions.py");
     expect(request.system).toContain(".maintenance.lock");
+    expect(request.system).toContain("june-issue-credentials");
+    expect(request.system).toContain("waiting/usable/expired");
+    expect(request.system).toContain(
+      "credential receipt is not proof of GitHub access",
+    );
     expect(request.system).toContain("hourly UTC activity with Tokens/Calls");
     expect(request.system).toContain(
       "Automated events gain no analytics grant from this description",

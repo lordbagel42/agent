@@ -122,11 +122,12 @@ function issuePath(number: number): string {
  * REST contract: https://docs.github.com/en/rest (API version 2026-03-10).
  */
 export function createIssueGitHub(options: {
-  token: string;
+  token: string | (() => string);
   fetch?: typeof fetch;
 }): IssueGitHub {
-  const { token } = options;
-  if (typeof token !== "string" || !/^[A-Za-z0-9._~-]{1,4096}$/.test(token))
+  const validToken = (value: unknown): value is string =>
+    typeof value === "string" && /^[A-Za-z0-9._~-]{1,4096}$/.test(value);
+  if (typeof options.token !== "function" && !validToken(options.token))
     throw new GitHubIssuesError("configuration");
   const fetchImpl = options.fetch ?? globalThis.fetch;
 
@@ -136,6 +137,11 @@ export function createIssueGitHub(options: {
     body?: Record<string, string>,
     deadline = Date.now() + REQUEST_TIMEOUT_MS,
   ): Promise<{ data: unknown; hasNext: boolean | undefined }> {
+    // This getter may prove no request was dispatched. Keep that error outside
+    // the transport catch so the journal can leave an unattempted write pending.
+    const token =
+      typeof options.token === "function" ? options.token() : options.token;
+    if (!validToken(token)) throw new GitHubIssuesError("configuration");
     const timeoutMs = Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now());
     if (timeoutMs <= 0) throw new GitHubIssuesError("timeout");
     const controller = new AbortController();

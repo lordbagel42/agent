@@ -2,7 +2,8 @@
 """Explicit issue companion updates; install this policy, never run from a worktree.
 
 Install companions.py and issues.py root-owned in /usr/local/lib/june-companions.
-Run with --role worker on amp-runner, --role sources on June, and --revision SHA.
+Run with --role worker on amp-runner, --role sources or credentials on June,
+and --revision SHA. Credential renewal has its own release root and stable link.
 The exact reviewed revision must be current public main. --start opts into first
 activation; later updates preserve running state. This command never enables a
 unit at boot, changes credentials, updates its own policy, or restores data.
@@ -37,9 +38,24 @@ ROOT = Path("/opt/june-issues")
 STATE = Path("/var/lib/june-companions")
 UNITS = Path("/etc/systemd/system")
 REPOSITORY = "https://github.com/lordbagel42/agent.git"
-SERVICES = {"worker": "june-issues.service", "sources": "june-issue-sources.service"}
-ENTRY = {"worker": "issues.py", "sources": "source_status.py"}
-FILES = ("issues.py", "deploy.py", "source_status.py", *SERVICES.values())
+SERVICES = {
+    "worker": "june-issues.service",
+    "sources": "june-issue-sources.service",
+    "credentials": "june-issue-credentials.service",
+}
+ENTRY = {
+    "worker": "issues.py",
+    "sources": "source_status.py",
+    "credentials": "issue_credentials.py",
+}
+# Keep existing worker/source manifests valid across this policy upgrade.
+FILES = (
+    "issues.py",
+    "deploy.py",
+    "source_status.py",
+    SERVICES["worker"],
+    SERVICES["sources"],
+)
 
 
 def revision(value):
@@ -105,13 +121,16 @@ def atomic(path, data, mode=0o600):
 
 def unit_bytes(release, role):
     raw = (release / SERVICES[role]).read_bytes()
-    expected = f"ExecStart=/usr/bin/python3 -I /opt/june-issues/current/{ENTRY[role]}"
+    root = (
+        "/opt/june-issues/credentials" if role == "credentials" else "/opt/june-issues"
+    )
+    expected = f"ExecStart=/usr/bin/python3 -I {root}/current/{ENTRY[role]}"
     expected += " worker" if role == "worker" else ""
     if raw.splitlines().count(expected.encode()) != 1:
         raise ValueError("invalid_unit_template")
     return raw.replace(
         expected.encode(),
-        expected.replace("/opt/june-issues/current", str(release)).encode(),
+        expected.replace(f"{root}/current", str(release)).encode(),
     )
 
 
@@ -165,6 +184,12 @@ class Host:
         self.role = role
         self.unit = SERVICES[role]
         self.previous = previous
+        self.root = ROOT / "credentials" if role == "credentials" else ROOT
+        self.files = (
+            ("issues.py", "deploy.py", ENTRY[role], self.unit)
+            if role == "credentials"
+            else FILES
+        )
         self.repository = STATE / "source.git"
 
     def command(self, *args):
@@ -202,14 +227,14 @@ class Host:
         ).stdout
 
     def check_release(self, target):
-        release = trusted(ROOT / "releases" / revision(target), directory=True)
+        release = trusted(self.root / "releases" / revision(target), directory=True)
         marker = json.loads(trusted(release / "manifest.json").read_bytes())
         actual = {
             name: hashlib.sha256(trusted(release / name).read_bytes()).hexdigest()
-            for name in FILES
+            for name in self.files
         }
         if {p.name for p in release.iterdir()} != {
-            *FILES,
+            *self.files,
             "manifest.json",
         } or marker != {"revision": target, "sha256": actual}:
             raise ValueError("companion_release_drift")
@@ -226,7 +251,7 @@ class Host:
         if self.previous:
             self.git("merge-base", "--is-ancestor", revision(self.previous), target)
         contents = {}
-        for name in FILES:
+        for name in self.files:
             source = f"scripts/deploy/{name}"
             entry = self.git("ls-tree", target, "--", source).decode().split()
             if (
@@ -242,7 +267,7 @@ class Host:
                 compile(
                     contents[name], name, "exec"
                 )  # Never execute fetched code in the installer.
-        release = ROOT / "releases" / target
+        release = self.root / "releases" / target
         if release.exists():
             self.check_release(target)
             if any(
@@ -251,7 +276,7 @@ class Host:
                 raise ValueError("companion_source_mismatch")
             return
         with tempfile.TemporaryDirectory(
-            prefix=".stage-", dir=ROOT / "releases"
+            prefix=".stage-", dir=self.root / "releases"
         ) as staging:
             stage = Path(staging)
             for name, data in contents.items():
@@ -346,12 +371,12 @@ class Host:
     def install(self, target):
         release = self.check_release(target)
         atomic(UNITS / self.unit, unit_bytes(release, self.role), 0o644)
-        link = ROOT / ".current-next"
+        link = self.root / ".current-next"
         if os.path.lexists(link):
             raise ValueError("unsettled_companion_link")
         link.symlink_to(release)
-        os.replace(link, ROOT / "current")
-        issues.sync_directory(ROOT)
+        os.replace(link, self.root / "current")
+        issues.sync_directory(self.root)
         self.command("systemctl", "daemon-reload")
 
     def start(self):
@@ -360,8 +385,8 @@ class Host:
     def verify(self, target, running):
         release = self.check_release(target)
         if (
-            not (ROOT / "current").is_symlink()
-            or (ROOT / "current").resolve() != release
+            not (self.root / "current").is_symlink()
+            or (self.root / "current").resolve() != release
             or trusted(UNITS / self.unit).read_bytes() != unit_bytes(release, self.role)
         ):
             raise ValueError("companion_installation_drift")
@@ -414,7 +439,9 @@ def main():
         raise ValueError("root_required")
     os.umask(0o077)
     directory(ROOT)
-    directory(ROOT / "releases")
+    root = ROOT / "credentials" if args.role == "credentials" else ROOT
+    directory(root)
+    directory(root / "releases")
     directory(STATE, 0o700)
     trusted(UNITS, directory=True)
     with ExitStack() as locks:
@@ -426,7 +453,7 @@ def main():
         )
         # Existing host locks must already exist: never create a replacement inode.
         locks.enter_context(existing_lock(Path("/run/lock") / outer))
-        if args.role == "sources":
+        if args.role != "worker":
             locks.enter_context(existing_lock(Path("/var/lib/june-deploy/deploy.lock")))
             with sqlite3.connect(
                 "file:/var/lib/june-deploy/records/deploy.sqlite?mode=ro", uri=True
@@ -455,7 +482,7 @@ def main():
         host = Host(args.role, state.get("revision") if state else None)
         if state is None and (
             host.properties().get("FragmentPath")
-            or os.path.lexists(ROOT / "current")
+            or os.path.lexists(host.root / "current")
             or os.path.lexists(UNITS / host.unit)
         ):
             raise ValueError("unmanaged_companion")

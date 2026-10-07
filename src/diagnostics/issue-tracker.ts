@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { GitHubIssue, IssueGitHub } from "./github-issues.js";
+import {
+  type IssueCredentialStatus,
+  IssueCredentialUnavailable,
+} from "./issue-credentials.js";
 import type { DiagnosticStore } from "./store.js";
 
 const number = z.number().int().positive().safe();
@@ -120,13 +124,14 @@ interface Settings {
 interface Effect {
   input: Extract<IssueAction, { action: "comment" | "complete" }>;
   marker: string;
-  phase: "commenting" | "commented" | "closing" | "done";
+  phase: "pending" | "commenting" | "commented" | "closing" | "done";
   commentId?: number;
 }
 export interface IssueIndex {
   enabled: boolean;
   checkedAt?: number;
   error?: string;
+  credentials?: IssueCredentialStatus;
   items: Omit<IssueRecord, "body" | "authorId">[];
   total: number;
   pending: Pick<SourceRecord, "source" | "status">[];
@@ -146,6 +151,7 @@ export class IssueTracker {
       github: IssueGitHub;
       origin: string;
       creatorId: number;
+      credentialStatus?: () => IssueCredentialStatus;
       now?: () => number;
     },
   ) {
@@ -202,6 +208,9 @@ export class IssueTracker {
       enabled: true,
       checkedAt: settings.checkedAt,
       error: settings.error,
+      ...(this.options.credentialStatus
+        ? { credentials: this.options.credentialStatus() }
+        : {}),
       items: all
         .slice(0, 100)
         .map(({ body: _body, authorId: _author, ...issue }) => issue),
@@ -360,8 +369,13 @@ export class IssueTracker {
           this.saveSource(record);
           try {
             this.observe(await this.options.github.create(title, body));
-          } catch {
-            /* Intent remains unknown even when no response was received. */
+          } catch (error) {
+            if (error instanceof IssueCredentialUnavailable) {
+              record.status = "pending";
+              this.saveSource(record);
+              throw error;
+            }
+            /* Any possibly dispatched write remains unknown. */
           }
         }
         settings.cursor = new Date(began).toISOString();
@@ -441,15 +455,21 @@ export class IssueTracker {
     const result = () => ({
       number: input.number,
       key: input.key,
-      status: effect?.phase === "done" ? "done" : "unknown",
+      status:
+        effect?.phase === "done"
+          ? "done"
+          : effect?.phase === "pending"
+            ? "pending"
+            : "unknown",
       phase: effect?.phase,
     });
-    if (!effect) {
-      effect = {
+    if (!effect || effect.phase === "pending") {
+      effect ??= {
         input,
         marker: `<!-- june-effect:${randomUUID()} -->`,
         phase: "commenting",
       };
+      effect.phase = "commenting";
       save();
       const body = [
         input.body,
@@ -469,7 +489,11 @@ export class IssueTracker {
         ).id;
         effect.phase = "commented";
         save();
-      } catch {
+      } catch (error) {
+        if (error instanceof IssueCredentialUnavailable) {
+          effect.phase = "pending";
+          save();
+        }
         return result();
       }
     } else if (effect.phase === "commenting") {
@@ -491,7 +515,12 @@ export class IssueTracker {
         save();
         try {
           Object.assign(issue, await this.options.github.close(input.number));
-        } catch {
+        } catch (error) {
+          if (error instanceof IssueCredentialUnavailable) {
+            effect.phase = "commented";
+            save();
+            return { ...result(), status: "pending" };
+          }
           return result();
         }
       }

@@ -330,12 +330,13 @@ work. Coordinate these changes with existing installation/deployment ownership:
    `issue-tracker.ts` storage pin. Update all three storage pins only after a
    verified manual forward install. Do not bypass the updater's storage-policy
    block or restore old data. Older installed policies do not cover the new pin.
-2. Set `JUNE_DEBUG_ISSUES_ENABLED=1` in the site's protected environment. Provision
-   `JUNE_DEBUG_GITHUB_TOKEN` with access to **only this repository**, Issues
-   read/write and Contents read for publication verification. The integration
-   accepts a fine-grained token or externally managed installation token; it does
-   not refresh expiring GitHub tokens. It cannot use June's encrypted MCP/OAuth
-   credentials. Provision a separate random `JUNE_DEBUG_ISSUE_TOKEN` (same encoding
+2. Set `JUNE_DEBUG_ISSUES_ENABLED=1` in the site's protected environment. Configure
+   **exactly one** GitHub credential mode: renewable installation tokens via
+   `JUNE_DEBUG_GITHUB_REFRESH_TOKEN` and the service below, or an independently
+   verified, repository-only `JUNE_DEBUG_GITHUB_TOKEN` with Issues read/write and
+   Contents read. Static mode has no refresh; renewable mode never falls back to
+   it. Neither mode uses June's encrypted MCP/OAuth credentials or a broad personal
+   token. Provision a separate random `JUNE_DEBUG_ISSUE_TOKEN` (same encoding
    and length rules as the viewer token), distinct from viewer and ingest tokens.
    Set `JUNE_DEBUG_GITHUB_ACTOR_ID` to the verified numeric GitHub user/bot ID that
    this token creates issues as. Source reconciliation checks this ID and the
@@ -408,14 +409,72 @@ work. Coordinate these changes with existing installation/deployment ownership:
    Enable/start the worker only with operator approval. Neither a mock test nor a
    configured endpoint proves live GitHub/Amp access.
 
+### Renewable GitHub App credentials
+
+Use the existing root-only App key **in place on June's host**, not on amp-runner,
+in the debug-site environment, or in Amp. The independently installed
+`june-issue-credentials` service verifies the configured installation and requests
+only `lordbagel42/agent`, `issues:write` and `contents:read` (implicit metadata read
+is allowed). Broader returned grants, wrong repositories and invalid expiry fail
+closed. It neither changes the App installation nor runs the deployment controller.
+
+Provision root `0600` `/etc/june-issues/credentials.json` and its separate token file
+under root-controlled directories. Example paths/IDs, **not credentials**:
+
+```json
+{
+  "origin": "https://debug.raygen.dev",
+  "tokenFile": "/etc/june-issues/refresh-token",
+  "githubApp": {
+    "appId": 123456,
+    "installationId": 789012,
+    "privateKeyFile": "/etc/june/github-app.pem"
+  }
+}
+```
+
+The token file contains the same random credential as the site's
+`JUNE_DEBUG_GITHUB_REFRESH_TOKEN`, distinct from **all** viewer, ingest, operations,
+automation and reconciliation credentials. Do not give it to agents or the source
+exporter. `POST /api/issue-github-token` authenticates before reading at most 8 KiB
+within two seconds. It accepts only `{version:1, token, expiresAt}`, rejects browser
+origins, and returns an empty 204; other capabilities cannot call it. Tokens remain
+in memory, never SQLite, argv, tools or receipts. Disable core dumps for both services.
+
+Install/update this service through `companions.py --role credentials` on June,
+using the same ownership/lock procedure below. It redelivers about every 60 seconds
+and renews ten minutes early using both wall and monotonic clocks. Site restarts
+start empty and recover on the next delivery. Identical grants cannot extend expiry;
+stale/altered deliveries cannot replace a newer grant. The site stops using a token
+two minutes early, also reserving the full ten-second GitHub request budget. Missing
+or expired credentials pause polling/writes but do not prevent archive readiness,
+sign-in or reads. June's `inspection:"debug-issues"` exposes only
+`credentials.state` (`waiting|usable|expired`), receipt time and expiry. This is
+**delivery evidence, not verified GitHub access**; check polling and issue receipts.
+Failures retry at the next service poll and never fall back to personal credentials.
+
+**Review the complete credential transport before enabling renewal.** HTTPS at the
+public hostname is not necessarily end-to-end TLS: TLS terminators, reverse proxies
+and any plaintext LAN hop become part of the credential trust boundary. Verify live
+header/body logging, buffering, managed WAF/request capture and access restrictions;
+disable secret capture and do not assume provisioning source proves live settings.
+Use only independently verified operator access, never weaken SSH/TLS validation.
+The renewer uses certificate validation, no environment proxy or redirects, and an
+explicit `june-issue-renewer` User-Agent; 403 fails closed. Do not send credentials
+to test an unreviewed path. If protections cannot be established, leave renewal and
+issue automation disabled and report the specific transport gap.
+
 ### Unknown outcomes and recovery
 
 Creation, comment and close intents commit before remote writes. Source IDs and
 per-action UUID keys are stable. After response loss, repeat only the **identical**
 action/key to reconcile its marker or closed state by read; never use a new key,
 source or transport to replay an unknown effect. The inspector returns bounded
-effect phases (`commenting`, `commented`, `closing`, `done`). Authentication or
-network failure before a proven receipt may conservatively remain unknown.
+effect phases (`pending`, `commenting`, `commented`, `closing`, `done`). Only a
+locally proven credential absence **before HTTP dispatch** leaves the same write
+retryable (`pending`, or `commented` when only close is pending). Reuse its identical
+action/key after renewal. Provider authentication or transport failures keep the
+unknown fence because dispatch may have happened; token rotation never clears it.
 
 The worker writes `active.json` before claiming or launching, retains a process
 lock, and never automatically relaunches after `launching`, `running` or `unknown`
@@ -459,13 +518,13 @@ permit deleting state. Coordinate a handoff and the host's existing locks first.
 Install reviewed `scripts/deploy/companions.py` and its matching `issues.py` as
 root-owned 0644 policy files in `/usr/local/lib/june-companions` (0755). This policy
 is installed explicitly, never self-replaced from main. The updater manages only
-the issue worker and source exporter, not June, the website, deployment policy,
+the issue worker, source exporter and credential renewer, not June, the website, deployment policy,
 DEBUGSHARE/SSH launchers, credentials, sudo grants or other services.
 
 On **amp-runner**, stop the debug-site timer, let any active poll settle, and
 invoke the following outside an already-held flock. On **June**, coordinate the
-current operator, stop/settle the deployment poller and use `--role sources`.
-Any unresolved recovery or operator hold blocks the sources update. Resume the
+current operator, stop/settle the deployment poller and use `--role sources` or
+`--role credentials`. Any unresolved recovery or operator hold blocks both updates. Resume the
 original poller/timer after verification; do not stop an issue observer to force
 a maintenance window.
 
@@ -482,12 +541,15 @@ only verifies the installed files and process. It fetches only the fixed public
 repository and requires exact current main with forward ancestry. It extracts a
 fixed file list, checks Python syntax/systemd units, seals per-file hashes under
 `/opt/june-issues/releases/<SHA>`, pins the unit's ExecStart to that release and
-switches only the stable tool-helper link. No build scripts or fetched Python
+switches only the stable tool-helper link. Renewal uses its own
+`/opt/june-issues/credentials/releases/<SHA>` and `credentials/current`, preserving
+the worker/source file manifest and link when services are updated separately.
+No build scripts or fetched Python
 run in the installer. The configuration and issue journals remain in their
 existing private paths and are never rewritten or restored.
 
 The updater takes the existing host installation/operator lock (plus June's inner
-deployment lock for `sources`). The worker holds a shared `.maintenance.lock`
+deployment lock for `sources` and `credentials`). The worker holds a shared `.maintenance.lock`
 through each claim, launch and full observation; updates require its exclusive
 lock and no `active.json`. A busy or unresolved worker blocks an update without
 stopping it. Lock inodes are preserved. Each service update records `applying`

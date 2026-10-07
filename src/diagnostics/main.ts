@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { createDebugSiteDeploymentReader } from "./deployment.js";
 import { createIssueGitHub } from "./github-issues.js";
+import { IssueCredentials } from "./issue-credentials.js";
 import { IssueTracker } from "./issue-tracker.js";
 import { createDebugSite } from "./server.js";
 import { DiagnosticStore } from "./store.js";
@@ -31,20 +32,23 @@ if (
 const store = new DiagnosticStore(file);
 const issueToken = process.env.JUNE_DEBUG_ISSUE_TOKEN;
 const githubToken = process.env.JUNE_DEBUG_GITHUB_TOKEN;
+const refreshToken = process.env.JUNE_DEBUG_GITHUB_REFRESH_TOKEN;
 const creatorId = Number(process.env.JUNE_DEBUG_GITHUB_ACTOR_ID);
 const issueEnabled = process.env.JUNE_DEBUG_ISSUES_ENABLED === "1";
 if (
   issueEnabled &&
   (!issueToken ||
-    !githubToken ||
+    Boolean(githubToken) === Boolean(refreshToken) ||
     !Number.isSafeInteger(creatorId) ||
     creatorId < 1)
 )
   throw new Error(
-    "Issue tracking requires separate automation and GitHub credentials and a verified GitHub actor ID",
+    "Issue tracking requires automation credentials, exactly one static or refresh GitHub credential, and a verified GitHub actor ID",
   );
+const credentials =
+  issueEnabled && refreshToken ? new IssueCredentials() : undefined;
 const issues =
-  issueEnabled && issueToken && githubToken
+  issueEnabled && issueToken && (githubToken || credentials)
     ? {
         token: issueToken,
         operatorToken: process.env.JUNE_DEBUG_ISSUE_OPERATOR_TOKEN,
@@ -52,7 +56,12 @@ const issues =
           store,
           origin,
           creatorId,
-          github: createIssueGitHub({ token: githubToken }),
+          github: createIssueGitHub({
+            token: credentials ? () => credentials.get() : (githubToken ?? ""),
+          }),
+          credentialStatus: credentials
+            ? () => credentials.status()
+            : undefined,
         }),
       }
     : undefined;
@@ -68,6 +77,10 @@ const app = createDebugSite({
     file: "/var/lib/june-debug-deploy/public/status.json",
   }),
   issues,
+  issueCredentials:
+    credentials && refreshToken
+      ? { token: refreshToken, value: credentials }
+      : undefined,
 });
 let timer: ReturnType<typeof setTimeout> | undefined;
 let stopping = false;

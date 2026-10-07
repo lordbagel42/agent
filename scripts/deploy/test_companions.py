@@ -217,7 +217,11 @@ class Companions(unittest.TestCase):
             git("init", "--initial-branch=main")
             sources = checkout / "scripts/deploy"
             sources.mkdir(parents=True)
-            for name in self.module.FILES:
+            for name in (
+                *self.module.FILES,
+                "issue_credentials.py",
+                "june-issue-credentials.service",
+            ):
                 (sources / name).write_bytes(
                     Path(__file__).with_name(name).read_bytes()
                 )
@@ -267,6 +271,24 @@ class Companions(unittest.TestCase):
                     str(release / "issues.py").encode(),
                     (units / "june-issues.service").read_bytes(),
                 )
+                host.check_release(commit)
+                # June hosts the exporter AND renewer: installing either must
+                # not move the other's stable link or invalidate its manifest.
+                renewal = self.module.Host("credentials")
+                (installation / "credentials/releases").mkdir(parents=True)
+                renewal.command = controlled
+                renewal.prepare(commit)
+                renewal.install(commit)
+                credential_release = installation / "credentials/releases" / commit
+                self.assertEqual(
+                    (installation / "credentials/current").resolve(), credential_release
+                )
+                self.assertEqual((installation / "current").resolve(), release)
+                self.assertIn(
+                    str(credential_release / "issue_credentials.py").encode(),
+                    (units / "june-issue-credentials.service").read_bytes(),
+                )
+                renewal.check_release(commit)
                 host.check_release(commit)
                 (release / "issues.py").chmod(0o644)
                 (release / "issues.py").write_text("# corrupted\n")

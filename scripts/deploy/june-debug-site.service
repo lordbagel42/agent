@@ -15,6 +15,7 @@ ExecStart=/usr/bin/node /opt/june-debug/current/server.mjs
 Restart=on-failure
 RestartSec=5
 UMask=0077
+LimitCORE=0
 StateDirectory=june-debug
 StateDirectoryMode=0700
 NoNewPrivileges=true
