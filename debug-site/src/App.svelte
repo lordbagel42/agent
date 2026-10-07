@@ -7,16 +7,18 @@
     LogOut,
   } from "@lucide/svelte";
   import { onMount } from "svelte";
-  import { createArchive } from "$lib/archive.js";
+  import { type ArchiveDestination, createArchive } from "$lib/archive.js";
   import ArchiveRail from "$lib/components/ArchiveRail.svelte";
   import CaptureView from "$lib/components/CaptureView.svelte";
   import Loading from "$lib/components/Loading.svelte";
   import Login from "$lib/components/Login.svelte";
+  import OperationsView from "$lib/components/OperationsView.svelte";
   import Passkeys from "$lib/components/Passkeys.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   const archive = createArchive();
   let railOpen = $state(false);
   let passkeysOpen = $state(false);
+  let operationsPage = $state(false);
   let zone = $state("local");
   let capturePage = $state<"evidence" | "conversation">("evidence");
   const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -24,7 +26,12 @@
   $effect(() => {
     if ($archive.phase !== "ready") passkeysOpen = false;
   });
-  function routeId() {
+  function routeTarget(): ArchiveDestination {
+    operationsPage = location.pathname === "/operations";
+    if (operationsPage)
+      return {
+        operationId: new URLSearchParams(location.search).get("id") || null,
+      };
     const match = /^\/s\/([^/]+)(\/conversation)?\/?$/.exec(location.pathname);
     capturePage = match?.[2] ? "conversation" : "evidence";
     try {
@@ -34,6 +41,7 @@
     }
   }
   function navigate(id: string | null, page = capturePage) {
+    operationsPage = false;
     capturePage = id ? page : "evidence";
     history.pushState(
       null,
@@ -44,7 +52,35 @@
     );
     railOpen = false;
     passkeysOpen = false;
+    if (!$archive.index) void archive.search($archive.query, $archive.offset);
     void archive.select(id);
+  }
+  function navigateOperation(id: string | null) {
+    const entering = !operationsPage;
+    operationsPage = true;
+    history.pushState(
+      null,
+      "",
+      id ? `/operations?id=${encodeURIComponent(id)}` : "/operations",
+    );
+    railOpen = false;
+    passkeysOpen = false;
+    if (entering || !$archive.operations.index)
+      void archive.searchOperations($archive.operations);
+    void archive.selectOperation(id);
+  }
+  function follow(event: MouseEvent, action: () => void) {
+    if (
+      $archive.phase !== "ready" ||
+      event.button ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    )
+      return;
+    event.preventDefault();
+    action();
   }
   async function download() {
     const result = await archive.download();
@@ -57,15 +93,23 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   onMount(() => {
-    void archive.start(routeId());
+    void archive.start(routeTarget());
     const pop = () => {
       railOpen = false;
       passkeysOpen = false;
-      if ($archive.phase === "ready") void archive.select(routeId());
+      const target = routeTarget();
+      if ($archive.phase !== "ready") return;
+      if (target && typeof target === "object") {
+        void archive.searchOperations($archive.operations);
+        void archive.selectOperation(target.operationId);
+      } else {
+        void archive.search($archive.query, $archive.offset);
+        void archive.select(target);
+      }
     };
     // A restored browser history document must re-check its private session.
     const show = (event: PageTransitionEvent) => {
-      if (event.persisted) void archive.start(routeId());
+      if (event.persisted) void archive.start(routeTarget());
     };
     const hide = () => archive.clear();
     window.addEventListener("popstate", pop);
@@ -80,20 +124,34 @@
   });
 </script>
 
-<a class="skip-link" href="#capture-main">Skip to capture</a>
+<a class="skip-link" href="#capture-main">Skip to content</a>
 <header class="app-header">
   <a
     class="brand"
     href="/"
-    onclick={(event) => {
-      if ($archive.phase === "ready" && !event.metaKey && !event.ctrlKey) {
-        event.preventDefault();
-        navigate(null);
-      }
-    }}
+    onclick={(event) => follow(event, () => navigate(null))}
     ><span>June</span><span class="brand-divider" aria-hidden="true">/</span
     ><span>Debug</span></a
   >
+  {#if $archive.phase === "ready"}
+    <nav class="archive-navigation" aria-label="Debug archive pages">
+      <a
+        href="/"
+        aria-current={!operationsPage && !passkeysOpen ? "page" : undefined}
+        onclick={(event) => follow(event, () => navigate(null))}>Captures</a
+      >
+      <a
+        href={$archive.operations.selectedId
+          ? `/operations?id=${encodeURIComponent($archive.operations.selectedId)}`
+          : "/operations"}
+        aria-current={operationsPage && !passkeysOpen ? "page" : undefined}
+        onclick={(event) =>
+          follow(event, () =>
+            navigateOperation($archive.operations.selectedId),
+          )}>Operations</a
+      >
+    </nav>
+  {/if}
   <div class="header-actions">
     <span
       class="private-indicator"
@@ -127,16 +185,19 @@
       error={$archive.loginError}
       notice={$archive.notice}
       signoutError={$archive.actionError}
-      onlogin={(token) => archive.login(token, routeId())}
-      onpasskey={() => archive.loginWithPasskey(routeId())}
+      onlogin={(token) => archive.login(token, routeTarget())}
+      onpasskey={() => archive.loginWithPasskey(routeTarget())}
       onlogout={() => archive.logout()}
     />
   </main>
 {:else if $archive.phase === "error"}
   <main id="capture-main" class="empty-state">
     <h1>Archive connection unavailable</h1>
-    <p>Your session could not be checked. No captured data has been loaded.</p>
-    <Button variant="outline" onclick={() => archive.start(routeId())}
+    <p>
+      Your session could not be checked. No private archive data has been
+      loaded.
+    </p>
+    <Button variant="outline" onclick={() => archive.start(routeTarget())}
       >Retry connection</Button
     >
   </main>
@@ -148,6 +209,33 @@
       onremove={archive.removePasskey}
       onrefresh={archive.loadPasskeys}
       onback={() => (passkeysOpen = false)}
+    />
+  </main>
+{:else if operationsPage}
+  <main id="capture-main" class="operations-main">
+    <div class="workspace-toolbar">
+      <span>Independent private archive</span><label class="timezone-control"
+        >Times<select aria-label="Timestamp timezone" bind:value={zone}
+          ><option value="local">Local · {localZone}</option><option value="utc"
+            >UTC</option
+          ></select
+        ></label
+      >
+    </div>
+    <OperationsView
+      state={$archive.operations}
+      {utc}
+      onsearch={archive.searchOperations}
+      onselect={navigateOperation}
+      onevents={(offset) =>
+        archive.selectOperation($archive.operations.selectedId, offset)}
+      onrefresh={() => {
+        void archive.searchOperations($archive.operations);
+        void archive.selectOperation(
+          $archive.operations.selectedId,
+          $archive.operations.eventOffset,
+        );
+      }}
     />
   </main>
 {:else}

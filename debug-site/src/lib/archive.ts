@@ -7,8 +7,29 @@ import { writable } from "svelte/store";
 import type {
   DebugSnapshot,
   DiagnosticIndex,
+  OperationDetail,
+  OperationEvent,
+  OperationIndex,
   PasskeySummary,
 } from "./types.js";
+
+export type ArchiveDestination = string | null | { operationId: string | null };
+export interface OperationFilters {
+  query: string;
+  source: OperationEvent["source"] | "";
+  failureKey: string;
+  offset: number;
+}
+export interface OperationsState extends OperationFilters {
+  index: OperationIndex | null;
+  detail: OperationDetail | null;
+  selectedId: string | null;
+  eventOffset: number;
+  indexBusy: boolean;
+  detailBusy: boolean;
+  indexError: boolean;
+  detailError: "missing" | "failed" | null;
+}
 
 export interface ArchiveState {
   phase: "checking" | "login" | "ready" | "error";
@@ -30,6 +51,7 @@ export interface ArchiveState {
   notice: string;
   loginError: string;
   actionError: string;
+  operations: OperationsState;
 }
 
 const initial = (): ArchiveState => ({
@@ -52,6 +74,20 @@ const initial = (): ArchiveState => ({
   notice: "",
   loginError: "",
   actionError: "",
+  operations: {
+    index: null,
+    detail: null,
+    selectedId: null,
+    query: "",
+    source: "",
+    failureKey: "",
+    offset: 0,
+    eventOffset: 0,
+    indexBusy: false,
+    detailBusy: false,
+    indexError: false,
+    detailError: null,
+  },
 });
 
 class HttpError extends Error {
@@ -90,9 +126,14 @@ export function createArchive(
   let epoch = 0;
   let indexSequence = 0;
   let captureSequence = 0;
+  let operationsSequence = 0;
+  let operationSequence = 0;
   function patch(update: Partial<ArchiveState>) {
     state = { ...state, ...update };
     store.set(state);
+  }
+  function patchOperations(update: Partial<OperationsState>) {
+    patch({ operations: { ...state.operations, ...update } });
   }
   function clear(phase: ArchiveState["phase"], notice = "") {
     epoch++;
@@ -199,11 +240,89 @@ export function createArchive(
         });
     }
   }
-  async function enter(id: string | null) {
-    patch({ phase: "ready", loginBusy: false, loginError: "", notice: "" });
-    await Promise.all([search(""), select(id)]);
+  async function searchOperations({
+    query = "",
+    source = "",
+    failureKey = "",
+    offset = 0,
+  }: Partial<OperationFilters> = {}) {
+    const generation = epoch;
+    const sequence = ++operationsSequence;
+    patchOperations({
+      query,
+      source,
+      failureKey,
+      offset,
+      indexBusy: true,
+      indexError: false,
+      index: null,
+    });
+    const params = new URLSearchParams({ q: query });
+    if (source) params.set("source", source);
+    if (failureKey) params.set("failureKey", failureKey);
+    params.set("offset", String(offset));
+    params.set("limit", "50");
+    try {
+      const index = (await (
+        await request(`/api/operations?${params}`, generation)
+      ).json()) as OperationIndex;
+      if (!Array.isArray(index.items) || !Number.isSafeInteger(index.total))
+        throw new HttpError(0);
+      if (generation === epoch && sequence === operationsSequence)
+        patchOperations({ index, indexBusy: false });
+    } catch {
+      if (generation === epoch && sequence === operationsSequence)
+        patchOperations({ indexError: true, indexBusy: false });
+    }
   }
-  async function start(id: string | null) {
+  async function selectOperation(id: string | null, offset = 0) {
+    const generation = epoch;
+    const sequence = ++operationSequence;
+    patchOperations({
+      selectedId: id,
+      detail: null,
+      eventOffset: offset,
+      detailBusy: id !== null,
+      detailError: null,
+    });
+    if (id === null) return;
+    try {
+      const detail = (await (
+        await request(
+          `/api/operations/${encodeURIComponent(id)}?offset=${offset}`,
+          generation,
+        )
+      ).json()) as OperationDetail;
+      if (
+        detail.operation?.latest.operationId !== id ||
+        !Array.isArray(detail.events) ||
+        !Array.isArray(detail.related) ||
+        !Number.isSafeInteger(detail.totalEvents)
+      )
+        throw new HttpError(0);
+      if (generation === epoch && sequence === operationSequence)
+        patchOperations({ detail, detailBusy: false });
+    } catch (error) {
+      if (generation === epoch && sequence === operationSequence)
+        patchOperations({
+          detailError:
+            error instanceof HttpError && error.status === 404
+              ? "missing"
+              : "failed",
+          detailBusy: false,
+        });
+    }
+  }
+  async function enter(destination: ArchiveDestination) {
+    patch({ phase: "ready", loginBusy: false, loginError: "", notice: "" });
+    if (destination && typeof destination === "object")
+      await Promise.all([
+        searchOperations(),
+        selectOperation(destination.operationId),
+      ]);
+    else await Promise.all([search(""), select(destination)]);
+  }
+  async function start(destination: ArchiveDestination) {
     clear("checking");
     const generation = epoch;
     try {
@@ -211,13 +330,13 @@ export function createArchive(
         await request("/api/session", generation)
       ).json()) as { authenticated: boolean };
       if (generation !== epoch) return;
-      if (session.authenticated === true) await enter(id);
+      if (session.authenticated === true) await enter(destination);
       else clear("login");
     } catch {
       if (generation === epoch) patch({ phase: "error" });
     }
   }
-  async function login(token: string, id: string | null) {
+  async function login(token: string, destination: ArchiveDestination) {
     clear("login");
     const generation = epoch;
     patch({ loginBusy: true });
@@ -227,7 +346,7 @@ export function createArchive(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),
       });
-      if (generation === epoch) await enter(id);
+      if (generation === epoch) await enter(destination);
     } catch (error) {
       // An unauthorized login intentionally clears the epoch in request().
       if (
@@ -260,7 +379,8 @@ export function createArchive(
       if (generation === epoch)
         patch({
           loginBusy: false,
-          notice: "Signed out. Captured data has been cleared from this page.",
+          notice:
+            "Signed out. Private archive data has been cleared from this page.",
         });
     } catch (error) {
       if (error instanceof HttpError && error.status === 401) return;
@@ -269,11 +389,11 @@ export function createArchive(
           loginBusy: false,
           notice: "",
           actionError:
-            "Captured data is cleared, but sign-out could not be confirmed. Retry sign out.",
+            "Private archive data is cleared, but sign-out could not be confirmed. Retry sign out.",
         });
     }
   }
-  async function loginWithPasskey(id: string | null) {
+  async function loginWithPasskey(destination: ArchiveDestination) {
     clear("login");
     const generation = epoch;
     patch({ loginBusy: true });
@@ -292,7 +412,7 @@ export function createArchive(
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(response),
       });
-      if (generation === epoch) await enter(id);
+      if (generation === epoch) await enter(destination);
     } catch (error) {
       if (generation === epoch)
         patch({ loginBusy: false, loginError: passkeyError(error) });
@@ -397,6 +517,8 @@ export function createArchive(
     start,
     select,
     search,
+    searchOperations,
+    selectOperation,
     login,
     loginWithPasskey,
     loadPasskeys,

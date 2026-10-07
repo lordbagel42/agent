@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { serve } from "@hono/node-server";
+import type { OperationEvent } from "../src/diagnostics/operations.js";
 import { createDebugSite } from "../src/diagnostics/server.js";
 import { DiagnosticStore } from "../src/diagnostics/store.js";
 import type { DebugSnapshot } from "../src/runtime/session-controls.js";
@@ -9,7 +10,7 @@ import type { DebugSnapshot } from "../src/runtime/session-controls.js";
 // Synthetic-only preview. Never reads June's config, secrets or runtime data.
 const directory = mkdtempSync(join(tmpdir(), "june-debug-preview-"));
 const store = new DiagnosticStore(join(directory, "archive.sqlite"));
-const port = 3092;
+const port = Number(process.env.PORT ?? 3092);
 const origin =
   process.env.JUNE_DEBUG_PREVIEW_ORIGIN ?? `http://127.0.0.1:${port}`;
 const capturedAt = "2026-10-04T16:42:08.000Z";
@@ -187,6 +188,195 @@ for (let index = 1; index <= 52; index++)
             ],
           },
   });
+
+// Fixed synthetic metadata, including failures that remain matchable after
+// reconciliation. These fixtures do not launch Amp or contact any live service.
+const operationTime = Date.parse("2026-10-05T16:00:00.000Z");
+const currentThread = "T-10000000-0000-4000-8000-000000000001";
+const pastThread = "T-10000000-0000-4000-8000-000000000002";
+const revision = "a".repeat(40);
+const targetRevision = "b".repeat(40);
+function putOperation(
+  operationId: string,
+  sequence: number,
+  value: Omit<OperationEvent, "id" | "operationId" | "sequence">,
+) {
+  store.putOperation({
+    id: `${operationId}:${sequence}`,
+    operationId,
+    sequence,
+    ...value,
+  });
+}
+putOperation("recovery:synthetic-current", 1, {
+  source: "recovery",
+  observedAt: operationTime,
+  occurredAt: operationTime - 5000,
+  status: "pending",
+  failure: true,
+  phase: "readiness",
+  reason: "health_failed",
+  revision: targetRevision,
+  relatedOperationId: "deployment:synthetic-current",
+});
+putOperation("recovery:synthetic-current", 2, {
+  source: "recovery",
+  observedAt: operationTime + 120000,
+  occurredAt: operationTime + 119000,
+  status: "claimed",
+  failure: false,
+  phase: "readiness",
+  reason: "recovery_claimed",
+  threadId: currentThread,
+  revision: targetRevision,
+  attempt: 3,
+  relatedOperationId: "deployment:synthetic-current",
+});
+const pastTime = operationTime - 86400000;
+putOperation("recovery:synthetic-reconciled", 1, {
+  source: "recovery",
+  observedAt: pastTime,
+  occurredAt: null,
+  status: "pending",
+  failure: true,
+  phase: "readiness",
+  reason: "health_failed",
+  revision,
+});
+putOperation("recovery:synthetic-reconciled", 2, {
+  source: "recovery",
+  observedAt: pastTime + 60000,
+  occurredAt: pastTime + 59000,
+  status: "running",
+  failure: false,
+  phase: "readiness",
+  threadId: pastThread,
+  revision,
+});
+putOperation("recovery:synthetic-reconciled", 3, {
+  source: "recovery",
+  observedAt: pastTime + 600000,
+  occurredAt: pastTime + 599000,
+  status: "completed",
+  failure: false,
+  phase: "readiness",
+  threadId: pastThread,
+  revision,
+});
+putOperation("recovery:synthetic-reconciled", 4, {
+  source: "recovery",
+  observedAt: pastTime + 900000,
+  occurredAt: pastTime + 899000,
+  status: "reconciled",
+  failure: false,
+  phase: "readiness",
+  reason: "readiness_confirmed",
+  threadId: pastThread,
+  revision,
+  snapshotId: snapshot.id,
+});
+putOperation("recovery:synthetic-different-phase", 1, {
+  source: "recovery",
+  observedAt: pastTime - 60000,
+  occurredAt: null,
+  status: "failed",
+  failure: true,
+  phase: "prepare",
+  reason: "health_failed",
+  revision,
+});
+putOperation("deployment:synthetic-current", 1, {
+  source: "deployment",
+  observedAt: operationTime - 1000,
+  occurredAt: operationTime - 5000,
+  status: "blocked",
+  failure: true,
+  phase: "readiness",
+  reason: "health_failed",
+  revision: targetRevision,
+  attempt: 3,
+  retryAt: operationTime + 600000,
+  relatedOperationId: "recovery:synthetic-current",
+});
+putOperation("debugshare:synthetic-completed", 1, {
+  source: "debugshare",
+  observedAt: operationTime - 600000,
+  occurredAt: operationTime - 601000,
+  status: "completed",
+  failure: false,
+  phase: "investigation",
+  snapshotId: snapshot.id,
+  threadId: "T-10000000-0000-4000-8000-000000000003",
+});
+putOperation("amp-task:synthetic-queued", 1, {
+  source: "amp-task",
+  observedAt: operationTime - 300000,
+  occurredAt: operationTime - 301000,
+  status: "queued",
+  failure: false,
+  phase: "dispatch",
+});
+putOperation("coding:synthetic-unknown", 1, {
+  source: "coding",
+  observedAt: operationTime - 400000,
+  occurredAt: null,
+  status: "unknown",
+  failure: true,
+  phase: "execution",
+  reason: "outcome_unknown",
+});
+// More than one index page and more than the ten-related-operation cap. The
+// readiness incident above still has exactly two matching operations.
+for (let index = 1; index <= 52; index++) {
+  const id = `recovery:synthetic-dispatch-${String(index).padStart(2, "0")}`;
+  const at = pastTime - index * 3600000;
+  putOperation(id, 1, {
+    source: "recovery",
+    observedAt: at,
+    occurredAt: null,
+    status: "pending",
+    failure: true,
+    phase: "dispatch",
+    reason: "launch_failed",
+  });
+  putOperation(id, 2, {
+    source: "recovery",
+    observedAt: at + 60000,
+    occurredAt: at + 59000,
+    status: "reconciled",
+    failure: false,
+    phase: "dispatch",
+    reason: "receipt_reconciled",
+    threadId: `T-20000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+  });
+}
+// A stale controller with enough immutable observations to exercise timeline
+// pagination. No UI health signal is derived from its historical status.
+for (let sequence = 1; sequence <= 103; sequence++)
+  putOperation("controller:synthetic-preview", sequence, {
+    source: "controller",
+    observedAt: operationTime - (103 - sequence) * 1000,
+    occurredAt: operationTime - (103 - sequence) * 1000 - 100,
+    status: "blocked",
+    failure: false,
+    controller: {
+      activeRevision: revision,
+      observedRevision: targetRevision,
+      targetRevision,
+      controllerRevision: "c".repeat(40),
+      blocked: true,
+      operatorHold: true,
+      phase: "readiness",
+      recoveryIncident: "recovery:synthetic-current",
+      recoveryThreadId: currentThread,
+      recoveryOwner: currentThread,
+      retryAttempts: 3,
+      retryAt: operationTime + 600000,
+      queuedRevisions: [targetRevision, "d".repeat(40)],
+      omittedQueueCount: 0,
+    },
+  });
+
 const app = createDebugSite({
   origin,
   store,
@@ -195,7 +385,23 @@ const app = createDebugSite({
   viewerToken: "june-debug-synthetic-preview-viewer",
   ingestToken: "june-debug-synthetic-preview-uploader",
 });
-const server = serve({ fetch: app.fetch, hostname: "0.0.0.0", port });
+const server = serve({
+  fetch: async (request) => {
+    const response = await app.fetch(request);
+    if (!response.headers.get("Content-Type")?.startsWith("text/html"))
+      return response;
+    const html = (await response.text()).replace(
+      "<body>",
+      '<body><div class="synthetic-preview" role="note">Synthetic preview · All captures and operations are fixtures. No live June data or services are connected.</div>',
+    );
+    return new Response(html, {
+      status: response.status,
+      headers: response.headers,
+    });
+  },
+  hostname: "0.0.0.0",
+  port,
+});
 const stop = () =>
   server.close(() => {
     store.close();
@@ -204,4 +410,4 @@ const stop = () =>
   });
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
-console.info("Synthetic June Debug preview listening on port 3092");
+console.info(`Synthetic June Debug preview listening on port ${port}`);

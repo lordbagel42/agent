@@ -504,6 +504,16 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
       "PINGMODEL first invokes the configured model",
     );
     expect(request.system).toContain('inspection:"debug-shares"');
+    expect(request.system).toContain('inspection:"debug-operations"');
+    expect(request.system).toContain('inspection:"debug-site-deployment"');
+    expect(request.system).toContain(
+      "Overview, Captures, Deployments, Errors and Amp",
+    );
+    expect(request.system).toContain("no new inspection or repair grant");
+    expect(request.system).toContain(
+      "same retained signature is not proof of the same root cause",
+    );
+    expect(request.system).toContain("operationsDatabase");
     expect(request.system).toContain("separately installed DEBUGSHARE service");
     expect(request.system).toContain(
       "Independent DEBUGSHARE investigators and automatic deployment-recovery agents use Ultra reasoning (--mode ultra)",

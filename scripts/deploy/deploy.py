@@ -9,6 +9,7 @@ import base64
 import fcntl
 import gzip
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -32,7 +33,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import ClassVar
@@ -146,6 +147,35 @@ def atomic_json(path, value, mode=0o600, gid=None):
             temporary.unlink(missing_ok=True)
 
 
+def operations_reporter(config):
+    if config is None:
+        return None
+    try:
+        # Installed siblings are not on sys.path under python3 -I. Optional
+        # reporting must also tolerate an incomplete/older source installation.
+        spec = importlib.util.spec_from_file_location(
+            "operations", Path(__file__).with_name("operations.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        reporter = module.Reporter(config)
+        reporter.start()
+        return reporter
+    except Exception:  # noqa: BLE001 - configuration/path/token details stay private
+        with suppress(OSError):
+            print("operations_disabled: coverage_incomplete", flush=True)
+        return None
+
+
+def report_operations(reporter, method, *args, **kwargs):
+    if reporter is not None:
+        try:
+            getattr(reporter, method)(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - reporting can never enter recovery/action policy
+            with suppress(OSError):
+                print("operations_local_record_failed: coverage_incomplete", flush=True)
+
+
 class Store:
     def __init__(
         self,
@@ -160,7 +190,9 @@ class Store:
         slack_responder_feed=False,
         publish_feed=True,
         existing_only=False,
+        reporter=None,
     ):
+        self.reporter = reporter
         self.feed, self.feed_gid = feed, feed_gid
         self.staging_recovery_feed = staging_recovery_feed
         self.repository_metadata_feed = repository_metadata_feed
@@ -201,11 +233,17 @@ class Store:
                 [("active", revision(initial)), ("observed", initial)],
             )
         sync_directory(root)
+        self.report("backfill", self)
+        self.report("controller", self)
         if publish_feed:
             self.publish()
 
     def close(self):
+        self.report("close")
         self.db.close()
+
+    def report(self, method, *args, **kwargs):
+        report_operations(self.reporter, method, *args, **kwargs)
 
     def get(self, key):
         row = self.db.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
@@ -214,6 +252,9 @@ class Store:
     def set(self, key, value):
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO state VALUES (?,?)", (key, value))
+        if key == "recovery" and value:
+            self.report("recovery", value)
+        self.report("controller", self)
 
     def publish_responder(self):
         if self.slack_responder_feed:
@@ -273,6 +314,8 @@ class Store:
                     ("cutover", json.dumps(record)),
                 ],
             )
+        self.report("checkpoint", commit, record)
+        self.report("controller", self)
         # Fixed fields only: no request bodies, credentials or process output.
         print(
             json.dumps(
@@ -292,6 +335,7 @@ class Store:
             self.db.execute(
                 "UPDATE state SET value='' WHERE key IN ('intent','cutover')"
             )
+        self.report("controller", self)
 
     def obsolete(self, keep):
         recent = {
@@ -310,6 +354,7 @@ class Store:
 
     def event(self, commit, status, reason=None, committed_at=None):
         now = time.time_ns() // 1_000_000
+        recorded = None
         previous = self.db.execute(
             "SELECT status,reason FROM events WHERE revision=? ORDER BY sequence DESC LIMIT 1",
             (commit,),
@@ -337,7 +382,7 @@ class Store:
                 or not previous
                 or tuple(previous) != (status, reason)
             ):
-                self.db.execute(
+                inserted = self.db.execute(
                     "INSERT INTO events(revision,status,at,committedAt,reason,elapsedMs) VALUES (?,?,?,?,?,?)",
                     (
                         revision(commit),
@@ -348,6 +393,16 @@ class Store:
                         max(0, now - received[0]) if received else None,
                     ),
                 )
+                recorded = {
+                    "sequence": inserted.lastrowid,
+                    "revision": commit,
+                    "status": status,
+                    "at": now,
+                    "reason": reason,
+                }
+        if recorded:
+            self.report("deployment", recorded)
+        self.report("controller", self)
         self.publish()
 
     def block(self, commit, reason):
@@ -463,6 +518,9 @@ class Deployer:
             self.host.intake(commit, paused=False)
         self.store.event(commit, "reconciled")
         if incident:
+            # Copy the verified ownership receipt before clearing live state.
+            # The operation journal is permanent; its failure cannot block clear.
+            self.store.report("recovery", incident, status="reconciled")
             self.store.set("recovery", "")
             self.store.publish()
 
@@ -575,6 +633,7 @@ class Deployer:
 
     def tick(self):
         self.repository_observation = None
+        self.store.report("controller", self.store)
         try:
             if self.recovery:
                 self.recovery.flush()
@@ -612,6 +671,7 @@ class Deployer:
                 self.statuses.flush()
             if self.recovery:
                 self.recovery.flush()
+            self.store.report("controller", self.store)
 
     def deploy(self):
         h, s = self.host, self.store
@@ -889,6 +949,9 @@ class Recovery:
 
     def flush(self):
         s = self.store
+        # Also observe transitions written by the independent CAS dispatcher.
+        # Old/current state has no trustworthy transition timestamp.
+        s.report("current_recovery", s)
         if s.get("operatorHold"):
             return
         if not s.get("recoveryInitialized"):
@@ -1019,7 +1082,11 @@ def amp_job_argv(command, directory, title, prompt, *, mode="high"):
 
 
 def dispatch_recovery(
-    config, number, database=Path("/var/lib/june-deploy/records/deploy.sqlite")
+    config,
+    number,
+    database=Path("/var/lib/june-deploy/records/deploy.sqlite"),
+    *,
+    reporter=None,
 ):
     # This worker must not take deploy.lock: the observing poller holds it.
     # Only the pending -> dispatching CAS authorizes an external creation.
@@ -1042,6 +1109,14 @@ def dispatch_recovery(
         or ssh[0] != "/usr/bin/ssh"
     ):
         raise ValueError("invalid_recovery_ssh")
+    owns_reporter = reporter is None
+    reporter = (
+        reporter
+        if reporter is not None
+        else operations_reporter(config.get("operations"))
+    )
+    launched = None
+    acknowledged = False
     db = sqlite3.connect(database)
     try:
         with db:
@@ -1058,6 +1133,10 @@ def dispatch_recovery(
             incident["phase"] = "dispatching"
             raw = json.dumps(incident)
             db.execute("UPDATE state SET value=? WHERE key='recovery'", (raw,))
+        launched = incident
+        # Local-only write AFTER committing the launch CAS. No transaction or
+        # deployment lock is ever held waiting for the operations collector.
+        report_operations(reporter, "recovery", incident)
         prompt = recovery_prompt(number, incident["revision"], incident["reason"])
         argv = amp_job_argv(
             command,
@@ -1094,15 +1173,22 @@ def dispatch_recovery(
                 ):
                     incident.update(phase="spawned", thread=thread)
                     with db:
-                        db.execute(
+                        saved = db.execute(
                             "UPDATE state SET value=? WHERE key='recovery' AND value=?",
                             (json.dumps(incident), raw),
                         )
+                    if saved.rowcount:
+                        acknowledged = True
+                        report_operations(reporter, "recovery", incident)
                     # Continue draining without overwriting a later claim.
             process.wait()
         # A missing receipt/failed command is ambiguous, not permission to retry.
     finally:
         db.close()
+        if launched and not acknowledged:
+            report_operations(reporter, "recovery", launched, status="unknown")
+        if owns_reporter:
+            report_operations(reporter, "close")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -3151,6 +3237,7 @@ def main():
             slack_responder_feed=config.get("slackResponderFeed") is True,
             publish_feed=not state_only,
             existing_only=args.report_only,
+            reporter=operations_reporter(config.get("operations")),
         )
         recovery = Recovery(store)
         if args.controller_failed:

@@ -25,6 +25,8 @@ import {
 import { slackHistorySchema } from "../core/slack-history.js";
 import { socialActionSchema } from "../core/social.js";
 import { WEB_EMBED_HELP, webEmbedSchema } from "../core/web-embed.js";
+import { operationInspectionSchema } from "../diagnostics/operation-reader.js";
+import { operationSourceSchema } from "../diagnostics/operations.js";
 import {
   ENVIRONMENT_HELP,
   environmentCommandSchema,
@@ -279,12 +281,15 @@ const companionReplySchema = z.strictObject({
         "operations",
         "debug-shares",
         "sandboxes",
+        "debug-operations",
+        "debug-site-deployment",
         "mcp-connections",
         "personality",
         "backup",
         "mcp-enrollment",
         "capacity",
       ]),
+      operationInspectionSchema,
       z.strictObject({
         target: z.literal("imports"),
         selection: z.string().min(1).nullable(),
@@ -1291,6 +1296,8 @@ function legacyReplyJsonSchema(
                     "operations",
                     "debug-shares",
                     "sandboxes",
+                    "debug-operations",
+                    "debug-site-deployment",
                     "mcp-connections",
                     "personality",
                     "backup",
@@ -1298,6 +1305,57 @@ function legacyReplyJsonSchema(
                     "capacity",
                     null,
                   ],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    target: { type: "string", enum: ["debug-operations"] },
+                    query: { type: ["string", "null"], maxLength: 512 },
+                    operationId: {
+                      type: ["string", "null"],
+                      description:
+                        "Exact operation ID for an event timeline; null lists operations.",
+                    },
+                    source: {
+                      type: ["string", "null"],
+                      enum: [...operationSourceSchema.options, null],
+                    },
+                    sources: {
+                      type: ["array", "null"],
+                      items: {
+                        type: "string",
+                        enum: operationSourceSchema.options,
+                      },
+                      minItems: 1,
+                      maxItems: 6,
+                    },
+                    failuresOnly: {
+                      type: ["boolean", "null"],
+                      description:
+                        "Any retained failure, even if later reconciled; applied before counts and pagination.",
+                    },
+                    failureKey: { type: ["string", "null"], maxLength: 250 },
+                    offset: { type: ["integer", "null"], minimum: 0 },
+                    limit: {
+                      type: ["integer", "null"],
+                      minimum: 1,
+                      maximum: 10,
+                    },
+                  },
+                  required: [
+                    "target",
+                    "query",
+                    "operationId",
+                    "source",
+                    "sources",
+                    "failuresOnly",
+                    "failureKey",
+                    "offset",
+                    "limit",
+                  ],
+                  description:
+                    "Owner-private configured archive metadata, not the local operations marker inspection. Complete bounded record pages: start offset at 0, follow nextOffset, use relatedQuery for retained matching failures. Small limits reduce page size. Summary failure IDs/sequences link to full operation timelines. source and sources intersect. No task text, results, raw logs, live actions or repair authority.",
                 },
                 {
                   type: "object",
@@ -2527,6 +2585,23 @@ export function parseReply(
   if (isJsonObject(normalized.telemetry)) {
     for (const key of ["traceId", "name", "status", "since", "until", "before"])
       if (normalized.telemetry[key] === null) delete normalized.telemetry[key];
+  }
+  if (
+    isJsonObject(normalized.inspection) &&
+    normalized.inspection.target === "debug-operations"
+  ) {
+    for (const key of [
+      "query",
+      "operationId",
+      "source",
+      "sources",
+      "failuresOnly",
+      "failureKey",
+      "offset",
+      "limit",
+    ])
+      if (normalized.inspection[key] === null)
+        delete normalized.inspection[key];
   }
   const parsed = companionReplySchema.safeParse(normalized);
   if (!parsed.success) {

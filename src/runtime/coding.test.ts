@@ -16,6 +16,10 @@ import type {
   SendResult,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
+import {
+  type OperationObservation,
+  validateOperation,
+} from "../diagnostics/operations.js";
 import { createHttpApp } from "../http/app.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
@@ -234,10 +238,168 @@ async function fixture(
 }
 
 describe("separate coding supervisor", () => {
+  it.for([
+    "amp",
+    "codex",
+    "reporting-failure",
+    "unknown",
+    "cancel-during-receipt",
+  ] as const)(
+    "records content-free durable local Amp observations (%s) without changing launch or replay",
+    async (mode, t) => {
+      const observations: OperationObservation[] = [];
+      const sentinel = "SENTINEL-private-goal-report-error";
+      const threadId = "T-00000000-0000-0000-0000-000000000123";
+      const saving = Promise.withResolvers<void>();
+      const allowSave = Promise.withResolvers<void>();
+      const receiptSettled = Promise.withResolvers<void>();
+      let launches = 0;
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      t.onTestFinished(() => {
+        persistence.beforeSave = undefined;
+        allowSave.resolve();
+        warning.mockRestore();
+      });
+      const { registry, coding, repositoryRoot } = await fixture(t, {
+        async run(input) {
+          launches++;
+          if (mode === "unknown") throw new Error(sentinel);
+          persistence.beforeSave = async () => {
+            persistence.beforeSave = undefined;
+            saving.resolve();
+            await allowSave.promise;
+          };
+          try {
+            await input.onThread(threadId);
+          } finally {
+            receiptSettled.resolve();
+          }
+          return { threadId, report: sentinel };
+        },
+      });
+      coding.runtimeKind = mode === "codex" ? "codex" : "amp";
+      coding.operations = (observation) => {
+        observations.push(structuredClone(observation));
+        if (mode === "reporting-failure") throw new Error(sentinel);
+      };
+      const { client } = await setupTest(t, registry);
+      const id = "private-proposal-identity";
+      const job = client.job.getOrCreate([owner.id, id]);
+      await job.send("commands", {
+        type: "propose",
+        proposal: {
+          id,
+          source,
+          workspace: "june",
+          goal: sentinel,
+          runtimeId: coding.runtimeId,
+        },
+      });
+      await job.send("commands", { type: "approve", commandId: "approval" });
+      if (mode !== "unknown") {
+        await saving.promise;
+        // The saved thread is not reported while its durable save is pending.
+        expect(observations.some((event) => event.threadId)).toBe(false);
+        if (mode === "cancel-during-receipt") {
+          await job.cancel();
+          await expect
+            .poll(() => observations.at(-1)?.status, { timeout: 15_000 })
+            .toBe("unknown");
+        }
+        allowSave.resolve();
+        await receiptSettled.promise;
+      }
+      await expect
+        .poll(async () => (await job.snapshot()).status, { timeout: 15_000 })
+        .toBe(
+          mode === "unknown" || mode === "cancel-during-receipt"
+            ? "needs_review"
+            : "completed",
+        );
+      await job.send("commands", { type: "approve", commandId: "approval" });
+      await job.send("commands", {
+        type: "approve",
+        commandId: "after-duplicate",
+      });
+      await expect
+        .poll(
+          async () =>
+            (await job.snapshot()).commandApprovals["after-duplicate"],
+          { timeout: 15_000 },
+        )
+        .toBeNull();
+      expect(launches).toBe(1);
+      expect((await job.snapshot()).attempts).toBe(1);
+      if (mode === "codex") {
+        expect(observations).toEqual([]);
+      } else {
+        expect(
+          observations.map((event) => [event.phase, event.status]),
+        ).toEqual(
+          mode === "unknown" || mode === "cancel-during-receipt"
+            ? [
+                ["local_intent", "preparing"],
+                ["local_dispatch", "dispatching"],
+                ["local_terminal", "unknown"],
+              ]
+            : [
+                ["local_intent", "preparing"],
+                ["local_dispatch", "dispatching"],
+                ["local_thread", "running"],
+                ["local_result", "running"],
+                ["local_verification", "completed"],
+                ["local_terminal", "completed"],
+              ],
+        );
+        expect(
+          new Set(observations.map((event) => event.operationId)).size,
+        ).toBe(1);
+        for (const event of observations) {
+          expect(event).toMatchObject({
+            source: "coding",
+            attempt: 1,
+            operationId: expect.stringMatching(/^coding:[a-f0-9]{64}$/),
+          });
+          expect(() =>
+            validateOperation({
+              ...event,
+              id: "fixture",
+              sequence: 0,
+              observedAt: 0,
+            }),
+          ).not.toThrow();
+        }
+        expect(observations.at(-1)).toMatchObject({
+          failure: mode === "unknown" || mode === "cancel-during-receipt",
+        });
+        if (mode === "unknown")
+          expect(observations.at(-1)).not.toHaveProperty("threadId");
+        else expect(observations.at(-1)?.threadId).toBe(threadId);
+      }
+      const serialized = JSON.stringify([observations, warning.mock.calls]);
+      for (const privateValue of [sentinel, repositoryRoot, id])
+        expect(serialized).not.toContain(privateValue);
+      await expect
+        .poll(
+          async () => {
+            const state = await client.conversation
+              .getOrCreate(["private", owner.id])
+              .snapshot();
+            return Object.values(state.events).some(
+              (record) => record.event.id === source.id && record.done,
+            );
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+    },
+  );
+
   it.for(["result", "ambiguous"] as const)(
     "remote Amp %s uses private approval, receipts and never resumes or verifies locally",
     async (outcome, t) => {
       let launches = 0;
+      const observations: OperationObservation[] = [];
       const local = vi.fn(async () => {
         throw new Error("Local runtime forbidden");
       });
@@ -263,6 +425,9 @@ describe("separate coding supervisor", () => {
           },
         },
       );
+      // Remote jobs remain observable even when the local runtime is not Amp.
+      coding.runtimeKind = "pi";
+      coding.operations = (observation) => observations.push(observation);
       const { client } = await setupTest(t, registry);
       const june = client.conversation.getOrCreate(["private", owner.id]);
       await june.send("inbox", { type: "event", event: source });
@@ -339,6 +504,43 @@ describe("separate coding supervisor", () => {
         .poll(async () => (await job.snapshot()).commandApprovals.resume)
         .toBeNull();
       expect(launches).toBe(1);
+      expect(observations.map((event) => [event.phase, event.status])).toEqual(
+        outcome === "result"
+          ? [
+              ["remote_dispatch", "dispatching"],
+              ["remote_thread", "running"],
+              ["remote_result", "completed"],
+            ]
+          : [
+              ["remote_dispatch", "dispatching"],
+              ["remote_terminal", "unknown"],
+            ],
+      );
+      expect(observations.at(-1)).toMatchObject({
+        failure: outcome === "ambiguous",
+        reason:
+          outcome === "result"
+            ? "report_returned_unverified"
+            : "execution_unknown",
+      });
+      if (outcome === "ambiguous")
+        expect(observations.at(-1)).not.toHaveProperty("threadId");
+      for (const event of observations)
+        expect(() =>
+          validateOperation({
+            ...event,
+            id: "fixture",
+            sequence: 0,
+            observedAt: 0,
+          }),
+        ).not.toThrow();
+      for (const privateValue of [
+        "Synthetic remote result",
+        "Lost SSH before receipt",
+        "/remote-only/june",
+        "Fix reaction handling",
+      ])
+        expect(JSON.stringify(observations)).not.toContain(privateValue);
       await expect
         .poll(() =>
           sent.some(
@@ -2102,12 +2304,14 @@ describe("separate coding supervisor", () => {
 
   it("reports occupied admission without disclosing or releasing another job's lease", async (t) => {
     let launches = 0;
-    const { registry, manager } = await fixture(t, {
+    const observations: OperationObservation[] = [];
+    const { registry, manager, coding } = await fixture(t, {
       async run() {
         launches++;
         return { threadId: "T-admitted", report: "Finished." };
       },
     });
+    coding.operations = (observation) => observations.push(observation);
     await manager.admit("private-other-job", 7);
     const { client } = await setupTest(t, registry);
     const job = client.job.getOrCreate(["raygen", "blocked-admission"]);
@@ -2155,11 +2359,38 @@ describe("separate coding supervisor", () => {
       confirmedStopped: true,
     });
     await expect
-      .poll(async () => (await job.snapshot()).status)
+      .poll(async () => (await job.snapshot()).status, { timeout: 15_000 })
       .toBe("completed");
     expect((await job.snapshot()).admissionReason).toBeUndefined();
     expect((await job.snapshot()).attempts).toBe(3);
     expect(launches).toBe(1);
+    await expect.poll(() => observations.at(-1)?.status).toBe("completed");
+    const terminals = observations.filter(
+      (event) => event.phase === "local_terminal",
+    );
+    expect(terminals.map((event) => [event.attempt, event.status])).toEqual([
+      [1, "blocked"],
+      [2, "blocked"],
+      [3, "completed"],
+    ]);
+    expect(new Set(terminals.map((event) => event.operationId)).size).toBe(3);
+    expect(terminals[0]?.reason).toBe("workspace_occupied");
+    expect(
+      observations.filter((event) => event.phase === "local_dispatch"),
+    ).toHaveLength(1);
+    await expect
+      .poll(
+        async () => {
+          const state = await client.conversation
+            .getOrCreate(["private", owner.id])
+            .snapshot();
+          return Object.values(state.events).some(
+            (record) => record.event.id === source.id && record.done,
+          );
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
   });
 
   it("rejects approvals and resumes under a different runtime binding without releasing admission", async (t) => {

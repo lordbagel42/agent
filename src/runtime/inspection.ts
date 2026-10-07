@@ -7,6 +7,11 @@ import {
 import type { Config } from "../config.js";
 import type { CompanionReply, MessageEvent } from "../core/contracts.js";
 import type { BitwardenCredentialResolver } from "../credentials/bitwarden.js";
+import {
+  type createOperationReader,
+  operationInspectionPage,
+  operationInspectionSchema,
+} from "../diagnostics/operation-reader.js";
 import type { ImportedMemoryExtraction } from "../imports/extraction.js";
 import type { HistoryImports } from "../imports/index.js";
 import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
@@ -421,6 +426,8 @@ export function createInspectionReader(deps: {
   operations?: () => Promise<OutstandingOperationSnapshot>;
   debugShares?: () => Promise<unknown>;
   sandboxes?: () => Promise<unknown>;
+  debugOperations?: ReturnType<typeof createOperationReader>;
+  debugSiteDeployment?: () => Promise<string>;
   curiosity?: (audience: string) => Promise<CuriosityProgress>;
   coding?: {
     enabled: boolean;
@@ -464,6 +471,24 @@ export function createInspectionReader(deps: {
     switch (target) {
       case "sandboxes":
         return `${heading}\n${JSON.stringify((await deps.sandboxes?.()) ?? { status: "unavailable" })}\nAllocations are not live usage. Activity is bounded to the current process lifetime. Disabled/unavailable does not establish absence of retained disks. No VM was started, stopped, executed or deleted.`;
+      case "debug-site-deployment":
+        return (
+          deps.debugSiteDeployment?.() ??
+          "Independent debug-site deployment inspection unavailable; configuration, loaded revision and updater activation are unknown."
+        );
+      case "debug-operations": {
+        if (!deps.debugOperations)
+          return `${heading}\nOperations archive reader unavailable. Configuration, reporting coverage and current state are unknown, not zero.`;
+        const { target: _target, ...filters } = operationInspectionSchema.parse(
+          typeof query === "object" ? query : { target },
+        );
+        const json = operationInspectionPage(
+          await deps.debugOperations(filters),
+          filters.offset,
+          filters.limit,
+        );
+        return `${heading}\n${json}\nComplete bounded record page. Continue with nextOffset as offset and unchanged filters; relatedQuery retrieves matching operations (including this one). Summaries link failure event IDs/sequences; inspect operationId for full events and controller payloads. Each page is a fresh observation; new arrivals may shift offsets, not rewrite history. Historical failure matches are not proof of the same root cause; completed Amp work is not verified recovery. Controller observations older than five minutes or ahead of your clock are stale/unknown. Queued or missing threads are not launches; pending recovery records fence competing repairs even without an owner. No task bodies, results or raw logs; no launch, retry, deployment or mutation was performed.`;
+      }
       case "debug-shares":
         return `${heading}\n${JSON.stringify((await deps.debugShares?.()) ?? { status: "unavailable" })}\nAt most ten private DEBUG/DEBUGSHARE receipts, including reports from other Slack surfaces. Saved means a DEBUG snapshot was stored without starting an investigation. Queued/running is not success; completed means the investigator returned, not that a fix was deployed. Resolved:true is an explicit verified-resolution attestation by the investigator or an authorized owner/operator, not an independent host verification. ResolutionNotification separately records the generic origin-thread notice's send outcome; owner one-on-one DMs are excluded. The host owns this notice; do not duplicate it. Unknown requires operator investigation, not automatic retry. Snapshot bodies are excluded; missing notification outcomes do not prove delivery. Optional website metadata is separate: pending means the host owns upload/retry, saved means the independent archive acknowledged it, rejected needs operator reconciliation. Its URL requires separate viewer sign-in and remains owner-private; absence does not prove the website is installed. Do not duplicate uploads, recapture to retry or infer current site health from a saved receipt. Anyone can submit a fresh plain DEBUGSHARE command, but these details remain owner-private; DEBUG and this inspection do not launch an investigation.`;
       case "capability-matrix":
@@ -723,7 +748,7 @@ export function createInspectionReader(deps: {
         const selections = Object.entries(deps.selections).filter(
           ([, coverage]) => coverage.audiences.includes(deps.audience),
         );
-        if (typeof query === "object") {
+        if (typeof query === "object" && query.target === "imports") {
           if (query.selection === null) {
             const { json, ...page } = jsonPage(
               JSON.stringify(selections.map(([id]) => id)),

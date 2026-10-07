@@ -16,6 +16,7 @@ import type {
   CodingRuntime,
   MessageEvent,
 } from "../core/contracts.js";
+import type { OperationObservation } from "../diagnostics/operations.js";
 import type { SkillChangeProposal } from "../reflection/domain.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import type { Lifecycle } from "./lifecycle.js";
@@ -44,6 +45,8 @@ export interface CodingDependencies {
   /** Missing managers fail closed, never fall back to the shared checkout. */
   isolation?: Record<string, ReturnType<typeof createWorktreeManager>>;
   appsWorkspace?: string;
+  /** Optional local-only journal append; never network or action authority. */
+  operations?: (observation: OperationObservation) => void;
 }
 
 /** Identity excludes workspace/evaluation attempts: retries cannot retarget a skill. */
@@ -108,6 +111,111 @@ export interface CodingState {
   /** Last attempt's admission denial, not a live queue position or grant. */
   admissionReason?: "workspace_occupied" | "admission_unknown";
 }
+
+type CodingOperationStatus =
+  | "preparing"
+  | "dispatching"
+  | "running"
+  | "completed"
+  | "unknown"
+  | "failed"
+  | "blocked"
+  | "needs_review";
+type CodingOperationPhase =
+  | "local_intent"
+  | "local_dispatch"
+  | "local_thread"
+  | "local_result"
+  | "local_verification"
+  | "local_terminal"
+  | "local_replay"
+  | "remote_dispatch"
+  | "remote_thread"
+  | "remote_result"
+  | "remote_terminal"
+  | "remote_replay";
+type CodingOperationReason =
+  | "attempt_claimed"
+  | "worktree_prepared"
+  | "thread_returned"
+  | "report_returned_unverified"
+  | "verification_passed"
+  | "verification_failed"
+  | "verification_unknown"
+  | "historical_verification"
+  | "artifact_unconfirmed"
+  | "verified_result"
+  | "verification_needs_review"
+  | "workspace_occupied"
+  | "admission_unknown"
+  | "execution_unknown"
+  | "release_unknown"
+  | "workflow_interrupted";
+
+function operationRecordFailed() {
+  try {
+    console.warn("coding_operation_record_failed");
+  } catch {
+    /* Fail-soft even if logging fails. */
+  }
+}
+
+/** Explicit metadata projection, after action-state persistence only. This
+ * separate journal can miss observations; it must never authorize a retry.
+ * A remote result is a returned report, NOT independent verification.
+ */
+function observeCoding(
+  coding: CodingDependencies,
+  state: CodingState,
+  phase: CodingOperationPhase,
+  status: CodingOperationStatus,
+  reason: CodingOperationReason,
+) {
+  try {
+    if (
+      !coding.operations ||
+      (!state.remoteAmp && coding.runtimeKind !== "amp") ||
+      !state.proposal ||
+      state.attempts < 1
+    )
+      return;
+    const observation: OperationObservation = {
+      operationId: `coding:${createHash("sha256")
+        .update(
+          JSON.stringify([
+            "coding-attempt-v1",
+            state.proposal.id,
+            state.attempts,
+          ]),
+        )
+        .digest("hex")}`,
+      source: "coding",
+      attempt: state.attempts,
+      occurredAt: Date.now(),
+      phase,
+      status,
+      reason,
+      failure:
+        status === "unknown" ||
+        status === "failed" ||
+        status === "blocked" ||
+        status === "needs_review",
+    };
+    // Omit invalid/legacy IDs, not the observation (especially unknown outcomes).
+    if (
+      state.threadId &&
+      /^T-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(state.threadId)
+    )
+      observation.threadId = state.threadId;
+    // The contract is synchronous; also contain an accidentally async rejection.
+    void Promise.resolve(coding.operations(observation)).catch(
+      operationRecordFailed,
+    );
+  } catch {
+    operationRecordFailed();
+  }
+}
+
 type Command =
   | { type: "propose"; proposal: JobProposal }
   | { type: "approve"; commandId: string }
@@ -485,6 +593,13 @@ export function createCodingActor(
                         ? missingSessionReport
                         : "The coding run was interrupted. Check its saved thread and process before resuming.";
                     await step.vars.persist();
+                    observeCoding(
+                      coding,
+                      step.state,
+                      step.state.remoteAmp ? "remote_replay" : "local_replay",
+                      "unknown",
+                      "workflow_interrupted",
+                    );
                   }
                   return;
                 }
@@ -505,6 +620,13 @@ export function createCodingActor(
                         step.state.attempts = approved;
                         step.state.status = "running";
                         await step.vars.persist();
+                        observeCoding(
+                          coding,
+                          step.state,
+                          "remote_dispatch",
+                          "dispatching",
+                          "attempt_claimed",
+                        );
                         const controller = new AbortController();
                         step.vars.controller = controller;
                         const remote = coding.remoteAmp;
@@ -543,6 +665,13 @@ export function createCodingActor(
                                     throw new Error("Remote receipt changed");
                                   step.state.threadId = threadId;
                                   await step.vars.persist();
+                                  observeCoding(
+                                    coding,
+                                    step.state,
+                                    "remote_thread",
+                                    "running",
+                                    "thread_returned",
+                                  );
                                 },
                               }),
                           );
@@ -565,6 +694,22 @@ export function createCodingActor(
                           delete step.vars.controller;
                         }
                         await step.vars.persist();
+                        if (step.state.status === "completed")
+                          observeCoding(
+                            coding,
+                            step.state,
+                            "remote_result",
+                            "completed",
+                            "report_returned_unverified",
+                          );
+                        else
+                          observeCoding(
+                            coding,
+                            step.state,
+                            "remote_terminal",
+                            "unknown",
+                            "execution_unknown",
+                          );
                         return;
                       }
                       const manager = coding.isolation?.[proposal.workspace];
@@ -575,6 +720,13 @@ export function createCodingActor(
                       delete step.state.appArtifact;
                       delete step.state.admissionReason;
                       await step.vars.persist();
+                      observeCoding(
+                        coding,
+                        step.state,
+                        "local_intent",
+                        "preparing",
+                        "attempt_claimed",
+                      );
                       const controller = new AbortController();
                       step.vars.controller = controller;
                       const signal = AbortSignal.any([
@@ -587,6 +739,8 @@ export function createCodingActor(
                       let launched = false;
                       let settled = false;
                       let acceptingThread = true;
+                      let terminalReason: CodingOperationReason =
+                        "execution_unknown";
                       let onAbort: () => void = () => {};
                       try {
                         // Do not launch an old approval in a shared checkout, nor silently
@@ -634,6 +788,13 @@ export function createCodingActor(
                           );
                         step.state.worktree = manifest;
                         await step.vars.persist();
+                        observeCoding(
+                          coding,
+                          step.state,
+                          "local_dispatch",
+                          "dispatching",
+                          "worktree_prepared",
+                        );
                         signal.throwIfAborted();
                         launched = true;
                         const runtime = coding.runtime;
@@ -657,6 +818,13 @@ export function createCodingActor(
                                   );
                                 step.state.threadId = threadId;
                                 await step.vars.persist();
+                                observeCoding(
+                                  coding,
+                                  step.state,
+                                  "local_thread",
+                                  "running",
+                                  "thread_returned",
+                                );
                               },
                             }),
                         );
@@ -688,6 +856,13 @@ export function createCodingActor(
                         step.state.threadId = result.threadId;
                         step.state.workerClaim = result.report;
                         await step.vars.persist();
+                        observeCoding(
+                          coding,
+                          step.state,
+                          "local_result",
+                          "running",
+                          "report_returned_unverified",
+                        );
                         const appArtifact = proposal.appId
                           ? await readAppArtifact(manifest.cwd, proposal.appId)
                           : undefined;
@@ -722,12 +897,19 @@ export function createCodingActor(
                           // Retain exact verified bytes, never mutable worker paths.
                           step.state.appArtifact = appArtifact;
                         }
+                        terminalReason =
+                          step.state.status === "completed"
+                            ? "verified_result"
+                            : "verification_needs_review";
                       } catch (error) {
                         step.state.status = "needs_review";
                         if (admissionAttempted && !admitted) {
                           const occupied =
                             error instanceof WorkspaceOccupiedError;
                           step.state.admissionReason = occupied
+                            ? "workspace_occupied"
+                            : "admission_unknown";
+                          terminalReason = occupied
                             ? "workspace_occupied"
                             : "admission_unknown";
                           step.state.report =
@@ -751,11 +933,51 @@ export function createCodingActor(
                             await manager.release(proposal.id, approved);
                           } catch {
                             step.state.status = "needs_review";
+                            terminalReason = "release_unknown";
                           }
                         }
                         delete step.vars.controller;
                       }
                       await step.vars.persist();
+                      const verification = step.state.verification;
+                      if (verification) {
+                        const verified =
+                          verification.status === "passed" &&
+                          verification.artifactMatches === true &&
+                          !verification.replayed;
+                        observeCoding(
+                          coding,
+                          step.state,
+                          "local_verification",
+                          verified
+                            ? "completed"
+                            : verification.status === "failed"
+                              ? "failed"
+                              : "needs_review",
+                          verification.replayed
+                            ? "historical_verification"
+                            : verification.status === "failed"
+                              ? "verification_failed"
+                              : verification.status !== "passed"
+                                ? "verification_unknown"
+                                : verified
+                                  ? "verification_passed"
+                                  : "artifact_unconfirmed",
+                        );
+                      }
+                      observeCoding(
+                        coding,
+                        step.state,
+                        "local_terminal",
+                        step.state.status === "completed"
+                          ? "completed"
+                          : terminalReason === "workspace_occupied"
+                            ? "blocked"
+                            : terminalReason === "verification_needs_review"
+                              ? "needs_review"
+                              : "unknown",
+                        terminalReason,
+                      );
                     } finally {
                       // Supervisor completion does not assert native or remote stoppage.
                       span.setAttribute("june.outcome", step.state.status);

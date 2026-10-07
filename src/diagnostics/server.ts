@@ -6,6 +6,13 @@ import { bodyLimit } from "hono/body-limit";
 import { createDebugAuth } from "./auth.js";
 import type { DebugSiteDeploymentStatus } from "./deployment.js";
 import {
+  MAX_OPERATION_BYTES,
+  OperationConflictError,
+  OperationValidationError,
+  operationQuerySchema,
+  validateOperation,
+} from "./operations.js";
+import {
   DiagnosticConflictError,
   type DiagnosticStore,
   DiagnosticValidationError,
@@ -21,6 +28,7 @@ export function createDebugSite(options: {
   origin: string;
   viewerToken: string;
   ingestToken: string;
+  operationsToken?: string;
   store: DiagnosticStore;
   assets: string;
   revision?: string;
@@ -28,6 +36,11 @@ export function createDebugSite(options: {
   now?: () => number;
 }) {
   const origin = new URL(options.origin);
+  const tokens = [
+    options.viewerToken,
+    options.ingestToken,
+    ...(options.operationsToken === undefined ? [] : [options.operationsToken]),
+  ];
   if (
     origin.origin !== options.origin ||
     (origin.protocol !== "https:" &&
@@ -35,8 +48,8 @@ export function createDebugSite(options: {
         origin.protocol === "http:" &&
         ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)
       )) ||
-    options.viewerToken === options.ingestToken ||
-    [options.viewerToken, options.ingestToken].some(
+    new Set(tokens).size !== tokens.length ||
+    tokens.some(
       (token) =>
         token.length < 32 ||
         token.length > 4096 ||
@@ -66,6 +79,10 @@ export function createDebugSite(options: {
     await next();
   });
   app.onError((error, c) => {
+    if (error instanceof OperationValidationError)
+      return c.json({ error: "invalid_operation" }, 400);
+    if (error instanceof OperationConflictError)
+      return c.json({ error: "operation_conflict" }, 409);
     if (error instanceof DiagnosticConflictError)
       return c.json({ error: "snapshot_conflict" }, 409);
     if (error instanceof DiagnosticValidationError)
@@ -82,6 +99,25 @@ export function createDebugSite(options: {
       return c.json({ error: "unauthorized" }, 401);
     await next();
   });
+  app.put(
+    "/api/ingest/operations/:id",
+    bodyLimit({
+      maxSize: MAX_OPERATION_BYTES,
+      onError: (c) => c.json({ error: "operation_too_large" }, 413),
+    }),
+    async (c) => {
+      if (c.req.header("content-type")?.split(";")[0] !== "application/json")
+        return c.json({ error: "json_required" }, 415);
+      const event = validateOperation(await c.req.json().catch(() => null));
+      if (event.id !== c.req.param("id"))
+        return c.json({ error: "identity_mismatch" }, 400);
+      const result = options.store.putOperation(event);
+      return c.json(
+        { id: event.id, saved: true },
+        result === "created" ? 201 : 200,
+      );
+    },
+  );
   app.put(
     "/api/ingest/:id",
     bodyLimit({
@@ -102,7 +138,48 @@ export function createDebugSite(options: {
     },
   );
 
+  const registerOperations = (path: string) => {
+    app.get(path, (c) => {
+      const failuresOnly = c.req.query("failuresOnly");
+      if (
+        failuresOnly !== undefined &&
+        failuresOnly !== "true" &&
+        failuresOnly !== "false"
+      )
+        throw new OperationValidationError();
+      const query = operationQuerySchema.safeParse({
+        query: c.req.query("q") ?? "",
+        source: c.req.query("source") || undefined,
+        sources: c.req.query("sources")?.split(","),
+        failuresOnly: failuresOnly === "true",
+        failureKey: c.req.query("failureKey") || undefined,
+        offset: Number(c.req.query("offset") ?? 0),
+        limit: Number(c.req.query("limit") ?? 50),
+      });
+      if (!query.success) throw new OperationValidationError();
+      return c.json(options.store.operations(query.data));
+    });
+    app.get(`${path}/:id`, (c) => {
+      const detail = options.store.operation(
+        c.req.param("id") ?? "",
+        Number(c.req.query("offset") ?? 0),
+      );
+      return detail ? c.json(detail) : c.notFound();
+    });
+  };
+  // This credential reads ONLY content-free operations. It never becomes a
+  // browser session and does not share the viewer or write-only ingest token.
+  const operationsReader = options.operationsToken
+    ? hash(options.operationsToken)
+    : undefined;
+  app.use("/api/operations-read*", async (c, next) => {
+    if (!operationsReader || !matches(bearer(c.req.raw), operationsReader))
+      return c.json({ error: "unauthorized" }, 401);
+    await next();
+  });
+  registerOperations("/api/operations-read");
   app.route("/api", createDebugAuth(options));
+  registerOperations("/api/operations");
   app.get("/api/snapshots", (c) =>
     c.json(
       options.store.list({
@@ -152,6 +229,9 @@ export function createDebugSite(options: {
     return c.body(bytes);
   });
   app.get("/", async (c) =>
+    c.html(await readFile(join(options.assets, "index.html"), "utf8")),
+  );
+  app.get("/operations", async (c) =>
     c.html(await readFile(join(options.assets, "index.html"), "utf8")),
   );
   app.get("/s/:id/:page?", async (c) => {

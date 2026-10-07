@@ -16,6 +16,16 @@ import type {
   DiagnosticSummary,
   PasskeySummary,
 } from "./contracts.js";
+import {
+  getOperation,
+  initializeOperations,
+  listOperations,
+  OperationConflictError,
+  type OperationQuery,
+  OperationValidationError,
+  putOperation,
+  validateOperation,
+} from "./operations.js";
 
 type DebugSnapshot = Parameters<DebugSitePublisher["publish"]>[0];
 type StoredPasskey = WebAuthnCredential & PasskeySummary;
@@ -168,6 +178,7 @@ export class DiagnosticStore {
           id TEXT PRIMARY KEY, name TEXT NOT NULL, public_key BLOB NOT NULL,
           counter INTEGER NOT NULL, transports TEXT NOT NULL,
           created_at INTEGER NOT NULL, last_used_at INTEGER);`);
+      initializeOperations(this.db);
       this.db
         .prepare("INSERT OR IGNORE INTO passkey_owner VALUES(1,?)")
         .run(randomBytes(32));
@@ -187,7 +198,12 @@ export class DiagnosticStore {
       if (!this.db) throw new DiagnosticStorageError();
       return run(this.db);
     } catch (error) {
-      if (error instanceof DiagnosticConflictError) throw error;
+      if (
+        error instanceof DiagnosticConflictError ||
+        error instanceof OperationConflictError ||
+        error instanceof OperationValidationError
+      )
+        throw error;
       throw new DiagnosticStorageError();
     }
   }
@@ -272,6 +288,19 @@ export class DiagnosticStore {
           offset + items.length < total ? offset + items.length : null,
       };
     });
+  }
+
+  putOperation(value: unknown) {
+    const event = validateOperation(value);
+    return this.access((db) => putOperation(db, event));
+  }
+
+  operations(options: OperationQuery = {}) {
+    return this.access((db) => listOperations(db, options));
+  }
+
+  operation(id: string, offset = 0) {
+    return this.access((db) => getOperation(db, id, offset));
   }
 
   passkeyUserId(): Uint8Array<ArrayBuffer> {

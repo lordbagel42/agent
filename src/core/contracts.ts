@@ -328,6 +328,8 @@ export interface CompanionReply {
     | "operations"
     | "debug-shares"
     | "sandboxes"
+    | "debug-operations"
+    | "debug-site-deployment"
     | "capacity"
     | "retention"
     | "capabilities"
@@ -338,6 +340,7 @@ export interface CompanionReply {
     | "personality"
     | "backup"
     | "mcp-enrollment"
+    | import("../diagnostics/operation-reader.js").OperationInspection
     | { target: "imports"; selection: string | null; offset: number }
     | { target: "import-approval"; selection: string };
   /** One owner-private query of retained evidence, never a permission grant. */

@@ -398,10 +398,12 @@ export function createDebugAuth(options: {
     deleteCookie(c, browserCookie, cookieOptions);
     return c.json({ authenticated: false });
   });
-  app.use("/snapshots*", async (c, next) => {
-    if (!authenticated(c.req.raw, getCookie(c, cookie)))
-      return c.json({ error: "unauthorized" }, 401);
-    await next();
-  });
+  for (const path of ["/snapshots*", "/operations*"]) {
+    app.use(path, async (c, next) => {
+      if (!authenticated(c.req.raw, getCookie(c, cookie)))
+        return c.json({ error: "unauthorized" }, 401);
+      await next();
+    });
+  }
   return app;
 }

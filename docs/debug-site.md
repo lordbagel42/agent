@@ -81,6 +81,79 @@ Previously published captures whose source bodies were retired remain at the
 destination or acknowledged independent archive. This app-storage change needs
 a June forward release, not a debug website deployment or new permissions.
 
+## Operations history and June's private reader
+
+`/operations` lists retained deployment, recovery, DEBUGSHARE, owner Amp task and
+local/remote Amp coding observations. `/operations?id=<operationId>` opens the
+immutable timeline. The latest controller observation includes revisions, queue,
+phase, retry state, holds and recovery ownership; more than five minutes old or
+ahead of the clock means stale/unknown. Sequence, not upload order, determines
+the latest event. Occurrence time and source-observation time are separate.
+Completed Amp work is not verified recovery or deployment. Unknown/no-thread
+outcomes must not be replayed. The page grants no mutation authority.
+
+Events contain fixed-code metadata only, never titles, task bodies, results,
+credentials or raw logs. Matching failures are exact source + phase + reason
+(or status), across distinct retained operations including reconciled ones;
+this is the same symptom signature, **not a confirmed common root cause**.
+The bounded related list links to all matches. Missing records are coverage gaps,
+not proof that nothing happened. DEBUG remains capture-only.
+
+The authenticated viewer API is `GET /api/operations[/:id]`. List parameters are
+`q`, `source`, comma-separated `sources`, `failuresOnly=true|false`, `failureKey`,
+`offset` and `limit` (1–100). Filters apply before totals and pagination, across
+retained history. `source` and `sources` intersect when both are supplied;
+invalid sources/booleans return 400. Amp grouping is
+`sources=amp-task,debugshare,coding`. Existing capture deep links are unchanged.
+
+For June, provision a third distinct credential as `JUNE_DEBUG_OPERATIONS_TOKEN`
+in the independent site and reference the same secret through June's optional
+`debugSite.operationsTokenEnv`. It authorizes only `GET /api/operations-read`
+and its detail route, not captures, passkeys, browser sessions or ingest. Never
+give June the viewer token. Owner-private `inspection:"debug-operations"` and
+typed `{target:"debug-operations", sources, failuresOnly, query, source,
+failureKey, operationId, offset, limit}` use this reader.
+Interaction agents delegate; workers and automated events keep existing grants.
+Each response contains a complete bounded JSON record page. Continue with
+`nextOffset` and unchanged filters; `relatedQuery` retrieves matching operations.
+Summaries link the last failure's event ID and sequence; `operationId` retrieves
+full timeline events and controller payloads. The default is three records,
+maximum ten; large pages return fewer whole records with an adjusted next offset.
+Each page is a fresh observation; new arrivals may shift offsets. This is
+separate from `inspection:"operations"` for local unresolved conversation markers.
+
+Recording needs coordinated operator installation, not just source publication:
+
+- Install the archive bundle on the existing private database (additive event
+  tables, no archive restoration/deletion). The independent updater's storage
+  pins intentionally fence this change until a reviewed forward install and
+  rebootstrap; preserve passkeys and captures.
+- To record coding attempts, configure June's optional
+  `debugSite.operationsDatabase` as an absolute private SQLite journal path
+  outside immutable releases. Parent directory and files must be service-owned
+  0700/0600 without symlinks. It uses the existing write-only ingest credential.
+  Both local Amp and remote Amp attempts are recorded; non-Amp local runtimes
+  are not mislabeled. Disabling configuration pauses publication.
+- Install `operations.py` beside the separately reviewed `deploy.py` and
+  `debugshare.py`. In each private config add
+  `"operations":{"origin":"https://debug.example.com","tokenFile":"/private/ingest-token","database":"/private/operations.sqlite"}`.
+  Create the existing service-owned 0700 parent and private token file first.
+  Controller and recovery workers share a journal; dispatcher uses its own.
+  Install/configure under the existing operator locks and ownership rules.
+
+Source journals bind their destination and keep immutable upload IDs/bytes.
+Background publication retries transient failures from five seconds up to five
+minutes, not the underlying launch/deployment. Conflicts and permanent HTTP
+rejections remain retained for operator reconciliation. Local recording failures
+fail soft with content-free coverage warnings; action and journal commits are
+separate and can leave gaps. The dispatcher unit currently discards stdout/stderr,
+so its warning visibility needs operator review; absence of logs is not success.
+Retained deployment events and current dispatcher receipts backfill once with
+honest historical timing. Cleared incidents and old coding runs cannot be
+reconstructed. No automatic retention pruning, owner notification or repair
+launch is added. Check source journals, acknowledged archive events, loaded
+revisions and real private inspection separately before claiming live coverage.
+
 ## Passkey sign-in and recovery
 
 Sign in with the existing viewer credential, open **Passkeys** in the header,

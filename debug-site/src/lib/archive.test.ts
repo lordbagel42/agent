@@ -2,6 +2,7 @@ import * as webauthn from "@simplewebauthn/browser";
 import { get } from "svelte/store";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createArchive } from "./archive.js";
+import type { OperationDetail, OperationSummary } from "./types.js";
 
 vi.mock("@simplewebauthn/browser", () => ({
   startAuthentication: vi.fn(),
@@ -239,5 +240,181 @@ describe("private archive client", () => {
       snapshot: null,
       index: null,
     });
+  });
+});
+
+function operation(id: string): OperationSummary {
+  return {
+    latest: {
+      id: `${id}:1`,
+      operationId: id,
+      source: "recovery",
+      sequence: 1,
+      observedAt: 2000,
+      occurredAt: null,
+      status: "pending",
+      failure: false,
+      phase: "readiness",
+      reason: "health_failed",
+    },
+    firstObservedAt: 2000,
+    lastObservedAt: 2000,
+    eventCount: 1,
+    failure: null,
+    failureKey: null,
+    matchingFailures: 0,
+  };
+}
+function detail(id: string): OperationDetail {
+  const summary = operation(id);
+  return {
+    operation: summary,
+    events: [summary.latest],
+    totalEvents: 1,
+    nextOffset: null,
+    related: [],
+  };
+}
+const operationIndex = (id: string) => ({
+  items: [operation(id)],
+  total: 1,
+  nextOffset: null,
+  controller: null,
+});
+
+describe("private operations client", () => {
+  it("searches retained metadata with source and symptom filters, ignoring older results", async () => {
+    const network = transport();
+    const archive = createArchive(network.fetcher);
+    const first = archive.searchOperations({ query: "old" });
+    const second = archive.searchOperations({
+      query: "health_failed",
+      source: "recovery",
+      failureKey: "recovery:readiness:health_failed",
+      offset: 50,
+    });
+    network.reply(
+      "/api/operations?q=health_failed&source=recovery&failureKey=recovery%3Areadiness%3Ahealth_failed&offset=50&limit=50",
+      operationIndex("recovery:second"),
+    );
+    await second;
+    network.reply(
+      "/api/operations?q=old&offset=0&limit=50",
+      operationIndex("recovery:first"),
+    );
+    await first;
+    expect(get(archive).operations.index?.items[0]?.latest.operationId).toBe(
+      "recovery:second",
+    );
+    expect(get(archive).operations).toMatchObject({
+      query: "health_failed",
+      source: "recovery",
+      offset: 50,
+      indexBusy: false,
+    });
+  });
+
+  it("keeps the selected incident when list refreshes and rejects late timeline pages", async () => {
+    const network = transport();
+    const archive = createArchive(network.fetcher);
+    const older = archive.selectOperation("recovery:first", 100);
+    const selected = archive.selectOperation("recovery:second");
+    network.reply(
+      "/api/operations/recovery%3Asecond?offset=0",
+      detail("recovery:second"),
+    );
+    await selected;
+    const refresh = archive.searchOperations({});
+    network.reply(
+      "/api/operations?q=&offset=0&limit=50",
+      operationIndex("recovery:third"),
+    );
+    await refresh;
+    network.reply(
+      "/api/operations/recovery%3Afirst?offset=100",
+      detail("recovery:first"),
+    );
+    await older;
+    expect(get(archive).operations).toMatchObject({
+      selectedId: "recovery:second",
+      eventOffset: 0,
+      detailBusy: false,
+    });
+    expect(get(archive).operations.detail?.operation.latest.operationId).toBe(
+      "recovery:second",
+    );
+  });
+
+  it.each(["expiry", "logout", "pagehide"])(
+    "clears all operations metadata on %s and ignores outstanding reads",
+    async (cause) => {
+      const network = transport();
+      const archive = createArchive(network.fetcher);
+      const loaded = archive.selectOperation("recovery:private-retained");
+      network.reply(
+        "/api/operations/recovery%3Aprivate-retained?offset=0",
+        detail("recovery:private-retained"),
+      );
+      await loaded;
+      const index = archive.searchOperations({ query: "private-query" });
+      const pending = archive.selectOperation("recovery:private-pending");
+      if (cause === "expiry") {
+        const expired = archive.search("expiry");
+        network.reply("/api/snapshots?q=expiry&offset=0", {}, 401);
+        await expired;
+      } else if (cause === "logout") {
+        const logout = archive.logout();
+        network.reply("/api/logout", {});
+        await logout;
+      } else archive.clear();
+      network.reply(
+        "/api/operations?q=private-query&offset=0&limit=50",
+        operationIndex("recovery:private-index"),
+      );
+      network.reply(
+        "/api/operations/recovery%3Aprivate-pending?offset=0",
+        detail("recovery:private-pending"),
+      );
+      await Promise.all([index, pending]);
+      expect(get(archive)).toMatchObject({
+        phase: "login",
+        operations: { index: null, detail: null, selectedId: null, query: "" },
+      });
+      expect(JSON.stringify(get(archive))).not.toContain("private-");
+    },
+  );
+
+  it("enters an operations deep link after sign-in without reading capture bodies", async () => {
+    const paths: string[] = [];
+    const archive = createArchive(async (path) => {
+      paths.push(path);
+      if (path === "/api/session")
+        return Response.json({ authenticated: true });
+      return Response.json(
+        path.includes("?q=")
+          ? operationIndex("recovery:deep")
+          : detail("recovery:deep"),
+      );
+    });
+    await archive.login("synthetic-viewer-token", {
+      operationId: "recovery:deep",
+    });
+    expect(paths).toEqual([
+      "/api/session",
+      "/api/operations?q=&offset=0&limit=50",
+      "/api/operations/recovery%3Adeep?offset=0",
+    ]);
+    expect(get(archive).operations.selectedId).toBe("recovery:deep");
+    expect(get(archive).phase).toBe("ready");
+  });
+
+  it("expires the shared session on an operations 401 and keeps failed response bodies private", async () => {
+    const archive = createArchive(async () =>
+      Response.json({ error: "private-error" }, { status: 401 }),
+    );
+    await archive.selectOperation("recovery:private");
+    expect(get(archive).phase).toBe("login");
+    expect(get(archive).operations.detail).toBeNull();
+    expect(JSON.stringify(get(archive))).not.toContain("private-error");
   });
 });

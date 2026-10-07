@@ -31,6 +31,7 @@ const app = createDebugSite({
   origin,
   viewerToken,
   ingestToken,
+  operationsToken: process.env.JUNE_DEBUG_OPERATIONS_TOKEN,
   store,
   assets: fileURLToPath(new URL("./public", import.meta.url)),
   revision: process.env.JUNE_DEBUG_BUILD_REVISION,

@@ -51,6 +51,9 @@ import {
   awaitSlotActivation,
   validateSlotLauncher,
 } from "./deployment/standby.js";
+import { createDebugSiteDeploymentInspection } from "./diagnostics/deployment.js";
+import { OperationJournal } from "./diagnostics/operation-journal.js";
+import { createOperationReader } from "./diagnostics/operation-reader.js";
 import { createDebugSitePublisher } from "./diagnostics/publisher.js";
 import { createBoxLiteProvider } from "./environments/boxlite.js";
 import { openBoxLiteHost } from "./environments/boxlite-host.js";
@@ -127,6 +130,7 @@ let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
 const hotProviders: ReturnType<typeof createHotCodexProvider>[] = [];
 let slotActivated = false;
 let telemetry: Telemetry | undefined;
+let operationJournal: OperationJournal | undefined;
 let failStartup: (() => void) | undefined;
 
 function exitOrRetainOwnership(code: number) {
@@ -446,6 +450,20 @@ async function main() {
         .update(JSON.stringify([coding?.runtimeId ?? null, config.ampJobs]))
         .digest("hex"),
     };
+  }
+  if (config.debugSite?.operationsDatabase && coding) {
+    try {
+      operationJournal = new OperationJournal({
+        file: config.debugSite.operationsDatabase,
+        origin: config.debugSite.origin,
+        token: secret(config.debugSite.tokenEnv),
+      });
+      operationJournal.start();
+      coding.operations = (observation) =>
+        operationJournal?.record(observation);
+    } catch {
+      console.warn("operations_disabled: coverage_incomplete");
+    }
   }
   let browserCompanion: BrowserCompanion | undefined;
   let environments: EnvironmentService | undefined;
@@ -1432,6 +1450,15 @@ async function main() {
       audience: ownerAudience,
       debugShares: () => june.debugShares(),
       sandboxes: () => inspectSandboxes(environments, release?.revision),
+      debugOperations: config.debugSite?.operationsTokenEnv
+        ? createOperationReader({
+            origin: config.debugSite.origin,
+            token: secret(config.debugSite.operationsTokenEnv),
+          })
+        : undefined,
+      debugSiteDeployment: config.debugSite
+        ? createDebugSiteDeploymentInspection(config.debugSite.origin)
+        : undefined,
       memory,
       imports,
       importExtraction,
@@ -2061,6 +2088,7 @@ async function main() {
       await environments?.close();
       await browser?.close();
       await connections?.close();
+      await operationJournal?.close();
       capabilities?.close();
       continuity?.close();
       memory?.personality?.close();
@@ -2104,6 +2132,7 @@ await main().catch(async () => {
   failStartup?.();
   if (slotActivated) setInterval(() => {}, 60_000);
   await Promise.allSettled(hotProviders.map((provider) => provider.close()));
+  await operationJournal?.close();
   recordEvent("june.lifecycle", {
     "june.phase": "shutdown_failed",
     "june.outcome": "error",

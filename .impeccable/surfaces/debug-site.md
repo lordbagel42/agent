@@ -36,6 +36,22 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the
 finish review, the verdict, DESIGN.md, and every shipping raster carrying its
 provenance
 
+## Operations extension
+
+The approved read-only Operations route inherits this world. Compact Captures /
+Operations navigation preserves the capture and passkey workflows. A deployment
+observation strip leads with its timestamp and stale age, never invented health.
+Below it, server-backed filters and dense operation rows sit beside the selected
+immutable timeline and matching symptom history; narrow screens stack these
+regions and let the operation list collapse without hiding the selection.
+
+Refresh preserves the selected incident. Event time and archive observation time
+remain separate, including explicitly unknown historical times. Related-history
+counts include the selected operation and link to all retained matches, not only
+the bounded related list. Recorded terminal outcomes and Amp/capture links are
+evidence, not claims of a shared root cause or verified recovery. No action
+controls or private content are added. Verification uses labeled synthetic data.
+
 ## Finish verdict
 
 Accepted after rendered desktop and narrow Chromium review. The selected evidence
@@ -52,3 +68,17 @@ and radius differences in this dense standalone surface were reviewed deliberate
 
 No raster assets ship. Painter supplied layout exploration only. All screenshots
 and preview captures contain synthetic evidence, never production conversations.
+
+The Operations extension was inspected at 1440px and 390px using the labeled
+synthetic preview, with no horizontal document overflow. The inline finish review
+resolved controller-phase fallback and keyboard focus for matching-history
+navigation; independent integration review remains with the parent. The detector
+reported only advisory type/radius differences, consistent with the established
+dense surface and mobile input sizing; DESIGN.md was not changed.
+
+Rendered checks covered authentication return and expiry clearing, browser
+Back/Forward, retained selection on refresh/filtering, search beyond the first
+page, all 52 synthetic symptom matches beyond the related-list cap, 103-event
+timeline pagination, queued/no-thread and unknown outcomes, missing/unavailable/
+empty states, and the existing capture, conversation and passkey settings views.
+Passkey enrollment itself and live operational publication were not exercised.

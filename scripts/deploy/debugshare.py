@@ -2,6 +2,7 @@
 
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import ExitStack, suppress
 from pathlib import Path
 
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -83,6 +85,89 @@ def dispatch_due(directory, identity):
     return receipt["status"] == "queued" and receipt["retryAt"] <= time.time() * 1000
 
 
+def operations_reporter(config):
+    if config is None:
+        return None
+    try:
+        # Isolated installed scripts cannot use bare sibling imports.
+        spec = importlib.util.spec_from_file_location(
+            "operations", Path(__file__).with_name("operations.py")
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        reporter = module.Reporter(config)
+        reporter.start()
+        return reporter
+    except Exception:  # noqa: BLE001 - never report config/path/credential contents
+        with suppress(OSError):
+            print("operations_disabled: coverage_incomplete", flush=True)
+        return None
+
+
+def observe_dispatch(
+    reporter, path, receipt, *, phase, backfill=False, attempt=False, payload=None
+):
+    if reporter is None:
+        return
+    try:
+        if payload is None:
+            payload = json.loads(read_private(path))
+        reporter.dispatch(
+            path.stem.removesuffix(".task"),
+            path.name.endswith(".task.json"),
+            payload,
+            receipt,
+            phase=phase,
+            backfill=backfill,
+            attempt=attempt,
+        )
+    except Exception:  # noqa: BLE001 - logging faults never change the launch fence or retry
+        with suppress(OSError):
+            print("operations_local_record_failed: coverage_incomplete", flush=True)
+
+
+def observe_request(reporter, directory, path, *, receipt=False):
+    identity = path.stem.removesuffix(".task")
+    observe_dispatch(
+        reporter, path, {"status": "queued"}, phase="discovered", backfill=True
+    )
+    if reporter is not None and receipt:
+        try:
+            saved = json.loads(
+                read_private(directory / f"{identity}.receipt.json", limit=65536)
+            )
+        except FileNotFoundError:
+            return
+        except Exception:  # noqa: BLE001 - private receipt faults are coverage gaps
+            with suppress(OSError):
+                print("operations_local_record_failed: coverage_incomplete", flush=True)
+        else:
+            observe_dispatch(reporter, path, saved, phase="receipt", backfill=True)
+
+
+def recover_receipts(directory, reporter=None):
+    # Project only immutable request/receipt metadata; mtimes do not establish
+    # when historical queued/running/completed transitions happened.
+    if reporter is not None:
+        for path in sorted(directory.glob("*.json")):
+            if UUID.fullmatch(path.stem.removesuffix(".task")):
+                observe_request(reporter, directory, path, receipt=True)
+    for path in directory.glob("*.receipt.json"):
+        receipt = json.loads(read_private(path, limit=65536))
+        if (
+            not UUID.fullmatch(receipt["id"])
+            or path.name != f"{receipt['id']}.receipt.json"
+        ):
+            raise ValueError("invalid_debug_receipt")
+        if receipt["status"] == "running":
+            receipt["status"] = "unknown"
+            save_receipt(directory, receipt)
+            request = directory / f"{receipt['id']}.task.json"
+            if not request.exists():
+                request = directory / f"{receipt['id']}.json"
+            observe_dispatch(reporter, request, receipt, phase="restart")
+
+
 def wait_ready(stream, expected):
     # A partial line must not defeat the deadline. Read no bytes beyond READY;
     # the buffered stream reader below owns subsequent Amp records.
@@ -98,8 +183,9 @@ def wait_ready(stream, expected):
             raise ValueError("invalid_debug_readiness")
 
 
-def dispatch(directory, path, ssh):
+def dispatch(directory, path, ssh, reporter=None):
     identity = path.stem.removesuffix(".task")
+    observe_request(reporter, directory, path)
     if not dispatch_due(directory, identity):
         return
     receipt = {
@@ -110,6 +196,8 @@ def dispatch(directory, path, ssh):
     # Queued means no snapshot bytes have been authorized for transport. This
     # retry checkpoint survives dispatcher restarts and does not consume admission.
     save_receipt(directory, receipt)
+    observe_dispatch(reporter, path, receipt, phase="readiness", attempt=True)
+    payload = None
     try:
         data = read_private(path)
         payload = json.loads(data)
@@ -120,6 +208,9 @@ def dispatch(directory, path, ssh):
         task = payload.get("kind") == "amp-task"
         if task != path.name.endswith(".task.json"):
             raise ValueError("invalid_dispatch_path")
+        if payload.get("snapshotOnly") is True:
+            # DEBUG is capture-only, even if mistakenly placed in this inbox.
+            return
         digest = hashlib.sha256(data).hexdigest()
         # Distinct wire command fails closed against an older diagnostic endpoint.
         command = (
@@ -138,6 +229,9 @@ def dispatch(directory, path, ssh):
                 # crash after it is ambiguous, even if Amp emits no thread ID.
                 receipt = {"id": identity, "status": "running"}
                 save_receipt(directory, receipt)
+                observe_dispatch(
+                    reporter, path, receipt, phase="launch", payload=payload
+                )
                 # The endpoint consumes all input before starting Amp, so large
                 # snapshots cannot deadlock against Amp's stdout stream.
                 process.stdin.write(data)
@@ -164,6 +258,9 @@ def dispatch(directory, path, ssh):
                             raise ValueError("invalid_debug_thread")
                         receipt["threadId"] = thread
                         save_receipt(directory, receipt)
+                        observe_dispatch(
+                            reporter, path, receipt, phase="thread", payload=payload
+                        )
                     if message.get("type") == "result":
                         if (
                             not receipt.get("threadId")
@@ -208,6 +305,13 @@ def dispatch(directory, path, ssh):
         else:
             receipt["retryAt"] = int(time.time() * 1000) + 30000
     save_receipt(directory, receipt)
+    observe_dispatch(
+        reporter,
+        path,
+        receipt,
+        phase="readiness" if receipt["status"] == "queued" else "terminal",
+        payload=payload,
+    )
 
 
 def main():
@@ -223,19 +327,14 @@ def main():
     ):
         raise ValueError("invalid_debug_ssh")
     # One independent dispatcher; queued retries resume, launch intents never replay.
-    with open(directory / ".dispatcher.lock", "a") as lock:
+    with open(directory / ".dispatcher.lock", "a") as lock, ExitStack() as cleanup:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        for path in directory.glob("*.receipt.json"):
-            receipt = json.loads(read_private(path, limit=65536))
-            if (
-                not UUID.fullmatch(receipt["id"])
-                or path.name != f"{receipt['id']}.receipt.json"
-            ):
-                raise ValueError("invalid_debug_receipt")
-            if receipt["status"] == "running":
-                receipt["status"] = "unknown"
-                save_receipt(directory, receipt)
+        reporter = operations_reporter(config.get("operations"))
+        if reporter is not None:
+            cleanup.callback(reporter.close)
+        recover_receipts(directory, reporter)
         workers = {}
+        observed = set()
         while True:
             workers = {
                 identity: worker
@@ -244,6 +343,11 @@ def main():
             }
             for path in sorted(directory.glob("*.json")):
                 identity = path.stem.removesuffix(".task")
+                if UUID.fullmatch(identity) and identity not in observed:
+                    # A queued request is visible even before a worker/thread
+                    # exists, including requests waiting for a readiness retry.
+                    observe_request(reporter, directory, path)
+                    observed.add(identity)
                 if (
                     UUID.fullmatch(identity)
                     and identity not in workers
@@ -254,7 +358,9 @@ def main():
                     # persisted its launch fence yet. The daemon lock excludes
                     # other dispatchers; durable receipts exclude later replay.
                     worker = threading.Thread(
-                        target=dispatch, args=(directory, path, ssh), daemon=True
+                        target=dispatch,
+                        args=(directory, path, ssh, reporter),
+                        daemon=True,
                     )
                     worker.start()
                     workers[identity] = worker

@@ -137,6 +137,8 @@ const schema = z
           );
         }, "Use a canonical HTTPS origin or loopback HTTP for local checks"),
         tokenEnv: envName,
+        operationsTokenEnv: envName.optional(),
+        operationsDatabase: absolutePath.optional(),
       })
       .optional(),
     activitySessions: z
