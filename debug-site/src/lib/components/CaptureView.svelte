@@ -1,114 +1,172 @@
 <script lang="ts">
-  import { Download, FileJson, Info, MessagesSquare } from "@lucide/svelte";
+  import {
+    ArrowLeft,
+    Download,
+    FileJson,
+    MessagesSquare,
+    RotateCw,
+  } from "@lucide/svelte";
+  import type { CaptureLinks } from "$lib/archive.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Tabs from "$lib/components/ui/tabs/index.js";
+  import { link } from "$lib/display.js";
   import { projectSnapshot } from "$lib/projection.js";
+  import { operationRoute, type Route } from "$lib/route.js";
   import type { DebugSnapshot } from "$lib/types.js";
   import ConversationView from "./ConversationView.svelte";
   import EvidenceTable from "./EvidenceTable.svelte";
   import JsonViewer from "./JsonViewer.svelte";
+  import Revision from "./Revision.svelte";
+  import StateBadge from "./StateBadge.svelte";
   import Time from "./Time.svelte";
   let {
     snapshot,
     utc,
     page,
+    links,
+    back,
     downloading,
     actionError,
     ondownload,
-    onpage,
+    onnavigate,
+    onretrylinks,
   }: {
     snapshot: DebugSnapshot;
     utc: boolean;
     page: "evidence" | "conversation";
+    links: CaptureLinks;
+    back: Route;
     downloading: boolean;
     actionError: string;
     ondownload: () => void;
-    onpage: (page: "evidence" | "conversation") => void;
+    onnavigate: (route: Route) => void;
+    onretrylinks: () => void;
   } = $props();
   const view = $derived(projectSnapshot(snapshot));
+  const nav = (route: Route) => link(route, onnavigate);
+  const linked = $derived(links.id === snapshot.id ? links : null);
+  const pages = ["evidence", "conversation"] as const;
   let tab = $state("timeline");
 </script>
 
-<div class="capture-heading">
-  <div class="capture-title">
-    <FileJson size={19} aria-hidden="true" />
-    <h1>Capture <span class="mono">{snapshot.id.slice(0, 8)}</span></h1>
-    <Badge variant="outline">Archived</Badge>
-  </div>
-  <Button variant="outline" onclick={ondownload} disabled={downloading}
-    ><Download size={15} />{downloading ? "Exporting…" : "Export JSON"}</Button
+<div class="capture-bar">
+  <a class="back-link" {...nav(back)}
+    ><ArrowLeft size={14} aria-hidden="true" />Captures</a
+  >
+  <h1>
+    <FileJson size={16} aria-hidden="true" />Capture
+    <span class="mono" title={snapshot.id}>{snapshot.id}</span>
+  </h1>
+  <Badge variant="outline">Archived</Badge>
+  <nav class="segmented" aria-label="Capture pages">
+    {#each pages as destination (destination)}
+      <a
+        {...nav({ view: "capture", id: snapshot.id, page: destination })}
+        aria-current={page === destination ? "page" : undefined}
+      >
+        {#if destination === "conversation"}<MessagesSquare
+            size={14}
+            aria-hidden="true"
+          />Conversation
+        {:else}<FileJson size={14} aria-hidden="true" />Evidence{/if}
+      </a>
+    {/each}
+  </nav>
+  <Button
+    variant="outline"
+    size="sm"
+    onclick={ondownload}
+    disabled={downloading}
+    ><Download size={14} />{downloading ? "Exporting…" : "Export JSON"}</Button
   >
 </div>
 {#if actionError}<p class="action-error" role="alert">{actionError}</p>{/if}
-<nav class="capture-pages" aria-label="Capture pages">
-  {#each ["evidence", "conversation"] as destination}
-    <a
-      href={`/s/${encodeURIComponent(snapshot.id)}${destination === "conversation" ? "/conversation" : ""}`}
-      aria-current={page === destination ? "page" : undefined}
-      onclick={(event) => {
-        if (
-          event.button ||
-          event.ctrlKey ||
-          event.metaKey ||
-          event.shiftKey ||
-          event.altKey
-        )
-          return;
-        event.preventDefault();
-        onpage(destination === "conversation" ? "conversation" : "evidence");
-      }}
+
+<dl class="capture-facts">
+  <div>
+    <dt>Captured</dt>
+    <dd><Time value={snapshot.capturedAt} {utc} /></dd>
+  </div>
+  <div>
+    <dt>Mode</dt>
+    <dd>
+      {snapshot.snapshotOnly === true
+        ? "DEBUG · storage only"
+        : "DEBUGSHARE / historical"}
+    </dd>
+  </div>
+  <div>
+    <dt>Session</dt>
+    <dd class="mono">{snapshot.sessionId}</dd>
+  </div>
+  <div>
+    <dt>Code revision</dt>
+    <dd>
+      {#if snapshot.revision}<Revision value={snapshot.revision} />{:else}<span
+          class="muted">Not retained</span
+        >{/if}
+    </dd>
+  </div>
+  <div>
+    <dt>Reporter</dt>
+    <dd>
+      {snapshot.reporter
+        ? `${snapshot.reporter.channel} · ${snapshot.reporter.isOwner ? "owner" : "non-owner"}`
+        : "Not retained"}
+    </dd>
+  </div>
+</dl>
+
+<section class="reported-reason" aria-label="Reporter-provided reason">
+  <span class="reason-label"
+    >Reported reason <span>· reporter text, not a verified diagnosis</span
+    ></span
+  >
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard focus lets long reporter text scroll without a pointer.) -->
+  <p tabindex="0" role="region" aria-label="Reported reason, scrollable text">
+    {snapshot.reason || "No reason was provided with this capture."}
+  </p>
+</section>
+
+<div class="capture-relations">
+  <span class="relation-label">Recorded operations</span>
+  {#if !linked || linked.busy}<span class="muted" role="status"
+      >Checking operation metadata for this capture ID…</span
     >
-      {#if destination === "conversation"}<MessagesSquare
-          size={15}
-          aria-hidden="true"
-        />Conversation
-      {:else}<FileJson size={15} aria-hidden="true" />Evidence{/if}
-    </a>
-  {/each}
-</nav>
+  {:else if linked.error}<span class="muted" role="alert"
+      >Operation metadata could not be read.</span
+    ><Button variant="ghost" size="sm" onclick={onretrylinks}
+      ><RotateCw size={13} aria-hidden="true" />Retry</Button
+    >
+  {:else if !linked.index?.items.length}<span class="muted"
+      >No archived operation metadata contains this capture ID.</span
+    >
+  {:else}
+    {#each linked.index.items as item (item.latest.operationId)}<a
+        class="relation"
+        {...nav(
+          operationRoute(
+            item.latest.source === "deployment" ||
+              item.latest.source === "recovery"
+              ? "deployments"
+              : "amp",
+            { id: item.latest.operationId },
+          ),
+        )}
+        ><code>{item.latest.operationId}</code><StateBadge
+          event={item.latest}
+        /></a
+      >{/each}
+    {#if linked.index.total > linked.index.items.length}<span class="muted"
+        >+{linked.index.total - linked.index.items.length} more</span
+      >{/if}
+  {/if}
+</div>
+
 {#if page === "conversation"}
   <ConversationView rows={view.messages} {utc} />
 {:else}
-  <section class="reported-reason" aria-label="Reporter-provided reason">
-    <div class="reason-label">
-      Reported reason <span>Reporter text, not a verified diagnosis</span>
-    </div>
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex (Keyboard focus lets long reporter text scroll without a pointer.) -->
-    <p tabindex="0" role="region" aria-label="Reported reason, scrollable text">
-      {snapshot.reason || "No reason was provided with this capture."}
-    </p>
-  </section>
-  <dl class="capture-facts">
-    <div>
-      <dt>Captured</dt>
-      <dd><Time value={snapshot.capturedAt} {utc} /></dd>
-    </div>
-    <div>
-      <dt>Session</dt>
-      <dd class="mono">{snapshot.sessionId}</dd>
-    </div>
-    <div>
-      <dt>Code revision</dt>
-      <dd class="mono">{snapshot.revision || "Not retained"}</dd>
-    </div>
-    <div>
-      <dt>Capture mode</dt>
-      <dd>
-        {snapshot.snapshotOnly === true
-          ? "DEBUG · storage only"
-          : "DEBUGSHARE / historical"}
-      </dd>
-    </div>
-  </dl>
-  <div class="capture-notice">
-    <Info size={14} aria-hidden="true" />
-    <p>
-      Point-in-time evidence, not live status. This archive does not establish
-      investigation or delivery success.
-    </p>
-  </div>
-
   <Tabs.Root bind:value={tab} class="capture-tabs">
     <Tabs.List
       variant="line"
@@ -137,8 +195,9 @@
     </Tabs.List>
     <Tabs.Content value="timeline">
       <p class="section-note">
-        Newest recorded timestamps first; untimed records follow in source
-        order. Markers are not spans or proof of successful work.
+        Point-in-time evidence, not live status. Newest recorded timestamps
+        first; untimed records follow in source order. Markers are not spans or
+        proof of successful work.
       </p>
       <EvidenceTable rows={view.timeline} label="Timeline" {utc} />
     </Tabs.Content>
@@ -282,26 +341,83 @@
 {/if}
 
 <style>
-  .capture-pages {
+  .capture-bar {
     display: flex;
-    gap: 24px;
-    border-bottom: 1px solid var(--line-strong);
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 14px 0 12px;
   }
-  .capture-pages a {
+  .capture-bar h1 {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 12px 0;
-    color: var(--muted-text);
-    text-decoration: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
+    min-width: 0;
+    font-size: 1rem;
   }
-  .capture-pages a:hover,
-  .capture-pages a[aria-current="page"] {
+  .capture-bar h1 :global(svg) {
+    color: var(--muted-text);
+  }
+  .capture-bar h1 .mono {
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+  .back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted-text);
+    font-size: 0.86rem;
+    text-decoration: none;
+    padding-right: 12px;
+    border-right: 1px solid var(--line);
+  }
+  .back-link:hover {
     color: var(--foreground);
   }
-  .capture-pages a[aria-current="page"] {
-    border-bottom-color: var(--foreground);
+  .segmented {
+    display: inline-flex;
+    margin-left: auto;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .segmented a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    min-height: 30px;
+    font-size: 0.86rem;
+    color: var(--muted-text);
+    text-decoration: none;
+  }
+  .segmented a + a {
+    border-left: 1px solid var(--line-strong);
+  }
+  .segmented a:hover {
+    color: var(--foreground);
+  }
+  .segmented a[aria-current="page"] {
+    color: var(--foreground);
+    background: var(--raised);
+  }
+  .segmented a:focus-visible {
+    outline-offset: -2px;
+  }
+  @media (max-width: 800px) {
+    .segmented {
+      margin-left: 0;
+      order: 5;
+      flex: 1 1 100%;
+    }
+    .segmented a {
+      flex: 1;
+      justify-content: center;
+      min-height: 44px;
+    }
+    .back-link {
+      min-height: 44px;
+    }
   }
 </style>

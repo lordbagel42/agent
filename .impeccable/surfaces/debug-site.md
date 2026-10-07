@@ -12,47 +12,77 @@ The owner explicitly requires a separate website, not main-dashboard navigation.
 
 ## Direction contract
 
-THESIS: An independently available capture workbench, organized around the
-reported message and recorded evidence rather than a generic metrics dashboard.
+THESIS: An independent operator home for captures, deployments, failures and Amp
+activity, organized around recorded evidence rather than invented metrics.
 
 OWN-WORLD: Extend June's dark neutral palette, system sans and exact-value mono.
 Use shadcn-svelte controls, hairlines, small status labels and dense selectable
 rows. No imagery, gradients, decorative charts or invented health signals.
 
-STORY: Open a DEBUG link, understand what was captured, follow the recorded turn,
-inspect its exact evidence, and see which sources were deliberately not captured.
+STORY: Start with the archive's last observations, open a relevant operation or
+DEBUG capture, and follow its exact evidence and recorded relationships. Make
+unavailable sources and evidence boundaries explicit.
 
-FIRST VIEWPORT: Independent June Debug header, recent captures on the left,
-capture reason and export at the top, compact facts, evidence tabs, and a wide
-timeline beside its selected record. On mobile, stack the inspector and expose
-capture navigation without horizontal document overflow.
+FIRST VIEWPORT: Independent June Debug header with Overview, Captures,
+Deployments, Errors and Amp. A thin context bar holds the archive-not-health
+notice, timezone and explicit Refresh. Overview leads with a fact row of real
+archive totals and the latest archived record, then the failures to inspect.
+A capture detail fits its ID, mode switch and export on one row, then compact
+facts and a bounded reason, so evidence rows start near the top. On mobile, the
+navigation scrolls in its own row, inspectors stack below their lists, and the
+document never overflows horizontally.
 
-FORM: Owner-pinned Vercel/Cloudflare operational language. Painter's two-layout
-comparison favored trace-first; dashboard navigation and invented telemetry in
-that concept are excluded. Signature interaction: selecting an evidence row
-reveals its exact retained payload without losing the surrounding chronology.
+FORM: RivetKit's dense collection/inspector model in June's established
+Vercel/Cloudflare-like operational language. The standalone site has its own
+navigation, not main-console navigation. Selecting an evidence row reveals its
+exact retained payload without losing the surrounding chronology.
 
-FINISH: unreviewed and undocumented is unfinished; this build ends with the
-finish review, the verdict, DESIGN.md, and every shipping raster carrying its
-provenance
+FINISH: Review actual desktop and narrow renders, authentication and evidence
+workflows, and data-truth edge cases. No raster assets ship.
 
 ## Operations extension
 
-The approved read-only Operations route inherits this world. Compact Captures /
-Operations navigation preserves the capture and passkey workflows. A deployment
+The read-only Operations routes preserve the capture and passkey workflows. A deployment
 observation strip leads with its timestamp and stale age, never invented health.
 Below it, server-backed filters and dense operation rows sit beside the selected
 immutable timeline and matching symptom history; narrow screens stack these
 regions and let the operation list collapse without hiding the selection.
 
-Refresh preserves the selected incident. Event time and archive observation time
+Refresh preserves the selected incident. Event time and source observation time
 remain separate, including explicitly unknown historical times. Related-history
 counts include the selected operation and link to all retained matches, not only
 the bounded related list. Recorded terminal outcomes and Amp/capture links are
 evidence, not claims of a shared root cause or verified recovery. No action
 controls or private content are added. Verification uses labeled synthetic data.
 
-## Finish verdict
+## Console rebuild (2026-10-05)
+
+Owner request: a denser home for DEBUG captures, deployments, error logging and
+Amp, comparable to RivetKit's collection/inspector model. Decisions settled in
+the brief: Overview comes first, with list/inspector layouts for investigation;
+the Svelte, shadcn and auth stack is unchanged.
+
+- Overview uses lists and fact rows, not metric cards or charts. Every count is
+  a real archive total for a named scope, and every section links to its full
+  list and records.
+- Captures uses a full-width dense table. The capture detail page drops the
+  old left rail, so the evidence table and its inspector are the only two
+  columns (never three).
+- Deployments, Errors, Amp and All operations share one list/inspector. The
+  list is sticky on desktop and collapsible above the inspector on narrow
+  screens. The inspector shows the outcome, recorded links, the exact failure
+  event, same-signature history and the immutable timeline.
+- The shared controller block keeps revisions distinct and shows hold, blocked,
+  retry and queue as facts. Stale observations are labeled; there is no green
+  health state.
+- States use neutral, warn or danger tones only. The green `state-ok` tone stays
+  limited to capture delivery receipts.
+
+The lists require the backend's archive-wide `sources` and `failuresOnly`
+filters (see `debug-site/README.md`); activation against an older server is not
+supported. Source publication and runtime activation are separate.
+
+## Rebuild finish verdict
 
 Accepted after rendered desktop and narrow Chromium review. The selected evidence
 inspector keeps exact payloads accessible while archive previews and table summaries
@@ -66,15 +96,10 @@ conclusions are invented. Keyboard tab semantics and visible focus remain native
 The existing DESIGN.md remains the palette/type/spacing reference; advisory type
 and radius differences in this dense standalone surface were reviewed deliberately.
 
-No raster assets ship. Painter supplied layout exploration only. All screenshots
-and preview captures contain synthetic evidence, never production conversations.
-
-The Operations extension was inspected at 1440px and 390px using the labeled
-synthetic preview, with no horizontal document overflow. The inline finish review
-resolved controller-phase fallback and keyboard focus for matching-history
-navigation; independent integration review remains with the parent. The detector
-reported only advisory type/radius differences, consistent with the established
-dense surface and mobile input sizing; DESIGN.md was not changed.
+The rebuilt shell was inspected at 1440×960 and 390×844 using labeled synthetic
+evidence, never production conversations. The last row and pagination in the
+left scrolling list are fully reachable; no footer obscures them. On narrow
+screens, the selected inspector remains below a collapsible results list.
 
 Rendered checks covered authentication return and expiry clearing, browser
 Back/Forward, retained selection on refresh/filtering, search beyond the first
@@ -82,3 +107,11 @@ page, all 52 synthetic symptom matches beyond the related-list cap, 103-event
 timeline pagination, queued/no-thread and unknown outcomes, missing/unavailable/
 empty states, and the existing capture, conversation and passkey settings views.
 Passkey enrollment itself and live operational publication were not exercised.
+
+Oracle review found three data-truth issues, reproduced and corrected: latest
+record selection includes independently retried failure reads; related-operation
+history shows last observation time, not a potentially different failure's time;
+and missing-thread labels apply only to the checked events. Focused checks also
+cover capture-tab retention on refresh, out-of-order controller reads, and
+clearing remembered private queries on logout. No live-health or shared-cause
+conclusion is inferred from these records.

@@ -35,7 +35,7 @@
 
 <div class="passkeys-page">
   <Button variant="ghost" onclick={onback}
-    ><ArrowLeft size={15} aria-hidden="true" />Back to captures</Button
+    ><ArrowLeft size={15} aria-hidden="true" />Back to archive</Button
   >
   <h1>Passkeys</h1>
   <p class="passkeys-intro">

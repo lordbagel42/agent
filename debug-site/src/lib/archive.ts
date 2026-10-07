@@ -4,6 +4,12 @@ import {
   WebAuthnAbortService,
 } from "@simplewebauthn/browser";
 import { writable } from "svelte/store";
+import {
+  type OperationFilters,
+  operationsPath,
+  type Route,
+  sameFilters,
+} from "./route.js";
 import type {
   DebugSnapshot,
   DiagnosticIndex,
@@ -13,23 +19,62 @@ import type {
   PasskeySummary,
 } from "./types.js";
 
-export type ArchiveDestination = string | null | { operationId: string | null };
-export interface OperationFilters {
-  query: string;
-  source: OperationEvent["source"] | "";
-  failureKey: string;
-  offset: number;
-}
+export type ListError = "failed" | null;
 export interface OperationsState extends OperationFilters {
   index: OperationIndex | null;
+  /** Latest archived controller event from any validated index read. */
+  controller: OperationEvent | null | undefined;
   detail: OperationDetail | null;
   selectedId: string | null;
   eventOffset: number;
   indexBusy: boolean;
   detailBusy: boolean;
-  indexError: boolean;
+  indexError: ListError;
   detailError: "missing" | "failed" | null;
 }
+export interface Section<T> {
+  data: T | null;
+  busy: boolean;
+  error: ListError;
+}
+export interface OverviewState {
+  captures: Section<DiagnosticIndex>;
+  failures: Section<OperationIndex>;
+  deployments: Section<OperationIndex>;
+  amp: Section<OperationIndex>;
+  controller: OperationEvent | null | undefined;
+}
+type OverviewName = Exclude<keyof OverviewState, "controller">;
+/** Operations whose retained metadata contains a capture ID. */
+export interface CaptureLinks {
+  id: string | null;
+  index: OperationIndex | null;
+  busy: boolean;
+  error: boolean;
+}
+
+const overviewReads: Record<
+  Exclude<OverviewName, "captures">,
+  OperationFilters
+> = {
+  failures: {
+    scope: "errors",
+    query: "",
+    source: "",
+    failureKey: "",
+    offset: 0,
+  },
+  deployments: {
+    scope: "deployments",
+    query: "",
+    source: "",
+    failureKey: "",
+    offset: 0,
+  },
+  amp: { scope: "amp", query: "", source: "", failureKey: "", offset: 0 },
+};
+export const OVERVIEW_ROWS = 8;
+const section = <T>(): Section<T> => ({ data: null, busy: false, error: null });
 
 export interface ArchiveState {
   phase: "checking" | "login" | "ready" | "error";
@@ -52,6 +97,8 @@ export interface ArchiveState {
   loginError: string;
   actionError: string;
   operations: OperationsState;
+  overview: OverviewState;
+  captureLinks: CaptureLinks;
 }
 
 const initial = (): ArchiveState => ({
@@ -76,8 +123,10 @@ const initial = (): ArchiveState => ({
   actionError: "",
   operations: {
     index: null,
+    controller: undefined,
     detail: null,
     selectedId: null,
+    scope: "operations",
     query: "",
     source: "",
     failureKey: "",
@@ -85,10 +134,29 @@ const initial = (): ArchiveState => ({
     eventOffset: 0,
     indexBusy: false,
     detailBusy: false,
-    indexError: false,
+    indexError: null,
     detailError: null,
   },
+  overview: {
+    captures: section(),
+    failures: section(),
+    deployments: section(),
+    amp: section(),
+    controller: undefined,
+  },
+  captureLinks: { id: null, index: null, busy: false, error: false },
 });
+
+function validIndex(value: unknown): OperationIndex {
+  const index = value as OperationIndex | null;
+  if (
+    !index ||
+    !Array.isArray(index.items) ||
+    !Number.isSafeInteger(index.total)
+  )
+    throw new HttpError(0);
+  return index;
+}
 
 class HttpError extends Error {
   constructor(readonly status: number) {
@@ -128,12 +196,32 @@ export function createArchive(
   let captureSequence = 0;
   let operationsSequence = 0;
   let operationSequence = 0;
+  let linksSequence = 0;
+  const overviewSequence: Record<OverviewName, number> = {
+    captures: 0,
+    failures: 0,
+    deployments: 0,
+    amp: 0,
+  };
   function patch(update: Partial<ArchiveState>) {
     state = { ...state, ...update };
     store.set(state);
   }
   function patchOperations(update: Partial<OperationsState>) {
     patch({ operations: { ...state.operations, ...update } });
+  }
+  function patchSection(
+    name: OverviewName,
+    value: Section<DiagnosticIndex | OperationIndex>,
+    controller = state.overview.controller,
+  ) {
+    patch({
+      overview: {
+        ...state.overview,
+        [name]: value,
+        controller,
+      } as OverviewState,
+    });
   }
   function clear(phase: ArchiveState["phase"], notice = "") {
     epoch++;
@@ -194,37 +282,24 @@ export function createArchive(
         patch({ indexError: true, indexBusy: false });
     }
   }
-  async function select(id: string | null) {
+  async function select(id: string) {
     const generation = epoch;
     const sequence = ++captureSequence;
     patch({
       selectedId: id,
-      snapshot: null,
+      snapshot: state.selectedId === id ? state.snapshot : null,
       captureBusy: true,
       captureError: null,
       actionError: "",
     });
     try {
-      if (id === null) {
-        const index = (await (
-          await request("/api/snapshots?q=&offset=0", generation)
-        ).json()) as DiagnosticIndex;
-        id = index.items[0]?.id ?? null;
-      }
-      const snapshot =
-        id === null
-          ? null
-          : ((await (
-              await request(
-                `/api/snapshots/${encodeURIComponent(id)}`,
-                generation,
-              )
-            ).json()) as DebugSnapshot);
+      const snapshot = (await (
+        await request(`/api/snapshots/${encodeURIComponent(id)}`, generation)
+      ).json()) as DebugSnapshot;
       if (
-        snapshot &&
-        (snapshot.id !== id ||
-          !Array.isArray(snapshot.scope) ||
-          !Array.isArray(snapshot.exclusions))
+        snapshot?.id !== id ||
+        !Array.isArray(snapshot.scope) ||
+        !Array.isArray(snapshot.exclusions)
       )
         throw new HttpError(0);
       if (generation === epoch && sequence === captureSequence)
@@ -241,6 +316,7 @@ export function createArchive(
     }
   }
   async function searchOperations({
+    scope = "operations",
     query = "",
     source = "",
     failureKey = "",
@@ -248,32 +324,139 @@ export function createArchive(
   }: Partial<OperationFilters> = {}) {
     const generation = epoch;
     const sequence = ++operationsSequence;
+    const filters = { scope, query, source, failureKey, offset };
     patchOperations({
-      query,
-      source,
-      failureKey,
-      offset,
+      ...filters,
       indexBusy: true,
-      indexError: false,
+      indexError: null,
       index: null,
     });
-    const params = new URLSearchParams({ q: query });
-    if (source) params.set("source", source);
-    if (failureKey) params.set("failureKey", failureKey);
-    params.set("offset", String(offset));
-    params.set("limit", "50");
     try {
-      const index = (await (
-        await request(`/api/operations?${params}`, generation)
-      ).json()) as OperationIndex;
-      if (!Array.isArray(index.items) || !Number.isSafeInteger(index.total))
-        throw new HttpError(0);
-      if (generation === epoch && sequence === operationsSequence)
-        patchOperations({ index, indexBusy: false });
+      const index = validIndex(
+        await (await request(operationsPath(filters), generation)).json(),
+      );
+      if (generation === epoch && sequence === operationsSequence) {
+        patchOperations({
+          index,
+          indexError: null,
+          controller: index.controller ?? null,
+          indexBusy: false,
+        });
+      }
     } catch {
       if (generation === epoch && sequence === operationsSequence)
-        patchOperations({ indexError: true, indexBusy: false });
+        patchOperations({ indexError: "failed", indexBusy: false });
     }
+  }
+  async function loadOverviewSection(name: OverviewName) {
+    const generation = epoch;
+    const sequence = ++overviewSequence[name];
+    const current = () =>
+      generation === epoch && sequence === overviewSequence[name];
+    patchSection(name, { data: null, busy: true, error: null });
+    try {
+      if (name === "captures") {
+        const data = (await (
+          await request("/api/snapshots?q=&offset=0", generation)
+        ).json()) as DiagnosticIndex;
+        if (!Array.isArray(data?.items) || !Number.isSafeInteger(data.total))
+          throw new HttpError(0);
+        if (current()) patchSection(name, { data, busy: false, error: null });
+        return;
+      }
+      const filters = overviewReads[name];
+      const index = validIndex(
+        await (
+          await request(operationsPath(filters, OVERVIEW_ROWS), generation)
+        ).json(),
+      );
+      if (!current()) return;
+      const previous = state.overview.controller;
+      const controller =
+        previous &&
+        (!index.controller || previous.observedAt > index.controller.observedAt)
+          ? previous
+          : (index.controller ?? null);
+      patchSection(name, { data: index, busy: false, error: null }, controller);
+    } catch {
+      if (current())
+        patchSection(name, { data: null, busy: false, error: "failed" });
+    }
+  }
+  /** Parallel, independently retryable reads; one expiry clears them all. */
+  async function loadOverview(force = false, only?: OverviewName) {
+    const names = (["captures", "failures", "deployments", "amp"] as const)
+      .filter((name) => only === undefined || name === only)
+      .filter(
+        (name) =>
+          force ||
+          (state.overview[name].data === null && !state.overview[name].busy),
+      );
+    await Promise.all(names.map(loadOverviewSection));
+  }
+  async function loadCaptureLinks(id: string) {
+    const generation = epoch;
+    const sequence = ++linksSequence;
+    patch({ captureLinks: { id, index: null, busy: true, error: false } });
+    try {
+      const params = new URLSearchParams({ q: id, offset: "0", limit: "20" });
+      const index = validIndex(
+        await (await request(`/api/operations?${params}`, generation)).json(),
+      );
+      if (generation === epoch && sequence === linksSequence)
+        patch({ captureLinks: { id, index, busy: false, error: false } });
+    } catch {
+      if (generation === epoch && sequence === linksSequence)
+        patch({ captureLinks: { id, index: null, busy: false, error: true } });
+    }
+  }
+  /**
+   * Loads what a route needs. Navigation between already-loaded states does
+   * not refetch; `force` is the explicit read-only refresh.
+   */
+  async function open(route: Route, force = false) {
+    const reads: Promise<void>[] = [];
+    if (route.view === "overview") reads.push(loadOverview(force));
+    else if (route.view === "captures") {
+      if (
+        force ||
+        state.query !== route.query ||
+        state.offset !== route.offset ||
+        (!state.index && !state.indexBusy)
+      )
+        reads.push(search(route.query, route.offset));
+    } else if (route.view === "capture") {
+      if (
+        force ||
+        state.selectedId !== route.id ||
+        (!state.snapshot && !state.captureBusy)
+      )
+        reads.push(select(route.id));
+      if (force || state.captureLinks.id !== route.id)
+        reads.push(loadCaptureLinks(route.id));
+    } else {
+      const operations = state.operations;
+      if (
+        force ||
+        !sameFilters(operations, route) ||
+        (!operations.index && !operations.indexBusy)
+      )
+        reads.push(searchOperations(route));
+      if (
+        force ||
+        operations.selectedId !== route.id ||
+        (route.id !== null && !operations.detail && !operations.detailBusy)
+      )
+        reads.push(
+          selectOperation(
+            route.id,
+            force && operations.selectedId === route.id
+              ? operations.eventOffset
+              : 0,
+          ),
+        );
+    }
+    await Promise.all(reads);
   }
   async function selectOperation(id: string | null, offset = 0) {
     const generation = epoch;
@@ -313,16 +496,11 @@ export function createArchive(
         });
     }
   }
-  async function enter(destination: ArchiveDestination) {
+  async function enter(destination: Route) {
     patch({ phase: "ready", loginBusy: false, loginError: "", notice: "" });
-    if (destination && typeof destination === "object")
-      await Promise.all([
-        searchOperations(),
-        selectOperation(destination.operationId),
-      ]);
-    else await Promise.all([search(""), select(destination)]);
+    await open(destination);
   }
-  async function start(destination: ArchiveDestination) {
+  async function start(destination: Route) {
     clear("checking");
     const generation = epoch;
     try {
@@ -336,7 +514,7 @@ export function createArchive(
       if (generation === epoch) patch({ phase: "error" });
     }
   }
-  async function login(token: string, destination: ArchiveDestination) {
+  async function login(token: string, destination: Route) {
     clear("login");
     const generation = epoch;
     patch({ loginBusy: true });
@@ -393,7 +571,7 @@ export function createArchive(
         });
     }
   }
-  async function loginWithPasskey(destination: ArchiveDestination) {
+  async function loginWithPasskey(destination: Route) {
     clear("login");
     const generation = epoch;
     patch({ loginBusy: true });
@@ -515,10 +693,13 @@ export function createArchive(
   return {
     subscribe: store.subscribe,
     start,
+    open,
     select,
     search,
     searchOperations,
     selectOperation,
+    retryOverview: (name: OverviewName) => loadOverview(true, name),
+    retryCaptureLinks: loadCaptureLinks,
     login,
     loginWithPasskey,
     loadPasskeys,

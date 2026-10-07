@@ -169,11 +169,13 @@ for (let index = 1; index <= 52; index++)
       Date.parse(capturedAt) - index * 3600000,
     ).toISOString(),
     reason:
-      index % 3 === 0
-        ? "[Demo] Delivery receipt review"
-        : index % 3 === 1
-          ? "[Demo] Context loading investigation"
-          : "[Demo] Historical capture · no model request",
+      index === 1
+        ? `[Demo] Long reporter reason that must stay bounded above the evidence. ${"Synthetic reporter detail. ".repeat(40)}`
+        : index % 3 === 0
+          ? "[Demo] Delivery receipt review"
+          : index % 3 === 1
+            ? "[Demo] Context loading investigation"
+            : "[Demo] Historical capture · no model request",
     data:
       index === 52
         ? {
@@ -324,6 +326,66 @@ putOperation("coding:synthetic-unknown", 1, {
   failure: true,
   phase: "execution",
   reason: "outcome_unknown",
+});
+// A linked DEBUGSHARE whose launch never recorded a thread.
+putOperation("debugshare:synthetic-no-thread", 1, {
+  source: "debugshare",
+  observedAt: operationTime - 200000,
+  occurredAt: operationTime - 201000,
+  status: "queued",
+  failure: false,
+  phase: "dispatch",
+  snapshotId: snapshot.id,
+});
+putOperation("debugshare:synthetic-no-thread", 2, {
+  source: "debugshare",
+  observedAt: operationTime - 140000,
+  occurredAt: null,
+  status: "unknown",
+  failure: true,
+  phase: "dispatch",
+  reason: "launch_unconfirmed",
+  snapshotId: snapshot.id,
+});
+// Two separate operations that recorded the same thread stay separate.
+const sharedThread = "T-10000000-0000-4000-8000-000000000004";
+putOperation("amp-task:synthetic-shared-thread", 1, {
+  source: "amp-task",
+  observedAt: operationTime - 900000,
+  occurredAt: operationTime - 901000,
+  status: "completed",
+  failure: false,
+  phase: "execution",
+  threadId: sharedThread,
+});
+putOperation("coding:synthetic-shared-thread", 1, {
+  source: "coding",
+  observedAt: operationTime - 800000,
+  occurredAt: operationTime - 801000,
+  status: "running",
+  failure: false,
+  phase: "execution",
+  threadId: sharedThread,
+  revision: targetRevision,
+});
+// An earlier deployment that recorded a terminal outcome.
+putOperation("deployment:synthetic-previous", 1, {
+  source: "deployment",
+  observedAt: pastTime - 7200000,
+  occurredAt: pastTime - 7201000,
+  status: "activating",
+  failure: false,
+  phase: "activate",
+  revision,
+});
+putOperation("deployment:synthetic-previous", 2, {
+  source: "deployment",
+  observedAt: pastTime - 7000000,
+  occurredAt: pastTime - 7001000,
+  status: "completed",
+  failure: false,
+  phase: "activate",
+  revision,
 });
 // More than one index page and more than the ten-related-operation cap. The
 // readiness incident above still has exactly two matching operations.

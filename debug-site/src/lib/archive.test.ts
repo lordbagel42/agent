@@ -2,7 +2,12 @@ import * as webauthn from "@simplewebauthn/browser";
 import { get } from "svelte/store";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createArchive } from "./archive.js";
-import type { OperationDetail, OperationSummary } from "./types.js";
+import type { OperationRoute, OperationScope, Route } from "./route.js";
+import type {
+  OperationDetail,
+  OperationEvent,
+  OperationSummary,
+} from "./types.js";
 
 vi.mock("@simplewebauthn/browser", () => ({
   startAuthentication: vi.fn(),
@@ -12,6 +17,26 @@ vi.mock("@simplewebauthn/browser", () => ({
 afterEach(() => {
   vi.resetAllMocks();
   vi.unstubAllGlobals();
+});
+
+const overview: Route = { view: "overview" };
+const capture = (id: string): Route => ({
+  view: "capture",
+  id,
+  page: "evidence",
+});
+const operations = (
+  scope: OperationScope,
+  update: Partial<OperationRoute> = {},
+): OperationRoute => ({
+  view: "operations",
+  scope,
+  id: null,
+  query: "",
+  source: "",
+  failureKey: "",
+  offset: 0,
+  ...update,
 });
 
 const snapshot = (id: string, data: unknown = {}) => ({
@@ -58,6 +83,32 @@ describe("private archive client", () => {
     expect(get(archive).selectedId).toBe("second");
   });
 
+  it("keeps the selected capture mounted during refresh but clears it when the selection changes", async () => {
+    const network = transport();
+    const archive = createArchive(network.fetcher);
+    const first = archive.select("retained");
+    network.reply(
+      "/api/snapshots/retained",
+      snapshot("retained", { value: 1 }),
+    );
+    await first;
+    const refresh = archive.select("retained");
+    expect(get(archive)).toMatchObject({
+      captureBusy: true,
+      snapshot: { id: "retained", data: { value: 1 } },
+    });
+    network.reply(
+      "/api/snapshots/retained",
+      snapshot("retained", { value: 2 }),
+    );
+    await refresh;
+    expect(get(archive).snapshot?.data).toEqual({ value: 2 });
+    const next = archive.select("different");
+    expect(get(archive).snapshot).toBeNull();
+    network.reply("/api/snapshots/different", snapshot("different"));
+    await next;
+  });
+
   it("clears all capture data on expiry and ignores already-in-flight private responses", async () => {
     const network = transport();
     const archive = createArchive(network.fetcher);
@@ -90,35 +141,31 @@ describe("private archive client", () => {
     expect(JSON.stringify(get(archive))).not.toContain("privateError");
   });
 
-  it("does not start a chained newest-capture read after the session is cleared", async () => {
-    const paths: string[] = [];
-    const latest = Promise.withResolvers<Response>();
-    const archive = createArchive(async (path) => {
-      paths.push(path);
-      return path === "/api/snapshots?q=&offset=0"
-        ? latest.promise
-        : new Response(JSON.stringify(snapshot("latest")));
-    });
-    const pending = archive.select(null);
-    archive.clear();
-    latest.resolve(
-      new Response(
-        JSON.stringify({
-          items: [{ ...snapshot("latest"), bytes: 500 }],
-          total: 1,
-          nextOffset: null,
-        }),
-      ),
+  it("keeps a capture's recorded operation links with the capture that requested them", async () => {
+    const network = transport();
+    const archive = createArchive(network.fetcher);
+    const first = archive.open(capture("first"));
+    const second = archive.open(capture("second"));
+    network.reply("/api/snapshots/second", snapshot("second"));
+    network.reply(
+      "/api/operations?q=second&offset=0&limit=20",
+      operationIndex("debugshare:second"),
     );
-    await pending;
-    expect(paths).toEqual(["/api/snapshots?q=&offset=0"]);
-    expect(get(archive).snapshot).toBeNull();
+    await second;
+    network.reply("/api/snapshots/first", snapshot("first"));
+    network.reply(
+      "/api/operations?q=first&offset=0&limit=20",
+      operationIndex("debugshare:first"),
+    );
+    await first;
+    expect(get(archive).captureLinks).toMatchObject({ id: "second" });
+    expect(JSON.stringify(get(archive))).not.toContain("debugshare:first");
   });
 
   it("sends credentials in a same-origin JSON body and distinguishes unavailable captures from server failures", async () => {
     const network = transport();
     const archive = createArchive(network.fetcher);
-    const login = archive.login("synthetic-viewer-token", null);
+    const login = archive.login("synthetic-viewer-token", overview);
     expect(network.requests[0]).toMatchObject({
       path: "/api/session",
       init: {
@@ -156,7 +203,7 @@ describe("private archive client", () => {
     vi.stubGlobal("navigator", { locks: { request: lock } });
     const fetcher = vi.fn(async () => Response.json({}));
     const archive = createArchive(fetcher);
-    const login = archive.login("synthetic-viewer-token", null);
+    const login = archive.login("synthetic-viewer-token", overview);
     expect(lock.mock.calls[0]?.[0]).toBe("june-debug-auth");
     expect(fetcher).not.toHaveBeenCalled();
     archive.clear();
@@ -170,7 +217,7 @@ describe("private archive client", () => {
     vi.stubGlobal("navigator", {});
     const fetcher = vi.fn(async () => Response.json({}));
     const archive = createArchive(fetcher);
-    await archive.loginWithPasskey(null);
+    await archive.loginWithPasskey(overview);
     expect(fetcher).not.toHaveBeenCalled();
     expect(get(archive).loginError).toContain("Update your browser");
     expect(get(archive).loginBusy).toBe(false);
@@ -188,7 +235,7 @@ describe("private archive client", () => {
       paths.push(path);
       return Response.json({ challenge: "synthetic-challenge" });
     });
-    const login = archive.loginWithPasskey("deep-capture");
+    const login = archive.loginWithPasskey(capture("deep-capture"));
     await vi.waitFor(() => expect(waiting).toBe(true));
     archive.clear();
     prompt.resolve({
@@ -216,7 +263,7 @@ describe("private archive client", () => {
     const archive = createArchive(async () =>
       Response.json({ challenge: "test" }),
     );
-    await archive.loginWithPasskey(null);
+    await archive.loginWithPasskey(overview);
     expect(get(archive)).toMatchObject({ phase: "login", loginBusy: false });
     expect(get(archive).loginError).toContain("cancelled");
     expect(get(archive).loginError).not.toContain("private platform detail");
@@ -243,26 +290,27 @@ describe("private archive client", () => {
   });
 });
 
-function operation(id: string): OperationSummary {
+function operation(id: string, failed = false): OperationSummary {
+  const latest: OperationEvent = {
+    id: `${id}:1`,
+    operationId: id,
+    source: (id.split(":")[0] ?? "recovery") as OperationEvent["source"],
+    sequence: 1,
+    observedAt: 2000,
+    occurredAt: null,
+    status: "pending",
+    failure: failed,
+    phase: "readiness",
+    reason: "health_failed",
+  };
   return {
-    latest: {
-      id: `${id}:1`,
-      operationId: id,
-      source: "recovery",
-      sequence: 1,
-      observedAt: 2000,
-      occurredAt: null,
-      status: "pending",
-      failure: false,
-      phase: "readiness",
-      reason: "health_failed",
-    },
+    latest,
     firstObservedAt: 2000,
     lastObservedAt: 2000,
     eventCount: 1,
-    failure: null,
-    failureKey: null,
-    matchingFailures: 0,
+    failure: failed ? latest : null,
+    failureKey: failed ? `${latest.source}:readiness:health_failed` : null,
+    matchingFailures: failed ? 1 : 0,
   };
 }
 function detail(id: string): OperationDetail {
@@ -275,11 +323,16 @@ function detail(id: string): OperationDetail {
     related: [],
   };
 }
-const operationIndex = (id: string) => ({
-  items: [operation(id)],
+const operationIndex = (id: string, failed = false) => ({
+  items: [operation(id, failed)],
   total: 1,
   nextOffset: null,
   controller: null,
+});
+const captureIndex = (id: string) => ({
+  items: [{ ...snapshot(id), bytes: 500 }],
+  total: 1,
+  nextOffset: null,
 });
 
 describe("private operations client", () => {
@@ -396,9 +449,10 @@ describe("private operations client", () => {
           : detail("recovery:deep"),
       );
     });
-    await archive.login("synthetic-viewer-token", {
-      operationId: "recovery:deep",
-    });
+    await archive.login(
+      "synthetic-viewer-token",
+      operations("operations", { id: "recovery:deep" }),
+    );
     expect(paths).toEqual([
       "/api/session",
       "/api/operations?q=&offset=0&limit=50",
@@ -416,5 +470,121 @@ describe("private operations client", () => {
     expect(get(archive).phase).toBe("login");
     expect(get(archive).operations.detail).toBeNull();
     expect(JSON.stringify(get(archive))).not.toContain("private-error");
+  });
+});
+
+describe("overview and workspace navigation", () => {
+  const failures = "/api/operations?q=&failuresOnly=true&offset=0&limit=8";
+  const deployments =
+    "/api/operations?q=&sources=deployment%2Crecovery&offset=0&limit=8";
+  const amp =
+    "/api/operations?q=&sources=debugshare%2Camp-task%2Ccoding&offset=0&limit=8";
+
+  it("clears every overview pane when one parallel read expires and ignores late private successes", async () => {
+    const network = transport();
+    const archive = createArchive(network.fetcher);
+    const pending = archive.open(overview);
+    expect(network.requests.map((request) => request.path).sort()).toEqual([
+      failures,
+      amp,
+      deployments,
+      "/api/snapshots?q=&offset=0",
+    ]);
+    network.reply(
+      "/api/snapshots?q=&offset=0",
+      captureIndex("private-capture"),
+    );
+    await vi.waitFor(() =>
+      expect(get(archive).overview.captures.data).not.toBeNull(),
+    );
+    network.reply(failures, {}, 401);
+    network.reply(deployments, operationIndex("deployment:private-late"));
+    network.reply(amp, operationIndex("coding:private-late"));
+    await pending;
+    expect(get(archive)).toMatchObject({
+      phase: "login",
+      overview: {
+        captures: { data: null },
+        failures: { data: null },
+        deployments: { data: null },
+        amp: { data: null },
+        controller: undefined,
+      },
+    });
+    expect(JSON.stringify(get(archive))).not.toContain("private-");
+  });
+
+  it("keeps the newest controller observation when parallel overview responses arrive out of order", async () => {
+    const network = transport();
+    const archive = createArchive(network.fetcher);
+    const pending = archive.open(overview);
+    const newest = {
+      ...operation("controller:newest").latest,
+      observedAt: 3000,
+    };
+    network.reply(failures, {
+      ...operationIndex("recovery:failed", true),
+      controller: newest,
+    });
+    await vi.waitFor(() =>
+      expect(get(archive).overview.controller).toEqual(newest),
+    );
+    network.reply(deployments, {
+      ...operationIndex("deployment:older"),
+      controller: { ...operation("controller:older").latest, observedAt: 1000 },
+    });
+    network.reply(amp, operationIndex("coding:earlier-without-controller"));
+    network.reply("/api/snapshots?q=&offset=0", captureIndex("capture"));
+    await pending;
+    expect(get(archive).overview.controller).toEqual(newest);
+  });
+
+  it("follows an overview record into its workspace and reloads only what navigation changed", async () => {
+    const paths: string[] = [];
+    const archive = createArchive(async (path) => {
+      paths.push(path);
+      if (path.startsWith("/api/snapshots"))
+        return Response.json(captureIndex("capture"));
+      if (path.startsWith("/api/operations?"))
+        return Response.json(
+          path.includes("failuresOnly")
+            ? operationIndex("recovery:failed", true)
+            : operationIndex(
+                path.includes("debugshare") ? "debugshare:amp" : "recovery:x",
+              ),
+        );
+      const id = decodeURIComponent(path.split("/")[3]?.split("?")[0] ?? "");
+      return Response.json(detail(id));
+    });
+    await archive.open(overview);
+    paths.length = 0;
+    const route = operations("errors", { id: "recovery:failed" });
+    await archive.open(route);
+    expect(paths).toEqual([
+      "/api/operations?q=&failuresOnly=true&offset=0&limit=50",
+      "/api/operations/recovery%3Afailed?offset=0",
+    ]);
+    paths.length = 0;
+    // Back/Forward between already-loaded views is not an implicit refresh.
+    await archive.open(overview);
+    await archive.open(route);
+    expect(paths).toEqual([]);
+    expect(
+      get(archive).overview.failures.data?.items[0]?.latest.operationId,
+    ).toBe("recovery:failed");
+    await archive.open({
+      ...route,
+      failureKey: "recovery:readiness:health_failed",
+    });
+    expect(paths).toEqual([
+      "/api/operations?q=&failuresOnly=true&failureKey=recovery%3Areadiness%3Ahealth_failed&offset=0&limit=50",
+    ]);
+    expect(get(archive).operations.selectedId).toBe("recovery:failed");
+    paths.length = 0;
+    await archive.open(route, true);
+    expect(paths).toEqual([
+      "/api/operations?q=&failuresOnly=true&offset=0&limit=50",
+      "/api/operations/recovery%3Afailed?offset=0",
+    ]);
   });
 });

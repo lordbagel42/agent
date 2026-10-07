@@ -1,86 +1,122 @@
 <script lang="ts">
   import {
-    Archive,
-    ChevronDown,
+    Bot,
+    Files,
     Fingerprint,
+    Info,
+    LayoutDashboard,
     LockKeyhole,
     LogOut,
+    RefreshCw,
+    Rocket,
+    TriangleAlert,
   } from "@lucide/svelte";
-  import { onMount } from "svelte";
-  import { type ArchiveDestination, createArchive } from "$lib/archive.js";
-  import ArchiveRail from "$lib/components/ArchiveRail.svelte";
+  import { onMount, tick } from "svelte";
+  import { createArchive } from "$lib/archive.js";
   import CaptureView from "$lib/components/CaptureView.svelte";
+  import CapturesView from "$lib/components/CapturesView.svelte";
   import Loading from "$lib/components/Loading.svelte";
   import Login from "$lib/components/Login.svelte";
   import OperationsView from "$lib/components/OperationsView.svelte";
+  import OverviewView from "$lib/components/OverviewView.svelte";
   import Passkeys from "$lib/components/Passkeys.svelte";
   import { Button } from "$lib/components/ui/button/index.js";
+  import { link } from "$lib/display.js";
+  import {
+    type OperationRoute,
+    type OperationScope,
+    operationRoute,
+    parseRoute,
+    type Route,
+    routeHref,
+  } from "$lib/route.js";
+
   const archive = createArchive();
-  let railOpen = $state(false);
+  const current = () => parseRoute(location.pathname, location.search);
+  let route = $state<Route>(current());
   let passkeysOpen = $state(false);
-  let operationsPage = $state(false);
   let zone = $state("local");
-  let capturePage = $state<"evidence" | "conversation">("evidence");
+  let main: HTMLElement | undefined = $state();
+  /** Last list state per workspace, so the header returns to it. */
+  let remembered = $state<Partial<Record<OperationScope, OperationRoute>>>({});
+  const overviewSections = [
+    "captures",
+    "failures",
+    "deployments",
+    "amp",
+  ] as const;
   const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const utc = $derived(zone === "utc");
-  $effect(() => {
-    if ($archive.phase !== "ready") passkeysOpen = false;
+  const capturesRoute = $derived<Route>({
+    view: "captures",
+    query: $archive.query,
+    offset: $archive.offset,
   });
-  function routeTarget(): ArchiveDestination {
-    operationsPage = location.pathname === "/operations";
-    if (operationsPage)
-      return {
-        operationId: new URLSearchParams(location.search).get("id") || null,
-      };
-    const match = /^\/s\/([^/]+)(\/conversation)?\/?$/.exec(location.pathname);
-    capturePage = match?.[2] ? "conversation" : "evidence";
-    try {
-      return match?.[1] ? decodeURIComponent(match[1]) : null;
-    } catch {
-      return "invalid-capture-id";
+  const busy = $derived(
+    $archive.indexBusy ||
+      $archive.captureBusy ||
+      $archive.operations.indexBusy ||
+      $archive.operations.detailBusy ||
+      $archive.captureLinks.busy ||
+      overviewSections.some((name) => $archive.overview[name].busy),
+  );
+  const sections = $derived([
+    {
+      label: "Overview",
+      icon: LayoutDashboard,
+      route: { view: "overview" } as Route,
+      active: route.view === "overview",
+    },
+    {
+      label: "Captures",
+      icon: Files,
+      route: capturesRoute,
+      active: route.view === "captures" || route.view === "capture",
+    },
+    ...(
+      [
+        ["Deployments", Rocket, "deployments"],
+        ["Errors", TriangleAlert, "errors"],
+        ["Amp", Bot, "amp"],
+      ] as const
+    ).map(([label, icon, scope]) => ({
+      label,
+      icon,
+      route: remembered[scope] ?? operationRoute(scope),
+      active: route.view === "operations" && route.scope === scope,
+    })),
+  ]);
+  $effect(() => {
+    if ($archive.phase !== "ready") {
+      passkeysOpen = false;
+      remembered = {};
+    } else if (route.view === "operations") remembered[route.scope] = route;
+  });
+
+  async function navigate(next: Route) {
+    if ($archive.phase !== "ready") {
+      location.assign(routeHref(next));
+      return;
+    }
+    const href = routeHref(next);
+    const viewChanged =
+      next.view !== route.view ||
+      (next.view === "operations" &&
+        route.view === "operations" &&
+        next.scope !== route.scope);
+    if (href !== location.pathname + location.search)
+      history.pushState(null, "", href);
+    route = next;
+    passkeysOpen = false;
+    void archive.open(next);
+    if (viewChanged) {
+      await tick();
+      main?.focus({ preventScroll: true });
+      window.scrollTo({ top: 0 });
     }
   }
-  function navigate(id: string | null, page = capturePage) {
-    operationsPage = false;
-    capturePage = id ? page : "evidence";
-    history.pushState(
-      null,
-      "",
-      id
-        ? `/s/${encodeURIComponent(id)}${capturePage === "conversation" ? "/conversation" : ""}`
-        : "/",
-    );
-    railOpen = false;
-    passkeysOpen = false;
-    if (!$archive.index) void archive.search($archive.query, $archive.offset);
-    void archive.select(id);
-  }
-  function navigateOperation(id: string | null) {
-    const entering = !operationsPage;
-    operationsPage = true;
-    history.pushState(
-      null,
-      "",
-      id ? `/operations?id=${encodeURIComponent(id)}` : "/operations",
-    );
-    railOpen = false;
-    passkeysOpen = false;
-    if (entering || !$archive.operations.index)
-      void archive.searchOperations($archive.operations);
-    void archive.selectOperation(id);
-  }
-  function follow(event: MouseEvent, action: () => void) {
-    if (
-      $archive.phase !== "ready" ||
-      event.button ||
-      event.metaKey ||
-      event.ctrlKey ||
-      event.shiftKey ||
-      event.altKey
-    )
-      return;
-    event.preventDefault();
-    action();
+  function refresh() {
+    void archive.open(route, true);
   }
   async function download() {
     const result = await archive.download();
@@ -93,23 +129,18 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   onMount(() => {
-    void archive.start(routeTarget());
+    void archive.start(route);
     const pop = () => {
-      railOpen = false;
       passkeysOpen = false;
-      const target = routeTarget();
-      if ($archive.phase !== "ready") return;
-      if (target && typeof target === "object") {
-        void archive.searchOperations($archive.operations);
-        void archive.selectOperation(target.operationId);
-      } else {
-        void archive.search($archive.query, $archive.offset);
-        void archive.select(target);
-      }
+      route = current();
+      if ($archive.phase === "ready") void archive.open(route);
     };
     // A restored browser history document must re-check its private session.
     const show = (event: PageTransitionEvent) => {
-      if (event.persisted) void archive.start(routeTarget());
+      if (event.persisted) {
+        route = current();
+        void archive.start(route);
+      }
     };
     const hide = () => archive.clear();
     window.addEventListener("popstate", pop);
@@ -124,32 +155,21 @@
   });
 </script>
 
-<a class="skip-link" href="#capture-main">Skip to content</a>
+<a class="skip-link" href="#debug-main">Skip to content</a>
 <header class="app-header">
-  <a
-    class="brand"
-    href="/"
-    onclick={(event) => follow(event, () => navigate(null))}
+  <a class="brand" {...link({ view: "overview" }, navigate)}
     ><span>June</span><span class="brand-divider" aria-hidden="true">/</span
     ><span>Debug</span></a
   >
   {#if $archive.phase === "ready"}
-    <nav class="archive-navigation" aria-label="Debug archive pages">
-      <a
-        href="/"
-        aria-current={!operationsPage && !passkeysOpen ? "page" : undefined}
-        onclick={(event) => follow(event, () => navigate(null))}>Captures</a
-      >
-      <a
-        href={$archive.operations.selectedId
-          ? `/operations?id=${encodeURIComponent($archive.operations.selectedId)}`
-          : "/operations"}
-        aria-current={operationsPage && !passkeysOpen ? "page" : undefined}
-        onclick={(event) =>
-          follow(event, () =>
-            navigateOperation($archive.operations.selectedId),
-          )}>Operations</a
-      >
+    <nav class="app-nav" aria-label="Debug workspaces">
+      {#each sections as section (section.label)}
+        <a
+          {...link(section.route, navigate)}
+          aria-current={section.active && !passkeysOpen ? "page" : undefined}
+          ><section.icon size={14} aria-hidden="true" />{section.label}</a
+        >
+      {/each}
     </nav>
   {/if}
   <div class="header-actions">
@@ -159,6 +179,7 @@
       ><LockKeyhole size={13} aria-hidden="true" />Private archive</span
     >{#if $archive.phase === "ready"}<Button
         variant="ghost"
+        size="sm"
         aria-pressed={passkeysOpen}
         onclick={() => {
           passkeysOpen = !passkeysOpen;
@@ -166,43 +187,44 @@
         }}><Fingerprint size={14} aria-hidden="true" />Passkeys</Button
       ><Button
         variant="ghost"
+        size="sm"
         onclick={() => {
           passkeysOpen = false;
           void archive.logout();
-        }}><LogOut size={14} />Sign out</Button
+        }}><LogOut size={14} aria-hidden="true" />Sign out</Button
       >{/if}
   </div>
 </header>
 
 {#if $archive.phase === "checking"}
-  <main id="capture-main">
+  <main id="debug-main" tabindex="-1">
     <Loading label="Checking your private session…" />
   </main>
 {:else if $archive.phase === "login"}
-  <main id="capture-main">
+  <main id="debug-main" tabindex="-1">
     <Login
       busy={$archive.loginBusy}
       error={$archive.loginError}
       notice={$archive.notice}
       signoutError={$archive.actionError}
-      onlogin={(token) => archive.login(token, routeTarget())}
-      onpasskey={() => archive.loginWithPasskey(routeTarget())}
+      onlogin={(token) => archive.login(token, current())}
+      onpasskey={() => archive.loginWithPasskey(current())}
       onlogout={() => archive.logout()}
     />
   </main>
 {:else if $archive.phase === "error"}
-  <main id="capture-main" class="empty-state">
+  <main id="debug-main" tabindex="-1" class="empty-state">
     <h1>Archive connection unavailable</h1>
     <p>
       Your session could not be checked. No private archive data has been
       loaded.
     </p>
-    <Button variant="outline" onclick={() => archive.start(routeTarget())}
+    <Button variant="outline" onclick={() => archive.start(current())}
       >Retry connection</Button
     >
   </main>
 {:else if passkeysOpen}
-  <main id="capture-main">
+  <main id="debug-main" tabindex="-1">
     <Passkeys
       state={$archive}
       onadd={archive.addPasskey}
@@ -211,69 +233,44 @@
       onback={() => (passkeysOpen = false)}
     />
   </main>
-{:else if operationsPage}
-  <main id="capture-main" class="operations-main">
-    <div class="workspace-toolbar">
-      <span>Independent private archive</span><label class="timezone-control"
+{:else}
+  <div class="context-bar">
+    <p>
+      <Info size={13} aria-hidden="true" />Archived observations, not live
+      health. Reading never contacts June or repeats an operation.
+    </p>
+    <div class="context-actions">
+      <label class="timezone-control"
         >Times<select aria-label="Timestamp timezone" bind:value={zone}
           ><option value="local">Local · {localZone}</option><option value="utc"
             >UTC</option
           ></select
         ></label
+      ><Button variant="outline" size="sm" onclick={refresh} disabled={busy}
+        ><RefreshCw size={13} aria-hidden="true" />{busy
+          ? "Reading…"
+          : "Refresh"}</Button
       >
     </div>
-    <OperationsView
-      state={$archive.operations}
-      {utc}
-      onsearch={archive.searchOperations}
-      onselect={navigateOperation}
-      onevents={(offset) =>
-        archive.selectOperation($archive.operations.selectedId, offset)}
-      onrefresh={() => {
-        void archive.searchOperations($archive.operations);
-        void archive.selectOperation(
-          $archive.operations.selectedId,
-          $archive.operations.eventOffset,
-        );
-      }}
-    />
-  </main>
-{:else}
-  <div class="app-workspace">
-    <div class="mobile-rail-toggle">
-      <Button
-        variant="outline"
-        aria-expanded={railOpen}
-        aria-controls="archive-rail"
-        onclick={() => (railOpen = !railOpen)}
-        ><Archive size={15} />Recent captures<ChevronDown size={15} /></Button
-      >
-    </div>
-    <aside
-      id="archive-rail"
-      class:rail-open={railOpen}
-      class="archive-rail"
-      aria-label="Capture archive"
-    >
-      <ArchiveRail
+  </div>
+  <main id="debug-main" tabindex="-1" class="workspace" bind:this={main}>
+    {#if route.view === "overview"}
+      <OverviewView
+        overview={$archive.overview}
+        {utc}
+        onnavigate={navigate}
+        onretry={archive.retryOverview}
+      />
+    {:else if route.view === "captures"}
+      <CapturesView
+        {route}
         state={$archive}
         {utc}
-        page={capturePage}
-        onsearch={(query, offset) => archive.search(query, offset)}
-        onselect={navigate}
+        onnavigate={navigate}
+        onretry={() => archive.open(route, true)}
       />
-    </aside>
-    <main id="capture-main" class="capture-main">
-      <div class="workspace-toolbar">
-        <span>Diagnostic evidence</span><label class="timezone-control"
-          >Times<select aria-label="Timestamp timezone" bind:value={zone}
-            ><option value="local">Local · {localZone}</option><option
-              value="utc">UTC</option
-            ></select
-          ></label
-        >
-      </div>
-      {#if $archive.captureBusy}<Loading />
+    {:else if route.view === "capture"}
+      {#if $archive.captureBusy && !$archive.snapshot}<Loading />
       {:else if $archive.captureError}
         <div class="empty-state" role="alert">
           <h1>
@@ -286,34 +283,47 @@
               ? "This capture is not in the archive. The upload may still be pending, or this archive may not contain it. Retry without creating a new capture."
               : "The archive could not return this capture. Try again; no evidence has been changed."}
           </p>
-          <Button
-            variant="outline"
-            onclick={() => archive.select($archive.selectedId)}
-            >Retry capture</Button
-          >
+          <div class="inline-actions">
+            <Button variant="outline" onclick={() => archive.open(route, true)}
+              >Retry capture</Button
+            >
+            <Button variant="ghost" {...link(capturesRoute, navigate)}
+              >Browse captures</Button
+            >
+          </div>
         </div>
       {:else if $archive.snapshot}
         {#key $archive.snapshot.id}<CaptureView
             snapshot={$archive.snapshot}
             {utc}
-            page={capturePage}
+            page={route.page}
+            links={$archive.captureLinks}
+            back={capturesRoute}
             downloading={$archive.downloadBusy}
             actionError={$archive.actionError}
             ondownload={download}
-            onpage={(page) => navigate($archive.snapshot!.id, page)}
+            onnavigate={navigate}
+            onretrylinks={() => {
+              if ($archive.snapshot)
+                void archive.retryCaptureLinks($archive.snapshot.id);
+            }}
           />{/key}
-      {:else}
-        <div class="empty-state">
-          <h1>No captures archived yet</h1>
-          <p>
-            Uploaded DEBUG captures will appear here. This site can read
-            archived evidence without contacting June.
-          </p>
-          <Button variant="outline" onclick={() => archive.select(null)}
-            >Check for captures</Button
-          >
-        </div>
       {/if}
-    </main>
-  </div>
+    {:else}
+      <OperationsView
+        {route}
+        state={$archive.operations}
+        {utc}
+        onnavigate={navigate}
+        onevents={(offset) =>
+          archive.selectOperation($archive.operations.selectedId, offset)}
+        onretrylist={() => archive.searchOperations($archive.operations)}
+        onretrydetail={() =>
+          archive.selectOperation(
+            $archive.operations.selectedId,
+            $archive.operations.eventOffset,
+          )}
+      />
+    {/if}
+  </main>
 {/if}
