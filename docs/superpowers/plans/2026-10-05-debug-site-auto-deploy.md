@@ -30,7 +30,7 @@ are separate observations.
   successful advancement, unchanged build inputs, failed candidate rollback,
   duplicate suppression, non-fast-forward main, storage-policy drift, and
   interrupted-operation fences before any systemd integration.
-- [ ] Add installed `debug-site-preflight.sh`, service and timer. Build under a
+- [x] Add installed `debug-site-preflight.sh`, service and timer. Build under a
   dedicated UID with bounded memory/time, no live archive/config access, frozen
   dependencies and disabled lifecycle hooks. Smoke-test the actual bundle on
   disposable data before promotion. Reject symlinks/hardlinks in promoted output.
@@ -38,12 +38,13 @@ are separate observations.
   main/server and inspection/schema/prompt hooks with the Operations thread,
   which owns those files. Expose only validated phases, reasons, revisions and
   timestamps; bounded credential-free health reads never follow redirects.
-- [ ] Verify June can discover and invoke owner-private
-  `inspection:"debug-site-deployment"`; interaction agents delegate it. Keep the
-  automation knowledge in interaction, execution and automated-event prompts.
-- [ ] Run formatting, lint, types, targeted Python/TypeScript checks and Oracle
+- [x] Verify June's owner-private `inspection:"debug-site-deployment"` workflow
+  in source; interaction agents delegate it. Keep the automation knowledge in
+  interaction, execution and automated-event prompts. Live June activation is
+  separate from this standalone-site rollout.
+- [x] Run formatting, lint, types, targeted Python/TypeScript checks and Oracle
   review. Publish atomic changes to main without including concurrent work.
-- [ ] Install reviewed controller policy and its provenance, bootstrap from a
+- [x] Install reviewed controller policy and its provenance, bootstrap from a
   verified healthy immutable release, enable the timer, and observe one real
   automatic update followed by a no-op poll. Verify loaded revision, readiness,
   status inspection, unchanged archive permissions and independence from June.
@@ -54,8 +55,27 @@ to other threads and are not part of this implementation.
 
 The status module and isolated health hooks are published in `4925a18`. The
 Operations thread owns the remaining June inspection/schema/prompt integration.
+Its local schema and dispatcher successfully read the live public receipt;
+disabled inspection rejects the request and missing integration reports unknown.
+The interaction/execution/automated prompt matrix passes. The Operations owner's
+four-turn worker fixture also passes after waiting for the receiving notification
+before teardown, without changing the production action budget. Its Oracle
+follow-up found no blockers. Integration publication remains with that owner;
+new June-facing instructions are not yet claimed live.
+
 Oracle's deployment review identified cgroup settlement, stable process identity
 and boot-lock creation gaps. They are covered by cgroup-v2 checks, five seconds
 of pinned invocation health, proxy/redirect rejection, and a tmpfiles rule. A
 final-probe restart race reproduced before the fix and is covered by the focused
-regression. Actual builder sandbox and timer installation remain to be verified.
+regression. Controller policy `af177bd` passed its actual isolated preflight and
+automatically advanced the site from `206557b` to `af177bd`; unchanged polls
+preserved its process. Credentials, unit and archive permissions were preserved.
+
+The runner subsequently restarted during a different build. The site recovered
+the verified release and the controller fenced the interrupted build, as designed.
+After checking no build survived and no new release was promoted, the operator
+reconciled the unchanged release and resumed the timer. Starting the existing
+ingress socket restored public readiness without restarting the site or June.
+No storage pins changed; Operations still requires a separately authorized
+forward installation. See `docs/debug-site.md` for historical receipts and the
+ingress boot-order limitation.

@@ -341,3 +341,32 @@ even while its service and disk remain healthy. The archive additionally shares
 Tower and the runner LXC with other runner workloads; it is not an off-site
 backup or a dedicated-host security boundary. No automatic archive retention or
 backup was enabled by this installation.
+
+The independent updater was enabled on 2026-10-05 with installed controller
+policy `af177bdd528ada18d7baa356c34b6fcdc77dae32`. Its first automatic activation
+advanced the site from `206557b1bf68c13b5580125b17e26903e6f2f463` to that revision;
+later unchanged polls preserved MainPID 206912 and the process invocation.
+Loopback/public readiness, the live credential-free inspection, private API
+boundaries, unchanged credentials/unit, and preserved archive inode/0600 mode
+were verified. June was not restarted by this standalone rollout.
+
+The dedicated builder uses a 4 GiB ceiling and 15-minute timeout. Its real
+sandboxed preflight and disposable-bundle smoke passed; the initial 2 GiB attempt
+was OOM-killed without touching the running site. Boot-lock creation and inode
+preservation were tested with an isolated tmpfiles root, not a host reboot.
+These are historical installation receipts: inspect current `/health`, timer
+state and installed provenance for current status. Later Operations storage
+changes still require the separately authorized forward-install procedure.
+
+On 2026-10-07 the runner returned after an interruption during a later build.
+The website recovered the same verified release (MainPID 85), the boot lock was
+created with 0600 permissions, and the poller fenced the interrupted build.
+No candidate had been promoted and no build process/cgroup survived. The operator
+reconciled the unchanged healthy release and resumed the timer without changing
+storage pins, restoring archive data, or restarting June.
+
+The existing ingress socket failed at boot because its explicit LAN address was
+not yet available (`Cannot assign requested address`). Starting that socket after
+the address appeared restored public readiness without restarting the website.
+Its persistent boot-order configuration was not changed by the updater rollout;
+loopback health alone does not prove public ingress is available after a reboot.
