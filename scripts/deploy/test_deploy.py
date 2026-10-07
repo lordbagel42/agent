@@ -888,6 +888,151 @@ class RecoverySafety(unittest.TestCase):
             self.recovery.flush()
         return json.loads(self.store.get("recovery"))["incident"]
 
+    def test_source_admission_is_metadata_only_and_survives_reconciliation(self):
+        for admission in (
+            self.incident,
+            lambda: self.recovery.record("controller_failed"),
+        ):
+            admission()
+            incident = json.loads(self.store.get("recovery"))
+            key = f"issue-source:recovery:{incident['incident']}"
+            self.assertTrue(self.store.get(key))
+            source = json.loads(self.store.get(key))
+            self.assertEqual(
+                source,
+                {
+                    "source": f"recovery:{incident['incident']}",
+                    "phase": "queued",
+                    "revision": incident["revision"],
+                },
+            )
+            incident.update(phase="spawned", thread=self.thread)
+            self.store.set("recovery", json.dumps(incident))
+            self.recovery.claim(incident["incident"], self.thread)
+            host = Mock()
+            deploy.Deployer(host, self.store).reconcile(self.revision, self.thread)
+            self.assertEqual(self.store.get("recovery"), "")
+            source = json.loads(self.store.get(key))
+            # Readiness/ownership is NOT evidence that an Amp turn returned.
+            self.assertEqual(source["phase"], "running")
+            self.assertEqual(source["threadId"], self.thread)
+
+    def test_source_return_requires_matching_single_terminal_and_successful_exit(self):
+        init = {"type": "system", "subtype": "init", "session_id": self.thread}
+        result = {
+            "type": "result",
+            "session_id": self.thread,
+            "is_error": False,
+            "result": "PRIVATE_RESULT",
+        }
+        for messages, code, expected in (
+            ([init, result], 0, "returned"),
+            ([init, result], 1, "unknown"),
+            ([init], 0, "unknown"),
+            ([result], 0, "unknown"),
+            (
+                [
+                    init,
+                    {**result, "session_id": "T-99999999-2222-3333-4444-555555555555"},
+                ],
+                0,
+                "unknown",
+            ),
+            ([init, {**result, "is_error": True}], 0, "unknown"),
+            ([init, result, result], 0, "unknown"),
+            ([init, init, result], 0, "unknown"),
+        ):
+            with self.subTest(messages=messages, code=code):
+                self.recovery.record("controller_failed")
+                number = json.loads(self.store.get("recovery"))["incident"]
+                fake = Mock()
+                fake.__enter__ = Mock(return_value=fake)
+                fake.__exit__ = Mock(return_value=False)
+                fake.wait.return_value = code
+
+                def stream(messages=messages):
+                    for message in messages:
+                        yield json.dumps(message) + "\n"
+                    # The dispatcher must retain metadata even if recovery is
+                    # cleared while the same observer is still draining output.
+                    self.store.set("recovery", "")
+
+                fake.stdout = stream()
+                with patch.object(deploy.subprocess, "Popen", return_value=fake):
+                    deploy.dispatch_recovery(
+                        self.config, number, self.root / "records/deploy.sqlite"
+                    )
+                raw = self.store.get(f"issue-source:recovery:{number}")
+                self.assertTrue(raw)
+                source = json.loads(raw)
+                self.assertEqual(source["phase"], expected)
+                self.assertNotIn("PRIVATE", raw)
+                if messages[0] == init:
+                    self.assertEqual(source["threadId"], self.thread)
+
+    def test_source_updates_never_commit_caller_transactions_or_regress(self):
+        self.assertTrue(hasattr(deploy, "record_recovery_source"))
+        incident = {"incident": 12, "revision": self.revision}
+        key = "issue-source:recovery:12"
+        deploy.record_recovery_source(self.store.db, incident, "running", self.thread)
+        self.store.db.execute("BEGIN IMMEDIATE")
+        self.store.db.execute("INSERT INTO state VALUES ('uncommitted','private')")
+        deploy.record_recovery_source(self.store.db, incident, "returned", self.thread)
+        self.assertTrue(self.store.db.in_transaction)
+        self.store.db.rollback()
+        self.assertEqual(self.store.get("uncommitted"), "")
+        self.assertEqual(json.loads(self.store.get(key))["phase"], "running")
+        deploy.record_recovery_source(self.store.db, incident, "returned", self.thread)
+        deploy.record_recovery_source(self.store.db, incident, "queued")
+        deploy.record_recovery_source(self.store.db, incident, "unknown")
+        self.assertEqual(
+            json.loads(self.store.get(key)),
+            {
+                "source": "recovery:12",
+                "phase": "returned",
+                "revision": self.revision,
+                "threadId": self.thread,
+            },
+        )
+
+    def test_source_late_thread_links_without_regressing_unknown_or_rebinding(self):
+        incident = {"incident": 23, "revision": self.revision}
+        deploy.record_recovery_source(self.store.db, incident, "unknown")
+        deploy.record_recovery_source(self.store.db, incident, "running", self.thread)
+        expected = {
+            "source": "recovery:23",
+            "phase": "unknown",
+            "revision": self.revision,
+            "threadId": self.thread,
+        }
+        self.assertEqual(
+            json.loads(self.store.get("issue-source:recovery:23")), expected
+        )
+        deploy.record_recovery_source(
+            self.store.db,
+            incident,
+            "returned",
+            "T-99999999-2222-3333-4444-555555555555",
+        )
+        self.assertEqual(
+            json.loads(self.store.get("issue-source:recovery:23")), expected
+        )
+
+    def test_source_storage_failure_never_blocks_dispatch(self):
+        self.assertTrue(hasattr(deploy, "record_recovery_source"))
+        self.store.db.execute("""CREATE TRIGGER source_unavailable BEFORE INSERT ON state
+            WHEN NEW.key LIKE 'issue-source:%' BEGIN SELECT RAISE(FAIL, 'private'); END""")
+        number = self.incident()
+        with (
+            patch.object(deploy.subprocess, "Popen", side_effect=OSError("private")),
+            self.assertRaises(OSError),
+        ):
+            deploy.dispatch_recovery(
+                self.config, number, self.root / "records/deploy.sqlite"
+            )
+        self.assertEqual(json.loads(self.store.get("recovery"))["phase"], "dispatching")
+        self.assertEqual(self.store.get(f"issue-source:recovery:{number}"), "")
+
     def test_dispatch_receipt_is_durable_private_and_never_recreated(self):
         number = self.incident()
         self.config["ampRecovery"]["ssh"] = ["/usr/bin/ssh", "fixture-runner"]
@@ -971,9 +1116,36 @@ class RecoverySafety(unittest.TestCase):
             )
             self.assertEqual(spawn.call_count, 1)
         self.assertEqual(json.loads(self.store.get("recovery"))["phase"], "dispatching")
+        raw = self.store.get(f"issue-source:recovery:{number}")
+        self.assertTrue(raw)
+        self.assertEqual(json.loads(raw)["phase"], "unknown")
         with patch.object(deploy.subprocess, "run") as start:
             self.recovery.flush()
             start.assert_not_called()
+
+    def test_optional_issue_tracker_failure_never_blocks_recovery_or_changes_policy(
+        self,
+    ):
+        number = self.incident()
+        self.config["issueTracker"] = {
+            "origin": "http://not-allowed.invalid",
+            "tokenFile": str(self.root / "missing-token"),
+        }
+        fake = Mock()
+        fake.__enter__ = Mock(return_value=fake)
+        fake.__exit__ = Mock(return_value=False)
+        fake.stdout = io.StringIO("")
+        with patch.object(deploy.subprocess, "Popen", return_value=fake) as spawn:
+            deploy.dispatch_recovery(
+                self.config, number, self.root / "records/deploy.sqlite"
+            )
+        argv = spawn.call_args.args[0]
+        self.assertEqual(argv[1:5], ["--mode", "ultra", "--features", "fast"])
+        self.assertIn(f'"source":"recovery:{number}"', argv[-1])
+        self.assertIn("/usr/local/lib/june-deploy/issues.py tool", argv[-1])
+        self.assertIn("explicit operator authorization", argv[-1])
+        self.assertIn("Require an Oracle review", argv[-1])
+        self.assertEqual(json.loads(self.store.get("recovery"))["phase"], "dispatching")
 
     def test_operator_hold_fences_pending_dispatch_and_claim(self):
         number = self.incident()

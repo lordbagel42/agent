@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     Bot,
+    CircleDot,
     Files,
     Fingerprint,
     Info,
@@ -15,6 +16,7 @@
   import { createArchive } from "$lib/archive.js";
   import CaptureView from "$lib/components/CaptureView.svelte";
   import CapturesView from "$lib/components/CapturesView.svelte";
+  import IssuesView from "$lib/components/IssuesView.svelte";
   import Loading from "$lib/components/Loading.svelte";
   import Login from "$lib/components/Login.svelte";
   import OperationsView from "$lib/components/OperationsView.svelte";
@@ -58,6 +60,7 @@
       $archive.operations.indexBusy ||
       $archive.operations.detailBusy ||
       $archive.captureLinks.busy ||
+      $archive.issuesBusy ||
       overviewSections.some((name) => $archive.overview[name].busy),
   );
   const sections = $derived([
@@ -72,6 +75,12 @@
       icon: Files,
       route: capturesRoute,
       active: route.view === "captures" || route.view === "capture",
+    },
+    {
+      label: "Issues",
+      icon: CircleDot,
+      route: { view: "issues" } as Route,
+      active: route.view === "issues",
     },
     ...(
       [
@@ -269,6 +278,13 @@
         onnavigate={navigate}
         onretry={() => archive.open(route, true)}
       />
+    {:else if route.view === "issues"}
+      <IssuesView
+        state={$archive}
+        {utc}
+        onrefresh={() => archive.loadIssues()}
+        onnavigate={navigate}
+      />
     {:else if route.view === "capture"}
       {#if $archive.captureBusy && !$archive.snapshot}<Loading />
       {:else if $archive.captureError}
@@ -293,6 +309,13 @@
           </div>
         </div>
       {:else if $archive.snapshot}
+        <IssuesView
+          state={$archive}
+          {utc}
+          compact
+          onrefresh={() => archive.loadIssues(`debug:${$archive.snapshot?.id}`)}
+          onnavigate={navigate}
+        />
         {#key $archive.snapshot.id}<CaptureView
             snapshot={$archive.snapshot}
             {utc}

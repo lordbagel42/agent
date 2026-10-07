@@ -107,6 +107,9 @@ raise SystemExit(1 if mode == 'lost-exit' else 0)
                 receipt = json.loads(dispatch.read_private(receipt_path, limit=65536))
                 self.assertEqual(receipt_path.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(
+                    receipt.get("kind"), "debugshare" if mode == "debug" else "amp-task"
+                )
+                self.assertEqual(
                     receipt["status"],
                     {
                         "task": "completed",
@@ -267,6 +270,9 @@ raise SystemExit(1 if mode == 'lost-exit' else 0)
                 "Any unresolved recovery record is an ownership fence", argv[-1]
             )
             self.assertIn("Oracle review is required and permitted", argv[-1])
+            self.assertIn(f'"source":"debug:{IDENTITY}"', argv[-1])
+            self.assertIn("/usr/local/lib/june-deploy/issues.py tool", argv[-1])
+            self.assertIn('"action":"complete"', argv[-1])
             self.assertNotIn("$(id)", argv[-1])
             saved = Path(root) / IDENTITY / "snapshot.json"
             self.assertEqual(saved.read_bytes(), data)
@@ -347,6 +353,7 @@ print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False}), f
                         receipt,
                         {
                             "id": IDENTITY,
+                            "kind": "debugshare",
                             "status": "unknown",
                             "threadId": THREAD,
                         },
@@ -356,6 +363,7 @@ print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False}), f
                         receipt,
                         {
                             "id": IDENTITY,
+                            "kind": "debugshare",
                             "status": "queued",
                             "retryAt": 130000,
                         },
@@ -375,6 +383,7 @@ print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False}), f
                     final,
                     {
                         "id": IDENTITY,
+                        "kind": "debugshare",
                         "status": "unknown" if outage == "lost-result" else "completed",
                         "threadId": THREAD,
                     },
@@ -412,10 +421,12 @@ assert json.loads(data)['id'] == identity
 (root / 'received').write_text(data)
 if mode == 'lost':
     raise SystemExit(1)
-thread = 'T-' + identity
+thread = 'T-' + ('-' * 36 if mode == 'invalid-thread' else identity)
 print(json.dumps({'type': 'system', 'subtype': 'init', 'session_id': thread}), flush=True)
 print(json.dumps({'type': 'result', 'session_id': 'T-wrong' if mode == 'mismatch' else thread,
                   'is_error': False, 'result': 'PRIVATE_REPORT'}), flush=True)
+if mode == 'duplicate-result':
+    print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False}), flush=True)
 """
         for mode, expected in (
             ("old-endpoint", "queued"),
@@ -423,6 +434,8 @@ print(json.dumps({'type': 'result', 'session_id': 'T-wrong' if mode == 'mismatch
             ("fence-failure", "unknown"),
             ("lost", "unknown"),
             ("mismatch", "unknown"),
+            ("invalid-thread", "unknown"),
+            ("duplicate-result", "unknown"),
             ("complete", "completed"),
         ):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
@@ -451,7 +464,14 @@ print(json.dumps({'type': 'result', 'session_id': 'T-wrong' if mode == 'mismatch
                 self.assertEqual(json.loads(receipt)["status"], expected)
                 self.assertEqual(
                     (directory / "received").exists(),
-                    mode in ("lost", "mismatch", "complete"),
+                    mode
+                    in (
+                        "lost",
+                        "mismatch",
+                        "invalid-thread",
+                        "duplicate-result",
+                        "complete",
+                    ),
                 )
                 (directory / "attempt").unlink()
                 dispatch.dispatch(directory, path, ssh)
@@ -599,6 +619,9 @@ print(json.dumps({'type': 'result', 'session_id': thread, 'is_error': False}), f
                             observed[identity],
                             {
                                 "id": identity,
+                                "kind": "amp-task"
+                                if identity == identities[8]
+                                else "debugshare",
                                 "status": "running",
                                 "threadId": f"T-{identity}",
                             },

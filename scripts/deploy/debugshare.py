@@ -16,7 +16,7 @@ from contextlib import ExitStack, suppress
 from pathlib import Path
 
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-THREAD = re.compile(r"T-[0-9a-f-]{36}", re.IGNORECASE)
+THREAD = re.compile(r"T-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 LIMIT = 64 * 1024 * 1024
 READY_TIMEOUT = 30
 
@@ -188,8 +188,12 @@ def dispatch(directory, path, ssh, reporter=None):
     observe_request(reporter, directory, path)
     if not dispatch_due(directory, identity):
         return
+    # Classify even pre-readiness receipts without requiring a metadata observer
+    # to open diagnostic snapshots or ordinary task prompts/results.
+    kind = "amp-task" if path.name.endswith(".task.json") else "debugshare"
     receipt = {
         "id": identity,
+        "kind": kind,
         "status": "queued",
         "retryAt": int(time.time() * 1000) + 30000,
     }
@@ -227,7 +231,7 @@ def dispatch(directory, path, ssh, reporter=None):
                 wait_ready(process.stdout, f"{command}\n".encode())
                 # Never send even buffered bytes before this durable fence. A
                 # crash after it is ambiguous, even if Amp emits no thread ID.
-                receipt = {"id": identity, "status": "running"}
+                receipt = {"id": identity, "kind": kind, "status": "running"}
                 save_receipt(directory, receipt)
                 observe_dispatch(
                     reporter, path, receipt, phase="launch", payload=payload
@@ -237,6 +241,7 @@ def dispatch(directory, path, ssh, reporter=None):
                 process.stdin.write(data)
                 process.stdin.close()
                 succeeded = False
+                result_seen = False
                 result = None
                 resolved = False
                 while line := process.stdout.readline(1_048_577):
@@ -263,10 +268,12 @@ def dispatch(directory, path, ssh, reporter=None):
                         )
                     if message.get("type") == "result":
                         if (
-                            not receipt.get("threadId")
+                            result_seen
+                            or not receipt.get("threadId")
                             or message.get("session_id") != receipt["threadId"]
                         ):
                             raise ValueError("invalid_debug_result")
+                        result_seen = True
                         succeeded = message.get("is_error") is False
                         # Completion alone is not a fix. Retain only the explicit
                         # UUID-bound attestation, never diagnostic report text.

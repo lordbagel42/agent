@@ -19,6 +19,7 @@ export async function publishDebugSite(
   publisher: DebugSitePublisher,
   persist: () => Promise<void>,
   now = Date.now(),
+  investigation?: Parameters<DebugSitePublisher["publish"]>[1],
 ) {
   if (state.status !== "pending" || (state.retryAt ?? 0) > now) return;
   if (state.url !== publisher.url(snapshot.id)) {
@@ -34,7 +35,7 @@ export async function publishDebugSite(
     now + Math.min(3_600_000, 15_000 * 2 ** Math.min(state.attempts - 1, 8));
   await persist();
   try {
-    await publisher.publish(snapshot);
+    await publisher.publish(snapshot, investigation);
     state.status = "saved";
     state.savedAt = now;
     delete state.retryAt;

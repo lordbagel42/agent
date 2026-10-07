@@ -18,6 +18,7 @@ const resolutionSchema = z.strictObject({
 });
 const receiptSchema = z.strictObject({
   id: idSchema,
+  kind: z.enum(["debugshare", "amp-task"]).optional(),
   status: z.enum(["queued", "running", "completed", "unknown"]),
   resolved: z.literal(true).optional(),
   retryAt: z.number().int().nonnegative().optional(),
@@ -55,6 +56,8 @@ export function createAmpInbox(
         ),
       );
       if (receipt.id !== id) throw new Error("Debug receipt identity mismatch");
+      if (receipt.kind && receipt.kind !== kind)
+        throw new Error("Debug receipt kind mismatch");
       return receipt;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -142,7 +145,7 @@ export function createDebugDispatcher(settings: {
     async inspect(id) {
       const receipt = await inbox.inspect(id);
       if (!receipt) return;
-      const { id: _id, result: _result, ...metadata } = receipt;
+      const { id: _id, kind: _kind, result: _result, ...metadata } = receipt;
       try {
         const resolution = resolutionSchema.parse(
           JSON.parse(

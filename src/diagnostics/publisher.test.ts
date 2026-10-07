@@ -85,6 +85,53 @@ it("uploads the complete snapshot with a write-only token and accepts only saved
   expect(publisher.url(id)).toBe(`${origin}/s/${id}`);
 });
 
+it("sends investigation metadata separately without changing immutable snapshot bytes", async () => {
+  const observations: unknown[] = [];
+  const origin = await listen(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    observations.push([
+      request.headers["x-june-investigation-phase"],
+      request.headers["x-june-investigation-thread"],
+      body,
+    ]);
+    response.end(JSON.stringify({ id, saved: true }));
+  });
+  const publisher = createDebugSitePublisher({ origin, token });
+  await publisher.publish(snapshot, { phase: "unavailable" });
+  await publisher.publish(snapshot, { phase: "returned", threadId: `T-${id}` });
+  expect(observations).toEqual([
+    ["unavailable", undefined, JSON.stringify(snapshot)],
+    ["returned", `T-${id}`, JSON.stringify(snapshot)],
+  ]);
+});
+
+it("reads issue metadata without viewer credentials and bounds responses", async () => {
+  let oversized = false;
+  const origin = await listen((request, response) => {
+    expect(request.method).toBe("GET");
+    expect(request.url).toBe("/api/ingest/issues");
+    expect(request.headers.authorization).toBe(`Bearer ${token}`);
+    response.end(
+      oversized
+        ? "x".repeat(262145)
+        : JSON.stringify({ enabled: true, items: [], total: 0, pending: [] }),
+    );
+  });
+  const publisher = createDebugSitePublisher({ origin, token });
+  expect(typeof publisher.inspectIssues).toBe("function");
+  expect(await publisher.inspectIssues?.()).toEqual({
+    enabled: true,
+    items: [],
+    total: 0,
+    pending: [],
+  });
+  oversized = true;
+  await expect(publisher.inspectIssues?.()).rejects.toThrow(
+    "Issue metadata unavailable",
+  );
+});
+
 it("rejects unsafe origins, credentials and IDs before making requests", () => {
   for (const origin of [
     "http://debug.example",

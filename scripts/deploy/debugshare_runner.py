@@ -91,6 +91,7 @@ def prompt(identity, snapshot, owner_report=False):
         "Use the existing operator credential mechanism over the pinned SSH route; never print "
         "credentials or post diagnostic details. This idempotent endpoint records resolution only, "
         "does not rerun Amp, and does not prove Slack delivery. Follow docs/deployment.md."
+        + runner.deploy.issue_tools_prompt(source=f"debug:{identity}")
     )
 
 

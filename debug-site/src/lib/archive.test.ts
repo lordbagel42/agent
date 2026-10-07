@@ -70,6 +70,86 @@ function transport() {
 }
 
 describe("private archive client", () => {
+  it("fences issue metadata by selection and session, including late responses after expiry", async () => {
+    const network = transport();
+    const archive = createArchive(network.fetcher);
+    const first = archive.loadIssues("debug:first");
+    const latest = archive.loadIssues("debug:latest");
+    network.reply("/api/issues?source=debug%3Alatest", {
+      enabled: true,
+      items: [{ number: 37 }],
+      total: 1,
+      pending: [],
+    });
+    await latest;
+    network.reply("/api/issues?source=debug%3Afirst", {
+      enabled: true,
+      items: [{ number: 12 }],
+      total: 1,
+      pending: [],
+    });
+    await first;
+    expect(get(archive).issues?.items[0]?.number).toBe(37);
+    const pending = archive.loadIssues();
+    const expired = archive.search("");
+    network.reply("/api/snapshots?q=&offset=0", {}, 401);
+    await expired;
+    network.reply("/api/issues", {
+      enabled: true,
+      items: [{ title: "private issue" }],
+      total: 1,
+      pending: [],
+    });
+    await pending;
+    expect(get(archive).phase).toBe("login");
+    expect(get(archive).issues).toBeNull();
+    expect(JSON.stringify(get(archive))).not.toContain("private issue");
+  });
+
+  it("restores the Issues route after sign-in and reloads metadata when switching between the index and a capture", async () => {
+    const paths: string[] = [];
+    const archive = createArchive(async (path) => {
+      paths.push(path);
+      if (path === "/api/session")
+        return Response.json({ authenticated: true });
+      if (path.startsWith("/api/issues"))
+        return Response.json({
+          enabled: true,
+          items: [{ number: path.includes("source=") ? 37 : 42 }],
+          total: 1,
+          pending: [],
+        });
+      if (path.startsWith("/api/operations"))
+        return Response.json(operationIndex("debugshare:linked"));
+      return Response.json(snapshot("linked"));
+    });
+    const issues: Route = { view: "issues" };
+    await archive.start(issues);
+    expect(paths).toEqual(["/api/session", "/api/issues"]);
+    expect(get(archive).issues?.items[0]?.number).toBe(42);
+    paths.length = 0;
+    await archive.open(capture("linked"));
+    expect(paths).toContain("/api/issues?source=debug%3Alinked");
+    expect(get(archive).issues?.items[0]?.number).toBe(37);
+    paths.length = 0;
+    await archive.open(capture("linked"));
+    expect(paths).toEqual([]);
+    await archive.open(issues);
+    expect(paths).toEqual(["/api/issues"]);
+    expect(get(archive).issues?.items[0]?.number).toBe(42);
+    paths.length = 0;
+    await archive.open(issues);
+    expect(paths).toEqual([]);
+    await archive.open(issues, true);
+    expect(paths).toEqual(["/api/issues"]);
+    paths.length = 0;
+    await archive.login("synthetic-viewer-token", issues);
+    expect(paths).toEqual(["/api/session", "/api/issues"]);
+    expect(get(archive).phase).toBe("ready");
+    archive.clear();
+    expect(get(archive).issues).toBeNull();
+  });
+
   it("does not let a slow previous capture replace the selected capture", async () => {
     const network = transport();
     const archive = createArchive(network.fetcher);
@@ -141,7 +221,7 @@ describe("private archive client", () => {
     expect(JSON.stringify(get(archive))).not.toContain("privateError");
   });
 
-  it("keeps a capture's recorded operation links with the capture that requested them", async () => {
+  it("keeps recorded operation and issue links with the capture that requested them", async () => {
     const network = transport();
     const archive = createArchive(network.fetcher);
     const first = archive.open(capture("first"));
@@ -151,13 +231,26 @@ describe("private archive client", () => {
       "/api/operations?q=second&offset=0&limit=20",
       operationIndex("debugshare:second"),
     );
+    network.reply("/api/issues?source=debug%3Asecond", {
+      enabled: true,
+      items: [{ number: 37 }],
+      total: 1,
+      pending: [],
+    });
     await second;
     network.reply("/api/snapshots/first", snapshot("first"));
     network.reply(
       "/api/operations?q=first&offset=0&limit=20",
       operationIndex("debugshare:first"),
     );
+    network.reply("/api/issues?source=debug%3Afirst", {
+      enabled: true,
+      items: [{ number: 12 }],
+      total: 1,
+      pending: [],
+    });
     await first;
+    expect(get(archive).issues?.items[0]?.number).toBe(37);
     expect(get(archive).captureLinks).toMatchObject({ id: "second" });
     expect(JSON.stringify(get(archive))).not.toContain("debugshare:first");
   });

@@ -17,6 +17,7 @@ export type OperationRoute = OperationFilters & {
 /** The URL is the only navigation state; API state never writes it back. */
 export type Route =
   | { view: "overview" }
+  | { view: "issues" }
   | { view: "captures"; query: string; offset: number }
   | { view: "capture"; id: string; page: CapturePage }
   | OperationRoute;
@@ -44,6 +45,8 @@ function offset(value: string | null) {
 
 export function parseRoute(pathname: string, search: string): Route {
   const params = new URLSearchParams(search);
+  if (pathname === "/issues" || pathname === "/issues/")
+    return { view: "issues" };
   const capture = /^\/s\/([^/]+)(\/conversation)?\/?$/.exec(pathname);
   if (capture?.[1]) {
     let id: string;
@@ -85,6 +88,7 @@ export function parseRoute(pathname: string, search: string): Route {
 
 export function routeHref(route: Route): string {
   if (route.view === "overview") return "/";
+  if (route.view === "issues") return "/issues";
   if (route.view === "capture")
     return `/s/${encodeURIComponent(route.id)}${route.page === "conversation" ? "/conversation" : ""}`;
   const params = new URLSearchParams();

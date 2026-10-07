@@ -14,7 +14,7 @@ import { setupTest } from "../../tests/rivet.js";
 import type { MessageEvent } from "../core/contracts.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import type { CapabilityContext } from "./capabilities.js";
-import { createDebugDispatcher } from "./debug-dispatch.js";
+import { createAmpInbox, createDebugDispatcher } from "./debug-dispatch.js";
 import { runExecutionCapability } from "./execution-capabilities.js";
 import {
   currentExecutionCapabilities,
@@ -124,6 +124,27 @@ it("records a late resolution idempotently without changing or relaunching the c
   expect(await restarted.resolve?.(taskId)).toBe(false);
   await expect(restarted.resolve?.("../invalid")).rejects.toThrow();
   await expect(restarted.resolve?.(id, () => false)).rejects.toThrow();
+});
+
+it("accepts typed host receipts only for the matching inbox", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "june-typed-receipt-"));
+  t.onTestFinished(() => rm(directory, { recursive: true, force: true }));
+  const id = randomUUID();
+  for (const kind of ["debugshare", "amp-task"] as const) {
+    await writeFile(
+      join(directory, `${id}.receipt.json`),
+      JSON.stringify({ id, kind, status: "queued" }),
+    );
+    expect(await createAmpInbox({ directory }, kind).inspect(id)).toMatchObject(
+      { status: "queued" },
+    );
+    await expect(
+      createAmpInbox(
+        { directory },
+        kind === "debugshare" ? "amp-task" : "debugshare",
+      ).inspect(id),
+    ).rejects.toThrow();
+  }
 });
 
 it("exposes late independent receipts through actor inspection after observation timed out", async (t) => {

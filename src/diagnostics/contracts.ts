@@ -18,8 +18,15 @@ export interface PasskeySummary {
   lastUsedAt: number | null;
 }
 
-/** Write-only host capability; it never grants June a viewer credential. */
+/** Upload and issue-metadata capability; never a viewer or automation credential. */
 export interface DebugSitePublisher {
   url(id: string): string;
-  publish(snapshot: DebugSnapshot): Promise<void>;
+  publish(
+    snapshot: DebugSnapshot,
+    investigation?: {
+      phase: "unavailable" | "queued" | "running" | "unknown" | "returned";
+      threadId?: string;
+    },
+  ): Promise<void>;
+  inspectIssues?(): Promise<unknown>;
 }

@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import type { DebugSnapshot } from "../runtime/session-controls.js";
+import { createIssueGitHub } from "./github-issues.js";
+import { IssueTracker } from "./issue-tracker.js";
 import { createDebugSite } from "./server.js";
 import { DiagnosticStore, MAX_SNAPSHOT_BYTES } from "./store.js";
 
@@ -273,4 +275,157 @@ it("reports its own revision and requires readable UI assets for readiness", asy
   expect((await app.request(`${origin}/health`)).status).toBe(503);
   rmSync(join(options.assets, "index.html"));
   expect((await app.request(`${origin}/health`)).status).toBe(503);
+});
+
+it("keeps issue automation separate from viewer/ingest authority and registers captures without a network dependency", async () => {
+  const { options, store } = fixture();
+  const token = "issue-automation-fixture".padEnd(48, "a");
+  const operatorToken = "issue-operator-fixture".padEnd(48, "o");
+  const operationsToken = "operations-reader-fixture".padEnd(48, "r");
+  const tracker = new IssueTracker({
+    store,
+    origin,
+    creatorId: 91,
+    github: createIssueGitHub({
+      token: "synthetic",
+      fetch: async () => {
+        throw new Error("offline");
+      },
+    }),
+  });
+  const app = createDebugSite({
+    ...options,
+    operationsToken,
+    issues: { token, operatorToken, tracker },
+  });
+  for (const reused of [token, operatorToken])
+    expect(() =>
+      createDebugSite({
+        ...options,
+        operationsToken: reused,
+        issues: { token, operatorToken, tracker },
+      }),
+    ).toThrow("Invalid debug site configuration");
+  const request = (path: string, credential: string, body?: unknown) =>
+    app.request(`${origin}${path}`, {
+      method: body ? "POST" : "GET",
+      headers: {
+        authorization: `Bearer ${credential}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  for (const credential of [viewerToken, ingestToken, operationsToken])
+    expect(
+      (
+        await request("/api/issue-tools", credential, {
+          action: "track",
+          source: `debug:${snapshot.id}`,
+        })
+      ).status,
+    ).toBe(401);
+  expect((await request("/api/snapshots", token)).status).toBe(401);
+  expect((await request("/api/issues", token)).status).toBe(401);
+  expect((await request("/api/issues", operationsToken)).status).toBe(401);
+  expect((await request("/api/operations-read", token)).status).toBe(401);
+  expect((await request("/api/operations-read", operationsToken)).status).toBe(
+    200,
+  );
+  for (const credential of [viewerToken, ingestToken, token, operationsToken])
+    expect(
+      (await request("/api/issue-reconciliation/7", credential, {})).status,
+    ).toBe(401);
+  expect(
+    (await request("/api/issue-reconciliation/7", operatorToken, {})).status,
+  ).toBe(409);
+  expect(
+    (await request("/api/issue-tools", operatorToken, { action: "inspect" }))
+      .status,
+  ).toBe(401);
+  expect(
+    (
+      await request("/api/issue-sources", token, {
+        source: "recovery:71",
+        phase: "queued",
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await request("/api/issue-sources", ingestToken, {
+        source: "recovery:71",
+        phase: "returned",
+      })
+    ).status,
+  ).toBe(401);
+  const uploaded = await app.request(`${origin}/api/ingest/${snapshot.id}`, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${ingestToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(snapshot),
+  });
+  expect(uploaded.status).toBe(201);
+  const index = await (await request("/api/ingest/issues", ingestToken)).json();
+  expect(index).toMatchObject({
+    enabled: true,
+    pending: [
+      { source: `debug:${snapshot.id}`, status: "pending" },
+      { source: "recovery:71", status: "pending" },
+    ],
+  });
+  expect(JSON.stringify(index)).not.toContain(snapshot.reason);
+  expect(JSON.stringify(index)).not.toContain("synthetic private evidence");
+  expect((await request("/api/issues", viewerToken)).status).toBe(200);
+  expect((await request("/issues", "")).status).toBe(200);
+  const tools = await (
+    await request("/mcp/issues", token, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+      params: {},
+    })
+  ).json();
+  expect(tools.result.tools.map((tool: { name: string }) => tool.name)).toEqual(
+    ["issue_track", "issue_inspect", "issue_comment", "issue_complete"],
+  );
+  const call = await (
+    await request("/mcp/issues", token, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "issue_inspect",
+        arguments: { source: `debug:${snapshot.id}` },
+      },
+    })
+  ).json();
+  expect(call.result.structuredContent.result).toMatchObject({
+    status: "pending",
+    snapshotOnly: true,
+  });
+  const shared = {
+    ...snapshot,
+    id: "20000000-0000-4000-8000-000000000001",
+    snapshotOnly: false,
+  };
+  expect(
+    (
+      await app.request(`${origin}/api/ingest/${shared.id}`, {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${ingestToken}`,
+          "content-type": "application/json",
+          "x-june-investigation-phase": "unavailable",
+        },
+        body: JSON.stringify(shared),
+      })
+    ).status,
+  ).toBe(201);
+  expect(
+    await tracker.run({ action: "inspect", source: `debug:${shared.id}` }),
+  ).toMatchObject({ phase: "unavailable" });
+  expect(store.get(shared.id)).toEqual(shared);
 });

@@ -2,6 +2,8 @@ import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { createDebugSiteDeploymentReader } from "./deployment.js";
+import { createIssueGitHub } from "./github-issues.js";
+import { IssueTracker } from "./issue-tracker.js";
 import { createDebugSite } from "./server.js";
 import { DiagnosticStore } from "./store.js";
 
@@ -27,6 +29,33 @@ if (
     "Debug site requires its own database, origin, credentials and valid port",
   );
 const store = new DiagnosticStore(file);
+const issueToken = process.env.JUNE_DEBUG_ISSUE_TOKEN;
+const githubToken = process.env.JUNE_DEBUG_GITHUB_TOKEN;
+const creatorId = Number(process.env.JUNE_DEBUG_GITHUB_ACTOR_ID);
+const issueEnabled = process.env.JUNE_DEBUG_ISSUES_ENABLED === "1";
+if (
+  issueEnabled &&
+  (!issueToken ||
+    !githubToken ||
+    !Number.isSafeInteger(creatorId) ||
+    creatorId < 1)
+)
+  throw new Error(
+    "Issue tracking requires separate automation and GitHub credentials and a verified GitHub actor ID",
+  );
+const issues =
+  issueEnabled && issueToken && githubToken
+    ? {
+        token: issueToken,
+        operatorToken: process.env.JUNE_DEBUG_ISSUE_OPERATOR_TOKEN,
+        tracker: new IssueTracker({
+          store,
+          origin,
+          creatorId,
+          github: createIssueGitHub({ token: githubToken }),
+        }),
+      }
+    : undefined;
 const app = createDebugSite({
   origin,
   viewerToken,
@@ -38,14 +67,34 @@ const app = createDebugSite({
   deployment: createDebugSiteDeploymentReader({
     file: "/var/lib/june-debug-deploy/public/status.json",
   }),
+  issues,
 });
+let timer: ReturnType<typeof setTimeout> | undefined;
+let stopping = false;
+let syncing: Promise<void> = Promise.resolve();
+const poll = () => {
+  if (!issues || stopping) return;
+  syncing = issues.tracker
+    .sync()
+    .catch(() => {
+      console.error("issue_sync_unavailable");
+    })
+    .finally(() => {
+      if (!stopping) timer = setTimeout(poll, 30_000);
+    });
+};
+poll();
 const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, () =>
   console.info("june_debug_ready"),
 );
-const stop = () =>
-  server.close(() => {
+const stop = () => {
+  stopping = true;
+  clearTimeout(timer);
+  server.close(async () => {
+    await syncing;
     store.close();
     process.exit(0);
   });
+};
 process.once("SIGTERM", stop);
 process.once("SIGINT", stop);

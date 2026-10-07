@@ -398,7 +398,7 @@ export function createDebugAuth(options: {
     deleteCookie(c, browserCookie, cookieOptions);
     return c.json({ authenticated: false });
   });
-  for (const path of ["/snapshots*", "/operations*"]) {
+  for (const path of ["/snapshots*", "/operations*", "/issues"]) {
     app.use(path, async (c, next) => {
       if (!authenticated(c.req.raw, getCookie(c, cookie)))
         return c.json({ error: "unauthorized" }, 401);

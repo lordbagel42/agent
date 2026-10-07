@@ -1539,6 +1539,111 @@ a.revision {
   padding-top: 20px;
   border-top: 1px solid var(--line);
 }
+.issues-heading,
+.issues-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+.issues-heading {
+  justify-content: space-between;
+}
+.issues-heading p {
+  margin-top: 6px;
+}
+.issues-controls input {
+  max-width: 420px;
+}
+.issues-controls select {
+  background: var(--inset);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  min-height: 34px;
+  padding: 4px 12px;
+}
+.issue-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border-block: 1px solid var(--line);
+}
+.issue-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 185px 180px;
+  gap: 24px;
+  padding: 20px 0;
+}
+.issue-row + .issue-row {
+  border-top: 1px solid var(--line);
+}
+.issue-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-weight: 500;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.issue-number {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.issue-title:hover,
+.issue-links a:hover {
+  text-decoration: underline;
+}
+.issue-links {
+  display: flex;
+  gap: 8px 20px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 0.86rem;
+  color: var(--muted-text);
+}
+.issue-state,
+.issue-updated {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 0.86rem;
+}
+.issue-state > span:last-child {
+  color: var(--muted-text);
+}
+.issue-state > .issue-uncertain:last-child {
+  color: var(--danger);
+}
+.issue-notice {
+  padding: 20px 0;
+}
+.issue-notice p {
+  margin-top: 6px;
+  color: var(--muted-text);
+  overflow-wrap: anywhere;
+}
+.issues-footnote {
+  margin-top: 16px;
+  color: var(--muted-text);
+  font-size: 0.86rem;
+}
+.issues-view.compact {
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 20px;
+}
+.issues-view.compact .issues-heading {
+  margin-bottom: 8px;
+}
+.issues-view.compact .issue-row {
+  grid-template-columns: minmax(0, 1fr) 170px;
+  padding-block: 12px;
+}
+.issues-view.compact .issue-list {
+  border: 0;
+}
 .loading-state {
   padding: 32px 24px;
 }
@@ -1613,6 +1718,18 @@ a.revision {
   [data-slot="input"],
   select {
     min-height: 44px;
+  }
+  .issue-row,
+  .issues-view.compact .issue-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .issue-state,
+  .issue-updated {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
   }
   .app-header {
     flex-wrap: wrap;

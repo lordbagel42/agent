@@ -36,7 +36,11 @@ INPUTS = (
     "biome.json",
     "tsconfig.json",
 )
-STORAGE = ("src/diagnostics/store.ts", "src/diagnostics/operations.ts")
+STORAGE = (
+    "src/diagnostics/store.ts",
+    "src/diagnostics/operations.ts",
+    "src/diagnostics/issue-tracker.ts",
+)
 
 
 class Interrupted(RuntimeError):

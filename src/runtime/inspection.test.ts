@@ -34,6 +34,32 @@ import {
   type JuneClientRegistry,
 } from "./registry.js";
 
+it("exposes read-only issue metadata to the existing authorized inspection workflow", async () => {
+  const parsed = parseReply(
+    JSON.stringify({ text: "", inspection: "debug-issues" }),
+    [],
+    { inspectionAvailable: true },
+  );
+  expect(parsed.inspection).toBe("debug-issues");
+  expect(
+    JSON.stringify(replyJsonSchema([], { inspectionAvailable: true })),
+  ).toContain('"debug-issues"');
+  const read = createInspectionReader({
+    audience: "private",
+    selections: {},
+    debugIssues: async () => ({
+      enabled: true,
+      items: [{ number: 37, state: "open", job: { phase: "unknown" } }],
+    }),
+  });
+  expect(await read("debug-issues")).toContain('"phase":"unknown"');
+  expect(
+    await createInspectionReader({ audience: "private", selections: {} })(
+      "debug-issues",
+    ),
+  ).toContain("unavailable");
+});
+
 it("advertises import cancellation only when mounted outside setup mode", () => {
   const config = parseConfig({
     setupMode: true,

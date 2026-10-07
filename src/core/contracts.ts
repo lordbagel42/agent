@@ -327,6 +327,7 @@ export interface CompanionReply {
     | "forgetting"
     | "operations"
     | "debug-shares"
+    | "debug-issues"
     | "sandboxes"
     | "debug-operations"
     | "debug-site-deployment"

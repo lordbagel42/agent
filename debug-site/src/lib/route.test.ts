@@ -9,6 +9,8 @@ const parse = (href: string) => {
 describe("debug routes", () => {
   it("keeps capture links exact and makes the root an overview", () => {
     expect(parse("/")).toEqual({ view: "overview" });
+    expect(parse("/issues")).toEqual({ view: "issues" });
+    expect(parse("/issues/?view=captures")).toEqual({ view: "issues" });
     expect(parse("/s/e782a1c4-9d2f/conversation")).toEqual({
       view: "capture",
       id: "e782a1c4-9d2f",
@@ -17,6 +19,7 @@ describe("debug routes", () => {
     expect(parse("/s/%25bad")).toMatchObject({ id: "%bad", page: "evidence" });
     expect(parse("/s/%E0%A4%A")).toMatchObject({ id: "invalid-capture-id" });
     for (const href of [
+      "/issues",
       "/s/e782a1c4-9d2f",
       "/s/e782a1c4-9d2f/conversation",
       "/?view=captures&q=delivery+receipt&offset=50",

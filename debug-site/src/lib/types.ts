@@ -3,6 +3,7 @@ export type {
   DiagnosticSummary,
   PasskeySummary,
 } from "../../../src/diagnostics/contracts.js";
+export type { IssueIndex } from "../../../src/diagnostics/issue-tracker.js";
 export type {
   OperationDetail,
   OperationEvent,

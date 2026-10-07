@@ -521,6 +521,11 @@ class Deployer:
             # Copy the verified ownership receipt before clearing live state.
             # The operation journal is permanent; its failure cannot block clear.
             self.store.report("recovery", incident, status="reconciled")
+            # Reconciliation proves readiness, not a returned Amp turn. Retain
+            # linkage before clearing ownership; the observer may return later.
+            record_recovery_source(
+                self.store.db, incident, "running", incident.get("thread")
+            )
             self.store.set("recovery", "")
             self.store.publish()
 
@@ -914,6 +919,57 @@ class Deployer:
             s.block(target, "activation_unknown")
 
 
+def record_recovery_source(db, incident, phase, thread=None):
+    """Optional local metadata only. Never commit a caller's open transaction.
+
+    Receipts are retained independently of recovery ownership. Recording them
+    does not opt in to external tracking: only the separately configured source
+    exporter publishes them, using its automation credential, without deploy.lock.
+    """
+    try:
+        if db.in_transaction:
+            return
+        number = incident["incident"]
+        phases = ("queued", "running", "unknown", "returned")
+        if type(number) is not int or not 0 < number < 10**19 or phase not in phases:
+            return
+        source = f"recovery:{number}"
+        value = {
+            "source": source,
+            "phase": phase,
+            "revision": revision(incident["revision"]),
+        }
+        if thread is not None:
+            if not isinstance(thread, str) or not THREAD.fullmatch(thread):
+                return
+            value["threadId"] = thread
+        if phase == "returned" and thread is None:
+            return
+        with db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT value FROM state WHERE key=? AND length(value)<=1024",
+                (f"issue-source:{source}",),
+            ).fetchone()
+            if row:
+                before = json.loads(row[0])
+                if before.get("source") != source or before.get("phase") not in phases:
+                    return
+                if phases.index(before["phase"]) > phases.index(phase):
+                    value["phase"] = before["phase"]
+                if "threadId" in before:
+                    if thread not in (None, before["threadId"]):
+                        return  # Never rebind a source to a different observer.
+                    value["threadId"] = before["threadId"]
+                value["revision"] = before["revision"]
+            db.execute(
+                "INSERT OR REPLACE INTO state VALUES (?,?)",
+                (f"issue-source:{source}", json.dumps(value)),
+            )
+    except Exception:  # noqa: BLE001, S110 - optional reporting cannot block recovery
+        pass
+
+
 class Recovery:
     """Durable, single-attempt dispatch; never infer ownership from a free lock."""
 
@@ -944,6 +1000,9 @@ class Recovery:
                         "phase": "pending",
                     }
                 ),
+            )
+            record_recovery_source(
+                self.store.db, json.loads(self.store.get("recovery")), "queued"
             )
             self.publish()
 
@@ -991,6 +1050,7 @@ class Recovery:
         incident = json.loads(raw)
         if incident["phase"] != "pending":
             return
+        record_recovery_source(s.db, incident, "queued")
         try:
             # The worker atomically consumes pending before invoking Amp. Even a
             # lost systemd response or worker restart cannot launch twice.
@@ -1021,6 +1081,71 @@ class Recovery:
             raise ValueError("recovery_claim_denied")
         incident["owner"] = thread
         self.store.set("recovery", json.dumps(incident))
+        record_recovery_source(self.store.db, incident, "running", thread)
+
+
+def issue_tools_prompt(*, source=None, number=None, can_complete=True):
+    """Agent-facing fallback; no token, incident authority, or launch capability."""
+    command = "sudo -n /usr/bin/python3 -I /usr/local/lib/june-deploy/issues.py tool"
+
+    def example(action):
+        return f"printf '%s\\n' {shlex.quote(json.dumps(action, separators=(',', ':')))} | {command}"
+
+    identity = {"source": source} if source else {"number": number}
+    text = (
+        " GitHub issue tracking is independent of June at debug.raygen.dev. Use the issue MCP "
+        "tools when available, or this installed fallback on amp-runner (never read its private "
+        "automation token). If unavailable, report the tracking blocker without blocking your "
+        "otherwise-authorized assignment; this helper grants no installation/configuration authority. "
+        "Do not create duplicate threads "
+        "or a second issue via another channel. Tool availability adds no authority. "
+    )
+    if source:
+        text += (
+            "Track this exact source even when archive ingestion is disabled; registration may already "
+            "exist and is idempotent. Generated diagnostic/recovery issues stay with this investigator, "
+            "not the issue-job queue. Run: "
+            + example({"action": "track", "source": source})
+            + ". Use the returned linked issue number; pending/unknown is not a new-issue invitation. "
+        )
+    text += (
+        "Inspect: " + example({"action": "inspect", **identity}) + ". "
+        "Post meaningful public-safe progress and blockers, never raw logs, private message bodies, "
+        "credentials, or diagnostic snapshots. Replace YOUR_STABLE_UUID with a newly generated UUID "
+        "once per logical comment/completion, and YOUR_THREAD_ID with this Amp thread ID. Persist "
+        "and reuse the identical key and payload after response loss; inspect/reconcile unknown "
+        "effects, never generate a fresh key to retry. "
+        + ("Replace example number 37 with the linked issue number. " if source else "")
+        + "Comment: "
+        + example(
+            {
+                "action": "comment",
+                "number": number or 37,
+                "body": "Public-safe progress or blocker",
+                "key": "YOUR_STABLE_UUID",
+                "threadId": "YOUR_THREAD_ID",
+            }
+        )
+        + ". "
+    )
+    if can_complete:
+        text += (
+            "Only complete after the reviewed code fix is published to remote main. The tool verifies "
+            "the full commit is on remote main before posting completion and closing; publication is "
+            "not proof of deployment. Complete: "
+            + example(
+                {
+                    "action": "complete",
+                    "number": number or 37,
+                    "body": "Published fix and verification",
+                    "key": "YOUR_STABLE_UUID",
+                    "commit": "FULL_40_CHARACTER_MAIN_COMMIT",
+                    "threadId": "YOUR_THREAD_ID",
+                }
+            )
+            + ". A successful returned turn is not issue completion. "
+        )
+    return text
 
 
 def recovery_prompt(number, commit, reason):
@@ -1057,6 +1182,7 @@ def recovery_prompt(number, commit, reason):
         "June launches DEBUGSHARE investigators and deployment-recovery agents in Ultra "
         "reasoning mode with the mandatory Fast thread feature. Preserve this policy "
         "in any launcher repairs; ordinary jobs keep their existing reasoning modes."
+        + issue_tools_prompt(source=f"recovery:{number}")
     )
 
 
@@ -1118,6 +1244,9 @@ def dispatch_recovery(
     launched = None
     acknowledged = False
     db = sqlite3.connect(database)
+    admitted = False
+    observed_thread = None
+    terminal_phase = "unknown"
     try:
         with db:
             db.execute("BEGIN IMMEDIATE")
@@ -1128,15 +1257,26 @@ def dispatch_recovery(
             if (hold and hold[0]) or not row or not row[0]:
                 return
             incident = json.loads(row[0])
-            if incident["incident"] != number or incident["phase"] != "pending":
+            if incident["incident"] != number:
                 return
-            incident["phase"] = "dispatching"
-            raw = json.dumps(incident)
-            db.execute("UPDATE state SET value=? WHERE key='recovery'", (raw,))
+            pending = incident["phase"] == "pending"
+            if pending:
+                incident["phase"] = "dispatching"
+                raw = json.dumps(incident)
+                db.execute("UPDATE state SET value=? WHERE key='recovery'", (raw,))
+        if not pending:
+            # A restarted observer cannot prove the prior turn returned, and
+            # cannot relaunch it. Keep any already verified terminal metadata.
+            record_recovery_source(db, incident, "unknown", incident.get("thread"))
+            return
+        admitted = True
         launched = incident
         # Local-only write AFTER committing the launch CAS. No transaction or
         # deployment lock is ever held waiting for the operations collector.
         report_operations(reporter, "recovery", incident)
+        # Local launch intent only, not proof of an Amp thread or live process.
+        # No tracker HTTP (even when issueTracker is configured) in dispatch.
+        record_recovery_source(db, incident, "running")
         prompt = recovery_prompt(number, incident["revision"], incident["reason"])
         argv = amp_job_argv(
             command,
@@ -1149,6 +1289,9 @@ def dispatch_recovery(
         # rather than letting SSH concatenate unquoted prompt arguments.
         if ssh is not None:
             argv = [*ssh, shlex.join(argv)]
+        valid = True
+        result_seen = False
+        succeeded = False
         with subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -1161,8 +1304,10 @@ def dispatch_recovery(
                 try:
                     message = json.loads(line)
                 except ValueError:
+                    valid = False
                     continue
                 if not isinstance(message, dict):
+                    valid = False
                     continue
                 thread = message.get("session_id")
                 if (
@@ -1181,9 +1326,26 @@ def dispatch_recovery(
                         acknowledged = True
                         report_operations(reporter, "recovery", incident)
                     # Continue draining without overwriting a later claim.
-            process.wait()
+                    if observed_thread is not None or result_seen:
+                        valid = False
+                    else:
+                        observed_thread = thread
+                        record_recovery_source(db, incident, "running", thread)
+                elif (
+                    message.get("type") == "system" and message.get("subtype") == "init"
+                ):
+                    valid = False
+                if message.get("type") == "result":
+                    if result_seen or not observed_thread or thread != observed_thread:
+                        valid = False
+                    result_seen = True
+                    succeeded = message.get("is_error") is False
+            if process.wait() == 0 and valid and result_seen and succeeded:
+                terminal_phase = "returned"
         # A missing receipt/failed command is ambiguous, not permission to retry.
     finally:
+        if admitted:
+            record_recovery_source(db, incident, terminal_phase, observed_thread)
         db.close()
         if launched and not acknowledged:
             report_operations(reporter, "recovery", launched, status="unknown")

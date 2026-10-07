@@ -177,7 +177,9 @@ export class DiagnosticStore {
         CREATE TABLE IF NOT EXISTS passkeys (
           id TEXT PRIMARY KEY, name TEXT NOT NULL, public_key BLOB NOT NULL,
           counter INTEGER NOT NULL, transports TEXT NOT NULL,
-          created_at INTEGER NOT NULL, last_used_at INTEGER);`);
+          created_at INTEGER NOT NULL, last_used_at INTEGER);
+        CREATE TABLE IF NOT EXISTS issue_records (
+          id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
       initializeOperations(this.db);
       this.db
         .prepare("INSERT OR IGNORE INTO passkey_owner VALUES(1,?)")
@@ -301,6 +303,38 @@ export class DiagnosticStore {
 
   operation(id: string, offset = 0) {
     return this.access((db) => getOperation(db, id, offset));
+  }
+
+  /** Mutable issue metadata and write-ahead receipts never alter capture bytes. */
+  issueRecord<T>(id: string): T | undefined {
+    return this.access((db) => {
+      const row = db
+        .prepare("SELECT value FROM issue_records WHERE id=?")
+        .get(id);
+      return row ? (JSON.parse(row.value as string) as T) : undefined;
+    });
+  }
+
+  issueRecords<T>(prefix: string): T[] {
+    return this.access((db) =>
+      db
+        .prepare(
+          "SELECT value FROM issue_records WHERE substr(id,1,?)=? ORDER BY id",
+        )
+        .all(prefix.length, prefix)
+        .map((row) => JSON.parse(row.value as string) as T),
+    );
+  }
+
+  saveIssueRecord(id: string, value: unknown): void {
+    const json = JSON.stringify(value);
+    this.access((db) =>
+      db
+        .prepare(
+          "INSERT INTO issue_records(id,value) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
+        )
+        .run(id, json),
+    );
   }
 
   passkeyUserId(): Uint8Array<ArrayBuffer> {

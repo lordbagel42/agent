@@ -13,6 +13,7 @@ import {
 import type {
   DebugSnapshot,
   DiagnosticIndex,
+  IssueIndex,
   OperationDetail,
   OperationEvent,
   OperationIndex,
@@ -91,6 +92,10 @@ export interface ArchiveState {
   passkeyBusy: boolean;
   passkeyError: string;
   passkeyNotice: string;
+  issues: IssueIndex | null;
+  issuesSource: string | null;
+  issuesBusy: boolean;
+  issuesError: boolean;
   indexError: boolean;
   captureError: "missing" | "failed" | null;
   notice: string;
@@ -116,6 +121,10 @@ const initial = (): ArchiveState => ({
   passkeyBusy: false,
   passkeyError: "",
   passkeyNotice: "",
+  issues: null,
+  issuesSource: null,
+  issuesBusy: false,
+  issuesError: false,
   indexError: false,
   captureError: null,
   notice: "",
@@ -203,6 +212,7 @@ export function createArchive(
     deployments: 0,
     amp: 0,
   };
+  let issueSequence = 0;
   function patch(update: Partial<ArchiveState>) {
     state = { ...state, ...update };
     store.set(state);
@@ -261,6 +271,35 @@ export function createArchive(
     }
     if (!response.ok) throw new HttpError(response.status);
     return response;
+  }
+  async function loadIssues(source = "") {
+    const generation = epoch;
+    const sequence = ++issueSequence;
+    patch({
+      issues: null,
+      issuesSource: source,
+      issuesBusy: true,
+      issuesError: false,
+    });
+    try {
+      const issues = (await (
+        await request(
+          `/api/issues${source ? `?${new URLSearchParams({ source })}` : ""}`,
+          generation,
+        )
+      ).json()) as IssueIndex;
+      if (
+        !Array.isArray(issues.items) ||
+        !Array.isArray(issues.pending) ||
+        typeof issues.enabled !== "boolean"
+      )
+        throw new HttpError(0);
+      if (generation === epoch && sequence === issueSequence)
+        patch({ issues, issuesBusy: false });
+    } catch {
+      if (generation === epoch && sequence === issueSequence)
+        patch({ issuesError: true, issuesBusy: false });
+    }
   }
   async function search(query: string, offset = 0) {
     const generation = epoch;
@@ -416,6 +455,15 @@ export function createArchive(
    */
   async function open(route: Route, force = false) {
     const reads: Promise<void>[] = [];
+    if (route.view === "issues" || route.view === "capture") {
+      const source = route.view === "capture" ? `debug:${route.id}` : "";
+      if (
+        force ||
+        state.issuesSource !== source ||
+        (!state.issues && !state.issuesBusy)
+      )
+        reads.push(loadIssues(source));
+    }
     if (route.view === "overview") reads.push(loadOverview(force));
     else if (route.view === "captures") {
       if (
@@ -434,7 +482,7 @@ export function createArchive(
         reads.push(select(route.id));
       if (force || state.captureLinks.id !== route.id)
         reads.push(loadCaptureLinks(route.id));
-    } else {
+    } else if (route.view === "operations") {
       const operations = state.operations;
       if (
         force ||
@@ -700,6 +748,7 @@ export function createArchive(
     selectOperation,
     retryOverview: (name: OverviewName) => loadOverview(true, name),
     retryCaptureLinks: loadCaptureLinks,
+    loadIssues,
     login,
     loginWithPasskey,
     loadPasskeys,

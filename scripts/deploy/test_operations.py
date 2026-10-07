@@ -290,7 +290,7 @@ class Operations(unittest.TestCase):
         receipt_path = self.root / f"{IDENTITY}.receipt.json"
         self.assertEqual(
             json.loads(receipt_path.read_text()),
-            {"id": IDENTITY, "status": "queued", "retryAt": 130000},
+            {"id": IDENTITY, "kind": "amp-task", "status": "queued", "retryAt": 130000},
         )
         self.assertEqual(self.events("amp-task")[-1]["reason"], "readiness_unavailable")
         self.assertEqual(self.events("amp-task")[-1]["attempt"], 1)
@@ -445,7 +445,7 @@ class Operations(unittest.TestCase):
                     )
                 self.assertEqual(
                     json.loads(receipt_path.read_text()),
-                    {"id": IDENTITY, "status": "unknown"},
+                    {"id": IDENTITY, "kind": "amp-task", "status": "unknown"},
                 )
         events = self.events("amp-task")
         self.assertEqual(

@@ -12,7 +12,6 @@ from unittest.mock import Mock, patch
 from debug_site import Host as InstalledHost
 from debug_site import Interrupted, bundle_digest, run_once
 
-
 OLD = "1" * 40
 NEW = "2" * 40
 
@@ -260,6 +259,27 @@ class DeploymentTests(unittest.TestCase):
         )
         self.assertEqual(self.state["phase"], "failed")
         self.assertEqual(self.state["reason"], "preflight_failed")
+
+    def test_issue_journal_policy_requires_a_reviewed_storage_pin(self):
+        pins = {
+            "src/diagnostics/store.ts": OLD,
+            "src/diagnostics/operations.ts": OLD,
+            "src/diagnostics/issue-tracker.ts": NEW,
+        }
+        host = InstalledHost({"enabled": False, "storagePins": pins})
+        with patch.object(
+            host,
+            "git",
+            side_effect=lambda *args: (
+                f"100644 blob {pins[args[-1]]}\t{args[-1]}".encode()
+            ),
+        ):
+            self.assertTrue(host.storage_allowed(NEW))
+            host.storage = {**pins, "src/diagnostics/issue-tracker.ts": OLD}
+            self.assertFalse(host.storage_allowed(NEW))
+        del pins["src/diagnostics/issue-tracker.ts"]
+        with self.assertRaisesRegex(ValueError, "invalid_policy"):
+            InstalledHost({"enabled": False, "storagePins": pins})
 
     def test_bundle_digest_rejects_linked_output_and_detects_changed_bytes(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -2,6 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { serve } from "@hono/node-server";
+import type { GitHubIssue } from "../src/diagnostics/github-issues.js";
+import { IssueTracker } from "../src/diagnostics/issue-tracker.js";
 import type { OperationEvent } from "../src/diagnostics/operations.js";
 import { createDebugSite } from "../src/diagnostics/server.js";
 import { DiagnosticStore } from "../src/diagnostics/store.js";
@@ -439,6 +441,87 @@ for (let sequence = 1; sequence <= 103; sequence++)
     },
   });
 
+let clock = Date.parse("2026-10-07T12:00:00.000Z");
+const remote: GitHubIssue[] = [
+  "[Demo] Preserve reply placement after a restart",
+  "[Demo] Link captures to GitHub issues",
+  "[Demo] Investigate a delayed notification",
+].map((title, index) => ({
+  number: 41 + index,
+  title,
+  body: "Synthetic issue content. No real GitHub request or Amp launch.",
+  state: "open",
+  stateReason: null,
+  authorId: index === 2 ? 2 : 1,
+  createdAt: "2026-10-07T12:01:00.000Z",
+  updatedAt: "2026-10-07T12:01:00.000Z",
+  url: `https://github.com/lordbagel42/agent/issues/${41 + index}`,
+}));
+function issue(number: number) {
+  const found = remote.find((item) => item.number === number);
+  if (!found) throw new Error("Missing synthetic issue");
+  return found;
+}
+const tracker = new IssueTracker({
+  store,
+  origin,
+  creatorId: 1,
+  now: () => clock,
+  github: {
+    ownerId: async () => 1,
+    list: async () => remote,
+    get: async (number) => structuredClone(issue(number)),
+    create: async (title, body) => {
+      const number = Math.max(...remote.map((item) => item.number)) + 1;
+      const created = {
+        ...issue(41),
+        number,
+        title,
+        body,
+        createdAt: new Date(clock).toISOString(),
+        updatedAt: new Date(clock).toISOString(),
+        url: `https://github.com/lordbagel42/agent/issues/${number}`,
+      };
+      remote.push(created);
+      return created;
+    },
+    comments: async () => [],
+    comment: async () => ({ id: 1 }),
+    close: async (number) => {
+      issue(number).state = "closed";
+      return structuredClone(issue(number));
+    },
+    shipped: async () => true,
+  },
+});
+tracker.track({
+  action: "track",
+  source: `debug:${snapshot.id}`,
+  snapshotOnly: true,
+});
+await tracker.sourceReceipt({
+  source: "recovery:17",
+  phase: "running",
+  threadId: "T-30000000-0000-4000-8000-000000000001",
+});
+clock += 120000;
+await tracker.sync();
+for (const [index, phase] of ["unknown", "returned"].entries()) {
+  const claimId = `10000000-0000-4000-8000-00000000000${index}`;
+  await tracker.claim(claimId);
+  await tracker.receipt(41 + index, {
+    claimId,
+    phase: phase as "unknown" | "returned",
+    threadId: `T-10000000-0000-4000-8000-00000000000${index}`,
+  });
+}
+await tracker.run({
+  action: "complete",
+  number: 42,
+  key: "20000000-0000-4000-8000-000000000001",
+  commit: "a".repeat(40),
+  body: "Synthetic completion; no real code publication.",
+});
 const app = createDebugSite({
   origin,
   store,
@@ -446,6 +529,7 @@ const app = createDebugSite({
   revision: "synthetic-preview",
   viewerToken: "june-debug-synthetic-preview-viewer",
   ingestToken: "june-debug-synthetic-preview-uploader",
+  issues: { token: "june-debug-synthetic-preview-issues", tracker },
 });
 const server = serve({
   fetch: async (request) => {

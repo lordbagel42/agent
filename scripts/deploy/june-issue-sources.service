@@ -1,0 +1,36 @@
+# Optional template on June's host, not amp-runner. Never auto-install/enable.
+# Requires root-owned source_status.py + issues.py in /usr/local/lib/june-deploy,
+# /etc/june-issues/sources.json and its automation tokenFile (both root 0600).
+# Existing issueTracker configuration alone does NOT enable this exporter.
+[Unit]
+Description=June independent issue-source metadata exporter
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/june-issues/sources.json
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/local/lib/june-deploy/source_status.py
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+# No writable state, deployment lock, process launcher, or shared service lifetime.
+ReadOnlyPaths=/var/lib/june-debugshare /var/lib/june-deploy/records /etc/june-issues
+InaccessiblePaths=-/var/lib/june -/var/lib/june-deploy/deploy.lock
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

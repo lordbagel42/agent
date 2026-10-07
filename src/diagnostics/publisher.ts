@@ -84,7 +84,34 @@ export function createDebugSitePublisher(options: {
         throw new DebugSitePublishError("invalid_id", false);
       return `${origin}/s/${id}`;
     },
-    async publish(value) {
+    async inspectIssues() {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      try {
+        const response = await fetch(`${origin}/api/ingest/issues`, {
+          headers: { authorization: `Bearer ${token}` },
+          redirect: "manual",
+          signal: AbortSignal.timeout(10_000),
+        });
+        reader = response.body?.getReader();
+        if (!response.ok || !reader) throw new Error();
+        const chunks: Uint8Array[] = [];
+        let bytes = 0;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          bytes += value.byteLength;
+          if (bytes > 262144) throw new Error();
+          chunks.push(value);
+        }
+        return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        throw new Error("Issue metadata unavailable");
+      } finally {
+        await reader?.cancel().catch(() => {});
+        reader?.releaseLock();
+      }
+    },
+    async publish(value, investigation) {
       let snapshot: Parameters<DebugSitePublisher["publish"]>[0];
       try {
         snapshot = validateSnapshot(value);
@@ -97,6 +124,14 @@ export function createDebugSitePublisher(options: {
           headers: {
             authorization: `Bearer ${token}`,
             "content-type": "application/json",
+            ...(investigation && !snapshot.snapshotOnly
+              ? {
+                  "x-june-investigation-phase": investigation.phase,
+                  ...(investigation.threadId
+                    ? { "x-june-investigation-thread": investigation.threadId }
+                    : {}),
+                }
+              : {}),
           },
           body: JSON.stringify(snapshot),
           redirect: "manual",

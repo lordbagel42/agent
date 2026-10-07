@@ -1449,6 +1449,7 @@ async function main() {
     inspection: createInspectionReader({
       audience: ownerAudience,
       debugShares: () => june.debugShares(),
+      debugIssues: async () => dependencies.debugSite?.inspectIssues?.(),
       sandboxes: () => inspectSandboxes(environments, release?.revision),
       debugOperations: config.debugSite?.operationsTokenEnv
         ? createOperationReader({

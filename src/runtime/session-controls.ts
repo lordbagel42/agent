@@ -478,6 +478,16 @@ export function createDebugShareActor(
                 await c.vars.bodies.read(c.state.snapshotRef),
                 deps.debugSite,
                 c.vars.persist,
+                Date.now(),
+                c.state.status && c.state.status !== "saved"
+                  ? {
+                      phase:
+                        c.state.status === "completed"
+                          ? "returned"
+                          : c.state.status,
+                      threadId: c.state.threadId,
+                    }
+                  : undefined,
               );
             } catch {
               console.error("debug_site_publication_failed");

@@ -5,6 +5,13 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { createDebugAuth } from "./auth.js";
 import type { DebugSiteDeploymentStatus } from "./deployment.js";
+import { createIssueApi } from "./issue-api.js";
+import {
+  type IssueIndex,
+  type IssueTracker,
+  issueActions,
+  issueSourceSchema,
+} from "./issue-tracker.js";
 import {
   MAX_OPERATION_BYTES,
   OperationConflictError,
@@ -33,6 +40,7 @@ export function createDebugSite(options: {
   assets: string;
   revision?: string;
   deployment?: () => Promise<DebugSiteDeploymentStatus | null>;
+  issues?: { token: string; operatorToken?: string; tracker: IssueTracker };
   now?: () => number;
 }) {
   const origin = new URL(options.origin);
@@ -40,6 +48,8 @@ export function createDebugSite(options: {
     options.viewerToken,
     options.ingestToken,
     ...(options.operationsToken === undefined ? [] : [options.operationsToken]),
+    ...(options.issues ? [options.issues.token] : []),
+    ...(options.issues?.operatorToken ? [options.issues.operatorToken] : []),
   ];
   if (
     origin.origin !== options.origin ||
@@ -94,11 +104,31 @@ export function createDebugSite(options: {
   });
   app.notFound((c) => c.json({ error: "not_found" }, 404));
 
+  const issueIndex = (source?: string): IssueIndex =>
+    options.issues?.tracker.index(source) ?? {
+      enabled: false,
+      items: [],
+      total: 0,
+      pending: [],
+    };
+  if (options.issues) {
+    const api = createIssueApi({ origin: options.origin, ...options.issues });
+    for (const path of [
+      "/api/issue-tools",
+      "/api/issue-sources",
+      "/api/issue-jobs/*",
+      "/api/issue-reconciliation/*",
+      "/mcp/issues",
+    ])
+      app.all(path, (c) => api.fetch(c.req.raw));
+  }
   app.use("/api/ingest/*", async (c, next) => {
     if (!matches(bearer(c.req.raw), ingest))
       return c.json({ error: "unauthorized" }, 401);
     await next();
   });
+  // June may read issue metadata with her ingest credential, never archive bodies.
+  app.get("/api/ingest/issues", (c) => c.json(issueIndex()));
   app.put(
     "/api/ingest/operations/:id",
     bodyLimit({
@@ -130,7 +160,28 @@ export function createDebugSite(options: {
       const snapshot = validateSnapshot(await c.req.json().catch(() => null));
       if (snapshot.id !== c.req.param("id"))
         return c.json({ error: "identity_mismatch" }, 400);
+      const phase = c.req.header("x-june-investigation-phase");
+      const observation =
+        phase && !snapshot.snapshotOnly
+          ? issueSourceSchema.safeParse({
+              source: `debug:${snapshot.id}`,
+              phase,
+              threadId: c.req.header("x-june-investigation-thread"),
+            })
+          : undefined;
+      if (observation && !observation.success)
+        return c.json({ error: "invalid_investigation_metadata" }, 400);
       const result = options.store.put(snapshot);
+      options.issues?.tracker.track({
+        action: "track",
+        source: `debug:${snapshot.id}`,
+        snapshotOnly: snapshot.snapshotOnly === true,
+        ...(/^[0-9a-f]{40}$/.test(snapshot.revision)
+          ? { revision: snapshot.revision }
+          : {}),
+      });
+      if (observation?.success)
+        await options.issues?.tracker.sourceReceipt(observation.data);
       return c.json(
         { id: snapshot.id, saved: true },
         result === "created" ? 201 : 200,
@@ -180,6 +231,13 @@ export function createDebugSite(options: {
   registerOperations("/api/operations-read");
   app.route("/api", createDebugAuth(options));
   registerOperations("/api/operations");
+  app.get("/api/issues", (c) => {
+    const query = issueActions.inspect.parse({
+      action: "inspect",
+      source: c.req.query("source"),
+    });
+    return c.json(issueIndex(query.source));
+  });
   app.get("/api/snapshots", (c) =>
     c.json(
       options.store.list({
@@ -232,6 +290,9 @@ export function createDebugSite(options: {
     c.html(await readFile(join(options.assets, "index.html"), "utf8")),
   );
   app.get("/operations", async (c) =>
+    c.html(await readFile(join(options.assets, "index.html"), "utf8")),
+  );
+  app.get("/issues", async (c) =>
     c.html(await readFile(join(options.assets, "index.html"), "utf8")),
   );
   app.get("/s/:id/:page?", async (c) => {

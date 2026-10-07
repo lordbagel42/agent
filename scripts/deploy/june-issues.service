@@ -1,0 +1,35 @@
+# Template only: not enabled/installed by repository publication.
+# Install on amp-runner with the existing authenticated amp account/homelab-amp.
+[Unit]
+Description=June independent GitHub issue-job dispatcher
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/june-issues/runner.json
+
+[Service]
+Type=exec
+# Root reads private automation auth/state; issues.py drops every CLI child to amp.
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/local/lib/june-deploy/issues.py worker
+Restart=on-failure
+RestartSec=15
+UMask=0077
+StateDirectory=june-issues
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=read-only
+ProtectSystem=strict
+# Amp's own auth/session files need its normal home; the executor is homelab-amp.
+ReadWritePaths=/var/lib/june-issues /home/amp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

@@ -266,9 +266,187 @@ not restore old conversation data or delete captures.
 
 Capture evidence is read-only to viewers; recent authenticated browser sessions
 can manage the owner's passkeys. The upload token can add immutable
-captures but cannot read them, create viewer sessions or overwrite a UUID.
+captures and read issue metadata, but cannot read capture bodies, create viewer
+sessions, mutate issues or overwrite a UUID.
 Existing matching uploads are idempotent; conflicts return 409. No authorization
 is implied by possession of a capture URL.
+
+## GitHub issues and autonomous Amp triage
+
+This optional integration tracks work in **`lordbagel42/agent` GitHub issues**.
+The private **Issues** page (`/issues`) shows last-observed GitHub open/closed
+state, capture/recovery links, Amp receipts and published commits. Capture pages
+link to their issue. Refresh reads saved metadata; it never starts work. Search
+and state filters cover the latest 100 observed issues, not the full GitHub archive.
+June's owner-private `inspection:"debug-issues"` reads the same metadata through
+her ingest credential; interaction agents delegate the read to an execution worker.
+
+- New ingested DEBUG/DEBUGSHARE captures register one source, `debug:<UUID>`.
+  DEBUG is still **capture-only**, with no Amp launch. DEBUGSHARE keeps its
+  existing investigator. The investigator can also register its exact source
+  when no archive upload was configured; this does not imply evidence exists.
+- Deployment recovery can register `recovery:<incident number>` before dispatch.
+  Its existing recovery agent owns that issue. Issue tracking failures never
+  block otherwise-authorized incident recovery.
+- The optional `june-issue-sources` service on June's host observes DEBUGSHARE
+  receipts and durable recovery source records, independently of June's process.
+  It exports only source ID, phase, thread ID and revision, in bounded batches;
+  it never opens snapshots/task results or makes HTTP requests under deployment
+  locks. Repeated metadata posts cannot regress state or change thread identity.
+  Initial archive uploads can report unavailable/queued separately from immutable
+  snapshot bytes. Missing receipts mean **dispatch unobserved**, not running.
+  Enabling this exporter can link retained host receipts, but never relaunch them.
+- Every 30 seconds after the previous sync settles, the site polls GitHub for
+  new/updated issues. Only issues created after **first activation** enter the
+  issue-job queue. Editing/reopening an issue never creates a second assignment;
+  historical issues and captures are not automatically backfilled. Generated
+  diagnostic/recovery issues are excluded from this queue.
+- The independent worker claims one issue at a time and dispatches Amp on
+  **homelab-amp, High + Fast**. Verified repository-owner authors get code-work
+  authority under normal main-publication rules. Other authors get triage only:
+  inspection and a public-safe assessment, no edits, push or close. Issue text is
+  untrusted; it grants no deployment, restart, infrastructure or secret authority.
+  Existing DEBUGSHARE/recovery Ultra + Fast and operator rules are unchanged.
+- Assigned Amp threads use `issue_comment` for progress/blockers and
+  `issue_complete` after shipping reviewed code. Completion verifies a full
+  40-character commit is an ancestor of remote `main`, posts a completion comment,
+  then closes the issue. It does **not** verify correctness or activation.
+  An Amp `returned` receipt is not issue completion; closed is not deployed.
+
+Generated GitHub bodies contain only identifiers, a private evidence/status URL
+and an optional revision. They never contain the reported reason, snapshot body,
+raw logs, credentials or conversation text. This repository may be public: agents
+must keep progress/completion comments public-safe too. Linking a capture or Amp
+thread does not bypass its access controls. There is no additional Slack notifier.
+
+### Activation prerequisites (operator authorization required)
+
+Source publication does **not** install this integration or enable automatic
+work. Coordinate these changes with existing installation/deployment ownership:
+
+1. Review and install the independent debug bundle under the standalone-site lock
+   described below. This change adds `issue_records` to its existing database;
+   preserve that database and install the reviewed updater policy with its added
+   `issue-tracker.ts` storage pin. Update all three storage pins only after a
+   verified manual forward install. Do not bypass the updater's storage-policy
+   block or restore old data. Older installed policies do not cover the new pin.
+2. Set `JUNE_DEBUG_ISSUES_ENABLED=1` in the site's protected environment. Provision
+   `JUNE_DEBUG_GITHUB_TOKEN` with access to **only this repository**, Issues
+   read/write and Contents read for publication verification. The integration
+   accepts a fine-grained token or externally managed installation token; it does
+   not refresh expiring GitHub tokens. It cannot use June's encrypted MCP/OAuth
+   credentials. Provision a separate random `JUNE_DEBUG_ISSUE_TOKEN` (same encoding
+   and length rules as the viewer token), distinct from viewer and ingest tokens.
+   Set `JUNE_DEBUG_GITHUB_ACTOR_ID` to the verified numeric GitHub user/bot ID that
+   this token creates issues as. Source reconciliation checks this ID and the
+   creation timestamp, never a public marker alone. Rotation preserves the
+   expected creator of already-pending write intents. Provision a distinct
+   `JUNE_DEBUG_ISSUE_OPERATOR_TOKEN` for operator-only launch reconciliation;
+   never install that token in Amp/MCP or the automation worker. Omitting it
+   disables reconciliation, not triage. All site credentials must differ,
+   including the optional Operations reader credential.
+   Keep all values out of Git, chat and logs. Do not change an existing GitHub App's
+   permissions or installation without owner approval.
+3. Install the reviewed `issues.py` **alongside** `deploy.py`, root-owned and not
+   writable by `amp`, under `/usr/local/lib/june-deploy/` on amp-runner. Update
+   `debugshare_runner.py` there and the separately installed recovery controller
+   only in their respective coordinated operator windows. Install the disabled
+   `june-issues.service` template; it uses the existing `amp` account's CLI auth.
+   Activate June's updated receipt reader before installing the updated
+   `debugshare.py` dispatcher: the older strict reader rejects its new `kind`
+   field. The new reader accepts both legacy and typed receipts.
+4. Provision root-only `/etc/june-issues/runner.json` and its token file (0600),
+   plus a canonical root-only 0700 state directory. Example **paths, not secrets**:
+
+   ```json
+   {
+     "origin": "https://debug.raygen.dev",
+     "tokenFile": "/etc/june-issues/token",
+     "command": ["/absolute/path/to/amp"],
+     "runnerDirectory": "/existing/homelab-amp/allowed/directory",
+     "stateDirectory": "/var/lib/june-issues"
+   }
+   ```
+
+   Use the verified installed CLI path and runner allowlist, not guessed paths.
+   The worker retains its private claim journal as root and drops CLI children
+   to `amp`. It performs a read-only runner check before recording launch intent.
+5. Grant `amp` only this exact fallback command through reviewed sudo policy:
+   `/usr/bin/python3 -I /usr/local/lib/june-deploy/issues.py tool`. Do not grant
+   arbitrary Python, arguments, config paths or the `worker` command. JSON actions
+   arrive on stdin; the helper reads the protected token and never returns it.
+   `issue_track`, `issue_inspect`, `issue_comment`, `issue_complete` are also
+   discoverable at the private Streamable HTTP MCP endpoint `/mcp/issues` with
+   the separate automation bearer token. Viewer/ingest credentials cannot call it;
+   the automation credential cannot sign in or read archive bodies. MCP enrollment
+   is optional when the installed fallback is available.
+6. For host-observed lifecycle reporting, install reviewed `source_status.py`
+   alongside `issues.py` on **June's host**, root-owned outside releases. Install
+   the separately enabled `june-issue-sources.service` template there and provision
+   root-only `/etc/june-issues/sources.json` (0600):
+
+   ```json
+   {
+     "origin": "https://debug.raygen.dev",
+     "tokenFile": "/etc/june-issues/automation-token",
+     "debugDirectory": "/var/lib/june-debugshare",
+     "recoveryDatabase": "/var/lib/june-deploy/records/deploy.sqlite"
+   }
+   ```
+
+   Verify these paths against the host; use its existing private permissions.
+   The token is the separate automation credential, never the operator credential.
+   The exporter retries only idempotent metadata at `/api/issue-sources`, polling
+   bounded pages every 15 seconds. It requires no deploy lock or June process.
+   Local recovery records are saved even without it; an old `issueTracker` config
+   does not enable any HTTP. Existing incident ownership and locks are unchanged.
+7. Verify site readiness/loaded revision, distinct credential boundaries, actual
+   issue creation and comment/closure on an operator-approved test issue, the
+   worker's durable receipt and Amp thread, and June's private inspection path.
+   Verify a DEBUG creates **no investigation**, and DEBUGSHARE retains one.
+   Enable/start the worker only with operator approval. Neither a mock test nor a
+   configured endpoint proves live GitHub/Amp access.
+
+### Unknown outcomes and recovery
+
+Creation, comment and close intents commit before remote writes. Source IDs and
+per-action UUID keys are stable. After response loss, repeat only the **identical**
+action/key to reconcile its marker or closed state by read; never use a new key,
+source or transport to replay an unknown effect. The inspector returns bounded
+effect phases (`commenting`, `commented`, `closing`, `done`). Authentication or
+network failure before a proven receipt may conservatively remain unknown.
+
+The worker writes `active.json` before claiming or launching, retains a process
+lock, and never automatically relaunches after `launching`, `running` or `unknown`
+survives restart. An unknown launch fences the worker, including later issues.
+Inspect the saved issue/claim and existing thread; do not delete the journal.
+Pre-launch runner failures keep the same claim pending and retry on the next
+15-second worker poll. A returned receipt releases the worker but does not close
+the issue.
+
+**Reconciliation requires exclusive launcher control.** The endpoint trusts the
+operator to establish this exclusion; it cannot verify a remote host lock:
+
+1. With operator authorization, stop/fence `june-issues.service` on amp-runner,
+   then acquire and hold the existing root-private `<stateDirectory>/.worker.lock`
+   using an exclusive flock. Never replace the lock inode or delete `active.json`.
+2. Re-read the exact journal under that lock. Check the runner and any remote
+   Amp thread: stopping the local observer does **not** prove the remote attempt
+   did not launch or has settled. Keep the fence if evidence remains ambiguous.
+3. Submit settlement while holding the lock. Only after its receipt is verified,
+   release the lock and resume the worker; it clears its own settled journal.
+
+An operator may settle the fenced attempt with the **operator token** at
+`POST /api/issue-reconciliation/<number>` and an exact `claimId`, bounded
+public-safe `evidence` of their checks, and either `resolution:"no_launch"` (only
+after proving no launch/thread exists) or `resolution:"settled"` with a verified
+`threadId` (after the existing process/thread is settled). Never fabricate a thread
+or returned turn. Identical settlement retries are idempotent; different evidence
+or identity conflicts are rejected. This terminal `reconciled` receipt releases
+later jobs without relaunching or closing the original issue. Late automation
+callbacks cannot undo it. The worker persists settlement before clearing only its
+own journal, so a cleanup crash remains recoverable. Agents cannot access this
+endpoint through the automation MCP/tools or installed CLI helper.
 
 ## Independent automatic updates
 
@@ -293,7 +471,8 @@ failures retry on subsequent polls. A confirmed activation failure rolls back
 **code only**, with the same readiness checks. Interrupted effects, a surviving
 build cgroup, non-forward history, changed service configuration or changed
 storage policy fence further effects for operator review. Storage pins cover
-`src/diagnostics/store.ts` and optional `src/diagnostics/operations.ts`; they are
+`src/diagnostics/store.ts`, `src/diagnostics/operations.ts` and
+`src/diagnostics/issue-tracker.ts` (nullable when absent at the pinned revision). They are
 conservative review gates, not a proof that arbitrary trusted-main code cannot
 change data. Moving storage responsibilities requires reviewing these pins too.
 The controller/preflight never update themselves from main. No automatic release,
@@ -346,7 +525,8 @@ instruction to run them against another deployment.
      "enabled": false,
      "storagePins": {
        "src/diagnostics/store.ts": "<reviewed Git blob ID>",
-       "src/diagnostics/operations.ts": null
+       "src/diagnostics/operations.ts": null,
+       "src/diagnostics/issue-tracker.ts": null
      }
    }
    ```
