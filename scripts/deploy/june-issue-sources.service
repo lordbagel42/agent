@@ -1,5 +1,5 @@
 # Optional template on June's host, not amp-runner. Never auto-install/enable.
-# Requires root-owned source_status.py + issues.py in /usr/local/lib/june-deploy,
+# Requires a root-owned immutable companion release in /opt/june-issues,
 # /etc/june-issues/sources.json and its automation tokenFile (both root 0600).
 # Existing issueTracker configuration alone does NOT enable this exporter.
 [Unit]
@@ -12,7 +12,7 @@ ConditionPathExists=/etc/june-issues/sources.json
 Type=exec
 User=root
 Group=root
-ExecStart=/usr/bin/python3 -I /usr/local/lib/june-deploy/source_status.py
+ExecStart=/usr/bin/python3 -I /opt/june-issues/current/source_status.py
 Restart=on-failure
 RestartSec=15
 UMask=0077

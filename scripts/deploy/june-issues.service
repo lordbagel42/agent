@@ -11,7 +11,7 @@ Type=exec
 # Root reads private automation auth/state; issues.py drops every CLI child to amp.
 User=root
 Group=root
-ExecStart=/usr/bin/python3 -I /usr/local/lib/june-deploy/issues.py worker
+ExecStart=/usr/bin/python3 -I /opt/june-issues/current/issues.py worker
 Restart=on-failure
 RestartSec=15
 UMask=0077

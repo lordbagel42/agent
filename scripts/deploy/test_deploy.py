@@ -1142,7 +1142,7 @@ class RecoverySafety(unittest.TestCase):
         argv = spawn.call_args.args[0]
         self.assertEqual(argv[1:5], ["--mode", "ultra", "--features", "fast"])
         self.assertIn(f'"source":"recovery:{number}"', argv[-1])
-        self.assertIn("/usr/local/lib/june-deploy/issues.py tool", argv[-1])
+        self.assertIn("/opt/june-issues/current/issues.py tool", argv[-1])
         self.assertIn("explicit operator authorization", argv[-1])
         self.assertIn("Require an Oracle review", argv[-1])
         self.assertEqual(json.loads(self.store.get("recovery"))["phase"], "dispatching")

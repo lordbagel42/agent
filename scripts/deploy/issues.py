@@ -1,10 +1,10 @@
 """Private issue-tools CLI and single-flight issue worker; disabled until installed.
 
-Install with deploy.py root-owned outside releases. The root entrypoint reads only
+Install with deploy.py in a root-owned immutable companion release. The root entrypoint reads only
 /etc/june-issues/runner.json (0600) and its root-private tokenFile. The token must
 be the issue service's separate automation credential, NEVER ingest/viewer auth.
 Allow the amp account only the exact sudo command:
-  /usr/bin/python3 -I /usr/local/lib/june-deploy/issues.py tool
+  /usr/bin/python3 -I /opt/june-issues/current/issues.py tool
 The worker runs as root for private receipts, but both read-only readiness and Amp
 launches drop to the existing amp account and use its existing authentication.
 Never grant sudo access to `worker`, arbitrary Python, or a writable installation.
@@ -37,6 +37,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+sys.dont_write_bytecode = True  # Companion releases remain byte-for-byte sealed.
 CONFIG = "/etc/june-issues/runner.json"
 UUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 THREAD = re.compile(r"T-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
@@ -410,11 +411,9 @@ def clear_state(directory):
 
 
 @contextmanager
-def worker_lock(directory):
+def worker_lock(directory, *, name=".worker.lock", shared=False):
     directory = private_directory(directory)
-    fd = os.open(
-        directory / ".worker.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
-    )
+    fd = os.open(directory / name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "a") as lock:
         info = os.fstat(lock.fileno())
         if (
@@ -425,15 +424,22 @@ def worker_lock(directory):
         ):
             raise IssueError("issue_private_file_required")
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+            fcntl.flock(lock, mode | fcntl.LOCK_NB)
         except BlockingIOError:
             raise IssueError("issue_worker_locked") from None
         yield
 
 
+def maintenance_lock(directory, *, exclusive=False):
+    # Shared for the entire claim/launch/observer turn, exclusive for updating.
+    # Never wait or stop an observer to manufacture an idle maintenance window.
+    return worker_lock(directory, name=".maintenance.lock", shared=not exclusive)
+
+
 def deploy_module():
     spec = importlib.util.spec_from_file_location(
-        "deploy", Path(__file__).with_name("deploy.py")
+        "deploy", Path(__file__).resolve().with_name("deploy.py")
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -698,7 +704,11 @@ def main(argv=None):
         client = Client(config)
         with worker_lock(Path(config["stateDirectory"])):
             while True:
-                dispatch_once(config, client.post)
+                try:
+                    with maintenance_lock(Path(config["stateDirectory"])):
+                        dispatch_once(config, client.post)
+                except IssueError:
+                    pass  # An updater owns admission; no claim or launch occurred.
                 time.sleep(POLL_SECONDS)
     except Exception:  # noqa: BLE001 - safe structured error, no private config/transport text
         print(

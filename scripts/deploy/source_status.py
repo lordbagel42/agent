@@ -28,12 +28,14 @@ import os
 import pwd
 import sqlite3
 import stat
+import sys
 import time
 from collections import OrderedDict
 from pathlib import Path
 
+sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location(
-    "issues", Path(__file__).with_name("issues.py")
+    "issues", Path(__file__).resolve().with_name("issues.py")
 )
 issues = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(issues)

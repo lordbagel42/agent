@@ -302,7 +302,7 @@ class Issues(unittest.TestCase):
             self.assertIn("third-party", prompt)
             self.assertIn("untrusted", prompt)
             self.assertIn("Do not create duplicate threads", prompt)
-            self.assertIn("/usr/local/lib/june-deploy/issues.py tool", prompt)
+            self.assertIn("/opt/june-issues/current/issues.py tool", prompt)
             self.assertIn('"action":"inspect"', prompt)
             self.assertIn('"action":"comment"', prompt)
             self.assertEqual("host-authenticated owner-authored" in prompt, owner)

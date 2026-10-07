@@ -347,9 +347,10 @@ work. Coordinate these changes with existing installation/deployment ownership:
    including the optional Operations reader credential.
    Keep all values out of Git, chat and logs. Do not change an existing GitHub App's
    permissions or installation without owner approval.
-3. Install the reviewed `issues.py` **alongside** `deploy.py`, root-owned and not
-   writable by `amp`, under `/usr/local/lib/june-deploy/` on amp-runner. Update
-   `debugshare_runner.py` there and the separately installed recovery controller
+3. Install the worker using the companion updater below. It keeps `issues.py`
+   **alongside** its matching `deploy.py` in an immutable `/opt/june-issues` release,
+   outside the existing controller installation and its whole-directory digest.
+   Update `debugshare_runner.py` and the separately installed recovery controller
    only in their respective coordinated operator windows. Install the disabled
    `june-issues.service` template; it uses the existing `amp` account's CLI auth.
    Activate June's updated receipt reader before installing the updated
@@ -372,7 +373,7 @@ work. Coordinate these changes with existing installation/deployment ownership:
    The worker retains its private claim journal as root and drops CLI children
    to `amp`. It performs a read-only runner check before recording launch intent.
 5. Grant `amp` only this exact fallback command through reviewed sudo policy:
-   `/usr/bin/python3 -I /usr/local/lib/june-deploy/issues.py tool`. Do not grant
+   `/usr/bin/python3 -I /opt/june-issues/current/issues.py tool`. Do not grant
    arbitrary Python, arguments, config paths or the `worker` command. JSON actions
    arrive on stdin; the helper reads the protected token and never returns it.
    `issue_track`, `issue_inspect`, `issue_comment`, `issue_complete` are also
@@ -380,9 +381,9 @@ work. Coordinate these changes with existing installation/deployment ownership:
    the separate automation bearer token. Viewer/ingest credentials cannot call it;
    the automation credential cannot sign in or read archive bodies. MCP enrollment
    is optional when the installed fallback is available.
-6. For host-observed lifecycle reporting, install reviewed `source_status.py`
-   alongside `issues.py` on **June's host**, root-owned outside releases. Install
-   the separately enabled `june-issue-sources.service` template there and provision
+6. For host-observed lifecycle reporting, use the companion updater's `sources`
+   role on **June's host**. This installs the matching `source_status.py` and
+   `issues.py` bundle and `june-issue-sources.service`. Separately provision
    root-only `/etc/june-issues/sources.json` (0600):
 
    ```json
@@ -447,6 +448,62 @@ later jobs without relaunching or closing the original issue. Late automation
 callbacks cannot undo it. The worker persists settlement before clearing only its
 own journal, so a cleanup crash remains recoverable. Agents cannot access this
 endpoint through the automation MCP/tools or installed CLI helper.
+
+### Updating the issue companion services
+
+Raygen's standing authorization in `AGENTS.md` covers deployment/configuration
+needed to finish requested June/debug work; do not request the same permission
+again. It does not transfer another operator's ownership, expand permissions or
+permit deleting state. Coordinate a handoff and the host's existing locks first.
+
+Install reviewed `scripts/deploy/companions.py` and its matching `issues.py` as
+root-owned 0644 policy files in `/usr/local/lib/june-companions` (0755). This policy
+is installed explicitly, never self-replaced from main. The updater manages only
+the issue worker and source exporter, not June, the website, deployment policy,
+DEBUGSHARE/SSH launchers, credentials, sudo grants or other services.
+
+On **amp-runner**, stop the debug-site timer, let any active poll settle, and
+invoke the following outside an already-held flock. On **June**, coordinate the
+current operator, stop/settle the deployment poller and use `--role sources`.
+Any unresolved recovery or operator hold blocks the sources update. Resume the
+original poller/timer after verification; do not stop an issue observer to force
+a maintenance window.
+
+```sh
+sudo /usr/bin/python3 -I /usr/local/lib/june-companions/companions.py \
+  --role worker --revision <exact-reviewed-current-main-SHA> --start
+```
+
+`--start` explicitly opts into first activation. Omit it for a staged, stopped
+installation; later updates preserve the last verified running state. Enable the
+appropriate unit at boot separately after the first workflow verification. The
+same command without `--start` performs future updates; an unchanged revision
+only verifies the installed files and process. It fetches only the fixed public
+repository and requires exact current main with forward ancestry. It extracts a
+fixed file list, checks Python syntax/systemd units, seals per-file hashes under
+`/opt/june-issues/releases/<SHA>`, pins the unit's ExecStart to that release and
+switches only the stable tool-helper link. No build scripts or fetched Python
+run in the installer. The configuration and issue journals remain in their
+existing private paths and are never rewritten or restored.
+
+The updater takes the existing host installation/operator lock (plus June's inner
+deployment lock for `sources`). The worker holds a shared `.maintenance.lock`
+through each claim, launch and full observation; updates require its exclusive
+lock and no `active.json`. A busy or unresolved worker blocks an update without
+stopping it. Lock inodes are preserved. Each service update records `applying`
+before effects in `/var/lib/june-companions/<role>.json`, requires a fully stopped
+cgroup, reloads the pinned unit and verifies exact process argv, MainPID and
+InvocationID for five seconds. This proves loaded code/process stability, **not**
+GitHub access, healthy polling or successful source export: verify those receipts
+separately through June's private `inspection:"debug-issues"` and actual workflows.
+
+Interrupted/failed updates retain `applying` and never retry or roll back
+automatically. Under exclusive ownership, settle all service jobs and finish the
+recorded reviewed installation, preserving data and unknown issue effects. Then
+run the same role/revision with `--reconcile`: it only verifies the recorded
+installation and process before marking ready; it does not replay stop/start,
+change files, clear issue fences or accept a different revision. Do not delete
+the updater state or fabricate a ready receipt to make a retry pass.
 
 ## Independent automatic updates
 

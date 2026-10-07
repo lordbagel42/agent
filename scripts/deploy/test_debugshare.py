@@ -271,7 +271,7 @@ raise SystemExit(1 if mode == 'lost-exit' else 0)
             )
             self.assertIn("Oracle review is required and permitted", argv[-1])
             self.assertIn(f'"source":"debug:{IDENTITY}"', argv[-1])
-            self.assertIn("/usr/local/lib/june-deploy/issues.py tool", argv[-1])
+            self.assertIn("/opt/june-issues/current/issues.py tool", argv[-1])
             self.assertIn('"action":"complete"', argv[-1])
             self.assertNotIn("$(id)", argv[-1])
             saved = Path(root) / IDENTITY / "snapshot.json"

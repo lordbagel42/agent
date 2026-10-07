@@ -272,6 +272,8 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain("Do not duplicate issue triage");
     expect(request.system).toContain("june-issue-sources service");
     expect(request.system).toContain("distinct reconciliation credential");
+    expect(request.system).toContain("companions.py");
+    expect(request.system).toContain(".maintenance.lock");
     expect(request.system).toContain("hourly UTC activity with Tokens/Calls");
     expect(request.system).toContain(
       "Automated events gain no analytics grant from this description",

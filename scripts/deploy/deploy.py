@@ -1086,7 +1086,7 @@ class Recovery:
 
 def issue_tools_prompt(*, source=None, number=None, can_complete=True):
     """Agent-facing fallback; no token, incident authority, or launch capability."""
-    command = "sudo -n /usr/bin/python3 -I /usr/local/lib/june-deploy/issues.py tool"
+    command = "sudo -n /usr/bin/python3 -I /opt/june-issues/current/issues.py tool"
 
     def example(action):
         return f"printf '%s\\n' {shlex.quote(json.dumps(action, separators=(',', ':')))} | {command}"

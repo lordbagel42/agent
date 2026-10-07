@@ -40,8 +40,8 @@
 
 - Never request the Slack OAuth scope `links:write`.
 - Obtain the deployment owner's authorization before changing Slack app features,
-  permissions, subscriptions, or installations. This file grants no standing
-  permission to change a live app or infrastructure.
+  permissions, subscriptions, or installations. The deployment permission below
+  does not authorize expanding Slack permissions or changing its installation.
 - Start from a fresh live manifest and preserve unrelated settings, including
   OAuth redirects and MCP settings. Never disclose private credentials or bypass
   June's runtime permission checks.
@@ -67,8 +67,19 @@
 
 ## Deployment safety
 
-- Obtain operator authorization for live deployment, service, or configuration
-  changes. Repository publication is not evidence of runtime activation.
+- Raygen grants standing authorization to complete requested June/debug work,
+  including installing/updating its companion services, configuring the existing
+  integrations, deploying reviewed code, and performing necessary service
+  restarts. Do not ask again merely because completing the requested feature
+  requires these actions. Carry explicit task authorization through verification.
+- This permission is scoped to the requested outcome. It does not authorize
+  unrelated infrastructure changes, permission expansion, deleting non-disposable
+  data, bypassing runtime grants, taking another operator's hold, or repeating
+  an uncertain external effect. Obtain an explicit handoff from an existing owner.
+- Use the deployment tooling for app and companion updates, not ad hoc file
+  replacement. Preserve journals, credentials, archive/passkeys and conversation
+  data. Acquire the documented host/operator locks and settle active jobs first.
+  Repository publication is not evidence of runtime activation.
 - Verify the loaded process revision and readiness, not just Git or a release
   symlink. Follow `docs/deployment.md` for recovery and coordinated config changes.
 - Never print credentials, provider authentication, or private message bodies,
