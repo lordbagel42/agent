@@ -8,6 +8,7 @@ import { chmodSync, closeSync, constants, openSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import type { ChannelAdapter, MessageEvent } from "../core/contracts.js";
+import { readHistory } from "../runtime/conversation-storage.js";
 import type { ConversationState } from "../runtime/registry.js";
 import type { ActivityReadProjection } from "../sessions/runtime.js";
 import type {
@@ -364,7 +365,7 @@ export class AgentService {
             ? "pending_submission"
             : "processing_or_interrupted",
       response:
-        state.history.find((entry) => entry.id === `${eventId}:reply`)
+        readHistory(state).find((entry) => entry.id === `${eventId}:reply`)
           ?.content ?? null,
       callbacks,
       deliveries: deliveries.map(([, delivery]) => ({
@@ -387,7 +388,7 @@ export class AgentService {
     const history =
       state.migration?.phase === "sessions"
         ? (projection?.history ?? [])
-        : state.history;
+        : readHistory(state);
     const start = after
       ? history.findIndex((entry) => entry.id === after) + 1
       : 0;

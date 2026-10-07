@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,10 @@ import { createHttpApp } from "../src/http/app.js";
 import { slackSource } from "../src/imports/identity.js";
 import { EvidenceStore } from "../src/memory/store.js";
 import { parseReply } from "../src/models/provider.js";
+import {
+  compactConversation,
+  conversationSnapshot,
+} from "../src/runtime/conversation-storage.js";
 import {
   type ConversationState,
   createJuneRegistry,
@@ -67,6 +71,94 @@ it("invalidates legacy polling when forgetting races its snapshot", async () => 
     service.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it("reads compacted legacy replies and paginates across the live tail without restoring cleared text", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "june-mcp-compacted-"));
+  const snapshot = state();
+  let source!: MessageEvent;
+  const service = new AgentService({
+    directory,
+    key: randomBytes(32),
+    ownerId: "owner",
+    clients: [
+      {
+        id: "amp",
+        token: randomBytes(32).toString("base64url"),
+        expiresAt: Date.now() + 60000,
+      },
+    ],
+    destinations: [],
+    submit: async (event) => {
+      source = event;
+    },
+    snapshot: async () => conversationSnapshot(snapshot),
+  });
+  t.onTestFinished(async () => {
+    await service.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const admission = await service.sendMessage("amp", {
+    idempotencyKey: randomUUID(),
+    conversationId: "compacted",
+    text: "synthetic request",
+  });
+  const eventId = createHash("sha256")
+    .update(JSON.stringify(["agent", "owner", admission.id]))
+    .digest("hex");
+  const replyId = `${eventId}:reply`;
+  snapshot.events[eventId] = { event: source, done: true };
+  snapshot.history = [
+    { id: "older", role: "user", content: "old context ".repeat(7000) },
+    { id: replyId, role: "assistant", content: "retained exact reply\nΩ" },
+  ];
+  compactConversation(snapshot);
+  expect(snapshot.history).toEqual([]);
+  snapshot.history.push({
+    id: "newer",
+    role: "assistant",
+    content: "unrelated newer reply",
+  });
+  snapshot.deliveries[`${eventId}:text`] = {
+    phase: "settled",
+    attempts: 1,
+    message: {
+      id: "delivery",
+      lastInboundAt: source.occurredAt,
+      address: {
+        channel: "agent",
+        accountId: "owner",
+        conversationId: "compacted",
+        threadId: "amp",
+      },
+      content: { type: "text", text: "retained exact reply\nΩ" },
+    },
+    result: { status: "sent", messageId: "delivery" },
+  };
+  expect(await service.getMessage(admission.id)).toMatchObject({
+    status: "completed",
+    response: "retained exact reply\nΩ",
+  });
+  expect(await service.readMessages("older", 1)).toEqual({
+    messages: [
+      { id: replyId, role: "assistant", content: "retained exact reply\nΩ" },
+    ],
+    nextCursor: replyId,
+    hasMore: true,
+  });
+  expect(await service.readMessages(replyId, 1)).toEqual({
+    messages: [
+      { id: "newer", role: "assistant", content: "unrelated newer reply" },
+    ],
+    nextCursor: "newer",
+    hasMore: false,
+  });
+  snapshot.history = [];
+  delete snapshot.historyArchive;
+  expect(await service.getMessage(admission.id)).toMatchObject({
+    response: null,
+  });
+  expect((await service.readMessages()).messages).toEqual([]);
 });
 
 async function connect(
