@@ -2,10 +2,82 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { expect, test, vi } from "vitest";
+import { assert, expect, test, vi } from "vitest";
 import { createConsoleRoutes } from "../console/routes.js";
+import { usagePage } from "../console/usage.js";
 import { createModelProvider } from "./provider.js";
 import { tokenUsage, UsageLedger } from "./usage.js";
+
+test("usage circles stay separated in every window without distorting relative areas", async () => {
+  const root = mkdtempSync(join(tmpdir(), "june-usage-spacing-"));
+  const ledger = new UsageLedger(join(root, "usage.sqlite"));
+  const now = Date.parse("2026-10-07T12:30:00Z");
+  const clock = vi.spyOn(Date, "now");
+  try {
+    const hours = [
+      { calls: 4, input: 250 },
+      { calls: 4, input: 1000 },
+      { calls: 1, input: 250 },
+      { calls: 1, input: null },
+      { calls: 1, input: 0 },
+    ];
+    for (const [i, hour] of hours.entries()) {
+      clock.mockReturnValue(now - (4 - i) * 3_600_000);
+      for (let call = 0; call < hour.calls; call++) {
+        await ledger.track(
+          { provider: "openai", model: "spacing", stage: "fast" },
+          async (report) => {
+            report({
+              input: hour.input,
+              output: hour.input === null ? null : 0,
+              cached: null,
+              cacheWrite: null,
+              reasoning: null,
+            });
+          },
+        );
+      }
+    }
+    for (const days of [1, 7, 30]) {
+      for (const metric of ["tokens", "calls"] as const) {
+        const markup = String(
+          await usagePage(ledger.snapshot(days, "", now), "nonce", "/console", {
+            metric,
+          }),
+        );
+        const chart =
+          markup.match(/<svg class="usage-chart"[\s\S]*?<\/svg>/)?.[0] ?? "";
+        const circles = [
+          ...chart.matchAll(
+            /<circle class="usage-(?:bubble|unknown)" cx="([^"]+)" cy="([^"]+)" r="([^"]+)"/g,
+          ),
+        ].map((match) => ({
+          x: Number(match[1]),
+          y: Number(match[2]),
+          r: Number(match[3]),
+        }));
+        expect(circles).toHaveLength(metric === "tokens" ? 4 : 5);
+        for (const [i, a] of circles.entries()) {
+          for (const b of circles.slice(i + 1)) {
+            // Include the non-scaling 1.3px outline at the narrowest chart width.
+            const gap =
+              (Math.hypot(a.x - b.x, a.y - b.y) - a.r - b.r) * 0.68 - 1.3;
+            expect(gap, `${days}d ${metric}`).toBeGreaterThan(1);
+          }
+        }
+        const [first, second] = circles;
+        assert(first && second);
+        expect((second.r / first.r) ** 2).toBeCloseTo(
+          metric === "tokens" ? 4 : 1,
+        );
+      }
+    }
+  } finally {
+    clock.mockRestore();
+    ledger.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("hourly activity covers the full filtered window, including calls beyond the recent limit", async () => {
   const root = mkdtempSync(join(tmpdir(), "june-usage-hours-"));

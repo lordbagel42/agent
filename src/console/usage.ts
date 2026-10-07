@@ -35,7 +35,10 @@ function activityChart(snapshot: UsageSnapshot, metric: Metric) {
     1,
     ...snapshot.activity.map((g) => value(g, metric) ?? 0),
   );
-  const radius = snapshot.days === 30 ? 12 : 22;
+  const dayWidth = 906 / dayCount;
+  const hourSpacing = Math.hypot(dayWidth / 24, 272 / 24);
+  // One shared scale preserves relative areas; leave room for outlines on mobile.
+  const radius = (Math.min(dayWidth, hourSpacing) - 4) / 2;
   const points = snapshot.activity.map((group) => {
     const started = Number(group.label) * 3_600_000;
     const hour = new Date(started).getUTCHours();

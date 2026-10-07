@@ -244,7 +244,7 @@ A restrained achromatic ground with one light action accent, one focus blue, thr
 - **Settled Green** (#86ceaa, fill #15241c, line #2c4d3b): saved, succeeded, reads allowed, live.
 - **Attention Amber** (#e3bd78, fill #282116, line #54442a): awaiting approval, expired, unknown outcome, failed discovery, private input.
 - **Stop Rose** (#eea09a, fill #2a1c1b, line #5a3532): failed, rejected, disconnected and destructive actions.
-- Usage bubbles reuse **Settled Green** at 15% fill and 75% stroke opacity as a data series, not a health indicator. Area represents the selected metric; a text legend explains the encoding. Dashed neutral rings distinguish unavailable counters from reported-zero crosses.
+- Usage bubbles reuse **Settled Green** at 15% fill and 75% stroke opacity as a data series, not a health indicator. Area represents the selected metric; a text legend explains the encoding. A shared radius scale fits the hourly spacing with a visible gap, so circles never overlap, including on mobile. Dashed neutral rings distinguish unavailable counters from reported-zero crosses.
 
 ### Named Rules
 **The Text-First Status Rule.** Every state is written in words: in a badge, a heading, a notice or the row itself. Tone color only supplements it, and configuration states such as configured, observed or recorded stay neutral.
