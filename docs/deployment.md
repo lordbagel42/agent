@@ -869,9 +869,14 @@ after provisioning its dedicated credential and an immutable release marker:
 
 Conversation admission remains held through status/typing cleanup and final
 persistence. Normal Rivet queue/sleep suspension is not a workflow failure;
-the public workflow error hook latches actual failures. Forced aborts cannot
-certify natural drain. Native coding, reflection and WhatsApp currently make
-the controller drain endpoint refuse certification even if the inbox is idle.
+the public workflow error hook also reports retryable step errors. Those retain
+the engine's existing durable retry policy without latching global admission.
+Exhausted/nonretrying steps and workflow/rollback failures still latch it, as do
+unexpected run failures outside that hook, including failed retry checkpoints.
+This does not authorize repeating uncertain effects or change their durable guards.
+Forced aborts cannot certify natural drain. Native coding, reflection and WhatsApp
+currently make the controller drain endpoint refuse certification even if the
+inbox is idle.
 
 Reflection now holds lifecycle admission through each raw provider call and
 its final durable flush, and pauses new steps while fenced. Its additional

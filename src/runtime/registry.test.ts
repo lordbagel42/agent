@@ -2826,6 +2826,141 @@ describe("Rivet conversation workflow", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it.for([false, true])(
+    "keeps retryable step errors local until retries exhaust (%s)",
+    async (exhaust, t) => {
+      const store = new EvidenceStore(":memory:", randomBytes(32));
+      t.onTestFinished(() => store.close());
+      const lifecycle = createLifecycle();
+      const sent: OutboundMessage[] = [];
+      let failures = 0;
+      const requests: ModelRequest[] = [];
+      const registry = createJuneRegistry({
+        owner,
+        lifecycle,
+        memory: {
+          store,
+          source() {
+            if (exhaust || failures === 0) {
+              failures++;
+              throw new Error("temporary source failure");
+            }
+            return undefined;
+          },
+        },
+        channels: { slack: transport("slack", sent) },
+        model: {
+          async reply(request) {
+            requests.push(request);
+            return { text: "Recovered once." };
+          },
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", owner.id]);
+      await june.send("inbox", { type: "event", event: message });
+      if (exhaust) {
+        await expect
+          .poll(() => lifecycle.failure, { timeout: 20_000 })
+          .toBe("explicit_failure");
+        expect(failures).toBeGreaterThan(1);
+        expect(requests).toEqual([]);
+        expect(sent).toEqual([]);
+        lifecycle.resume();
+        expect(lifecycle.ready).toBe(false);
+        expect(await lifecycle.drain()).toBe(false);
+      } else {
+        await expect.poll(() => sent.length, { timeout: 10_000 }).toBe(1);
+        await expect.poll(() => lifecycle.active).toBe(0);
+        expect(failures).toBe(1);
+        expect(requests).toHaveLength(1);
+        expect(conversationText(requests[0])).toContainEqual({
+          role: "user",
+          content: message.text,
+        });
+        expect(sent[0]?.content).toEqual({
+          type: "text",
+          text: "Recovered once.",
+        });
+        const snapshot = await june.snapshot();
+        expect(Object.values(snapshot.events)[0]?.done).toBe(true);
+        expect(
+          snapshot.history
+            .filter((entry) => entry.role === "user")
+            .map((entry) => entry.content),
+        ).toEqual([message.text]);
+        expect(lifecycle.ready).toBe(true);
+        await june.send("inbox", { type: "event", event: message });
+        expect(sent).toHaveLength(1);
+        expect(await lifecycle.drain()).toBe(true);
+        lifecycle.resume();
+      }
+    },
+  );
+
+  it("latches a retry-checkpoint failure outside the workflow error hook", async (t) => {
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    t.onTestFinished(() => store.close());
+    const lifecycle = createLifecycle();
+    const sent: OutboundMessage[] = [];
+    let rejectCheckpoint = false;
+    let checkpointFailures = 0;
+    const registry = createJuneRegistry({
+      owner,
+      lifecycle,
+      memory: {
+        store,
+        source() {
+          rejectCheckpoint = true;
+          throw new Error("temporary source failure");
+        },
+      },
+      channels: { slack: transport("slack", sent) },
+      model: {
+        async reply() {
+          return { text: "must not send" };
+        },
+      },
+    });
+    const config = registry.config.use.conversation.config;
+    const run = config.run;
+    if (typeof run !== "function")
+      throw new Error("Missing conversation run handler");
+    config.run = new Proxy(run, {
+      apply(target, receiver, [ctx]: Parameters<typeof run>) {
+        return Reflect.apply(target, receiver, [
+          new Proxy(ctx, {
+            get(context, property) {
+              if (property === "internalKeepAwake")
+                return async <T>(work: Promise<T>) => {
+                  // Settle the real driver operation before simulating a lost
+                  // checkpoint acknowledgment outside the workflow callback.
+                  const result = await context.internalKeepAwake(work);
+                  if (rejectCheckpoint) {
+                    rejectCheckpoint = false;
+                    checkpointFailures++;
+                    throw new Error("retry checkpoint unavailable");
+                  }
+                  return result;
+                };
+              const value = Reflect.get(context, property, context);
+              return typeof value === "function" ? value.bind(context) : value;
+            },
+          }),
+        ]);
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const june = client.conversation.getOrCreate(["private", owner.id]);
+    await june.send("inbox", { type: "event", event: message });
+    await expect.poll(() => checkpointFailures).toBe(1);
+    await expect.poll(() => lifecycle.failure).toBe("explicit_failure");
+    expect(sent).toEqual([]);
+    lifecycle.resume();
+    expect(lifecycle.ready).toBe(false);
+    expect(await lifecycle.drain()).toBe(false);
+  });
+
   it("latches admission failure without starting a turn or a send", async (t) => {
     let failed = false;
     let calls = 0;

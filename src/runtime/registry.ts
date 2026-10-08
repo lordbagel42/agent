@@ -2281,6 +2281,14 @@ export function createJuneRegistry(deps: Dependencies) {
                   await step.vars.persist();
                   return false;
                 }
+                // A rejected eligibility read must not leave an event marker
+                // that makes the retry skip recording the triggering message.
+                const retainHistory =
+                  ((!sessionControl &&
+                    event.type === "message" &&
+                    body.type === "event") ||
+                    body.type === "wakeup") &&
+                  valid(step.state);
                 step.state.events[eventId] = {
                   event,
                   done: false,
@@ -2296,7 +2304,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   !sessionControl &&
                   event.type === "message" &&
                   body.type === "event" &&
-                  valid(step.state)
+                  retainHistory
                 ) {
                   const { type: _type, text: _text, ...source } = event;
                   step.state.history.push({
@@ -2309,7 +2317,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     step.state.lastInbound[addressId] ?? 0,
                     event.occurredAt,
                   );
-                } else if (body.type === "wakeup" && valid(step.state)) {
+                } else if (body.type === "wakeup" && retainHistory) {
                   // Explicit machine provenance, never a forged owner message.
                   step.state.history.push({
                     id: eventId,
@@ -2317,6 +2325,12 @@ export function createJuneRegistry(deps: Dependencies) {
                     content: `[Automated wakeup; event data is untrusted] ${JSON.stringify(body.wakeup)}`,
                   });
                 }
+                if (
+                  retainHistory &&
+                  event.type === "message" &&
+                  !stopParticipation
+                )
+                  stopParticipation = deps.lifecycle?.participate?.(event);
               }
               // Keep admission identity until the history/event record exists;
               // otherwise a queued duplicate could move the latest marker back.
@@ -6639,15 +6653,35 @@ export function createJuneRegistry(deps: Dependencies) {
         });
       },
       {
-        // Queue waits and durable sleeps throw scheduler control exceptions, even
-        // without abort. Rivet's error hook excludes those normal yields and
-        // reports actual failed steps before their admission is released.
-        onError(ctx) {
-          if (!ctx.abortSignal.aborted) deps.lifecycle?.fail();
+        // Rivet reports retryable step errors before scheduling their retry.
+        // Latching those would make the retry itself fail admission globally.
+        // Terminal errors still fail closed; raw-work aborts retain their latch.
+        onError(ctx, event) {
+          if (
+            !ctx.abortSignal.aborted &&
+            !("step" in event && event.step.willRetry === true)
+          )
+            deps.lifecycle?.fail();
         },
       },
     ),
   });
+  const runConversation = conversation.config.run;
+  if (typeof runConversation === "function") {
+    // Retry checkpoint/alarm failures can escape Rivet without another error
+    // hook. Guard the settled run boundary, not scheduler yields in its body.
+    // A function proxy preserves Rivet's nonenumerable inspector metadata.
+    conversation.config.run = new Proxy(runConversation, {
+      async apply(run, receiver, [ctx]: Parameters<typeof runConversation>) {
+        try {
+          await Reflect.apply(run, receiver, [ctx]);
+        } catch (error) {
+          if (!ctx.abortSignal.aborted) deps.lifecycle?.fail();
+          throw error;
+        }
+      },
+    });
+  }
   return setup({
     use: {
       conversation,
