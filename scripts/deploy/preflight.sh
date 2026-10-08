@@ -15,7 +15,9 @@ test -x node_modules/.bin/codex
 echo 'june_preflight: lint'
 corepack pnpm exec biome check src
 echo 'june_preflight: typecheck'
-corepack pnpm exec tsc --noEmit
+# Node's cgroup-derived 1 GiB default is too small for the compiler. Keep its
+# heap below the unchanged 2 GiB build cgroup, including native/runner overhead.
+NODE_OPTIONS=--max-old-space-size=1536 corepack pnpm exec tsc --noEmit
 echo 'june_preflight: safety_tests'
 corepack pnpm exec vitest run src/core/routing.test.ts src/runtime/delivery.test.ts
 echo 'june_preflight: isolated_startup'
