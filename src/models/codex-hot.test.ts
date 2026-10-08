@@ -32,6 +32,7 @@ afterEach(() => systemFiles.clear());
 async function fixture(
   t: { onTestFinished(fn: () => Promise<void>): void },
   mode = "ok",
+  featureRequirements: Record<string, unknown> = { chronicle: false },
 ) {
   const root = await mkdtemp(join(tmpdir(), "hot-codex-test-"));
   const home = join(root, "home");
@@ -67,7 +68,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (r.id === undefined) continue;
   let result = {};
   if(r.method==='initialize' && ${JSON.stringify(mode)}==='slow-init') {setTimeout(()=>emit({id:r.id,result:{}}),300);continue;}
-  if (r.method === 'configRequirements/read') result={requirements:${JSON.stringify(mode === "requirements" ? { additionalDeveloperInstructions: "managed instruction" } : mode === "account-policy" ? { additionalDeveloperInstructions: null, modelProvider: null, modelProviders: null, chatgptBaseUrl: null, hooks: null, allowedLoginMethods: ["api", "chatgpt"], featureRequirements: { chronicle: false } } : null)}};
+  if (r.method === 'configRequirements/read') result={requirements:${JSON.stringify(mode === "requirements" ? { additionalDeveloperInstructions: "managed instruction" } : mode === "account-policy" ? { additionalDeveloperInstructions: null, modelProvider: null, modelProviders: null, chatgptBaseUrl: null, hooks: null, allowedLoginMethods: ["api", "chatgpt"], featureRequirements } : null)}};
   if (r.method === 'config/read') {
     result = {config:{...structuredClone(cli),mcp_servers:{},model_providers:{},chatgpt_base_url:'https://chatgpt.com/backend-api/',instructions:null,developer_instructions:null,model_instructions_file:null,hooks:null},layers:[{name:{type:'sessionFlags'},config:structuredClone(cli)},{name:{type:'user'},config:{}}]};
     if(${JSON.stringify(mode)}==='cloud') result.layers.push({name:{type:'enterpriseManaged'},config:{}});
@@ -398,6 +399,33 @@ it("accepts inert authenticated account requirements", async (t) => {
   await provider.ready();
   await expect(provider.reply(request)).resolves.toHaveProperty("text");
 });
+
+it.for([
+  { features: { chronicle: false, ultrafast_mode: false }, accepted: true },
+  { features: { chronicle: false, ultrafast_mode: true }, accepted: false },
+  { features: { chronicle: true, ultrafast_mode: false }, accepted: false },
+  {
+    features: { chronicle: false, ultrafast_mode: false, unknown: false },
+    accepted: false,
+  },
+])(
+  "keeps account feature restrictions exact: %j",
+  async ({ features, accepted }, t) => {
+    const { provider, calls } = await fixture(t, "account-policy", features);
+    if (accepted) {
+      await provider.ready();
+      expect(provider.inspect().idle).toBe(3);
+    } else {
+      await expect(provider.ready()).rejects.toMatchObject({
+        code: "invalid_configuration",
+        retryable: false,
+      });
+      expect(
+        (await calls()).filter((call) => call.method === "thread/start"),
+      ).toEqual([]);
+    }
+  },
+);
 
 for (const mode of [
   "requirements",

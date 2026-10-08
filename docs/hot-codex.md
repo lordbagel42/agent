@@ -75,7 +75,8 @@ instructions or `/etc/codex/{config,managed_config,requirements}.toml`.
 Before every thread creation/prewarm, it also reads effective configuration,
 all configuration layers, and managed requirements. Unsupported cloud/MDM/legacy
 layers, managed requirements other than supported login restrictions and
-`chronicle: false`, nonempty inherited layers, changed disabling
+`chronicle: false` (optionally accompanied by `ultrafast_mode: false`),
+nonempty inherited layers, changed disabling
 settings, custom provider definitions/endpoints, MCP servers, hooks, or inherited
 instructions fail closed. Administrative policy is never rewritten or bypassed.
 These RPCs are not an atomic configuration lock: operator-owned files/policy

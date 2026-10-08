@@ -43,9 +43,9 @@ export function assertHotCodexPolicy(
   function deny(): never {
     throw new ModelError("invalid_configuration", false);
   }
-  // Authenticated accounts include login restrictions and chronicle=false even
-  // without managed configuration. Accept only those inert restrictions; require
-  // the pinned RPC's instruction/provider fields rather than trusting omissions.
+  // Authenticated accounts include login restrictions and disabled account
+  // features even without managed configuration. Accept only known restrictions;
+  // require the pinned RPC's instruction/provider fields, not omissions.
   if (object(requirements).requirements !== null) {
     const policy = object(object(requirements).requirements);
     for (const key of [
@@ -67,7 +67,8 @@ export function assertHotCodexPolicy(
         continue;
       if (
         key === "featureRequirements" &&
-        isDeepStrictEqual(value, { chronicle: false })
+        (isDeepStrictEqual(value, { chronicle: false }) ||
+          isDeepStrictEqual(value, { chronicle: false, ultrafast_mode: false }))
       )
         continue;
       deny();
