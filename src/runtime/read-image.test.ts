@@ -179,11 +179,9 @@ it("reviews native bytes once, returning only text, and withholds unauthorized o
   });
   expect(counts()).toEqual({ downloads: 1, reviews: 1 });
   for (const change of [
-    { ownerTurn: false },
     { origin: "wakeup" },
     { phase: "synthesis" },
     { valid: () => false },
-    { scope: { key: ["channel"], private: false } },
   ] satisfies Partial<CapabilityContext>[]) {
     const denied = fixture();
     const answer = await runCapability(
@@ -194,6 +192,17 @@ it("reviews native bytes once, returning only text, and withholds unauthorized o
     expect(answer.text).not.toContain("WEST");
     expect(denied.counts()).toEqual({ downloads: 0, reviews: 0 });
   }
+  const guest = fixture();
+  expect(
+    (
+      await runCapability({ text: "", readImage: command }, request, {
+        ...guest.context,
+        ownerTurn: false,
+        scope: { key: ["channel"], private: false },
+      })
+    ).text,
+  ).toContain("WEST");
+  expect(guest.counts()).toEqual({ downloads: 1, reviews: 1 });
   const revoked = fixture();
   const abort = new AbortController();
   revoked.context.signal = abort.signal;

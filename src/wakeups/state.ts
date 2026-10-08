@@ -64,6 +64,8 @@ export interface WakeupJob {
   mode?: "decision";
   /** Conversation provenance; legacy direct jobs used id for both identities. */
   originEventId?: string;
+  /** Host-authenticated JSON scope key, including the requester for guest scopes. */
+  audience?: string;
   name: string;
   instruction: string;
   trigger: z.infer<typeof triggerSchema>;
@@ -81,6 +83,8 @@ export interface WakeupRun {
   id: string;
   jobId: string;
   event: WakeupEvent;
+  /** Producer scope supplied out of band by the host, never from event.data. */
+  audience?: string;
   /** Host-only trigger ancestry. Absent means payload retention is untracked. */
   contextSourceIds?: string[];
   createdAt: number;
@@ -134,7 +138,7 @@ function nextCron(
     .getTime();
 }
 
-/** The runtime verifies the owner and private destination before calling this. */
+/** The runtime verifies caller admission and saved-job scope before calling this. */
 export function applyAction(
   state: WakeupState,
   input: unknown,
@@ -144,6 +148,7 @@ export function applyAction(
   sources: readonly string[],
   evidenceIds: string[] = [],
   originEventId?: string,
+  audience?: string,
 ): string {
   const action = wakeupActionSchema.parse(input);
   if (action.action === "list") {
@@ -186,6 +191,7 @@ export function applyAction(
     state.jobs[commandId] = {
       id: commandId,
       ...(originEventId ? { originEventId } : {}),
+      ...(audience !== undefined ? { audience } : {}),
       name: action.name,
       instruction: action.instruction,
       trigger,
@@ -198,7 +204,7 @@ export function applyAction(
       nextAt,
       coalesced: 0,
     };
-    return `Wakeup ${commandId} saved: ${action.name}. ${trigger.kind === "event" ? `Watching ${trigger.source}/${trigger.type} from now.` : `Next: ${new Date(nextAt as number).toISOString()}${trigger.kind === "cron" ? ` (${trigger.timezone}, ${trigger.expression})` : ""}.`} ${state.jobs[commandId].once ? "One time." : "Repeating."} Replies go to this private Slack DM.`;
+    return `Wakeup ${commandId} saved: ${action.name}. ${trigger.kind === "event" ? `Watching ${trigger.source}/${trigger.type} from now.` : `Next: ${new Date(nextAt as number).toISOString()}${trigger.kind === "cron" ? ` (${trigger.timezone}, ${trigger.expression})` : ""}.`} ${state.jobs[commandId].once ? "One time." : "Repeating."} This is a notification-only job; replies stay in the original Slack conversation and thread. List, inspect, pause, resume, or cancel from that same sender/conversation/thread scope.`;
   }
   const job = Object.hasOwn(state.jobs, action.id)
     ? state.jobs[action.id]
@@ -253,6 +259,7 @@ function enqueue(
   event: WakeupEvent,
   now: number,
   contextSourceIds?: string[],
+  audience?: string,
 ) {
   const id = createHash("sha256")
     .update(JSON.stringify([job.id, event.source, event.id]))
@@ -271,6 +278,7 @@ function enqueue(
     id,
     jobId: job.id,
     event,
+    ...(audience !== undefined ? { audience } : {}),
     ...(contextSourceIds
       ? { contextSourceIds: [...new Set(contextSourceIds)] }
       : {}),
@@ -283,12 +291,37 @@ function enqueue(
   }
 }
 
+/**
+ * Only configured deployment/GitHub/webhook feeds retain shared delivery; the
+ * runtime separately enforces source enrollment. All other sources (including
+ * future native platforms) fail closed without host-authenticated scope. Even
+ * a shared feed can be narrowed by an explicit audience. Filters grant nothing.
+ */
+export function eventAudienceMatches(
+  job: WakeupJob,
+  event: WakeupEvent,
+  audience?: string,
+) {
+  if (audience !== undefined)
+    return (
+      typeof audience === "string" &&
+      audience.length > 0 &&
+      job.audience === audience
+    );
+  return (
+    event.source === "deployment" ||
+    event.source === "github" ||
+    event.source.startsWith("webhook.")
+  );
+}
+
 /** Durable acceptance and dispatch intent are saved together by the actor. */
 export function acceptEvent(
   state: WakeupState,
   input: unknown,
   now: number,
   contextSourceIds?: string[],
+  audience?: string,
 ) {
   const event = eventSchema.parse(input);
   const key = createHash("sha256")
@@ -304,7 +337,8 @@ export function acceptEvent(
       ((job.mode !== "decision" || event.source === "deployment") &&
         event.occurredAt < job.updatedAt) ||
       trigger.source !== event.source ||
-      (trigger.type !== "*" && trigger.type !== event.type)
+      (trigger.type !== "*" && trigger.type !== event.type) ||
+      !eventAudienceMatches(job, event, audience)
     )
       return false;
     return trigger.filters.every(({ path, value }) => {
@@ -317,10 +351,18 @@ export function acceptEvent(
       return found === value;
     });
   });
-  // A requested notification takes precedence over unsolicited commentary.
-  const requested = matches.some((job) => job.mode !== "decision");
+  // A requested notification takes precedence only in the same recipient scope.
+  // Another person's watch must not suppress the owner's decision subscription.
   const admitted = matches.filter(
-    (job) => !requested || job.mode !== "decision",
+    (job) =>
+      job.mode !== "decision" ||
+      !matches.some(
+        (requested) =>
+          requested.mode !== "decision" &&
+          requested.source.senderId === job.source.senderId &&
+          JSON.stringify(requested.source.address) ===
+            JSON.stringify(job.source.address),
+      ),
   );
   if (
     admitted.some((job) => job.mode === "decision") &&
@@ -336,7 +378,8 @@ export function acceptEvent(
     if (oldest) delete state.seen[oldest[0]];
   }
   state.seen[key] = now;
-  for (const job of admitted) enqueue(state, job, event, now, contextSourceIds);
+  for (const job of admitted)
+    enqueue(state, job, event, now, contextSourceIds, audience);
   return { accepted: true, duplicate: false };
 }
 

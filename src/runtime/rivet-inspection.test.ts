@@ -89,7 +89,7 @@ const event: MessageEvent = {
   text: "Inspect retained state",
 };
 
-it("reads a real actor through June only in the owner DM without retaining or redisclosing results", async (t) => {
+it("reads a real actor for admitted conversations without retaining results or enabling other effects", async (t) => {
   const sent: OutboundMessage[] = [];
   const prompts: ModelRequest[] = [];
   const paths: string[] = [];
@@ -310,22 +310,17 @@ it("reads a real actor through June only in the owner DM without retaining or re
   ]) {
     const before = paths.length;
     await send(extra);
-    expect(prompts.at(-1)?.rivetAvailable).toBe(false);
-    expect(paths).toHaveLength(before);
-    expect(JSON.stringify(sent.slice(count))).not.toContain("PRIVATE_FIXTURE");
+    expect(prompts.at(-1)?.rivetAvailable).toBe(true);
+    expect(paths.length).toBeGreaterThan(before);
+    expect(sent.at(-1)?.content).toMatchObject({
+      text: expect.stringContaining("PRIVATE_FIXTURE"),
+    });
   }
   synthesisAttack = true;
   await send();
   expect(sent.at(-1)?.content).toMatchObject({
     text: expect.stringContaining("couldn't complete"),
   });
-  expect(
-    sent.every(
-      (m) =>
-        m.address.conversationId !== "C1" ||
-        !JSON.stringify(m).includes("PRIVATE_FIXTURE"),
-    ),
-  ).toBe(true);
   // Exercise every pinned inspector GET, and ensure DB internals cannot reveal KV credentials.
   for (const target of [
     "state",
@@ -355,8 +350,7 @@ it("reads a real actor through June only in the owner DM without retaining or re
       new AbortController().signal,
     ),
   ).rejects.toThrow("table_not_allowed");
-  // The same owner-only read capability can retrieve the new diagnostic tables;
-  // guest capture admission does not grant the guest private inspector access.
+  // Diagnostic tables use the same bounded, credential-redacted read path.
   await other.receive({
     ...guest,
     id: "diagnostic-fixture",
@@ -376,15 +370,21 @@ it("reads a real actor through June only in the owner DM without retaining or re
     expect(JSON.parse(result).jsonFragment).toContain(column);
   }
   const before = paths.length;
-  for (const denied of [
+  await read(
     { ...event, senderId: "U2" },
+    { ...request, actorId },
+    new AbortController().signal,
+  );
+  expect(paths.length).toBeGreaterThan(before);
+  const admitted = paths.length;
+  for (const denied of [
     { ...event, address: { ...event.address, accountId: "T2" } },
-    { ...event, metadata: undefined },
+    { ...event, senderId: "U2", metadata: undefined },
   ])
     await expect(
       read(denied, request, new AbortController().signal),
-    ).rejects.toThrow("owner_dm_required");
-  expect(paths).toHaveLength(before);
+    ).rejects.toThrow("inspection_scope_unavailable");
+  expect(paths).toHaveLength(admitted);
 });
 
 it("redacts before JSON pointer selection and never follows redirects or inspects a foreign pool", async () => {

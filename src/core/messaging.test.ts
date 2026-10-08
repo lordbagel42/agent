@@ -4,7 +4,7 @@ import { buildModelRequest } from "../runtime/prompt.js";
 import type { MessageEvent } from "./contracts.js";
 import { messageDestinations } from "./messaging.js";
 
-it("keeps directed sends owner-only independently of private-read grants and worker flags", () => {
+it("resolves configured destinations for any Slack requester without impersonating the owner", () => {
   const owner = {
     id: "owner",
     identities: [
@@ -30,26 +30,49 @@ it("keeps directed sends owner-only independently of private-read grants and wor
   };
   const sendMessages = [
     { conversationId: "owner", threadId: null, text: "metadata" },
+    { conversationId: "UGUEST", threadId: null, text: "your update" },
+    { conversationId: "C2", threadId: "234.567", text: "channel update" },
   ];
   const body = JSON.stringify({ text: "", sendMessages });
+  for (const senderId of ["U1", "UGUEST"]) {
+    const source = { ...event, senderId };
+    expect(messageDestinations(sendMessages, source, owner)).toEqual([
+      {
+        address: { channel: "slack", accountId: "T1", conversationId: "U1" },
+        text: "metadata",
+      },
+      {
+        address: {
+          channel: "slack",
+          accountId: "T1",
+          conversationId: "UGUEST",
+        },
+        text: "your update",
+      },
+      {
+        address: {
+          channel: "slack",
+          accountId: "T1",
+          conversationId: "C2",
+          threadId: "234.567",
+        },
+        text: "channel update",
+      },
+    ]);
+    expect(source.senderId).toBe(senderId);
+  }
   for (const source of [
-    { ...event, senderId: "UGUEST" },
+    { ...event, address: { ...event.address, channel: "whatsapp" as const } },
     { ...event, address: { ...event.address, accountId: "TOTHER" } },
   ]) {
     expect(() => messageDestinations(sendMessages, source, owner)).toThrow();
-    if (source.address.accountId !== "T1") continue;
-    const request = buildModelRequest({
-      event: source,
-      owner,
-      now: new Date(),
-      history: [],
-      models: { current: { provider: "test", model: "test" } },
-      agentRole: "interaction",
-      capabilities: { messagingAvailable: true },
-    });
-    expect(request.messagingAvailable).toBe(false);
-    expect(() => parseReply(body, [], request)).toThrow();
   }
+  for (const message of [
+    { conversationId: "invented", threadId: null, text: "bad destination" },
+    { conversationId: "C2", threadId: "invalid", text: "bad thread" },
+    { conversationId: "C2", threadId: null, text: "x".repeat(3501) },
+  ])
+    expect(() => messageDestinations([message], event, owner)).toThrow();
   const request = buildModelRequest({
     event,
     owner,
@@ -57,10 +80,9 @@ it("keeps directed sends owner-only independently of private-read grants and wor
     history: [],
     models: { current: { provider: "test", model: "test" } },
     agentRole: "interaction",
-    capabilities: { messagingAvailable: true, inspectionAvailable: true },
+    capabilities: { messagingAvailable: true },
   });
   expect(request.messagingAvailable).toBe(true);
-  expect(request.inspectionAvailable).toBe(false);
   expect(parseReply(body, [], request).sendMessages).toEqual(sendMessages);
   expect(
     replyJsonSchema([], { ...request, agentRole: "execution" }).properties,

@@ -3,6 +3,7 @@ import type { Client } from "rivetkit/client";
 import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type {
+  CodingRuntime,
   CompanionReply,
   MessageEvent,
   ModelRequest,
@@ -12,7 +13,7 @@ import { routeEvent } from "../core/routing.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import type { SkillChangeProposal } from "../reflection/domain.js";
-import { skillCodingRequest } from "./coding.js";
+import { type CodingDependencies, skillCodingRequest } from "./coding.js";
 import {
   createJuneRegistry,
   type Dependencies,
@@ -29,7 +30,9 @@ vi.mock("./coding.js", async (importOriginal) => {
   return {
     ...real,
     createCodingActor: (
-      ...[coding, lifecycle, current]: Parameters<typeof real.createCodingActor>
+      ...[coding, lifecycle, current, deletionRevision]: Parameters<
+        typeof real.createCodingActor
+      >
     ) =>
       real.createCodingActor(
         coding,
@@ -45,6 +48,7 @@ vi.mock("./coding.js", async (importOriginal) => {
           fail: () => lifecycle?.fail(),
         },
         current,
+        deletionRevision,
       ),
   };
 });
@@ -127,7 +131,7 @@ it.for([
   "deleted-during-handoff",
   "deleted-during-consumer-read",
 ] as const)(
-  "bridges June's evaluated candidate without launch or stale provenance (%s)",
+  "admits June's fresh evaluated task once without stale provenance (%s)",
   async (boundary, t) => {
     const owner = {
       id: "owner",
@@ -152,6 +156,7 @@ it.for([
       });
     const sent: OutboundMessage[] = [];
     const modelRequests: ModelRequest[] = [];
+    const executionRequests: ModelRequest[] = [];
     let action: CompanionReply = {
       text: "",
       reflectionRequest: {
@@ -164,14 +169,54 @@ it.for([
     const quiet = { timeZone: "UTC", startMinute: 0, endMinute: 0 };
     const handoff = Promise.withResolvers<void>();
     const handoffFinished = Promise.withResolvers<void>();
+    const worker = Promise.withResolvers<void>();
     let jobEntered = false;
     t.onTestFinished(() => {
       handoff.resolve();
+      worker.resolve();
       jobGate.enter = undefined;
       jobGate.exit = undefined;
     });
-    const run = vi.fn(async () => {
-      throw new Error("The bridge must never launch a worker");
+    // Model the isolation adapter without touching Git or launching real processes.
+    type Isolation = NonNullable<CodingDependencies["isolation"]>[string];
+    const isolation: Isolation = {
+      checkArtifact: async () => null,
+      isSettled: async () => true,
+      diffSummary: async () => {
+        throw new Error("This fixture does not inspect worktree diffs");
+      },
+      capacity: async () => ({ occupied: false, admissionLocked: false }),
+      admit: vi.fn(async () => {}),
+      release: vi.fn(async () => {}),
+      prepare: vi.fn<Isolation["prepare"]>(async (jobId) => ({
+        disposition: "created",
+        manifest: {
+          version: 1,
+          jobId,
+          repositoryRoot: "/fixture/june",
+          worktreeRoot: "/fixture/worktrees",
+          cwd: `/fixture/worktrees/${jobId}`,
+          baseCommit: "a".repeat(40),
+        },
+      })),
+      verify: vi.fn<Isolation["verify"]>(async () => ({
+        status: "not_configured",
+        passed: null,
+        exitCode: null,
+        signal: null,
+        baseCommit: "a".repeat(40),
+        headCommit: "a".repeat(40),
+        finishedAt: new Date().toISOString(),
+        replayed: false,
+        output: "omitted",
+      })),
+    };
+    const run = vi.fn<CodingRuntime["run"]>(async (input) => {
+      expect(input.cwd).toMatch(/^\/fixture\/worktrees\/[a-f0-9]{64}$/);
+      expect(input.prompt).toContain("do not change permissions");
+      await input.onThread("fixture-thread");
+      await worker.promise;
+      return { threadId: "fixture-thread", report: "Fixture worker result" };
     });
     const deps: Dependencies = {
       owner,
@@ -181,7 +226,8 @@ it.for([
         runtimeKind: "amp",
         runtimeId: "original-runtime",
         workspaces: { june: "/fixture/june", other: "/fixture/other" },
-        timeoutMs: 1000,
+        isolation: { june: isolation },
+        timeoutMs: 60000,
       },
       channels: {
         slack: {
@@ -199,6 +245,8 @@ it.for([
       model: {
         async reply(request) {
           modelRequests.push(request);
+          if (request.system.includes("Coding completion ("))
+            return { text: "Coding outcome noted." };
           if (request.skillCodingProposalAvailable)
             expect(request.system).toContain("skillCodingProposal");
           await beforeReply?.();
@@ -312,7 +360,7 @@ it.for([
       if (expectDelivery)
         await expect
           .poll(() => sent.length, { timeout: 5000 })
-          .toBeGreaterThan(before + (deps.execution && route.private ? 1 : 0));
+          .toBeGreaterThan(before + (deps.execution ? 1 : 0));
       const content = sent.at(-1)?.content;
       return content?.type === "text" ? content.text : "";
     };
@@ -331,7 +379,7 @@ it.for([
       text: "",
       skillCodingProposal: { candidateId, workspace: "june" },
     };
-    expect(await turn()).toContain("No skill coding proposal was queued");
+    expect(await turn()).toContain("No skill coding task was queued");
     expect((await conversation.snapshot()).jobs).toEqual({});
     action = {
       text: "",
@@ -359,6 +407,7 @@ it.for([
       deps.execution = {
         model: {
           async reply(request) {
+            executionRequests.push(request);
             expect(request.agentRole).toBe("execution");
             expect(request.skillCodingProposalAvailable).toBe(true);
             return structuredClone(action);
@@ -414,7 +463,7 @@ it.for([
       if (boundary === "deleted-before-save")
         expect((await conversation.snapshot()).jobs).toEqual({});
       if (boundary === "quiet-before-enqueue")
-        expect(text).toContain("No skill coding proposal was queued");
+        expect(text).toContain("No skill coding task was queued");
       else expect(await conversation.canResumeJob(id)).toBe(false);
       expect(run).not.toHaveBeenCalled();
       return;
@@ -431,8 +480,10 @@ it.for([
     const preview = await pending;
     beforeReply = undefined;
     expect(preview).toContain(skill.proposedBehavior);
-    expect(preview).toContain("!approve");
-    expect(preview).toContain("No push, deployment");
+    expect(preview).toContain("No separate approval command is required");
+    expect(preview).toContain(
+      "do not change permissions, access credentials, push, publish or deploy",
+    );
     const state = await conversation.snapshot();
     const ids = Object.keys(state.jobs);
     expect(ids).toHaveLength(1);
@@ -447,15 +498,26 @@ it.for([
       ]),
     );
     const job = client.job.getOrCreate([owner.id, id]);
+    await expect.poll(() => run.mock.calls.length).toBe(1);
     await expect
       .poll(async () => (await job.snapshot()).status)
-      .toBe("awaiting_approval");
+      .toBe("running");
     expect(await job.snapshot()).toMatchObject({
-      attempts: 0,
-      commandApprovals: {},
-      proposal: { runtimeId: "original-runtime", workspace: "june" },
+      attempts: 1,
+      commandApprovals: { [`model-selected:${id}`]: 1 },
+      proposal: {
+        runtimeId: "original-runtime",
+        workspace: "june",
+        runImmediately: true,
+        conversationKey: ["private", owner.id],
+      },
+      worktree: {
+        repositoryRoot: "/fixture/june",
+        cwd: `/fixture/worktrees/${id}`,
+      },
     });
-    expect((await job.snapshot()).worktree).toBeUndefined();
+    expect(isolation.admit).toHaveBeenCalledTimes(1);
+    expect(isolation.prepare).toHaveBeenCalledTimes(1);
     expect(await turn()).toBe(preview);
     action.skillCodingProposal = { candidateId, workspace: "other" };
     expect(await turn()).toContain("no retargeting or second job");
@@ -464,23 +526,39 @@ it.for([
     if (deps.coding) deps.coding.runtimeId = "changed-runtime";
     expect(await turn()).toBe(preview);
     expect((await job.snapshot()).proposal?.runtimeId).toBe("original-runtime");
-    // Custom providers cannot use this owner-only directive from guest/channel turns.
-    await turn({ senderId: "U2" });
-    expect(modelRequests.at(-1)?.skillCodingProposalAvailable).toBe(false);
-    await turn({ direct: false, metadata: { channelType: "channel" } });
-    expect(modelRequests.at(-1)?.skillCodingProposalAvailable).toBe(false);
+    // Available task tools cannot reuse a private candidate from another scope.
+    // In delegated mode the task belongs to execution, not its interaction recap.
+    const taskRequests = deps.execution ? executionRequests : modelRequests;
+    expect(await turn({ senderId: "U2" })).toContain(
+      "No skill coding task was queued",
+    );
+    expect(taskRequests.at(-1)?.skillCodingProposalAvailable).toBe(true);
+    expect(
+      await turn({ direct: false, metadata: { channelType: "channel" } }),
+    ).toContain("No skill coding task was queued");
+    expect(taskRequests.at(-1)?.skillCodingProposalAvailable).toBe(true);
     expect((await conversation.snapshot()).jobs).toEqual(state.jobs);
     // An unrelated original conversation source disappears while the authoritative
     // RPC is suspended. Evaluation evidence is still valid; original context is not.
+    const deleted = Promise.withResolvers<void>();
     afterRetrieve = () => {
       store.deleteSource("origin");
       afterRetrieve = undefined;
+      deleted.resolve();
     };
     await turn({}, false);
-    if (boundary === "delegated")
-      await expect.poll(() => afterRetrieve).toBeUndefined();
+    // Interaction completion is not execution completion. Await the actual read
+    // boundary, as with the handoff gates, before asserting deletion fences.
+    await deleted.promise;
+    expect(afterRetrieve).toBeUndefined();
     expect(await conversation.canResumeJob(id)).toBe(false);
-    expect((await job.snapshot()).attempts).toBe(0);
-    expect(run).not.toHaveBeenCalled();
+    worker.resolve();
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("needs_review");
+    expect((await job.snapshot()).attempts).toBe(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(isolation.verify).toHaveBeenCalledTimes(1);
+    expect(isolation.release).toHaveBeenCalledTimes(1);
   },
 );

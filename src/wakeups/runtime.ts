@@ -8,11 +8,13 @@ import { correlationId, withSpan } from "../telemetry/index.js";
 import {
   acceptEvent,
   applyAction,
+  eventAudienceMatches,
   initialState,
   pending,
   tick,
   type WakeupAction,
   type WakeupEvent,
+  type WakeupJob,
   type WakeupRun,
   type WakeupState,
 } from "./state.js";
@@ -44,13 +46,22 @@ export function createWakeupActor(
     if (key.length !== 1 || key[0] !== deps.owner.id)
       throw new Error("wakeup_owner_mismatch");
   };
+  const audienceOf = (source: MessageEvent) => {
+    const scope = routeEvent(source, deps.owner);
+    return scope ? JSON.stringify(scope.key) : undefined;
+  };
   const authorized = (
     source: MessageEvent,
     evidenceIds: string[] = [],
     mode?: "decision",
   ) => {
     const scope = routeEvent(source, deps.owner);
-    if (source.address.channel !== "slack" || !scope?.private) return false;
+    if (
+      source.address.channel !== "slack" ||
+      !scope ||
+      (mode === "decision" && !scope.private)
+    )
+      return false;
     // A host-created private destination is not original Slack-message evidence.
     const evidence =
       mode === "decision"
@@ -66,6 +77,24 @@ export function createWakeupActor(
             : !deps.memory.store.isDeleted(id)),
       )
     );
+  };
+  const canManage = (source: MessageEvent, job: WakeupJob) => {
+    // Host event-decision subscriptions retain their owner-private controls.
+    if (job.mode === "decision")
+      return source.direct && routeEvent(source, deps.owner)?.private === true;
+    return (
+      source.senderId === job.source.senderId &&
+      source.address.channel === job.source.address.channel &&
+      source.address.accountId === job.source.address.accountId &&
+      source.address.conversationId === job.source.address.conversationId &&
+      (source.address.threadId ?? "") === (job.source.address.threadId ?? "")
+    );
+  };
+  const sourceEvidence = (job: WakeupJob) => {
+    const scope = routeEvent(job.source, deps.owner);
+    return job.mode !== "decision" && scope
+      ? deps.memory?.source(job.source, JSON.stringify(scope.key))
+      : undefined;
   };
   const revoke = (state: WakeupState, ids: string[]) => {
     for (const id of ids) {
@@ -122,12 +151,17 @@ export function createWakeupActor(
         },
       };
     }
+    // Recover only the subscription's saved, authenticated recipient. Never
+    // infer a queued event's producer audience from its recipient or payload.
+    for (const job of Object.values(state.jobs))
+      if (job.audience === undefined) job.audience = audienceOf(job.source);
     revoke(
       state,
       Object.values(state.jobs)
         .filter(
           (job) =>
             !authorized(job.source, job.evidenceIds, job.mode) ||
+            job.audience !== audienceOf(job.source) ||
             (job.mode === "decision" &&
               job.trigger.kind === "event" &&
               !decisionSources.includes(job.trigger.source)),
@@ -135,7 +169,18 @@ export function createWakeupActor(
         .map((job) => job.id),
     );
     for (const run of Object.values(state.runs)) {
+      const job = state.jobs[run.jobId];
+      // Clock runs are intrinsic to their saved job, including legacy timers.
+      // Every native run needs its own producer scope even after queue ACK or
+      // restart; missing scope is not upgraded to the subscriber's authority.
+      const recipientAllowed =
+        job &&
+        ((run.event.source === "schedule" &&
+          job.trigger.kind !== "event" &&
+          run.audience === undefined) ||
+          eventAudienceMatches(job, run.event, run.audience));
       if (
+        !recipientAllowed ||
         run.contextSourceIds?.some(
           (id) =>
             !deps.memory ||
@@ -163,27 +208,24 @@ export function createWakeupActor(
         return c.state;
       },
       /** Metadata only. Bind these tombstone dependencies before retaining reads. */
-      async dependencies(c, action: WakeupAction) {
+      async dependencies(c, action: WakeupAction, source?: MessageEvent) {
         guard(c.key);
+        if (!source || !authorized(source))
+          throw new Error("wakeup_requires_authenticated_source");
         invalidate(c.state);
         await c.vars.persist();
         const jobs = Object.values(c.state.jobs).filter(
           (job) =>
             job.instruction &&
+            canManage(source, job) &&
             (action.action === "list" ||
               ("id" in action && action.id === job.id)),
         );
         return [
           ...new Set(
             jobs.flatMap((job) => {
-              const source =
-                job.mode === "decision"
-                  ? undefined
-                  : deps.memory?.source(
-                      job.source,
-                      JSON.stringify(["private", deps.owner.id]),
-                    );
-              return [...job.evidenceIds, ...(source ? [source.id] : [])];
+              const evidence = sourceEvidence(job);
+              return [...job.evidenceIds, ...(evidence ? [evidence.id] : [])];
             }),
           ),
         ];
@@ -198,10 +240,31 @@ export function createWakeupActor(
       ) {
         guard(c.key);
         if (!authorized(source, evidenceIds))
-          throw new Error("wakeup_requires_owner_dm");
+          throw new Error("wakeup_requires_authenticated_source");
         invalidate(c.state);
+        const targetId =
+          action.action === "create"
+            ? commandId
+            : "id" in action
+              ? action.id
+              : undefined;
+        const existing =
+          targetId === undefined ? undefined : c.state.jobs[targetId];
+        if (existing && !canManage(source, existing))
+          throw new Error("Wakeup not found");
+        const state =
+          action.action === "list"
+            ? {
+                ...c.state,
+                jobs: Object.fromEntries(
+                  Object.entries(c.state.jobs).filter(([, job]) =>
+                    canManage(source, job),
+                  ),
+                ),
+              }
+            : c.state;
         const result = applyAction(
-          c.state,
+          state,
           action,
           source,
           commandId,
@@ -209,7 +272,14 @@ export function createWakeupActor(
           deps.sources,
           evidenceIds,
           originEventId,
+          audienceOf(source),
         );
+        if (action.action === "create" && !existing) {
+          const job = c.state.jobs[commandId];
+          // The legacy state helper normalizes DMs by removing threadId. New
+          // notifications must retain the authenticated registration scope.
+          if (job) job.source = { ...source, address: { ...source.address } };
+        }
         await c.vars.persist();
         await c.queue.send("wake", { wake: true });
         return result;
@@ -226,7 +296,13 @@ export function createWakeupActor(
         );
         await c.vars.persist();
       },
-      async publish(c, event: WakeupEvent, contextSourceIds?: string[]) {
+      /** Audience is the host's JSON scope key, never a model/provider field. */
+      async publish(
+        c,
+        event: WakeupEvent,
+        contextSourceIds?: string[],
+        audience?: string,
+      ) {
         guard(c.key);
         if (!deps.sources.includes(event.source))
           throw new Error("unknown_event_source");
@@ -244,6 +320,7 @@ export function createWakeupActor(
             event,
             Date.now(),
             contextSourceIds,
+            audience,
           );
           await c.vars.persist();
           await c.queue.send("wake", { wake: true });
@@ -266,13 +343,7 @@ export function createWakeupActor(
           ["paused", "cancelled"].includes(job.status)
         )
           return null;
-        const source =
-          job.mode === "decision"
-            ? undefined
-            : deps.memory?.source(
-                job.source,
-                JSON.stringify(["private", deps.owner.id]),
-              );
+        const source = sourceEvidence(job);
         return {
           ...(job.mode ? { mode: job.mode } : {}),
           evidenceIds: [
@@ -393,17 +464,21 @@ export function createWakeupActor(
                 }
                 tick(step.state, Date.now());
                 await step.vars.persist();
-                if (
-                  Object.values(step.state.runs).some(
-                    (run) =>
-                      run.status === "queued" || run.status === "running",
-                  )
-                ) {
+                const recoveryScopes = new Map<string, string[]>();
+                for (const run of Object.values(step.state.runs)) {
+                  if (run.status !== "queued" && run.status !== "running")
+                    continue;
+                  const job = step.state.jobs[run.jobId];
+                  const scope = job && routeEvent(job.source, deps.owner);
+                  if (scope)
+                    recoveryScopes.set(JSON.stringify(scope.key), scope.key);
+                }
+                for (const scope of recoveryScopes.values()) {
                   // A queue ACK is durable, but a host crash can leave its
                   // consumer asleep. Reactivate it without re-enqueuing work.
                   await step
                     .client<JuneClientRegistry>()
-                    .conversation.getOrCreate(["private", deps.owner.id])
+                    .conversation.getOrCreate(scope)
                     .wake()
                     .catch(() => {
                       if (step.abortSignal.aborted)
@@ -415,7 +490,11 @@ export function createWakeupActor(
                   const job = step.state.jobs[run.jobId];
                   if (!job || ["paused", "cancelled"].includes(job.status))
                     continue;
-                  if (!authorized(job.source, job.evidenceIds, job.mode)) {
+                  const scope = routeEvent(job.source, deps.owner);
+                  if (
+                    !scope ||
+                    !authorized(job.source, job.evidenceIds, job.mode)
+                  ) {
                     revoke(step.state, [job.id]);
                     await step.vars.persist();
                     continue;
@@ -430,7 +509,7 @@ export function createWakeupActor(
                       async (span) => {
                         await step
                           .client<JuneClientRegistry>()
-                          .conversation.getOrCreate(["private", deps.owner.id])
+                          .conversation.getOrCreate(scope.key)
                           .notify({
                             type: "wakeup",
                             source: job.source,

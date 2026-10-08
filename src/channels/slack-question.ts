@@ -6,7 +6,8 @@ import { questionSchema } from "../core/question.js";
 const buttonSchema = z.strictObject({
   id: z.string().min(1).max(200),
   team: z.string().min(1).max(80),
-  channel: z.string().regex(/^D[A-Z0-9_]+$/),
+  channel: z.string().regex(/^[CDG][A-Z0-9_]+$/),
+  channelType: z.enum(["im", "mpim", "channel", "group"]).optional(),
   user: z.string().min(1).max(80),
   thread: z.string().max(100).optional(),
   expires: z.number().int(),
@@ -22,16 +23,20 @@ function signature(value: string, secret: string) {
 }
 
 /** Stateless signed choices survive restarts without another persistence store.
- * The existing durable inbox deduplicates a question's first answer per owner. */
+ * The existing durable inbox deduplicates a question's first answer per requester. */
 export function slackQuestionBlocks(
   message: OutboundMessage,
-  owner: string,
   secret: string,
   now: number,
 ) {
+  if (message.content.type !== "text") return undefined;
+  const target = message.content.questionTarget;
   if (
-    message.content.type !== "text" ||
-    !message.address.conversationId.startsWith("D")
+    !target?.userId ||
+    !["im", "mpim", "channel", "group"].includes(target.channelType) ||
+    !/^[CDG][A-Z0-9_]+$/.test(message.address.conversationId) ||
+    (target.channelType === "im") !==
+      message.address.conversationId.startsWith("D")
   )
     return undefined;
   const parsed = questionSchema.safeParse(message.content.question);
@@ -44,7 +49,8 @@ export function slackQuestionBlocks(
         id: message.id,
         team: message.address.accountId,
         channel: message.address.conversationId,
-        user: owner,
+        channelType: target.channelType,
+        user: target.userId,
         thread,
         expires: now + 7 * 86_400_000,
         prompt: question.prompt,
@@ -91,7 +97,6 @@ export function slackQuestionAnswer(
   payload: unknown,
   team: string,
   bot: string,
-  owners: ReadonlySet<string>,
   secret: string,
   now: number,
 ): MessageEvent | undefined {
@@ -99,12 +104,7 @@ export function slackQuestionAnswer(
   if (!parsed.success) return undefined;
   const value = parsed.data;
   const action = value.actions[0];
-  if (
-    !action ||
-    value.team.id !== team ||
-    value.message.user !== bot ||
-    !owners.has(value.user.id)
-  )
+  if (!action || value.team.id !== team || value.message.user !== bot)
     return undefined;
   const [encoded, digest, extra] = action.value.split(".");
   if (!encoded || !digest || extra !== undefined) return undefined;
@@ -121,7 +121,12 @@ export function slackQuestionAnswer(
   const button = buttonSchema.safeParse(decoded);
   if (!button.success) return undefined;
   const choice = button.data;
+  // Existing signed DM buttons predate the explicit surface field.
+  const channelType =
+    choice.channelType ?? (choice.channel.startsWith("D") ? "im" : undefined);
   if (
+    !channelType ||
+    (channelType === "im") !== choice.channel.startsWith("D") ||
     choice.team !== team ||
     choice.channel !== value.channel.id ||
     choice.user !== value.user.id ||
@@ -141,10 +146,11 @@ export function slackQuestionAnswer(
     occurredAt: now,
     messageId: value.message.ts,
     senderId: choice.user,
-    direct: true,
+    direct: channelType === "im",
+    questionAnswered: true,
     text: `Selected option ${choice.index + 1}: ${JSON.stringify(choice.option)} for June's question ${JSON.stringify(choice.prompt)}. This is a conversational selection, not confirmation of a protected action.`,
     metadata: {
-      channelType: "im",
+      channelType,
       ...(choice.thread ? { threadTs: choice.thread } : {}),
     },
     // No privileged command-eligibility flags: buttons are conversational input.

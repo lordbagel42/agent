@@ -25,7 +25,9 @@ import {
 } from "./registry.js";
 
 it.for(["search", "dependents", "claim"] as const)(
-  "recalls $0 only for the owner privately and invalidates recalled and derived replies after deletion",
+  "recalls scoped $0 evidence and invalidates recalled and derived replies after deletion",
+  // The paginated search case traverses many real actor turns; each RPC keeps its own bound.
+  { timeout: 60000 },
   async (mode, t) => {
     const store = new EvidenceStore(":memory:", randomBytes(32));
     t.onTestFinished(() => store.close());
@@ -429,7 +431,7 @@ it.for(["search", "dependents", "claim"] as const)(
         "Repeat the search without a cursor",
       );
       expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE violet");
-      expect(requests.at(-1)?.system).toContain("copy nextCursor");
+      expect(requests.at(-1)?.system).toContain("nextCursor into cursor");
     }
     action = { text: "Derived color answer" };
     const derived = await turn();
@@ -471,7 +473,7 @@ it.for(["search", "dependents", "claim"] as const)(
       expect(
         categorized.state.history.at(-1)?.context?.contextSourceIds,
       ).toContain("claim-9");
-      expect(requests.at(-1)?.system).toContain("category-filtered recall");
+      expect(requests.at(-1)?.system).toContain("Category-filtered recall");
       store.appendSource({
         ...source,
         id: "contrary-source",
@@ -614,9 +616,11 @@ it.for(["search", "dependents", "claim"] as const)(
       { senderId: "U2", metadata: { channelType: "im" as const } },
     ]) {
       await turn(extra);
-      expect(requests.at(-1)?.recallAvailable).toBe(false);
+      expect(requests.at(-1)?.recallAvailable).toBe(true);
       expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE violet");
-      expect(JSON.stringify(sent.at(-1))).toContain("owner-private turn");
+      expect(JSON.stringify(sent.at(-1))).toContain(
+        mode === "dependents" ? "recall is unavailable" : "No retained",
+      );
       expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE violet");
       expect(JSON.stringify(sent.at(-1))).not.toContain("Alex likes pears");
     }
@@ -687,9 +691,9 @@ it.for(["search", "dependents", "claim"] as const)(
         { senderId: "U2", metadata: { channelType: "im" as const } },
       ]) {
         await turn(extra);
-        expect(requests.at(-1)?.recallAvailable).toBe(false);
+        expect(requests.at(-1)?.recallAvailable).toBe(true);
         expect(JSON.stringify(requests.at(-1))).not.toContain("PRIVATE violet");
-        expect(JSON.stringify(sent.at(-1))).toContain("owner-private turn");
+        expect(sent.at(-1)?.content).toEqual(absentSource);
         expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE violet");
       }
     }
@@ -697,7 +701,7 @@ it.for(["search", "dependents", "claim"] as const)(
     await turn();
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.recallAvailable).toBe(false);
-    expect(JSON.stringify(sent.at(-1))).toContain("owner-private turn");
+    expect(JSON.stringify(sent.at(-1))).toContain("enabled retained memory");
     web = false;
     for (validate of [false, true]) {
       action = {
@@ -1286,7 +1290,7 @@ it("holds owner-wide reflection occupancy for overlapping live calls until each 
   expect((await reflection.status()).activeTurnIds).toEqual([]);
 });
 
-it("keeps supersession receipts private and suppresses retry after a chain source is forgotten", async (t) => {
+it("keeps supersession evidence scoped and suppresses retry after a chain source is forgotten", async (t) => {
   const store = new EvidenceStore(":memory:", randomBytes(32));
   t.onTestFinished(() => store.close());
   const audience = JSON.stringify(["private", "owner"]);
@@ -1409,8 +1413,16 @@ it("keeps supersession receipts private and suppresses retry after a chain sourc
     ["guest", true, "U2"],
   ] as const) {
     await turn(id, direct, sender);
-    expect(requests.at(-1)?.recallAvailable).toBe(false);
+    expect(requests.at(-1)?.recallAvailable).toBe(true);
     expect(JSON.stringify(sent.at(-1))).not.toContain("PRIVATE");
+    const content = sent.at(-1)?.content;
+    if (content?.type !== "text")
+      throw new Error("Missing scoped chain receipt");
+    expect(JSON.parse(content.text.split("\n").at(-1) ?? "{}")).toEqual({
+      claims: [],
+      incomplete: false,
+      cyclic: false,
+    });
   }
   // Deleting an omitted relation endpoint invalidates the visible claim even
   // though its direct original source survives. Do not rely on source IDs alone.

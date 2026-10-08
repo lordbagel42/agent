@@ -15,7 +15,11 @@ it("authorizes rejection, preserves terminal decisions and re-persists failed-sa
   };
   const proposalId = `personality:${"a".repeat(64)}`;
   const acceptedId = `personality:${"b".repeat(64)}`;
-  const lookup = vi.fn((): { id: string } | undefined => ({ id: proposalId }));
+  const lookup = vi.fn((scope: string): { id: string } | undefined =>
+    scope === JSON.stringify(["private", owner.id])
+      ? { id: proposalId }
+      : undefined,
+  );
   type State = {
     revisions: unknown[];
     proposalDecisions?: Record<
@@ -75,6 +79,7 @@ it("authorizes rejection, preserves terminal decisions and re-persists failed-sa
   ]) {
     expect(await command(extra)).not.toContain("Rejected personality");
   }
+  lookup.mockClear();
   expect(
     await command({ text: '!personality reject {"proposalId":"__proto__"}' }),
   ).toContain("Invalid");
@@ -118,7 +123,10 @@ it("authorizes rejection, preserves terminal decisions and re-persists failed-sa
   expect(c.state.proposalDecisions).not.toBe(failedDecisionMap);
   expect(persisted.proposalDecisions).toEqual({
     [acceptedId]: { status: "accepted", revision: 1 },
-    [proposalId]: { status: "rejected" },
+    [proposalId]: {
+      status: "rejected",
+      sourceScope: JSON.stringify(["private", owner.id]),
+    },
   });
   c.state = structuredClone(persisted);
   expect(await command({ id: "new-owner-retry" })).toBe(receipt);

@@ -6,7 +6,6 @@ import type {
   SendResult,
 } from "../core/contracts.js";
 import { PRIVATE_ARTIFACT_PIN_PREFIX } from "../core/private-input.js";
-import { isOwner } from "../core/social.js";
 import {
   type ArtifactContext,
   type ArtifactPresentation,
@@ -24,7 +23,10 @@ export class ArtifactService {
       origin: string;
       owner: Owner;
       deletionRevision(): number;
-      workflow(id: string): Promise<WorkflowView | undefined>;
+      workflow(
+        id: string,
+        event?: MessageEvent,
+      ): Promise<WorkflowView | undefined>;
       preview?(record: ArtifactRecord, workflow?: WorkflowView): Promise<void>;
       sendSecret(
         identity: Identity,
@@ -71,12 +73,10 @@ export class ArtifactService {
     )
       parseScene(JSON.parse(command.content));
     if (command.kind === "workflow") {
-      if (
-        !isOwner(context.event, this.options.owner) ||
-        !context.event.direct ||
-        !command.runId ||
-        !(await this.options.workflow(command.runId))
-      )
+      const view = command.runId
+        ? await this.options.workflow(command.runId, context.event)
+        : undefined;
+      if (!view || view.status === "revoked")
         throw new Error("artifact_workflow_denied");
     }
     let record = this.store.mutate(

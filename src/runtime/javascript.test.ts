@@ -32,7 +32,7 @@ it("grants sandbox execution separately from other tools and interaction dispatc
 });
 
 it.for(["guest", "owner"])(
-  "lets %s run code in a channel without private workflow access",
+  "lets %s delegate channel JavaScript without granting unconfigured workflows",
   async (kind, t) => {
     const owner = {
       id: "owner",
@@ -61,7 +61,6 @@ it.for(["guest", "owner"])(
       owner,
       model: {
         async reply(request) {
-          if (kind === "guest") return execute(request);
           if (request.executionAvailable)
             return {
               text: "",

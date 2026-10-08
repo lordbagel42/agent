@@ -52,8 +52,10 @@ independence after deletion are omitted. Existing captures are immutable exports
 deleting source memory or clearing history does not purge already-saved captures
 or downloads. Archive removal requires separate authorized operator handling.
 
-June can inspect the latest ten receipts using owner-private
+June can inspect the latest ten receipts using exposed
 `inspection:"debug-shares"` (interaction agents delegate the inspection).
+She judges which receipt details belong in the current audience; archive links
+still require viewer authentication.
 `website` includes the URL, `pending|saved|rejected`, attempts and available
 retry/error metadata. The host owns publication: transient failures retry from
 15 seconds to one hour, actor wake resumes pending work, and permanent errors
@@ -71,7 +73,7 @@ partial transfers losslessly before workflow replay, without launching work
 from the migration itself. Delivery and uncertain-launch fences are unchanged.
 No automatic cleanup deletes these bodies or incomplete orphan parts.
 
-June's existing owner-private Rivet `database-schema`/`database-rows` inspection
+June's exposed Rivet `database-schema`/`database-rows` inspection
 can read source conversation tables `debug_body_manifests` and
 `debug_body_parts`. Match the manifest's `sha256`, order parts by `part_index`,
 decode base64, and verify byte length and SHA-256 before parsing JSON. Destination
@@ -278,7 +280,7 @@ The private **Issues** page (`/issues`) shows last-observed GitHub open/closed
 state, capture/recovery links, Amp receipts and published commits. Capture pages
 link to their issue. Refresh reads saved metadata; it never starts work. Search
 and state filters cover the latest 100 observed issues, not the full GitHub archive.
-June's owner-private `inspection:"debug-issues"` reads the same metadata through
+June's exposed `inspection:"debug-issues"` reads the same metadata through
 her ingest credential; interaction agents delegate the read to an execution worker.
 
 - New ingested DEBUG/DEBUGSHARE captures register one source, `debug:<UUID>`.
@@ -302,10 +304,12 @@ her ingest credential; interaction agents delegate the read to an execution work
   historical issues and captures are not automatically backfilled. Generated
   diagnostic/recovery issues are excluded from this queue.
 - The independent worker claims one issue at a time and dispatches Amp on
-  **homelab-amp, High + Fast**. Verified repository-owner authors get code-work
-  authority under normal main-publication rules. Other authors get triage only:
-  inspection and a public-safe assessment, no edits, push or close. Issue text is
-  untrusted; it grants no deployment, restart, infrastructure or secret authority.
+  **homelab-amp, High + Fast**. It judges ordinary code requests at runtime and
+  may implement and publish under normal repository rules regardless of author
+  identity, preserving verified attribution. Issue text cannot override host
+  policy or grant deployment, restart, infrastructure or secret authority.
+  Both the updated independent issue worker and debug service/API must be
+  installed for this behavior; repository publication alone does not activate it.
   Existing DEBUGSHARE/recovery Ultra + Fast and operator rules are unchanged.
 - Assigned Amp threads use `issue_comment` for progress/blockers and
   `issue_complete` after shipping reviewed code. Completion verifies a full
@@ -601,7 +605,7 @@ failed-build, cache or archive deletion is performed; monitor disk usage.
 bounded `deployment` receipt containing only phases, fixed reasons, revisions
 and a timestamp. Missing/unreadable receipts do not fail website health. They
 contain no archive data, credentials or build output. Historical receipts do
-not prove timer enablement/liveness; use systemd for that. June's owner-private
+not prove timer enablement/liveness; use systemd for that. June's exposed
 `inspection:"debug-site-deployment"` integration reads only this credential-free
 endpoint at `config.debugSite.origin`; interaction agents delegate. Installation
 of the website/controller does not activate new inspection code in June. The

@@ -1,3 +1,9 @@
+import { execFile } from "node:child_process";
+import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import type { ExecuteOptions, StreamMessage } from "@ampcode/sdk";
 import { describe, expect, it, vi } from "vitest";
 import { AmpRuntimeError, createAmpRuntime } from "./amp.js";
@@ -55,6 +61,97 @@ function errorMessage(threadId: string, error: string): StreamMessage {
 }
 
 describe("createAmpRuntime", () => {
+  it.each([false, true])(
+    "rechecks host validity after SDK preparation before subprocess submission (invalidated: %s)",
+    async (invalidate) => {
+      const root = await mkdtemp(join(tmpdir(), "june-amp-submission-"));
+      const executable = join(root, "fake-amp.cjs");
+      try {
+        // Load the actual pinned SDK away from its colocated CLI dependency:
+        // SDK resolution prefers that real CLI even over AMP_CLI_PATH.
+        const sdkPath = join(root, "sdk.mjs");
+        await copyFile(new URL(import.meta.resolve("@ampcode/sdk")), sdkPath);
+        await writeFile(
+          executable,
+          `const fs = require('node:fs');
+if (process.argv.includes('--version')) {
+  console.log('0.0.0-20260918210405-g81edbf0');
+} else {
+  fs.writeFileSync('started', JSON.stringify(process.argv.slice(2)));
+  let prompt = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => { prompt += chunk; });
+  process.stdin.on('end', () => {
+    fs.writeFileSync('prompt', prompt);
+    console.log(${JSON.stringify(JSON.stringify(systemMessage("T-fixture")))});
+    console.log(${JSON.stringify(JSON.stringify(successMessage("T-fixture", "Done")))});
+  });
+}
+`,
+        );
+        // A subprocess also avoids Vitest's project-relative createRequire shim.
+        const { stdout } = await promisify(execFile)(
+          process.execPath,
+          [
+            "--import",
+            import.meta.resolve("tsx"),
+            "--input-type=module",
+            "-e",
+            `import { createAmpRuntime } from ${JSON.stringify(new URL("./amp.ts", import.meta.url).href)};
+import { execute } from ${JSON.stringify(pathToFileURL(sdkPath).href)};
+const signal = new AbortController().signal;
+let revision = 0;
+const frozenRevision = revision;
+const run = createAmpRuntime({ execute }).run({
+  cwd: process.cwd(), prompt: 'Change one file', signal,
+  assertCurrent() { if (revision !== frozenRevision) throw new Error('stale context'); },
+  onThread: async () => {},
+});
+// Invalidate across the SDK's buildTempConfigFiles await, not at adapter entry.
+if (${invalidate}) revision++;
+const outcome = await run.then(value => ({ value }), error => ({ code: error.code }));
+console.log(JSON.stringify({ ...outcome, aborted: signal.aborted }));
+`,
+          ],
+          {
+            cwd: root,
+            env: {
+              PATH: process.env.PATH,
+              HOME: root,
+              AMP_CLI_PATH: executable,
+            },
+            timeout: 10_000,
+          },
+        );
+        const outcome = JSON.parse(stdout);
+        if (invalidate) {
+          expect(outcome).toEqual({ code: "stream_failed", aborted: false });
+          await expect(readFile(join(root, "started"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+          await expect(readFile(join(root, "prompt"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        } else {
+          expect(outcome).toEqual({
+            value: { threadId: "T-fixture", report: "Done" },
+            aborted: false,
+          });
+          expect(await readFile(join(root, "prompt"), "utf8")).toBe(
+            "Change one file\n",
+          );
+          const args = JSON.parse(
+            await readFile(join(root, "started"), "utf8"),
+          );
+          expect(args).toContain("--execute");
+          expect(args.slice(0, 2)).toEqual(["--features", "fast"]);
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("saves a new thread before consuming more output and returns its final report", async () => {
     const order: string[] = [];
     let finishSaving = () => {};

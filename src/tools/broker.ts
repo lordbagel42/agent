@@ -361,6 +361,9 @@ export class CapabilityBroker {
     /** Trusted host-only sink for a fresh successful result. Never persisted or
      * called for receipt replay; current grant authority must still hold. */
     onResult?: (result: unknown) => void,
+    /** Optional live task ceiling, checked across credential lookup and adapter
+     * awaits. Losing it never reopens the durable receipt for another attempt. */
+    canExecute?: () => boolean,
   ): Promise<Receipt> {
     const action = this.propose(input);
     const adapter = this.#options.tools[action.tool];
@@ -425,6 +428,7 @@ export class CapabilityBroker {
           let requested = false;
           let admitted = false;
           const authorize = () => {
+            if (canExecute?.() === false) deny();
             if (!this.#active.has(grantId)) deny();
             this.#grant(principal, grantId);
             if (linkToken !== undefined) this.#link(principal, linkToken);

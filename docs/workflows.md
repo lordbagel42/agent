@@ -1,7 +1,12 @@
 # June-authored Rivet workflows
 
 June can write JavaScript function bodies, save named definitions, start runs,
-inspect them, send signals, and cancel them from an owner-private conversation.
+inspect them, send signals, and cancel them from admitted conversations where
+`workflow` is exposed, without compulsory human approval. June judges task intent,
+authority and disclosure. Definitions, runs, controls and cached receipts are
+bound to the original authenticated requester, audience, channel/account and
+conversation/thread—not an owner-wide library. Unbound legacy definitions and
+receipts remain retained for review, not automatically shared or replayed.
 This is an agent capability, not a dashboard-only feature. It is mounted in
 normal startup (not setup mode), independently of natural-language execution
 workers. There is no generic host `eval`, shell, filesystem or network bridge.
@@ -11,9 +16,9 @@ workers. There is no generic host `eval`, shell, filesystem or network bridge.
 For one-off calculations or user-submitted code, June has a separate,
 capability-free **QuickJS sandbox**. Anyone already admitted to a conversation
 can ask, for example, “Run this JavaScript: `console.log(19 - 7)`.” This works
-in DMs and mentions without granting access to owner-private workflows or
-requiring approval for a native coding job. Owner interaction turns delegate
-to an execution worker; guest/direct turns use the sandbox tool directly.
+in DMs and mentions without granting access to another requester's workflows or
+starting a native coding job. Interaction turns delegate to an execution worker
+when available; the direct path uses the sandbox tool itself.
 
 The agent-callable directive is:
 
@@ -65,7 +70,7 @@ Use the `workflow` output field with empty `text` and other actions unset:
 Editing a definition does not edit existing runs. A replay of the same initiating
 command repairs admission rather than creating another run.
 
-`list` returns the library; `inspect` takes either `name` or `runId` and returns
+`list` returns the source-scoped library; `inspect` takes either `name` or `runId` and returns
 source, status, receipts and result. `signal` takes `runId` and `dataJson`;
 `cancel` takes `runId`. Unused fields are null; offset starts at zero. Large
 reports return `chunk` and `nextOffset`; concatenate pages. Inspect completed
@@ -99,7 +104,7 @@ The shipped tool catalog is:
 | `clock` | `{}` | Journal current Unix milliseconds. |
 | `random` | `{}` | Journal a random UUID. |
 | `model` | `{prompt}` | One text-only inference, no tools or implicit memory/history. |
-| `notify` | `{text}` | Send only to the initiating owner-private conversation. |
+| `notify` | `{text}` | Send only to the original initiating conversation/thread. |
 | `web_search` | `{query}` | Configured public search; only mounted when available. |
 | `analytics` | `{days: 1\|7\|30}` | June's own usage report, when configured. |
 
@@ -110,7 +115,7 @@ rejected delivery is not a successful notification.
 
 Raw private-search and MCP results deliberately remain unavailable here: their
 existing adapters require transient results, while workflow outputs are durable.
-Workflows cannot grant MCP permissions, approve coding, change configuration,
+Workflows cannot grant MCP permissions, start native coding, change configuration,
 deploy, select arbitrary message recipients, or grant themselves more tools.
 Additional host tools must honor the same authority, retention and cancellation
 contracts; adding a tool does not add it to already-created runs.
@@ -120,7 +125,7 @@ contracts; adding a tool does not add it to already-created runs.
 Each run is a real `workflowRun` Rivet actor registered with the native workflow
 handler/inspector. Native steps, joins, queue waits and alarms own replay; no
 second workflow engine or graph DSL is involved. Source, input, tool allowlist,
-owner provenance, deletion revision and runtime ABI are pinned at admission.
+requester/source provenance, deletion revision and runtime ABI are pinned at admission.
 Each replay gets a fresh QuickJS VM and replays the pinned JavaScript. Native
 scheduler exceptions remain original host objects, never serialized guest errors.
 

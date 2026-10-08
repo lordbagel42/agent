@@ -41,7 +41,7 @@ it("exposes E2B only as an available exclusive execution action", () => {
     ).toThrow();
 });
 
-it("dispatches owner-private E2B once and rejects forged shared, guest and synthesis actions", async (t) => {
+it("dispatches E2B once per admitted task, including shared and guest turns, but not replay or synthesis", async (t) => {
   const owner = {
     id: "owner",
     identities: [
@@ -139,10 +139,12 @@ it("dispatches owner-private E2B once and rejects forged shared, guest and synth
     address: { ...base.address, conversationId: "C1" },
     metadata: { channelType: "channel" },
   });
+  expect(calls).toBe(2);
   await deliver({ ...base, id: "guest", senderId: "U2" });
+  expect(calls).toBe(3);
   search = true;
   await deliver({ ...base, id: "synthesis" });
-  expect(calls).toBe(1);
+  expect(calls).toBe(3);
   expect(executionCapabilities(deps, base).e2bAvailable).toBe(true);
   expect(currentExecutionCapabilities(deps, base, {}).e2bAvailable).toBe(false);
   expect(

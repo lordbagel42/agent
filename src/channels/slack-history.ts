@@ -20,20 +20,18 @@ class HistoryError extends Error {
   }
 }
 
-/** Bot-token reads only. Raw text goes straight to a verified owner DM, never
+/** Bot-token reads only. Raw text goes straight to the verified requester's DM, never
  * through a model, a user-token search, a caller-selected destination or a log. */
 export function createSlackHistory({
   teamId,
   botUserId,
   botToken,
-  ownerUserIds,
   fetch: fetchImpl,
   send,
 }: {
   teamId: string;
   botUserId: string;
   botToken: string;
-  ownerUserIds: ReadonlySet<string>;
   fetch: typeof globalThis.fetch;
   send: ChannelAdapter["send"];
 }): NonNullable<ChannelAdapter["shareHistory"]> {
@@ -43,14 +41,14 @@ export function createSlackHistory({
       code,
       retryable: false,
     });
-    const ownerId = event.senderId;
+    const requesterId = event.senderId;
     if (
       event.address.channel !== "slack" ||
       event.address.accountId !== teamId ||
-      !ownerUserIds.has(ownerId) ||
-      ownerId === botUserId
+      !/^[UW][A-Z0-9]+$/.test(requesterId) ||
+      requesterId === botUserId
     )
-      return rejected("history_owner_required");
+      return rejected("history_requester_required");
     const parsed = slackHistorySchema.safeParse(input);
     if (!parsed.success) return rejected("history_invalid_request");
     const request = parsed.data;
@@ -58,8 +56,7 @@ export function createSlackHistory({
     const readSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     const check = async () => {
       readSignal.throwIfAborted();
-      if (!ownerUserIds.has(ownerId) || !(await isCurrent()))
-        throw new HistoryError("history_invalidated");
+      if (!(await isCurrent())) throw new HistoryError("history_invalidated");
       readSignal.throwIfAborted();
     };
     async function read(
@@ -195,7 +192,7 @@ export function createSlackHistory({
       const targetUser = /^[CDG][A-Z0-9]+$/.test(target)
         ? undefined
         : await userId(target);
-      let ownerDm: string | undefined;
+      let requesterDm: string | undefined;
       let targetDm: string | undefined;
       let cursor = "";
       for (let page = 0; page < 5; page++) {
@@ -215,19 +212,20 @@ export function createSlackHistory({
             !/^D[A-Z0-9]+$/.test(channel.id)
           )
             continue;
-          if (channel.user === ownerId) ownerDm = channel.id;
+          if (channel.user === requesterId) requesterDm = channel.id;
           if (channel.user === targetUser) targetDm = channel.id;
         }
-        if (ownerDm && (!targetUser || targetDm)) break;
+        if (requesterDm && (!targetUser || targetDm)) break;
         cursor = nextCursor(data);
         if (!cursor) break;
       }
-      if (!ownerDm) throw new HistoryError("history_owner_dm_unavailable");
+      if (!requesterDm)
+        throw new HistoryError("history_requester_dm_unavailable");
       if (targetUser) {
         if (!targetDm) throw new HistoryError("history_dm_not_found");
         target = targetDm;
       }
-      if (enterprise && !targetUser && target !== ownerDm) {
+      if (enterprise && !targetUser && target !== requesterDm) {
         // An org token can read a supplied ID from a different workspace.
         // Require explicit source IDs in the bot's workspace-scoped membership
         // list before even requesting conversation info (which may include text).
@@ -253,16 +251,16 @@ export function createSlackHistory({
         }
         if (!member) throw new HistoryError("history_not_a_member");
       }
-      // Confirm the recipient before fetching any contents. An owner user ID is
-      // not a destination, and a channel named after the owner is never a DM.
-      const destination = await info(ownerDm);
+      // Confirm the recipient before fetching any contents. A requester user ID is
+      // not a destination, and a channel named after that person is never a DM.
+      const destination = await info(requesterDm);
       if (
         destination.is_im !== true ||
         destination.is_mpim === true ||
-        destination.user !== ownerId
+        destination.user !== requesterId
       )
-        throw new HistoryError("history_owner_dm_unavailable");
-      const source = target === ownerDm ? destination : await info(target);
+        throw new HistoryError("history_requester_dm_unavailable");
+      const source = target === requesterDm ? destination : await info(target);
       if (source.is_im === true) {
         if (
           source.is_mpim === true ||
@@ -345,20 +343,20 @@ export function createSlackHistory({
             : "\n\nEnd of this available page range; this is not proof of complete history.");
       // Revalidate after reads as well as before them. Raw content is never
       // returned, and callers cannot redirect it through reply placement.
-      const currentDestination = await info(ownerDm);
+      const currentDestination = await info(requesterDm);
       if (
         currentDestination.is_im !== true ||
         currentDestination.is_mpim === true ||
-        currentDestination.user !== ownerId
+        currentDestination.user !== requesterId
       )
-        throw new HistoryError("history_owner_dm_unavailable");
+        throw new HistoryError("history_requester_dm_unavailable");
       await check();
       const result = await send({
         id: operationId,
         address: {
           channel: "slack",
           accountId: teamId,
-          conversationId: ownerDm,
+          conversationId: requesterDm,
         },
         lastInboundAt: event.occurredAt,
         content: { type: "text", text },

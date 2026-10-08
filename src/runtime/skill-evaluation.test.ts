@@ -21,7 +21,7 @@ import {
   type JuneClientRegistry,
 } from "./registry.js";
 
-it("mounts a private exclusive held-out request, never accepts candidate content or authority", async (t) => {
+it("mounts scoped exclusive held-out requests, never accepts candidate content or authority", async (t) => {
   const owner = {
     id: "owner",
     identities: [{ channel: "slack" as const, accountId: "T", senderId: "U" }],
@@ -126,11 +126,12 @@ it("mounts a private exclusive held-out request, never accepts candidate content
   expect((await reflection.status()).reflection.requests).toHaveLength(0);
   expect((await reflection.status()).liveActive).toBe(0);
   await deliver(false);
-  expect(requests.at(-1)?.skillEvaluationRequestAvailable).toBe(false);
+  expect(requests.at(-1)?.skillEvaluationRequestAvailable).toBe(true);
   expect(sent.at(-1)?.content).toMatchObject({
     type: "text",
-    text: expect.stringContaining("owner-private"),
+    text: expect.stringContaining("unavailable"),
   });
+  expect((await reflection.status()).reflection.requests).toHaveLength(0);
 
   const capabilities = { skillEvaluationRequestAvailable: true };
   expect(replyJsonSchema([], capabilities).properties).toHaveProperty(

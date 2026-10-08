@@ -129,6 +129,7 @@ export function isControl(
   input: ConversationInput,
   deps: Dependencies,
 ): boolean {
+  if (input.type === "forget_request") return true;
   if (input.type !== "event" || input.event.type !== "message") return false;
   const event = input.event;
   return !!(
@@ -647,7 +648,7 @@ export function createSessionCatalog(
           );
     }
     if (!valid(host, assignment, reference, revision)) return suppress();
-    if (input.type !== "wakeup") {
+    if (input.type !== "wakeup" && input.type !== "forget_request") {
       const native: WakeupEvent =
         input.type === "event"
           ? {

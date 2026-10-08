@@ -4,6 +4,7 @@ import { EvidenceStore } from "../memory/store.js";
 import {
   createReflectionActor,
   type ReflectionCandidate,
+  type ReflectionDependencies,
   reflectionCandidateId,
 } from "./reflection.js";
 
@@ -12,13 +13,18 @@ function required<T>(value: T | undefined): T {
   return value;
 }
 
-async function fixture(beforeRetrieve?: (ids: string[]) => Promise<void>) {
+async function fixture(
+  beforeRetrieve?: (ids: string[]) => Promise<void>,
+  stageInterruption?: ReflectionDependencies["stageInterruption"],
+) {
   const now = Date.now();
-  const scope = JSON.stringify(["private", "owner"]);
+  const privateScope = JSON.stringify(["private", "owner"]);
   const store = new EvidenceStore(":memory:", randomBytes(32));
   onTestFinished(() => store.close());
   const config = createReflectionActor({
     ownerId: "owner",
+    stageInterruption,
+    deletionRevision: () => store.deletionRevision(),
     idleMs: 100,
     deepMs: 200,
     pollMs: 100,
@@ -71,6 +77,7 @@ async function fixture(beforeRetrieve?: (ids: string[]) => Promise<void>) {
   const add = (
     name: string,
     phase: "settled" | "started" | "uncertain" = "settled",
+    scope = privateScope,
   ) => {
     store.appendSource({
       id: name,
@@ -113,6 +120,233 @@ async function fixture(beforeRetrieve?: (ids: string[]) => Promise<void>) {
   };
   return { c, actions: config.actions, add, now, store };
 }
+
+it("uses host channel scope for reflection requests and review without exposing owner-private evidence", async () => {
+  const { c, actions, add, store } = await fixture();
+  c.state.candidateFormatVersion = 1;
+  const scope = JSON.stringify(["slack", "T", "C", ""]);
+  const privateScope = JSON.stringify(["private", "owner"]);
+  const privateId = add("owner-private");
+  const id = add("channel-evidence", "settled", scope);
+  const alias = reflectionCandidateId(id);
+  const privateAlias = reflectionCandidateId(privateId);
+  for (const candidate of Object.values(c.state.candidates)) {
+    candidate.kind = "interruption-candidate";
+    required(
+      c.state.reflection.requests.find((r) => r.id === candidate.requestId),
+    ).kind = "curiosity";
+  }
+  // The payload cannot select another audience, even with a forged scope field.
+  const forged = {
+    mode: "idle" as const,
+    evidenceIds: ["owner-private"],
+    scope: privateScope,
+  };
+  expect(await actions.request(c, forged, scope)).toEqual({
+    status: "unavailable",
+  });
+  const input = { mode: "idle" as const, evidenceIds: ["channel-evidence"] };
+  expect(await actions.request(c, input, scope)).toEqual({
+    status: "duplicate",
+  });
+  expect(await actions.request(c, input)).toEqual({ status: "unavailable" });
+  const extra = store.source(scope, "channel-evidence");
+  if (!extra) throw new Error("Missing channel source");
+  store.appendSource({ ...extra, id: "channel-request" });
+  expect(
+    await actions.request(
+      c,
+      { ...input, evidenceIds: ["channel-request"] },
+      scope,
+    ),
+  ).toEqual({ status: "queued" });
+  expect(c.state.reflection.requests.at(-1)).toMatchObject({
+    scope,
+    evidenceIds: ["channel-request"],
+    attempts: 0,
+  });
+  expect(await actions.candidate(c, alias, scope)).toMatchObject({
+    scope,
+    evidenceIds: ["channel-evidence"],
+  });
+  expect(await actions.candidate(c, id, scope)).toBeNull();
+  expect(await actions.candidate(c, privateAlias, scope)).toBeNull();
+  expect(await actions.listCandidates(c, scope)).toMatchObject({
+    status: "ready",
+    ids: [alias],
+  });
+  const progress = await actions.curiosityProgress(c, scope);
+  expect(progress.rows).toHaveLength(1);
+  expect(progress.rows[0]).toMatchObject({
+    currentInputs: { episodes: 1, ownerCorrections: 0, dreamHypotheses: 0 },
+    invocation: "settled",
+  });
+  const inspected = await actions.inspectCandidate(c, scope, alias);
+  if (!inspected) throw new Error("Missing channel review");
+  expect(inspected.evidence.map((e) => e.id)).toEqual(["channel-evidence"]);
+  expect((await actions.reviewCandidates(c, scope))?.references).toEqual([
+    inspected.reference,
+  ]);
+  expect(await actions.validateReview(c, scope, [inspected.reference])).toBe(
+    true,
+  );
+  expect(
+    await actions.validateReview(c, privateScope, [inspected.reference]),
+  ).toBe(false);
+  expect(await actions.inspectCandidate(c, scope, privateAlias)).toBeNull();
+  expect(await actions.rejectCandidate(c, scope, privateAlias)).toBe(false);
+  expect(await actions.rejectCandidate(c, privateScope, privateAlias)).toBe(
+    true,
+  );
+  expect(await actions.rejectCandidate(c, scope, privateAlias)).toBe(false);
+
+  const receipts = structuredClone(c.state.reflection.requests);
+  expect(await actions.rejectCandidate(c, scope, alias)).toBe(true);
+  expect(await actions.rejectCandidate(c, scope, alias)).toBe(true);
+  expect(await actions.inspectCandidate(c, scope, alias)).toBeNull();
+  expect(await actions.validateReview(c, scope, [inspected.reference])).toBe(
+    false,
+  );
+  expect(await actions.request(c, input, scope)).toEqual({
+    status: "duplicate",
+  });
+  expect(c.state.reflection.requests).toEqual(receipts);
+  expect(c.state.invocations[id]).toBe("settled");
+});
+
+it("binds held-out evaluation and interruption staging to the host channel scope", async () => {
+  const staged: Parameters<
+    NonNullable<ReflectionDependencies["stageInterruption"]>
+  >[] = [];
+  const { c, actions, add, store, now } = await fixture(
+    undefined,
+    (...args) => {
+      staged.push(args);
+      return "staged";
+    },
+  );
+  c.state.candidateFormatVersion = 1;
+  const scope = JSON.stringify(["guest", "slack", "T", "C", "", "GUEST"]);
+  const privateScope = JSON.stringify(["private", "owner"]);
+  const privateId = add("owner-private");
+  const id = add("channel-evidence", "settled", scope);
+  const alias = reflectionCandidateId(id);
+  const candidate = required(c.state.candidates[id]);
+  candidate.skillChange = {
+    id: "a".repeat(64),
+    digest: "b".repeat(64),
+    proposedBehavior: "Give the requested answer before optional details.",
+    rationale: "The channel episode supports this hypothesis.",
+    evidenceIds: ["channel-evidence"],
+    createdAt: now,
+    hypothesisOnly: true,
+  };
+  for (const name of ["held-a", "held-b"]) {
+    const source = store.source(scope, "channel-evidence");
+    if (!source) throw new Error("Missing channel source");
+    store.appendSource({
+      ...source,
+      id: name,
+      text: `${name}: baseline omits the requested answer; desired outcome is answer first.`,
+    });
+  }
+  const input = {
+    candidateId: alias,
+    heldOutEvidenceIds: ["held-a", "held-b"],
+  };
+  const revision = store.deletionRevision();
+  expect(await actions.requestSkillEvaluation(c, input, revision)).toEqual({
+    status: "unavailable",
+  });
+  expect(
+    await actions.requestSkillEvaluation(
+      c,
+      { ...input, candidateId: reflectionCandidateId(privateId) },
+      revision,
+      scope,
+    ),
+  ).toEqual({ status: "unavailable" });
+  expect(
+    await actions.requestSkillEvaluation(
+      c,
+      { ...input, heldOutEvidenceIds: ["held-a", "owner-private"] },
+      revision,
+      scope,
+    ),
+  ).toEqual({ status: "unavailable" });
+  expect(
+    await actions.requestSkillEvaluation(c, input, revision, scope),
+  ).toEqual({ status: "queued" });
+  expect(c.state.reflection.requests.at(-1)).toMatchObject({
+    scope,
+    evidenceIds: ["channel-evidence", "held-a", "held-b"],
+    evaluationFor: alias,
+  });
+  expect(
+    await actions.requestSkillEvaluation(c, input, revision, scope),
+  ).toEqual({ status: "duplicate" });
+
+  const event = {
+    id: "guest-request",
+    type: "message" as const,
+    messageId: "1",
+    occurredAt: now,
+    address: { channel: "slack" as const, accountId: "T", conversationId: "C" },
+    direct: false,
+    senderId: "GUEST",
+    text: "Stage this candidate.",
+  };
+  const interruptionId = add("channel-interruption", "settled", scope);
+  required(c.state.candidates[interruptionId]).kind = "interruption-candidate";
+  required(
+    c.state.reflection.requests.find(
+      (r) => r.id === c.state.candidates[interruptionId]?.requestId,
+    ),
+  ).kind = "curiosity";
+  const draft = {
+    candidateId: reflectionCandidateId(interruptionId),
+    userId: "RECIPIENT",
+    text: "An inert draft.",
+  };
+  expect(await actions.stageInterruption(c, event, draft, revision)).toContain(
+    "unavailable",
+  );
+  expect(
+    await actions.stageInterruption(c, event, draft, revision, false, scope),
+  ).toBe("staged");
+  expect(staged).toHaveLength(1);
+  expect(staged[0]?.[2]).toMatchObject({
+    scope,
+    evidenceIds: ["channel-interruption"],
+  });
+  expect(staged[0]?.[3]).toBe(true);
+  expect(
+    await actions.stageInterruption(
+      c,
+      event,
+      { ...draft, candidateId: reflectionCandidateId(privateId) },
+      revision,
+      true,
+      scope,
+    ),
+  ).toContain("unavailable");
+  expect(await actions.candidate(c, alias, privateScope)).toBeNull();
+  store.deleteSource("channel-interruption");
+  expect(
+    await actions.stageInterruption(c, event, draft, revision, true, scope),
+  ).toContain("unavailable");
+  expect(
+    await actions.stageInterruption(
+      c,
+      event,
+      draft,
+      store.deletionRevision(),
+      true,
+      scope,
+    ),
+  ).toContain("unavailable");
+  expect(staged).toHaveLength(1);
+});
 
 it("preserves published bodies across interactions without rearming effects or releasing uncertain work", async () => {
   const { c, actions, add } = await fixture();

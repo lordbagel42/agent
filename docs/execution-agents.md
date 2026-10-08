@@ -14,13 +14,21 @@ June treats those capabilities as her own: a clear request such as "research
 xyz" starts authorized work, not a discussion of who will do it. She acts as
 though she is capable of anything: assume the task is achievable, investigate
 available routes, and try suitable permitted alternatives before reporting a
-concrete blocker. This does not grant access, bypass approvals, repeat uncertain
+concrete blocker. This does not grant access, bypass administrative controls, repeat uncertain
 effects, or extend a turn's budget.
+
+Ordinary task tools are not owner-only or private-DM-only and do not require
+compulsory human approval. June judges the actual requester's intent, authority,
+legitimacy, sensitivity, audience and impact. Use only exposed capabilities;
+manual disables, provider scopes, credentials, login/PIN controls and authenticated
+administration remain enforced. Broader task eligibility does not inject private
+history into another audience or make account data public. Source support,
+enabled configuration, recorded receipts and verified live behavior are distinct.
 
 Workers and handoffs stay internal unless someone explicitly asks about them
 or an actual execution failure makes them relevant. Acknowledgments, requested
 progress and completion replies describe the task and findings in June's voice.
-Internal reports and required approval/diagnostic records retain their evidence
+Internal reports and exact task/diagnostic records retain their evidence
 and exact identifiers; this is not an output keyword filter. The shared policy
 reaches conversation, execution and automated-event prompts. Completion turns
 still synthesize evidence without starting more work. Requested deliverables retain
@@ -30,7 +38,7 @@ privacy or verification limits or forward internal report framing.
 
 ## June-facing interface
 
-The model schema and prompt expose this owner-only action:
+The model schema and prompt expose this action on admitted interaction turns:
 
 ```json
 {"text":"I'll compare both options.","execution":[
@@ -50,20 +58,25 @@ necessary authorized excerpt or targeted authorized recall when available.
 Cancel with `{"agent":"trains","action":"cancel","task":""}`. The host reports
 admission failures rather than silently accepting a false success claim.
 Worker completions wake June to synthesize findings or stay silent if redundant.
-Completion turns cannot dispatch new actions. Coding proposals retain the existing
-private `/approve` requirement; coding results return to June and worker history.
+Completion turns cannot dispatch new actions. New `coding:{workspace,goal}` tasks
+start automatically on host admission; no separate `!approve` is required. Coding
+results return to June and worker history. The producer durably freezes the exact
+task, workspace, runtime, conversation and originating deletion revision with a
+host-only immediate-run marker before queueing. The receiving job rechecks that
+revision and runtime before admission and dispatch. It repairs a save-to-queue gap
+only for the identical fresh, unattempted task: historical pending, cancelled,
+revoked or uncertain work is never swept or relaunched.
 
-The host's coding preview names the exact workspace alias, canonical repository
-path, configured native runtime, and task. `/approve ID` authorizes only that
-local task in an isolated checkout—not pushing, deploying, publishing, shared
-infrastructure changes, or credential access. Native execution is not a sandbox.
-Changed tasks or workspaces get a fresh proposal and approval ID; changed runtime
-or execution policy cannot reuse the old approval. June must not present a coding
-approval or a passing verifier result as delivery authority.
+Admission authorizes only the configured task in its isolated checkout—not pushing,
+deploying, publishing, shared infrastructure changes or credential access. Native
+execution is not a sandbox. Changed tasks/workspaces need a new task; changed
+runtime or execution policy cannot reuse the old binding. A queued task or passing
+verifier is not delivery authority. Legacy `!approve` and explicit recovery
+commands remain optional manual interfaces with their original safeguards.
 
 June delegates reviewed, evaluated skill candidates to an execution worker.
-The worker can return this request for the same unapproved proposal in an
-owner-private scope; it is not an interaction-model directive:
+The worker can return this request for the same scoped candidate when the
+capability is exposed; it is not an interaction-model directive:
 
 ```json
 {"text":"","skillCodingProposal":{"candidateId":"<64-character reflection alias>","workspace":"june"}}
@@ -80,13 +93,14 @@ deletion revision immediately before accepting the proposal, including after
 queue delays. A historical evaluation is not permission. The skill gets one job
 ID across retries: the first workspace, task, preview and runtime binding stay
 frozen, and a different workspace is refused. Existing `codingJob` inspection and
-cancellation apply. The owner must separately send `!approve ID` as an ordinary
-private message before local execution. This bridge cannot approve, run, resume,
-install, push or deploy anything, or enable dormant coding/reflection integrations.
+cancellation apply. A fresh task uses the same immediate-run and revision fences
+as ordinary coding; there is no separate human approval. Legacy pending work is
+not upgraded. This bridge does not resume uncertain jobs, install a skill, push,
+deploy, or enable dormant coding/reflection integrations.
 
 ## Per-worker command environments
 
-`environment` gives each authorized owner-private execution worker its own
+`environment` gives each admitted execution worker with that capability its own
 command workspace. The model loop remains in June; shell commands run in the
 isolated environment. BoxLite is the default workspace provider; E2B remains
 available through its independent one-shot tool. Neither is enabled just by
@@ -118,9 +132,9 @@ the separate browser companion's live-view/PIN workflow.
 
 Interaction, execution and automated-event prompts carry this knowledge;
 repository/research specialists and text-only workflow steps are told about it
-without gaining a shell. Guests, shared channels, automated events, synthesis
-and legacy requests lacking the saved grant cannot use it. Commands do not grant
-host access, credentials, coding approval, publication or deployment authority.
+without gaining a shell. Only workers with a saved, still-current capability can
+use it; report-only turns and legacy requests lacking that capability cannot.
+Commands do not grant host access, credentials, publication or deployment authority.
 QuickJS remains preferable for small pure calculations. The existing one-shot
 `e2b` action is unchanged and independent of this provider selection.
 
@@ -268,7 +282,7 @@ BoxLite replacement. No Cloudflare resources are provisioned by this feature.
 
 ## Boundaries and recovery
 
-- Each request reads June's approved global public-safe personality once and uses
+- Each request reads June's current global public-safe personality once and uses
   that snapshot for every worker model step. Reusing a worker for a new task or
   follow-up picks up the latest revision automatically; June needs no extra action.
   Only validated style and the generated self-description are projected, never
@@ -276,18 +290,18 @@ BoxLite replacement. No Cloudflare resources are provisioned by this feature.
   instructions, concise reporting to June, JSON output, or permission boundaries.
 - Enabled by default outside setup mode; workers use `deepModel ?? model`.
   Search availability is explicitly disclosed; configuration is not a health check.
-- For newly admitted owner turns, interaction output is restricted in both the
+- For newly admitted interaction turns, output is restricted in both the
   schema and parser to text, reactions, reply placement and delegation/cancellation.
   The interaction prompt advertises capability names, not integration instructions.
   Casual conversation and synthesis stay with June; tools, research, analysis and
-  planning belong to workers. Guests and legacy journaled turns keep their prior
-  capability ceiling; disabling execution preserves the old direct path.
+  planning belong to workers. Legacy journaled turns keep their saved capability
+  ceiling; disabling execution preserves the direct path.
 - Workers use the shared host capability runner for diagnostics/logs, memory recall,
-  coding-job inspection, approvals/proposals, workflows, wakeups and configured
+  coding-job inspection, task effects, workflows, wakeups and configured
   integrations. MCP discovery and calls run inside the worker, not the interaction
   turn. Every operation keeps the original authenticated scope and its existing
   permission checks; delegation grants no new permission and workers cannot spawn
-  workers or execute native coding without separate approval.
+  workers. Native coding uses the exact-task admission path above.
 - Retainable tool output becomes a worker observation, followed by a model step to
   interpret it. June receives the findings for conversational synthesis, not a
   direct formatted-tool dump. Logs should produce relevant evidence, interpretation,
@@ -297,8 +311,8 @@ BoxLite replacement. No Cloudflare resources are provisioned by this feature.
   Rivet inspection keeps its separate transient read/interpret/delivery callback.
 - Linked owner DMs share a roster. Channel/thread workers remain in the originating
   scope even if June's reply starts a new thread; follow up in the original scope
-  to reuse them. Guests keep their existing explicitly granted capabilities and
-  cannot dispatch execution workers.
+  to reuse them. Admitted guest and channel requests can delegate without inheriting
+  the owner's private history, memory or cross-conversation continuity.
 - Different workers run independently; one worker processes tasks serially and
   retains history (last 40 entries in its prompt). Limits are four pending requests
   and 32 worker names per conversation, six model steps/five searches per request,
@@ -316,12 +330,16 @@ BoxLite replacement. No Cloudflare resources are provisioned by this feature.
   and do not certify remote-provider quiescence.
 - Stable IDs deduplicate requests and completions. Interrupted calls and ambiguous
   search failures become `needs_review`, not automatic retries. Known-unsent search
-  failures become `failed`. A fresh `run` is an explicit new attempt.
+  failures become `failed`. A fresh `run` is a distinct attempt, not a way around
+  uncertainty: reconcile the existing operation before repeating its effect.
 - A journaled capability ceiling is intersected with current availability before
   each worker step. The worker persists a started operation receipt before host IO.
-  After an effect/proposal or uncertain external read, only a final reporting step
+  After an effect or uncertain external read, only a final reporting step
   remains; failures cannot chain into automatic retries. Plain local reads can
   supply evidence for another tool step within the existing bounded loop.
+  `pendingMemory:true`, personality previews with absent/false `apply`, forgetting
+  previews without `apply`, browser name discovery and import review are reads;
+  their decision/execution forms are effects, not permission to keep chaining.
 - Cancellation suppresses late answers but waits for the underlying provider to
   settle. Workers participate in deployment draining. Forget revokes workers and
   clears live history/reports; transitive provenance prevents reuse after deletion.
@@ -335,21 +353,22 @@ BoxLite replacement. No Cloudflare resources are provisioned by this feature.
   rules; clearing live state is not secure erasure. Worker history is not encrypted
   by the optional evidence store.
 
-## Private ongoing public research
+## Scoped ongoing public research
 
-An explicit ongoing-research request in the verified owner's one-to-one Slack DM
-can create a durable research session. An ordinary one-off research question does
+An explicit ongoing-research request in an admitted conversation can create a
+durable research session when configured. An ordinary one-off research question does
 not authorize this loop. June delegates management to an execution worker, which
 can emit `research` with `start`, `list`, `inspect`, `pause`, `resume`, or `stop`.
-Shared conversations, guests, automated events, completion turns and synthesis
-cannot manage or inspect sessions. Generic instructions reach all prompt paths;
-private goals and findings do not.
+Listing, inspection and control stay bound to the original authenticated requester,
+conversation/thread and audience, not all sessions belonging to the owner.
+Completion/report-only turns cannot launch follow-ups. Generic instructions reach
+all prompt paths; private goals and findings do not cross scopes automatically.
 
 ```json
 {"text":"","research":{"action":"start","id":null,"goal":"Find official public museum opening hours in the requested area.","connections":["<approved-public-search-connection-id>"],"intervalMinutes":null,"dailyBatches":null,"offset":0}}
 ```
 
-Only exact selected connection IDs and already owner-approved `read` contracts
+Only exact selected connection IDs and already enabled `read` contracts
 are available to each batch. Tavily or another public search/extraction MCP can
 use this existing connection mechanism; this feature does not enroll providers,
 grant permissions, or claim a particular live connection exists. Built-in Slack,
@@ -366,7 +385,7 @@ and follow `nextOffset`. List pages contain five goal previews; inspect pages
 contain a checkpoint and up to ten findings within 8,000 JSON characters.
 The host owns continuation: do not add a duplicate wakeup, cron job or polling
 worker. There are **no background messages or completion notifications**; ask
-June privately for status/results. A management receipt proves only admission,
+June in the original source scope for status/results. A management receipt proves only admission,
 not useful research or delivery.
 
 - Host wiring follows `executionEnabled` outside setup mode and uses
@@ -398,7 +417,7 @@ not useful research or delivery.
   bytes per session; the library retains at most 32 sessions within 120,000 bytes.
   Storage exhaustion pauses work. Session state is private Rivet state, not
   encrypted by the evidence store. Existing journal/backup retention still applies.
-  Source deletion or changed owner authority revokes access and continuation;
+  Source deletion or changed source authority revokes access and continuation;
   forgetting clears live session data. Stop is not deletion. Inspected results
   keep their source dependencies through worker synthesis and forgetting.
 
@@ -406,6 +425,23 @@ Disposable-engine tests cover private delegation, repeated batches, quotas,
 deduplication, paging, cancellation/settlement, deletion and hard-kill recovery.
 MCP transport fixtures cover selected-read enforcement and revocation. These
 checks do not establish live provider quality, configuration or deployment.
+
+## Social decisions and reflection drafts
+
+Ordinary `social:{kind:"outreach",userId,text}` sends the exact selected message
+without compulsory human approval or a staging prerequisite. June judges whether
+the request is for delivery or only a draft and whether the recipient/audience is
+appropriate. Durable operation identity prevents replay; an unknown send is not
+permission for a replacement or a different route.
+
+`request_access` is an obsolete no-op: it directs June to the already exposed
+tools, creates no approval request or notification, and changes no permissions or
+shared context. Deliberate scoped retrieval still must respect source boundaries.
+`interruption_proposal` remains optional, inert candidate-bound staging. Its
+evidence, publication, rejection, quiet-hours, activity and epoch checks remain;
+staging neither sends nor grants access. Legacy guarded commands can handle those
+drafts, but fresh ordinary outreach does not depend on them. Never automatically
+promote historical drafts or bypass a rejected candidate's lifecycle checks.
 
 ## Session integration contract
 
@@ -425,8 +461,8 @@ originating conversation, not an inferred current session.
 ## Verification
 
 Real Rivet integration tests exercise the model-facing interface, bounded work
-alongside chat, follow-ups, synthesis, guest isolation, bounded searches, cancellation,
-deletion, and coding approval. A separate-host hard-kill test checks uncertainty
+alongside chat, follow-ups, synthesis, source isolation, bounded searches, cancellation,
+deletion, and coding admission. A separate-host hard-kill test checks uncertainty
 without replaying a model call. Controlled provider/transport boundaries verify
 the host contract, not live model quality or deployment. For a live check, ask June
 for two independent tasks, keep chatting, ask for status and a related follow-up,

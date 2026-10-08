@@ -171,7 +171,7 @@ it("makes the same sandbox observations available to authorized June workers", a
   expect(await inspect("sandboxes")).toContain('"status":"disabled"');
 });
 
-it("dispatches sandbox inspection through a private execution worker without granting it to guests or shared conversations", async (t) => {
+it("dispatches sandbox inspection through a worker and also grants it to admitted guest and shared tasks", async (t) => {
   let reads = 0;
   let observed = false;
   const deps: Dependencies = {
@@ -234,7 +234,7 @@ it("dispatches sandbox inspection through a private execution worker without gra
   expect(
     executionCapabilities(deps, { ...event, senderId: "guest" })
       .inspectionAvailable,
-  ).not.toBe(true);
+  ).toBe(true);
   expect(
     executionCapabilities(deps, {
       ...event,
@@ -242,7 +242,11 @@ it("dispatches sandbox inspection through a private execution worker without gra
       metadata: { channelType: "channel" },
       address: { ...event.address, conversationId: "C1" },
     }).inspectionAvailable,
-  ).not.toBe(true);
+  ).toBe(true);
+  expect(
+    executionCapabilities({ ...deps, inspection: undefined }, event)
+      .inspectionAvailable,
+  ).toBe(false);
   const { client } = await setupTest(t, createJuneRegistry(deps));
   await client.conversation
     .getOrCreate(["private", "owner"])

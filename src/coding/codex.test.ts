@@ -95,6 +95,57 @@ describe("Codex coding side-effect boundaries", () => {
     });
   });
 
+  it.each([false, true])(
+    "rechecks host validity after onThread without signal cancellation (invalidated: %s)",
+    async (invalidate) => {
+      for (const threadId of [undefined, thread]) {
+        const { runtime, sent } = fixture([...handshake, ...ending]);
+        const saved = Promise.withResolvers<void>();
+        const observed = Promise.withResolvers<void>();
+        const controller = new AbortController();
+        let revision = 0;
+        const frozenRevision = revision;
+        const run = runtime.run({
+          ...input(),
+          threadId,
+          signal: controller.signal,
+          assertCurrent: () => {
+            if (revision !== frozenRevision) throw new Error("stale context");
+          },
+          onThread: async () => {
+            observed.resolve();
+            await saved.promise;
+          },
+        });
+        const outcome = run.then(
+          (value) => ({ value, error: undefined }),
+          (error: unknown) => ({ value: undefined, error }),
+        );
+        await observed.promise;
+        expect(sent.some((event) => event.method === "turn/start")).toBe(false);
+        if (invalidate) revision++;
+        saved.resolve();
+        const result = await outcome;
+        expect(controller.signal.aborted).toBe(false);
+        expect(
+          sent.filter((event) => event.method === "turn/start"),
+        ).toHaveLength(invalidate ? 0 : 1);
+        if (invalidate) {
+          expect(result.value).toBeUndefined();
+          expect(result.error).toMatchObject({ code: "completion_unknown" });
+        } else {
+          expect(result.error).toBeUndefined();
+          expect(result.value).toEqual({ threadId: thread, report: "Done" });
+        }
+        expect(
+          sent.filter((event) =>
+            ["thread/start", "thread/resume"].includes(String(event.method)),
+          ),
+        ).toHaveLength(1);
+      }
+    },
+  );
+
   it("never launches after failed persistence or cancellation while saving", async () => {
     for (const cancel of [false, true]) {
       const { runtime, sent } = fixture([...handshake, ...ending]);

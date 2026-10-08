@@ -46,12 +46,11 @@ it.for(["original", "foreign"])(
       return {
         answer: "yes",
         rationale: "private observation",
-        evidenceIds: ["original"],
+        evidenceIds: input.evidence.map((item) => item.id),
       };
     };
     const jury = createJuryTool({
       store,
-      scope,
       evidenceMaxAgeMs: 60000,
       executor: new DecisionExecutor(2, 1000),
       providers: {
@@ -74,16 +73,26 @@ it.for(["original", "foreign"])(
         ["original", "original"],
         Array(21).fill("original"),
       ])
-        expect(await jury({ ...request, evidenceIds: ids }, signal)).toBeNull();
+        expect(
+          await jury({ ...request, evidenceIds: ids }, signal, scope),
+        ).toBeNull();
       expect(calls).toBe(0);
-      expect(await jury(request, signal)).not.toBeNull();
-      expect(calls).toBe(4);
+      expect(await jury(request, signal, "other")).toBeNull();
+      expect(calls).toBe(0);
+      expect(
+        await jury({ ...request, evidenceIds: ["foreign"] }, signal, "other"),
+      ).not.toBeNull();
+      expect(await jury(request, signal, scope)).not.toBeNull();
+      expect(calls).toBe(8);
       remove = true;
-      expect(await jury(request, signal)).toBeNull();
+      expect(await jury(request, signal, scope)).toBeNull();
       // The first juror deletes synchronously; neither the other juror nor
       // critic/synthesis can see the stale snapshot or prior private rationale.
-      expect(calls).toBe(5);
-      expect(received).toEqual(Array(5).fill(["original"]));
+      expect(calls).toBe(9);
+      expect(received).toEqual([
+        ...Array(4).fill(["foreign"]),
+        ...Array(5).fill(["original"]),
+      ]);
     } finally {
       store.close();
     }
@@ -104,7 +113,6 @@ it("retains shared capacity and host occupancy until cancelled raw providers act
   };
   const jury = createJuryTool({
     store,
-    scope,
     evidenceMaxAgeMs: 60000,
     executor: new DecisionExecutor(1, 1000),
     providers: {
@@ -118,13 +126,13 @@ it("retains shared capacity and host occupancy until cancelled raw providers act
   });
   const controller = new AbortController();
   let settled = false;
-  const first = jury(request, controller.signal).finally(() => {
+  const first = jury(request, controller.signal, scope).finally(() => {
     settled = true;
   });
   try {
     await expect.poll(() => calls).toBe(1);
     controller.abort();
-    const blocked = await jury(request, new AbortController().signal);
+    const blocked = await jury(request, new AbortController().signal, scope);
     expect(blocked?.firstPass.map((vote) => vote.decision.rationale)).toEqual([
       "capacity",
       "capacity",

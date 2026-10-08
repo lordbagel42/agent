@@ -19,7 +19,7 @@ import {
   type JuneClientRegistry,
 } from "./registry.js";
 
-it("admits explicit private reflection once without bypassing evidence or scheduler boundaries", async (t) => {
+it("admits scoped reflection once without bypassing evidence or scheduler boundaries", async (t) => {
   const owner = {
     id: "owner",
     identities: [
@@ -96,11 +96,11 @@ it("admits explicit private reflection once without bypassing evidence or schedu
           ),
         ).toBe(request.reflectionRequestAvailable);
         if (request.reflectionRequestAvailable) {
-          expect(request.system).toContain("set reflectionRequest");
+          expect(request.system).toContain("use reflectionRequest:");
+          expect(request.system).toContain("it performs no public search");
           expect(request.system).toContain(
-            "Curiosity performs no public search",
+            "Alternatives and predicted effects are speculation",
           );
-          expect(request.system).toContain("explicitly hypothetical");
           expect(request.system).toContain("optional skill-change proposal");
         }
         if (search && request.webSearchAvailable)
@@ -220,19 +220,20 @@ it("admits explicit private reflection once without bypassing evidence or schedu
     { direct: false },
     { senderId: "U2", metadata: { channelType: "im" as const } },
   ]) {
-    expect(await deliver(extra)).toContain("require an owner-private turn");
-    expect(requests.at(-1)?.reflectionRequestAvailable).toBe(false);
+    // Availability does not transfer the owner's original evidence to this scope.
+    expect(await deliver(extra)).toContain("Reflection unavailable");
+    expect(requests.at(-1)?.reflectionRequestAvailable).toBe(true);
   }
   expect(searches).toBe(0); // Missing evidence never expands into public search.
   search = true;
-  expect(await deliver()).toContain("require an owner-private turn");
+  expect(await deliver()).toContain("reflection enabled for this task");
   expect(requests.at(-1)?.usageStage).toBe("synthesis");
   expect(requests.at(-1)?.reflectionRequestAvailable).toBe(false);
   expect(searches).toBe(1); // Only the separate explicit webSearch directive.
   search = false;
   const enabled = deps.reflection;
   deps.reflection = undefined;
-  expect(await deliver()).toContain("reflection enabled");
+  expect(await deliver()).toContain("reflection enabled for this task");
   expect(requests.at(-1)?.reflectionRequestAvailable).toBe(false);
   deps.reflection = enabled;
   const memory = deps.memory;

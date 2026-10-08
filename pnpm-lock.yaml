@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@ampcode/sdk@0.1.0-20260918210405-g81edbf0':
-    hash: 2e8e270e4eec3e2ce4b0f1eb6307d3ca54a156c5a97d6bd453541a25dc496896
+    hash: 64878c449c2f28bfdc27e759c52a052497b756299c2473db98b5b87a863ef9b3
     path: src/coding/@ampcode__sdk.patch
   '@rivet-dev/dynamic-apps-core@0.3.1':
     hash: 2699059bdf4cf9153c9272de5900cde905420643ae94e03fb57640403d73db59
@@ -21,7 +21,7 @@ importers:
     dependencies:
       '@ampcode/sdk':
         specifier: 0.1.0-20260918210405-g81edbf0
-        version: 0.1.0-20260918210405-g81edbf0(patch_hash=2e8e270e4eec3e2ce4b0f1eb6307d3ca54a156c5a97d6bd453541a25dc496896)
+        version: 0.1.0-20260918210405-g81edbf0(patch_hash=64878c449c2f28bfdc27e759c52a052497b756299c2473db98b5b87a863ef9b3)
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.3.283
         version: 0.3.283(@anthropic-ai/sdk@0.128.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(zod@4.6.5)
@@ -6099,7 +6099,7 @@ snapshots:
       '@ampcode/cli-linux-x64': 0.0.1790683256-gc25f8e
       '@ampcode/cli-win32-x64': 0.0.1790683256-gc25f8e
 
-  '@ampcode/sdk@0.1.0-20260918210405-g81edbf0(patch_hash=2e8e270e4eec3e2ce4b0f1eb6307d3ca54a156c5a97d6bd453541a25dc496896)':
+  '@ampcode/sdk@0.1.0-20260918210405-g81edbf0(patch_hash=64878c449c2f28bfdc27e759c52a052497b756299c2473db98b5b87a863ef9b3)':
     dependencies:
       '@ampcode/cli': 0.0.1790683256-gc25f8e
       zod: 3.25.76

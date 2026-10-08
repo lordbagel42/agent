@@ -4,7 +4,7 @@ A persistent personal companion, built with TypeScript and Rivet.
 
 June talks in Slack, remembers scoped context, and delegates work without turning
 every task into a new chatbot. She has one evolving personality, separate workers
-for execution, and durable records of what was requested, approved, and actually
+for execution, and durable records of what was requested, admitted, and actually
 completed.
 
 **This is a personal project, shared for the code and ideas—not a turnkey product.**
@@ -19,6 +19,7 @@ support for a feature does not mean it is enabled, live-tested, or safe to expos
 - **Shared visual spaces.** Optional [HTML artifacts, collaborative Excalidraw
   boards and live workflow views](docs/shared-artifacts.md), with image/link
   delivery and creator-DM PIN protection when June chooses a private view.
+  Workflow status views stay bound to the originating requester and source.
 - **Conversation that continues.** Slack DMs, mentions, threaded follow-ups,
   reactions, multipart replies, and intentional silence. Owner and guest context
   have separate privacy and permission boundaries.
@@ -29,12 +30,19 @@ support for a feature does not mean it is enabled, live-tested, or safe to expos
   message has a durable receipt, and uncertain sends are not automatically retried.
 - **Work in the background.** Persistent execution agents handle substantive
   tasks while June keeps chatting. Native coding jobs can use Amp, Codex, Claude,
-  or Pi, with explicit approval, worktrees, cancellation, and recovery records.
+  or Pi, with immediate admission of new exact tasks, worktrees, cancellation,
+  and recovery records. Historical pending jobs do not run automatically.
 - **Memory with provenance.** Optional encrypted evidence storage, scoped recall,
-  reviewed personality changes, forgetting, and explicitly approved history
-  imports. Reflection proposes hypotheses; it cannot grant itself permissions.
+  version-bound public style changes, fingerprint-bound forgetting, and page-bounded
+  configured imports. June can review and accept/reject pending claims in their
+  authenticated audience; extraction and reflection never accept them automatically.
+  Forgetting reads scoped impact before June queues exact logical deletion without
+  a human command. The host alone reports cleanup completion; queued is not done,
+  and logical deletion is not physical erasure of journals/backups or sent content.
 - **Tools with boundaries.** Optional web search, MCP connections, scoped browser
-  recipes, and vault-backed credentials. Tool discovery is not authorization.
+  recipes, and vault-backed credentials. June judges ordinary task access at
+  runtime, without owner/private-DM prerequisites or compulsory per-task human
+  confirmation. Explicit disables, scopes, account access and secret protection remain.
 - **Durable automation.** Reminders, cron and event wakeups, authored JavaScript
   workflows, and optional HTTP apps on a separate app host.
 - **Operator visibility.** A private console and authenticated APIs expose
@@ -49,7 +57,7 @@ but is shelved; Linq/RCS is not a registered runtime integration.
 ```diagram
 ┌──────────────────────┐                 ┌──────────────────────┐
 │ Messaging            │                 │ Owner / operator     │
-│ Slack · WhatsApp*    │                 │ config · approvals   │
+│ Slack · WhatsApp*    │                 │ config · activation  │
 └──────────┬───────────┘                 │ private API/console* │
            │ events / replies            └──────────┬───────────┘
            │                                        │ authority
@@ -66,9 +74,9 @@ but is shelved; Linq/RCS is not a registered runtime integration.
           │                          │                    │
 ┌─────────┴──────────┐  ┌────────────┴────────┐  ┌────────┴───────────┐
 │ Memory/reflection* │  │ Tools/credentials*  │  │ Coding/apps*       │
-│ evidence · recall  │  │ web search · MCP    │  │ approved jobs      │
+│ evidence · recall  │  │ web search · MCP    │  │ admitted jobs      │
 │ reviewed curation  │  │ browser · vault     │  │ worktrees/verifier │
-│ personality        │  │ scoped grants       │  │ separate app host  │
+│ personality        │  │ bound receipts      │  │ separate app host  │
 └────────────────────┘  └─────────────────────┘  └────────────────────┘
 ```
 
@@ -80,16 +88,21 @@ in host code, outside personality and memory. The global public-safe personality
 is distinct from private learned preferences.
 
 An uncertain external send or launch stays **unknown**, not silently retried.
-Durability is not exactly-once delivery. Coding approval is not deployment
-approval, and a worktree is not a security sandbox.
+Durability is not exactly-once delivery. Coding admission is not authority to
+deploy June, and a worktree is not a security sandbox. App publication uses a
+separate exact prepared source/audience receipt. Dashboard sign-in, PINs, provider
+consent and authenticated operator/recovery controls remain protected. Tool access
+does not automatically inject another person's original history into a prompt.
+Verified owner identity is attribution, not a universal safety guarantee; June
+judges the actual request, impact and disclosure audience on every task.
 
 ### June's repository specialist
 
 For questions about her own code, June delegates to the stable `june-repo`
 worker, which calls `repository` with a self-contained question. Other execution
 workers consult the same specialist before repo-dependent conclusions or coding
-proposals. This is available for authenticated owner requests when execution is
-enabled, not for guests or automated/completion turns.
+tasks. It is available for admitted task requests when execution and the
+capability are enabled, not for automated/completion turns.
 
 Before reasoning, the specialist loads the complete public GitHub source archive
 into memory, including docs, scripts and tests. It receives the full file
@@ -204,7 +217,7 @@ shutdown/alarm diagnostics and replay/migration limits are documented in the
 | --- | --- |
 | System design | [Architecture](docs/architecture.md) |
 | Conversation workers | [Execution agents](docs/execution-agents.md) |
-| Approved remote coding | [Ordinary Amp jobs](docs/amp-jobs.md) (SSH transport, separate from Puck/MCP) |
+| Remote coding | [Ordinary Amp jobs](docs/amp-jobs.md) (SSH transport, separate from Puck/MCP) |
 | Reminders and durable programs | [Wakeups](docs/wakeups.md), [workflows](docs/workflows.md) |
 | External tools | [MCP connections](docs/mcp-connections.md), [Slack](docs/slack.md), [GitHub](docs/github.md), [browser](docs/browser.md) |
 | Trusted external agents | [Optional inbound agent MCP](docs/agent-mcp.md): configure `agentMcp`, separately from outbound `mcp` connections |

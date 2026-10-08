@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { actor, queue, type Registry } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type { MessageEvent, ModelProvider } from "../core/contracts.js";
-import { isOwnerRivetDm } from "../core/rivet.js";
+import { routeEvent } from "../core/routing.js";
 import type { createPriorityAdmission } from "../runtime/priority.js";
 import type { Dependencies } from "../runtime/registry.js";
 import {
@@ -30,6 +30,7 @@ interface Spec {
   dailyBatches: number;
   createdAt: number;
   origin: MessageEvent;
+  scopeKey?: string[];
   deletionRevision: number;
   evidenceIds: string[];
 }
@@ -54,8 +55,20 @@ interface State {
   findings: ResearchFinding[];
   commands: string[];
 }
+const sourceScope = (source: MessageEvent, scopeKey: string[]) =>
+  hash([
+    scopeKey,
+    source.senderId,
+    source.address.channel,
+    source.address.accountId,
+    source.address.conversationId,
+    source.address.threadId ?? "",
+  ]);
 const current = (deps: Dependencies, spec: Spec) =>
-  isOwnerRivetDm(spec.origin, deps.owner) &&
+  hash(routeEvent(spec.origin, deps.owner)?.key ?? null) ===
+    hash(spec.scopeKey ?? ["private", deps.owner.id]) &&
+  (spec.origin.address.channel !== "agent" ||
+    deps.agents?.clientActive(spec.origin.senderId) === true) &&
   spec.deletionRevision === revision(deps) &&
   spec.evidenceIds.every((id) =>
     id.startsWith("volatile-context:continuity:")
@@ -466,14 +479,23 @@ export function createResearchLibraryActor(deps: Dependencies) {
         c.vars.tail = lock.promise;
         await previous;
         try {
+          const scope = routeEvent(source, deps.owner);
           if (
             c.key.length !== 1 ||
             c.key[0] !== deps.owner.id ||
             !deps.research ||
-            !isOwnerRivetDm(source, deps.owner) ||
+            !scope ||
+            (source.address.channel === "agent" &&
+              deps.agents?.clientActive(source.senderId) !== true) ||
             deletionRevision !== revision(deps)
           )
             throw new Error("research_denied");
+          const inScope = (spec: Spec) =>
+            sourceScope(source, scope.key) ===
+            sourceScope(
+              spec.origin,
+              spec.scopeKey ?? ["private", deps.owner.id],
+            );
           const command = researchCommandSchema.parse(raw);
           const id =
             command.id ?? hash([deps.owner.id, operationId, "research"]);
@@ -491,7 +513,7 @@ export function createResearchLibraryActor(deps: Dependencies) {
                 throw new Error("research_session_limit");
               const ownSource = deps.memory?.source(
                 source,
-                JSON.stringify(["private", deps.owner.id]),
+                JSON.stringify(scope.key),
               );
               const ids = [
                 ...new Set([
@@ -508,6 +530,7 @@ export function createResearchLibraryActor(deps: Dependencies) {
                 intervalMinutes: command.intervalMinutes ?? 5,
                 dailyBatches: command.dailyBatches ?? 48,
                 createdAt: deps.research.now?.() ?? Date.now(),
+                scopeKey: scope.key,
                 deletionRevision,
                 evidenceIds: ids,
                 origin: {
@@ -516,9 +539,12 @@ export function createResearchLibraryActor(deps: Dependencies) {
                   messageId: source.messageId,
                   occurredAt: source.occurredAt,
                   senderId: source.senderId,
-                  direct: true,
+                  direct: source.direct,
                   address: source.address,
-                  metadata: { channelType: "im" },
+                  botMentioned: source.botMentioned,
+                  threadFollowup: source.threadFollowup,
+                  questionAnswered: source.questionAnswered,
+                  metadata: { channelType: source.metadata?.channelType },
                   text: "",
                 },
               };
@@ -533,6 +559,7 @@ export function createResearchLibraryActor(deps: Dependencies) {
               c.state.sessions[id] = spec;
               await c.saveState({ immediate: true });
             } else if (
+              !inScope(spec) ||
               spec.goal !== command.goal ||
               hash(spec.connections) !== hash(command.connections) ||
               spec.dailyBatches !== (command.dailyBatches ?? 48) ||
@@ -549,7 +576,8 @@ export function createResearchLibraryActor(deps: Dependencies) {
             };
           } else if (command.action === "list") {
             const entries = Object.values(c.state.sessions).filter(
-              (spec): spec is Spec => !!spec && current(deps, spec),
+              (spec): spec is Spec =>
+                !!spec && inScope(spec) && current(deps, spec),
             );
             const page = entries.slice(command.offset, command.offset + 5);
             resultIds = page.flatMap((spec) => spec.evidenceIds);
@@ -562,7 +590,7 @@ export function createResearchLibraryActor(deps: Dependencies) {
             };
           } else {
             const spec = c.state.sessions[id];
-            if (!spec || !current(deps, spec))
+            if (!spec || !inScope(spec) || !current(deps, spec))
               throw new Error("research_unavailable");
             resultIds = spec.evidenceIds;
             report =

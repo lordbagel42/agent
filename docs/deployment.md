@@ -68,8 +68,8 @@ completed builds, expired/missing/invalid artifacts and changed build policy
 terminally fail that candidate with a fixed reason. Publish a forward commit
 after resolving the cause; rerunning an already failed SHA does not re-admit it.
 
-June can inspect these outcomes through her existing owner-authenticated
-`release: {"action":"inspect","revision":"<SHA>"}` directive. The receipt
+June can inspect these outcomes through her exposed
+`release: {"action":"inspect","revision":"<SHA>"}` task directive. The receipt
 distinguishes Actions waiting/unavailability, build success, validation/policy
 failure and actual deployment evidence, and links to the private workflow logs.
 It cannot dispatch/rerun Actions, change policy pins, drain or activate. Build

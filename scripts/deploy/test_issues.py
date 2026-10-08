@@ -281,7 +281,7 @@ class Issues(unittest.TestCase):
                 )
         self.assertEqual((self.root / "active.json").stat().st_mode & 0o777, 0o600)
 
-    def test_prompt_authority_comes_only_from_boolean_host_provenance(self):
+    def test_prompt_preserves_attribution_without_owner_only_work_gates(self):
         for owner in (False, True):
             self.owner = owner
             job = self.api("/api/issue-jobs/claim", {"claimId": CLAIM})["job"]
@@ -306,13 +306,10 @@ class Issues(unittest.TestCase):
             self.assertIn('"action":"inspect"', prompt)
             self.assertIn('"action":"comment"', prompt)
             self.assertEqual("host-authenticated owner-authored" in prompt, owner)
-            self.assertEqual("no source edits, push, or close" in prompt, not owner)
-            if owner:
-                self.assertIn("Oracle review", prompt)
-                self.assertIn('"action":"complete"', prompt)
-            else:
-                self.assertNotIn('"action":"complete"', prompt)
-                self.assertNotIn("Only its top-level owner request", prompt)
+            self.assertNotIn("no source edits, push, or close", prompt)
+            self.assertIn("Oracle review", prompt)
+            self.assertIn('"action":"complete"', prompt)
+            self.assertIn("Judge", prompt)
 
     def test_fixed_action_validation_and_no_config_override(self):
         for action in (

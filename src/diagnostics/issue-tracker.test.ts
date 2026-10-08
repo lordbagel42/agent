@@ -185,16 +185,10 @@ it("does not bind copied public markers from another author or an older issue", 
   expect(
     restarted.index().items.find((item) => item.number === 102)?.job,
   ).toBeUndefined();
-  f.publish();
-  await expect(
-    restarted.run({
-      action: "complete",
-      number: 4,
-      key,
-      body: "Copied marker is not source authority",
-      commit: "a".repeat(40),
-    }),
-  ).rejects.toThrow("issue_triage_only");
+  for (const number of [4, 5])
+    expect(
+      restarted.index().items.find((item) => item.number === number)?.sources,
+    ).toEqual([]);
 });
 
 it("retains monotonic host source receipts before and after GitHub linkage", async () => {
@@ -335,35 +329,33 @@ it("reconciles a posted comment after response loss and rejects changed idempote
   ).rejects.toThrow();
 });
 
-it("requires publication before completion and reconciles a lost close without another comment", async () => {
-  const f = fixture();
-  f.add(7);
-  await f.tracker.sync();
-  const input = {
-    action: "complete" as const,
-    number: 7,
-    body: "Fixed and verified",
-    key,
-    commit: "a".repeat(40),
-    threadId,
-  };
-  await expect(f.tracker.run(input)).rejects.toThrow(
-    "issue_commit_not_shipped",
-  );
-  expect(f.comments).toEqual([]);
-  expect(f.remote[0]?.state).toBe("open");
-  f.publish();
-  f.loseClose();
-  expect(await f.tracker.run(input)).toMatchObject({ status: "unknown" });
-  expect(await new IssueTracker(f.options).run(input)).toMatchObject({
-    status: "done",
-  });
-  expect(f.remote[0]?.state).toBe("closed");
-  expect(f.comments).toHaveLength(1);
-  expect(f.comments[0]?.body).toContain(`/commit/${"a".repeat(40)}`);
-  f.add(8, 93);
-  await f.tracker.sync();
-  await expect(
-    f.tracker.run({ ...input, number: 8, key: claimId }),
-  ).rejects.toThrow("issue_triage_only");
-});
+it.for([42, 93])(
+  "requires publication before completion and reconciles a lost close without another comment (author=%s)",
+  async (authorId) => {
+    const f = fixture();
+    f.add(7, authorId);
+    await f.tracker.sync();
+    const input = {
+      action: "complete" as const,
+      number: 7,
+      body: "Fixed and verified",
+      key,
+      commit: "a".repeat(40),
+      threadId,
+    };
+    await expect(f.tracker.run(input)).rejects.toThrow(
+      "issue_commit_not_shipped",
+    );
+    expect(f.comments).toEqual([]);
+    expect(f.remote[0]?.state).toBe("open");
+    f.publish();
+    f.loseClose();
+    expect(await f.tracker.run(input)).toMatchObject({ status: "unknown" });
+    expect(await new IssueTracker(f.options).run(input)).toMatchObject({
+      status: "done",
+    });
+    expect(f.remote[0]?.state).toBe("closed");
+    expect(f.comments).toHaveLength(1);
+    expect(f.comments[0]?.body).toContain(`/commit/${"a".repeat(40)}`);
+  },
+);

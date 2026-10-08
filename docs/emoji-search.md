@@ -23,10 +23,11 @@ process. Actions requires its explicit enablement variable and secrets;
 source support does not prove activation. New image descriptions still require
 an explicitly operated indexer; Actions never retries failed/unknown inference.
 
-Initially only the owner's private turns can use this catalogue. Shared channels
-and guest turns are denied at capability advertisement and dispatch; the owner's
-private cross-surface access follows June's existing owner identity. A wider
-Hack Club audience must be explicitly authorized before changing that boundary.
+The configured catalogue is available to admitted tasks, including shared and
+guest conversations, without an owner-private prerequisite or per-query human
+approval. June judges task relevance and audience; public queries must not leak
+private conversation details or secrets. Existing task/specialist ceilings still
+apply, and search grants no access to semoji's private administration.
 
 June discovers `emojiSearch: {query: string, limit?: number}` in her capability
 schema and prompt. Queries are 1–300 characters, limits 1–20 (default 8; structured

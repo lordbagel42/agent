@@ -91,7 +91,7 @@ it("searches anonymously with a tokenless provider and validates results", async
   }
 });
 
-it("lets June's private worker inspect emoji candidates before reporting, but denies shared and guest grants", async (t) => {
+it("lets June's worker inspect emoji candidates and grants the same tool to admitted shared and guest tasks", async (t) => {
   const owner = {
     id: "raygen",
     identities: [
@@ -156,11 +156,23 @@ it("lets June's private worker inspect emoji candidates before reporting, but de
       direct: false,
       address: { ...source.address, conversationId: "C1" },
     }).emojiSearchAvailable,
-  ).not.toBe(true);
+  ).toBe(true);
+  expect(
+    executionCapabilities(deps, {
+      ...source,
+      senderId: "U2",
+      metadata: { channelType: "im" },
+    }).emojiSearchAvailable,
+  ).toBe(true);
+  // Guest events still need authenticated routing metadata.
   expect(
     executionCapabilities(deps, { ...source, senderId: "U2" })
       .emojiSearchAvailable,
   ).not.toBe(true);
+  expect(
+    executionCapabilities({ ...deps, emojiSearch: undefined }, source)
+      .emojiSearchAvailable,
+  ).toBe(false);
   const registry = createJuneRegistry(deps);
   const { client } = await setupTest(t, registry);
   const june = client.conversation.getOrCreate(["private", "raygen"]);

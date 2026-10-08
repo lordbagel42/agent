@@ -25,7 +25,7 @@ const descriptions = {
   comment:
     "Post public-safe progress or a blocker to the issue. Use a new UUID key once per logical comment; reuse identical key and arguments after response loss. Unknown only reconciles by read; never make a new key to retry. Never include private messages, raw logs, captures or credentials. threadId links your Amp thread without making it public.",
   complete:
-    "Post a public-safe completion report and close the issue only AFTER verified code publication. commit must be a full 40-character SHA on lordbagel42/agent remote main; this tool verifies ancestry, not correctness or deployment. Include verification and remaining activation work in body. Reuse the identical UUID key/arguments on retry; unknown is not permission to duplicate. Non-owner issues are triage-only and cannot be closed by this tool.",
+    "Post a public-safe completion report and close the issue only AFTER verified code publication. commit must be a full 40-character SHA on lordbagel42/agent remote main; this tool verifies ancestry, not correctness or deployment. Include verification and remaining activation work in body. Reuse the identical UUID key/arguments on retry; unknown is not permission to duplicate. Author identity does not gate completion; judge whether the requested outcome is actually complete.",
 };
 
 /** Independent owner-trusted API. Its token cannot read archive bodies or sign in. */

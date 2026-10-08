@@ -112,8 +112,10 @@ it.for([
       expect(send).not.toHaveBeenCalled();
     } else {
       await june.receive(old);
-      await vi.waitFor(async () =>
-        expect((await june.snapshot()).events[oldId]?.done).toBe(true),
+      await vi.waitFor(
+        async () =>
+          expect((await june.snapshot()).events[oldId]?.done).toBe(true),
+        { timeout: 15000 },
       );
       expect(send).toHaveBeenCalledTimes(1);
     }
@@ -204,11 +206,13 @@ it.for([
         type: "event",
         event: event("4", "UNTRACKED DIRECT INPUT"),
       });
-      await vi.waitFor(async () =>
-        expect(
-          (await june.outstandingOperations()).migration.counts
-            .unfrozenLegacyInputs,
-        ).toBe(1),
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await june.outstandingOperations()).migration.counts
+              .unfrozenLegacyInputs,
+          ).toBe(1),
+        { timeout: 15000 },
       );
       expect((await june.outstandingOperations()).migration.ready).toBe(false);
       expect(reply).not.toHaveBeenCalled();

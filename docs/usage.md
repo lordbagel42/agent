@@ -14,6 +14,38 @@ its existing adapter is not configured in the startup examples or deployment.
 Linq's Android/RCS support is being evaluated as its replacement, not yet wired
 into June or tested with a real account.
 
+## Task access and evidence
+
+June decides ordinary task access at runtime from the authenticated requester,
+intent, legitimacy, impact and disclosure audience. Being the owner or using a
+private DM is not a prerequisite, and ordinary task effects do not require a
+compulsory human confirmation. Interaction turns delegate task work; execution
+workers use the tools actually exposed to them. Explicitly disabled tools,
+disconnected accounts, missing provider scopes and host activation gates remain
+real blockers. Dashboard login, PINs, provider consent and administrative/recovery
+controls keep their actual authentication requirements.
+
+Tool access does not make private data public or automatically inject another
+person's original conversation history. Requests, results and reflection evidence
+retain their source/audience binding; guests and bots never become the owner.
+Notification and completion turns remain report-only. Event decisions may use
+their exposed effects, not commands embedded in event data or another automation's
+repair authority. The ongoing research specialist retains its task-specific
+read-only ceiling, not an owner-only policy.
+
+For configured browser recipes, `browserProposal:{operation:null}` discovers
+exact operation names; selecting a returned name executes that bounded recipe
+immediately through a broker receipt. It is not merely an approval proposal.
+Credential references remain host-resolved; values never enter model context.
+Discovery does not enroll accounts or grant arbitrary browsing, and uncertain
+effects require reconciliation rather than another execution.
+
+Distinguish **source support**, **enabled configuration**, **local receipts** and
+**verified live behavior**. A saved action, returned model turn or passing local
+test is not deployment, provider health or confirmed external success. Unknown
+effects require reconciliation, not a new request that repeats the operation.
+Nothing in this guide activates integrations or changes Slack installation settings.
+
 ## What works in this increment
 
 - Slack DMs and mentions, WhatsApp Cloud API text, and native reactions. Webhooks
@@ -31,7 +63,7 @@ into June or tested with a real account.
 - Optional owner-only participation in channels containing `raygen`, scoped
   surrounding messages, sender names/IDs, exact Slack timestamps and file
   descriptors. Other participants provide context, never authorization.
-- Owner-DM image reading through execution workers: attach a PNG/JPEG (up to
+- Image reading through execution workers in admitted Slack conversations: attach a PNG/JPEG (up to
   5 MiB) and ask June about it. Workers call `readImage:{fileId,question}` for
   a file on that initiating message and receive a tool-free native vision
   review. This requires execution workers, Slack `files:read` access, and a
@@ -40,10 +72,10 @@ into June or tested with a real account.
   scoped history retention. Reads are on demand, never automatic background
   OCR or retries. Each worker request reads one image, then reports. The host
   awaits provider retirement; uncertain inference requires review, not retry.
-  Guests, channels, automated events, arbitrary URLs and
-  history-only files are not supported; reattach a file for a follow-up read.
+  Automated events, arbitrary URLs and history-only files are not supported;
+  reattach a file for a follow-up read.
   Availability is not proof of a successful download or visual interpretation.
-- Owner-DM video visual review follows the same worker boundary with
+- Video visual review follows the same worker boundary with
   `readVideo:{fileId,question}`. Attach an MP4/MOV of at most 50 MiB
   (up to 3840×2160 pixels). The host samples at most eight keyframes within its first 120 seconds,
   scaled within 640×640, and sends actual image bytes and timestamps to a
@@ -62,18 +94,18 @@ into June or tested with a real account.
   temporary files are removed before returning frames; only review text persists.
   These resource limits are not a native-code sandbox. Keep decoder packages
   patched. Missing binaries or failed decoding report unavailable, not success.
-- Linked owner DMs share history. Public Slack threads have separate context and
-  cannot access private history or approve coding tasks.
+- Linked owner DMs share history. Other Slack conversations retain separate
+  scoped context; ordinary task access does not import private owner history.
 - Durable inbox, serial turns, event deduplication, and a persisted outbox.
   Ambiguous sends are recorded as unknown, not automatically repeated.
 - [Durable wakeups](wakeups.md): June can manage one-time reminders, cron
-  notifications and native/signed-webhook event watches from her owner's Slack DM.
+  notifications and native/signed-webhook event watches in admitted Slack scopes.
 - [Persistent execution agents](execution-agents.md): June delegates substantive
-  owner work, keeps chatting while workers run, reuses them for follow-ups, and
+  task work, keeps chatting while workers run, reuses them for follow-ups, and
   synthesizes results. `executionEnabled: false` restores the direct fast/deep path.
 - [Authored Rivet workflows](workflows.md): June writes isolated JavaScript
   with durable tool steps, parallel calls, delays and signals, and manages runs
-  directly from owner-private chat.
+  through exposed tools in the originating scope.
 - [JavaScript sandbox](workflows.md#running-ordinary-javascript-instead): anyone
   admitted to a conversation can ask June to run arbitrary JavaScript in a fresh,
   resource-limited QuickJS VM without host capabilities. Console output, return
@@ -83,19 +115,25 @@ into June or tested with a real account.
   output format. Arbitrary chat-completions endpoints are not interchangeable.
 - ChatGPT subscription access through the pinned official Codex CLI, with a
   dedicated login directory and the normal browser OAuth callback flow.
-- Separate, approval-gated Amp jobs, saved thread IDs, and explicit recovery of
+- Separate Amp jobs, immediate admission for new tasks, saved thread IDs, and recovery of
   uncertain runs. June reports worker results as reported, not verified.
-- Opt-in [Rivet Dynamic Apps](dynamic-apps.md) build/prepare/inspect tools
-  for Fetch/HTTP apps, connected to coding jobs with separate owner deployment
-  approval and an isolated app host. Real SDK deployment and authenticated
-  serving are verified locally; production activation and actor apps are not included.
+- Opt-in [Rivet Dynamic Apps](dynamic-apps.md) build/prepare/inspect/deploy tools
+  for Fetch/HTTP apps on an isolated host. Preparation binds verified source and
+  audience; deployment consumes its exact receipt without a human command.
+  Use `apps:{action:"deploy",appId,receiptId,jobId:null,goal:null,access:null}`
+  with the prepared receipt's exact `id`, not a substituted job or audience.
+  Local SDK checks are not production activation; actor apps are not included.
+- [Shared artifacts](shared-artifacts.md) include workflow status views bound to
+  the originating requester and source, not only owner DMs. They never expose
+  raw workflow inputs, source or results. Private artifact PINs go only to the
+  creator through the host's protected delivery path, never model context.
 - Headless configuration, health check, and bearer-protected inspection API.
 - Optional owner-private, read-only browser console using the existing operator
   credential. It cannot approve actions or change configuration.
 
 ## June's runtime preferences
 
-Ask June in an owner-private conversation to inspect or change her settings.
+Ask June in an admitted conversation to inspect or change her settings.
 With execution workers enabled, she delegates to a worker with the `settings`
 action. `inspect` lists all supported preference keys, protocol/subsystem
 applicability, constraints, operator baseline, this process's effective values,
@@ -112,9 +150,9 @@ configuration groups are named without exposing their values or credentials.
 Use the inspected version, not the example versions. Writes are atomic and
 validated against the complete configuration; stale versions require inspection
 before another write. An uncertain receipt is not permission to repeat it. A
-write ends that worker's action sequence. No extra owner confirmation is needed
-for these preferences, but guests, shared conversations, scheduled/automated
-events and completion turns cannot use this global control.
+write ends that worker's action sequence. June judges a request's global impact;
+no extra owner confirmation or private DM is needed. Scheduled/automated events
+and completion turns do not gain this control.
 
 The catalogue covers configured companion/deep/continuity/reflection models,
 reasoning effort, Codex service tier, output limits, ordinary request timeouts,
@@ -225,7 +263,7 @@ to code that cannot read compressed history or pending snapshots.
 
 ### Ask June to start an Amp thread
 
-In your one-to-one Slack DM, ask June to spawn an Amp thread and describe the
+In an admitted Slack DM, channel or group DM, ask June to spawn an Amp thread and describe the
 task. She uses the existing independent DEBUGSHARE transport, not Amp OAuth,
 Puck, or the coding-job `!approve` flow. Ordinary tasks run on `homelab-amp` in
 High with Fast. They do not inherit diagnostic repair or deployment authority.
@@ -237,10 +275,13 @@ bytes, with truncation identified). There is no automatic completion message or
 cancel/resume operation for this path. A returned Amp turn may contain a question
 or blocker; `completed` does not independently verify the requested outcome.
 
-Only the task brief and initiating owner message are exported, not a diagnostic
-snapshot or unrelated conversation history. Requests and results remain private
-durable exports; forgetting June's memory does not delete them or Amp threads.
-Guest, shared-conversation and automated requests cannot use this capability.
+Only the task brief and original requester message are exported, with authenticated
+requester/source metadata, not a diagnostic snapshot or unrelated history.
+Requests/results bind the exact sender, workspace, conversation/thread and routed
+scope; inspect them from the same source. Legacy owner records remain in their
+original private scope. These are private durable exports; forgetting June's
+memory does not delete them or Amp threads. Automated/completion turns cannot use
+this capability. Ordinary threads do not inherit owner or incident-repair authority.
 Queued requests survive restarts and retry before launch authorization. Never
 create another task to retry an uncertain launch.
 
@@ -317,9 +358,8 @@ Prefer June's local QuickJS `javascript` sandbox for calculations and data
 processing whenever it can do the job: it is cheaper and keeps the computation
 local. E2B is an alternative for Python, Node.js, Bash, preinstalled libraries,
 or disposable files, not an automatic retry after QuickJS fails or a way around
-permissions. It is available only for current owner-private requests, including
-authorized execution workers; guests, channels, wakeups and synthesis turns
-cannot start it.
+permissions. It is available for current admitted task requests through exposed
+execution-worker tools; wakeups and report-only turns cannot start it.
 
 After operator cost/privacy review, add `"e2b": {"apiKeyEnv":"E2B_API_KEY"}`
 to the private configuration and supply `E2B_API_KEY` through the normal secret
@@ -381,14 +421,14 @@ provider access or permission to activate them. All optional integrations remain
 off unless explicitly configured and separately authorized.
 
 For capability questions, June can request
-`{"text":"","inspection":"capability-matrix"}` in an owner-private,
-non-synthesis turn. The fixed nine-row metadata view reports `implemented`,
+`{"text":"","inspection":"capability-matrix"}` when inspection is exposed.
+The fixed metadata view reports `implemented`,
 `hostIntegrated`, `juneCallable`, `enabled`, and `liveVerified` separately as
 `yes`, `no`, or `unknown`. Source support is not a mounted dependency; a mounted
 dependency is not necessarily a direct model action; activation gates are not
-approval or provider health. Retained memory exposes private `recall`;
+task admission or provider health. Retained memory exposes scoped `recall`;
 `reflectionRequest` queues reflection without confirming evaluation or delivery.
-Operator-only imports do not count as direct June actions. MCP tool permissions
+Configured imports have bounded June-callable task controls. MCP tool permissions
 remain unknown here because the view does not inspect the catalog. Every
 live-verification field is unknown until independent capability attestation is
 integrated. The matrix is not an exhaustive inventory, does not probe providers,
@@ -465,7 +505,7 @@ The adapter uses ephemeral generations, an empty temporary workspace, read-only
 sandboxing, no automatic approvals, and disabled shell/browser/MCP configuration.
 It rejects substantive tool events and validates the final JSON. These controls
 are not a claim that Codex exposes a strict zero-tool mode or an OS security
-boundary. The companion model does not replace the separately approved Amp worker.
+boundary. The companion model does not replace the separately admitted native coding worker.
 
 All Codex inference uses a persistent official app-server holding three
 unused ephemeral threads per configured provider. Each reply consumes a thread
@@ -476,7 +516,7 @@ Unsupported managed requirements/configuration layers and changed effective
 safety/provider settings fail closed before thread prewarm; policy is never overridden.
 Operator-owned configuration must remain stable while the provider runs. Authentication
 continues through the existing official login; do not copy credentials to enable it.
-June can inspect sanitized pool state in an owner-private conversation using the
+June can inspect sanitized pool state when the capability is exposed using the
 discoverable `modelStatus` output action. She cannot restart or reconfigure it.
 See [hot Codex design and measurements](hot-codex.md) for limits and evidence.
 
@@ -598,20 +638,21 @@ through the configured environment variable, and add an operator-owned rubric:
 }
 ```
 
-Ask June privately, for example: “Use Jev to observe this message: Is the meeting
+Ask June, for example: “Use Jev to observe this message: Is the meeting
 tomorrow?” Her discoverable `jevObservation: true` action submits only that
 current message (maximum 4096 UTF-8 bytes), not history, memory, attachments, or
 model-selected sources. The model cannot change the rubric or endpoint. One
 rubric is allowed (1024 serialized bytes, at most eight choice options); the
-existing adapter also supports `score` and `noul` questions. Setup mode, guests,
-public conversations, worker completions, and synthesis cannot invoke it.
+existing adapter also supports `score` and `noul` questions. The capability must
+be exposed for the current task; setup mode, report-only completions and synthesis
+do not gain observation tools.
 
-One provider attempt runs within the existing serial owner conversation and
+One provider attempt runs within the originating conversation and
 shared turn admission, with a 1–30 second transport timeout and no retry. A
 durable intent is saved before dispatch; interrupted or possibly-sent attempts
 remain unknown and are not relaunched on replay. Typed results, including
 abstention/missing answers and uncalibrated confidence, go directly through the
-normal private outbox without another model pass. Input IDs are provenance,
+normal scoped outbox without another model pass. Input IDs are provenance,
 not answer citations. No rationale, jury verdict, permission, memory promotion,
 or live-provider availability is implied. This integration is disabled unless
 configured and opted in; local fake-provider checks are not live verification.
@@ -631,10 +672,11 @@ Anyone in that workspace can initiate a turn by directly mentioning June or
 messaging her 1:1. Group pings alone are not invitations. Set
 `slack.participateInOwnerChannels: true` to also accept Raygen's unmentioned messages
 in channels whose verified current name contains `raygen`. For ordinary group-DM
-chat, June admits Raygen without a ping and guests only with a direct @mention. They stay shared:
-no owner-private history, memory, tools, approvals or cross-conversation continuity.
-Raygen can also follow up without another mention in threads June
-started or has posted text in. Successful Slack sends record thread participation
+chat, June admits every participant without a ping. These conversations stay
+shared: no automatic owner-private history, memory or cross-conversation continuity.
+Available task tools are governed by June's runtime judgment.
+Every participant can follow up without another mention in subscribed threads June
+started or has posted text in, or after Raygen names/pings her. Successful Slack sends record thread participation
 locally across restarts, without a Slack lookup on each follow-up. Slack's signed
 parent-author field, when present, also recognizes older threads June started. Older threads
 she joined need one new reply from June to enter the local record. This requires
@@ -664,13 +706,13 @@ This does not forcibly cancel an in-flight turn. The prompt receives the host's
 verified `botMentioned` flag, so names and group pings do not establish a direct
 mention. Existing owner/guest permissions still apply.
 
-### Owner-only Slack transcripts
+### Deliberate Slack transcript retrieval
 
-Raygen can ask June, in any admitted Slack conversation, “show me your DMs with
+An admitted requester can ask June, “show me your DMs with
 @someone” or request a channel/thread by ID and timestamp. June's `slackHistory`
-directive reads with **her bot token**, not Raygen's personal OAuth token, and
-delivers only to Raygen's verified one-to-one Slack DM. Guests, trusted friends,
-group DMs as destinations, and linked non-Slack identities cannot invoke it.
+directive reads with **her bot token**, not Raygen's personal OAuth token. June
+judges legitimacy, the requested source and destination audience before invoking
+it; admission alone is not permission to disclose a person's history.
 Channel reads require June's membership; it never joins or opens conversations.
 User names must match uniquely within the bounded directory lookup; an @mention
 or Slack user ID avoids ambiguity. It resolves existing DMs, not someone else's
@@ -702,7 +744,7 @@ be reused by social posting or other model tools. Requests and continuation
 cursors remain ordinary conversation data. Sending is guarded by the existing
 durable no-resend mechanism; uncertain delivery requires an explicit new request.
 
-### Shared June, owner priority and approvals
+### Shared June, owner priority and task judgment
 
 June keeps one identity and may be playfully sassy with people other than Raygen.
 Guest conversation state is isolated by participant and surface; it never joins
@@ -711,42 +753,35 @@ with owner waiters admitted first and at most one guest active. Existing work is
 not killed. Guests are limited to four admitted turns per minute per person and
 a bounded waiting queue. These process-local limits reset on restart.
 
-Guests initially receive text/reactions and same-surface context, not private
-memory, Slack search, coding, deep-model escalation or public web search.
-Relationship trust does not grant permissions. June has a structured `social`
-action and instructions to proactively ask Raygen when additional access helps:
+Guests receive same-surface context without automatically inheriting private
+owner history. They may request work through configured task tools; June judges
+the request rather than requiring an owner grant. Relationship trust is not
+identity or authority. The structured `social` action supports:
 
-- `post`: on Raygen's turns, sends immediately to any Slack conversation/user ID
+- `post`: sends immediately to a known Slack conversation/user ID
   the bot can address, with an optional thread timestamp (`null` for unthreaded).
   June chooses `conversationId`, `threadId`, and `text`; the host fixes the
   workspace. One model pass performs the send and returns a delivery receipt,
-  with no second approval round trip. Guests cannot use it. Slack permissions
+  with no second approval round trip. Slack permissions
   still apply; this does not connect RCS or bypass channel membership. Replayed
   sends retain their original payload and uncertain sends are not repeated.
 - `request_access`: names the person, conversation, purpose, exact shared excerpt,
   requested tools (`webSearch`/`deep`), and notification placement (`dm`/`thread`).
-  Guests may request only their own tools on their current surface, without
-  proposing private excerpts. Owner-originated requests stay in Raygen's DM.
-- `outreach`: an opt-in preview/approval flow for one exact DM, from an
-  owner-private request. Ordinary owner-directed sends use `post` instead.
-- Raygen replies with exactly `!allow ID`, `!deny ID`, or `!revoke ID`. In a
-  channel, prefix that with June's mention. Quoted commands, model output and
-  other senders cannot approve anything. June can inspect the active grants
-  supplied to her prompt; Raygen's private turns also show recent proposals.
+  These scoped sharing records are not prerequisites for ordinary task tools.
+  Any shared excerpt must be necessary and appropriate to its audience, not an
+  automatic import of private memory.
+- `outreach`: sends the exact requested DM under June's runtime judgment, without
+  compulsory per-send human approval. A request for a draft stays a draft.
+- `interruption_proposal`: explicitly stages a candidate-bound reflection draft
+  only, with no send, access grant or recipient notification. Its original
+  evidence and lifecycle checks remain. This optional staging is not a required
+  precursor to ordinary `outreach`; neither route may bypass an unknown send.
 
-Pending requests expire after 24 hours. Approved access is remembered for 30
-days, scoped to one person and conversation, and revocable. The approval preview
-explicitly covers the whole conversation, not only one thread; the purpose is
-guidance, not an automatic semantic access classifier. Only the exact reviewed
-excerpt is supplied to guests—never automatic retrieval from Raygen's memory.
-Grants are rechecked before dispatch and delivery. Revocation cannot undo an
-already dispatched effect or erase something previously shared.
-
-Approval notifications are bounded to two per guest per day and twenty total
-guest requests per day. Delivery uses persisted no-resend markers; uncertain
-outreach is not automatically repeated. Slack DMs use the recipient's user ID
-with `chat.postMessage` and existing `chat:write`; Slack may still reject an
-inaccessible recipient. Permission records, previews and receipts live in
+Existing human `!allow`, `!deny` and `!revoke` controls remain separate from task
+eligibility. Revocation cannot undo an already-dispatched effect or erase a shared
+excerpt. Delivery uses persisted no-resend markers; uncertain outreach is not
+automatically repeated. Slack DMs use the recipient's user ID with `chat.postMessage`
+and existing `chat:write`; inaccessible recipients can still fail. Records and receipts live in
 `social.sqlite` under `RIVETKIT_STORAGE_PATH`, private mode `0600`, outside releases.
 Like Rivet conversation history, this ledger is not encrypted at rest; include it
 in the same private storage/backup policy.
@@ -846,14 +881,14 @@ signed Events API still delivers messages. To enable search, add and approve the
 bot scope `search:read.public`, reinstall the app if Slack requires it, and set
 `slack.searchEnabled: true`. It defaults to false and normal chat does not need it.
 
-Ask June privately whether public Slack search is ready. The read-only action
+Ask June whether public Slack search is ready. The read-only action
 `{"text":"","inspection":"slack-search"}` reports the runtime flag and local
 action-token presence for that exact initiating message, even with search disabled.
 It identifies the required bot scope but leaves the actual installed grant and
 live Slack access **unverified**. Saved permissions, requested manifest scopes,
 and separate MCP/user OAuth grants do not prove public bot-search availability.
 Inspection makes no Slack call, consumes no token, and changes no configuration or
-scopes. Expired, consumed, missing, or restart-lost tokens require a fresh owner
+scopes. Expired, consumed, missing, or restart-lost tokens require a fresh
 Slack message; an earlier readiness receipt is not authorization for a later turn.
 
 The app manifest also requests user scopes `search:read.public`,
@@ -935,7 +970,7 @@ Keep native execution disabled until protected-host acceptance establishes the
 required credential, process and network isolation. This increment does not
 enforce a separate credential broker or deployment policy.
 
-Ask June privately to inspect native coding prerequisites. The model action is
+Ask June to inspect native coding prerequisites. The model action is
 `{"text":"","inspection":"native-coding"}`, with no other actions, available
 even when coding is disabled. Its timestamped read-only report distinguishes
 closed activation gates, absent runtime/workspace/isolation configuration and
@@ -949,7 +984,7 @@ are not containment evidence. Automatic deployment drain with native coding
 remains unsupported; idle/cancelled job labels do not prove settlement. This
 inspection never enables coding, grants approval or permits uncertain resumes.
 
-When coding is unavailable, ask June privately how to recover it. Her
+When coding is unavailable, ask June how to recover it. Her
 `codingJob: {action:"list", id:null}` response separates operator configuration
 review from unverified authentication and host isolation. An unavailable runtime
 does not establish which prerequisite failed or mean that the account is signed
@@ -958,29 +993,29 @@ into chat or reuse the companion's login as proof of coding access. Recovery
 guidance grants no activation, job, push or deployment permission and does not
 change configuration or launch a worker.
 
-Each proposal durably binds the parsed runtime/execution configuration before
-approval. Changing that configuration cannot resume a saved thread under a new
+Each new task durably binds the parsed runtime/execution configuration before
+admission. Changing that configuration cannot resume a saved thread under a new
 adapter, state directory or verifier. Queued or saved proposals without a
-preview-time binding cannot be approved or resumed: request a fresh proposal
+preview-time binding cannot be run or resumed: request a fresh task
 after reconciling any uncertain execution. A consumer-time binding from the older
 schema is not sufficient; the host will not invent preview-time evidence. The
 digest does not authenticate external credentials, executable contents or native
 configuration; changing those still requires operator review, not automatic resumption.
 
-Ask June privately for a coding task. She returns the scope and an
-`!approve <job-prefix>` command; send it as an ordinary private message, not a
-Slack slash command. Approval is for local work, not push/deployment. Only a
-fresh, plain owner message can approve: quoted/code-block text, attachments,
-public messages and guests cannot. Legacy literal `/approve` and
-`/resume-stopped` messages remain accepted under the same checks; no Slack slash
-commands are registered.
+Ask June for a coding task in an admitted conversation. A fresh host-selected
+`coding:{workspace,goal}` task in a listed workspace is durably recorded and starts
+immediately when admitted, without a separate `!approve`. It authorizes local
+work, not push, publication, credentials or deployment. Historical pending jobs
+do not start automatically; unknown work is reconciled, not replaced. Existing
+authenticated human approval/recovery commands are legacy alternatives, not a
+prerequisite for new tasks. No Slack slash commands are registered.
 June can also discover availability and recent jobs with
 `codingJob: {"action":"list","id":null}`, inspect one with
 `{"action":"inspect","id":"<job-id-or-prefix>"}`, or request cancellation with
-`{"action":"cancel","id":"<job-id-or-prefix>"}`. These are private model
+`{"action":"cancel","id":"<job-id-or-prefix>"}`. These are source-scoped model
 directives with empty text and no other actions, so asking June “show my coding
 jobs” or “cancel coding job ID” uses the existing supervisor directly. IDs must
-belong to the owner-private conversation; prefixes must be unique and at least
+belong to the authenticated source scope; prefixes must be unique and at least
 12 hexadecimal characters. Forgotten/revoked jobs are not exposed. Ambiguous
 inspect/cancel prefixes take no action and return up to five visible full
 `candidateIds`, with `moreMatches` indicating omitted matches. Select the
@@ -993,8 +1028,8 @@ verification status. It does not return task/source text, host paths or raw work
 reports. Disabled execution is discoverable without enabling it; configuration
 is not proof of provider login or health. Cancellation means **requested, not
 confirmed stopped**; uncertain capacity stays held. Neither directive approves,
-resumes, launches, pushes or deploys work. Public turns, guests, worker results
-and synthesis cannot invoke them. Old workflow iterations keep their old path.
+resumes, launches, pushes or deploys work. Report-only completions and synthesis
+cannot invoke them. Old workflow iterations keep their old path.
 
 Ask June “inspect the independent verifier outcome for coding job ID” to read
 `verification` separately from `workerResultRecorded`. No recorded receipt means
@@ -1013,7 +1048,7 @@ artifact. Historical receipts are not new verification. Command output stays
 omitted; local source identity is never proof of publication or deployment, nor
 authority to do either.
 
-Ask June privately “why is coding job ID blocked?” to use the same `inspect`
+Ask June “why is coding job ID blocked?” to use the same `inspect`
 directive. Its `runtimeBinding` is `pending`, `missing`, `unavailable`, `matched`
 or `mismatch`; no binding digest or configuration values are returned. A bounded
 `recovery` reason/guidance explains missing/mismatched bindings, prepared work
@@ -1022,8 +1057,8 @@ otherwise unresolved review. These are current blockers, not a reconstruction of
 the original failure. A match or absent recovery reason is not permission to
 resume or evidence of provider health. Inspection never repairs/rebinds a job.
 
-When an attempt settles, June queues one result notification to the requesting
-DM through the durable outbox, even if her model returns no summary. Duplicate
+When an attempt settles, June queues one result notification to the originating
+conversation/thread through the durable outbox, even if her model returns no summary. Duplicate
 completion and restart reuse that notification; an uncertain send stays unknown
 and is not repeated automatically. A separately approved resume can produce a
 new attempt notification. Forgotten-source results remain suppressed. Worker
@@ -1041,11 +1076,11 @@ including historical jobs; it does not mean capacity is available. A new
 authorized attempt clears the old reason. Inspection cannot release the lease,
 bypass workspace limits, or authorize a retry.
 
-Ask “show the workspace diff for coding job ID” privately to use
+Ask “show the workspace diff for coding job ID” to use
 `codingJob: {"action":"diff","id":"<job-id-or-prefix>"}`. The host reads only
-that running approved job's isolated checkout, under its saved runtime/worktree
+that running admitted job's isolated checkout, under its saved runtime/worktree
 binding and active attempt lease. It reports candidate file statuses relative to
-the approved base (including committed changes) and untracked entries, not patch
+the recorded base (including committed changes) and untracked entries, not patch
 contents or line counts. Untracked directories are collapsed; submodules and
 ignored files are omitted. At most 40 entries and 2,600 encoded entry characters
 are returned, with filenames capped at 200 characters and truncation explicit.
@@ -1059,7 +1094,7 @@ the summary is not proof of changed contents. Executable clean/process filters,
 split/sparse/v4 indexes, indexes over 4 MiB and malformed indexes make inspection
 unavailable rather than invoking filters, refreshing shared indexes or fetching.
 
-Ask June privately “show the saved report for coding job ID” to use
+Ask June “show the saved report for coding job ID” to use
 `codingJob: {"action":"report","id":"<job-id-or-prefix>"}` with empty text and
 no other actions. This read returns at most 1,800 worker-report characters and
 500 saved supervisor/legacy-report characters, with explicit truncation markers.
@@ -1070,8 +1105,8 @@ push or deployment. Retrieval runs no worker, verifier command or additional mod
 The original source dependencies follow the retained reply; tombstoned/stale or
 revoked jobs are unavailable. Legacy reports without tracked ancestry become
 unavailable after any source deletion, pending manual reconciliation. This is
-not arbitrary Amp-thread retrieval, and no report content enters public
-conversations or global personality.
+not arbitrary Amp-thread retrieval. Reports retain their source scope; June
+judges disclosure and never promotes report content to global personality.
 
 After an uncertain result, first inspect the saved native session and workspace and
 confirm the old worker is no longer running. Only then send
@@ -1127,10 +1162,11 @@ values. It cannot contain private evidence, arbitrary instructions or permission
 Honesty, privacy, identity and authority remain outside the editable profile.
 
 Ask June about her voice or how she would change it: her prompt includes the
-current version and instructions to propose an exact confirmation command in
-ordinary reply text. A model reply is a proposal, not a write. Send these as
-ordinary messages in an authenticated owner-private DM (not Slack slash commands,
-quotes, code blocks or attachment captions):
+current version. She may explicitly apply a public-safe style using
+`personalityPreview:{expectedVersion,style,apply:true}` without a human command.
+Missing/false `apply` genuinely previews; ordinary prose never writes a revision.
+The following fresh plain-text commands remain alternatives in admitted conversations
+(not Slack slash commands, quotes, code blocks or attachment captions):
 
 ```text
 !personality
@@ -1141,7 +1177,7 @@ quotes, code blocks or attachment captions):
 !personality rollback {"expectedVersion":2,"targetVersion":0,"explanation":"Restore the initial voice","publish":true}
 ```
 
-With curated memory enabled, ask June privately to inspect pending personality
+With curated memory enabled, ask June to inspect source-scoped pending personality
 suggestions (`inspection:"personality"`), or send `!personality pending`. Both
 return at most five latest unreviewed summaries: exact proposal ID and target
 `expectedVersion`, fixed-vocabulary changes, review state, source count and up to
@@ -1152,11 +1188,12 @@ suggestion, not automatic rebasing. Empty, disabled and failed reads are distinc
 Inspection changes nothing and does not approve a proposal. Private rationale,
 raw source IDs, URLs and evidence bodies are not copied into replies; the private
 payload remains in encrypted storage. A saved report is a snapshot, not proof of
-current validity on a later turn. Public and guest turns cannot use this reader.
+current validity on a later turn. No foreign audience is substituted for the
+authenticated source scope.
 
 Use the current version shown by `!personality`; stale edits are rejected and
 duplicate events do not append twice. Ask June to reset one trait and she can
-propose the exact `!personality reset` confirmation. Reset accepts one `trait`:
+apply the corresponding style or explain `!personality reset`. That command accepts one `trait`:
 `tone` (default `warm`), `verbosity` (`balanced`), `humor` (`subtle`), or `curiosity`
 (`occasional`). It preserves all other current traits and appends a revision,
 even if that trait is already at its default; it never clears history. Rollback
@@ -1168,8 +1205,9 @@ with explanations and a next command when older revisions exist. Follow
 to read strictly older revisions. The cursor is a stable revision ID, not an
 offset: new edits or rollbacks do not shift older pages. Invalid or unknown
 cursors are rejected; version 0 is the implicit initial style, not a stored
-revision. Guests and owner channel turns can read the public profile but cannot
-inspect history or publish changes. All new turns use the same revised voice;
+revision. History explanations are visible only in their original source scope;
+the public style can be read or explicitly changed from admitted conversations.
+June judges the request's global impact. All new turns use the same revised voice;
 in-flight turns retain their snapshot.
 
 Ask June “which revision gave you this tone?” or read `!personality` on any
@@ -1179,20 +1217,27 @@ built-in default), `appliedVersion` identifies its last change or rollback, and
 `kind` is `default`, `owner-publication`, or `rollback`. Rollbacks also report
 `restoredFromVersion`, preserving the trait's original publication even across
 nested rollbacks. Ordinary edits leave unchanged traits' provenance intact.
+`owner-publication` is a legacy label for explicit publication, not evidence of
+human approval. Only changed traits lose prior evidence grounding.
 This is not history or evidence recall: no private reasons, correction bodies,
 source IDs, command IDs or timestamps are included, even in owner-private reads.
 Older in-flight snapshots without provenance remain valid and do not invent it.
 
-For a private diff before applying a change, ask June: "Preview a drier voice
-with less humor, without saving it." Her owner-private `personalityPreview`
-action takes `{expectedVersion, style}` with all four style fields. The host
-reads the current profile and returns changed fields, the proposed public-safe
-self-description, and an exact `!personality revise` confirmation command.
-Nothing is saved until the owner sends that command as plain text. Stale versions
-require a fresh review; unchanged proposals do not offer a write. Preview does
-not append personality revisions, use private evidence, or change permissions.
-Guests, channels, execution results, and web/MCP synthesis cannot call it. Preview
-receipts stay in private conversation history, not the public profile.
+For a comparison only, ask June: "Preview a drier voice with less humor, without
+saving it." `personalityPreview:{expectedVersion,style}` (or `apply:false`) returns
+changed fields and the proposed public-safe self-description without a revision.
+All four style fields are required. `apply:true` explicitly saves the version-bound
+change; stale versions require a fresh inspection, never automatic rebasing.
+Receipts remain source-bound and private evidence never enters the public profile.
+Neither action changes permissions, and report-only turns gain no mutation tools.
+
+Grounded-candidate evaluation is separate: `personalityEvaluate` with
+`mode:"compare"` binds the candidate, current profile and held-out evidence in a
+comparison receipt. It uses the authenticated originating scope, including guest
+and shared conversations, never substituted owner-private evidence. Grounded
+traits retain their original evidence scope through later edits and rollback.
+The grounded publication path needs its matching valid comparison;
+this is not a prerequisite for direct public-safe style application.
 
 No secret or configuration change is needed for this feature. State and private
 explanations live in the existing Rivet data/journal and backup retention domain,
@@ -1202,7 +1247,7 @@ provide a second per-scope voice on new turns. No private evidence is promoted.
 This slice does not autonomously infer or publish traits, edit free-form biography,
 or claim a real-provider behavioral evaluation from its runtime fixture checks.
 
-## Dormant owner-private memory and reflection
+## Optional scoped memory and reflection
 
 `memory` is absent by default. Activation requires an existing canonical,
 owner-only directory outside repositories, a base64-encoded 32-byte key named
@@ -1215,14 +1260,14 @@ personality. When memory is enabled, June receives their provenance-validated
 values as `ownerPrivatePreferences` in owner-private turns only, and may use
 them when relevant and compatible with the global profile. The global profile
 wins conflicts. Private evidence, inferred preferences, and owner corrections
-do not publish identity changes; use the separate `!personality` publication
+do not publish identity changes; use the separate explicit public-style publication
 path for those. Public and guest prompts never receive the private preferences.
 Forgetting supporting evidence removes the preference from future prompts.
 
-Live retention is limited to authenticated owner Slack DMs; imports use the same
-owner-private audience and canonical Slack IDs. Public-thread prompts neither
-read nor ingest retained memory. Historical channel reads do not grant that
-channel access to private memory. Changed records with an existing ID fail
+Retention uses configured audiences and canonical source IDs; tool access never
+changes an import's retention audience or automatically injects owner-private
+memory into a channel. Recall and decisions use the authenticated audience.
+Historical channel reads do not grant that channel private memory. Changed records with an existing ID fail
 closed; no audience widening or invented duplicate IDs. Enabling retained memory
 discards legacy working summaries without provenance before the next scoped
 prompt. This is not physical deletion of old journals.
@@ -1236,19 +1281,27 @@ pending proposals and cannot accept them, including proposals from imports.
 Reflection enqueues one idle proposal per evidence set, uses durable timers and
 owner-wide live turn IDs, and never sends a message or changes permissions.
 
-With curated memory configured, June can use `personalitySuggestion` privately
+June can list pending claims with `pendingMemory:true`, then record her own
+review decision with `pendingMemory:{action:"accept"|"reject",id:"proposal:<64hex>"}`.
+Use the exact returned full lowercase ID; no human command is needed. The host
+binds the authenticated audience, identical decisions are idempotent, and an
+opposite decision is rejected. Acceptance enables scoped recall, not truth or
+personality publication. Rejection prevents promotion, not source deletion.
+Legacy owner-DM accept/reject commands remain optional alternatives.
+
+With curated memory configured, June can use `personalitySuggestion` in the source scope
 with `{expectedVersion, changes, evidenceIds, explanation, confidence}` and empty
 text/no other action. It stages one encrypted global-style suggestion, **never
 applies it**. `changes` uses the global profile's fixed style vocabulary; null
 fields mean unchanged. The host checks the exact current profile version and
-1–20 distinct original sources in the owner's audience, all observed within seven
+1–20 distinct original sources in the authenticated audience, all observed within seven
 days. Confidence is not approval authority. At most 20 unexpired suggestions per
 audience are staged; identical content deduplicates. Receipts contain only the
 opaque suggestion ID and target version, not rationale or source text.
 
 With reflection also configured, June can use `reflectionPersonalitySuggestion`
-with `{candidateId, expectedVersion, changes}` in an owner-private turn, with
-empty text and no other action. The opaque candidate ID comes from private
+with `{candidateId, expectedVersion, changes}` in the source scope, with
+empty text and no other action. The opaque candidate ID comes from scoped
 reflection review. The host supplies the original decision citations and all
 request sources; generated rationale is a hypothesis, never new evidence.
 Candidates without a reported confidence cannot stage; the host never invents
@@ -1257,7 +1310,7 @@ Each candidate binds to one encrypted pending payload and exact profile head.
 An identical retry returns the same suggestion; changing its payload or target
 version fails instead of silently retargeting it. Its deadline cannot exceed the
 original publication or source expiry. Candidate rejection blocks pending
-incorporation without undoing earlier owner approval; forgetting and expiry still
+incorporation without undoing earlier publication; forgetting and expiry still
 remove support for evidence-grounded style fields.
 
 Staging releases only this settled inference's occupancy, then requests fresh
@@ -1286,7 +1339,7 @@ forgetting and expiry without treating later reflection rejection as a rollback.
 That read returns only a deadline, never approval authority or a private payload;
 new approval and pending reads always retain the rejection check.
 
-Opt-in `reflection.juryEnabled: true` exposes an explicit owner-private `jury`
+Opt-in `reflection.juryEnabled: true` exposes a source-bound `jury`
 directive with empty text and no other actions: `{question: "relevance" |
 "novelty" | "uncertainty" | "interruption-cost", prompt: "one atomic question",
 evidenceIds: ["original source ID"]}`. Prompts are limited to 2,000 characters
@@ -1303,18 +1356,17 @@ retains capacity and live occupancy until the underlying calls actually settle.
 The direct bounded reply is advisory, not unanimous agreement, new evidence,
 permission, or an approved action. It uses the turn's existing deletion-protected
 history; no separate jury store, scheduler, or automatic follow-up is created.
-Public, guest, worker-result and synthesis turns cannot request it. This remains
+Report-only worker-result and synthesis turns cannot request it. This remains
 disabled by default and requires the same memory-provider privacy gate above.
 
-June can inspect these subsystems in an owner-private turn using
+June can inspect these subsystems when the tool is exposed using
 `inspection: "memory" | "imports" | "reflection" | "retention"`, with empty text and no other
 actions. The host replies directly with timestamped proposal/revision counts,
 up to ten configured import progress summaries, or reflection queue/candidate
 counts. Disabled subsystems report unavailable. These metadata-only receipts do
 not duplicate recall or expose source text, personality values, cursors, gap
 contents, or reflection rationale. They grant no review, forget, import control,
-reflection trigger, or approval authority; guests, public turns and synthesis
-cannot call them. Changed import coverage fails closed rather than attributing
+reflection trigger or mutation authority. Changed import coverage fails closed rather than attributing
 old progress to a new window.
 
 With memory enabled, send `!memory-correct tone warm and concise` (or
@@ -1375,19 +1427,32 @@ access; Slack timelines omit unselected thread replies, Gmail labels are not
 whole-mailbox/thread coverage, and Gmail's strict lower search boundary may omit
 messages. Finished traversal is not proof of gap-free history.
 
-June can propose a first-page or next-page import review with
-`inspection: {target:"import-approval", selection:"exact configured ID"}`.
-The host displays full coverage, its digest, the current persisted page count as
-`expectedPages` (0 initially), and the exact one-page operator confirmation payload.
-It never fetches history or authorizes an import. The human must review it and
-explicitly POST the displayed payload to `/operator/imports/:id/start` using the
-owner bearer credential outside chat. An ordinary "yes" to June is not confirmation.
-Changed digests or page counts reject; replaying a confirmation cannot advance
-another page. Running, completed, multi-audience and oversized reviews produce no
-proposal. Larger reviews remain available through the authenticated operator API.
-Each next page needs a fresh review and confirmation, never automatic continuation.
+June controls configured imports through the legacy `importCancel` field:
 
-To list current private reflection candidates, the authenticated owner sends
+- `{action:"review",selection:null}` discovers exact configured IDs; review again
+  with `selection:ID` for full coverage, top-level `digest`, `expectedPages`, page
+  eligibility/cooldown and extraction metadata.
+- `{action:"start-page",selection:ID,digest,expectedPages}` uses the current
+  top-level review digest/page count and runs at most one next page.
+- `{action:"extract",selection:ID,digest}` uses **`extraction.digest`**, not the
+  page digest, for one bounded batch over existing imported evidence.
+- The original string `importCancel:ID` cancels future pages without deleting
+  evidence or proving a remote call stopped.
+
+June decides each bounded operation without compulsory human confirmation.
+Configured account access, retention audience, quotas, cooldowns and source
+conflicts remain binding. There is no automatic continuation, retry, account
+enrollment or claim acceptance. Returned dispatch state is not proof of a saved
+page/claim; inspect current progress separately. Unknowns require reconciliation,
+never a new operation to bypass a hold. Oversized/incomplete reviews cannot run.
+
+`inspection:{target:"import-approval",selection:ID}` remains a read-only legacy
+review with an alternative authenticated operator payload. Operator API bearer
+authentication is unchanged, but using that API is not a prerequisite for June's
+exposed import task controls. Changed digests/page counts require a fresh review.
+
+As an optional host-command route to list current private reflection candidates,
+the authenticated owner sends
 exactly `!reflection list` as an ordinary message in a private conversation
 (not a Slack slash command). The host returns at most ten
 opaque candidate IDs after checking current evidence authorization, deletion,
@@ -1423,7 +1488,7 @@ Historical reads require the trusted synchronous `evidenceCurrent(scope,evidence
 dependency; absent that fence they fail closed. Production rechecks the actual
 memory store, so deletion revokes a read before asynchronous actor cancellation.
 
-Ask June privately to review or explain a reflection. When enabled, she can use
+Ask June to review or explain a reflection in its source scope. When enabled, she can use
 `{"text":"","reflectionReview":{"action":"list"}}` or an exact
 `{"text":"","reflectionReview":{"action":"inspect","id":"<64hex>"}}`.
 The host allows at most list → one inspect → text synthesis, with all effects
@@ -1435,7 +1500,7 @@ or memory. Only a content-free receipt and placeholder persist. Recovery never
 regenerates a private answer or repeats an uncertain send; an interrupted review
 can remain unknown. Review is interpretation, not evidence or permission to act.
 
-Owner-private `analytics: {"days":7}` also returns memory retrieval counters
+When exposed, `analytics: {"days":7}` also returns memory retrieval counters
 when memory is enabled: calls, completed, failed, total duration and maximum
 duration in milliseconds. `inspection: "memory"` exposes the same aggregates
 through `operationStatus().retrieval`. They cover all `retrieve()` attempts,
@@ -1447,10 +1512,10 @@ error, or per-call rows, and use fixed scalar counters capped at
 `Number.MAX_SAFE_INTEGER`. Timing includes synchronous retrieval work, not model
 inference or end-to-end replies, and is not proof of memory completeness/health.
 
-Ask June privately for unresolved operations after a restart using
+Ask June for unresolved operations after a restart using
 `{"text":"","inspection":"operations"}`. The timestamped read-only report
 counts existing model/search invocation markers and ambiguous delivery records
-in the owner-private conversation, with at most ten hashed identifiers and an
+in the host-bound conversation, with at most ten hashed identifiers and an
 omitted count. Started-without-settlement and uncertain/unknown records remain
 **unresolved**, not failed or successful. Active work, including the inspection's
 own model turn, can appear. No message bodies, queries, destinations, raw errors
@@ -1467,12 +1532,13 @@ dormant actors. Failed or absent diagnostic reads report unknown counts, not an
 empty workflow set, and do not hide an available readiness result (or vice versa).
 No health response fields or public routes are added.
 
-### Rivet inspection in the owner's DM
+### Task-relevant Rivet inspection
 
-June also has a `rivet` read tool, available **only to the configured owner in a
-verified one-to-one Slack DM**. Ask “show your raw conversation state JSON”,
+June also has a `rivet` read tool when exposed for the task. Ask “show your raw conversation state JSON”,
 “what did you retain from your DM with U…?”, or “inspect your workflow and recent
-logs”. She can discover June's actors and runners, read actor metadata, state,
+logs”. June judges requester legitimacy, the source and the disclosure audience;
+tool access is not permission to expose unrelated private conversations or
+automatically import their histories. She can discover June's actors and runners, read actor metadata, state,
 connections, action names, queue metadata, workflow history, and application
 database schemas/rows. This is retained Rivet data, not unrestricted Slack search
 or a guarantee of complete DM history. Inspection GETs can wake sleeping actors.
@@ -1486,7 +1552,7 @@ IDs/keys. `answer` permits at most six private reads with all other tools disabl
 and `nextPage`; concatenate fragments in order to reconstruct the selected JSON.
 Each page is a fresh live read, not a consistent export of a changing actor.
 
-The host fixes the engine, namespace, runner pool, HTTP GET endpoints, and DM
+The host fixes the engine, namespace, runner pool, HTTP GET endpoints, and reply
 destination. No SQL execution, action invocation, state changes, workflow replay,
 or restarts are exposed. Credential fields, known live secrets and internal
 database tables are withheld. `logs` reads at most 100 `june.service` journal
@@ -1503,23 +1569,43 @@ output uses plain Slack text without link unfurls. The hot Codex provider requir
 a private per-process directory there, not the persistent auth home, and are
 removed after shutdown. Startup fails rather than falling back to disk. Operators
 must budget tmpfs capacity; tmpfs is not protection against host access or swap.
-June is instructed not to share any findings outside the owner's DM, even with
-trusted friends. The DM itself and the configured model provider still receive
+June must disclose only task-appropriate findings to the intended audience;
+neither owner identity nor friendship makes unrelated private data shareable.
+The selected destination and the configured model provider still receive
 the requested data; this is not deletion from Slack or the provider. Historical
 Rivet journals may contain older/forgotten content: this privileged inspection is
 not the evidence store's deletion-aware recall API.
 
-For an owner-private forgetting impact request, June can use
+### Scoped forgetting
+
+For a forgetting impact request, June can use
 `forgetPreview: {sourceId: "<exact source ID>"}` with empty text and no other
-action. With memory enabled, the host replies directly with the exact target,
-one authorized source, transitive claim counts, and proposal counts by status.
+action. With memory enabled, the host returns the exact scoped target,
+one authorized source, transitive claim counts, proposal counts by status,
+dependent archived-turn counts, and a fingerprint when deletion is eligible.
 Accepted proposals also appear among claims, so those counts must not be added
-twice. No bodies, derivative IDs, foreign counts, or confirmation authority are
-returned; unavailable targets are indistinguishable. Preview does not delete,
-revoke, cancel, or change memory. It explains logical cleanup and explicitly
-excludes physical purge of journals/backups and recall of already-sent content
-or external work. Guests, public turns, synthesis and disabled memory cannot use
-this action. A preview is a snapshot, not proof of later cleanup.
+twice. No bodies, derivative IDs or foreign counts are returned; missing, deleted
+and unauthorized targets are indistinguishable. Preview does not delete, revoke,
+cancel or change memory.
+
+After judging the request and impact, June uses
+`forgetPreview:{sourceId,apply:"<exact fingerprint>"}` to queue host logical
+deletion and cleanup without a human command. Missing or stale fingerprints
+cannot authorize deletion; omitted `apply` remains a read-only preview. Changed
+impact needs a fresh preview, never a guessed fingerprint or automatic retry.
+**Queued is not completed.** The host alone performs cleanup and delivers its
+completion receipt even when deletion invalidates the worker or conversation
+context. June must not duplicate that completion or infer success from admission.
+`inspection:"forgetting"` reads available cleanup status; unknown admission needs
+inspection/reconciliation, not another request. The legacy `!forget-confirm`
+command is an optional manual/recovery route using the exact receipt's guidance,
+not a compulsory approval step.
+
+Source/audience binding, disabled memory and turn limits still apply. No tool
+grants deletion outside the authenticated audience or gives notification/report-only
+turns effect authority. Logical cleanup does not physically purge journals,
+backups or encrypted history, recall already-sent content, or stop external work.
+A preview or completed logical-deletion receipt is not proof of physical erasure.
 
 The existing `conversation-v1` workflow remains. Journaled old iterations stay
 on their old path; new iterations persist optional feature choices before use.
@@ -1528,23 +1614,24 @@ automatically relaunch an interrupted attempt. Unknown live turn occupancy stays
 held until authenticated confirmation of stoppage releases that exact ID.
 Cancellation is not proof of remote cancellation or descendant quiescence.
 
-Ask June privately about interrupted inference with
+Ask June about interrupted inference with
 `{"text":"","inspection":"inference"}`, with no other actions. The host sends
-up to ten recorded recovery receipts from that private conversation, newest by
+up to ten recorded recovery receipts from the host-bound conversation, newest by
 inbound event time, with opaque receipt IDs and the original unknown status.
 Forgotten events, message bodies and raw invocation keys are omitted. Timestamps
 describe inbound events, not inference start or interruption; those times were
 not recorded. Missing receipts, including on legacy events, prove neither success
 nor intentional silence. This read-only view does not retry, reconcile, reclassify
-or release uncertain work; actions may already have occurred. Guests, public
-turns, worker results and synthesis cannot invoke it.
+or release uncertain work; actions may already have occurred. It requires an
+exposed inspection capability and grants no tools to report-only turns.
 
 These routes require the existing owner bearer token, not a console cookie:
 
 - `GET /operator/memory`: bounded evidence, pending claims and curated metadata.
   Optional `audience` must equal the configured owner-private scope.
 - `POST /operator/memory/proposals/:id/review`: `decision` is `accepted` or
-  `rejected`. Review is an operator action, never a model capability.
+  `rejected`. This bearer-only route is an operator action; June's separate
+  scoped `pendingMemory` action does not require it.
 - `POST /operator/memory/forget`: `{sourceId, confirmed:true}` tombstones first,
   resets working context, revokes old coding approvals/results and requests
   cancellation of associated jobs/reflections. Retry after interrupted cleanup.
@@ -1552,7 +1639,7 @@ These routes require the existing owner bearer token, not a console cookie:
   revokes all existing social grants/pending outreach and redacts their frozen
   prose and delivery payloads, retaining content-free replay IDs. Copied owner
   and guest working history is reset; unrelated evidence remains retrievable
-  and new social requests can be approved normally. Durable deletion revisions
+  and new social requests are judged normally. Durable deletion revisions
   enforce this even after a crash before cleanup.
   After any deletion, unprovenanced platform history is no longer supplied to
   models (it may contain copies of forgotten text); current-message enrichment
@@ -1568,7 +1655,9 @@ These routes require the existing owner bearer token, not a console cookie:
 `imports` contains operator-defined selections (`platform`, `account`,
 `conversations`, epoch-millisecond `from`/`to`, `accessTokenEnv`). It additionally
 requires `JUNE_ALLOW_HISTORY_IMPORTS=1` after actual account/scope/consent review.
-`GET /operator/imports` returns exact coverage and its digest. Each
+June uses the bounded `importCancel` task contracts above. For the optional
+authenticated operator route, `GET /operator/imports` returns exact coverage and
+its digest. Each
 `POST /operator/imports/:id/start` requires `{confirmed:true,digest,expectedPages}`
 from that review and reads at most one page. A successful-page retry cannot
 advance a second page. Durable progress binds immutable approved coverage before
@@ -1576,10 +1665,11 @@ credential lookup. Restart never resumes imports; changed coverage requires a
 new selection. `/cancel` aborts the current fetch, not already persisted pages.
 Imported text never enters the live command inbox.
 
-With `memory.extraction` authorized, ask June privately to extract imported
-memories. `inspection:"imports"` returns up to five extraction status summaries
-with exact operator review paths and approval digests. Read
-`GET /operator/imports/:id/extraction`, then approve one batch with
+With `memory.extraction` enabled, June can review and select a bounded batch
+through `importCancel` using `extraction.digest`. `inspection:"imports"` also
+returns up to five extraction status summaries with legacy operator review
+paths and digests. As an optional manual route, read
+`GET /operator/imports/:id/extraction`, then select one batch with
 `POST /operator/imports/:id/extraction/start` and `{confirmed:true,digest}`.
 Only existing authorized evidence is sent to the configured model (at most 20
 sources / 64,000 serialized characters, plus 20 scoped context claims / 16,000
@@ -1706,10 +1796,10 @@ cannot approve or run work.
 
 With both `capabilities` and `console` configured, the existing generic broker
 also mounts private action links. June can discover whether they are mounted via
-owner-private `inspection: "capabilities"`; this is metadata, not permission to
+exposed `inspection: "capabilities"`; this is metadata, not permission to
 issue links, grant capabilities, or confirm actions. An empty broker has no tools
 to grant or execute. Dashboard sign-in links remain separate and grant no tool
-authority.
+authority. This optional human control is not a prerequisite for ordinary task effects.
 
 - `POST /operator/capabilities/links` requires the operator bearer token and
   `{grantId, action, expiresAt}`. The full action must match an existing owner-bound
@@ -1748,7 +1838,7 @@ cache and reasoning details. Measurement details retain latency percentiles,
 coverage and billing limitations. All controls work without application scripts.
 `/console/usage/export` exports the same filtered snapshot, including hourly
 `activity` aggregates as UTC epoch-hour labels; both routes are private and
-no-store. June's existing owner-private `analytics` capability remains available
+no-store. June's separately exposed `analytics` capability remains available
 for bounded current totals; dashboard browsing never starts a model call.
 
 For a read-only synthetic preview, run `pnpm exec tsx scripts/preview-usage.ts`.
@@ -1796,15 +1886,18 @@ than restoring an old data snapshot blindly.
 ## MCP connections
 
 The private dashboard's **Connections** page adds remote MCP servers and native
-Slack, Amp and GitHub authorization. June can use explicitly enabled tools in owner-private conversations;
-effects require exact, single-use dashboard approvals. See
+Slack, Amp and GitHub authorization. June can use exposed enabled tools for
+legitimate tasks in admitted conversations; ordinary effects execute through
+durable receipts without compulsory dashboard approval. Actual provider scopes,
+manual disables/disconnections and credential protection remain binding. Account
+enrollment and administrative permission changes remain authenticated. See
 [MCP setup and permissions](mcp-connections.md) for configuration and limits.
 GitHub also feeds signed events into shared decision turns; see
 [GitHub account and events](github.md) for installation and live verification.
 
 ## Public webpage embeds in Slack (experimental)
 
-June can call `webEmbed: {url, thumbnailUrl, title}` from an owner-private Slack
+June can call `webEmbed: {url, thumbnailUrl, title}` from an admitted Slack
 turn, including through her execution worker. Set `slack.webEmbedOrigins` to
 exact approved HTTPS origins (no trailing slash) for both the page and thumbnail.
 The default empty list disables the capability. URLs cannot contain credentials,
@@ -1846,7 +1939,7 @@ unfinished records rather than silently losing every active operation. SQLite
 WAL/NORMAL protects against application crashes, not all power-loss scenarios.
 Recording failures are counted and never replay or block an external effect.
 
-**June can inspect the records herself.** In a private owner conversation, ask her
+**June can inspect the records herself.** When the capability is exposed, ask her
 to investigate telemetry. Her execution worker uses `telemetry` with one of:
 
 ```json
@@ -1863,9 +1956,10 @@ page's `nextBefore`. Trace pages contain spans, newest first, with parent IDs,
 timings, outcomes, token counters and originating process/revision. Pages are
 bounded by count (1–100, default 25) and approximately 48 KiB of row data; keep
 paging until `nextBefore` is null. Queries neither mutate workflow state nor
-retry work. Owner-private worker results can enter the existing private history.
-Guests, shared channels, automated/completion turns and revoked/stale work do not
-gain this read capability.
+retry work. Retainable worker results stay in their source scope. June judges
+task relevance and sensitive disclosure to the current audience, not a blanket
+owner/private-DM rule. Automated/completion turns without a grant and
+revoked/stale work do not gain this read capability.
 
 The inbound owner-trusted MCP exposes the same query as `query_telemetry`; the
 operator API accepts its JSON body at `POST /operator/telemetry/query` under the
@@ -1927,7 +2021,7 @@ RivetKit is pinned to 2.3.21. The native runtime currently emits
 `transaction_closed`/scheduled-alarm errors during actor shutdown in integration
 tests. These are not suppressed. Passing targeted recovery tests does not establish
 production reliability; soak testing, upgrades/migrations, backup recovery, and
-broader platform end-to-end validation remain gates before expanding beyond the
-owner-only Slack rollout or importing sensitive history. Workflow code changes
+broader platform end-to-end validation remain gates before expanding the live
+Slack rollout or importing sensitive history. Workflow code changes
 must preserve replay compatibility with existing journals. Services is disabled,
 although RivetKit still pulls agentOS dependencies transitively.

@@ -224,7 +224,7 @@ test("GitHub credentials refresh privately before MCP discovery and ambiguous re
     await store.discover("github", store.generation("github"));
     expect(store.list()[0]).toMatchObject({
       status: "connected",
-      tools: [{ permission: "disabled", contract: { name: "get_commit" } }],
+      tools: [{ permission: "approval", contract: { name: "get_commit" } }],
     });
     expect(JSON.stringify(store.list())).not.toMatch(/gh[ur]_/);
     expect(JSON.stringify(store.inventory())).not.toMatch(/gh[ur]_/);

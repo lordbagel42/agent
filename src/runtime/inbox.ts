@@ -6,6 +6,7 @@ import type { WakeupContext } from "../wakeups/state.js";
 export type ConversationInput =
   | { type: "event"; event: ChannelEvent }
   | { type: "wakeup"; source: MessageEvent; wakeup: WakeupContext }
+  | { type: "forget_request"; source: MessageEvent; token: string }
   | {
       type: "execution_result";
       agentId: string;
@@ -33,9 +34,11 @@ export function conversationInputId(input: ConversationInput): string {
             ]
           : input.type === "execution_result"
             ? ["execution", input.agentId, input.requestId]
-            : input.type === "wakeup"
-              ? ["wakeup", input.wakeup.runId]
-              : ["job", input.jobId, input.attempt],
+            : input.type === "forget_request"
+              ? ["forget", input.token]
+              : input.type === "wakeup"
+                ? ["wakeup", input.wakeup.runId]
+                : ["job", input.jobId, input.attempt],
       ),
     )
     .digest("hex");

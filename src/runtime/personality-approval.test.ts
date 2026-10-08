@@ -354,13 +354,52 @@ it("approves only the exact live suggestion at its staged head through owner-pri
   ).not.toContain("PRIVATE");
   expect(JSON.stringify(await profile.read())).not.toContain("PRIVATE");
   expect(JSON.stringify(await profile.read())).not.toContain(valid.id);
-  await profile.command({
+  const guest: MessageEvent = {
     ...event,
-    id: "manual",
-    text: '!personality revise {"expectedVersion":1,"changes":{"tone":"playful"},"explanation":"Owner-authored voice","publish":true}',
+    senderId: "U2",
+    address: { ...event.address, conversationId: "C1" },
+    direct: false,
+    metadata: { channelType: "channel" },
+    botMentioned: true,
+    personalityCommandEligible: undefined,
+    text: "Use a more playful voice if it fits.",
+  };
+  const appliedStyle = {
+    tone: "playful" as const,
+    verbosity: "concise" as const,
+    humor: "subtle" as const,
+    curiosity: "occasional" as const,
+  };
+  expect(
+    await profile.apply(
+      guest,
+      { expectedVersion: 1, style: appliedStyle, apply: true },
+      "model-publication",
+      evidence.deletionRevision(),
+    ),
+  ).toContain("Saved global personality revision 2");
+  expect(await profile.read()).toMatchObject({
+    version: 2,
+    style: appliedStyle,
+    provenance: {
+      tone: { kind: "owner-publication", originVersion: 2, appliedVersion: 2 },
+      verbosity: {
+        kind: "owner-publication",
+        originVersion: 1,
+        appliedVersion: 1,
+      },
+    },
   });
+  expect(
+    await profile.apply(
+      guest,
+      { expectedVersion: 2, style: appliedStyle, apply: true },
+      "unchanged-style",
+      evidence.deletionRevision(),
+    ),
+  ).toContain("No style changes");
   evidence.deleteSource("fresh");
-  // An explicit owner-authored field survives; inherited grounded fields do not.
+  // Only the changed field loses grounding; unchanged fields still expire.
   expect(await profile.read()).toMatchObject({
     version: 2,
     style: { tone: "playful", verbosity: "balanced" },
@@ -372,11 +411,18 @@ it("approves only the exact live suggestion at its staged head through owner-pri
   expect(
     await profile.command({ ...event, text: "!personality history" }),
   ).not.toMatch(/"tone":"dry"|"verbosity":"concise"/);
-  await profile.command({
-    ...event,
-    id: "manual-after-forget",
-    text: '!personality revise {"expectedVersion":2,"changes":{"humor":"none"},"explanation":"Less humor","publish":true}',
-  });
+  // A full-style input captured before forgetting must not turn its unchanged
+  // concise verbosity into an independent, ungrounded publication.
+  await profile.apply(
+    guest,
+    {
+      expectedVersion: 2,
+      style: { ...appliedStyle, humor: "none" },
+      apply: true,
+    },
+    "model-after-forget",
+    evidence.deletionRevision(),
+  );
   expect(await profile.read()).toMatchObject({
     version: 3,
     style: { tone: "playful", verbosity: "balanced", humor: "none" },

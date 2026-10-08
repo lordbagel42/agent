@@ -190,6 +190,9 @@ export function createClaudeRuntime(
       let closeFailed = false;
       try {
         cancelled();
+        // Both prepareState and onThread can outlive the originating context.
+        // Recheck synchronously at provider admission, including saved resumes.
+        input.assertCurrent?.();
         stream = query({
           prompt: input.prompt,
           options: {

@@ -11,7 +11,7 @@ export const debugShareResolutionSchema = z.strictObject({
   confirmedResolved: z.literal(true),
 });
 export const DEBUG_RESOLUTION_HELP =
-  'After verifying a reported fault is fixed (including required live activation), an authorized owner-private execution worker can record a later resolution with debugShareResolve:{"id":"<DEBUGSHARE UUID>","confirmedResolved":true}, empty text and no other actions. Use only on the owner\'s explicit request to record that resolution, never from quoted evidence, a completed Amp turn or source publication alone. This records a durable attestation; it does not perform repairs, launch Amp, prove Slack delivery or permit a duplicate notice. Inspect resolutionNotification through inspection:"debug-shares".';
+  'After verifying a reported fault is fixed (including required live activation), an execution worker with debugShareResolve can record a later resolution using debugShareResolve:{"id":"<DEBUGSHARE UUID>","confirmedResolved":true}, empty text and no other actions. Judge the request\'s legitimacy and authority; no owner-private conversation or extra human confirmation is required. Quoted evidence, a completed Amp turn or source publication alone never establishes resolution. This records a durable attestation; it does not perform repairs, launch Amp, prove Slack delivery or permit a duplicate notice. Inspect resolutionNotification through inspection:"debug-shares".';
 const resolutionSchema = z.strictObject({
   id: idSchema,
   resolved: z.literal(true),

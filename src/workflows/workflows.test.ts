@@ -1,7 +1,11 @@
 import { randomBytes } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it } from "vitest";
 import { z } from "zod";
 import { setupTest } from "../../tests/rivet.js";
+import { AgentService } from "../agent/service.js";
 import type {
   CompanionReply,
   MessageEvent,
@@ -55,6 +59,308 @@ it("exposes workflow commands only with the capability and forbids mixed directi
       webSearchAvailable: true,
     }),
   ).toThrow();
+});
+
+it("isolates admitted workflow definitions, runs and receipts to the original task scope", async (t) => {
+  const registry = createJuneRegistry({
+    owner,
+    channels: {},
+    model: { reply: async () => ({ text: "" }) },
+    workflows: { tools: {} },
+  });
+  const { client } = await setupTest(t, registry);
+  const library = client.workflowLibrary.getOrCreate([owner.id]);
+  const channel: MessageEvent = {
+    ...event("channel"),
+    senderId: "guest",
+    direct: false,
+    botMentioned: true,
+    metadata: { channelType: "channel" },
+    address: {
+      channel: "slack",
+      accountId: "T1",
+      conversationId: "C1",
+      threadId: "thread",
+    },
+  };
+  const dm: MessageEvent = {
+    ...event("dm"),
+    senderId: "guest",
+    metadata: { channelType: "im" },
+    address: { channel: "slack", accountId: "T1", conversationId: "D2" },
+  };
+  const sources = [
+    event("owner"),
+    {
+      ...event("other-dm"),
+      address: { ...event("owner").address, conversationId: "D3" },
+    },
+    channel,
+    dm,
+    {
+      ...channel,
+      botMentioned: false,
+      questionAnswered: true,
+      address: { ...channel.address, conversationId: "C2" },
+    },
+  ];
+  for (const [i, source] of sources.entries()) {
+    const manage = (id: string, action: string, extra = {}) =>
+      library.manage(source, id, command(action, extra));
+    expect(JSON.parse(await manage("list", "list"))).toEqual({
+      definitions: [],
+      runs: [],
+    });
+    await expect(
+      manage("inspect", "inspect", { name: "same-name" }),
+    ).rejects.toThrow();
+    await expect(
+      manage(`missing-${i}`, "start", { name: "same-name" }),
+    ).rejects.toThrow();
+    const code = `await workflow.wait("hold"); return ${i};`;
+    await manage(`define-${i}`, "define", { name: "same-name", source: code });
+    const started = JSON.parse(
+      await manage(`start-${i}`, "start", { name: "same-name" }),
+    );
+    expect(started.status).toBe("accepted");
+    expect(
+      JSON.parse(await manage(`start-${i}`, "start", { name: "same-name" }))
+        .runId,
+    ).toBe(started.runId);
+    expect(
+      JSON.parse(await manage("inspect", "inspect", { name: "same-name" }))
+        .source,
+    ).toBe(code);
+    expect(
+      JSON.parse(await manage("list", "list")).runs.map(
+        (run: { runId: string }) => run.runId,
+      ),
+    ).toEqual([started.runId]);
+    await manage("cancel", "cancel", { runId: started.runId });
+    expect(
+      JSON.parse(await manage("inspect", "inspect", { runId: started.runId }))
+        .status,
+    ).toBe("cancelled");
+    const run = client.workflowRun.getOrCreate([owner.id, started.runId]);
+    const presentation = await run.presentation(source);
+    expect(presentation).toEqual({
+      runId: started.runId,
+      name: "same-name",
+      revision: started.revision,
+      status: "cancelled",
+      operations: expect.any(Array),
+    });
+    // Existing artifact viewers use the status-only presentation behind the
+    // artifact's public/PIN access controls, not the creator's live event.
+    expect(await run.presentation()).toEqual(presentation);
+    for (const other of [
+      {
+        ...source,
+        senderId: "someone-else",
+        metadata: source.metadata ?? { channelType: "im" as const },
+      },
+      {
+        ...source,
+        address: { ...source.address, conversationId: "elsewhere" },
+      },
+      { ...source, address: { ...source.address, threadId: "other-thread" } },
+    ]) {
+      expect(await run.presentation(other)).toBeNull();
+      expect(
+        JSON.parse(await library.manage(other, "list", command("list"))),
+      ).toEqual({ definitions: [], runs: [] });
+      for (const action of ["inspect", "signal", "cancel"])
+        await expect(
+          library.manage(
+            other,
+            action,
+            command(action, { runId: started.runId }),
+          ),
+        ).rejects.toThrow();
+      // A cached write receipt must not reveal another scope's run or definition.
+      await expect(
+        library.manage(
+          other,
+          `start-${i}`,
+          command("start", { name: "same-name" }),
+        ),
+      ).rejects.toThrow();
+      await expect(
+        library.manage(
+          other,
+          `define-${i}`,
+          command("define", { name: "same-name", source: code }),
+        ),
+      ).rejects.toThrow();
+    }
+    expect(
+      await run.presentation({
+        ...source,
+        address: { ...source.address, accountId: "unconfigured" },
+      }),
+    ).toBeNull();
+    if (source.senderId === "guest") {
+      expect(
+        await run.presentation({ ...source, metadata: undefined }),
+      ).toBeNull();
+      expect(
+        await run.presentation({
+          ...source,
+          senderId: owner.identities[0]?.senderId ?? "U1",
+        }),
+      ).toBeNull();
+    }
+  }
+  for (const invalid of [
+    { ...channel, botMentioned: false },
+    { ...dm, metadata: undefined },
+    { ...dm, address: { ...dm.address, accountId: "unconfigured" } },
+  ])
+    await expect(
+      library.manage(
+        invalid,
+        "invalid",
+        command("start", { name: "bad", source: "return null;" }),
+      ),
+    ).rejects.toThrow();
+});
+
+it("notifies the admitted original channel or DM and preserves unknown-send receipts", async () => {
+  const sent: OutboundMessage[] = [];
+  const tools = createWorkflowTools({
+    owner,
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        receive: async () => ({ response: new Response(), events: [] }),
+        send: async (message) => {
+          sent.push(message);
+          return { status: "unknown", code: "connection_lost" };
+        },
+      },
+    },
+    model: { reply: async () => ({ text: "" }) },
+  });
+  for (const channelType of ["channel", "im"] as const) {
+    const source: MessageEvent = {
+      ...event("notify"),
+      senderId: "guest",
+      direct: channelType === "im",
+      botMentioned: channelType === "channel",
+      metadata: { channelType },
+    };
+    const context = {
+      source,
+      operationId: channelType,
+      signal: new AbortController().signal,
+    };
+    await expect(
+      tools.notify?.execute({ text: "Progress" }, context),
+    ).rejects.toThrow("workflow_send_unknown");
+    expect(sent.at(-1)).toMatchObject({
+      id: `workflow:${channelType}`,
+      address: source.address,
+    });
+    await expect(
+      tools.notify?.execute(
+        { text: "Progress" },
+        { ...context, source: { ...source, metadata: undefined } },
+      ),
+    ).rejects.toThrow("workflow_denied");
+    await expect(
+      tools.notify?.execute(
+        { text: "Progress" },
+        { ...context, signal: AbortSignal.abort() },
+      ),
+    ).rejects.toThrow();
+  }
+  expect(sent).toHaveLength(2);
+});
+
+it("admits workflow callbacks from channels and DMs while fencing revoked agent identities", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "workflow-callback-"));
+  const agents = new AgentService({
+    directory,
+    key: randomBytes(32),
+    ownerId: owner.id,
+    clients: [
+      {
+        id: "agent",
+        token: randomBytes(32).toString("base64url"),
+        expiresAt: Date.now() + 60_000,
+      },
+    ],
+    destinations: [],
+    submit: async () => {},
+    snapshot: async () => ({
+      history: [],
+      events: {},
+      deliveries: {},
+      jobs: {},
+      lastInbound: {},
+    }),
+  });
+  t.onTestFinished(async () => {
+    await agents.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const tools = createWorkflowTools({
+    owner: {
+      ...owner,
+      identities: [
+        ...owner.identities,
+        { channel: "agent", accountId: owner.id, senderId: "agent" },
+      ],
+    },
+    agents,
+    channels: {},
+    model: { reply: async () => ({ text: "" }) },
+  });
+  const context = {
+    operationId: "callbacks",
+    signal: new AbortController().signal,
+  };
+  for (const channelType of ["channel", "im"] as const) {
+    const source: MessageEvent = {
+      ...event("callback"),
+      senderId: "guest",
+      direct: channelType === "im",
+      botMentioned: channelType === "channel",
+      metadata: { channelType },
+    };
+    expect(
+      await tools.agent_webhook?.execute(
+        { action: "list" },
+        { ...context, source },
+      ),
+    ).toEqual([]);
+    await expect(
+      tools.agent_webhook?.execute(
+        { action: "list" },
+        { ...context, source: { ...source, metadata: undefined } },
+      ),
+    ).rejects.toThrow("workflow_denied");
+  }
+  const source: MessageEvent = {
+    ...event("agent"),
+    senderId: "agent",
+    address: {
+      channel: "agent",
+      accountId: owner.id,
+      conversationId: "thread",
+    },
+  };
+  expect(
+    await tools.agent_webhook?.execute(
+      { action: "list" },
+      { ...context, source },
+    ),
+  ).toEqual([]);
+  agents.revokeClient("agent");
+  await expect(
+    tools.agent_webhook?.execute({ action: "list" }, { ...context, source }),
+  ).rejects.toThrow("workflow_denied");
 });
 
 it("journals authored code, pins revisions, waits for signals, runs parallel steps and cancels", async (t) => {
@@ -138,7 +444,7 @@ it("journals authored code, pins revisions, waits for signals, runs parallel ste
   ).rejects.toThrow();
 }, 60_000);
 
-it("lets June define, start and inspect a workflow without a dashboard or guest authority", async (t) => {
+it("lets June define, start and inspect a workflow without a dashboard", async (t) => {
   const sent: OutboundMessage[] = [];
   const turns: boolean[] = [];
   const registry = createJuneRegistry({
@@ -328,6 +634,8 @@ it("stops uncertain effects, rejects duplicate names, and suppresses late result
   await expect
     .poll(async () => await late.inspect())
     .toEqual({ status: "revoked" });
+  expect(await late.presentation(event("late"))).toBeNull();
+  expect(await late.presentation()).toBeNull();
   await expect.poll(() => lifecycle.active).toBe(0);
   expect(lifecycle.ready).toBe(true);
   expect(await lifecycle.drain()).toBe(true);

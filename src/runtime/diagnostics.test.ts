@@ -112,7 +112,7 @@ test("persistent diagnostics exclude sensitive inputs and preserve original cloc
     );
 });
 
-test("June reads persisted logs only for owner-private turns; HTTP, guest, channel and synthesis reads fail closed", async (t) => {
+test("June reads persisted logs for admitted tasks while HTTP authentication and synthesis grants stay enforced", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "june-log-access-"));
   const log = new DiagnosticLog(join(directory, "logs.sqlite"));
   log.slackOAuth({ stage: "scope_validation", reason: "validation_failed" });
@@ -170,7 +170,10 @@ test("June reads persisted logs only for owner-private turns; HTTP, guest, chann
           return { text: "", webSearch: "public query" };
         if (request.latencyAvailable) {
           expect(request.system).toContain(
-            "Only the configured owner user account may view logs",
+            "Judge task relevance, sensitive contents and destination",
+          );
+          expect(request.system).toContain(
+            "owner identity or DM placement is not a tool prerequisite",
           );
           expect(replyJsonSchema([], request).properties).toHaveProperty(
             "latency",
@@ -248,12 +251,15 @@ test("June reads persisted logs only for owner-private turns; HTTP, guest, chann
     { senderId: "U2", metadata: { channelType: "im" } },
     ["guest", "slack", "T1", "private-dm", "", "U2"],
   );
-  expect(JSON.stringify(sent.slice(1))).not.toContain("slack.arrival");
-  expect(JSON.stringify(sent.slice(1))).not.toContain("slack_oauth");
+  for (const message of sent.slice(1)) {
+    expect(JSON.stringify(message)).toContain("slack.arrival");
+    expect(JSON.stringify(message)).toContain("slack_oauth");
+  }
+  expect(reads).toHaveBeenCalledTimes(3);
   search = true;
   await deliver("synthesis-logs");
   expect(requests.at(-1)?.latencyAvailable).toBe(false);
-  expect(reads).toHaveBeenCalledTimes(1);
+  expect(reads).toHaveBeenCalledTimes(3);
   expect(() => parseReply('{"text":"","latency":"logs"}', [])).toThrow();
 
   const token = "fixture-owner-token-at-least-32-characters";

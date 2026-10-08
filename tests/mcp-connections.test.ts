@@ -1,8 +1,14 @@
 import { strict as assert } from "node:assert";
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createHmac,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { Hono } from "hono";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
@@ -168,6 +174,37 @@ async function fixture(
     calls,
     request,
     invoke,
+    // Simulate encrypted pending records written by the pre-autonomous version.
+    // Migration coverage must not depend on new model calls creating pending work.
+    pending: (target = id) => {
+      const proposal = {
+        id: randomUUID(),
+        connection: target,
+        revision: store.generation(target),
+        tool: "lookup",
+        arguments: { id: "record-9" },
+        expiresAt: Date.now() + 600_000,
+      };
+      const iv = randomBytes(12);
+      const cipher = createCipheriv("aes-256-gcm", Buffer.alloc(32, 7), iv);
+      cipher.setAAD(Buffer.from(proposal.id));
+      const encrypted = Buffer.concat([
+        cipher.update(JSON.stringify(proposal)),
+        cipher.final(),
+      ]);
+      const db = new DatabaseSync(join(directory, "connections.sqlite"));
+      try {
+        db.prepare("INSERT INTO proposals VALUES(?,?)").run(
+          proposal.id,
+          Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString(
+            "base64",
+          ),
+        );
+      } finally {
+        db.close();
+      }
+      return proposal;
+    },
     connection,
     change: () => {
       description = "Changed contract";
@@ -189,7 +226,7 @@ async function fixture(
 }
 
 test.for([false, true])(
-  "unwatched provider decisions use standing MCP reads but only propose approval tools (sessions=%s)",
+  "unwatched provider decisions execute enabled MCP reads and effects (sessions=%s)",
   async (sessions, t) => {
     const f = await fixture();
     f.store.permit(f.id, f.connection().revision, "lookup", "read");
@@ -279,13 +316,16 @@ test.for([false, true])(
     f.store.permit(f.id, f.connection().revision, "lookup", "approval");
     await wakeups.publish({ ...event, id: "event-approval" });
     await expect.poll(() => sent.length, { timeout: 10000 }).toBe(2);
-    expect(f.calls).toHaveLength(1);
+    expect(f.calls).toHaveLength(2);
     expect(f.store.proposals()).toHaveLength(1);
-    expect(JSON.stringify(sent[1]?.content)).toContain("Nothing has run");
+    expect(f.store.proposals()[0]?.status).toBe("succeeded");
+    expect(JSON.stringify(sent[1]?.content)).toContain(
+      "I checked the event context.",
+    );
     f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
     await wakeups.publish({ ...event, id: "event-disabled" });
     await expect.poll(() => sent.length, { timeout: 10000 }).toBe(3);
-    expect(f.calls).toHaveLength(1);
+    expect(f.calls).toHaveLength(2);
     expect(f.store.proposals()).toHaveLength(1);
     if (sessions) {
       f.store.permit(f.id, f.connection().revision, "lookup", "read");
@@ -307,7 +347,7 @@ test.for([false, true])(
             },
           },
         });
-      expect(f.calls).toHaveLength(2);
+      expect(f.calls).toHaveLength(3);
     }
   },
 );
@@ -325,7 +365,7 @@ test("enrollment inspection reveals no credentials or private configuration and 
     selections: {},
     mcp: f.store,
   })("mcp-enrollment");
-  expect(report).toContain('"next":"owner_tool_consent_required"');
+  expect(report).toContain('"next":"no_enrollment_step_known"');
   expect(report).toContain("Browser consent progress is unknown");
   expect(report).toContain("there is no separate save confirmation");
   expect(report).toContain("do not prove current authorization");
@@ -388,8 +428,12 @@ test.each([
   "MCP %s failure preserves uncertainty without leaking errors or repeating calls",
   async (scenario, outcome, calls) => {
     const f = await fixture();
-    if (scenario !== "disabled")
-      f.store.permit(f.id, f.connection().revision, "lookup", "read");
+    f.store.permit(
+      f.id,
+      f.connection().revision,
+      "lookup",
+      scenario === "disabled" ? "disabled" : "read",
+    );
     if (scenario === "preparation")
       f.duringList(() => {
         throw new Error("provider-secret private-token");
@@ -655,7 +699,7 @@ test("connection inventory omits private config and credentials without network 
       {
         lastDiscovery: "succeeded",
         credential: "saved",
-        tools: { disabled: 1, read: 0, approval: 0 },
+        tools: { disabled: 0, read: 0, approval: 1 },
       },
     ],
   });
@@ -989,7 +1033,7 @@ test("Add commands stay consumed across permission changes, disconnection and re
   await f.invoke(id);
   expect(f.calls).toHaveLength(1);
   f.store.permit(id, connection().revision, "lookup", "approval");
-  await f.invoke(id);
+  f.pending(id);
   const proposal = f.store.proposals()[0];
   assert(proposal);
   f.store.permit(id, connection().revision, "lookup", "disabled");
@@ -1030,10 +1074,8 @@ test("Add commands stay consumed across permission changes, disconnection and re
   expect(f.store.list().some((value) => value.id === "slack")).toBe(true);
 });
 
-test("discovery grants nothing, read results are transient and credentials stay encrypted", async () => {
+test("read results are transient and credentials stay encrypted; changed contracts default to effects", async () => {
   const f = await fixture();
-  expect(f.connection().tools[0]?.permission).toBe("disabled");
-  await f.invoke();
   expect(f.calls).toHaveLength(0);
   f.store.permit(f.id, f.connection().revision, "lookup", "read");
   f.request.latencyAvailable = true;
@@ -1230,7 +1272,7 @@ test("discovery grants nothing, read results are transient and credentials stay 
   ).toBe(false);
   f.change();
   await f.store.discover(f.id, f.connection().revision);
-  expect(f.connection().tools[0]?.permission).toBe("disabled");
+  expect(f.connection().tools[0]?.permission).toBe("approval");
 });
 
 test("permission inspection explains owner trust without network, grants or reclassification", async () => {
@@ -1289,7 +1331,9 @@ test("permission inspection explains owner trust without network, grants or recl
     expect(answer.text.length).toBeLessThan(3500);
     return answer.text;
   };
-  // A server hint must not override the default disabled permission.
+  // A server hint must not turn a newly discovered effect into a read.
+  expect(f.connection().tools[0]?.permission).toBe("approval");
+  f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
   expect(await inspect()).toContain(
     "Disabled: June cannot call or propose this tool",
   );
@@ -1307,8 +1351,8 @@ test("permission inspection explains owner trust without network, grants or recl
     expect(snapshot.contractDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(answer).toContain(
       permission === "read"
-        ? "owner's trust classification, not independent proof"
-        : "Separate authenticated owner confirmation",
+        ? "saved trust classification, not independent proof"
+        : "without mandatory human approval",
     );
     expect(answer).toContain("does not sandbox its internal behavior");
   }
@@ -1373,7 +1417,7 @@ test("permission status is a separate bounded exclusive capability, not tool aut
     ).toThrow();
 });
 
-test("June can use enabled tools privately but channels receive no MCP catalog or authority", async () => {
+test("June can use enabled MCP tools in private and channel tasks", async () => {
   const f = await fixture();
   f.store.permit(f.id, f.connection().revision, "lookup", "read");
   for (const direct of [false, true]) {
@@ -1402,7 +1446,7 @@ test("June can use enabled tools privately but channels receive no MCP catalog o
       models: { current: { provider: "fixture", model: "fixture" } },
       capabilities: { mcpAvailable: true, executionAvailable: true },
     });
-    expect(request.mcpAvailable).toBe(direct);
+    expect(request.mcpAvailable).toBe(true);
     const answer = await f.store
       .wrap({
         reply: async (input) => {
@@ -1415,12 +1459,8 @@ test("June can use enabled tools privately but channels receive no MCP catalog o
                 argumentsJson: '{"id":"record-9"}',
               },
             };
-          if (!direct)
-            expect(input.system).not.toContain("Owner-approved MCP tools");
-          else {
-            expect(input.releaseAvailable).toBe(false);
-            expect(input.executionAvailable).toBe(false);
-          }
+          expect(input.releaseAvailable).toBe(false);
+          expect(input.executionAvailable).toBe(false);
           expect(input.mcpPermissionAvailable).toBe(false);
           expect(() =>
             parseReply(
@@ -1433,25 +1473,17 @@ test("June can use enabled tools privately but channels receive no MCP catalog o
             ),
           ).toThrow();
           return {
-            text: direct ? "Found record-9" : "No private tools",
-            ...(direct
-              ? {
-                  execution: [
-                    {
-                      agent: "injected",
-                      action: "run" as const,
-                      task: "Do more",
-                    },
-                  ],
-                }
-              : {}),
+            text: "Found record-9",
+            execution: [
+              { agent: "injected", action: "run" as const, task: "Do more" },
+            ],
           };
         },
       })
       .reply(request);
-    expect(answer.text).toBe(direct ? "Found record-9" : "No private tools");
+    expect(answer.text).toBe("Found record-9");
     expect(answer.execution).toBeUndefined();
-    expect(f.calls).toHaveLength(direct ? 1 : 0);
+    expect(f.calls).toHaveLength(direct ? 2 : 1);
   }
 });
 
@@ -1489,7 +1521,7 @@ test("per-connection cached catalog inspection neither probes availability nor g
           round === 0
             ? JSON.parse(
                 lines
-                  .find((line) => line.startsWith("Owner-approved MCP tools"))
+                  .find((line) => line.startsWith("Available MCP tools"))
                   ?.split(": ")
                   .slice(1)
                   .join(": ") ?? "",
@@ -1554,6 +1586,7 @@ test("June discovers and calls beyond the first catalog page without granting di
   const f = await fixture(undefined, tools);
   for (const tool of tools.slice(0, 42))
     f.store.permit(f.id, f.connection().revision, tool.name, "read");
+  f.store.permit(f.id, f.connection().revision, "lookup_42", "disabled");
   const query = (tool: string | null, offset = 0) => ({
     text: "",
     mcpCatalog: { connection: f.id, tool, offset },
@@ -1576,7 +1609,7 @@ test("June discovers and calls beyond the first catalog page without granting di
         if (phase++ === 0) {
           const initial = JSON.parse(
             lines
-              .find((line) => line.startsWith("Owner-approved MCP tools"))
+              .find((line) => line.startsWith("Available MCP tools"))
               ?.split(": ")
               .slice(1)
               .join(": ") ?? "",
@@ -1700,13 +1733,15 @@ test("catalog discovery obeys the MCP capability and action exclusivity contract
     ).toThrow();
 });
 
-test("mutation approval executes exactly once, including concurrent confirmation", async () => {
+test("model-selected mutations execute exactly once without confirmation, including receipt replay after restart", async () => {
   const f = await fixture();
   f.store.permit(f.id, f.connection().revision, "lookup", "approval");
   await f.invoke();
-  expect(f.calls).toHaveLength(0);
+  expect(f.calls).toEqual([{ name: "lookup", arguments: { id: "record-9" } }]);
   const proposal = f.store.proposals()[0];
   assert(proposal);
+  expect(proposal.status).toBe("succeeded");
+  await f.restart();
   await Promise.all([
     f.store.confirm(proposal.id),
     f.store.confirm(proposal.id),
@@ -1717,7 +1752,155 @@ test("mutation approval executes exactly once, including concurrent confirmation
   expect(f.calls).toHaveLength(1);
 });
 
-test("revocation invalidates June's pending request without affecting another connection's grant", async () => {
+test.each(["custom", "amp"])(
+  "fresh %s effects expose bounded sanitized results and receipts without replaying legacy pending work",
+  async (kind) => {
+    const f = await fixture();
+    let id = f.id;
+    if (kind === "amp") {
+      f.store.disconnect(id, f.connection().revision);
+      f.store.connectAmp({
+        accessToken: "private-token",
+        expiresAt: Date.now() + 3600_000,
+        account: "fixture-owner",
+      });
+      id = "amp";
+      await f.store.discover(id, f.connection().revision);
+    }
+    const legacy = f.pending(id);
+    await f.restart();
+    expect(f.calls).toHaveLength(0);
+    f.result(`Effect fixture private-token ${"x".repeat(13_000)}`, {
+      conversationId: "returned-29",
+    });
+    let synthesized = 0;
+    const answer = await f.store
+      .wrap({
+        reply: async (request) => {
+          if (request.mcpAvailable)
+            return {
+              text: "",
+              mcp: {
+                connection: id,
+                tool: "lookup",
+                argumentsJson: '{"id":"record-9"}',
+              },
+            };
+          synthesized++;
+          const executed = f.store.proposals()[0];
+          assert(executed);
+          expect(request.system).toContain(executed.id);
+          expect(request.system).toContain('"status":"succeeded"');
+          expect(request.system).not.toContain("private-token");
+          const result = JSON.parse(
+            request.system.split("Result (JSON): ")[1] ?? "null",
+          );
+          expect(result.text).toContain("returned-29");
+          expect(result.text).toContain("[credential redacted]");
+          expect(result.truncated).toBe(true);
+          expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(12_000);
+          return { text: "Effect completed with returned-29." };
+        },
+      })
+      .reply({ ...f.request, agentRole: "execution" });
+    expect(answer.text).toBe("Effect completed with returned-29.");
+    expect(synthesized).toBe(1);
+    expect(f.calls).toHaveLength(1);
+    expect(
+      f.store.proposals().find((entry) => entry.id === legacy.id)?.status,
+    ).toBe("awaiting_approval");
+    const executed = f.store.proposals()[0];
+    assert(executed);
+    await f.restart();
+    expect(await f.store.confirm(executed.id)).toBe("succeeded");
+    expect(f.calls).toHaveLength(1);
+    expect(
+      f.store.proposals().find((entry) => entry.id === legacy.id)?.grant,
+    ).toBeUndefined();
+    expect(
+      (await readFile(join(f.directory, "connections.sqlite"))).includes(
+        Buffer.from("Effect fixture"),
+      ),
+    ).toBe(false);
+  },
+);
+
+test("new contracts execute as effects without enrollment per tool, while saved disabled records remain disabled", async () => {
+  const f = await fixture();
+  expect(f.connection().tools[0]?.permission).toBe("approval");
+  expect((await f.invoke()).text).toBe("answer");
+  expect(f.calls).toHaveLength(1);
+  f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
+  await f.restart();
+  await f.store.discover(f.id, f.connection().revision);
+  expect(f.connection().tools[0]?.permission).toBe("disabled");
+  f.change();
+  await f.store.discover(f.id, f.connection().revision);
+  expect(f.connection().tools[0]?.permission).toBe("disabled");
+  await f.invoke();
+  expect(f.calls).toHaveLength(1);
+});
+
+test("disabled contracts remain revoked when temporarily omitted by discovery", async () => {
+  const contract: Tool = { name: "lookup", inputSchema: { type: "object" } };
+  const tools = [contract];
+  const f = await fixture(undefined, tools);
+  f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
+  tools.pop();
+  await f.store.discover(f.id, f.connection().revision);
+  await f.restart();
+  tools.push({ ...contract, description: "rediscovered contract" });
+  await f.store.discover(f.id, f.connection().revision);
+  expect(f.connection().tools[0]?.permission).toBe("disabled");
+  await f.invoke();
+  expect(f.calls).toHaveLength(0);
+});
+
+test.each(["stale", "superseded", "aborted"])(
+  "%s model-selected effects recheck task authority during discovery and never replay after restart",
+  async (boundary) => {
+    const f = await fixture();
+    f.store.permit(f.id, f.connection().revision, "lookup", "approval");
+    let current = true;
+    const controller = new AbortController();
+    f.duringList(() => {
+      current = false;
+      if (boundary === "aborted") controller.abort();
+    });
+    const observations: string[] = [];
+    await f.store
+      .wrap({
+        reply: async () => ({
+          text: "",
+          mcp: {
+            connection: f.id,
+            tool: "lookup",
+            argumentsJson: '{"id":"record-9"}',
+          },
+        }),
+      })
+      .reply(
+        f.request,
+        controller.signal,
+        () => boundary !== "stale" || current,
+        () => boundary !== "superseded" || current,
+        async (_kind, outcome) => {
+          observations.push(outcome);
+        },
+      );
+    expect(current).toBe(false);
+    expect(f.calls).toHaveLength(0);
+    const proposal = f.store.proposals()[0];
+    assert(proposal);
+    expect(proposal.status).toBe("unknown");
+    expect(observations).toEqual(["started", "unknown"]);
+    await f.restart();
+    expect(await f.store.confirm(proposal.id)).toBe("unknown");
+    expect(f.calls).toHaveLength(0);
+  },
+);
+
+test("revocation invalidates legacy pending requests without affecting another connection's grant", async () => {
   const f = await fixture();
   f.store.permit(f.id, f.store.generation(f.id), "lookup", "approval");
   const other = f.store.add({
@@ -1726,8 +1909,8 @@ test("revocation invalidates June's pending request without affecting another co
   });
   await f.store.discover(other, f.store.generation(other));
   f.store.permit(other, f.store.generation(other), "lookup", "approval");
-  await f.invoke();
-  await f.invoke(other);
+  f.pending();
+  f.pending(other);
   const revoked = f.store.proposals().find((item) => item.connection === f.id);
   const current = f.store.proposals().find((item) => item.connection === other);
   assert(revoked && current);
@@ -1784,7 +1967,7 @@ test("revocation invalidates June's pending request without affecting another co
 test("owner cancellation persists ungranted proposals and rejects stale approval and replay", async () => {
   const f = await fixture();
   f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-  await f.invoke();
+  f.pending();
   const proposal = f.store.proposals()[0];
   assert(proposal);
   const app = new Hono().route(
@@ -1847,7 +2030,7 @@ test.each(["credential lookup", "discovery"])(
   async (phase) => {
     const f = await fixture();
     f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-    await f.invoke();
+    f.pending();
     const proposal = f.store.proposals()[0];
     assert(proposal);
     let cancelled = "";
@@ -1877,15 +2060,17 @@ test.each(["succeeded", "unknown"])(
   async (outcome) => {
     const f = await fixture();
     f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-    await f.invoke();
-    const proposal = f.store.proposals()[0];
-    assert(proposal);
     let cancelled = "";
     f.duringCall(() => {
+      const proposal = f.store.proposals()[0];
+      assert(proposal);
       cancelled = f.store.cancel("owner", proposal.id);
       if (outcome === "unknown") throw new Error("lost response");
     });
-    expect(await f.store.confirm(proposal.id)).toBe(outcome);
+    await f.invoke();
+    const proposal = f.store.proposals()[0];
+    assert(proposal);
+    expect(proposal.status).toBe(outcome);
     expect(cancelled).toContain("outcome: unknown");
     expect(cancelled).toContain("does not confirm an external effect stopped");
     expect(f.calls).toHaveLength(1);
@@ -1904,7 +2089,7 @@ test.each(["succeeded", "unknown"])(
 test("proposal inspection is content-free and never repeats approved or unknown effects", async () => {
   const f = await fixture();
   f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-  await f.invoke();
+  f.pending();
   const proposal = f.store.proposals()[0];
   assert(proposal);
   const inspect = async (id: string) => {
@@ -1970,7 +2155,7 @@ test("proposal inspection is content-free and never repeats approved or unknown 
     cancelledAt: expect.any(Number),
     receipt: { status: "unknown" },
   });
-  await f.invoke();
+  f.pending();
   const cancelled = f.store.proposals()[0];
   assert(cancelled);
   f.store.cancel("owner", cancelled.id);
@@ -1981,7 +2166,7 @@ test("proposal inspection is content-free and never repeats approved or unknown 
     receipt: null,
   });
   // Exact lookup must not depend on the 50-entry dashboard listing window.
-  for (let n = 0; n < 51; n++) await f.invoke();
+  for (let n = 0; n < 51; n++) f.pending();
   expect(f.store.proposals().some(({ id }) => id === proposal.id)).toBe(false);
   const unconsumed = f.store.proposals()[0];
   assert(unconsumed);
@@ -2037,10 +2222,10 @@ test("proposal inspection is content-free and never repeats approved or unknown 
     expect(() => parseReply(JSON.stringify(reply), [], capabilities)).toThrow();
 });
 
-test("June privately inspects receipts and forgetting suppresses an in-flight inspection", async (t) => {
+test("June inspects receipts in task contexts and forgetting suppresses an in-flight inspection", async (t) => {
   const f = await fixture();
   f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-  await f.invoke();
+  f.pending();
   const proposal = f.store.proposals()[0];
   assert(proposal);
   const directive: CompanionReply = {
@@ -2129,7 +2314,7 @@ test("June privately inspects receipts and forgetting suppresses an in-flight in
   expect((await june.snapshot()).history).toEqual([]);
   expect(f.calls).toHaveLength(0);
 
-  // The same known UUID cannot reveal metadata outside an owner-private turn.
+  // Receipt inspection is task-capable, not restricted to an owner-private turn.
   for (const [direct, senderId] of [
     [false, "U1"],
     [true, "U2"],
@@ -2150,19 +2335,17 @@ test("June privately inspects receipts and forgetting suppresses an in-flight in
       models: { current: { provider: "fixture", model: "fixture" } },
       capabilities: { mcpAvailable: true },
     });
-    expect(request.mcpAvailable).toBe(false);
-    await f.store
+    expect(request.mcpAvailable).toBe(true);
+    const inspected = await f.store
       .wrap({
         async reply(input) {
-          expect(input.system).not.toContain("Recorded MCP proposal");
-          expect(input.system).not.toContain(proposal.id);
-          expect(() =>
-            parseReply(JSON.stringify(directive), [], input),
-          ).toThrow();
-          return { text: "No private tools" };
+          return parseReply(JSON.stringify(directive), [], input);
         },
       })
       .reply(request);
+    expect(inspected.text).toContain(proposal.id);
+    expect(inspected.text).not.toContain("record-9");
+    expect(f.calls).toHaveLength(0);
   }
 });
 
@@ -2171,7 +2354,7 @@ test.each(["succeeded", "failed"])(
   async (outcome) => {
     const f = await fixture();
     f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-    await f.invoke();
+    f.pending();
     const proposal = f.store.proposals()[0];
     assert(proposal);
     const confirmation = { confirmedStopped: true, outcome };
@@ -2187,7 +2370,7 @@ test.each(["succeeded", "failed"])(
     );
     expect(await execution).toBe("unknown");
     expect(f.calls).toHaveLength(1);
-    await f.invoke();
+    f.pending();
     const other = f.store.proposals()[0];
     assert(other && other.id !== proposal.id);
     f.store.disconnect(f.id, f.connection().revision);
@@ -2228,7 +2411,7 @@ test.each(["succeeded", "failed"])(
 test("June accepts MCP commands only from exact current owner-private confirmations, never model assertions", async (t) => {
   const f = await fixture();
   f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-  await f.invoke();
+  f.pending();
   const proposal = f.store.proposals()[0];
   assert(proposal);
   f.duringCall(() => {
@@ -2383,7 +2566,7 @@ test("June accepts MCP commands only from exact current owner-private confirmati
   expect(status()).toBe("failed");
   expect(requests).toHaveLength(modelCalls);
   expect(f.calls).toHaveLength(1);
-  await f.invoke();
+  f.pending();
   const pending = f.store.proposals()[0];
   assert(pending && pending.id !== proposal.id);
   await send(`!mcp-cancel ${pending.id}`, { senderId: "UGUEST" });
@@ -2402,14 +2585,14 @@ test("June accepts MCP commands only from exact current owner-private confirmati
 test("WhatsApp MCP attestations reject forwarded and legacy commands before inference", async (t) => {
   const f = await fixture();
   f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-  await f.invoke();
+  f.pending();
   const unknown = f.store.proposals()[0];
   assert(unknown);
   f.duringCall(() => {
     throw new Error("ambiguous fixture transport");
   });
   expect(await f.store.confirm(unknown.id)).toBe("unknown");
-  await f.invoke();
+  f.pending();
   const pending = f.store.proposals()[0];
   assert(pending && pending.id !== unknown.id);
   let modelCalls = 0;
@@ -2683,14 +2866,14 @@ test.for(["read", "approval", "catalog", "discovery", "result", "synthesis"])(
   },
 );
 
-test("approval review identifies only the matching destination and preserves consent checks", async () => {
+test("legacy approval review identifies only the matching destination and preserves consent checks", async () => {
   const f = await fixture({
     name: 'Research <img src=x onerror="alert(1)">',
     url: "https://mcp.example/research/rpc",
     token: "private-token",
   });
   f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-  await f.invoke();
+  f.pending();
   const app = new Hono().route(
     "/console/connections",
     createConnectionRoutes(
@@ -2729,7 +2912,7 @@ test("approval review identifies only the matching destination and preserves con
   );
   expect(f.calls).toEqual([{ name: "lookup", arguments: { id: "record-9" } }]);
   expect(await (await app.request(path())).text()).toContain("succeeded");
-  await f.invoke();
+  f.pending();
   const staleProof = proof(await (await app.request(path())).text());
   f.store.permit(f.id, f.connection().revision, "lookup", "disabled");
   f.store.add({ name: "Other server", url: "https://other.example/mcp" });
@@ -2752,11 +2935,10 @@ test("approval review identifies only the matching destination and preserves con
 });
 
 test.each(["disconnect", "revoke"])(
-  "%s during discovery prevents an already-approved mutation from dispatching",
+  "%s during discovery prevents a model-selected mutation from dispatching",
   async (change) => {
     const f = await fixture();
     f.store.permit(f.id, f.connection().revision, "lookup", "approval");
-    await f.invoke();
     f.duringList(() => {
       if (change === "disconnect") {
         f.store.disconnect(f.id, f.connection().revision);
@@ -2765,6 +2947,7 @@ test.each(["disconnect", "revoke"])(
         f.store.permit(f.id, f.connection().revision, "lookup", "approval");
       }
     });
+    await f.invoke();
     const proposal = f.store.proposals()[0];
     assert(proposal);
     expect(await f.store.confirm(proposal.id)).toBe("unknown");
@@ -3048,7 +3231,7 @@ test("Slack OAuth returns once to a saved connection, bound to the starting brow
   expect(exchanges).toBe(2);
 });
 
-test("Amp consent saves once without a second confirmation, resumes after the session lapses; June needs tool consent and reconnect revokes it", async () => {
+test("Amp consent saves once, resumes after the session lapses, enables discovered effects and reconnect invalidates pending work", async () => {
   const f = await fixture();
   f.store.disconnect(f.id, f.connection().revision);
   const origin = "https://june.example";
@@ -3270,11 +3453,8 @@ test("Amp consent saves once without a second confirmation, resumes after the se
       argumentsJson: '{"id":"record-9"}',
     },
   };
-  expect(
-    (await f.store.wrap({ reply: async () => call }).reply(f.request)).text,
-  ).toContain("denied");
+  expect(f.connection().tools[0]?.permission).toBe("approval");
   expect(f.calls).toEqual([]);
-  f.store.permit("amp", f.connection().revision, "lookup", "read");
   const requests: ModelRequest[] = [];
   const answer = await f.store
     .wrap({
@@ -3297,8 +3477,10 @@ test("Amp consent saves once without a second confirmation, resumes after the se
     usageStage: "synthesis",
   });
   expect(f.calls).toEqual([{ name: "lookup", arguments: { id: "record-9" } }]);
-  f.store.permit("amp", f.connection().revision, "lookup", "approval");
-  expect((await f.invoke("amp")).text).toContain("Nothing has run");
+  const executed = f.store.proposals()[0];
+  assert(executed);
+  expect(executed.status).toBe("succeeded");
+  f.pending("amp");
   expect(f.calls).toHaveLength(1);
   const proposal = f.store.proposals()[0];
   assert(proposal);
@@ -3312,6 +3494,7 @@ test("Amp consent saves once without a second confirmation, resumes after the se
   await expect(f.store.confirm(proposal.id)).rejects.toThrow(
     "proposal_expired",
   );
+  expect(await f.store.confirm(executed.id)).toBe("succeeded");
   expect(f.calls).toHaveLength(1);
 });
 
@@ -3384,7 +3567,7 @@ test("final execution MCP synthesis cannot silently request a repository consult
   expect(reply.text).toContain("Read budget reached");
 });
 
-test("approved Puck replies are private, transient and one-use without replaying effects", async () => {
+test("legacy confirmed Puck replies are transient and one-use without replaying effects", async () => {
   const f = await fixture();
   f.store.disconnect(f.id, f.connection().revision);
   f.store.connectAmp({
@@ -3397,7 +3580,7 @@ test("approved Puck replies are private, transient and one-use without replaying
   f.result(`Puck fixture reply private-token ${"x".repeat(13_000)}`, {
     conversationId: "puck-29",
   });
-  await f.invoke("amp");
+  f.pending("amp");
   const proposal = f.store.proposals()[0];
   assert(proposal);
   expect(f.calls).toHaveLength(0);
@@ -3435,7 +3618,7 @@ test("approved Puck replies are private, transient and one-use without replaying
   expect((await read()).text).toContain("No transient Puck reply");
   expect(f.calls).toHaveLength(1);
 
-  await f.invoke("amp");
+  f.pending("amp");
   const revoked = f.store.proposals()[0];
   assert(revoked);
   f.duringCall(() => f.store.cancel("owner", revoked.id));

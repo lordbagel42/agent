@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
+import type { MessageEvent, Owner } from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
 import type { EvidenceStore } from "../memory/store.js";
 import { type Evidence, freshEvidence } from "../reflection/domain.js";
 import {
@@ -25,8 +27,10 @@ export type PersonalityEvaluateInput = z.infer<
   typeof personalityEvaluateSchema
 >;
 
-/** Volatile owner-private data. Never journal this snapshot or provider rationale. */
+/** Volatile source-scoped data. Never journal this snapshot or provider rationale. */
 export interface PersonalityPreviewSnapshot {
+  /** Original authenticated ingress, copied by the host; never model input. */
+  source: MessageEvent;
   candidateId: string;
   expectedVersion: number;
   candidate: GlobalPersonality;
@@ -92,34 +96,49 @@ export async function runPersonalityPreview(
   return results;
 }
 
-/** Host-bound owner audience and read-only dependencies; no mutation/send API.
+/** Host-routed source audience and read-only dependencies; no mutation/send API.
  * Construct once so timeout/cancellation cannot replace a held provider slot. */
 export function createPersonalityPreview(deps: {
-  ownerId: string;
+  owner: Owner;
   store: Pick<EvidenceStore, "reflectionEvidence" | "source">;
-  /** Atomic host-only actor read; must exclude accepted/rejected proposals. */
-  readCandidate(id: string): Promise<{
+  /** Atomic host-only actor read in the event's routed scope; must exclude
+   * accepted/rejected proposals. Neither event nor scope comes from model input. */
+  readCandidate(
+    source: MessageEvent,
+    id: string,
+  ): Promise<{
     profile: GlobalPersonality;
     proposal: Pick<
       GlobalPersonalityProposal,
-      "id" | "expectedVersion" | "changes" | "sourceIds" | "evidenceIds"
+      | "id"
+      | "scope"
+      | "expectedVersion"
+      | "changes"
+      | "sourceIds"
+      | "evidenceIds"
     >;
   } | null>;
   decide: DecisionFunction;
   evidenceMaxAgeMs: number;
   now?: () => number;
 }) {
-  const scope = JSON.stringify(["private", deps.ownerId]);
   const now = deps.now ?? Date.now;
   const executor = new DecisionExecutor(1, 30_000);
 
   async function snapshot(
+    event: MessageEvent,
     value: PersonalityEvaluateInput,
   ): Promise<PersonalityPreviewSnapshot | undefined> {
     const parsed = personalityEvaluateSchema.safeParse(value);
     if (!parsed.success) return;
+    // Freeze the authenticated source before any asynchronous read. A caller
+    // cannot retarget an in-flight comparison by mutating its event object.
+    const source = structuredClone(event);
+    const routed = routeEvent(source, deps.owner);
+    if (!routed) return;
+    const scope = JSON.stringify(routed.key);
     const request = parsed.data;
-    const selected = await deps.readCandidate(request.candidateId);
+    const selected = await deps.readCandidate(source, request.candidateId);
     if (!selected) return;
     const { profile, proposal } = selected;
     const current = {
@@ -129,6 +148,7 @@ export function createPersonalityPreview(deps: {
     const at = now();
     if (
       proposal.id !== request.candidateId ||
+      proposal.scope !== scope ||
       proposal.expectedVersion !== current.version ||
       current.version >= Number.MAX_SAFE_INTEGER ||
       request.heldOutSourceIds.some(
@@ -169,6 +189,7 @@ export function createPersonalityPreview(deps: {
       style: globalStyleSchema.parse({ ...current.style, ...proposal.changes }),
     };
     return structuredClone({
+      source,
       candidateId: proposal.id,
       expectedVersion: current.version,
       current,
@@ -185,7 +206,7 @@ export function createPersonalityPreview(deps: {
   async function isCurrent(
     input: PersonalityPreviewSnapshot,
   ): Promise<boolean> {
-    const fresh = await snapshot({
+    const fresh = await snapshot(input.source, {
       candidateId: input.candidateId,
       heldOutSourceIds: input.evidence.map((e) => e.id),
     });
@@ -226,13 +247,14 @@ export function createPersonalityPreview(deps: {
   }
 
   async function preview(
+    source: MessageEvent,
     value: PersonalityEvaluateInput,
     signal?: AbortSignal,
   ) {
     const unavailable = { status: "unavailable" as const };
     try {
       if (signal?.aborted) return unavailable;
-      const input = await snapshot(value);
+      const input = await snapshot(source, value);
       if (!input || signal?.aborted) return unavailable;
       const results = await evaluate(input, signal);
       if (signal?.aborted || !(await isCurrent(input)) || signal?.aborted)

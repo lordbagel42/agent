@@ -210,14 +210,13 @@ export function createSlackSearch({
   function authorization(event: MessageEvent) {
     if (
       !privateSearch ||
-      !event.direct ||
-      !/^D[A-Z0-9]+$/.test(event.address.conversationId) ||
       event.address.channel !== "slack" ||
-      event.address.accountId !== teamId ||
-      event.senderId !== privateSearch.userId
+      event.address.accountId !== teamId
     )
       return undefined;
     try {
+      // Requester/audience are not OAuth identities. Keep the real consenting
+      // account and scopes intact; bind any result to this exact request below.
       const grant = privateSearch.getAuthorization();
       if (
         !grant ||
@@ -291,10 +290,9 @@ export function createSlackSearch({
       // Use the signed event time, not delivery time: a retry cannot revive an
       // expired entry after its tombstone is removed. Reject clock-future events.
       const expiresAt = event.occurredAt + GRANT_TTL_MS;
-      const privateGrant =
-        privateSearch && event.direct ? authorization(event) : undefined;
+      const privateGrant = authorization(event);
       if (
-        (privateSearch && event.direct
+        (privateSearch
           ? !privateGrant
           : typeof token !== "string" ||
             !token.trim() ||
@@ -350,7 +348,7 @@ export function createSlackSearch({
         : undefined;
       const privateBinding = grant.privateAuthorization;
       const eventBinding = grant.binding;
-      // A top-level DM may be answered in a thread on that exact message.
+      // A top-level request may be answered in a thread on that exact message.
       // Keep ingress authorization exact; only delivery gains this destination.
       const replyBinding = event.address.threadId
         ? eventBinding

@@ -22,7 +22,7 @@ const start = {
   offset: 0,
 } satisfies NonNullable<CompanionReply["research"]>;
 
-it("admits private research management only under its capability, never as mixed work", () => {
+it("admits research management only under its capability, never as mixed work", () => {
   const reply = { text: "", research: start };
   const capabilities = {
     agentRole: "execution" as const,
@@ -84,6 +84,119 @@ const settled = (reply: ModelProvider["reply"]): ModelProvider => ({
       ),
     };
   },
+});
+
+it("isolates admitted research management and evidence by original sender and conversation", async (t) => {
+  const store = new EvidenceStore(":memory:", randomBytes(32));
+  t.onTestFinished(() => store.close());
+  const audiences: string[] = [];
+  const registry = createJuneRegistry({
+    owner,
+    channels: {},
+    memory: {
+      store,
+      source: (_source, audience) => {
+        audiences.push(audience);
+        return undefined;
+      },
+    },
+    model: { reply: async () => ({ text: "" }) },
+    research: {
+      model: settled(async () => ({
+        text: '{"checkpoint":"done","done":true,"findings":[]}',
+      })),
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const library = client.researchLibrary.getOrCreate([owner.id]);
+  const channel: MessageEvent = {
+    ...event,
+    senderId: "guest",
+    direct: false,
+    botMentioned: true,
+    metadata: { channelType: "channel" },
+    address: { ...event.address, conversationId: "C1", threadId: "thread" },
+  };
+  const dm: MessageEvent = {
+    ...event,
+    senderId: "guest",
+    address: { ...event.address, conversationId: "D2" },
+  };
+  const sources = [
+    event,
+    { ...event, address: { ...event.address, conversationId: "D3" } },
+    channel,
+    dm,
+    {
+      ...channel,
+      botMentioned: false,
+      questionAnswered: true,
+      address: { ...channel.address, conversationId: "C2" },
+    },
+  ];
+  const ids: string[] = [];
+  for (const [i, source] of sources.entries()) {
+    const accepted = JSON.parse(
+      await library.manage(source, `start-${i}`, start, 0, [`evidence-${i}`]),
+    );
+    expect(accepted.status).toBe("accepted");
+    ids.push(accepted.id);
+    const own = JSON.parse(
+      await library.manage(source, "list", command("list", null), 0),
+    );
+    expect(own.sessions.map((s: { id: string }) => s.id)).toEqual([
+      accepted.id,
+    ]);
+    expect(own.evidenceIds).toEqual([`evidence-${i}`]);
+    for (const other of [
+      { ...source, senderId: "someone-else" },
+      {
+        ...source,
+        address: { ...source.address, conversationId: "elsewhere" },
+      },
+      { ...source, address: { ...source.address, threadId: "other-thread" } },
+    ]) {
+      expect(
+        JSON.parse(
+          await library.manage(other, "list", command("list", null), 0),
+        ).sessions,
+      ).toEqual([]);
+      for (const action of ["inspect", "pause", "resume", "stop"] as const)
+        await expect(
+          library.manage(other, action, command(action, accepted.id), 0),
+        ).rejects.toThrow();
+      await expect(
+        library.manage(other, `start-${i}`, start, 0),
+      ).rejects.toThrow();
+    }
+    await library.manage(source, "stop", command("stop", accepted.id), 0);
+    expect(
+      JSON.parse(
+        await library.manage(
+          source,
+          "inspect",
+          command("inspect", accepted.id),
+          0,
+        ),
+      ).status,
+    ).toBe("stopped");
+  }
+  expect(new Set(ids).size).toBe(5);
+  expect(audiences).toEqual([
+    '["private","owner"]',
+    '["private","owner"]',
+    '["guest","slack","T1","C1","thread","guest"]',
+    '["guest","slack","T1","D2","","guest"]',
+    '["guest","slack","T1","C2","thread","guest"]',
+  ]);
+  for (const invalid of [
+    { ...channel, botMentioned: false },
+    { ...dm, metadata: undefined },
+    { ...dm, address: { ...dm.address, accountId: "unconfigured" } },
+  ])
+    await expect(
+      library.manage(invalid, "invalid", start, 0),
+    ).rejects.toThrow();
 });
 
 it("continues sourced batches, deduplicates findings and preserves quotas through pause and resume", async (t) => {
@@ -224,11 +337,11 @@ it("continues sourced batches, deduplicates findings and preserves quotas throug
   for (const source of [
     { ...event, senderId: "U2" },
     { ...event, direct: false, metadata: { channelType: "channel" as const } },
-    { ...event, metadata: { channelType: "mpim" as const } },
   ])
-    await expect(
-      library.manage(source, "leak", command("list", null), 0),
-    ).rejects.toThrow();
+    expect(
+      JSON.parse(await library.manage(source, "list", command("list", null), 0))
+        .sessions,
+    ).toEqual([]);
 }, 60000);
 
 it("backs off empty batches without shortening a long owner interval", async (t) => {

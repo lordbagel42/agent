@@ -401,7 +401,8 @@ const expectedReplySchema = {
         workspace: { type: "string", enum: ["garden", "notes"] },
         goal: {
           type: "string",
-          description: "Must contain at least one non-whitespace character.",
+          description:
+            "Nonblank task goal. Fresh configured coding tasks run after host admission without compulsory human approval; existing pending or unknown jobs never auto-start or retry. No push, deployment or credential access is authorized.",
         },
       },
       required: ["workspace", "goal"],

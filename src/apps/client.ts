@@ -11,13 +11,19 @@ import {
 
 export const appsRequestSchema = z
   .strictObject({
-    action: z.enum(["build", "prepare", "inspect"]),
+    action: z.enum(["build", "prepare", "inspect", "deploy"]),
     appId: appIdSchema,
     jobId: digestSchema.nullable(),
+    receiptId: digestSchema.nullable().optional(),
     goal: z.string().trim().max(900).nullable(),
     access: appAccessSchema.nullable().optional(),
   })
   .refine((request) => request.action === "prepare" || request.access == null)
+  .refine((request) =>
+    request.action === "deploy"
+      ? request.receiptId != null && request.jobId === null
+      : request.receiptId == null,
+  )
   .refine((request) =>
     request.action === "build"
       ? !!request.goal && request.jobId === null
@@ -52,7 +58,14 @@ export function createAppsClient(options: {
   endpoint: string;
   token: string;
   workspace: string;
-  readJob(id: string): Promise<CodingState | undefined>;
+  /** Authorize the saved source and proposal scope against the authenticated
+   * caller, never against the job's own scope as if that were caller authority.
+   * Only historical proposals may default to the owner's private scope.
+   */
+  readJob(
+    id: string,
+    conversationKey: string[],
+  ): Promise<CodingState | undefined>;
   fetch?: typeof fetch;
 }) {
   async function call(path: string, body?: unknown) {
@@ -99,10 +112,14 @@ export function createAppsClient(options: {
         : receipt.access === "signed-in"
           ? "Anyone who signs in; no owner or workspace allowlist."
           : "Internal credential-only viewer; not published.";
-    return `Dynamic App receipt: ${JSON.stringify(receipt)}. Audience: ${audience} This is the host's last recorded outcome, not a live health check.${receipt.status === "prepared" ? (receipt.expiresAt <= Date.now() ? " This approval has expired. Ask June to prepare the app again for a fresh approval." : ` Reply !deploy-app ${receipt.id} as a fresh plain-text owner Slack DM before ${new Date(receipt.expiresAt).toISOString()} to deploy exactly this source digest AND audience. This may install dependencies, execute generated code, and provision Rivet resources. Coding approval did not authorize deployment or publication.`) : receipt.status === "unknown" ? " Do not retry: inspect the dedicated app host and Rivet dashboard to reconcile this uncertain deployment." : ""}`;
+    return `Dynamic App receipt: ${JSON.stringify(receipt)}. Audience: ${audience} This is the host's last recorded outcome, not a live health check.${receipt.status === "prepared" ? (receipt.expiresAt <= Date.now() ? " This receipt has expired. Prepare the app again for a fresh receipt before deciding whether to deploy." : ` Preparation has not deployed anything. June may inspect this receipt and choose apps action deploy with appId ${receipt.appId}, receiptId ${receipt.id}, jobId null, goal null and access null before ${new Date(receipt.expiresAt).toISOString()} to deploy exactly this source digest AND audience. No per-task human command is required. Deployment may install dependencies, execute generated code, and provision Rivet resources only on the configured app host; this grants no credential access or authority over other destinations.`) : receipt.status === "unknown" ? " Do not retry: inspect the dedicated app host and Rivet dashboard to reconcile this uncertain deployment." : ""}`;
   }
-  async function artifactFor(jobId: string, appId: string) {
-    const job = await options.readJob(jobId);
+  async function artifactFor(
+    jobId: string,
+    appId: string,
+    conversationKey: string[],
+  ) {
+    const job = await options.readJob(jobId, conversationKey);
     if (
       job?.status !== "completed" ||
       job.revoked ||
@@ -119,10 +136,40 @@ export function createAppsClient(options: {
       throw new Error("verified_app_required");
     return job.appArtifact;
   }
+  // Shared by model-selected deployment and the legacy explicit command. The
+  // exact receipt binds immutable source AND audience; neither can be replaced.
+  // conversationKey is required host context, never a model-selected field.
+  async function approve(
+    id: string,
+    conversationKey: string[],
+    isCurrent = () => true,
+    appId?: string,
+  ) {
+    digestSchema.parse(id);
+    if (!isCurrent()) throw new Error("app_context_revoked");
+    const receipt = await call(`/control/receipts/${id}`);
+    if (!receipt || receipt.id !== id) throw new Error("missing_app_receipt");
+    if (appId !== undefined && receipt.appId !== appId)
+      throw new Error("app_receipt_mismatch");
+    const artifact = await artifactFor(
+      receipt.jobId,
+      receipt.appId,
+      conversationKey,
+    );
+    if (!isCurrent() || artifact.digest !== receipt.digest)
+      throw new Error("app_approval_revoked");
+    if (receipt.status !== "prepared" || receipt.expiresAt <= Date.now())
+      return report(receipt);
+    const deployed = await call(`/control/deploy/${id}`, {});
+    if (!isCurrent()) throw new Error("app_context_revoked");
+    return report(deployed);
+  }
   return {
+    /** conversationKey comes from the authenticated host, not AppsRequest. */
     async request(
       input: AppsRequest,
       requestId: string,
+      conversationKey: string[],
       isCurrent = () => true,
     ): Promise<CompanionReply> {
       const request = appsRequestSchema.parse(input);
@@ -137,33 +184,41 @@ export function createAppsClient(options: {
             goal: appCodingGoal(request.appId, request.goal ?? ""),
           },
         };
-      if (request.action === "inspect")
-        return { text: report(await call(`/control/apps/${request.appId}`)) };
-      const artifact = await artifactFor(request.jobId ?? "", request.appId);
+      if (request.action === "inspect") {
+        const receipt = await call(`/control/apps/${request.appId}`);
+        if (receipt) {
+          if (receipt.appId !== request.appId)
+            throw new Error("app_receipt_mismatch");
+          await artifactFor(receipt.jobId, receipt.appId, conversationKey);
+        }
+        if (!isCurrent()) throw new Error("app_context_revoked");
+        return { text: report(receipt) };
+      }
+      if (request.action === "deploy")
+        return {
+          text: await approve(
+            request.receiptId ?? "",
+            conversationKey,
+            isCurrent,
+            request.appId,
+          ),
+        };
+      const artifact = await artifactFor(
+        request.jobId ?? "",
+        request.appId,
+        conversationKey,
+      );
       if (!isCurrent()) throw new Error("app_context_revoked");
-      return {
-        text: report(
-          await call("/control/prepare", {
-            jobId: request.jobId,
-            requestId,
-            ...(request.access ? { access: request.access } : {}),
-            artifact: { appId: artifact.appId, files: artifact.files },
-          }),
-        ),
-      };
-    },
-    /** Called only for an actual owner-private command, never a model directive. */
-    async approve(id: string, isCurrent = () => true) {
-      digestSchema.parse(id);
+      const prepared = await call("/control/prepare", {
+        jobId: request.jobId,
+        requestId,
+        ...(request.access ? { access: request.access } : {}),
+        artifact: { appId: artifact.appId, files: artifact.files },
+      });
       if (!isCurrent()) throw new Error("app_context_revoked");
-      const receipt = await call(`/control/receipts/${id}`);
-      if (!receipt || receipt.id !== id) throw new Error("missing_app_receipt");
-      const artifact = await artifactFor(receipt.jobId, receipt.appId);
-      if (!isCurrent() || artifact.digest !== receipt.digest)
-        throw new Error("app_approval_revoked");
-      if (receipt.status !== "prepared" || receipt.expiresAt <= Date.now())
-        return report(receipt);
-      return report(await call(`/control/deploy/${id}`, {}));
+      return { text: report(prepared) };
     },
+    /** Legacy explicit command compatibility; uses the same deployment checks. */
+    approve,
   };
 }

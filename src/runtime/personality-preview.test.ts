@@ -10,7 +10,7 @@ import { routeEvent } from "../core/routing.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { createJuneRegistry } from "./registry.js";
 
-it("previews privately through June without publishing or leaking a proposal across audiences", async (t) => {
+it("previews public-safe style through June without publishing or exposing private explanations", async (t) => {
   const owner = {
     id: "owner",
     identities: [
@@ -119,23 +119,13 @@ it("previews privately through June without publishing or leaking a proposal acr
   };
   const preview = await deliver();
   expect(requests).toHaveLength(1);
-  expect(requests[0]?.system).toContain("set personalityPreview");
   expect(preview).toContain("tone: dry → playful");
   expect(preview).toContain("humor: subtle → none");
   expect(preview).not.toContain("verbosity:");
   expect(preview).not.toContain("curiosity:");
   expect(preview).toContain("Nothing has been saved");
-  const confirmation = preview
-    .split("\n")
-    .find((line) => line.startsWith("!personality revise "));
-  expect(confirmation).toBeDefined();
-  expect(
-    JSON.parse(confirmation?.slice("!personality revise ".length) ?? ""),
-  ).toMatchObject({
-    expectedVersion: 1,
-    changes: { tone: "playful", humor: "none" },
-    publish: true,
-  });
+  expect(preview).toContain("apply:true");
+  expect(preview).not.toContain("!personality revise");
   expect(await profile.read()).toEqual(before);
   expect(await history()).toBe(historyBefore);
 
@@ -148,20 +138,18 @@ it("previews privately through June without publishing or leaking a proposal acr
     },
     { metadata: undefined },
   ]) {
-    const denied = await deliver(extra);
-    expect(denied).toContain("owner-private");
-    expect(denied).not.toContain("tone: dry → playful");
-    expect(requests.at(-1)?.personalityPreviewAvailable).toBe(false);
+    const scopedPreview = await deliver(extra);
+    expect(scopedPreview).toContain("tone: dry → playful");
+    expect(scopedPreview).not.toContain("PRIVATE reason");
+    expect(requests.at(-1)?.personalityPreviewAvailable).toBe(true);
   }
-  for (const request of requests.slice(1, 3))
-    expect(JSON.stringify(request)).not.toContain("!personality revise {");
   search = true;
   expect(await deliver()).not.toContain("tone: dry → playful");
   expect(requests.at(-1)?.usageStage).toBe("synthesis");
   expect(requests.at(-1)?.personalityPreviewAvailable).toBe(false);
   search = false;
   action = { text: "", personalityPreview: proposal, reaction: "eyes" };
-  expect(await deliver()).toContain("unavailable");
+  expect(await deliver()).toContain("could not be confirmed");
   action = {
     text: "",
     personalityPreview: { expectedVersion: 1, style: before.style },
@@ -187,8 +175,8 @@ it("previews privately through June without publishing or leaking a proposal acr
       ),
     ).toThrow();
 
-  // Only an explicit owner command publishes; old preview versions then fail closed.
-  await deliver({ text: confirmation ?? "" });
+  // The separate actor action publishes only when June explicitly chooses apply.
+  await profile.apply(event, { ...proposal, apply: true }, "model-apply", 0);
   expect(await profile.read()).toMatchObject({
     version: 2,
     style: proposal.style,

@@ -66,10 +66,14 @@ export function createAmpRuntime({
       }
 
       try {
+        input.assertCurrent?.();
         for await (const message of execute({
           prompt: input.prompt,
           options,
           signal: input.signal,
+          // The pinned SDK repeats this after its async config preparation,
+          // immediately before spawning/submitting; it never serializes it.
+          ...(input.assertCurrent && { assertCurrent: input.assertCurrent }),
         })) {
           if (input.signal.aborted) {
             throw new AmpRuntimeError("cancelled");

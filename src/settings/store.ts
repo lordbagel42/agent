@@ -202,7 +202,7 @@ export class SettingsStore {
         configurationGroups: Object.keys(this.base),
         rule: "Every configuration field not listed as adjustable is operator-owned. Values are withheld. This includes credentials/references, identities, endpoints, paths, activation gates, permission/allowlists, safety/admission budgets, native execution and deployment/recovery controls. Consult repository source for schema and the authorized operator for changes; this action cannot grant authority or change infrastructure.",
         existingInterfaces:
-          "Personality: !personality and its owner approval workflow. Optional per-conversation typing: typingEnabled. MCP permissions: owner confirmation in Connections. Deployment: release.inspect is read-only; the designated operator coordinates changes under deployment ownership rules.",
+          "Personality: personalityPreview with apply:true saves an exact version-bound public-safe style; !personality remains an optional manual route. Optional per-conversation typing: typingEnabled. MCP account consent and explicit permission/disconnect controls remain authenticated in Connections; ordinary enabled effects need no separate human approval. Deployment: release.inspect is read-only; the designated operator coordinates changes under deployment ownership rules.",
       },
     };
   }

@@ -443,11 +443,6 @@ export class IssueTracker {
     if (input.threadId && issue.threadId && issue.threadId !== input.threadId)
       throw new Error("issue_thread_conflict");
     if (input.action === "complete") {
-      if (
-        !issue.sources.length &&
-        issue.authorId !== (await this.options.github.ownerId())
-      )
-        throw new Error("issue_triage_only");
       if (!(await this.options.github.shipped(input.commit)))
         throw new Error("issue_commit_not_shipped");
     }

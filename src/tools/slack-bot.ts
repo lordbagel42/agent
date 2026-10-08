@@ -204,8 +204,8 @@ export const slackBotTools: Tool[] = methods.map(
       name === "slack.capabilities"
         ? "Check June's bot identity and currently granted OAuth scopes. Optionally supply method to inspect missing scope alternatives for an exact tool. Use mcpCatalog to list tools. Does not grant permissions."
         : name === "files.uploadContent"
-          ? "Upload a small file as June in one approved operation. filename and content are strings; encoding is utf8 (default) or base64. Optional title, channel_id, initial_comment and thread_ts. Maximum 48 KiB decoded content; whole arguments must fit the 64 KiB broker limit. Never accepts local paths or source URLs."
-          : `As June's bot: ${name}. ${read ? "Read-only." : "Requires owner approval; may change Slack state."} Scope alternatives: ${scopes || "none additional"}. API parameters and limits: https://docs.slack.dev/reference/methods/${name}/ . Pass Slack arguments directly; never include a token. Pagination is explicit (cursor); results are bounded.`,
+          ? "Upload a small file as June. Executes immediately with a durable receipt; judge intent and audience first and never retry an unknown outcome. filename and content are strings; encoding is utf8 (default) or base64. Optional title, channel_id, initial_comment and thread_ts. Maximum 48 KiB decoded content; whole arguments must fit the 64 KiB broker limit. Never accepts local paths or source URLs."
+          : `As June's bot: ${name}. ${read ? "Read-only." : "Executes immediately with a durable receipt; may change Slack state. Judge intent and audience first; never retry an unknown outcome."} Scope alternatives: ${scopes || "none additional"}. API parameters and limits: https://docs.slack.dev/reference/methods/${name}/ . Pass Slack arguments directly; never include a token. Pagination is explicit (cursor); results are bounded.`,
     inputSchema: {
       type: "object",
       properties:

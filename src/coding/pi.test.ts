@@ -347,6 +347,56 @@ test("failed persistence and cancellation never dispatch a late prompt", async (
   expect(g.commands.some((c) => c.type === "prompt")).toBe(false);
 });
 
+test.each([false, true])(
+  "rechecks host validity after onThread without signal cancellation (invalidated: %s)",
+  async (invalidate) => {
+    const f = await fixture();
+    const saved = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    let revision = 0;
+    const frozenRevision = revision;
+    const run = createPiRuntime(f.options).run({
+      ...f.input,
+      assertCurrent: () => {
+        if (revision !== frozenRevision) throw new Error("stale context");
+      },
+      onThread: async () => {
+        observed.resolve();
+        await saved.promise;
+      },
+    });
+    const outcome = run.then(
+      (value) => ({ value, error: undefined }),
+      (error: unknown) => ({ value: undefined, error }),
+    );
+    await observed.promise;
+    expect(f.commands.map((c) => c.type)).toEqual(["get_state"]);
+    if (invalidate) revision++;
+    saved.resolve();
+    // Finish any submitted prompt, including an erroneous stale submission,
+    // so failure demonstrates dispatch rather than relying on a timeout.
+    await Promise.race([f.prompted, outcome]);
+    if (f.commands.some((c) => c.type === "prompt")) {
+      f.assistant();
+      f.emit({ type: "agent_settled" });
+    }
+    const completed = await outcome;
+    expect(f.input.signal.aborted).toBe(false);
+    expect(f.commands.filter((c) => c.type === "prompt")).toHaveLength(
+      invalidate ? 0 : 1,
+    );
+    if (invalidate) {
+      expect(completed.value).toBeUndefined();
+      expect(completed.error).toMatchObject({ code: "outcome_unknown" });
+    } else {
+      expect(completed.error).toBeUndefined();
+      expect(completed.value?.threadId).toBe(SESSION);
+    }
+    expect(f.launch).toHaveBeenCalledOnce();
+    expect(f.commands.at(-1)?.type).toBe("abort");
+  },
+);
+
 test("holds concurrent session admission and reports unknown rather than retrying a lost run", async () => {
   const f = await fixture();
   const runtime = createPiRuntime(f.options);

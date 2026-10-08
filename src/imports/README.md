@@ -11,13 +11,38 @@ for that job ID, including before its first start and across restart. A new
 import requires a newly authorized job ID; replaying an old start/continuation
 cannot clear cancellation. Already imported evidence is not deleted.
 No timers, background loops, actions, approvals, models or message dispatch run
-here. A host operator route must authenticate/authorize **all three methods**;
-June can request cancellation in an authenticated owner-private turn using
-`{"text":"","importCancel":"exact-selection-id"}`. The host revalidates the
-directive and selection's owner audience before mutation. No start/resume or
-coverage authorization is granted by this directive. Use
-`{"text":"","inspection":"imports"}` to discover IDs and read the durable
-`cancelled` flag. Public, guest, synthesis and mixed-action requests are denied.
+in this page-fetching service. Manual operator routes must authenticate/authorize
+**all three methods**. June also has the bounded task interface below when
+configured; ordinary task decisions do not require an owner-private conversation
+or per-page human approval. June judges intent, authority and disclosure, while
+provider credentials/scopes, manual disables and retention enrollment stay separate.
+
+## June-facing configured tasks
+
+The legacy `importCancel` field supports these exclusive actions with empty text
+and no competing action:
+
+- `importCancel:{action:"review",selection:null}` discovers configured IDs only.
+- `importCancel:{action:"review",selection:"<exact ID>"}` reads exact immutable
+  coverage, the top-level page `digest` and `expectedPages`, cooldown/budget/conflict
+  state, and separate extraction metadata. Review is bounded to 3,500 JSON characters;
+  oversized reviews fail rather than issuing a digest for unseen coverage.
+- `importCancel:{action:"start-page",selection:"<exact ID>",digest:"<page digest>",expectedPages:0}`
+  starts at most one page. Copy the actual `expectedPages` from that review, not
+  the example's zero. The host checks both values immediately before dispatch.
+- `importCancel:{action:"extract",selection:"<exact ID>",digest:"<extraction.digest>"}`
+  runs one eligible extraction batch, not a page fetch. Use its separate digest.
+- The original string `importCancel:"<exact ID>"` permanently cancels future
+  pages without deleting evidence or proving that a dispatched read stopped.
+
+The host binds invocation identity and durably reserves an account-wide page lane
+or extraction-wide lane before dispatch. Replay only inspects that reservation;
+an interrupted/unknown attempt holds the lane and must not be retried under a new
+ID. A returned dispatch receipt is not proof a page or proposal was saved: review
+current metadata separately. `inspection:"imports"` is also read-only. There is
+no automatic continuation, retry, backfill or claim acceptance. Imported records
+keep the **configured retention audiences**, never the invoking channel's audience;
+these actions cannot enroll accounts, broaden coverage or publish private evidence.
 
 Signatures: `start(id: string): Promise<ImportProgress>`;
 `status(id: string)` and `cancel(id: string, audience?: string)` return
@@ -48,7 +73,7 @@ page count, gap or retry-boundary update is committed. Import creation/coverage
 binding can precede a rejected first page. Do not blindly retry a budget failure.
 
 The private operator start route returns HTTP 409 `import_budget_exceeded` with
-the exceeded dimension and a content-free reason. June's owner-private
+the exceeded dimension and a content-free reason. June's
 `inspection: "imports"` reports each selection's `budgetRejected` dimension and
 explains rollback/remediation; no source IDs, current global counts or evidence
 are disclosed. `lastRejection` is observed only by this `HistoryImports` instance,
@@ -64,12 +89,13 @@ it. A restart loses this observation, not the durable evidence or cursor. `null`
 therefore does not prove there are no conflicts. No source IDs or either version
 of the evidence are retained in the observation.
 
-June can explain observed conflicts in an owner-private turn using
+June can explain observed conflicts when inspection is exposed, using
 `{ "text": "", "inspection": "imports" }`. The bounded metadata report asks the
 owner to arrange explicit reconciliation through the authenticated operator before
 retrying. This is a request for review, not a queued repair or permission to rewrite
-evidence. June cannot fetch/retry, skip a conflict, invent another source ID, or
-perform reconciliation. Existing immutable identity and tombstone checks still
+evidence. The task interface refuses another page while the conflict is recorded;
+June cannot skip it, invent another source ID or perform that reconciliation.
+Existing immutable identity and tombstone checks still
 apply to every attempt; owner assent in chat does not bypass them.
 
 Configure exact immutable coverage (`platform`, `account`, `conversations`,
@@ -79,8 +105,8 @@ requires a newly authorized job. Audiences must come from trusted routing, not
 imported headers, mentions, addresses or instructions. Tokens are supplied by an
 injected `accessToken(signal)` callback; optional `transport` supports fixtures.
 No credentials are enrolled, stored or logged. Never supply Slack RTS results.
-June's owner-only audience is `JSON.stringify(["private", owner.id])`, computed
-from trusted host identity, not a request-supplied audience value.
+The host's owner-private retention audience is `JSON.stringify(["private", owner.id])`,
+computed from trusted identity, not the task's requester or a model-supplied value.
 
 `review(id)` returns cloned coverage, its confirmation digest, and current
 running/progress metadata from the same binding used by `start`. The digest binds
@@ -94,7 +120,8 @@ environment credential under the same name across restart still requires fresh
 review. Runtime credential-reference retargeting is unsupported; recreate the
 importer after any such change. Review/confirmation does not verify provider
 authorization or credential validity, and neither handles nor token values are
-included in review output. June may propose a confirmation, never execute it.
+included in review output. June may select a bounded page using the exact reviewed
+digest; an authenticated operator may still use the manual confirmation routes.
 
 ## Provider prerequisites and limits
 
@@ -142,14 +169,14 @@ Unrelated accounts remain independent; replacing a selection does not reset paci
 The host must serialize/rate-limit accounts across service instances and respect
 `notBefore` (do not busy-poll).
 
-June can report these deadlines through owner-private `inspection: "imports"`.
+June can report these deadlines through `inspection: "imports"` when exposed.
 The metadata receipt includes the effective account `notBefore` (epoch
 milliseconds), `coolingDown`, and a persisted fixed `cooldownReason`:
 `rate_limit` for rate-limit responses, `provider_backoff` for HTTP 503,
 `pacing` for successful-page spacing, or `unknown` for older deadlines without
 a recorded reason. An account with no deadline reports `0`/`null`. It never
 includes provider error text. Expiry is not a ready/healthy claim, and does not resume
-anything: each further page still needs explicit operator confirmation. Status
+anything: each further page needs a fresh exact task decision or manual start. Status
 inspection makes no provider/credential calls and schedules no retries.
 
 ## Small-import envelope and configured ceiling
@@ -169,7 +196,7 @@ the byte ceiling:
 }
 ```
 
-June can request owner-private `inspection: "imports"` for the effective limits,
+June can request `inspection: "imports"` for the effective limits,
 last in-process budget rejection, and this measured guidance. `inspection:
 "memory"` reports process-local retrieval/persistence counters since opening;
 they reset on restart, are not percentiles, and do not include network/model
@@ -260,7 +287,7 @@ transaction and records one content-free `Tombstoned evidence omitted` gap per
 record, with no source ID, text or URL. This also handles deletion during a fetch.
 Other records still undergo immutable-source checks; a conflict rolls back all
 sources, gaps and progress for that page. The connector does not filter ledger
-IDs. June's owner-only `inspection: "imports"` reports the resulting `gapCount`
+IDs. June's `inspection: "imports"` reports the resulting `gapCount`
 without gap contents or source metadata; it cannot start or cancel imports.
 
 `gmailSourceId(account, messageId)` remains `gmail:${account}:${messageId}`.
@@ -280,21 +307,28 @@ evidence**, never instructions. Page fetching never runs extraction or review.
 Store/key provisioning and authenticated HTTP routing belong to the host; use a
 private encrypted store outside Git.
 
-## One approved imported-memory batch
+## One bounded imported-memory batch
 
-`ImportedMemoryExtraction` is a separate operator-only pass over stored evidence.
+`ImportedMemoryExtraction` is a separate pass over stored evidence, reached through
+June's configured `extract` task or the optional authenticated operator API.
 It reuses `memory.extraction`, its provider/privacy activation gates and the
 existing pending-claim ledger. It does not fetch accounts, replay live events,
 run tools, accept claims, or start background work.
 
-Ask June privately to extract memories from imported history. Her existing
-`inspection:"imports"` action returns bounded counts and, for eligible selections,
-an exact review path and digest. The request grants no authority. The operator:
+Ask June to review an exact configured selection, then choose `extract` with its
+`extraction.digest`. The host binds coverage, model configuration, exact source
+and context inputs; changed inputs need fresh review. It admits at most 20 sources /
+64,000 serialized characters plus at most 20 existing scoped claims / 16,000
+characters, staging at most 20 pending hypotheses. June separately reviews those
+with `pendingMemory:true` and an exact accept/reject action in their retained
+audience; importing or extraction never accepts them automatically.
+
+The optional manual API retains the same boundaries:
 
 1. Reads `GET /operator/imports/:id/extraction` using the owner bearer token.
    Review the exact source IDs, context claim IDs, immutable coverage, model
    configuration, blockers and digest. The console cookie does not authorize these routes.
-2. Approves `POST /operator/imports/:id/extraction/start` with
+2. Starts `POST /operator/imports/:id/extraction/start` with
    `{confirmed:true,digest}`. This authorizes **one** call for at most 20 sources
    and 64,000 serialized characters, plus at most 20 existing scoped claims /
    16,000 characters for context. The digest binds those claim IDs too; changed
@@ -304,18 +338,19 @@ an exact review path and digest. The request grants no authority. The operator:
    `POST /operator/imports/:id/extraction/cancel` with `{digest}` durably prevents
    staging and requests abort. Cancellation is not proof the provider stopped.
 
-Review and June's private imports inspection report `overflow`: eligible,
+Review and June's imports inspection report `overflow`: eligible,
 non-oversized sources outside the current bounded batch. These remain evidence,
 not queued jobs. Admission uses the existing single active slot across selections:
 `running` means a local extraction is active; `paused` explains capacity,
-approval-required, oversized-source or untracked-page blockers; `unknown` means
+decision-required, oversized-source or untracked-page blockers (the low-level
+service's historical `approval-required` label is not a human-approval gate); `unknown` means
 a saved started intent has no local handle, including one in another selection.
 `active` and `unknown` count holds across the host-bound audience, not just the
 displayed selection. Cancellation retains the local slot until the provider
 settles. `idle` means no eligible tracked inputs, not proof of extraction success;
 settled uncertain outcomes remain in the attempt counts. Clearing a blocker,
-settlement and restart never schedule a next batch. Each batch requires explicit
-approval; there is no waiting queue, automatic backfill or retry.
+settlement and restart never schedule a next batch. Each batch requires an exact
+task decision or manual start; there is no waiting queue, automatic backfill or retry.
 
 The encrypted ledger records attempted exact inputs before inference. Completion
 and proposals commit together, including empty results. Restart never runs work;

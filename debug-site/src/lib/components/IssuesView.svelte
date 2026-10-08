@@ -159,7 +159,7 @@
                 {#if !issue.sources.length && issue.job}<span
                     >{issue.job.ownerRequest
                       ? "Owner request"
-                      : "Triage only"}</span
+                      : "Other author"}</span
                   >{/if}
               </div>
             </div>

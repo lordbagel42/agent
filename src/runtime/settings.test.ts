@@ -213,7 +213,7 @@ it("lets June inspect then save and reset through a real delegated worker withou
     { ...event, direct: false, metadata: { channelType: "mpim" as const } },
     { ...event, direct: false, metadata: { channelType: "channel" as const } },
   ])
-    expect(executionCapabilities(deps, other).settingsAvailable).not.toBe(true);
+    expect(executionCapabilities(deps, other).settingsAvailable).toBe(true);
   const { client } = await setupTest(t, createJuneRegistry(deps));
   const context: CapabilityContext = {
     event,
@@ -249,25 +249,9 @@ it("lets June inspect then save and reset through a real delegated worker withou
   };
   // Even a forged valid directive/grant must not bypass host provenance or drain.
   for (const change of [
-    { event: { ...event, senderId: "guest" } },
-    {
-      event: {
-        ...event,
-        direct: false,
-        metadata: { channelType: "mpim" as const },
-      },
-    },
-    {
-      event: {
-        ...event,
-        direct: false,
-        metadata: { channelType: "channel" as const },
-      },
-    },
     { origin: "wakeup" as const },
     { origin: "execution_result" as const },
     { phase: "synthesis" as const },
-    { ownerTurn: false },
     { valid: () => false },
     { signal: AbortSignal.abort() },
     { canStartAction: () => false },

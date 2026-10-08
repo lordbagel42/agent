@@ -374,6 +374,9 @@ export function createPiRuntime(options: PiRuntimeOptions): CodingRuntime {
           throw new PiRuntimeError("thread_save_failed");
         }
         if (input.signal.aborted) throw new PiRuntimeError("cancelled");
+        // Initialization, binding fsync and onThread all yield before this RPC.
+        // Check live host authority without yielding again before prompt write.
+        input.assertCurrent?.();
         prompted = true;
         // Prefix prevents built-in slash command dispatch; templates are disabled at startup.
         const accepted = await command("prompt", {

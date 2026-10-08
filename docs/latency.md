@@ -34,24 +34,26 @@ Storage failures emit one fixed warning and increment a process-local counter;
 they never retry a model call or delivery. Check `writeFailures` in `/operator/logs`.
 No attempt is made to recover observations from before this feature was enabled.
 
-## June can inspect her timings privately
+## June can inspect her timings
 
-In an owner-private conversation, ask June to "show your recent reply timings"
+In an admitted conversation, ask June to "show your recent reply timings"
 or "check the timing for ping <UUID>", including after a restart. Ask "show your
 logs" for recent lifecycle and Slack ingress records. Her output schema and
 instructions expose the read-only `latency` action (`"logs"`, `"recent"` or a UUIDv4).
-Only the configured owner's linked user accounts may request it privately. It is unavailable in
-channels, group conversations, and synthesis passes; the host independently
-checks private scope before reading diagnostics. Another user's DM is not an owner
-DM. June is instructed never to relay logs to another user or a shared channel,
-even if the owner asks there. No general filesystem, SQL or external log access is granted.
+An owner identity or private DM is not a tool prerequisite. June judges task
+legitimacy, sensitive contents and the destination before requesting or sharing
+diagnostics; broad tool availability does not make logs public. Only capabilities
+exposed for the invocation may run, and synthesis/specialist ceilings remain.
+No general filesystem, SQL, secrets or external log access is granted. Operator
+HTTP endpoints retain the same bearer authentication and private routing.
 
-The host sends up to five recent samples (or the requested probe), excluding
-the request in progress, through the ordinary durable reply/outbox. This needs
-no additional model invocation, external tool call, ping, or credential in the
-prompt. It neither changes settings nor retries original work. June sees the
-report in subsequent conversation history; she does not receive a same-turn
-synthesis pass and must not invent an interpretation before seeing the report.
+The host returns up to five recent samples (or the requested probe), excluding
+the request in progress. The direct path sends the report through the ordinary
+durable reply/outbox without another model pass; June can read it in subsequent
+history. In the execution-worker path, the worker inspects the bounded observation
+before reporting relevant evidence and interpretation to June. Neither path sends
+a ping, changes settings, retries original work or exposes a credential. Do not
+invent an interpretation before reading the evidence.
 The requested human-readable report is ordinary conversation content and is
 retained as such. Raw observations remain in the private diagnostic database, not
 conversation history. Historical traces retain their original process UUID,
@@ -60,7 +62,7 @@ start time and release revision; they never reconnect to the new process's clock
 Reports include revision/process identity, missing/ambiguous/incomplete states,
 queue/context/provider/send spans and separate acknowledgments. They do not
 establish provider-only inference time, live model settings, or a cold cache.
-The same private report separates provider answer readiness from cleanup for
+The same bounded report separates provider answer readiness from cleanup for
 the first observed provider call in each sample: submitted→terminal,
 terminal→validated (validation), submitted→validated, arrival→validated, and
 validated→retired (cleanup). Missing stages are explicitly unobserved, never

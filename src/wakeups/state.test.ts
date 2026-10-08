@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { MessageEvent } from "../core/contracts.js";
-import { acceptEvent, applyAction, initialState, tick } from "./state.js";
+import {
+  acceptEvent,
+  applyAction,
+  initialState,
+  tick,
+  type WakeupJob,
+} from "./state.js";
 
 const now = Date.parse("2026-09-27T16:00:00Z");
 const source: MessageEvent = {
@@ -34,6 +40,168 @@ const event = {
 };
 
 describe("durable wakeup state", () => {
+  it.each([
+    "slack",
+    "coding",
+    "execution",
+    "whatsapp",
+    "agent",
+    "future-native",
+  ])(
+    "binds %s wildcard matches to the host audience, not forged data or filters",
+    (nativeSource) => {
+      const state = initialState();
+      const ownerAudience = '["private","raygen"]';
+      const guestAudience = '["guest","slack","T1","C1","123.001","U2"]';
+      const guest: MessageEvent = {
+        ...source,
+        senderId: "U2",
+        direct: false,
+        address: {
+          ...source.address,
+          conversationId: "C1",
+          threadId: "123.001",
+        },
+      };
+      for (const [id, requester, audience] of [
+        ["owner", source, ownerAudience],
+        ["guest", guest, guestAudience],
+        [
+          "other-sender",
+          { ...guest, senderId: "U3" },
+          '["guest","slack","T1","C1","123.001","U3"]',
+        ],
+        [
+          "other-thread",
+          { ...guest, address: { ...guest.address, threadId: "123.002" } },
+          '["guest","slack","T1","C1","123.002","U2"]',
+        ],
+      ] as const) {
+        applyAction(
+          state,
+          {
+            ...watch,
+            trigger: {
+              kind: "event",
+              source: nativeSource,
+              type: "*",
+              filters: [{ path: "scope", value: guestAudience }],
+            },
+          },
+          requester,
+          id,
+          now,
+          [nativeSource],
+        );
+        (state.jobs[id] as WakeupJob).audience = audience;
+      }
+      const privateEvent = {
+        id: "private-event",
+        source: nativeSource,
+        type:
+          nativeSource === "coding" || nativeSource === "execution"
+            ? "result"
+            : "message",
+        occurredAt: now + 1,
+        data: {
+          text: "owner-private text",
+          report: "owner-private report",
+          scope: guestAudience,
+          audience: guestAudience,
+        },
+      };
+      acceptEvent(
+        state,
+        privateEvent,
+        now + 10,
+        ["private-evidence"],
+        ownerAudience,
+      );
+      expect(Object.values(state.runs).map((run) => run.jobId)).toEqual([
+        "owner",
+      ]);
+      expect(state.jobs.guest).toMatchObject({
+        status: "active",
+        coalesced: 0,
+      });
+      expect(Object.values(state.runs)[0]).toMatchObject({
+        audience: ownerAudience,
+        contextSourceIds: ["private-evidence"],
+      });
+
+      // Unscoped native events are consumed without creating a run. A replay
+      // with new authority must not broaden an already accepted occurrence.
+      const unscoped = { ...privateEvent, id: "missing-audience" };
+      acceptEvent(state, unscoped, now + 20);
+      expect(acceptEvent(state, unscoped, now + 21, [], guestAudience)).toEqual(
+        { accepted: true, duplicate: true },
+      );
+      expect(Object.values(state.runs)).toHaveLength(1);
+      const restored = JSON.parse(JSON.stringify(state));
+      acceptEvent(
+        restored,
+        { ...privateEvent, id: "own-scope" },
+        now + 30,
+        [],
+        guestAudience,
+      );
+      expect(
+        Object.values(restored.runs).map(
+          (run) => (run as { jobId: string }).jobId,
+        ),
+      ).toEqual(["owner", "guest"]);
+      expect(restored.jobs.guest.status).toBe("completed");
+      expect(restored.jobs["other-sender"].status).toBe("active");
+      expect(restored.jobs["other-thread"].status).toBe("active");
+    },
+  );
+
+  it.each(["deployment", "github", "webhook.fixture"])(
+    "keeps configured %s feeds shared with notification precedence confined to the recipient",
+    (sharedSource) => {
+      const state = initialState();
+      const sharedWatch = {
+        ...watch,
+        once: false,
+        trigger: {
+          kind: "event",
+          source: sharedSource,
+          type: "*",
+          filters: [],
+        },
+      };
+      applyAction(state, sharedWatch, source, "decision", now, [sharedSource]);
+      (state.jobs.decision as WakeupJob).mode = "decision";
+      applyAction(
+        state,
+        sharedWatch,
+        { ...source, senderId: "U2" },
+        "guest",
+        now,
+        [sharedSource],
+      );
+      acceptEvent(state, { ...event, source: sharedSource }, now + 10);
+      expect(Object.values(state.runs).map((run) => run.jobId)).toEqual([
+        "decision",
+        "guest",
+      ]);
+      for (const run of Object.values(state.runs)) run.status = "completed";
+      applyAction(state, sharedWatch, source, "owner-request", now, [
+        sharedSource,
+      ]);
+      acceptEvent(
+        state,
+        { ...event, id: "next", source: sharedSource },
+        now + 20,
+      );
+      expect(
+        Object.values(state.runs)
+          .filter((run) => run.event.id === "next")
+          .map((run) => run.jobId),
+      ).toEqual(["guest", "owner-request"]);
+    },
+  );
+
   it("bounds decision backlog without coalescing or remembering rejected events", () => {
     const state = initialState();
     applyAction(

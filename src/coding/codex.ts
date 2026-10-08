@@ -327,7 +327,9 @@ export function createCodexRuntime({
               } catch {
                 throw new CodexRuntimeError("thread_save_failed");
               }
-              // No coding turn is submitted until the durable callback succeeds.
+              // Persistence may yield across deletion before abort reaches us.
+              // No await between this host check and the coding turn submission.
+              input.assertCurrent?.();
               request(4, "turn/start", {
                 threadId,
                 cwd: input.cwd,

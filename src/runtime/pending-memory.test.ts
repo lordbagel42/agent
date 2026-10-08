@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Ajv } from "ajv";
+import { expect, it, onTestFinished } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import { createConsoleLoginLinks } from "../console/session.js";
 import type {
@@ -12,6 +16,8 @@ import { routeEvent } from "../core/routing.js";
 import { pendingMemoryView } from "../memory/pending.js";
 import { EvidenceStore, type MemoryProposalInput } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
+import type { CapabilityContext } from "./capabilities.js";
+import { runExecutionCapability } from "./execution-capabilities.js";
 import { createInspectionReader } from "./inspection.js";
 import { createJuneRegistry, type Dependencies } from "./registry.js";
 
@@ -144,7 +150,7 @@ it("bounds unaccepted claims without leaking other scopes, raw quotes, or active
   expect(pendingMemoryView(store, audience).text).toContain("Showing 0 of 0");
 });
 
-it("dispatches a private June pending view with provenance, rejecting forged, mixed, synthesis and disabled access", async (t) => {
+it("dispatches scoped June pending views with provenance, denying cross-scope, mixed, synthesis and disabled access", async (t) => {
   const store = new EvidenceStore(":memory:", randomBytes(32));
   t.onTestFinished(() => store.close());
   const uncited = {
@@ -227,7 +233,9 @@ it("dispatches a private June pending view with provenance, rejecting forged, mi
           request.pendingMemoryAvailable,
         );
         if (request.pendingMemoryAvailable)
-          expect(request.system).toContain("set pendingMemory to true");
+          expect(request.system).toContain(
+            "pendingMemory:true lists bounded pending hypotheses in the authenticated audience",
+          );
         return request.usageStage === "synthesis"
           ? { text: "", pendingMemory: true }
           : action;
@@ -312,7 +320,7 @@ it("dispatches a private June pending view with provenance, rejecting forged, mi
     { senderId: "U2", metadata: { channelType: "im" as const } },
   ]) {
     await send(patch);
-    expect(requests.at(-1)?.pendingMemoryAvailable).toBe(false);
+    expect(requests.at(-1)?.pendingMemoryAvailable).toBe(true);
     expect(sent.at(-1)?.content.text).not.toContain(input.text);
     expect(sent.at(-1)?.content.text).not.toContain("private-import");
   }
@@ -364,3 +372,364 @@ it("dispatches a private June pending view with provenance, rejecting forged, mi
     ).toThrow();
   expect(() => parseReply('{"text":"","pendingMemory":true}', [])).toThrow();
 }, 60000);
+
+it("validates exact pending-memory decisions in both schemas and keeps them exclusive", () => {
+  const capabilities = { pendingMemoryAvailable: true };
+  const schema = replyJsonSchema([], capabilities);
+  const validate = new Ajv({ allowUnionTypes: true }).compile(schema);
+  const id = `proposal:${"a".repeat(64)}`;
+  const decisions = [true, { action: "accept", id }, { action: "reject", id }];
+  for (const pendingMemory of decisions) {
+    const reply = { text: "", pendingMemory };
+    expect(validate({ coding: null, reaction: null, ...reply })).toBe(true);
+    expect(parseReply(JSON.stringify(reply), [], capabilities)).toEqual(reply);
+    expect(() => parseReply(JSON.stringify(reply), [])).toThrow();
+    for (const extra of [
+      { text: "Already done" },
+      { reaction: "thumbsup" },
+      { recall: "hypothesis" },
+      { inspection: "memory" },
+      { messages: ["Already done"] },
+    ])
+      expect(() =>
+        parseReply(JSON.stringify({ ...reply, ...extra }), [], {
+          ...capabilities,
+          recallAvailable: true,
+          inspectionAvailable: true,
+          turnTakingAvailable: true,
+        }),
+      ).toThrow();
+  }
+  for (const pendingMemory of [
+    false,
+    {},
+    { action: "list", id },
+    { action: "accepted", id },
+    { action: "accept" },
+    { action: "accept", id: "a".repeat(64) },
+    { action: "accept", id: `proposal:${"a".repeat(63)}` },
+    { action: "accept", id: `proposal:${"g".repeat(64)}` },
+    { action: "accept", id: `${id}\n` },
+    { action: "accept", id, audience },
+    { action: "reject", id, text: "replacement claim" },
+  ]) {
+    const reply = { text: "", pendingMemory };
+    expect(validate({ coding: null, reaction: null, ...reply })).toBe(false);
+    expect(() => parseReply(JSON.stringify(reply), [], capabilities)).toThrow();
+  }
+  const noAction = {
+    text: "",
+    coding: null,
+    reaction: null,
+    pendingMemory: null,
+  };
+  expect(validate(noAction)).toBe(true);
+  expect(parseReply(JSON.stringify(noAction), [], capabilities)).toEqual({
+    text: "",
+  });
+  expect(replyJsonSchema([]).properties).not.toHaveProperty("pendingMemory");
+});
+
+function pendingDecisionFixture(
+  senderId = "U2",
+  channelType: "im" | "channel" = "channel",
+) {
+  const directory = mkdtempSync(join(tmpdir(), "june-pending-decisions-"));
+  const path = join(directory, "memory.db");
+  const key = randomBytes(32);
+  let store = new EvidenceStore(path, key);
+  onTestFinished(() => {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+  const event: MessageEvent = {
+    type: "message",
+    id: "review-task",
+    messageId: "1.000001",
+    occurredAt: Date.now(),
+    senderId,
+    direct: channelType === "im",
+    botMentioned: true,
+    text: "Review the pending hypotheses for this task",
+    address: {
+      channel: "slack",
+      accountId: "T1",
+      conversationId: channelType === "im" ? "D2" : "C1",
+    },
+    metadata: { channelType },
+  };
+  const deps: Dependencies = {
+    owner: {
+      id: "owner",
+      identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
+    },
+    channels: {},
+    model: {
+      async reply() {
+        throw new Error("Pending decisions do not invoke a nested model");
+      },
+    },
+    memory: { store, source: () => undefined },
+  };
+  const scope = routeEvent(event, deps.owner);
+  if (!scope) throw new Error("Missing task scope");
+  const taskAudience = JSON.stringify(scope.key);
+  const bound: { sourceIds: string[]; claimIds: string[] }[] = [];
+  const unused = (): never => {
+    throw new Error("Unexpected unrelated capability");
+  };
+  const context: CapabilityContext = {
+    event,
+    scope,
+    audience: taskAudience,
+    eventId: event.id,
+    origin: "event",
+    phase: "reply",
+    ownerTurn: senderId === "U1",
+    deletionRevision: 0,
+    personalityVersion: undefined,
+    workspaces: [],
+    signal: new AbortController().signal,
+    valid: () => true,
+    model: deps.model,
+    deps,
+    ports: {
+      beginJevObservation: unused,
+      personality: { stage: unused, read: unused, pending: unused },
+      coding: {
+        ids: unused,
+        visible: unused,
+        job: unused,
+        hasProvenance: unused,
+        bindReport: unused,
+      },
+      evidence: {
+        sourceIds: () => [],
+        async bindRecall() {
+          throw new Error("Unexpected recall binding");
+        },
+        async bindPending(sourceIds, claimIds) {
+          bound.push({ sourceIds, claimIds });
+        },
+      },
+      inspectInference: unused,
+      deliverRivet: unused,
+      waitForTypingCleanup: unused,
+      send: unused,
+    },
+  };
+  const scopedSource = {
+    ...source,
+    id: "scoped-evidence",
+    audiences: [taskAudience],
+  };
+  const uncitedSource = { ...scopedSource, id: "uncited-context" };
+  store.appendSource(scopedSource);
+  store.appendSource(uncitedSource);
+  store.appendSource(source);
+  const [proposal, untouched] = store.stageProposals(
+    taskAudience,
+    [scopedSource.id, uncitedSource.id],
+    ["Scoped hypothesis", "Another pending hypothesis"].map((text) => ({
+      ...input,
+      text,
+      subjectSourceId: scopedSource.id,
+      citations: [{ sourceId: scopedSource.id, quote: scopedSource.text }],
+    })),
+  );
+  const [ownerProposal] = store.stageProposals(audience, [source.id], [input]);
+  if (!proposal || !untouched || !ownerProposal)
+    throw new Error("Missing proposal fixture");
+  const request: ModelRequest = {
+    system: "Review pending memory",
+    messages: [],
+    workspaces: [],
+    agentRole: "execution",
+    pendingMemoryAvailable: true,
+  };
+  return {
+    store,
+    proposal,
+    untouched,
+    ownerProposal,
+    scopedSource,
+    uncitedSource,
+    context,
+    request,
+    bound,
+    reopen() {
+      store.close();
+      store = new EvidenceStore(path, key);
+      deps.memory = { store, source: () => undefined };
+      return store;
+    },
+    run(reply: CompanionReply) {
+      return runExecutionCapability(
+        reply,
+        request,
+        context,
+        deps,
+        {} as Parameters<typeof runExecutionCapability>[4],
+        [],
+        async () => {
+          throw new Error("Pending decisions do not require private delivery");
+        },
+      );
+    },
+  };
+}
+
+it.each([
+  ["guest DM", "U2", "im"],
+  ["guest channel", "U2", "channel"],
+  ["owner channel", "U1", "channel"],
+] as const)(
+  "%s can choose its own exact pending ID, never an owner-private proposal",
+  async (_name, senderId, channelType) => {
+    const fixture = pendingDecisionFixture(senderId, channelType);
+    const { proposal, untouched, ownerProposal, context, bound, run } = fixture;
+    const store = fixture.reopen();
+    const before = store.proposals(context.audience);
+    const view = await run({ text: "", pendingMemory: true });
+    expect(view.terminal).toBe(false);
+    const rows = view.text
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line));
+    expect(rows.map((row) => row.proposalId)).toEqual([
+      proposal.id,
+      untouched.id,
+    ]);
+    expect(view.text).not.toContain(ownerProposal.id);
+    expect(view.text).not.toContain(source.text);
+    expect(bound).toEqual([
+      {
+        sourceIds: [fixture.scopedSource.id],
+        claimIds: [proposal.claim.id, untouched.claim.id],
+      },
+    ]);
+    expect(store.proposals(context.audience)).toEqual(before);
+    expect(store.search(context.audience, "").claims).toEqual([]);
+
+    for (const action of ["accept", "reject"] as const) {
+      const denied = await run({
+        text: "",
+        pendingMemory: { action, id: ownerProposal.id },
+      });
+      expect(denied.terminal).toBe(true);
+      expect(denied.text).not.toContain(input.text);
+      expect(store.proposal(audience, ownerProposal.id)?.status).toBe(
+        "pending",
+      );
+    }
+    for (const [index, action, status] of [
+      [0, "accept", "accepted"],
+      [1, "reject", "rejected"],
+    ] as const) {
+      const id = rows[index]?.proposalId;
+      const decision = await run({ text: "", pendingMemory: { action, id } });
+      expect(decision.terminal).toBe(true);
+      expect(decision.text).toContain(id);
+      expect(store.proposal(context.audience, id)?.status).toBe(status);
+    }
+    expect(store.search(context.audience, "").claims).toEqual([proposal.claim]);
+    expect(store.search(audience, "").claims).toEqual([]);
+  },
+);
+
+it.each([
+  ["accept", "accepted", "reject", 1],
+  ["reject", "rejected", "accept", 0],
+] as const)(
+  "%s persists a terminal decision across repeat actions and restart",
+  async (action, status, opposite, retained) => {
+    const { store, proposal, untouched, context, run, reopen, scopedSource } =
+      pendingDecisionFixture();
+    const command = { text: "", pendingMemory: { action, id: proposal.id } };
+    const first = await run(command);
+    expect(first.terminal).toBe(true);
+    expect(store.proposal(context.audience, proposal.id)?.status).toBe(status);
+    const reopened = reopen();
+    expect(await run(command)).toEqual(first);
+    const conflicting = await run({
+      text: "",
+      pendingMemory: { action: opposite, id: proposal.id },
+    });
+    expect(conflicting.terminal).toBe(true);
+    expect(conflicting.text).toMatch(/unavailable|not confirmed/);
+    expect(reopened.proposal(context.audience, proposal.id)?.status).toBe(
+      status,
+    );
+    expect(reopened.proposal(context.audience, untouched.id)?.status).toBe(
+      "pending",
+    );
+    expect(reopened.search(context.audience, "").claims).toHaveLength(retained);
+    expect(reopened.source(context.audience, scopedSource.id)).toEqual(
+      scopedSource,
+    );
+    const view = await run({ text: "", pendingMemory: true });
+    expect(view.terminal).toBe(false);
+    expect(view.text).not.toContain(proposal.id);
+    expect(view.text).toContain(untouched.id);
+  },
+);
+
+it.each(["accept", "reject"] as const)(
+  "rechecks action admission immediately before a synchronous %s decision",
+  async (action) => {
+    const { store, proposal, context, run } = pendingDecisionFixture();
+    let checks = 0;
+    context.canStartAction = () => ++checks === 1;
+    const result = await run({
+      text: "",
+      pendingMemory: { action, id: proposal.id },
+    });
+    expect(checks).toBe(2);
+    expect(result.terminal).toBe(true);
+    expect(store.proposal(context.audience, proposal.id)?.status).toBe(
+      "pending",
+    );
+    expect(store.search(context.audience, "").claims).toEqual([]);
+  },
+);
+
+it("does not accept a listed proposal after an uncited extraction input is deleted", async () => {
+  const { store, proposal, context, run, uncitedSource, scopedSource } =
+    pendingDecisionFixture();
+  expect((await run({ text: "", pendingMemory: true })).text).toContain(
+    proposal.id,
+  );
+  let checks = 0;
+  context.canStartAction = () => {
+    if (++checks === 2) store.deleteSource(uncitedSource.id);
+    return true;
+  };
+  const result = await run({
+    text: "",
+    pendingMemory: { action: "accept", id: proposal.id },
+  });
+  expect(result.terminal).toBe(true);
+  expect(result.text).toMatch(/unavailable|not confirmed/);
+  expect(store.proposal(context.audience, proposal.id)).toBeUndefined();
+  expect(store.search(context.audience, "").claims).toEqual([]);
+  expect(store.source(context.audience, scopedSource.id)).toEqual(scopedSource);
+});
+
+it("revalidates disabled, mixed and audience-forged decisions before any mutation", async () => {
+  const { store, proposal, context, request, run } = pendingDecisionFixture();
+  const command = {
+    text: "",
+    pendingMemory: { action: "accept" as const, id: proposal.id },
+  };
+  request.pendingMemoryAvailable = false;
+  await run(command);
+  request.pendingMemoryAvailable = true;
+  for (const reply of [
+    { ...command, text: "Already done" },
+    { ...command, reaction: "thumbsup" },
+    { ...command, pendingMemory: { ...command.pendingMemory, audience } },
+  ])
+    await run(reply);
+  expect(store.proposal(context.audience, proposal.id)?.status).toBe("pending");
+  expect(store.search(context.audience, "").claims).toEqual([]);
+});

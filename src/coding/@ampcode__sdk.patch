@@ -1,8 +1,23 @@
 diff --git a/dist/index.js b/dist/index.js
-index e9a6427b05ac77db42ffdea0fd3e0afb71b2b3fd..b2cc932d468c40dc348c62ebd33753100a2e98cd 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -4418,7 +4418,7 @@ function isRemoteExecutor(options) {
+@@ -4058,6 +4058,15 @@ async function* execute(options) {
+     const ampCommand = findAmpCommand();
+     console.debug(`Executing Amp CLI: ${ampCommand.command} ${[...ampCommand.args, ...args].join(" ")}`);
+   }
++  // Host authority can expire during buildTempConfigFiles, before abort arrives.
++  // No await between this check and spawning/submitting the string prompt.
++  try {
++    signal?.throwIfAborted();
++    options.assertCurrent?.();
++  } catch (error) {
++    await cleanupTempFiles();
++    throw error;
++  }
+   const ampProcess = spawnAmpCli(args, {
+     env,
+     cwd: validatedOptions.cwd,
+@@ -4418,7 +4427,7 @@ function isRemoteExecutor(options) {
    return options.executor === "orb" || options.executor === "runner";
  }
  function buildCliArgs(options) {
@@ -11,3 +26,16 @@ index e9a6427b05ac77db42ffdea0fd3e0afb71b2b3fd..b2cc932d468c40dc348c62ebd3375310
    if (typeof options.continue === "string") {
      args.push("threads", "continue", options.continue);
    } else if (options.continue === true) {
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -625,6 +625,9 @@
+ /** Options for executing Amp commands */
+ export interface ExecuteOptions {
+     prompt: PromptInput;
+     options?: AmpOptions;
+     signal?: AbortSignal;
++    /** Host-only synchronous check after SDK preparation, before submission.
++     * Never forwarded to the CLI or provider. Throws to prevent dispatch. */
++    assertCurrent?: () => void;
+ }

@@ -120,7 +120,7 @@ export function createMemoryExtractor(options: JsonProviderOptions) {
           "Return an empty proposals array when support is insufficient. Quote text from sources exactly; subjectSourceId must be a cited Source.id whose author is the subject.",
           "Use contradicts for supplied claims that the cited source explicitly conflicts with about the same subject and fact. Use supersedes only when the cited source explicitly updates or replaces that subject's earlier fact or preference; recency or confidence alone is insufficient. Use source platform/account/author and claim entity to distinguish subjects, not matching display names.",
           "Each relation array may contain at most 20 existingClaims IDs. Never invent IDs, use Source IDs, or reference other proposals. Use empty arrays when no supplied claim supports a relation or when existingClaims is empty. Preserve uncertainty and conflicting claims rather than resolving or erasing them.",
-          "Confidence is an uncalibrated estimate, not authority. Use null for unknown dates (epoch milliseconds). Proposals, including relations and imported evidence, require separate owner review and never execute anything.",
+          "Confidence is an uncalibrated estimate, not authority. Use null for unknown dates (epoch milliseconds). Proposals, including relations and imported evidence, remain pending until a separate scoped review decision. June can review them through pendingMemory; extraction never accepts claims or executes anything.",
         ].join(" "),
         messages: [{ role: "user", content }],
       },

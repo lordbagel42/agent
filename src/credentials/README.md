@@ -26,21 +26,26 @@ the digest-only `capabilities.sqlite`; it **does not register any tools, resolve
 credentials, or issue grants**. Browser/vault adapters need separate reviewed host
 wiring and activation. MCP connections keep their existing integration.
 
-Ask June privately to inspect generic capabilities. The June-callable directive
+Ask June to inspect generic capabilities in an admitted task. The June-callable directive
 is `{"text":"","inspection":"capabilities"}`; it reports disabled/mounted
 status and registration count without credentials, payloads, or authorization.
-The host gates this through the existing owner-private inspection path; it is not
-available in shared/guest turns or synthesis. This slice exposes no model grant
-or execution directive. Owner API entry points are listed below; mounting and
-registration are not live health or evidence that an action ran.
+An owner-private conversation is not an ordinary tool prerequisite. June judges
+task legitimacy, safety and audience; invocation ceilings still apply. The generic
+broker is not exposed as a model-controlled grant API. Configured browser recipes
+and MCP effects use trusted host wrappers to issue exact durable grants and run
+fresh actions without compulsory human approval. Operator API entry points are
+listed below; mounting and registration are not live health or execution evidence.
 
 ## June's metadata-only inspection
 
-In an owner-private conversation, ask June to inspect credential bindings. The
+In an admitted task, ask June to inspect credential bindings. The
 discoverable directive is `{"text":"","inspection":"credentials"}`, with no
-other actions. It uses the existing private inspection boundary; guests, public
-turns, execution workers and synthesis cannot invoke it. The host sends a
-timestamped receipt directly, without another model pass.
+other actions. This is metadata-only inspection, not a secret-reading tool.
+The direct path sends a timestamped report without another model pass; an
+execution worker can inspect the bounded report before answering. June judges
+appropriate disclosure; synthesis and explicit specialist ceilings remain.
+Nothing bypasses secret/PIN protections, login, enrollment or authenticated
+administration. Operator endpoints keep their existing authentication.
 
 `createBitwardenCredentialResolver` remains callable by the broker and also
 exposes `inspect()`. This returns the validated snapshot's binding count and at
@@ -107,8 +112,13 @@ are explicit owner mappings to exact item UUIDs, not proof of the website's logg
 identity or the vault's signed-in account. Hostnames, ports and schemes are never
 approximately matched: subdomains, lookalikes, alternate ports and userinfo URLs
 do not inherit a binding. All browser redirects, even same-origin, remain denied.
-The browser integration separately owns exact-operation approval and isolated
+The browser integration separately owns exact-operation authorization and isolated
 execution; this configuration alone exposes no secret-reading tool to June.
+`browserProposal: {operation:null}` discovers configured names without resolving
+credentials. Selecting an exact name runs that configured recipe through a durable
+one-use grant and receipt, including host-resolved credential references when
+configured. It cannot add steps, reveal credentials or enroll another account.
+Historical pending proposals stay inert and unknown outcomes never auto-retry.
 
 ## Trusted host setup
 
@@ -139,7 +149,9 @@ execution; this configuration alone exposes no secret-reading tool to June.
    adapters retain `execute(action, credential): Promise<unknown>`. They must
    enforce the approved origin through redirects/subrequests, never log secrets,
    never persist credentials/browser sessions, and never retry side effects.
-   Resolve only on confirmed success. Results and exceptions are not exposed.
+   Resolve only on confirmed success. Broker receipts never store adapter output
+   or exceptions; remote MCP's separate transient-result boundary sanitizes content
+   before model use. Browser execution receipts expose no page text or secrets.
    Browser adapters additionally support `executeWithCredentialResolver`: the
    broker supplies a one-use callback, and the browser validates the recipe before
    invoking it. Grant/link expiry and revocation are rechecked after lookup before
@@ -165,9 +177,11 @@ execution; this configuration alone exposes no secret-reading tool to June.
    Worker-facing wrappers bind their principal from trusted authentication,
    and expose only proposal validation and exact-grant execution.
 
-## Owner API
+## Authenticated operator API
 
-All routes require bearer authentication. GET never approves or executes.
+All routes retain bearer authentication and same-origin checks. Broader task-tool
+availability does not expose these administrative routes or credentials to June.
+GET never approves or executes.
 
 | Method/path (relative to mount) | Body / response |
 | --- | --- |
@@ -205,7 +219,7 @@ system out of band. Then the owner can reconcile it as succeeded or failed.
 Reconciliation refuses a locally active execution, requires explicit confirmation,
 records the decision, revokes the grant and **never reopens it**. Across processes
 the owner must actually establish quiescence; the checkbox cannot prove it.
-A new approval is required for any intentional retry. Do not issue it while the
+A fresh exact grant is required for any intentional retry. Do not issue it while the
 old effect is ambiguous. Reconciliation does not make external effects exactly-once.
 
 The five-minute grant and sixty-second local session lease limit **admission**,

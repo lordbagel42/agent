@@ -3,6 +3,13 @@
 Import from `./index.js`. No persistence, background loop, messaging, coding,
 permission grant, or provider SDK lives here. Rivet owns durable scheduling.
 
+June uses exposed reflection tools from admitted tasks, judging legitimacy,
+safety and audience at runtime, without a blanket owner-private or human-approval
+prerequisite. The host binds each request to its originating scope. Tool access
+does not enroll new retained-memory audiences or automatically import another
+person's history: configured retention, provenance and deletion checks still apply.
+Missing scoped evidence is unavailable, not permission to substitute owner memory.
+
 ## Entry points
 
 ```ts
@@ -56,9 +63,9 @@ the current trusted owner/audience mapping, immutable source versions and
 deletion tombstones, not reuse the enqueue-time snapshot. Canonical host scopes
 are `JSON.stringify(routeEvent(...).key)`; owner imports use
 `JSON.stringify(["private", owner.id])`. Adapt the memory store's
-`reflectionEvidence(scope, evidenceIds, evidenceMaxAgeMs)` after checking owner
-authorization; return `{authorized:false,evidence:[]}` on rejection. The memory
-bridge accepts only original sources (currently at most 20 IDs / 64K), never
+`reflectionEvidence(scope, evidenceIds, evidenceMaxAgeMs)` after checking source
+authorization in that audience; return `{authorized:false,evidence:[]}` on rejection.
+The memory bridge accepts only original sources (currently at most 20 IDs / 64K), never
 derived claims or dreams as independent evidence. The runtime rejects partial,
 duplicate, stale, future, expired, deleted or wrong-scope evidence. Retrieval
 runs at admission, after the intent flush immediately before the model, after
@@ -67,7 +74,7 @@ the model, and on every candidate read. No raw evidence enters state or journal.
 Host actions:
 
 ```ts
-request({evidenceIds, mode: "idle" | "deep", kind?: "reflection" | "curiosity"}):
+request({evidenceIds, mode: "idle" | "deep", kind?: "reflection" | "curiosity"}, scope?):
   Promise<{status: "queued" | "duplicate" | "unavailable"}>
 enqueue({scope, evidenceIds, kind: "reflection" | "curiosity",
          mode: "interaction" | "idle" | "deep"}): Promise<{id, accepted}>
@@ -77,13 +84,13 @@ trigger({id, type: "interaction" | "idle", liveActive}): Promise<void>
 status(): Promise<{reflection, invocations, decisionOutcomes, candidateIds, liveActive, activeTurnIds, epoch}>
 isSettled(): Promise<boolean>
 listCandidates(scope): Promise<{status, checkedAt, ids, truncated}>
-candidate(id): Promise<ReflectionCandidate | null>
+candidate(id, scope?): Promise<ReflectionCandidate | null>
 rejectCandidate(scope, opaqueId): Promise<boolean>
 reconcile(requestId, confirmedStopped): Promise<boolean>
 ```
 
 June uses `reflectionRequest` with `kind: "curiosity"` in an enabled
-owner-private turn to evaluate 1–20 currently permitted retained source IDs.
+task to evaluate 1–20 currently permitted retained source IDs.
 Omitted kind defaults to `reflection` for older replies. The host fixes the
 audience and uses the same scheduler, delays, quiet hours, capacity, attempt
 limits and cross-kind evidence-set dedupe. A duplicate preserves the original
@@ -102,8 +109,8 @@ use its revalidated read path, never this metadata, to consume it.
 
 These are trusted host APIs, not public authorization endpoints. Authenticate
 the operator before forwarding them, especially `reconcile`. Status includes
-request scope/source IDs but no model text. Only `candidate` releases a model
-rationale, after current evidence checks. For forgetting, use status source IDs
+request scope/source IDs but no model text. Candidate readers release model
+rationale only after current evidence checks. For forgetting, use status source IDs
 to cancel all dependent requests; cancellation removes their staged candidates.
 Actor storage, engine inspection and backups must remain private. Deletion of
 the memory store alone does not erase a candidate from actor storage/backups.
@@ -120,7 +127,7 @@ the memory store alone does not erase a candidate from actor storage/backups.
   deployment with reflection remains unsupported until the complete lifecycle,
   recovery and transport behavior is proven. No feature is enabled by this wiring.
 
-`listCandidates` accepts only the exact owner's private scope. It checks up to
+`listCandidates` uses the exact host-supplied scope. It checks up to
 twenty same-scope/current-epoch candidates, revalidates all request evidence and
 returns at most ten opaque `reflectionCandidateId(rawId)` SHA256 tokens, not the
 internal IDs (which embed source IDs). `truncated` reports possible omissions;
@@ -175,7 +182,7 @@ list still require the original epoch, no live work and non-quiet time.
   requests, retries and inspection do not refresh stimulation. A backwards
   clock cannot increase priority above 1 or waive an idle/cooldown deadline.
   This is recency preference, not starvation-free scheduling or authority.
-  June's owner-private `inspection: "reflection"` reports at most ten pending
+  June's scoped `inspection: "reflection"` reports at most ten pending
   scores with this fixed reason, without request/evidence IDs or private text.
   Pending scores are not eligibility claims; all existing admission gates apply.
 - Calls are deliberately serial even if the policy allows more background
@@ -201,10 +208,13 @@ list still require the original epoch, no live work and non-quiet time.
   interruption candidate. At most one interruption candidate is staged per
   interaction epoch, across scopes; quiet hours and live occupancy also gate
   staging/reads. Background reflection never sends automatically. An exact
-  owner-private `!reflection propose <candidate-id> <user-id> <text>` previews
-  one frozen recipient/message using the existing social permission ledger.
-  Only the owner's private `!allow <proposal-id>` authorizes delivery; `!deny`
-  and `!revoke` invalidate approval. The proposal/outbox identity is bound to
+  legacy owner-private `!reflection propose <candidate-id> <user-id> <text>` previews
+  one frozen recipient/message using the existing social ledger. This optional
+  draft path is not a prerequisite for ordinary `social.outreach`, which sends on
+  June's fresh task decision through durable receipts. Do not automatically send
+  a draft or bypass a candidate's lifecycle or an unknown delivery. On the legacy
+  candidate-outbox path, `!allow <proposal-id>` authorizes delivery; `!deny`
+  and `!revoke` invalidate it. The proposal/outbox identity is bound to
   account + candidate, not the approval turn. Accepted or unknown sends are not
   repeated after restart or repeated approval. Candidate reads grant nothing.
   The outbox checks current approval/deletion and the actor's candidate,
@@ -238,7 +248,7 @@ list still require the original epoch, no live work and non-quiet time.
 ### Deep-mode alternative-response simulation
 
 June requests `reflectionRequest: { evidenceIds, mode: "deep" }` in an
-owner-private conversation when `reflectionRequestAvailable` is advertised,
+admitted task when `reflectionRequestAvailable` is advertised,
 with empty reply text and no other actions. IDs must identify existing retained
 sources; the host binds the scope. The queued/duplicate receipt is not a
 completed simulation. Deep mode keeps the existing idle delay, quiet hours,
@@ -287,11 +297,16 @@ skill data. Historical review still requires current full-input provenance,
 settled publication, expiry and rejection checks, but grants no effect authority.
 This is inert review data only: no code, instructions, skills, personality or
 permissions are modified, and no coding job, promotion or installation is
-authorized. Evaluation and any separately approved coding are later capabilities.
+authorized by staging. Separate held-out evaluation can establish current
+eligibility for `skillCodingProposal`; June can then queue the exact configured
+coding task without a compulsory human approval. The host rechecks the immutable
+skill/digest and full training/held-out provenance before admission. Queuing is
+not completion, installation, publication or deployment; historical pending work
+and unknown attempts never auto-start or retry.
 
-### Private interruption previews
+### Optional interruption previews
 
-In an owner-private Slack turn, June can emit
+In an admitted Slack task with scoped reflection evidence, June can emit
 `social: {kind: "interruption_proposal", candidateId, userId, text}` with empty
 reply text and no other directives. After inference settles, the actor revalidates
 the immutable publication, all original evidence and rejection status, and checks
@@ -309,7 +324,7 @@ this exact command without inference, evidence ingestion, or extraction. Unlike
 inert model staging, this path also requires the original creation epoch to remain
 current. Neither path approves a candidate or refreshes its send eligibility.
 
-The preview quotes the exact frozen recipient/message privately in the current
+The preview quotes the exact frozen recipient/message in the originating
 conversation. It sends no separate notification or outreach, grants no tools,
 and copies no candidate rationale into the social ledger. Candidate provenance
 includes all original request evidence IDs, not just cited evidence. Repeating
@@ -339,9 +354,11 @@ RivetKit 2.3.21 still emits the repository's documented native
 `transaction_closed` shutdown diagnostic; passing checks are not a claim of
 production engine readiness.
 
-### Exact private candidate inspection
+### Exact scoped candidate inspection
 
-After `!reflection list`, send June `!reflection inspect <64hex>` with the full
+June's model-readable `reflectionReview` lists then inspects an exact candidate in
+the host-bound scope, with no effects. The separate legacy command path remains:
+after `!reflection list`, send June `!reflection inspect <64hex>` with the full
 opaque candidate ID in an authenticated owner-private conversation. The host
 handles this exact command without inference, memory ingestion/extraction or
 automatic reflection enqueue. Ordinary conversation still invalidates candidates;
@@ -349,9 +366,11 @@ inspection does not weaken live-work preemption or approve any later action.
 
 `inspectCandidate(scope, id)` returns one exact generated decision/rationale and
 current provenance metadata for **all** source inputs, marking which IDs the
-decision cited. It binds the configured owner-private scope and rechecks source
-authorization, deletion, freshness, candidate epoch/presence, live occupancy and
-quiet hours on every read. The DTO has a 24,000-byte UTF-8 JSON ceiling: oversized
+decision cited. It binds the supplied source scope and rechecks authorization,
+deletion, freshness, settled publication, expiry and rejection on every read.
+Historical review does not require the original epoch to remain action-eligible;
+it never waives the epoch/live/quiet checks at an effect boundary.
+The DTO has a 24,000-byte UTF-8 JSON ceiling: oversized
 results are unavailable, never silently clipped. Source bodies are not separately
 returned; the exact generated rationale may itself quote its support.
 The rationale and any simulations remain generated hypotheses, never independent
@@ -367,7 +386,7 @@ June-authored review reports from automatic platform context. This command does
 not supply the inspected body to June's model; a model-readable continuation is
 a separate capability, not implied by listing or inspecting through a command.
 
-Trusted host integrations can call `candidate(alias, ownerPrivateScope)` for the
+Trusted host integrations can call `candidate(alias, originatingScope)` for the
 full current candidate. Omitting the scope preserves the operator's legacy
 internal-ID lookup. Neither read is approval, a durable reservation, nor a later
 send/staging grant: consumers must recheck authority and eligibility at their
@@ -376,8 +395,8 @@ June command, no-retention boundary, read races and invalidated send retries.
 
 ### Separate held-out skill evaluation
 
-When `skillEvaluationRequestAvailable` is advertised on an owner-private inbound
-turn, June can request `skillEvaluationRequest: {candidateId, heldOutEvidenceIds}`
+When `skillEvaluationRequestAvailable` is advertised for an admitted task,
+June can request `skillEvaluationRequest: {candidateId, heldOutEvidenceIds}`
 with empty text and no other action. `candidateId` is the exact 64-hex reflection
 alias, not a skill ID, behavior body or model-selected digest. Select 2–5 distinct
 original retained sources disjoint from **every** original generation input,
@@ -387,10 +406,12 @@ provider has never encountered the material.
 
 The host resolves the existing immutable `skillChange`, releases only the
 requesting inference's settled occupancy, and stages one request per candidate.
-The actor API `requestSkillEvaluation(input, expectedDeletionRevision)` requires
-the originating turn's frozen ledger revision. It rechecks that revision before
-retrieval and immediately before enqueue, so deletion of originating input or
-context blocks staging even when all candidate evidence is still current.
+The actor API `requestSkillEvaluation(input, expectedDeletionRevision, scope)` requires
+the host-bound originating scope and turn's frozen ledger revision. Omitted scope
+preserves the legacy private caller contract, not authority to substitute it.
+It rechecks that revision before retrieval and immediately before enqueue, so
+deletion of originating input or context blocks staging even when all candidate
+evidence is still current.
 MCP result-only synthesis does not advertise this action.
 Choosing a different held-out set cannot retry it. The existing reflection
 workflow owns idle delay, quiet hours, live preemption, capacity, cooldown,
@@ -409,14 +430,14 @@ flushed before dispatch, results after actual settlement. Interrupted work
 becomes uncertain and never replays remaining cases, even after reconciliation.
 Failures, negative judgments and abstentions remain distinguishable.
 
-`skillEvaluation(alias, ownerPrivateScope)` returns
+`skillEvaluation(alias, originatingScope)` returns
 `{candidate, receipt, evidenceIds, eligible, checkedAt}` or `null`, after checking
 all original and held-out provenance. `evidenceIds` contains their complete
 union. Historical receipt visibility is not current action eligibility:
 `eligible` additionally requires a settled all-yes result, no live work and
 non-quiet time. Consumers must recheck at their own effect boundary. No result
 installs a skill, promotes a proposal, approves coding, grants permissions, or
-establishes an executed behavioral improvement. Private review is effect-free.
+establishes an executed behavioral improvement. Scoped review is effect-free.
 
 ## Semantics and limits
 
@@ -456,43 +477,48 @@ establishes an executed behavioral improvement. Private review is effect-free.
   dissent, even if synthesis disagrees or fails. Journal individual evaluations
   separately if per-juror crash recovery is required; `runJury` is one bounded
   convenience pass, not a workflow engine.
-- June's owner-private `jury` directive returns a bounded advisory report:
+- June's `jury` directive uses its authenticated originating evidence scope and returns a
+  bounded advisory report:
   every first-pass answer, critic and synthesis are separate, followed by
   explicit abstention and mechanical dissent references. Failed synthesis does
   not erase votes. Labels and rationale excerpts are individually bounded and
   quoted so all sections fit within 4,096 characters, even for eight jurors;
   citation counts are shown without a source-ID list or evidence records.
-  The report enters existing deletion-protected private history, so June can
+  The report enters existing deletion-protected conversation history, so June can
   read it on a follow-up without another provider call or a new result store.
   Reports are historical proposals, never fresh evidence or permission; missing
   votes in older synthesis-only reports remain unknown, not unanimous.
 - Personality is a narrow curated style surface (verbosity, tone, humor,
   interests). Its charter has no patch path. Owner corrections require matching
   trusted correction provenance and outrank inference. Revisions are append-only
-  snapshots; rollback appends an inverse of the current head. Owner authorization
-  for revision/rollback stays outside this module. Confidence is recorded only.
+  snapshots; rollback appends an inverse of the current head. Runtime publication
+  decisions and authenticated host controls stay outside this module. Confidence
+  is recorded only.
   Traits retain evidence scope; never inject private-scoped traits or historical
   revisions into public prompts. Memory integration must invalidate derived
   revisions on forgetting and handle durable storage/history retention.
 - Evaluations validate freshness at their supplied snapshot time. Revalidate
   evidence at proposal acceptance, after long calls, on replay and on deletion.
-  Provider exceptions/malformed decisions become explicit abstentions. There is
-  no Jev network implementation or claimed calibration; inject a real supported
-  typed-decision function through `typedEvaluator`.
+  Provider exceptions/malformed decisions become explicit abstentions. This
+  domain does not implement Jev transport or claim calibration; inject a supported
+  typed-decision function through `typedEvaluator`. June's separate configured
+  Jev observer is not a jury evaluator.
 
-## Owner-private held-out personality preview
+## Source-scoped held-out personality preview
 
 When reflection and curated memory are configured and their existing startup
 gates are enabled, June can request `personalityEvaluate` with an exact pending
 global proposal `candidateId` and `heldOutSourceIds` (1–4 distinct original
-interaction IDs). Leave text empty and other actions unset. This is available
-only on owner-private inbound turns, not guest/channel turns, worker results,
-web/MCP synthesis, or prompts without a verified Slack `im` surface.
+interaction IDs). Leave text empty and other actions unset. Use only when the
+task advertises this capability. The host supplies the originating scope for
+candidate and evidence reads; no fixed owner-private audience may be substituted.
+June judges whether evaluation and disclosure fit the task. Synthesis and explicit
+specialist ceilings still apply; availability does not enroll retention.
 
 `createPersonalityPreview` in `../runtime/personality-evaluation-preview.ts`
 reads the proposal and current global profile, rejects a stale target version,
 and requires held-out IDs disjoint from the proposal's original support IDs.
-Its host-only `personality.evaluationCandidate(id)` reader checks the actor's
+Its host-only `personality.evaluationCandidate` reader checks the actor's
 accepted/rejected decision ledger atomically with the current profile and
 curated payload; a stored payload marked pending alone is not sufficient.
 Sources must remain authorized, fresh, not forgotten or opted out, and no more
@@ -502,10 +528,12 @@ existing tool-free reflection provider, with one shared provider slot and a
 30-second per-call deadline. Cancelled/uncooperative calls retain their slot
 until actual settlement. No retries or background jobs are created.
 
-The service exports `snapshot`, `isCurrent`, `evaluate(snapshot, signal?, side?)`
-and `preview`; comparison callers can reuse the same snapshot and executor for
+The service exports `snapshot(source, input)`, `isCurrent`,
+`evaluate(snapshot, signal?, side?)` and `preview(source, input, signal?)`.
+`source` is the authenticated host event, never model input. Comparison callers
+reuse the same frozen source, snapshot and executor for
 `"current"` and `"candidate"`. Revalidate with `isCurrent` before releasing any
-evaluation output. Snapshots and raw decisions are volatile owner-private data;
+evaluation output. Snapshots and raw decisions are volatile source-scoped data;
 never journal evidence text or provider rationale. The June path returns only
 IDs, yes/no/abstain outcomes, timestamp, target version and SHA-256 profile
 digests over canonical `{version,style}`. The candidate uses target version + 1.
@@ -514,16 +542,16 @@ and before releasing the result; changes discard the result.
 
 This judges a style record against selected interactions; it does **not**
 generate candidate replies, send messages to another recipient, mutate a
-profile, accept a proposal, or create a promotion receipt. Only the ordinary
-private owner reply carries the metadata report. Source-ID disjointness is not
-proof of statistical independence or that a provider has never seen the text.
+profile, accept a proposal, or create a promotion receipt. The task receives only
+the metadata report; evidence and rationale are not returned. Source-ID disjointness
+is not proof of statistical independence or that a provider has never seen the text.
 Judgments are advisory, not calibrated scores; abstention means unknown. Verify
 offline with `src/runtime/personality-evaluation-preview.test.ts` and the
 existing evaluator tests, using fake providers and disposable stores/engine.
 
 ## Candidate versus current personality
 
-In an owner-private conversation, ask June to compare a pending personality
+In an admitted task, ask June to compare a pending personality
 candidate with the current profile and provide 1–4 original held-out source IDs.
 The `personalityEvaluate` action with `mode: "compare"` uses the same snapshot,
 fixed suitability rubric and reflection evaluator for both profiles. It excludes
@@ -546,31 +574,34 @@ source expires); source forgetting or candidate invalidation makes it
 unavailable. No interaction text, profile values, model rationale or confidence
 is persisted in a receipt. At most 100 unexpired receipts are retained in the
 latest encrypted curated snapshot; older encrypted history follows the store's
-existing retention/backup limitations. Approval must independently recheck the
-live profile digests, the personality actor's terminal decision ledger, and owner
-authorization. Curated staging status is not approval status. Neither a receipt
-nor a favorable judgment grants publication authority.
+existing retention/backup limitations. Grounded publication must independently
+recheck the live profile digests, the personality actor's terminal decision ledger,
+source scope and current evidence. Curated staging status is not acceptance status.
+Neither a receipt nor a favorable judgment grants publication authority.
 
-After reviewing the exact proposed style and a complete comparison, the owner
-can publish that candidate to **all conversations** with a fresh plain-text
-command in an authenticated owner-private DM:
+After reviewing the exact proposed style and a complete comparison, the existing
+explicit command path can publish that candidate to **all conversations** from
+its admitted originating scope:
 
 ```text
 !personality approve {"proposalId":"ID","expectedVersion":VERSION,"evaluationId":"RECEIPT_UUID","candidateDigest":"SHA256_FROM_COMPARISON","publish":true}
 ```
 
-The existing approval path resolves the host-created receipt, revalidates its
+The grounded acceptance path resolves the host-created receipt, revalidates its
 supporting and held-out evidence, and compares both live profile digests before
 atomically recording the revision and terminal acceptance. A missing, incomplete,
 expired, mismatched or stale evaluation cannot publish anything. Forgetting can
 change effective style without advancing the version; the current-profile digest
 detects that too. Repeating acceptance cannot append another revision, and
 rollback never revives evaluation authority. No winning score is required;
-judgments remain advisory. Preview-only results have no approval receipt. Direct
-owner-authored `!personality revise` remains a separate explicit manual edit,
-not evidence that a staged candidate was evaluated. Private support and rationale
-are never declassified by this command.
+judgments remain advisory. Preview-only results have no acceptance receipt.
+Direct `personalityPreview` with `apply:true` lets June publish a version-bound,
+public-safe style without compulsory human confirmation; `!personality revise`
+remains a separate manual route. Neither is evidence that a staged candidate was
+evaluated, and neither publishes private support or rationale.
 
-Staged approval requires an available configured reflection comparison provider.
-Curated-memory-only configurations can still stage suggestions, but cannot approve
-them until comparison is available; explicit manual owner edits remain available.
+Grounded acceptance requires an available configured reflection comparison provider.
+Curated-memory-only configurations can still stage suggestions, but cannot accept
+them through the grounded path until comparison is available. Direct public-safe
+style application remains separate. No draft, favorable score or historical
+receipt automatically changes the profile, and source support does not prove activation.

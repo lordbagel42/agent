@@ -1,13 +1,16 @@
 # Rivet Dynamic Apps
 
 Opt-in Fetch/HTTP-app integration with `@rivet-dev/dynamic-apps@0.3.1`. June can request builds,
-prepare verified source, and inspect deployment receipts in an owner-private DM.
+prepare verified source, deploy an exact prepared receipt, and inspect outcomes
+from admitted task turns where the integration is exposed. June judges intent,
+authority, sensitivity and publication audience; no owner-private DM or compulsory
+human approval is required for an ordinary task.
 The app host is a **separate process with a dedicated Rivet engine**, not another
 route in June's service. No live installation or activation is included.
 
 **Fetch/HTTP deployment was checked on a disposable development engine**, including
 authenticated POST requests, updating a running app to a different release,
-duplicate approvals, and credential stripping. June's approval workflow is also
+duplicate deployment requests, and credential stripping. June's receipt workflow is also
 tested with real Rivet conversations and a fake SDK deployer. Neither check
 activates production; verify the same path on the intended isolated host before
 enabling it for June.
@@ -36,37 +39,43 @@ actor apps through the dashboard or another client.
 ## June's workflow
 
 1. Ask June to build an app with a stable lowercase ID, such as `counter`.
-   Her `apps` directive accepts `build`, `prepare`, and `inspect`; it is absent
-   in guest/public turns and synthesis passes. Planning can use her existing
+   Her `apps` directive accepts `build`, `prepare`, `deploy`, and `inspect` on
+   eligible task turns; report-only turns cannot launch work. Planning uses her existing
    execution workers. A build uses the existing coding supervisor and configured
    coding runtime, never a second autonomous coding system.
-2. Approve the coding proposal with the usual `!approve <job-prefix>`. The worker
+2. A fresh coding task starts on host admission without `!approve`. The exact
+   task/runtime and originating deletion revision are frozen; legacy pending
+   jobs are not automatically started. The worker
    writes `june-app.json` in its isolated worktree. The supervisor reads this
    bounded export before verification and rejects changes during verification.
    Only a passed, non-replayed verifier result retains the exact exported bytes.
 3. Ask June to prepare the app using the full job ID from its completion report.
    This copies the retained artifact to the dedicated host; it does **not** run
    the SDK or grant deployment. Later worktree edits cannot alter the artifact.
-   The workspace must also still match its verification receipt at preparation
-   and approval time; changed or revoked jobs cannot deploy.
+   The job/source must still match its verification receipt at preparation
+   and deployment time; changed or revoked jobs cannot deploy.
    Choose `access: "public"` for anyone without login or `"signed-in"` for anyone
    who signs in (no owner/workspace allowlist). Null/omitted access leaves the
    app internal-only. Publication requires the optional viewer configuration.
-4. Send the returned `!deploy-app <receipt-id>` yourself as a fresh plain-text
-   owner Slack DM. Quotes, code blocks, forwarded messages and attachments cannot
-   authorize deployment, even if Slack's fallback text contains the command.
-   This distinct, ten-minute approval permits dependency installation, generated
-   code execution and Rivet resource creation. Models cannot emit an approval
-   action. Expired proposals require a new preparation turn and a new receipt;
-   replaying the original turn cannot renew an approval.
-   The receipt binds the audience as well as the source. Changing the audience
-   requires a new preparation/approval, even with identical source. Publication
-   cannot recall content already downloaded while public.
+4. June inspects the prepared receipt and chooses
+   `apps: {action:"deploy",appId:"counter",receiptId:"<exact receipt id>",jobId:null,goal:null,access:null}`.
+   The host revalidates the matching app ID, verified source digest and prepared
+   audience; deploy cannot substitute any of them. The ten-minute receipt permits
+   dependency installation, generated-code execution and Rivet resource creation
+   only on the configured app host. Preparation alone runs no SDK deployment.
+   Expiry or an audience change requires a new preparation and receipt; replay
+   cannot renew one. Publication cannot recall content already downloaded.
 5. Ask June to inspect `counter`. She reports `prepared`, `deploying`, `deployed`
    or `unknown`, the artifact digest, recorded release and private URL. These are
    historical receipts, **not health checks**. Active/uncertain receipts take
    precedence over newer preparations. Inspect again explicitly for completion;
    there is no automatic notification or background polling.
+
+The legacy `!deploy-app <receipt-id>` fresh plain-text owner Slack DM remains an
+optional manual interface with the same exact-receipt checks, not a prerequisite
+for June's `deploy` action. Quotes, code blocks, forwarded messages and attachment
+fallbacks do not execute that command. Coding approval/recovery commands likewise
+remain manual legacy paths, not an automatic sweep of old pending work.
 
 An owner-selected workspace verifier must actually validate the exported app,
 not merely trust the worker's claim or test unrelated workspace files. The
@@ -176,7 +185,7 @@ next release. Only a successful recorded result reopens viewing. An unknown
 outcome stays closed, including after restart. The viewer rechecks that pointer
 after authentication and serving to avoid returning a response under a
 superseded audience. Changing viewer configuration invalidates its old
-approvals/publications; reprepare and approve, never rewrite stored binding markers.
+receipts/publications; reprepare and deploy, never rewrite stored binding markers.
 
 Viewer credentials, Access assertions, identity headers and cookies are stripped
 before generated code; response cookies and CORS grants are stripped as well.
@@ -199,7 +208,7 @@ increment. An operator must inspect the dedicated host and Rivet dashboard to
 establish what happened. Do not clear receipts, restore an old database or swap
 engines merely to unblock deployment: that loses duplicate protection. Back up
 the host's `deployments.sqlite` (including WAL safely) and engine state together.
-Cancellation/forgetting prevents new preparation/approval but cannot undo an
+Cancellation/forgetting prevents new preparation/deployment but cannot undo an
 already dispatched deployment or erase source already retained by the app host.
 Host artifact retention and deployed-resource deletion require separate handling.
 
@@ -211,7 +220,7 @@ stripping and restart recovery before publishing. Image publication does not
 activate June; the cluster's Flux configuration pins a reviewed image digest.
 
 The host allows one build at a time. A different build receives 409 without
-consuming its approval. `/health/live` reports process liveness;
+consuming its prepared receipt. `/health/live` reports process liveness;
 `/health/ready` requires a reachable engine listener and writable audit log.
 Readiness is not a deployed-app health check. On SIGTERM the host rejects new
 control requests, finishes in-flight receipts and lets RivetKit drain. Allow

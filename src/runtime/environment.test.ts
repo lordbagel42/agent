@@ -156,7 +156,7 @@ it("delegates two private workers into separate reusable command environments an
   expect(
     executionCapabilities(deps, { ...event, senderId: "guest" })
       .environmentAvailable,
-  ).not.toBe(true);
+  ).toBe(true);
   expect(
     executionCapabilities(deps, {
       ...event,
@@ -164,7 +164,11 @@ it("delegates two private workers into separate reusable command environments an
       metadata: { channelType: "channel" },
       address: { ...event.address, conversationId: "C1" },
     }).environmentAvailable,
-  ).not.toBe(true);
+  ).toBe(true);
+  expect(
+    executionCapabilities({ ...deps, environments: undefined }, event)
+      .environmentAvailable,
+  ).toBe(false);
   const { client } = await setupTest(t, createJuneRegistry(deps));
   const conversation = client.conversation.getOrCreate(["private", "owner"]);
   await conversation.send("inbox", { type: "event", event });

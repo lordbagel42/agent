@@ -5,7 +5,7 @@ import { slackSourceId } from "../imports/identity.js";
 import type { EvidenceStore, Source } from "./store.js";
 
 export const MEMORY_CORRECTION_HELP =
-  "Send !memory-correct <verbosity|tone|humor|interests> <value> as a standalone, single-line plain text message in your Slack DM with June (value: 1–2000 UTF-16 code units; no quotes, code, lists, attachments or rich embeds). This records private correction evidence only; applying a curated personality revision still requires separate owner review. It does not change June's global profile, permissions, or other memories.";
+  "The optional owner-attributed correction command is !memory-correct <verbosity|tone|humor|interests> as a standalone plain text message in the owner's Slack DM, followed by a value of 1–2000 UTF-16 code units (no quotes, code, lists, attachments or rich embeds). This records private correction evidence only; it does not change June's global profile, permissions, or other memories. Ordinary personality requests from any admitted conversation use the exposed personality tools and June's runtime judgment, without a compulsory owner command.";
 
 export function isMemoryCorrectionCommand(text: string): boolean {
   return /^!memory-correct(?:\s|$)/u.test(text);

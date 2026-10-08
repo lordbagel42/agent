@@ -92,6 +92,7 @@ import {
 import { editHistory } from "./runtime/conversation-storage.js";
 import { createDebugDispatcher } from "./runtime/debug-dispatch.js";
 import { DiagnosticLog } from "./runtime/diagnostics.js";
+import { createImportTask } from "./runtime/import-task.js";
 import {
   capabilitySnapshot,
   createInspectionReader,
@@ -1042,7 +1043,7 @@ async function main() {
           decide,
           evidenceCurrent(scope: string, evidence: Evidence[]) {
             const current = memory.store.reflectionEvidence(
-              audience(scope),
+              scope,
               evidence.map((item) => item.id),
               config.reflection?.policy.evidenceMaxAgeMs ?? 0,
             );
@@ -1054,7 +1055,7 @@ async function main() {
           ) {
             if (input.ownerId !== config.owner.id || signal.aborted)
               return { authorized: false, evidence: [] };
-            const scope = audience(input.scope);
+            const scope = input.scope;
             const age = config.reflection?.policy.evidenceMaxAgeMs ?? 0;
             const evidence =
               memory?.store.reflectionEvidence(scope, input.evidenceIds, age) ??
@@ -1078,7 +1079,6 @@ async function main() {
     decisionModel
       ? createJuryTool({
           store: memory.store,
-          scope: ownerAudience,
           executor: decisionExecutor,
           evidenceMaxAgeMs: config.reflection.policy.evidenceMaxAgeMs,
           providers: {
@@ -1222,7 +1222,8 @@ async function main() {
         })
       : undefined;
   const forgetSource = async (scope: string, sourceId: string) => {
-    audience(scope);
+    // The caller already validated the exact source against this routed scope.
+    // Cleanup is independent of which audiences may enroll new retained data.
     if (!memory?.store.isDeleted(sourceId))
       throw new Error("Source must be tombstoned first");
     agents?.webhooks.invalidatePending();
@@ -1305,10 +1306,10 @@ async function main() {
           pepper: secret(config.artifacts.pepperEnv),
         }),
         deletionRevision: () => memory?.store.deletionRevision() ?? 0,
-        workflow: async (id) =>
+        workflow: async (id, event) =>
           (await client.workflowRun
             .getOrCreate([config.owner.id, id])
-            .presentation()) ?? undefined,
+            .presentation(event)) ?? undefined,
         sendSecret: config.slack
           ? slackArtifactSecret(
               config.slack.teamId,
@@ -1437,9 +1438,15 @@ async function main() {
     browserProposal:
       browser &&
       capabilities &&
+      config.capabilities &&
       (config.browser.mutationOperations.length ||
         config.browser.credentialOperations.length)
         ? createBrowserProposal({
+            owner: config.owner.id,
+            path: join(
+              config.capabilities.directory,
+              "browser-proposals.sqlite",
+            ),
             operations: config.browser.mutationOperations,
             credentialOperations: config.browser.credentialOperations,
             browser,
@@ -1497,7 +1504,7 @@ async function main() {
               ? "operator_acknowledged_not_verified"
               : "not_configured",
             liveVerified: "unknown",
-          })}. Browsing requires explicit browser.enabled, capabilities.directory, isolated execution configuration and JUNE_ALLOW_ISOLATED_BROWSER=1. Read recipes are anonymous GETs without steps or vault lookup. Separately configured mutations permit one anonymous fill or click. CredentialOperations require exact validated credential bindings; browserProposal with operation:null lists names for exact proposals only. No model grant/execute or credential-reading path exists. Every execution requires its own exact recipe-digest/account/item/origin grant. Results are receipts only, not webpage content. Inspection does not launch Chromium, read credentials or authorize operations; host isolation acknowledgements are not sandbox verification.`,
+          })}. Browsing requires explicit browser.enabled, capabilities.directory, isolated execution configuration and JUNE_ALLOW_ISOLATED_BROWSER=1. Read recipes are anonymous GETs without steps or vault lookup. Separately configured mutations permit one anonymous fill or click. CredentialOperations require exact validated credential bindings; browserProposal with operation:null lists names and an exact configured name executes through a durable receipt. The host issues the exact recipe-digest/account/item/origin grant; no human per-action approval or credential-reading path is required. Results are receipts only, not webpage content. Inspection does not launch Chromium, read credentials or authorize operations; host isolation acknowledgements are not sandbox verification.`,
           "Browser cancellation requests cleanup, not confirmed stoppage. Pending work retains admission until it settles. Cleanup failure leaves the receipt unknown and blocks new work on that adapter. Never describe unknown as success or safely retryable; owner reconciliation requires independently confirmed stoppage and outcome.",
         ].join("\n"),
       mcp: connections,
@@ -1533,14 +1540,24 @@ async function main() {
     personalityEvaluation:
       reflection && memory?.personality
         ? createPersonalityPreview({
-            ownerId: config.owner.id,
+            owner: config.owner,
             store: memory.store,
-            readCandidate: (id) =>
+            readCandidate: (source, id) =>
               client.personality
                 .getOrCreate([config.owner.id])
-                .evaluationCandidate(id),
+                .evaluationCandidate(source, id),
             decide: reflection.decide,
             evidenceMaxAgeMs: reflection.policy.evidenceMaxAgeMs,
+          })
+        : undefined,
+    importTask:
+      imports && config.memory
+        ? createImportTask({
+            owner: config.owner.id,
+            path: join(config.memory.directory, "import-task.sqlite"),
+            selections,
+            imports,
+            extraction: importExtraction,
           })
         : undefined,
     importCancel: imports
@@ -1555,16 +1572,21 @@ async function main() {
         ? createAppsClient({
             ...config.dynamicApps,
             token: appToken,
-            readJob: async (id) => {
-              const state = await june.snapshot();
-              if (
-                !Object.hasOwn(state.jobs, id) ||
-                state.forgottenEvents?.includes(id)
-              )
-                return undefined;
+            readJob: async (id, conversationKey) => {
               const job = await client.job
                 .get([config.owner.id, id])
                 .snapshot();
+              const scope = job.proposal?.conversationKey ?? [
+                "private",
+                config.owner.id,
+              ];
+              if (
+                JSON.stringify(scope) !== JSON.stringify(conversationKey) ||
+                !(await client.conversation
+                  .getOrCreate(conversationKey)
+                  .canResumeJob(id))
+              )
+                return undefined;
               return job.runtimeId === coding?.runtimeId ? job : undefined;
             },
           })
@@ -1770,7 +1792,7 @@ async function main() {
                       title: "Native coding",
                       status: config.coding.enabled ? "configured" : "disabled",
                       detail:
-                        "Separate approval and host isolation are required. This console cannot start, resume or cancel jobs.",
+                        "Fresh tasks use host admission and isolation without per-action human approval. This console cannot start, resume or cancel jobs.",
                     },
                     {
                       title: "Public Slack search",

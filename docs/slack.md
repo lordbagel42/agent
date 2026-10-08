@@ -8,9 +8,13 @@ work around denied access.
 | `slack-bot` | June | Existing host bot credential |
 | `slack` | The consenting owner | Official Slack MCP user OAuth |
 
-Both use the existing owner-private tool catalog and approval receipts. Public
-channels and group conversations do not receive these catalogs. June's ordinary
-channel replies and reactions remain separate and unchanged.
+Both use the configured MCP catalog and durable execution receipts. Admitted
+tasks can use exposed tools without an owner-private conversation or compulsory
+human approval. June judges legitimacy, safety and disclosure to each audience;
+tool access does not make private data public. Provider scopes, disabled tools,
+login/consent and authenticated administration remain enforced. The public-web
+research specialist retains its explicit read-only ceiling. June's ordinary
+channel replies and reactions remain separate.
 
 ## Thread subscriptions
 
@@ -18,10 +22,10 @@ Owner channel messages containing the whole word “June” (case-insensitive) o
 direct @mention subscribe June to that thread, even when she chooses silence.
 Threads she starts or posts in are also subscribed. Subscriptions persist across
 restarts and let every participant follow up without another ping. Guests remain
-in separate guest queues with unchanged tool permissions and receive the same
-bounded same-conversation context as guest pings when context is enabled, never
-owner-private history. Unrelated threads and unmentioned top-level guest messages
-are not admitted by a subscription. `##` opt-outs, direct-mention requirements for
+in separate guest queues and receive the same bounded same-conversation context
+as guest pings when context is enabled, never automatically injected owner-private
+history. Unrelated threads and unmentioned top-level guest messages are not
+admitted by a subscription. `##` opt-outs, direct-mention requirements for
 group pings, and privacy boundaries remain unchanged. A name reference does not
 count as a direct @mention. Previously ignored messages are not replayed.
 
@@ -35,7 +39,7 @@ Group DMs (`mpim`) use the existing signed HTTP webhook, not Socket Mode.
 Subscribe the live app to `message.mpim` with `mpim:history` and `mpim:read`;
 the checked-in manifest alone does not enable delivery. June accepts ordinary
 messages from every participant without a ping or name reference. Guests remain
-in separate guest queues with unchanged tool permissions. June is instructed to
+in separate guest queues with host-bound task scopes. June is instructed to
 reply to each ordinary group-DM message, especially one naming her; a brief
 acknowledgment or follow-up is enough. Multipart messages may still be answered
 together. Explicit wait/stop requests, `##` and `<>` opt-outs, group-ping silence
@@ -45,21 +49,23 @@ command path; this policy does not add acknowledgments to commands, worker
 completions or automated notifications.
 
 These are shared conversations, not owner-private DMs. Replies and bounded
-same-conversation/thread context use the normal conversation path. Private DM
-history, owner memory, private tools and approvals remain unavailable, and
-cross-conversation continuity is withheld.
+same-conversation/thread context use the normal conversation path. Ordinary
+tools are not withheld merely because the audience is shared. Private histories
+and owner memory are not automatically injected; deliberate retrieval and any
+disclosure must respect source and audience boundaries. Cross-conversation
+continuity is withheld, and tool access does not enroll new memory-retention scopes.
 Enabling the subscription does not replay messages sent before it was enabled.
 
 ## Bot tools
 
 When Slack and private MCP storage are configured, startup enrolls the fixed
-host-owned bot catalog. Initial trusted reads are enabled and all mutations
-require exact-argument owner approval. June cannot change permissions. Owner
-disable/disconnect decisions survive restarts. Changed tool contracts are disabled
-until reviewed again. Existing installations must review newly added tools such
-as `canvases.getContent`; changing the catalog also changes the method enum in
-`slack.capabilities`, so review that tool again if disabled. Unchanged tool
-permissions survive, but the catalog revision invalidates pending approvals.
+host-owned bot catalog. Reads default to `read`; mutations retain the policy name
+`approval` but fresh June-selected actions execute immediately with exact-argument
+grants and receipts. June's ordinary tool calls cannot change permissions. Saved
+disable/disconnect decisions survive restarts and contract changes, including
+older disables with unknown reasons. New or changed non-disabled bot contracts
+use the catalog defaults; a changed bot identity disables its tools. Catalog
+revision changes invalidate stale grants and proposals, never execute them.
 Catalog registration does not establish live health or installed scopes; every
 invocation verifies bot identity and, for org installs, workspace assignment.
 Slack still enforces resource access and workspace policy.
@@ -69,7 +75,7 @@ connection** form with URL `https://slack.com/api/`, a descriptive name and no
 bearer token. This enrolls the host adapter, not a remote MCP endpoint. Replaying
 an old Add submission cannot undo a later disconnect.
 
-Ask June privately:
+Ask June in an admitted conversation:
 
 - “What Slack bot tools do you have?”
 - “Check whether you have permission to pin messages.”
@@ -123,7 +129,8 @@ requests and automatic cross-identity fallbacks are deliberately excluded.
 Custom `chat.unfurl` is also excluded: never request `links:write`.
 
 `files.uploadContent` combines Slack's upload allocation, binary transfer and
-completion under one approval. Required `filename` and `content` are strings;
+completion under one exact grant and receipt. Required `filename` and `content`
+are strings;
 optional `encoding` is `utf8` (default) or canonical `base64`. Optional `title`,
 `channel_id`, `initial_comment` and `thread_ts` are strings. Content is limited to
 48 KiB decoded and the whole request must fit the broker's 64 KiB argument limit.
@@ -134,48 +141,69 @@ automatic file downloads are not provided by this adapter.
 API arguments use Slack's documented parameter names. Required parameters are
 listed in each contract; Slack validates detailed optional fields. Follow cursors
 explicitly. Responses are bounded and filtered by the same private-inspection and
-credential rules as remote MCP. Mutations return an approval receipt, not their
+credential rules as remote MCP. Mutations return an execution receipt, not their
 raw response; use an authorized read to look up created resources afterward.
 Uncertain mutations are never automatically retried, including partial uploads.
 Thread-stop and group-ping rules still apply.
 
 ### Verify through June, not just the manifest
 
-In an owner-private conversation, ask June to check `slack.capabilities` for
-`pins.add` and `canvases.edit`. Her interaction agent delegates to an authorized
-execution worker; a missing direct interaction tool is not missing support.
+Ask June to check `slack.capabilities` for `pins.add` and `canvases.edit` in an
+admitted task. Her interaction agent delegates to an authorized execution worker;
+a missing direct interaction tool is not missing support.
 The checks need `pins:write` and `canvases:write` respectively. Missing scopes
 require a separately authorized installation update, not merely a manifest edit.
 Disabled catalog tools require owner review in Connections, not a new Slack scope.
 
 For a live test, choose a disposable message and canvas the bot can access. Ask
-June to prepare the exact pin or append, approve it, then ask her to inspect the
-receipt and verify with `pins.list` or `canvases.getContent`. A prepared proposal,
-cached connection or local mock test does not prove the live operation succeeded.
+June to perform the exact pin or append, inspect its receipt, and verify with
+`pins.list` or `canvases.getContent`. No separate approval step is required.
+A prepared proposal, cached connection or local mock test does not prove success.
 Slack error responses and lost write responses conservatively remain `unknown`;
 inspect the external state before considering another action. No automatic
-background test or retry runs, and dashboard approval does not automatically
-notify June. Channel/group-DM requests cannot use this private catalog; send the
-target link in the owner's DM instead. Automated events retain their existing
-standing-read/proposal limits, with no new authority from these instructions.
+background test or retry runs, and legacy dashboard approval does not automatically
+notify June. Channel/group-DM requests use the same configured catalog, with
+audience-appropriate results. Host-enrolled event decisions can use enabled reads
+and fresh effects; notification-only wakeups cannot. Event content is untrusted
+evidence, not authority to bypass configuration or safety checks.
+
+## Direct outreach and history delivery
+
+`social.post` and `social.outreach` send through durable delivery receipts after
+June judges the task and recipient. `request_access` is obsolete: it creates no
+request, notification, permission or shared-context change. Candidate-linked
+`interruption_proposal` is an optional inert draft, not an outreach prerequisite;
+historical drafts never automatically become fresh sends. Unknown sends are not
+retried automatically.
+
+`slackHistory` reads bounded pages of conversations accessible to June's bot.
+Raw contents go directly to the verified **requester's** Slack DM, not the owner
+by default, the invoking shared thread or the model. The host verifies bot/workspace
+identity and rechecks the existing destination DM after reading. June must
+judge whether sharing the selected source with that requester is legitimate;
+bot access alone is not recipient consent. No attachments, deleted messages or
+expired history are recovered, and receipt success is not proof of complete history.
 
 ## Conversational Block Kit questions
 
 June can return `question: {prompt, options}` with empty `text` and 2–5 distinct
-option labels. In the verified owner's Slack DM the durable outbox renders a
-Block Kit question with buttons. Other surfaces receive numbered plain text.
-The owner can always type instead. Signed buttons expire after seven days;
+option labels. The durable outbox renders requester-bound Block Kit buttons in
+Slack DMs, channels and group DMs, regardless of owner identity. Other transports
+and legacy outbox messages without requester metadata use numbered plain text.
+The requester can always type instead. Signed buttons expire after seven days;
 the first button selection is deduplicated by the normal durable inbox and
-becomes a conversational reply. It never confirms a protected tool action.
-These conversational messages do not need a separate MCP mutation approval.
+becomes a conversational reply, never an authentication or credential grant.
+June judges the resulting request at runtime; no separate MCP approval is needed.
 
 Enable Slack app **Interactivity & Shortcuts** with the same production
 `/webhooks/slack` URL as event subscriptions. The manifest includes a template
 setting; it must be applied to the real app before clicks work. The receiver
-verifies Slack's signature and the signed button's owner, workspace and DM.
+verifies Slack's signature and the signed button's requester, workspace and
+conversation, preserving the selected thread and actual channel type. Another
+participant cannot answer on the requester's behalf.
 Arbitrary `chat.postMessage` blocks remain available through the bot catalog
-under exact approval, but custom interactive controls are not automatically
-wired into June's conversation.
+under exact grants and receipts, but custom interactive controls are not
+automatically wired into June's conversation.
 
 ## Install scopes and connect official MCP
 
@@ -195,9 +223,11 @@ automatically broaden the configured OAuth request or an existing grant.
 
 The owner must complete **Connections → Connect Slack → Slack consent**; the
 dashboard saves the authorization automatically on return, with no second
-confirmation. Then **Manage → Test & discover tools**. Review the discovered contracts
-and enable trusted reads; keep writes approval-required. OAuth consent cannot be
-completed by June, the bot credential or a management token. Existing official MCP
+confirmation. Then **Manage → Test & discover tools**. Review the contracts and
+their safety classifications. New remote contracts default to `approval`
+(fresh effects execute immediately); explicitly reviewed reads can use `read`.
+Saved disabled tools stay disabled. OAuth consent cannot be completed by June,
+the bot credential or a management token. Existing official MCP
 enrollment remains in use; no second OAuth implementation or Amp-account MCP
 connection is needed. Expiring grants require reconnecting.
 

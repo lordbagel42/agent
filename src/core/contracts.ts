@@ -42,6 +42,8 @@ export interface MessageEvent extends EventBase {
   /** Verified Slack reply in a subscribed or June-authored thread. Admission
    * only: not a direct mention, owner identity, or additional tool permission. */
   threadFollowup?: boolean;
+  /** Verified, recipient-bound Slack question choice; conversational admission only. */
+  questionAnswered?: boolean;
   /** Verified live Slack text, not a quote/code block, attachment or subtype.
    * Absent on historical/context events and old inbox records. */
   ownerCorrectionEligible?: boolean;
@@ -103,6 +105,8 @@ export interface OutboundMessage {
         webEmbed?: import("./web-embed.js").WebEmbed;
         artifact?: import("../artifacts/contracts.js").ArtifactPresentation;
         question?: import("./question.js").Question;
+        /** Host-bound requester and surface, never selected by model output. */
+        questionTarget?: { userId: string; channelType: string };
       }
     | { type: "reaction"; messageId: string; emoji: string; remove?: boolean };
 }
@@ -159,8 +163,8 @@ export interface ChannelAdapter {
     query: string,
     canStartAction?: () => boolean,
   ): Promise<ChannelSearchResult>;
-  /** Read June's accessible Slack history for the verified owner and deliver
-   * directly to that owner's Slack DM. Never return message bodies to a caller. */
+  /** Deliberately retrieve June's accessible Slack history for a task/audience.
+   * Deliver via the host; never return message bodies to a model caller. */
   shareHistory?(
     event: MessageEvent,
     request: import("./slack-history.js").SlackHistoryRequest,
@@ -170,7 +174,7 @@ export interface ChannelAdapter {
   ): Promise<SendResult>;
   /** Read-only local public-search token presence, not verified provider access. */
   hasSearchToken?(event: MessageEvent): boolean;
-  /** Bounded same-surface context for an already-authorized owner turn. */
+  /** Bounded same-surface context for an admitted turn, not cross-audience history. */
   context?(
     event: MessageEvent,
     signal?: AbortSignal,
@@ -185,7 +189,7 @@ export interface ChannelAdapter {
     | { status: "ready"; image: ModelImageInput }
     | { status: "unavailable"; code?: "files_read_required" }
   >;
-  /** Ephemeral sampled video frames; same initiating owner-DM boundary as images.
+  /** Ephemeral sampled video frames; same initiating-attachment boundary as images.
    * Decode in private temporary storage, remove it before returning, no audio. */
   readVideo?(
     event: MessageEvent,
@@ -244,7 +248,7 @@ export interface CompanionReply {
   text: string;
   /** Alternative to text: ordered conversational messages, not tool actions. */
   messages?: string[];
-  /** Independently addressed Slack messages; owner-authorized conversational output. */
+  /** Independently addressed Slack messages; June judges intent and audience. */
   sendMessages?: import("./messaging.js").DirectedMessage[];
   /** Native conversational choices, not authorization for a protected action. */
   question?: import("./question.js").Question;
@@ -265,7 +269,7 @@ export interface CompanionReply {
   repositoryRead?: import("../repository/contracts.js").RepositoryRead;
   social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
-  /** Owner-private reports, metadata/diff or cancellation; never approval. */
+  /** Scoped reports, metadata/diff or cancellation; never replay authority. */
   codingJob?: {
     action: "list" | "inspect" | "diff" | "report" | "cancel";
     id: string | null;
@@ -276,28 +280,28 @@ export interface CompanionReply {
   >;
   /** Request one current-channel lookup instead of a conversational reply. */
   search?: string;
-  /** Owner-only cross-conversation lookup, delivered only to the owner's Slack DM. */
+  /** Deliberate cross-conversation lookup; host delivery, not automatic model history. */
   slackHistory?: import("./slack-history.js").SlackHistoryRequest;
   /** Text is an optional acknowledgment before the configured deeper model. */
   escalate?: boolean;
   /** One public web query; never a request to search private Slack history. */
   webSearch?: string;
-  /** Opt-in owner-private disposable external code execution. */
+  /** Configured disposable external code execution, with task-scoped inputs. */
   e2b?: import("../tools/e2b.js").E2BRequest;
   /** Commands in this execution worker's host-selected isolated environment. */
   environment?: import("../environments/contracts.js").EnvironmentCommand;
-  /** Owner-private browser work, owned by the durable execution worker. */
+  /** Browser work owned by the durable execution worker; PINs stay protected. */
   browserTask?: import("../browser/contracts.js").BrowserCommand;
-  /** Owner Slack IM management of host-owned ongoing public research. */
+  /** Source-scoped management of host-owned ongoing public/read-only research. */
   research?: import("../research/contracts.js").ResearchCommand;
   webEmbed?: import("./web-embed.js").WebEmbed;
-  /** Owner-authenticated release tracking; never activation or approval authority. */
+  /** Read-only release tracking; never activation or recovery authority. */
   release?: { action: "inspect"; revision: string | null };
-  /** Owner-requested Amp work through the independent host dispatcher, not OAuth. */
+  /** Amp task work through the independent host dispatcher, not OAuth. */
   ampThread?: import("../runtime/amp-threads.js").AmpThreadCommand;
-  /** Owner-private read-only inspection of model runtime health. */
+  /** Read-only model runtime inspection; not an independent health attestation. */
   modelStatus?: boolean;
-  /** One owner-private MCP call; host resolves credentials and permissions. */
+  /** One MCP call; host resolves credentials, schemas and explicit disable controls. */
   mcp?: { connection: string; tool: string; argumentsJson: string };
   /** Selected saved permission/trust boundary only; never a tool call or grant. */
   mcpPermission?: { connection: string; tool: string };
@@ -307,15 +311,17 @@ export interface CompanionReply {
     tool: string | null;
     offset: number;
   };
-  /** Owner-private receipt metadata or one-use transient Puck reply; never execution. */
+  /** Receipt metadata or one-use transient Puck reply; never repeat execution. */
   mcpProposal?: { action: "inspect" | "result"; id: string };
-  /** Owner-private diagnostics: "logs", "recent" timings or one ping UUIDv4. */
+  /** Sensitive diagnostics: "logs", "recent" timings or one ping UUIDv4. */
   latency?: string;
-  /** Owner-private paginated OpenTelemetry observations, never replay authority. */
+  /** Paginated OpenTelemetry observations, never replay authority. */
   telemetry?: import("../telemetry/index.js").TelemetryQuery;
-  /** Owner-private aggregate token usage for the last 1, 7, or 30 days. */
+  /** Aggregate token usage for the last 1, 7, or 30 days. */
   analytics?: { days: 1 | 7 | 30 };
-  /** Owner-private bounded metadata inspection; never recall or mutation. */
+  /** Host-idempotent local encrypted evidence-ledger backup; content-free receipt only. */
+  memoryBackup?: true;
+  /** Bounded metadata inspection; never recall or mutation. */
   inspection?:
     | "tombstones"
     | "capability-matrix"
@@ -344,7 +350,7 @@ export interface CompanionReply {
     | import("../diagnostics/operation-reader.js").OperationInspection
     | { target: "imports"; selection: string | null; offset: number }
     | { target: "import-approval"; selection: string };
-  /** One owner-private query of retained evidence, never a permission grant. */
+  /** One audience-scoped query of retained evidence, never a permission grant. */
   recall?:
     | string
     | { kind: "dependents"; sourceId: string }
@@ -371,41 +377,42 @@ export interface CompanionReply {
     | { kind: "source"; sourceId: string }
     | { kind: "contradictions"; claimId: string }
     | { kind: "supersession"; claimId: string };
-  /** Owner-private bounded view of unaccepted memory claims; never review. */
-  pendingMemory?: true;
+  /** True lists pending claims read-only; an explicit decision reviews one exact
+   * proposal in the authenticated audience. Never supplies audience authority. */
+  pendingMemory?: true | { action: "accept" | "reject"; id: string };
   /** Privately stage evidence-grounded style only; never approve or publish. */
   personalitySuggestion?: import("../reflection/global-proposal.js").GlobalProposalInput;
   /** Stage from one retained reflection publication, never its generated text as evidence. */
   reflectionPersonalitySuggestion?: import("../reflection/global-proposal.js").ReflectionPersonalitySuggestion;
-  /** Observe only the current owner-private message with a fixed Jev rubric. */
+  /** Observe only the current message with a fixed Jev rubric. */
   jevObservation?: boolean;
   /** Read existing private hypotheses through an effect-free model continuation. */
   reflectionReview?: import("./reflection-review.js").ReflectionReview;
-  /** Request bounded owner-private reflection, not immediate evaluation or delivery. */
+  /** Request bounded source-scoped reflection, not immediate evaluation or delivery. */
   reflectionRequest?: {
     evidenceIds: string[];
     mode: "idle" | "deep";
     /** Omitted by older replies; defaults to reflection. No additional sources/tools. */
     kind?: "reflection" | "curiosity";
   };
-  /** Explicit owner-private advisory evaluation of existing scoped evidence. */
+  /** Explicit advisory evaluation of existing scoped evidence. */
   jury?: import("../reflection/jury.js").JuryRequest;
-  /** Propose exact evaluated behavior for separate coding approval, never run it. */
+  /** Submit exact evaluated behavior through the host's coding admission path. */
   skillCodingProposal?: { candidateId: string; workspace: string };
   /** Stage an existing reflection as a pending hypothesis, never accept it. */
   reflectionMemory?: { id: string; subjectSourceId: string };
-  /** Owner one-to-one Slack DM only; volatile read-only Rivet inspection. */
+  /** Volatile read-only Rivet inspection; not automatic cross-audience history. */
   rivet?: import("./rivet.js").RivetRequest;
-  /** List named mutations (null), or propose one for separate exact human approval. */
+  /** List named operations (null), or prepare one; credential controls remain separate. */
   browserProposal?: { operation: string | null };
-  /** Owner-private diff only; publishing still requires an owner command. */
+  /** Version-bound global style change; host receipt establishes the outcome. */
   personalityPreview?: PersonalityPreview;
-  /** Exact owner-private forgetting impact; never deletion or confirmation. */
-  forgetPreview?: { sourceId: string };
-  /** Owner-private held-out candidate suitability; never promotion or a send. */
+  /** Read impact, or select deletion using the exact current preview fingerprint. */
+  forgetPreview?: { sourceId: string; apply?: string };
+  /** Scoped held-out candidate suitability; never promotion or a send. */
   personalityEvaluate?: import("../runtime/personality-evaluation-preview.js").PersonalityEvaluateInput;
-  /** Permanently cancel one configured history selection, owner-private only. */
-  importCancel?: string;
+  /** A string cancels a selection; an object reviews or runs a bounded import task. */
+  importCancel?: string | import("../runtime/import-task.js").ImportTaskCommand;
   /** Evaluate one retained immutable skill proposal; never install or promote it. */
   skillEvaluationRequest?: {
     candidateId: string;
@@ -413,7 +420,7 @@ export interface CompanionReply {
   };
   /** Issue one short-lived dashboard login link to the owner privately. */
   dashboardLogin?: boolean;
-  /** Owner-private persistent schedules and event subscriptions. */
+  /** Persistent schedules and event subscriptions bound to their saved scope. */
   wakeup?: import("../wakeups/state.js").WakeupAction;
   apps?: import("../apps/client.js").AppsRequest;
   /** Slack: defaults to incoming placement in one-to-one DMs, otherwise a reply thread; false selects the main conversation. */
@@ -466,7 +473,7 @@ export interface ModelRequest {
   ampThreadsAvailable?: boolean;
   modelStatusAvailable?: boolean;
   mcpAvailable?: boolean;
-  /** Set by the owner-private MCP wrapper, independently of enabled tools. */
+  /** Set by the MCP wrapper, independently of enabled tools. */
   mcpPermissionAvailable?: boolean;
   /** Historical receipt reads remain available independently of enabled tools. */
   mcpProposalAvailable?: boolean;
@@ -567,5 +574,13 @@ export interface CodingRuntime {
     threadId?: string;
     signal: AbortSignal;
     onThread: (threadId: string) => Promise<void>;
+    /** Host-only synchronous admission assertion; throws if the frozen task's
+     * authority is no longer current. Never serialize or send to the provider.
+     * Call after all preparatory awaits, immediately before task submission
+     * (including inside an SDK that awaits preparation). Keep signal checks.
+     * Optional for legacy callers; the production coding actor always supplies
+     * it. Rejection does not authorize retry, replacement or lease release.
+     */
+    assertCurrent?: () => void;
   }): Promise<CodingResult>;
 }

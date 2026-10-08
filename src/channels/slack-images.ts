@@ -35,7 +35,6 @@ async function readBounded(response: Response, limit: number) {
 interface SlackFileOptions {
   teamId: string;
   botToken: string;
-  ownerUserIds: ReadonlySet<string>;
   fetch: typeof globalThis.fetch;
 }
 
@@ -52,11 +51,8 @@ export function createSlackFileReader(options: SlackFileOptions) {
       signal.aborted ||
       event.address.channel !== "slack" ||
       event.address.accountId !== options.teamId ||
-      !options.ownerUserIds.has(event.senderId) ||
-      !event.direct ||
-      event.metadata?.channelType !== "im" ||
       !/^F[A-Z0-9]{2,63}$/.test(fileId) ||
-      !event.metadata.files?.some((file) => file.id === fileId)
+      !event.metadata?.files?.some((file) => file.id === fileId)
     )
       return unavailable;
     const boundedSignal = AbortSignal.any([

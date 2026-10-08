@@ -179,11 +179,11 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
           const reply = { text: "", inspection: action };
           if (request.inspectionAvailable) {
             expect(request.system).toContain(
-              'inspection {target:"import-approval",selection:ID}',
+              'inspection:{target:"import-approval",selection:ID}',
             );
             return parseReply(JSON.stringify(reply), [], request);
           }
-          // Custom providers cannot bypass the host's owner-private guard.
+          // Custom providers still cannot bypass the invocation's tool grant.
           return reply;
         },
       },
@@ -219,8 +219,8 @@ it("requires owner auth, exact import review and a fresh page confirmation; forg
     { direct: false },
     { senderId: "U2", metadata: { channelType: "im" as const } },
   ])
-    expect(await deliver(extra)).toContain("owner-private turn");
-  expect(inspections).toBe(1);
+    expect(await deliver(extra)).toContain("No import was started");
+  expect(inspections).toBe(3);
   expect(proposal).toContain("No import was started");
   expect(await deliver({ text: "yes" })).toContain("No import was started");
   expect(imports.status("mail").progress).toBeUndefined();
@@ -456,8 +456,8 @@ it("reports rejected budgets without evidence and retries the same uncommitted p
   });
   const report = await inspect("imports");
   expect(report).toContain('"budgetRejected":"sources"');
-  expect(report).toContain("no page evidence or progress committed");
-  expect(report).toContain("last observed this process");
+  expect(report).toContain("Rejected pages commit no evidence or progress");
+  expect(report).toContain("process-local observations");
   expect(report).not.toContain("private-");
   expect(fetches).toBe(1);
   sources = [source];

@@ -6,8 +6,6 @@ import type {
   SendResult,
 } from "../core/contracts.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
-import { routeEvent } from "../core/routing.js";
-import { isOwner } from "../core/social.js";
 import { parseReply } from "../models/provider.js";
 import { type CapabilityContext, runCapability } from "./capabilities.js";
 import type { Dependencies, JuneClientRegistry } from "./registry.js";
@@ -42,10 +40,6 @@ export async function runExecutionCapability(
     if (
       !input.debugShareResolveAvailable ||
       input.agentRole !== "execution" ||
-      !context.ownerTurn ||
-      !context.scope.private ||
-      !isOwner(event, deps.owner) ||
-      !routeEvent(event, deps.owner)?.private ||
       context.origin !== "event" ||
       context.phase === "synthesis" ||
       context.canStartAction?.() === false ||
@@ -71,10 +65,6 @@ export async function runExecutionCapability(
     if (
       !input.settingsAvailable ||
       input.agentRole !== "execution" ||
-      !context.ownerTurn ||
-      !context.scope.private ||
-      !isOwner(event, deps.owner) ||
-      !routeEvent(event, deps.owner)?.private ||
       context.origin !== "event" ||
       context.phase === "synthesis" ||
       context.canStartAction?.() === false ||
@@ -100,8 +90,6 @@ export async function runExecutionCapability(
       !input.environmentAvailable ||
       input.agentRole !== "execution" ||
       !context.environmentOwner ||
-      !context.ownerTurn ||
-      !context.scope.private ||
       context.origin !== "event" ||
       context.phase === "synthesis" ||
       context.canStartAction?.() === false ||
@@ -241,7 +229,7 @@ export async function runExecutionCapability(
     if (!input.wakeupAvailable || !deps.wakeups)
       throw new Error("Wakeups unavailable");
     const wakeups = client.wakeups.getOrCreate([deps.owner.id]);
-    const dependencies = await wakeups.dependencies(reply.wakeup);
+    const dependencies = await wakeups.dependencies(reply.wakeup, event);
     await context.ports.evidence.bindPending([], dependencies);
     if (!current()) throw new Error("Execution invalidated");
     return {
@@ -260,8 +248,7 @@ export async function runExecutionCapability(
       throw new Error("Social action unavailable");
     const action = reply.social;
     if (action.kind === "interruption_proposal") {
-      if (!context.scope.private || !context.ownerTurn || !deps.reflection)
-        throw new Error("Private reflection staging unavailable");
+      if (!deps.reflection) throw new Error("Reflection staging unavailable");
       return receipt(
         await deliverPrivate(async (outbound) => {
           if (!current())
@@ -272,7 +259,13 @@ export async function runExecutionCapability(
             };
           const text = await client.reflection
             .getOrCreate([deps.owner.id])
-            .stageInterruption(event, action, context.deletionRevision, true);
+            .stageInterruption(
+              event,
+              action,
+              context.deletionRevision,
+              true,
+              context.audience,
+            );
           if (!current())
             return {
               status: "rejected",
@@ -321,9 +314,16 @@ export async function runExecutionCapability(
       reply.reflectionRequest ||
       reply.skillEvaluationRequest ||
       reply.reflectionMemory ||
+      reply.memoryBackup ||
+      (reply.pendingMemory !== undefined && reply.pendingMemory !== true) ||
+      reply.forgetPreview?.apply ||
       reply.reflectionReview ||
       reply.reflectionPersonalitySuggestion ||
-      reply.importCancel !== undefined ||
+      (reply.importCancel !== undefined &&
+        !(
+          typeof reply.importCancel === "object" &&
+          reply.importCancel.action === "review"
+        )) ||
       reply.ampThread ||
       (reply.apps && !["list", "inspect"].includes(reply.apps.action)) ||
       (reply.workflow &&
@@ -333,6 +333,8 @@ export async function runExecutionCapability(
       reply.jury ||
       reply.e2b ||
       reply.browserTask ||
+      (reply.browserProposal && reply.browserProposal.operation !== null) ||
+      reply.personalityPreview?.apply ||
       reply.readImage ||
       reply.readVideo ||
       reply.personalitySuggestion ||

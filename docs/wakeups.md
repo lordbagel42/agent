@@ -1,11 +1,14 @@
 # Durable wakeups
 
-June can save one-time timers, cron schedules, and event watches from the owner's
-private Slack DM. A match queues a new model turn and a reply to that same DM,
-even after a restart. No human message is needed to restart the timer loop.
+June can save one-time timers, cron schedules, and event watches from admitted
+Slack scopes. A match queues a new model turn and a reply to the registering
+conversation/thread, even after a restart. No human message is needed to restart
+the timer loop.
 These explicit watches are notification-only: they cannot invoke tools or change
 permissions/schedules. Separately, host-enrolled event awareness wakes June to
-decide what to do without requiring a watch.
+decide what to do without requiring a watch. June judges task legitimacy, safety
+and audience; ordinary watch management needs no owner-private prerequisite or
+compulsory human approval.
 
 ## Event awareness
 
@@ -13,12 +16,15 @@ Connected deployment and signed generic webhook sources automatically get an
 awareness subscription, such as `decision:deployment` or `decision:webhook.build`.
 Provider adapters can enroll their source through the same `decisionSources`
 host option. June receives the event as machine evidence, not an owner message.
-She can use configured public web search and owner-enabled MCP tools, prepare an
-approval-required proposal, send useful news to Raygen, or choose silence. An
-MCP `read` grant is the owner's standing trust classification, not proof the
-remote tool cannot have effects. Disabled tools remain unavailable; approval
-tools never run without separate human approval. Events cannot approve actions,
-change grants, execute owner commands, or choose the private reply destination.
+She can use configured public web search and enabled MCP tools, send useful news
+to Raygen, or choose silence. Fresh MCP effects execute through exact durable
+grants and receipts without mandatory human approval. An MCP `read` grant is a
+configured standing trust classification, not proof the
+remote tool cannot have effects. Disabled tools remain unavailable, legacy pending
+proposals never auto-execute, and unknown outcomes never auto-retry. Events are
+evidence, not permission to change configuration/grants, execute authenticated
+owner commands, or choose the reply destination. The explicit public-web research
+specialist ceiling remains read-only.
 
 With activity sessions enabled, decisions use the assigned activity actor and
 the same standing grants. MCP and public-search outcomes are accounted for
@@ -29,13 +35,16 @@ not provider payloads, fetched tool results, or decision text; this also means
 decision text is not searchable through session archives.
 
 Ask June to list wakeups, inspect `decision:deployment`, or pause/resume awareness
-for a source. `list` distinguishes `decision` and `notification` modes; `inspect`
+for a source. Host-enrolled awareness retains its owner-private management scope;
+ordinary watches are managed by the registering sender in the same conversation
+and thread. `list` distinguishes `decision` and `notification` modes; `inspect`
 shows recent run outcomes and bounded event previews. Cancellation is persistent,
 not silently undone on restart. Prefer pause/resume for reversible control.
 Explicit matching notification watches take precedence over unsolicited
-commentary so “DM me after the next successful deploy” does not also generate a
-second awareness notification. June must save that one-shot watch and return its
-receipt rather than merely promise to remember.
+commentary only for the same recipient scope, so another person's watch cannot
+suppress the owner's awareness. “DM me after the next successful deploy” from
+that DM should not generate a second awareness notification. June must save the
+watch and return its receipt rather than merely promise to remember.
 
 Awareness subscriptions do not backfill historical deployment events when first
 enabled or resumed. New deliveries from providers use local receipt time.
@@ -55,9 +64,10 @@ Ask June, for example:
 
 The prompt and structured `wakeup` action expose these operations to June. A
 saved receipt includes the real ID and schedule; a conversational promise or a
-deployment inspection does not register anything. Management is denied outside
-an owner-private Slack turn and during synthesis or an automated turn. General
-machine payloads are untrusted evidence, never fresh owner authorization.
+deployment inspection does not register anything. Management uses the admitted
+task's authenticated sender/conversation/thread, not a model-selected scope, and
+is unavailable during synthesis or automated turns. General
+machine payloads are untrusted evidence, never fresh human authorization.
 
 ## June's action contract
 
@@ -78,7 +88,7 @@ Other triggers are `{"kind":"at","at":"2027-01-01T17:00:00Z"}` and
 `{"kind":"cron","expression":"15 9 * * 1-5","timezone":"America/Boise"}`.
 Timers always run once. Cron accepts five deterministic fields, with an explicit
 IANA timezone; calendar/DST calculation uses cron-parser. The receipt gives the
-next UTC deadline so the owner can check the interpretation.
+next UTC deadline so the requester can check the interpretation.
 
 `{"action":"list"}` returns IDs, summaries, connected sources and feed issues.
 `{"action":"inspect","id":"..."}` returns the trigger and last three run
@@ -86,7 +96,7 @@ previews. `pause`, `resume` and `cancel` use the same `id` shape. Leave other
 directives unset/null and `text` empty. Terminal jobs cannot be resumed; create a
 new watch instead. To edit a schedule, cancel it and create its replacement.
 
-Connected native sources are advertised only when their integration is enabled:
+Connected sources are advertised only when their integration is enabled:
 
 | Source | Types | Useful `data` filters |
 | --- | --- | --- |
@@ -94,6 +104,7 @@ Connected native sources are advertised only when their integration is enabled:
 | `slack`, `whatsapp` | Accepted `message`, `reaction`, `receipt` events | `address.conversationId`, `senderId`, `emoji`, `status` |
 | `coding` | `result` | `jobId`, `attempt` |
 | `execution` | `result` | `agentId`, `requestId`, `status` |
+| `github` | Configured GitHub adapter events | Adapter-supplied repository/event fields |
 | `webhook.<name>` | Publisher-supplied type | Publisher-supplied scalar fields |
 
 Filters are ANDed exact equality checks on dotted paths, with at most eight
@@ -101,6 +112,13 @@ filters. `type:"*"` matches all types from one specific source. Existing ingress
 authentication, opt-outs and audience routing still apply; rejected Slack events
 are not a second path around those rules. Old events predating registration are
 not backfilled. Webhook occurrence time is June's receipt time.
+
+The host binds native events to their producer's audience outside the payload.
+A wildcard type or payload filter cannot capture another conversation's events.
+Native events without that binding fail closed, including queued legacy runs;
+restart does not upgrade them to the subscriber's scope. Configured GitHub,
+deployment and generic webhook feeds remain shared unless the host supplies an
+explicit audience to narrow them. Filters select evidence, never grant access.
 
 Deployment events are read from the existing protected controller feed every
 five seconds. The consumer cursor persists across releases; missing sequences
@@ -149,7 +167,8 @@ Provider adapters publish `{id, source, type, occurredAt, data}` through the sam
 durable publisher. The full serialized envelope must fit 16,384 UTF-8 bytes;
 reserve room for identifiers and truncation metadata before bounding payloads.
 Retain provider field names/timestamps, explicitly mark omissions, and exclude
-credentials. Source identity is adapter-controlled. Authentication establishes
+credentials. Source identity and any audience binding are adapter-controlled;
+putting an audience in `data` cannot change routing. Authentication establishes
 provenance, never owner intent. For GitHub specifically, HMAC authenticates the
 body, not delivery/event headers; those are validated HTTPS transport metadata.
 `accepted:false` is never HTTP success. A retryable response is not a guarantee
@@ -185,8 +204,8 @@ turn execution is fenced.
   receipt was saved. Failed runs are inspectable; one-shot watches do not automatically
   retry failed/unknown outcomes. `completed` permits intentional model silence
   and is not proof of delivery/read receipt.
-- Notification delivery targets the registering private Slack DM; awareness
-  uses the configured owner's Slack user ID as a private post destination.
+- Notification delivery targets the registering Slack conversation and thread;
+  awareness uses the configured owner's Slack user ID as a private post destination.
   Neither uses a provider-supplied destination or an expired WhatsApp
   messaging window. No polling system guarantees exact wall-clock delivery or
   recovery of events already aged out of an upstream bounded feed.

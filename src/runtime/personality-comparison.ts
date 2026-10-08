@@ -1,3 +1,4 @@
+import type { MessageEvent } from "../core/contracts.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import {
   personalityComparisonOutcome,
@@ -8,7 +9,7 @@ import type {
   PersonalityEvaluateInput,
 } from "./personality-evaluation-preview.js";
 
-/** Owner-private host service. Neither profiles nor raw model output are stored;
+/** Source-scoped host service. Neither profiles nor raw model output are stored;
  * approval remains a separate authenticated action, never a score threshold. */
 export function createPersonalityComparison(deps: {
   preview: Pick<
@@ -18,11 +19,15 @@ export function createPersonalityComparison(deps: {
   proposals: Pick<CuratedPersonalityStore, "recordEvaluation">;
   now?: () => number;
 }) {
-  return async (value: PersonalityEvaluateInput, signal?: AbortSignal) => {
+  return async (
+    source: MessageEvent,
+    value: PersonalityEvaluateInput,
+    signal?: AbortSignal,
+  ) => {
     const unavailable = { status: "unavailable" as const };
     try {
       if (signal?.aborted) return unavailable;
-      const snapshot = await deps.preview.snapshot(value);
+      const snapshot = await deps.preview.snapshot(source, value);
       if (!snapshot || signal?.aborted) return unavailable;
       // Same frozen evidence, clock, rubric and provider; independent copies with
       // no prior answers. Serial calls share preview's settlement-aware limiter.

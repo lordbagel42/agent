@@ -19,7 +19,7 @@ import { createPersonalityComparison } from "./personality-comparison.js";
 import { createPersonalityPreview } from "./personality-evaluation-preview.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
-it("inspects pending suggestions through June without disclosing private support or granting other audiences a read", async (t) => {
+it("inspects source-scoped pending suggestions through June without disclosing private support to other audiences", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "june-pending-"));
   const store = new EvidenceStore(":memory:", randomBytes(32));
   const curated = new CuratedPersonalityStore(
@@ -166,7 +166,7 @@ it("inspects pending suggestions through June without disclosing private support
       proposalId: proposal.id,
       expectedVersion: 0,
       changes: { tone: "dry", humor: "none" },
-      reviewState: "pending owner review; not applied",
+      reviewState: "pending draft; not applied",
       sourceCount: 4,
       sourceRefs: sources
         .toSorted()
@@ -190,18 +190,20 @@ it("inspects pending suggestions through June without disclosing private support
       metadata: { channelType: "channel" as const },
       address: { ...base.address, conversationId: "C1" },
     },
-    { metadata: undefined },
-    { metadata: { channelType: "mpim" as const } },
   ]) {
-    const calls = read.mock.calls.length;
     expect(await deliver(extra)).not.toContain(proposal.id);
     expect(
       await deliver({ ...extra, text: "Inspect pending suggestions" }),
     ).not.toContain(proposal.id);
-    expect(read).toHaveBeenCalledTimes(calls);
+    expect(read.mock.lastCall?.[0]).toBe(
+      JSON.stringify(routeEvent({ ...base, ...extra }, owner)?.key),
+    );
     if (extra.senderId === "U2" || extra.direct === false)
       expect(JSON.stringify(requests.at(-1))).not.toContain("SECRET");
   }
+  expect(await profile.pending({ ...base, metadata: undefined })).toContain(
+    proposal.id,
+  );
   const beforeUnmarked = read.mock.calls.length;
   expect(await deliver({ personalityCommandEligible: false })).not.toContain(
     proposal.id,
@@ -305,9 +307,9 @@ it("inspects pending suggestions through June without disclosing private support
   const compared = await createPersonalityComparison({
     proposals: curated,
     preview: createPersonalityPreview({
-      ownerId: owner.id,
+      owner,
       store,
-      readCandidate: (id) => profile.evaluationCandidate(id),
+      readCandidate: (source, id) => profile.evaluationCandidate(source, id),
       evidenceMaxAgeMs: GLOBAL_PROPOSAL_MAX_AGE_MS,
       decide: async (input) => ({
         answer: "yes",
@@ -315,7 +317,7 @@ it("inspects pending suggestions through June without disclosing private support
         rationale: "Suitable",
       }),
     }),
-  })({ candidateId: approved.id, heldOutSourceIds: ["held-out"] });
+  })(base, { candidateId: approved.id, heldOutSourceIds: ["held-out"] });
   if (compared.status !== "comparison")
     throw new Error("Missing comparison fixture");
   const { evaluationId, candidateDigest } = compared.receipt;

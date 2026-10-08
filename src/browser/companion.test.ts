@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import type { MessageEvent } from "../core/contracts.js";
 import { BrowserCompanion } from "./companion.js";
 import { browserCommandSchema } from "./contracts.js";
 import type { BrowserSession } from "./session.js";
@@ -21,6 +22,129 @@ it("rejects forged authority, secrets and unsafe destinations", () => {
   ])
     expect(browserCommandSchema.safeParse(input).success).toBe(false);
 });
+
+it.for(["im", "channel"] as const)(
+  "admits a nonowner %s browser task without granting another sender, conversation or PIN authority",
+  async (channelType, t) => {
+    const directory = await mkdtemp(join(tmpdir(), "browser-scope-"));
+    const event: MessageEvent = {
+      type: "message",
+      id: "event",
+      messageId: "1",
+      occurredAt: 1,
+      senderId: "guest",
+      direct: channelType === "im",
+      botMentioned: channelType === "channel",
+      metadata: { channelType },
+      text: "Review this page",
+      address: { channel: "slack", accountId: "T", conversationId: "C" },
+    };
+    const challengeId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const session: BrowserSession = {
+      generation: "session",
+      state: "private",
+      epoch: 0,
+      observe: async () => ({ text: "page" }),
+      frame: async () => undefined,
+      tool: async () => ({ text: "waiting" }),
+      pendingInput: () => ({
+        origin: "https://example.com",
+        question: "PIN?",
+        challengeId,
+      }),
+      enterPin: async () => {
+        throw new Error("Nonowner must not submit a PIN");
+      },
+      close: async () => {},
+    };
+    let runs = 0;
+    const companion = new BrowserCompanion({
+      directory,
+      home: directory,
+      tempDirectory: directory,
+      codexHome: directory,
+      navigationOrigins: ["https://example.com"],
+      resourceOrigins: [],
+      owner: {
+        id: "owner",
+        identities: [{ channel: "slack", accountId: "T", senderId: "U" }],
+      },
+      createSession: async () => session,
+      runTurn: async () => {
+        runs++;
+        return { threadId: "thread", report: "", waitingForInput: true };
+      },
+    });
+    t.onTestFinished(async () => {
+      await companion.close();
+      await rm(directory, { recursive: true, force: true });
+    });
+    const context = {
+      event,
+      operationId: "start",
+      signal: new AbortController().signal,
+      valid: () => true,
+      review: async () => "review",
+    };
+    const start = {
+      action: "start" as const,
+      url: "https://example.com/",
+      goal: "review",
+    };
+    await expect(
+      companion.run(start, {
+        ...context,
+        event: { ...event, metadata: undefined },
+      }),
+    ).rejects.toThrow("unavailable");
+    const task = await companion.run(start, context);
+    expect(task.status).toBe("waiting_for_input");
+    expect(task).toHaveProperty(
+      "question",
+      expect.stringContaining("Do not send PINs"),
+    );
+    expect(JSON.stringify(task)).not.toContain("!browser-pin");
+    expect((await companion.run(start, context)).id).toBe(task.id);
+    expect(companion.list(event).map(({ id }) => id)).toEqual([task.id]);
+    expect(companion.session(task.id, "guest")).toBeUndefined();
+    expect(companion.status(task.id, "guest")).toBeUndefined();
+    expect(companion.session(task.id, "owner")).toBe(session);
+    for (const other of [
+      { ...event, senderId: "other" },
+      { ...event, address: { ...event.address, conversationId: "elsewhere" } },
+      { ...event, address: { ...event.address, threadId: "other-thread" } },
+    ]) {
+      expect(companion.list(other)).toEqual([]);
+      for (const action of ["status", "cancel"] as const)
+        await expect(
+          companion.run(
+            { action, taskId: task.id },
+            { ...context, event: other },
+          ),
+        ).rejects.toThrow("unavailable");
+      await expect(
+        companion.run(start, { ...context, event: other }),
+      ).rejects.toThrow();
+    }
+    expect(
+      companion.consumePin({
+        ...event,
+        browserPinEligible: true,
+        text: `!browser-pin ${task.id} ${challengeId} 123456`,
+      })?.text,
+    ).toContain("not accepted");
+    expect(
+      (await companion.run({ action: "status", taskId: task.id }, context))
+        .status,
+    ).toBe("waiting_for_input");
+    expect(
+      (await companion.run({ action: "cancel", taskId: task.id }, context))
+        .status,
+    ).toBe("cancelled");
+    expect((await companion.run(start, context)).status).toBe("cancelled");
+    expect(runs).toBe(1);
+  },
+);
 
 it("keeps PIN bytes volatile, resumes once, and fences saved tasks after restart", async () => {
   const directory = await mkdtemp(join(tmpdir(), "browser-companion-"));

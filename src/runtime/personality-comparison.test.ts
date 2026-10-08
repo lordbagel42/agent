@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import type { MessageEvent } from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
 import { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
 import type {
@@ -14,10 +16,31 @@ import { defaultGlobalPersonality } from "./personality.js";
 import { createPersonalityComparison } from "./personality-comparison.js";
 import { createPersonalityPreview } from "./personality-evaluation-preview.js";
 
-function fixture() {
+function fixture(kind: "private" | "guest" | "shared" = "private") {
   const root = mkdtempSync(join(tmpdir(), "june-comparison-"));
   const store = new EvidenceStore(join(root, "evidence.db"), randomBytes(32));
-  const scope = JSON.stringify(["private", "owner"]);
+  const owner = {
+    id: "owner",
+    identities: [
+      { channel: "slack" as const, accountId: "workspace", senderId: "owner" },
+    ],
+  };
+  const source: MessageEvent = {
+    type: "message",
+    id: "comparison",
+    messageId: "comparison",
+    occurredAt: 1000,
+    address: {
+      channel: "slack",
+      accountId: "workspace",
+      conversationId: kind === "shared" ? "channel" : "dm",
+    },
+    senderId: kind === "guest" ? "guest" : "owner",
+    direct: kind !== "shared",
+    metadata: { channelType: kind === "shared" ? "channel" : "im" },
+    text: "Compare this scoped draft.",
+  };
+  const scope = JSON.stringify(routeEvent(source, owner)?.key);
   const at = 1000;
   const profile = { ...structuredClone(defaultGlobalPersonality), version: 3 };
   for (const [index, id] of [
@@ -63,10 +86,14 @@ function fixture() {
   const decision = { rejected: false };
   const preview = (decide: DecisionFunction) =>
     createPersonalityPreview({
-      ownerId: "owner",
+      owner,
       store,
-      async readCandidate(id) {
-        const pending = proposals.pendingGlobalProposal(scope, id, at);
+      async readCandidate(event, id) {
+        const pending = proposals.pendingGlobalProposal(
+          JSON.stringify(routeEvent(event, owner)?.key),
+          id,
+          at,
+        );
         return !decision.rejected &&
           pending &&
           pending.expectedVersion === profile.version
@@ -84,6 +111,7 @@ function fixture() {
       now: () => at,
     });
   return {
+    source,
     scope,
     at,
     profile,
@@ -131,7 +159,7 @@ it("preserves asymmetric and unknown outcomes without promotion or private text 
         confidence: 1,
       };
     });
-    const result = await compare(f.request);
+    const result = await compare(f.source, f.request);
     expect(result.status).toBe("comparison");
     if (result.status !== "comparison") throw new Error("Missing comparison");
     const receipt = result.receipt;
@@ -204,7 +232,7 @@ it("preserves asymmetric and unknown outcomes without promotion or private text 
       answer: "no",
       evidenceIds: ["two"],
       rationale: "not suitable",
-    }))({ ...f.request, heldOutSourceIds: ["two"] });
+    }))(f.source, { ...f.request, heldOutSourceIds: ["two"] });
     expect(neither.status).toBe("comparison");
     if (neither.status !== "comparison") throw new Error("Missing comparison");
     expect(neither.receipt.status).toBe("complete");
@@ -227,38 +255,80 @@ it("preserves asymmetric and unknown outcomes without promotion or private text 
   }
 });
 
-it("revalidates the profile, decision ledger and sources after inference before writing a receipt", async () => {
-  for (const invalidate of [
-    "profile",
-    "style",
-    "source",
-    "rejected",
-  ] as const) {
-    const f = fixture();
-    try {
-      const record = vi.spyOn(f.proposals, "recordEvaluation");
-      let calls = 0;
-      const compare = f.compare(async (input) => {
-        if (++calls === 1) {
-          if (invalidate === "profile") f.profile.version++;
-          else if (invalidate === "style") f.profile.style.tone = "direct";
-          else if (invalidate === "rejected") f.decision.rejected = true;
-          else f.store.deleteSource("one");
-        }
-        return {
-          answer: "yes",
-          evidenceIds: [input.evidence[0]?.id ?? ""],
-          rationale: "unsupported promotion",
-        };
-      });
-      expect(await compare(f.request)).toEqual({ status: "unavailable" });
-      expect(calls).toBe(1);
-      expect(record).not.toHaveBeenCalled();
-    } finally {
-      f.close();
-    }
+it("freezes the originating guest audience before the first asynchronous candidate read", async () => {
+  const f = fixture("guest");
+  try {
+    const scopes: string[] = [];
+    const compare = f.compare(async (input) => {
+      scopes.push(input.scope);
+      return {
+        answer: "yes",
+        evidenceIds: input.evidence.map((e) => e.id),
+        rationale: "Suitable in the original audience",
+      };
+    });
+    const pending = compare(f.source, {
+      ...f.request,
+      heldOutSourceIds: ["one"],
+    });
+    f.source.senderId = "owner";
+    f.source.address.conversationId = "other-dm";
+    const result = await pending;
+    expect(result.status).toBe("comparison");
+    expect(scopes).toEqual([f.scope, f.scope]);
+    if (result.status !== "comparison") throw new Error("Missing comparison");
+    expect(
+      f.proposals.readEvaluation(f.scope, result.receipt.evaluationId, f.at),
+    ).toEqual(result.receipt);
+    expect(
+      f.proposals.readEvaluation(
+        JSON.stringify(["private", "owner"]),
+        result.receipt.evaluationId,
+        f.at,
+      ),
+    ).toBeUndefined();
+  } finally {
+    f.close();
   }
 });
+
+it.each(["private", "guest", "shared"] as const)(
+  "revalidates %s profile, decision ledger and sources after inference before writing a receipt",
+  async (kind) => {
+    for (const invalidate of [
+      "profile",
+      "style",
+      "source",
+      "rejected",
+    ] as const) {
+      const f = fixture(kind);
+      try {
+        const record = vi.spyOn(f.proposals, "recordEvaluation");
+        let calls = 0;
+        const compare = f.compare(async (input) => {
+          if (++calls === 1) {
+            if (invalidate === "profile") f.profile.version++;
+            else if (invalidate === "style") f.profile.style.tone = "direct";
+            else if (invalidate === "rejected") f.decision.rejected = true;
+            else f.store.deleteSource("one");
+          }
+          return {
+            answer: "yes",
+            evidenceIds: [input.evidence[0]?.id ?? ""],
+            rationale: "unsupported promotion",
+          };
+        });
+        expect(await compare(f.source, f.request)).toEqual({
+          status: "unavailable",
+        });
+        expect(calls).toBe(1);
+        expect(record).not.toHaveBeenCalled();
+      } finally {
+        f.close();
+      }
+    }
+  },
+);
 
 it("does not persist a receipt when cancellation arrives during final currentness revalidation", async () => {
   const f = fixture();
@@ -281,7 +351,7 @@ it("does not persist a receipt when cancellation arrives during final currentnes
       proposals: f.proposals,
       now: () => f.at,
     });
-    expect(await compare(f.request, controller.signal)).toEqual({
+    expect(await compare(f.source, f.request, controller.signal)).toEqual({
       status: "unavailable",
     });
     expect(record).not.toHaveBeenCalled();

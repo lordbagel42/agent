@@ -31,7 +31,7 @@ export const DISABLED_CODING_RECOVERY = [
   "Configuration: an authorized operator must review the explicit runtime, named workspaces, per-workspace isolation policy, coding.enabled and separate host opt-in. Unavailable status alone does not identify which prerequisite is missing.",
   "Authentication: unverified, not necessarily signed out. An operator must check the selected runtime's supported login in its dedicated execution environment. Never paste tokens into chat, copy another tool's credentials, or assume the companion model's login also authenticates the coding worker.",
   "Isolation: unverified. Missing or failed isolation prerequisites need operator repair; worktrees are not a sandbox or proof of credential, process or network containment. Ask for native-coding preflight when available to inspect prerequisites without launching a worker.",
-  "Keep native execution disabled until protected-host acceptance and separate owner authorization to activate it. This guidance performs no login, configuration change or launch. Each local coding job still needs separate approval; no push or deployment is authorized.",
+  "Keep native execution disabled until protected-host acceptance and separate owner authorization to activate it. This guidance performs no login, configuration change or launch. Once configured and enabled, June may start new coding tasks without per-task human approval. Existing pending or unknown jobs are not automatically started or retried; no push, deployment or credential access is authorized.",
 ].join("\n");
 
 export interface CodingDependencies {
@@ -72,18 +72,34 @@ export function codingApprovalPreview(
   coding: CodingDependencies,
 ): string {
   if (Object.hasOwn(coding.remoteAmp?.workspaces ?? {}, request.workspace))
-    return `Remote Amp job proposal for ${request.workspace}:\nExecution: runner:homelab-amp via separately authorized SSH transport (not MCP/Puck or deployment recovery).\nDirectory: ${JSON.stringify(coding.remoteAmp?.workspaces[request.workspace])}\n\nTask:\n${request.goal}\n\nReply !approve ${id.slice(0, 12)} as a fresh ordinary owner-private message to authorize only this task. No push, publication, deployment, infrastructure changes, credential access or additional agents. Remote execution is not a sandbox; no local worktree verifier runs. Thread receipts and worker claims will be saved privately. Cancellation only stops observation, not the remote agent. Ambiguous dispatch cannot be retried or resumed. A changed task or execution policy requires a fresh proposal after reconciliation.`;
-  return `Coding proposal for ${request.workspace}:\nRepository: ${JSON.stringify(coding.workspaces[request.workspace])}\nRuntime: ${coding.runtimeKind}\n\nTask:\n${request.goal}\n\nReply !approve ${id.slice(0, 12)} as an ordinary private message to authorize only this task in an isolated local checkout of that repository. No push, deployment, publication, shared-infrastructure changes, or credential access is authorized. Native execution is not a sandbox. A changed task, workspace, or runtime requires a fresh proposal.`;
+    return `Remote Amp job proposal for ${request.workspace}:\nJob: ${id.slice(0, 12)}\nExecution: runner:homelab-amp via separately authorized SSH transport (not MCP/Puck or deployment recovery).\nDirectory: ${JSON.stringify(coding.remoteAmp?.workspaces[request.workspace])}\n\nTask:\n${request.goal}\n\nJune may start this new task after host validity and admission checks; no per-task human approval is required. No push, publication, deployment, infrastructure changes, credential access or additional agents. Remote execution is not a sandbox; no local worktree verifier runs. Thread receipts and worker claims will be saved privately. Cancellation only stops observation, not the remote agent. Ambiguous dispatch cannot be retried or resumed. A changed task or execution policy requires a fresh proposal after reconciliation.`;
+  return `Coding proposal for ${request.workspace}:\nJob: ${id.slice(0, 12)}\nRepository: ${JSON.stringify(coding.workspaces[request.workspace])}\nRuntime: ${coding.runtimeKind}\n\nTask:\n${request.goal}\n\nJune may start this new task in an isolated local checkout after host validity and admission checks; no per-task human approval is required. No push, deployment, publication, shared-infrastructure changes, or credential access is authorized. Native execution is not a sandbox. A changed task, workspace, or runtime requires a fresh proposal. Existing pending or unknown jobs are not automatically started or retried.`;
 }
 
 export interface JobProposal extends CodingRequest {
   id: string;
   source: MessageEvent;
+  /** Host-bound notification destination; legacy jobs used the private actor.
+   * New producers must preserve the source's conversation key, including threads.
+   * The receiver still validates source/scope and deletion provenance.
+   */
+  conversationKey?: string[];
   /** Bind new previews before queue delivery; absent on legacy proposals. */
   runtimeId?: string;
+  /** Host-only signal for a fresh model-selected task, never a model field.
+   * Persist with the original proposal; never add to an existing pending job.
+   * Does not grant push, deployment, credential access or retry authority.
+   */
+  runImmediately?: true;
+  /** Host-only deletion fence frozen from the task's original context.
+   * Required for every new runImmediately proposal, including skill tasks.
+   * Never sample at delivery/dispatch or backfill an existing saved proposal.
+   */
+  deletionRevision?: number;
   /** Host-only authority carried across queue delivery; never a model field. */
   skillContext?: {
     candidateId: string;
+    audience?: string;
     deletionRevision: number;
     reference: MemoryReference;
   };
@@ -361,7 +377,27 @@ export function createCodingActor(
     ownerId: string,
     context: NonNullable<JobProposal["skillContext"]>,
   ) => boolean,
+  getDeletionRevision: () => number = () => 0,
 ) {
+  // Synchronous checks against frozen authority, never a consumer-side refresh.
+  // Legacy explicit approvals keep their old contract; they gain no automatic
+  // authority. New immediate tasks without a host revision must fail closed.
+  const provenanceCurrent = (ownerId: string, proposal: JobProposal) => {
+    const revision = proposal.deletionRevision;
+    if (proposal.runImmediately === true || revision !== undefined) {
+      if (
+        revision === undefined ||
+        !Number.isSafeInteger(revision) ||
+        revision < 0 ||
+        revision !== getDeletionRevision()
+      )
+        return false;
+    }
+    return (
+      !proposal.skillContext ||
+      skillCurrent?.(ownerId, proposal.skillContext) === true
+    );
+  };
   return actor({
     state: {
       proposal: null,
@@ -399,7 +435,7 @@ export function createCodingActor(
         }
         return state;
       },
-      // Host must check owner-private conversation membership before this read.
+      // Host must check the originating conversation scope before this read.
       diffSummary: async (c) => {
         const approved =
           c.state.worktree &&
@@ -411,7 +447,6 @@ export function createCodingActor(
           proposal &&
           approved &&
           proposal.id === c.key[1] &&
-          proposal.source.direct &&
           c.state.status === "running" &&
           !c.state.revoked &&
           !c.state.cancelRequested &&
@@ -471,7 +506,6 @@ export function createCodingActor(
                 if (
                   step.state.proposal ||
                   step.state.revoked ||
-                  !command.proposal.source.direct ||
                   command.proposal.id !== step.key[1] ||
                   (command.proposal.appId !== undefined &&
                     (command.proposal.workspace !== coding.appsWorkspace ||
@@ -489,7 +523,7 @@ export function createCodingActor(
                     .reflection.getOrCreate([ownerId])
                     .skillEvaluation(
                       context.candidateId,
-                      JSON.stringify(["private", ownerId]),
+                      context.audience ?? JSON.stringify(["private", ownerId]),
                     )
                     .catch(() => null);
                   const skill = evaluated?.candidate.skillChange;
@@ -500,8 +534,6 @@ export function createCodingActor(
                       command.proposal.workspace,
                       skill,
                     );
-                  // Queue delivery and the getter both yield. Check frozen caller
-                  // authority synchronously at the actual proposal-write boundary.
                   if (
                     !evaluated?.eligible ||
                     !expected ||
@@ -509,15 +541,20 @@ export function createCodingActor(
                     expected.goal !== command.proposal.goal ||
                     !evaluated.evidenceIds.every((id) =>
                       context.reference.sourceIds.includes(id),
-                    ) ||
-                    step.abortSignal.aborted ||
-                    step.state.revoked ||
-                    !skillCurrent?.(ownerId, context)
+                    )
                   )
                     return;
                 }
+                // Queue delivery and the skill getter both yield. Recheck frozen
+                // caller authority at the actual proposal-write boundary.
+                if (
+                  step.abortSignal.aborted ||
+                  step.state.revoked ||
+                  !provenanceCurrent(step.key[0] ?? "", command.proposal)
+                )
+                  return;
                 step.state.proposal = command.proposal;
-                // Only the producer knows which configuration the owner reviewed.
+                // Only the producer knows the configuration selected for this task.
                 // Legacy queued proposals cannot adopt the consumer's configuration.
                 step.state.runtimeId = command.proposal.runtimeId;
                 step.state.remoteAmp = Object.hasOwn(
@@ -527,6 +564,35 @@ export function createCodingActor(
                 step.state.status = "awaiting_approval";
                 await step.vars.persist();
               });
+              if (command.proposal.runImmediately === true)
+                await loop.step("enqueue-model-task", async (step) => {
+                  const proposal = step.state.proposal;
+                  // Repair a save -> queue gap only for the exact fresh task.
+                  // Never upgrade old pending work or relaunch an uncertain run.
+                  if (
+                    version < 2 ||
+                    !proposal ||
+                    !isDeepStrictEqual(proposal, command.proposal) ||
+                    proposal.id !== step.key[1] ||
+                    step.state.status !== "awaiting_approval" ||
+                    step.state.attempts !== 0 ||
+                    step.abortSignal.aborted ||
+                    step.state.revoked ||
+                    step.state.cancelRequested ||
+                    proposal.runtimeId !== coding.runtimeId ||
+                    step.state.runtimeId !== coding.runtimeId ||
+                    !Object.hasOwn(coding.workspaces, proposal.workspace) ||
+                    !provenanceCurrent(step.key[0] ?? "", proposal)
+                  )
+                    return;
+                  await step
+                    .client<JuneRegistry>()
+                    .job.getOrCreate([step.key[0] ?? "", proposal.id])
+                    .send("commands", {
+                      type: "approve",
+                      commandId: `model-selected:${proposal.id}`,
+                    });
+                });
               return;
             }
             const approved = await loop.step("check-approval", async (step) => {
@@ -561,6 +627,8 @@ export function createCodingActor(
               const allowed =
                 step.state.proposal &&
                 !step.state.revoked &&
+                !step.abortSignal.aborted &&
+                provenanceCurrent(step.key[0] ?? "", step.state.proposal) &&
                 step.state.proposal.runtimeId === coding.runtimeId &&
                 step.state.runtimeId === coding.runtimeId &&
                 (!step.state.remoteAmp || command.type === "approve") &&
@@ -638,20 +706,25 @@ export function createCodingActor(
                           ),
                         ]);
                         try {
-                          if (
-                            !remote ||
-                            step.state.revoked ||
-                            step.state.cancelRequested ||
-                            proposal.runtimeId !== coding.runtimeId ||
-                            step.state.runtimeId !== coding.runtimeId
-                          )
+                          if (!remote)
                             throw new Error("Remote job binding unavailable");
-                          signal.throwIfAborted();
                           const result = await withSpan(
                             "june.coding.dispatch",
                             { "june.phase": "remote" },
-                            async () =>
-                              remote.run({
+                            async () => {
+                              // No await between this check and external dispatch.
+                              signal.throwIfAborted();
+                              if (
+                                step.state.revoked ||
+                                step.state.cancelRequested ||
+                                proposal.runtimeId !== coding.runtimeId ||
+                                step.state.runtimeId !== coding.runtimeId ||
+                                !provenanceCurrent(step.key[0] ?? "", proposal)
+                              )
+                                throw new Error(
+                                  "Remote job binding unavailable",
+                                );
+                              return remote.run({
                                 id: proposal.id,
                                 workspace: proposal.workspace,
                                 goal: proposal.goal,
@@ -673,7 +746,8 @@ export function createCodingActor(
                                     "thread_returned",
                                   );
                                 },
-                              }),
+                              });
+                            },
                           );
                           signal.throwIfAborted();
                           if (
@@ -712,6 +786,12 @@ export function createCodingActor(
                           );
                         return;
                       }
+                      // Preserve the exact accepted task and original deletion
+                      // fence across worktree/session persistence. Never refresh
+                      // its authority from the context at dispatch time.
+                      const frozenProposal = JSON.parse(
+                        JSON.stringify(proposal),
+                      ) as JobProposal;
                       const manager = coding.isolation?.[proposal.workspace];
                       step.state.status = "running";
                       step.state.attempts = approved;
@@ -795,18 +875,45 @@ export function createCodingActor(
                           "dispatching",
                           "worktree_prepared",
                         );
-                        signal.throwIfAborted();
-                        launched = true;
                         const runtime = coding.runtime;
+                        const assertCurrent = () => {
+                          signal.throwIfAborted();
+                          if (
+                            step.state.revoked ||
+                            step.state.cancelRequested ||
+                            step.state.status !== "running" ||
+                            step.state.attempts !== approved ||
+                            !isDeepStrictEqual(
+                              JSON.parse(JSON.stringify(step.state.proposal)),
+                              frozenProposal,
+                            ) ||
+                            frozenProposal.runtimeId !== coding.runtimeId ||
+                            step.state.runtimeId !== coding.runtimeId ||
+                            !provenanceCurrent(
+                              step.key[0] ?? "",
+                              frozenProposal,
+                            )
+                          )
+                            throw new Error(
+                              "Execution binding needs reconciliation",
+                            );
+                        };
                         const execution = withSpan(
                           "june.coding.dispatch",
                           { "june.phase": "local" },
-                          async () =>
-                            runtime.run({
+                          async () => {
+                            // Check here and at the adapter's actual submission:
+                            // native initialization/onThread can also yield while
+                            // deletion has invalidated the originating context,
+                            // before its cleanup cancellation RPC reaches us.
+                            assertCurrent();
+                            launched = true;
+                            return runtime.run({
                               cwd: manifest.cwd,
                               prompt: `You are June's coding worker, not her conversational persona. Work only on this approved local task. Follow repository guidance, preserve others' changes, and run relevant checks. Do not push, deploy, publish, modify shared infrastructure, or access credentials. Report what changed, verification evidence, limitations, and delivery state. Describe the task outcome, not your role or other agents, unless explicitly asked or an execution failure makes them relevant. Native execution is not a sandbox.\n\nTask:\n${proposal.goal}`,
                               threadId: step.state.threadId,
                               signal,
+                              assertCurrent,
                               onThread: async (threadId) => {
                                 if (signal.aborted || !acceptingThread) return;
                                 if (
@@ -826,7 +933,8 @@ export function createCodingActor(
                                   "thread_returned",
                                 );
                               },
-                            }),
+                            });
+                          },
                         );
                         // Neither worker nor verifier settlement may block cancellation.
                         // An abort is NOT proof either process exited; retain its lease.
@@ -995,10 +1103,12 @@ export function createCodingActor(
                   ? status === "completed"
                     ? `Work summary (not independently verified):\n${report ?? "No report supplied."}`
                     : `Coding job ${proposal.id.slice(0, 12)} needs review. ${report ?? ""}`
-                  : `Coding job ${proposal.id.slice(0, 12)}: ${status}.\n${report ?? "No verification evidence."}${step.state.appArtifact ? `\nDynamic App ${step.state.appArtifact.appId}: artifact ${step.state.appArtifact.digest}. Job ID ${proposal.id}. Ask June to prepare this app for separate deployment approval.` : ""}\n\nWork summary (not independently verified):\n${workerClaim?.slice(0, 2200) ?? "No confirmed result."}`;
+                  : `Coding job ${proposal.id.slice(0, 12)}: ${status}.\n${report ?? "No verification evidence."}${step.state.appArtifact ? `\nDynamic App ${step.state.appArtifact.appId}: artifact ${step.state.appArtifact.digest}. Job ID ${proposal.id}. June can prepare an exact source-and-audience receipt, inspect it, then separately decide whether to deploy it with the apps tool. This coding result does not itself deploy or authorize other destinations.` : ""}\n\nWork summary (not independently verified):\n${workerClaim?.slice(0, 2200) ?? "No confirmed result."}`;
               await step
                 .client<JuneRegistry>()
-                .conversation.getOrCreate(["private", step.key[0] ?? ""])
+                .conversation.getOrCreate(
+                  proposal.conversationKey ?? ["private", step.key[0] ?? ""],
+                )
                 .notify({
                   type: "job_result",
                   jobId: proposal.id,

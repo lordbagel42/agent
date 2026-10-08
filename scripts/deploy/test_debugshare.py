@@ -24,9 +24,27 @@ THREAD = "T-12345678-1234-4234-8234-123456789abc"
 
 
 class DebugShare(unittest.TestCase):
-    def test_owner_tasks_use_separate_admission_and_never_repair_authority(self):
-        for is_owner in (False, True):
-            with self.subTest(is_owner=is_owner), tempfile.TemporaryDirectory() as root:
+    def test_scoped_tasks_use_actual_reporter_and_never_repair_authority(self):
+        for is_owner, sender, conversation in (
+            (False, "U2", "C1"),
+            (False, "U2", "D1"),
+            (False, "U2", "G1"),
+            (False, "bot:B1", "C1"),
+            (True, "U1", "C1"),
+            (True, "U1", "D1"),
+            (True, "U1", "G1"),
+        ):
+            with (
+                self.subTest(
+                    is_owner=is_owner, sender=sender, conversation=conversation
+                ),
+                tempfile.TemporaryDirectory() as root,
+            ):
+                scope = ["slack", "T1", conversation, "123.4"]
+                if not is_owner:
+                    scope = ["guest", *scope, sender]
+                elif conversation == "D1":
+                    scope = ["private", "owner"]
                 data = json.dumps(
                     {
                         "kind": "amp-task",
@@ -34,10 +52,17 @@ class DebugShare(unittest.TestCase):
                         "title": "Compare two parsers",
                         "prompt": "PRIVATE_TASK $(id)",
                         "ownerRequest": "Spawn Amp to compare two parsers",
+                        "scopeKey": scope,
+                        "address": {
+                            "channel": "slack",
+                            "accountId": "T1",
+                            "conversationId": conversation,
+                            "threadId": "123.4",
+                        },
                         "reporter": {
                             "channel": "slack",
                             "accountId": "T1",
-                            "senderId": "U1",
+                            "senderId": sender,
                             "isOwner": is_owner,
                         },
                     }
@@ -55,25 +80,142 @@ class DebugShare(unittest.TestCase):
                     )
                 command = f"june-amp-task-ready {IDENTITY} {digest}"
                 with patch.object(runner.subprocess, "run"):
-                    if not is_owner:
-                        with self.assertRaises(ValueError):
-                            runner.prepare(command, config, io.BytesIO(data))
-                        self.assertEqual(list(Path(root).iterdir()), [])
-                        continue
                     argv = runner.prepare(command, config, io.BytesIO(data))
                     self.assertEqual(
                         argv[1:5], ["--mode", "high", "--features", "fast"]
                     )
                     self.assertEqual(argv[-3], "Compare two parsers")
                     self.assertIn("ownerRequest", argv[-1])
+                    self.assertIn("reporter", argv[-1])
+                    self.assertIn("scopeKey", argv[-1])
+                    self.assertIn("address", argv[-1])
+                    self.assertNotIn("came from Raygen in his Slack DM", argv[-1])
+                    self.assertNotIn("owner's Amp task", argv[-1])
                     self.assertIn("not a DEBUGSHARE", argv[-1])
                     self.assertNotIn(
                         "standing incident-scoped repair authority", argv[-1]
                     )
                     self.assertNotIn("PRIVATE_TASK", argv[-1])
                     self.assertNotIn("$(id)", argv[-1])
+                    saved = Path(root) / IDENTITY / "snapshot.json"
+                    self.assertEqual(saved.read_bytes(), data)
+                    self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
                     with self.assertRaises(FileExistsError):
                         runner.prepare(command, config, io.BytesIO(data))
+
+    def test_task_validation_requires_consistent_authenticated_source_provenance(self):
+        reporter = {
+            "channel": "slack",
+            "accountId": "T1",
+            "senderId": "U1",
+            "isOwner": True,
+        }
+        address = {
+            "channel": "slack",
+            "accountId": "T1",
+            "conversationId": "C1",
+            "threadId": "123.4",
+        }
+        payload = {
+            "kind": "amp-task",
+            "id": IDENTITY,
+            "title": "Compare parsers",
+            "prompt": "Compare A and B",
+            "ownerRequest": "Spawn Amp",
+            "reporter": reporter,
+            "address": address,
+            "scopeKey": ["slack", "T1", "C1", "123.4"],
+        }
+        for invalid in (
+            {"reporter": None},
+            {"reporter": {**reporter, "isOwner": "true"}},
+            {"reporter": {**reporter, "isOwner": 1}},
+            {"reporter": {**reporter, "senderId": "bot:B1"}},
+            {"reporter": {**reporter, "senderId": "Raygen"}},
+            {"address": None},
+            {"address": {**address, "accountId": "T2"}},
+            {"address": {**address, "channel": "agent"}},
+            {"address": {**address, "conversationId": "bad"}},
+            {"address": {**address, "threadId": None}},
+            {"address": {**address, "threadId": 123.4}},
+            {"scopeKey": None},
+            {"scopeKey": ["slack", "T1", "C1", "567.8"]},
+            {"scopeKey": ["private", "owner"]},
+            {
+                "reporter": {**reporter, "isOwner": False},
+                "scopeKey": ["private", "owner"],
+            },
+            {
+                "reporter": {**reporter, "isOwner": False},
+                "scopeKey": ["guest", "slack", "T1", "C1", "123.4", "U2"],
+            },
+            {"title": "Task\nwith newline"},
+            {"prompt": "bad\0prompt"},
+            {"ownerRequest": ""},
+        ):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as root:
+                data = json.dumps({**payload, **invalid}).encode()
+                config = {
+                    "command": ["/opt/amp"],
+                    "runnerDirectory": "/work/june",
+                    "snapshotDirectory": root,
+                }
+                with (
+                    patch.object(runner.subprocess, "run"),
+                    self.assertRaises(ValueError),
+                ):
+                    runner.prepare(
+                        f"june-amp-task-ready {IDENTITY} {hashlib.sha256(data).hexdigest()}",
+                        config,
+                        io.BytesIO(data),
+                    )
+                self.assertEqual(list(Path(root).iterdir()), [])
+
+    def test_only_legacy_owner_tasks_may_omit_source_binding(self):
+        for is_owner, partial in (
+            (True, {}),
+            (False, {}),
+            (True, {"scopeKey": ["private", "owner"]}),
+            (True, {"address": None}),
+        ):
+            with (
+                self.subTest(is_owner=is_owner, partial=partial),
+                tempfile.TemporaryDirectory() as root,
+            ):
+                data = json.dumps(
+                    {
+                        "kind": "amp-task",
+                        "id": IDENTITY,
+                        "title": "Legacy task",
+                        "prompt": "Compare parsers",
+                        "ownerRequest": "Spawn Amp",
+                        "reporter": {
+                            "channel": "slack",
+                            "accountId": "T1",
+                            "senderId": "U1",
+                            "isOwner": is_owner,
+                        },
+                        **partial,
+                    }
+                ).encode()
+                config = {
+                    "command": ["/opt/amp"],
+                    "runnerDirectory": "/work/june",
+                    "snapshotDirectory": root,
+                }
+                command = (
+                    f"june-amp-task-ready {IDENTITY} {hashlib.sha256(data).hexdigest()}"
+                )
+                with patch.object(runner.subprocess, "run"):
+                    if is_owner and not partial:
+                        argv = runner.prepare(command, config, io.BytesIO(data))
+                        self.assertEqual(
+                            argv[1:5], ["--mode", "high", "--features", "fast"]
+                        )
+                    else:
+                        with self.assertRaises(ValueError):
+                            runner.prepare(command, config, io.BytesIO(data))
+                        self.assertEqual(list(Path(root).iterdir()), [])
 
     def test_task_dispatch_keeps_bounded_results_private_and_never_downgrades(self):
         transport = """

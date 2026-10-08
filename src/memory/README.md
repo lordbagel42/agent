@@ -5,7 +5,13 @@ authenticated routing (`JSON.stringify(routeEvent(event, owner).key)`), never
 from model output, message bodies, or an unchecked operator request. Bind the
 configured owner and permitted scopes again at every operator/reflection call.
 `appendClaim`, proposal review, source deletion, and personality revisions are
-trusted host APIs, not autonomous model tools.
+trusted host APIs. June reaches supported operations through the bounded task
+directives below, not arbitrary store access. Ordinary task use has no blanket
+owner/private-DM gate or compulsory human approval: June judges actual intent,
+authority and audience. Source isolation, retention enrollment, provider scopes,
+manual disables, secret/admin controls and deletion provenance remain enforced.
+Task availability never enrolls a new retention audience or automatically injects
+another person's conversation history into a prompt.
 
 ## Configuration and live flow
 
@@ -39,8 +45,8 @@ trusted host APIs, not autonomous model tools.
   not a model-visible existence oracle. Tombstones must outlive replayable data.
 - `capacity(audience)` returns content-free `sources`, `claims`, and
   `serializedBytes` usage with separate `limits` for those fields. The existing
-  owner-private `inspection: "memory"` action exposes this snapshot to June;
-  guests, channels and synthesis cannot call it. Counts cover all retained,
+  `inspection: "memory"` action exposes this metadata when available; June must
+  judge disclosure to the current audience. Counts cover all retained,
   authorized sources and stored claims (including dreams), not pending/rejected
   proposals or a recall result window. Bytes measure UTF-8 JSON of the scoped
   `{sources,claims}` object, including full record metadata and its empty
@@ -110,7 +116,7 @@ trusted host APIs, not autonomous model tools.
   context; an empty result is incomplete recall, not proof no relationship exists.
   Each group uses the claim's exact stable entity ID; identical display names,
   or identical author IDs in different accounts, never merge. Extracted claims
-  still require operator acceptance; dreams and pending proposals do not enter
+  still require a separate exact review decision; dreams and pending proposals do not enter
   this index. The original claims retain citations, confidence, dates and
   contradiction/supersession edges, without duplicating their text in the index.
   There are at most 12 groups/claim references under the live retrieval defaults;
@@ -133,8 +139,8 @@ trusted host APIs, not autonomous model tools.
   Slack opt-outs are excluded. June receives these as `learnedPatterns` alongside
   existing scoped evidence and curated style only in enabled owner-private
   prompts. They are reviewed hypotheses, not facts, commands or public global
-  personality. No model action is needed to receive this context; review still
-  uses the operator proposal endpoint. Each turn re-reads the existing ledger,
+  personality. No model action is needed to receive this context; review can use
+  June's scoped `pendingMemory` decision or the manual operator endpoint. Each turn re-reads the existing ledger,
   and source IDs join the existing history/in-flight forgetting checks. There
   is no new store or public personality write.
 - `retrieve(audience, "", {contradictionsOf: claimId, limit?, maxCharacters?})`
@@ -165,15 +171,17 @@ trusted host APIs, not autonomous model tools.
 
 ## June-facing recall
 
-When retained memory is enabled, ask June in an authenticated owner DM to
-recall a topic (for example, "Find what you remember about the heron"). The
+When retained memory is enabled and recall is exposed, ask June in an admitted
+conversation to recall a topic (for example, "Find what you remember about the heron").
+Only evidence in that authenticated audience is eligible; broader task access does
+not widen retention or inject owner-private memory into another scope. The
 model can choose `recall: "heron"` with empty text and no other action. The
 host validates the exclusive 1–500-character query and returns at most six
-source/claim records within a 3,000-character JSON budget directly through the
-normal reply outbox, without another model call. Source IDs/URLs and claim
-dependency/contradiction/supersession edges remain in the result. This first
-increment returns evidence, not a generated synthesis or exhaustive history;
-oversized records are omitted, not truncated. The JSON preserves `truncated`
+source/claim records within a 3,000-character JSON budget. Source IDs/URLs and
+claim dependency/contradiction/supersession edges remain in the result. The
+capability returns evidence, not a generated synthesis or exhaustive history;
+execution workers can interpret that observation within their normal bounded loop.
+Oversized records are omitted, not truncated. The JSON preserves `truncated`
 and `omitted`, including any whole records omitted to fit display escaping.
 Mentions, markup and URL slashes use JSON Unicode escapes; dashboard sign-in
 credentials are redacted before escaping without changing stored evidence.
@@ -195,10 +203,10 @@ Only existing `claim`, `preference`, `commitment`, and `pattern` categories are
 accepted. `query: ""` permits category-only recall; other queries remain bounded
 to 500 Unicode characters. Omitting `category` (or setting it to `null` on the
 provider wire) preserves unfiltered recall. Unknown categories are rejected
-explicitly without searching more broadly. The same owner-private authorization,
+explicitly without searching more broadly. The same authenticated audience,
 six-record/3,000-character limits, provenance and deletion guards apply.
 
-For explicit contradiction neighbors, ask June privately to inspect a known
+For explicit contradiction neighbors, ask June to inspect a known scoped
 claim ID. She can choose `recall: {kind: "contradictions", claimId: "..."}`
 (exact ID, 1–2048 characters) with empty text and no other action. String queries
 remain lexical. The same six-record / 3,000-character escaped JSON budget applies
@@ -208,7 +216,7 @@ No result can establish agreement, and referenced but absent bodies are unknown.
 
 For an entity-specific request, June can use
 `recall: {kind: "search", query: "", entity: '["slack","T1","U1"]'}`
-with the exact existing entity ID from retained evidence or the owner's request.
+with the exact existing entity ID from retained evidence or the request.
 The filter never infers identity from a display name; equal names in different
 author/account/platform tuples stay separate. Unknown IDs produce no matches,
 not an unfiltered fallback. `entity` can accompany a category or keyword query;
@@ -222,7 +230,7 @@ provider wire) apply no time filter. Ask for original messages within a date
 window versus claims with known validity at an instant; these are different
 questions, with the half-open and unknown-bound semantics described above.
 
-For an exact original, ask "Show source ID …" in the same owner-private turn.
+For an exact original, ask "Show source ID …" in the same authorized source scope.
 June can use `recall: {kind: "source", sourceId: "…"}` with empty text and no
 other action. The ID is exact (1–2048 characters, not a keyword query). The
 same 3,000-character serialized/escaped budget applies to that one whole source,
@@ -233,7 +241,7 @@ metadata; an authorized oversized source is explicitly omitted, not clipped.
 
 For an exact retained claim, ask "Inspect claim <ID> and its original evidence."
 June can use `recall: {kind:"claim", claimId:"<exact ID>"}` with empty text and
-no other action. The same private receipt path returns the claim and up to six
+no other action. The same scoped receipt path returns the claim and up to six
 original quotations with provenance, bounded to 3,000 escaped JSON characters.
 There is no keyword/prefix fallback and no pending-proposal promotion. Missing,
 inaccessible, pending/rejected and deleted claims share the same unavailable
@@ -247,15 +255,17 @@ as extra corroboration. The host records originals even if some quotations are
 omitted, so deletion still invalidates the receipt and derivatives.
 
 The host derives the audience from routing; the model cannot choose an audience,
-limit, provider, account, or permission. Recall is absent from guest/public,
-web-synthesis, worker-result, and memory-disabled turns. Its availability is
+limit, provider, account, or permission. Recall is unavailable on report-only
+synthesis/completion and memory-disabled turns; task workers use their saved scope.
+Its availability is
 saved in the turn plan, so old plans cannot acquire the action during replay.
 Original source references are persisted before the result enters the journal
 or outbox and inherited by later answers through history. Existing source and
 deletion-revision checks suppress invalidated deliveries/retries and prune
 derived history, including when operator cleanup has not yet run. Duplicated
 events do not repeat the lookup; interrupted model invocations do not relaunch.
-Forgetting is still an authenticated operator action, not a model action.
+Forgetting has its separate exact-fingerprint task interface below; recall itself
+cannot delete anything.
 
 Live memory remains a separate activation task: provision the canonical private
 directory and key through the existing secret mechanism, configure `memory`
@@ -278,11 +288,11 @@ newer update is shown, never proof of current truth. Foreign incoming updates
 cannot affect the result; missing, foreign, opted-out and forgotten roots have
 the same absence. This is a scoped view, not proof the entire history is known.
 Claims remain untrusted; inspection does not accept or mutate them, and inherits
-recall's owner-private authorization, deletion checks and provenance binding.
+recall's audience authorization, deletion checks and provenance binding.
 
 ### Inspect claims that depend on a source
 
-In an owner-private conversation, ask June which claims depend on an exact source
+In the authorized source scope, ask June which claims depend on an exact source
 ID. June requests `recall: {kind:"dependents", sourceId:"<exact ID>"}` with empty
 text and no other action. The host uses the existing recall authorization and
 deletion checks, never a model-supplied audience or a second graph database.
@@ -374,14 +384,15 @@ empty relation arrays. `contradicts` records a source-supported conflict about t
 same subject and fact; `supersedes` requires an explicit update or replacement,
 not just a newer observation or higher confidence. Old claims cannot supply new
 citations. These edges stay pending, including for imported evidence, and never
-resolve or erase earlier claims automatically. Owner review determines whether
-the proposed relation is actually supported.
+resolve or erase earlier claims automatically. A separate review decision must
+assess whether the proposed relation is actually supported.
 
 The result goes to `stageProposals(audience, sourceIds, output)`. It checks exact
 source quotations and current dependencies, derives scope and stable entity IDs,
 and atomically persists encrypted pending proposals. The subject's entity ID is
 derived from that source's platform, account and author. Quotes establish
-provenance, not semantic entailment: human review remains necessary. The first
+provenance, not semantic entailment: June must review rather than treat extraction
+as automatic acceptance; manual operator review remains available. The first
 successful admission for an audience and exact source-ID set is durable, even
 when it produces no proposals. Reordering those IDs or changing model wording or
 confidence returns the original proposals with their current review decisions;
@@ -425,25 +436,26 @@ staging checks still reject their output. Older snapshots have no admission
 receipts; their first post-upgrade admission records one without rewriting
 existing proposals.
 
-Operator APIs:
+Trusted store APIs (also used by the bounded host directives):
 
 - `proposals(audience): MemoryProposal[]` lists pending, accepted, and rejected
   proposals. `proposal(audience, id): MemoryProposal | undefined` reads one.
-- `reviewProposal(audience, id, "accepted" | "rejected"): void` is an
-  authenticated operator action. Same-decision retries are idempotent; opposing
+- `reviewProposal(audience, id, "accepted" | "rejected"): void` records an
+  authenticated scoped decision. Same-decision retries are idempotent; opposing
   decisions fail. Only accepted proposals become retrievable claims.
 - `previewForget(audience, sourceId): ForgetPreview | undefined` is read-only,
   reusing source-dependent inspection's full authorized claim graph. It returns
   `{sourceId,sources:1,claims,proposals:{pending,accepted,rejected},physicalPurge:false}`
-  plus **host-only** `fingerprint` and `confirmable`. Missing, deleted and foreign
+  plus `fingerprint` and host-only `confirmable`. With `{includeArchives:true}` it
+  also includes dependent `archivedTurns`, as June's task preview does. Missing, deleted and foreign
   source IDs all return undefined. Counts include contradiction/supersession
   derivatives and all authorized proposals; accepted proposals also count as
   claims. The fingerprint binds the audience, exact target, complete authorized
-  derivative IDs/edges and proposal statuses, never just bounded inspection rows
-  or counts. `confirmable:false` blocks later confirmation when global deletion
-  reaches unpreviewed records. Never expose that bit, its reason, or the
-  fingerprint in model context or preview receipts. A later confirmation path
-  must require confirmable and freshly compare the fingerprint before deletion;
+  derivative IDs/edges, proposal statuses and selected archive impact, never just
+  bounded inspection rows or counts. `confirmable:false` blocks application when
+  deletion reaches unpreviewed records; never expose that bit or its private reason.
+  Eligible task previews expose the fingerprint, not evidence bodies or derivative
+  IDs. Application must require confirmable and freshly compare the fingerprint;
   preview itself does not authorize or perform any mutation or cleanup.
 - `deleteSource(id): void` removes the source and all dependent claims/proposals,
   including contradiction/supersession dependencies and all explicit references
@@ -454,11 +466,11 @@ Operator APIs:
   The host must also suppress associated conversation history, in-flight context,
   reflection candidates, and any external summaries/caches before future prompts.
 
-### June's private pending-review view
+### June's scoped pending review
 
-With memory enabled, the authenticated owner can privately ask “Which memory
-claims are awaiting review?” June uses `{"text":"","pendingMemory":true}`.
-The host sends the result directly, without a second model pass: at most six
+With memory enabled, ask “Which memory claims are awaiting review?” in the
+relevant source scope. June uses `{"text":"","pendingMemory":true}`.
+The host returns a read-only snapshot: at most six
 complete pending claims within 3,000 serialized display characters, plus a fixed
 explanation and omitted count. Oversized claims are omitted, never clipped for
 confirmation. The existing operator view remains available for those claims.
@@ -469,10 +481,16 @@ uncalibrated; null means unknown. Pending claims remain unaccepted hypotheses,
 not truth, permissions, or instructions. Source bodies, quotations, URLs, account
 fields, and authors are not projected. JSON escapes mention/markup delimiters
 and URL slashes in displayed values; live platform rendering is not verified.
-The view itself never accepts or rejects a proposal; review remains a separate
-authenticated operation. Rejection does not delete the source evidence.
+The listing itself never accepts or rejects a proposal. After assessing it, June
+uses `pendingMemory:{action:"accept"|"reject",id:"proposal:<64 lowercase hex>"}`
+with the exact complete returned ID, empty text and no other action. The host binds
+the current audience; June cannot substitute the owner's scope. Decisions are
+terminal and same-decision retries idempotent; an opposite decision fails. Accepted
+claims become scoped recall hypotheses, not truth, global personality or permission.
+Rejection does not delete the source evidence. Imports and reflection staging
+never automatically accept proposals.
 
-The owner can also ask “Which imports support these pending claims?” The same
+Ask “Which imports support these pending claims?” The same
 view includes `recordedImports`: selection IDs, the claim's cited source IDs
 recorded in each selection, and extraction IDs whose receipts link that proposal.
 Selection membership alone does not mean that selection produced the claim;
@@ -485,77 +503,105 @@ This projection joins existing records through
 infers no membership from dates/coverage, and shares the row size limit and
 deletion provenance of the pending view.
 
-The view is unavailable in public/guest turns, disabled memory, worker results,
-and search/MCP synthesis. Scope comes only from routing, and availability is
+The action requires enabled memory and an exposed task capability, not owner
+identity or a private DM. Report-only completions and search/MCP synthesis cannot
+start it. Scope comes only from routing, and availability is
 frozen in the turn plan. Returned claims carry original source provenance into
 the normal reply/history path so forgetting invalidates copied content and
 pending retries. Listing never mutates proposals or starts extraction/imports.
 General `inspection: "memory"` stays metadata-only. This local capability does
 not activate memory, create imports, or prove live provider access.
 
-June also accepts an explicit owner confirmation: after reviewing a pending claim,
-send exactly `!memory-accept proposal:<full 64-character lowercase hex ID>` in
-the authenticated owner's Slack DM as a new plain-text message. Verified ingress
-must establish it is not quoted, code-formatted, or an attachment fallback;
-historical events without that check cannot confirm. The command identifies one
-immutable proposal, not a batch or an inferred claim from a conversational “yes.”
-The host calls the same `reviewProposal` API and sends a receipt without invoking
-the conversational model. Public or guest messages cannot authorize it, even with
-the correct ID. Quoted commands, model output, worker results, and imported history
-never execute as confirmations. Missing, foreign, rejected, or forgotten proposals
-cannot be accepted; repeated acceptance leaves a single claim. Extraction remains
-pending-only. Acceptance changes neither personality nor permissions and does not
-create an owner correction. The command is version-gated to fresh workflow turns;
-already-journaled turns retain their prior path.
+Optional manual commands remain available in the same authorized Slack scope:
+`!memory-accept proposal:<full 64-character lowercase hex ID>` and
+`!memory-reject proposal:<full 64-character lowercase hex ID>`. The pending view
+includes them, but June need not ask a human to send them. Verified ingress
+requires a fresh plain-text message, not a quote, code block, forwarded message
+or attachment fallback. Model output, worker results, imports and historical
+text cannot execute these commands. Each identifies one immutable scoped proposal,
+not a batch or a conversational “yes”, and calls the same `reviewProposal` API.
+Missing, foreign, forgotten or oppositely decided proposals fail; repeated same
+decisions preserve one result. Rejection and bounded provenance survive reopening
+and extraction replay. Neither decision creates an owner correction or deletes
+original evidence. Acceptance starts at memory-claim-review version 2, rejection
+at version 3; already-journaled turns retain their prior path.
 
-To reject a pending claim, the owner instead sends exactly
-`!memory-reject proposal:<full 64-character lowercase hex ID>` through the same
-verified plain-text Slack DM boundary. The pending view supplies both complete
-commands within its existing display budget. Rejection persists the irreversible
-decision and bounded original proposal provenance in the encrypted ledger; it
-survives reopening, repeated commands and extraction replay. That candidate cannot
-later be accepted. Already accepted claims cannot be rejected through this command.
-This is not deletion: original sources remain available, and explicit source
-forgetting remains the separate operation that removes dependent proposals and
-records deletion tombstones. Rejection starts at memory-claim-review version 3;
-older journaled rejection text retains its previous conversational path.
+## Exact-preview forgetting through June
 
-## Owner confirmation through June
+June requests `forgetPreview:{sourceId}` using an exact source ID from scoped
+evidence, not a query, claim, author or conversation ID. This reads authorized
+counts and archive impact, plus a fingerprint when deletion is eligible. It
+does not delete anything. After judging intent and impact, June can choose
+`forgetPreview:{sourceId,apply:"<exact fingerprint>"}`. No human command or
+owner-private conversation is required. The host rechecks scope and fingerprint;
+changed dependencies or a non-confirmable preview deny application. Read the new
+impact rather than guessing a fingerprint or substituting an audience.
 
-Ask June in the authenticated owner's Slack DM to preview forgetting an
-exact source ID (`forgetPreview: {sourceId}`). When host cleanup is available and
-the entire deletion target can be previewed, the host appends a single-use
-`!forget-confirm TOKEN` command. Send that exact command as a new ordinary owner
-message (not a Slack slash command) within ten minutes. A new confirmable preview
-replaces any older unused confirmation. Quoted commands, public/guest turns,
-model suggestions and model-supplied confirmation flags cannot authorize deletion.
-A preview whose delivery was rejected or uncertain cannot be confirmed.
+Application durably queues host-owned logical deletion and cleanup. **Queued is
+not completed.** The host persists consumption and frozen cleanup targets before
+tombstoning, then revokes social grants, clears affected working context/archive
+payloads and requests associated job/reflection cleanup. Only its completion
+receipt crosses the resulting deletion boundary; invalidated workers must not
+send a replacement completion or repeat an uncertain request. Durable
+`forgetConfirmations` track pending/started/completed status. Frozen context/job
+IDs prevent recovery from erasing newer work; completed receipts and duplicate
+events do not rerun cleanup. A started receipt without a ledger tombstone requires
+a fresh preview, not a cleanup retry. `physicalPurge:false` always applies:
+journals, encrypted history, backups and already-sent content are not physically erased.
 
-The host rechecks the exact preview fingerprint and authorization immediately
-before tombstoning. Changed dependencies require a fresh preview. Consumption is
-persisted first, then the existing host cleanup revokes social grants, clears
-working context and cancels associated work. Durable `forgetConfirmations`
-receipts retain only binding metadata and pending/started/completed status.
-After interruption, send the same command as a new owner message to resume the
-same cleanup. Frozen context/job IDs prevent retries from erasing newer work;
-completed confirmations and duplicate events do not rerun cleanup. A started
-receipt without a ledger tombstone requires a fresh preview, not a cleanup retry.
-All results disclose `physicalPurge:false`: journals, encrypted history, backups
-and already-sent platform content are not physically erased.
+An eligible preview may also supply `!forget-confirm TOKEN`, an optional manual
+or recovery path. Send the exact token as a fresh plain Slack message in the same
+conversation within ten minutes for a pending preview. New previews replace older
+unused manual confirmations, not admitted runtime requests. Quoted/model/history
+text cannot execute the command. This manual path requires a confirmed delivered
+preview with its archived-turns marker; the model-selected application does not
+require delivery of a human confirmation command. After interruption, follow the
+specific saved receipt's guidance rather than blindly issuing another operation.
 
-Ask June privately whether forgetting cleanup finished; she can request
+Ask June whether forgetting cleanup finished; she can request
 `{"text":"","inspection":"forgetting"}`. This read-only report counts recorded
 pending/started/completed confirmations and shows at most ten started attempts
 with opaque tokens, current tombstone status and recovery guidance. It never
 recalls source bodies or returns source IDs, fingerprints or event IDs. For
-`repeat-confirmation`, the owner can resend the listed token with the existing
+`repeat-confirmation`, the requester can resend the listed token with the existing
 `!forget-confirm TOKEN` command; `fresh-preview` requires a new exact preview,
 and `operator-review` means safe recovery could not be established. Inspection
 does not authorize or run cleanup. Completed means the host callback returned,
 not external stoppage or physical erasure; every report retains `physicalPurge:false`.
 Missing receipts do not establish absence of older or operator-initiated cleanup.
 
-## Reflection and personality
+## Public-safe style and grounded personality
+
+June can preview a complete four-field public style with
+`personalityPreview:{expectedVersion,style:{tone,verbosity,humor,curiosity}}`.
+Absent or false `apply` is read-only; `apply:true` explicitly saves a version-bound
+global revision without a human command, from any admitted conversation where
+the capability is exposed. Allowed values are tone `warm|dry|playful|direct`,
+verbosity `concise|balanced|expansive`, humor `subtle|playful|none`, and curiosity
+`occasional|eager|reserved`. June judges the impact on every conversation, waits
+for the receipt and reinspects stale versions. New turns use the revision;
+already-started turns keep their snapshot. Only explicitly changed traits lose
+prior evidence grounding; unchanged grounded traits still expire or disappear
+with their evidence. This publishes no private evidence/rationale and changes
+neither permissions nor tools. Legacy `!personality` commands remain manual interfaces.
+
+Grounded-candidate evaluation and publication use the authenticated originating
+scope, including admitted guest and shared conversations. Publication requires
+an exact, complete, unexpired comparison receipt matching candidate, current
+profile and evidence. Each grounded trait keeps its original evidence scope
+through later edits and rollback; never substitute another audience. Grounded
+drafts do not publish automatically; private curated preferences remain separate
+from the public global voice.
+
+June can create a local encrypted evidence-ledger backup with `memoryBackup:true`
+when exposed and memory is configured. `inspection:"backup"` remains read-only;
+the fresh plain `!memory-backup` command is an optional manual path in any admitted
+Slack conversation. Host event/operation IDs make replay idempotent, and receipts
+contain metadata only, not paths, keys or evidence bodies. This adds a retained
+copy: it does not cover personality or Rivet journals, validate restore readiness,
+or authorize restoring data. Preserve and replay later tombstones before restore.
+
+### Scoped reflection evidence
 
 `reflectionEvidence(audience, sourceIds, maxAgeMs): Evidence[]` returns original
 episodes only, never claim/dream repetitions. Expiry is `observedAt + maxAgeMs`.
@@ -564,7 +610,7 @@ check current owner/scope authorization and `freshEvidence` for every returned
 item with the current clock. Re-read on admission, before/after inference and
 when reading candidates. Keep the raw result out of Rivet journals.
 
-In an enabled owner-private turn, June can request
+In a task turn with the scoped capability exposed, June can request
 `reflectionMemory: {id: "<candidate-alias>", subjectSourceId: "<cited-source-id>"}`
 with empty text and no other action. These are references only: rationale,
 confidence, quotations and the full source context come from the host-validated
@@ -575,13 +621,14 @@ the synchronous ledger write. The candidate's generation epoch is never restampe
 The originating turn's captured deletion revision is passed across the actor RPC
 and checked at entry and before the write; deletion invalidating that caller
 blocks staging even when all candidate evidence remains current.
-The capability is frozen in the turn plan and absent from guest/public turns,
-worker results and read-only reflection/search synthesis. Reading a candidate
+The capability is frozen in the turn plan and unavailable to report-only
+completions and read-only reflection/search synthesis. Reading a candidate
 does not grant staging permission to a continuation; staging needs its own
 effect-eligible turn. The private receipt contains only proposal identity/status,
 not copied rationale or quotations.
 
-After privately inspecting a current reflection candidate, the owner can send
+As an optional manual alternative, after privately inspecting a current candidate,
+the owner can send
 `!reflection memory <64-hex-candidate-id> <cited-source-id>` to June as a literal
 private message (not a Slack slash command). Slack requires verified plain text,
 not quoted/code blocks or attachment fallback. The source selects the subject
@@ -593,7 +640,7 @@ and observation times remain on the original sources. Oversized rationale or
 quotes are rejected, not silently clipped. The normal pending-proposal review
 surface owns subsequent acceptance or rejection; this command never accepts.
 Publication expiry limits admission, not the lifetime of an already-staged
-pending memory proposal. Subsequent owner review retains the ordinary memory
+pending memory proposal. Subsequent scoped review retains the ordinary memory
 validity and deletion rules, plus the durable candidate rejection below.
 
 The trusted reflection actor passes its validated opaque ID as the sixth
@@ -610,7 +657,7 @@ before persisting the actor's rejection. The ledger remembers the rejected alias
 even if nothing was staged, rejects future stale staging, and atomically marks
 that candidate's pending proposals rejected. Ordinary memory review then refuses
 their acceptance. Retries and reopening cannot restore pending status. A claim
-the owner accepted **before** candidate rejection is an already completed review;
+accepted **before** candidate rejection is an already completed review;
 candidate rejection does not retract it or delete the original evidence.
 
 The new extraction-receipt alias and rejection tombstones require a compatible
@@ -632,10 +679,11 @@ without that marker cannot qualify. Send a plain text command without attachment
 or rich embeds. No source-builder inference is involved.
 
 The deterministic receipt contains the original evidence ID, not the private
-value. `!memory-correct help` and June's owner-private memory inspection explain
+value. `!memory-correct help` and June's memory inspection explain
 the workflow. Recording does not apply a revision, replace claims, or promote
-private content into a global personality profile. Separate owner review remains
-mandatory. Values for `verbosity`, `tone`, `humor`, and `interests` are preserved
+private content into a global personality profile. Curated revisions use the
+separate trusted host/operator interface; this provenance command is not a
+prerequisite for public-safe style changes. Values for `verbosity`, `tone`, `humor`, and `interests` are preserved
 exactly (single-line, nonblank, 1–2000 UTF-16 code units). Freshness uses the original
 source time, never replay time. Repeated identical attestations are idempotent;
 changed trait/value for that source fails closed. A new correction needs a new
@@ -650,7 +698,8 @@ requires `supporting` from `reflectionEvidence` and
 rechecks it against the ledger, rejecting forged corrections or refreshed dates.
 The immutable charter is always taken from code, never disk or a proposal.
 
-`effectiveTraits(audience, commit?)` is the sole personality model projection.
+`effectiveTraits(audience, commit?)` is the scoped curated-personality projection,
+not the separate public global style.
 Traits are isolated by audience. Owner corrections take precedence over inferred
 style in that audience. It rechecks provenance even for historical commits, so
 deletion cannot restore a forgotten trait by rollback. `ownerHistory()` exposes
@@ -671,7 +720,7 @@ forgetting, not erasure of older encrypted snapshots or journals.
 
 ## Ledger operation status
 
-Owner-private `inspection: "memory"` reports scoped capacity and separate
+When exposed, `inspection: "memory"` reports capacity and separate
 ledger-wide `operationStatus()` metadata. This read-only API performs no I/O
 and returns `connection`, `sinceOpenedAt`, `persistence` counters, and `read`/`transaction` records
 containing `status` (`unknown`, `succeeded`, or `failed`), `attemptedAt`, and
@@ -700,7 +749,7 @@ privacy checks remain fail-closed. Reader failure reports do not prove a broken
 production ledger can still answer a conversational inspection request.
 
 `operationStatus().persistence` exposes fixed-size numeric counters through June's
-owner-private `inspection: "memory"`: `calls`, `completed`, `failed`,
+`inspection: "memory"`: `calls`, `completed`, `failed`,
 `totalDurationMs`, and `maxDurationMs` (null until a sample). These volatile
 counters start at zero on each store open. They count settled `transaction()`
 attempts, including no-op commits and failed BEGIN/read/change/write/COMMIT or
@@ -750,7 +799,7 @@ incomplete replay input aborts startup at the content-free memory-restore stage;
 it does not fall back to ordinary opening. This configuration does not copy or
 replace a database, fetch exports, grant restore authority, or activate memory.
 
-June's existing owner-private `inspection: "memory"` reports readiness, the
+June's existing `inspection: "memory"` reports readiness, the
 persisted replay watermark (or no restore receipt), and current deletion
 watermark, without evidence or tombstone IDs. The trusted host equivalent is
 `restoreStatus()`. A receipt proves only which supplied watermark was replayed,
@@ -784,8 +833,8 @@ policy. Git alone cannot restore personality, and a Git revert is not erasure.
 Physical purge/key rotation and retention scheduling remain operator work; no
 automatic backup/history deletion or production activation is performed here.
 
-June can request `{"text":"","inspection":"snapshot-retention"}` on an
-owner-private turn; public/guest turns and synthesis cannot use it. This is
+June can request `{"text":"","inspection":"snapshot-retention"}` when inspection
+is exposed, judging disclosure to the current audience. This is
 separate from the no-scan `retention` inventory and reports unavailable when no
 curated store is attached. It never creates a store or starts cleanup.
 `CuratedPersonalityStore.retentionReport()` is a metadata-only retention dry run:
@@ -869,10 +918,10 @@ append history, not a timestamp; never combine exports from unrelated or
 rolled-back histories based only on counts. Keep the same ledger identity across
 all pages and independently retain the required watermark.
 
-June can privately answer “Inspect tombstone export status” using
+June can answer “Inspect tombstone export status” using
 `inspection: "tombstones"`. The host returns only the current watermark, API path,
-and bounds, never IDs or an unbounded export. Public/guest and synthesis turns
-cannot call it. Neither this status nor an API read records or proves independent
+and bounds, never IDs or an unbounded export. The task read grants no export or
+restore authority. Neither this status nor an API read records or proves independent
 retention, performs a restore, or changes live backups. Replay before restored
 memory becomes readable remains a separate restore operation.
 
@@ -952,8 +1001,8 @@ backup against the host's current signed deletion history and in-memory key;
 request-supplied paths, keys, pages and watermarks are rejected. This local
 preflight does **not** verify independent backup/tombstone retention.
 
-June can inspect the last process-local result with `inspection: "memory"` in
-the owner's private conversation. It reports `validated`, `rejected`, `stale`
+June can inspect the last process-local result with `inspection: "memory"` when
+exposed. It reports `validated`, `rejected`, `stale`
 after new forgetting, or not run (including after restart). No body, tombstone
 ID, secret key or filesystem path is exposed. June cannot run validation or
 replace a store. A successful preflight is not a restore authorization: actual

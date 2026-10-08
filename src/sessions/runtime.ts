@@ -1139,11 +1139,19 @@ export function createActivityActor(deps: ActivityDependencies) {
                                   ? { replyTo: context.source.messageId }
                                   : {}),
                                 ...(output.question &&
-                                replyAddress.channel === "slack" &&
-                                replyAddress.conversationId.startsWith("D") &&
-                                isOwner(context.source, deps.owner) &&
-                                routeEvent(context.source, deps.owner)?.private
-                                  ? { question: output.question }
+                                replyAddress.channel === "slack"
+                                  ? {
+                                      question: output.question,
+                                      questionTarget: {
+                                        userId: context.source.senderId,
+                                        channelType:
+                                          context.source.metadata
+                                            ?.channelType ??
+                                          (context.source.direct
+                                            ? "im"
+                                            : "channel"),
+                                      },
+                                    }
                                   : {}),
                               },
                             },

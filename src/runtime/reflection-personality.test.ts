@@ -16,7 +16,7 @@ import { EvidenceStore } from "../memory/store.js";
 import { reflectionCandidateId } from "./reflection.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
-it("stages retained reflection through June without applying it or bypassing live, quiet, privacy and rejection gates", async (t) => {
+it("stages retained reflection through June without applying it or bypassing live, quiet, source-scope and rejection gates", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "june-reflection-personality-"));
   const store = new EvidenceStore(":memory:", randomBytes(32));
   const curated = new CuratedPersonalityStore(
@@ -273,9 +273,11 @@ it("stages retained reflection through June without applying it or bypassing liv
       },
     },
   ]) {
-    await deliver(extra);
+    expect(await deliver(extra)).toMatchObject({
+      text: expect.stringContaining("not staged"),
+    });
     expect(requests.at(-1)?.reflectionPersonalitySuggestionAvailable).toBe(
-      false,
+      true,
     );
     expect(curated.pendingGlobalProposals(scope)).toEqual([staged]);
   }

@@ -595,9 +595,10 @@ it("bounds private curiosity provenance and withholds revoked inputs and hypothe
   }
   expect(state).toEqual(snapshot);
   const count = reads.length;
-  await expect(inspect(context, "public")).rejects.toThrow(
-    "Wrong reflection audience",
-  );
+  expect(await inspect(context, "public")).toEqual({
+    truncated: false,
+    rows: [],
+  });
   await expect(inspect({ ...context, key: ["other"] }, scope)).rejects.toThrow(
     "Wrong reflection audience",
   );

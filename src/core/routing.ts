@@ -39,6 +39,7 @@ export function routeEvent(
       (!event.direct &&
         event.metadata?.channelType !== "mpim" &&
         !event.botMentioned &&
+        !event.questionAnswered &&
         !(
           event.threadFollowup === true &&
           address.threadId &&

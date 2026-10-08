@@ -24,6 +24,17 @@ const owner = {
   id: "owner",
   identities: [{ channel: "slack" as const, accountId: "T1", senderId: "U1" }],
 };
+const source: MessageEvent = {
+  type: "message",
+  id: "evaluation",
+  messageId: "evaluation",
+  occurredAt: 200,
+  address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+  senderId: "U1",
+  direct: true,
+  metadata: { channelType: "im" },
+  text: "Evaluate the draft in this conversation.",
+};
 const scope = JSON.stringify(["private", owner.id]);
 const request = {
   candidateId: "candidate",
@@ -93,11 +104,12 @@ function fixture(
     })) as DecisionFunction,
   };
   const service = createPersonalityPreview({
-    ownerId: owner.id,
+    owner,
     store,
     readCandidate:
       readCandidate ??
-      (async (id) =>
+      (async (event, id) =>
+        JSON.stringify(routeEvent(event, owner)?.key) === scope &&
         !state.decided &&
         id === state.proposal.id &&
         state.now < state.proposal.expiresAt &&
@@ -123,7 +135,7 @@ it("keeps held-out evidence private, rejects contaminated/stale inputs and disca
     profile: state.profile,
     proposal: state.proposal,
   });
-  const result = await service.preview(request);
+  const result = await service.preview(source, request);
   // Independently construct the canonical profile bytes, rather than reusing the digest helper.
   const digest = createHash("sha256")
     .update(
@@ -157,21 +169,27 @@ it("keeps held-out evidence private, rejects contaminated/stale inputs and disca
     ["held-one", "held-two", "held-three", "held-four", "held-five"],
   ]) {
     expect(
-      await service.preview({ ...request, heldOutSourceIds: ids }),
+      await service.preview(source, { ...request, heldOutSourceIds: ids }),
     ).toEqual({ status: "unavailable" });
   }
   state.profile.version = 1;
-  expect(await service.preview(request)).toEqual({ status: "unavailable" });
+  expect(await service.preview(source, request)).toEqual({
+    status: "unavailable",
+  });
   state.profile.version = 0;
   state.now = 1100;
-  expect(await service.preview(request)).toEqual({ status: "unavailable" });
+  expect(await service.preview(source, request)).toEqual({
+    status: "unavailable",
+  });
   state.now = 200;
   state.decided = true;
-  expect(await service.preview(request)).toEqual({ status: "unavailable" });
+  expect(await service.preview(source, request)).toEqual({
+    status: "unavailable",
+  });
   state.decided = false;
   expect(state.calls).toHaveLength(2);
 
-  const snapshot = await service.snapshot(request);
+  const snapshot = await service.snapshot(source, request);
   if (!snapshot) throw new Error("Missing test snapshot");
   snapshot.candidate.style.humor = "none";
   expect(await service.isCurrent(snapshot)).toBe(false);
@@ -179,11 +197,11 @@ it("keeps held-out evidence private, rejects contaminated/stale inputs and disca
   const held = Promise.withResolvers<Decision>();
   state.decide = () => held.promise;
   const controller = new AbortController();
-  const pending = service.preview(request, controller.signal);
+  const pending = service.preview(source, request, controller.signal);
   await expect.poll(() => state.calls.length).toBe(3);
   controller.abort();
   expect(await pending).toEqual({ status: "unavailable" });
-  expect(await service.preview(request)).toMatchObject({
+  expect(await service.preview(source, request)).toMatchObject({
     status: "preview",
     outcomes: [{ answer: "abstain" }, { answer: "abstain" }],
   });
@@ -202,7 +220,9 @@ it("keeps held-out evidence private, rejects contaminated/stale inputs and disca
       rationale: "PRIVATE revoked",
     };
   };
-  expect(await service.preview(request)).toEqual({ status: "unavailable" });
+  expect(await service.preview(source, request)).toEqual({
+    status: "unavailable",
+  });
   expect(state.calls).toHaveLength(4); // Never sends the second, forgotten interaction.
   expect({ profile: state.profile, proposal: state.proposal }).toEqual(before);
 
@@ -217,6 +237,7 @@ it("keeps held-out evidence private, rejects contaminated/stale inputs and disca
   });
   expect(
     await cancelled.service.preview(
+      source,
       { ...request, heldOutSourceIds: ["held-one"] },
       duringFinalRead.signal,
     ),
@@ -224,11 +245,12 @@ it("keeps held-out evidence private, rejects contaminated/stale inputs and disca
   expect(cancelled.state.calls).toHaveLength(1);
 });
 
-it("exposes June evaluation only to owner-private requests and never dispatches mixed or synthesis actions", async (t) => {
+it("exposes source-scoped June evaluation without owner-evidence access or mixed/synthesis actions", async (t) => {
   let client: Client<JuneClientRegistry>;
   const { store, state, service } = fixture(
     t,
-    (id) => client.personality.getOrCreate([owner.id]).evaluationCandidate(id),
+    (event, id) =>
+      client.personality.getOrCreate([owner.id]).evaluationCandidate(event, id),
     Date.now(),
     7 * 24 * 60 * 60 * 1000,
   );
@@ -316,8 +338,6 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
   async function deliver(extra: Partial<MessageEvent> = {}) {
     const event: MessageEvent = {
       type: "message",
-      id: `event-${++serial}`,
-      messageId: `${serial}`,
       occurredAt: Date.now(),
       address: { channel: "slack", accountId: "T1", conversationId: "D1" },
       senderId: "U1",
@@ -325,6 +345,8 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
       metadata: { channelType: "im" },
       text: "Evaluate this candidate privately",
       ...extra,
+      id: `event-${++serial}`,
+      messageId: `${serial}`,
     };
     const routed = routeEvent(event, owner);
     if (!routed) throw new Error("Invalid test route");
@@ -413,32 +435,38 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
       },
     },
     { senderId: "GUEST" },
-    { metadata: undefined },
   ]) {
     await deliver(extra);
-    expect(requests.at(-1)?.personalityEvaluateAvailable).toBe(false);
+    expect(requests.at(-1)?.personalityEvaluateAvailable).toBe(true);
     expect(state.calls).toHaveLength(6);
+    expect(sent.at(-1)?.content).toMatchObject({
+      text: expect.stringContaining("unavailable"),
+    });
   }
+  // Host-routed identity and audience, not optional Slack metadata, bind evidence.
+  await deliver({ metadata: undefined });
+  expect(requests.at(-1)?.personalityEvaluateAvailable).toBe(true);
+  expect(state.calls).toHaveLength(10);
   action = {
     text: "",
     personalityEvaluate: comparisonRequest,
     reaction: "wave",
   };
   await deliver();
-  expect(state.calls).toHaveLength(6);
+  expect(state.calls).toHaveLength(10);
   action = { text: "", personalityEvaluate: comparisonRequest };
   web = true;
   await deliver();
   expect(requests.at(-1)?.personalityEvaluateAvailable).toBe(false);
-  expect(state.calls).toHaveLength(6);
+  expect(state.calls).toHaveLength(10);
   await deliver({
     text: `!personality reject ${JSON.stringify({ proposalId: proposal.id })}`,
     personalityCommandEligible: true,
   });
-  expect(await service.preview(actualRequest)).toEqual({
+  expect(await service.preview(source, actualRequest)).toEqual({
     status: "unavailable",
   });
-  expect(state.calls).toHaveLength(6);
+  expect(state.calls).toHaveLength(10);
   expect(await client.personality.getOrCreate([owner.id]).read()).toEqual(
     profile,
   );
@@ -510,13 +538,13 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
     confidence: 0.8,
   });
   const nextRequest = { ...request, candidateId: next.id };
-  const beforeForgetting = await service.snapshot(nextRequest);
+  const beforeForgetting = await service.snapshot(source, nextRequest);
   expect(beforeForgetting?.current).toMatchObject({
     version: 1,
     style: { curiosity: "eager" },
   });
   store.deleteSource("support");
-  const afterForgetting = await service.snapshot(nextRequest);
+  const afterForgetting = await service.snapshot(source, nextRequest);
   expect(afterForgetting?.current).toMatchObject({
     version: 1,
     style: { curiosity: "occasional" },
@@ -526,5 +554,116 @@ it("exposes June evaluation only to owner-private requests and never dispatches 
   );
   if (!beforeForgetting) throw new Error("Missing pre-forgetting snapshot");
   expect(await service.isCurrent(beforeForgetting)).toBe(false);
-  expect(state.calls).toHaveLength(10);
-});
+  expect(state.calls).toHaveLength(14);
+
+  for (const [expectedVersion, scopedSource] of [
+    [
+      1,
+      {
+        ...source,
+        // Independent requester keeps this four-turn workflow within ingress's
+        // per-sender burst limit; the earlier foreign-candidate probe is separate.
+        senderId: "SCOPED_GUEST",
+        address: { ...source.address, conversationId: "D2" },
+      },
+    ],
+    [
+      2,
+      {
+        ...source,
+        direct: false,
+        metadata: { channelType: "channel" as const },
+        address: { ...source.address, conversationId: "C2" },
+      },
+    ],
+  ] as const) {
+    const sourceScope = JSON.stringify(routeEvent(scopedSource, owner)?.key);
+    const supportId = `scoped-support-${expectedVersion}`;
+    const heldId = `scoped-held-${expectedVersion}`;
+    for (const id of [supportId, heldId]) {
+      store.appendSource({
+        id,
+        audiences: [sourceScope],
+        platform: "slack",
+        account: "T1",
+        conversation: scopedSource.address.conversationId,
+        author: scopedSource.senderId,
+        observedAt: state.now - 100,
+        sourceUrl: "https://private.invalid/",
+        text: "PRIVATE scoped evidence",
+      });
+    }
+    const scopedDraft = curated.stageGlobalProposal(sourceScope, {
+      expectedVersion,
+      changes: { humor: "playful" },
+      evidenceIds: [supportId],
+      explanation: "PRIVATE scoped draft",
+      confidence: 0.8,
+    });
+    const scopedRequest = {
+      candidateId: scopedDraft.id,
+      heldOutSourceIds: [heldId],
+    };
+    const beforeCalls = state.calls.length;
+    action = { text: "", personalityEvaluate: scopedRequest };
+    // Even a known foreign candidate ID does not grant an owner-scope read.
+    await deliver();
+    expect(sent.at(-1)?.content).toMatchObject({
+      text: expect.stringContaining("unavailable"),
+    });
+    action = {
+      text: "",
+      personalityEvaluate: { ...scopedRequest, heldOutSourceIds: ["held-one"] },
+    };
+    await deliver(scopedSource);
+    expect(state.calls).toHaveLength(beforeCalls);
+    expect(sent.at(-1)?.content).toMatchObject({
+      text: expect.stringContaining("unavailable"),
+    });
+    action = { text: "", personalityEvaluate: scopedRequest };
+    await deliver(scopedSource);
+    expect(sent.at(-1)?.content).toMatchObject({
+      text: expect.stringContaining('"status":"preview"'),
+    });
+    action = {
+      text: "",
+      personalityEvaluate: { ...scopedRequest, mode: "compare" },
+    };
+    await deliver(scopedSource);
+    const comparison = sent.at(-1)?.content;
+    if (comparison?.type !== "text")
+      throw new Error("Missing scoped comparison");
+    expect(comparison.text).toContain('"status":"comparison"');
+    const receiptId = comparison.text.match(/"evaluationId":"([^"]+)"/)?.[1];
+    const receipt = curated.readEvaluation(sourceScope, receiptId ?? "");
+    if (!receipt) throw new Error("Missing scoped receipt");
+    expect(curated.readEvaluation(scope, receipt.evaluationId)).toBeUndefined();
+    expect(
+      state.calls.slice(beforeCalls).map((input) => ({
+        scope: input.scope,
+        ids: input.evidence.map((e) => e.id),
+      })),
+    ).toEqual([
+      { scope: sourceScope, ids: [heldId] },
+      { scope: sourceScope, ids: [heldId] },
+      { scope: sourceScope, ids: [heldId] },
+    ]);
+    expect(
+      (await client.personality.getOrCreate([owner.id]).read()).version,
+    ).toBe(expectedVersion);
+    await deliver({
+      ...scopedSource,
+      personalityCommandEligible: true,
+      text: `!personality approve ${JSON.stringify({ proposalId: scopedDraft.id, expectedVersion, evaluationId: receipt.evaluationId, candidateDigest: receipt.candidateDigest, publish: true })}`,
+    });
+    expect(sent.at(-1)?.content).toMatchObject({
+      text: expect.stringContaining(
+        `Saved global personality revision ${expectedVersion + 1}`,
+      ),
+    });
+    expect(
+      (await client.personality.getOrCreate([owner.id]).read()).style.humor,
+    ).toBe("playful");
+  }
+  expect(JSON.stringify(sent)).not.toContain("PRIVATE");
+}, 90_000);

@@ -12,7 +12,7 @@ import { slackSource, slackSourceId } from "../imports/index.js";
 import { EvidenceStore, extractMemory } from "../memory/store.js";
 import { createJuneRegistry } from "./registry.js";
 
-it("accepts one exact owner-private confirmation, never model, public, guest or stale authority", async (t) => {
+it("accepts exact scoped confirmations, never model text, cross-scope or stale authority", async (t) => {
   const owner = {
     id: "owner",
     identities: [
@@ -214,24 +214,28 @@ it("accepts one exact owner-private confirmation, never model, public, guest or 
   };
 
   expect(store.retrieve(audience, "").claims).toEqual([]);
-  // Wrong surface and wrong sender must be rejected before any proposal lookup.
+  // Admitted public and guest turns cannot accept the owner's scoped proposal.
   expect(
     await deliver({
       direct: false,
       address: { channel: "slack", accountId: "T1", conversationId: "C1" },
       metadata: { channelType: "channel" },
     }),
-  ).toContain("owner's private conversation");
+  ).toContain("unavailable for acceptance");
   expect(
     await deliver({ senderId: "U2", metadata: { channelType: "im" } }),
-  ).toContain("owner's private conversation");
+  ).toContain("unavailable for acceptance");
+  expect(review).toHaveBeenCalledTimes(2);
+  expect(review.mock.calls.map(([scope]) => scope)).not.toContain(audience);
+  expect(store.proposal(audience, selected.id)?.status).toBe("pending");
+  review.mockClear();
   for (const memoryReviewEligible of [false, undefined])
     expect(await deliver({ memoryReviewEligible })).toContain(
-      "new plain-text Slack DM",
+      "new plain-text Slack message",
     );
   const quoted = await receive("rich_text_quote");
   expect(quoted.memoryReviewEligible).toBe(false);
-  expect(await deliver(quoted)).toContain("new plain-text Slack DM");
+  expect(await deliver(quoted)).toContain("new plain-text Slack message");
   expect(requests).toHaveLength(0);
   expect(review).not.toHaveBeenCalled();
   expect(JSON.stringify(sent)).not.toContain("PRIVATE");
@@ -305,5 +309,45 @@ it("accepts one exact owner-private confirmation, never model, public, guest or 
   expect(store.retrieve(audience, "").claims.map((claim) => claim.id)).toEqual([
     selected.id,
   ]);
+  expect(requests).toHaveLength(9);
+  for (const extra of [
+    { senderId: "U2", metadata: { channelType: "im" as const } },
+    {
+      direct: false,
+      address: {
+        channel: "slack" as const,
+        accountId: "T1",
+        conversationId: "C1",
+      },
+      metadata: { channelType: "channel" as const },
+    },
+  ]) {
+    if (!lastEvent) throw new Error("Missing fixture event");
+    const routed = routeEvent(
+      {
+        ...lastEvent,
+        direct: true,
+        senderId: "U1",
+        address: { channel: "slack", accountId: "T1", conversationId: "D1" },
+        ...extra,
+      },
+      owner,
+    );
+    if (!routed) throw new Error("Missing scoped fixture route");
+    const scope = JSON.stringify(routed.key);
+    const proposal = await stage(
+      scope,
+      `scoped-${sequence}`,
+      "Scoped preference",
+    );
+    expect(
+      await deliver({ ...extra, text: `!memory-accept ${proposal.id}` }),
+    ).toContain(`${proposal.id} is accepted`);
+    expect(review).toHaveBeenLastCalledWith(scope, proposal.id, "accepted");
+    expect(store.retrieve(scope, "").claims.map((claim) => claim.id)).toEqual([
+      proposal.id,
+    ]);
+    expect(store.proposal(audience, proposal.id)).toBeUndefined();
+  }
   expect(requests).toHaveLength(9);
 });

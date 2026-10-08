@@ -27,6 +27,7 @@ import {
   type CodingDependencies,
   type CodingState,
   codingJobMetadata,
+  createCodingActor,
 } from "./coding.js";
 import { executionKey } from "./execution.js";
 import { createLifecycle } from "./lifecycle.js";
@@ -159,7 +160,7 @@ async function fixture(
   const sent: OutboundMessage[] = [];
   const modelRequests: ModelRequest[] = [];
   const legacy = !!options?.reply;
-  let workerReport = "Scope ready for approval.";
+  let workerReport = "Coding task queued.";
   const registry = createJuneRegistry({
     owner,
     memory,
@@ -203,7 +204,7 @@ async function fixture(
       },
     },
     // Custom directives exercise the supported legacy host without workers.
-    // Default cases use the interaction -> execution -> approval path.
+    // Default cases use the interaction -> execution -> immediate coding path.
     execution: legacy
       ? undefined
       : {
@@ -216,7 +217,7 @@ async function fixture(
               }
               if (options?.reply) return options.reply();
               return {
-                text: "Scope prepared, not executed.",
+                text: "Start the scoped coding task.",
                 coding: { ...codingRequest },
               };
             },
@@ -238,6 +239,533 @@ async function fixture(
 }
 
 describe("separate coding supervisor", () => {
+  it.for(["completed", "unknown"] as const)(
+    "runs a fresh model-selected nonprivate task once without external approval (%s)",
+    async (outcome, t) => {
+      let launches = 0;
+      const { registry, coding, worktreeRoot } = await fixture(t, {
+        async run(input) {
+          launches++;
+          expect(input.cwd.startsWith(`${worktreeRoot}/job-`)).toBe(true);
+          if (outcome === "unknown") throw new Error("Lost worker response");
+          await input.onThread("T-model-selected");
+          return { threadId: "T-model-selected", report: "Local result" };
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const proposal = {
+        id: "model-selected",
+        workspace: "june",
+        goal: "Fix reactions locally",
+        runtimeId: coding.runtimeId,
+        runImmediately: true as const,
+        deletionRevision: 0,
+        conversationKey: ["slack", "T1", "C1", "thread-1"],
+        source: {
+          ...source,
+          direct: false,
+          codingCommandEligible: false,
+          address: {
+            ...source.address,
+            conversationId: "C1",
+            threadId: "thread-1",
+          },
+        },
+      };
+      const job = client.job.getOrCreate([owner.id, proposal.id]);
+      const saving = Promise.withResolvers<void>();
+      const continueSave = Promise.withResolvers<void>();
+      t.onTestFinished(() => {
+        persistence.beforeSave = undefined;
+        continueSave.resolve();
+      });
+      persistence.beforeSave = async () => {
+        persistence.beforeSave = undefined;
+        saving.resolve();
+        await continueSave.promise;
+      };
+      await job.send("commands", { type: "propose", proposal });
+      await saving.promise;
+      expect(launches).toBe(0);
+      // Queue duplicate proposals before any generated approve command. All
+      // must share the durable command ID, not grant distinct attempts.
+      await job.send("commands", { type: "propose", proposal });
+      await job.send("commands", { type: "propose", proposal });
+      continueSave.resolve();
+      await expect
+        .poll(async () => (await job.snapshot()).status, { timeout: 15_000 })
+        .toBe(outcome === "completed" ? "completed" : "needs_review");
+      await job.send("commands", { type: "propose", proposal });
+      await job.send("commands", { type: "propose", proposal });
+      await job.send("commands", {
+        type: "resume",
+        commandId: "after-redelivery",
+        confirmedStopped: false,
+      });
+      await expect
+        .poll(
+          async () =>
+            (await job.snapshot()).commandApprovals["after-redelivery"],
+          { timeout: 15_000 },
+        )
+        .toBeNull();
+      const state = await job.snapshot();
+      expect(state.attempts).toBe(1);
+      expect(
+        Object.values(state.commandApprovals).filter(
+          (attempt) => attempt !== null,
+        ),
+      ).toEqual([1]);
+      expect(launches).toBe(1);
+      await expect
+        .poll(
+          async () =>
+            Object.values(
+              (
+                await client.conversation
+                  .getOrCreate(proposal.conversationKey)
+                  .snapshot()
+              ).events,
+            ).some((event) => event.done),
+          { timeout: 15_000 },
+        )
+        .toBe(true);
+    },
+  );
+
+  it("keeps legacy pending proposals pending even if redelivery adds the host-only signal", async (t) => {
+    let launches = 0;
+    const { registry, coding } = await fixture(t, {
+      async run() {
+        launches++;
+        return { threadId: "T-legacy-approval", report: "Local result" };
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const proposal = {
+      id: "legacy-pending",
+      workspace: "june",
+      goal: "Previously proposed task",
+      runtimeId: coding.runtimeId,
+      source,
+    };
+    const job = client.job.getOrCreate([owner.id, proposal.id]);
+    await job.send("commands", { type: "propose", proposal });
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("awaiting_approval");
+    await job.send("commands", {
+      type: "propose",
+      proposal: { ...proposal, runImmediately: true, deletionRevision: 0 },
+    });
+    await job.send("commands", {
+      type: "resume",
+      commandId: "pending-barrier",
+      confirmedStopped: false,
+    });
+    await expect
+      .poll(
+        async () => (await job.snapshot()).commandApprovals["pending-barrier"],
+      )
+      .toBeNull();
+    expect(await job.snapshot()).toMatchObject({
+      status: "awaiting_approval",
+      attempts: 0,
+      proposal,
+    });
+    expect(launches).toBe(0);
+    await job.send("commands", {
+      type: "approve",
+      commandId: "legacy-explicit",
+    });
+    await expect
+      .poll(async () => (await job.snapshot()).status, { timeout: 15_000 })
+      .toBe("completed");
+    expect(launches).toBe(1);
+    await expect
+      .poll(
+        async () =>
+          Object.values(
+            (
+              await client.conversation
+                .getOrCreate(["private", owner.id])
+                .snapshot()
+            ).events,
+          ).some((event) => event.done),
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+  });
+
+  it.for(["cancelled", "deleted", "runtime-changed"] as const)(
+    "revalidates a model-selected proposal after durable persistence (%s)",
+    async (mode, t) => {
+      let launches = 0;
+      const { registry, coding } = await fixture(t, {
+        async run() {
+          launches++;
+          throw new Error("Invalidated task must not start");
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const job = client.job.getOrCreate([owner.id, "model-revalidation"]);
+      const saving = Promise.withResolvers<void>();
+      const continueSave = Promise.withResolvers<void>();
+      t.onTestFinished(() => {
+        persistence.beforeSave = undefined;
+        continueSave.resolve();
+      });
+      persistence.beforeSave = async () => {
+        persistence.beforeSave = undefined;
+        saving.resolve();
+        await continueSave.promise;
+      };
+      await job.send("commands", {
+        type: "propose",
+        proposal: {
+          id: "model-revalidation",
+          workspace: "june",
+          goal: "Model-selected task",
+          runtimeId: coding.runtimeId,
+          runImmediately: true,
+          deletionRevision: 0,
+          source,
+        },
+      });
+      await saving.promise;
+      expect(launches).toBe(0);
+      if (mode === "runtime-changed") coding.runtimeId = "changed-policy";
+      else await job.cancel(mode === "deleted");
+      continueSave.resolve();
+      await job.send("commands", {
+        type: "resume",
+        commandId: "revalidation-barrier",
+        confirmedStopped: false,
+      });
+      await expect
+        .poll(
+          async () =>
+            (await job.snapshot()).commandApprovals["revalidation-barrier"],
+        )
+        .toBeNull();
+      expect((await job.snapshot()).attempts).toBe(0);
+      expect(launches).toBe(0);
+    },
+  );
+
+  it.for([
+    "queued-approval",
+    "local-prepare",
+    "local-save",
+    "remote-save",
+    "local-current",
+    "remote-current",
+  ] as const)(
+    "checks frozen coding provenance after awaits without relying on cancellation (%s)",
+    async (boundary, t) => {
+      const store = new EvidenceStore(":memory:", randomBytes(32));
+      t.onTestFinished(() => store.close());
+      store.appendSource({
+        id: "task-context",
+        platform: "slack",
+        account: "T1",
+        conversation: "D1",
+        author: "U1",
+        audiences: [JSON.stringify(["private", owner.id])],
+        observedAt: Date.now(),
+        sourceUrl: "https://example.test/task-context",
+        text: "Context used to select this coding task",
+      });
+      const remote = boundary.startsWith("remote-");
+      const deleted = !boundary.endsWith("-current");
+      let launches = 0;
+      const run: CodingRuntime["run"] = async (input) => {
+        launches++;
+        await input.onThread("T-provenance");
+        return { threadId: "T-provenance", report: "Local task result" };
+      };
+      const { registry, coding, manager, lifecycle } = await fixture(
+        t,
+        { run },
+        { store, source: () => undefined },
+        remote
+          ? {
+              remoteAmp: {
+                workspaces: { "amp-june": "/remote-only/june" },
+                timeoutMs: 60_000,
+                async run(input) {
+                  launches++;
+                  await input.onThread("T-provenance");
+                  return {
+                    threadId: "T-provenance",
+                    report: "Remote task result",
+                  };
+                },
+              },
+            }
+          : undefined,
+      );
+      // The fence, not an elapsed timeout, must prevent the stale launch.
+      coding.timeoutMs = 60_000;
+      // Exercise the consumer's callback independently of producer/registry wiring.
+      registry.config.use.job = createCodingActor(
+        coding,
+        lifecycle,
+        undefined,
+        () => store.deletionRevision(),
+      );
+      const reached = Promise.withResolvers<void>();
+      const proceed = Promise.withResolvers<void>();
+      t.onTestFinished(() => {
+        persistence.beforeSave = undefined;
+        proceed.resolve();
+      });
+      const pause = async () => {
+        reached.resolve();
+        await proceed.promise;
+      };
+      if (boundary === "queued-approval") {
+        const enter = lifecycle.enter;
+        let entries = 0;
+        lifecycle.enter = async (...args) => {
+          const release = await enter(...args);
+          if (++entries === 2) await pause();
+          return release;
+        };
+      } else if (boundary === "local-prepare" || boundary === "local-current") {
+        const prepare = manager.prepare;
+        manager.prepare = async (...args) => {
+          const result = await prepare(...args);
+          await pause();
+          return result;
+        };
+      } else {
+        let saves = 0;
+        persistence.beforeSave = async () => {
+          // Proposal, approval, run intent; local dispatch also saves its worktree.
+          if (++saves !== (remote ? 3 : 4)) return;
+          persistence.beforeSave = undefined;
+          await pause();
+        };
+      }
+      const { client } = await setupTest(t, registry);
+      const proposal = {
+        id: "provenance-race",
+        workspace: remote ? "amp-june" : "june",
+        goal: "Task chosen from still-current context",
+        runtimeId: coding.runtimeId,
+        runImmediately: true as const,
+        deletionRevision: store.deletionRevision(),
+        source,
+      };
+      const job = client.job.getOrCreate([owner.id, proposal.id]);
+      await job.send("commands", { type: "propose", proposal });
+      await reached.promise;
+      expect(launches).toBe(0);
+      // Commit the tombstone only: cleanup's job.cancel RPC has not run yet.
+      if (deleted) store.deleteSource("task-context");
+      expect(store.deletionRevision()).toBe(deleted ? 1 : 0);
+      proceed.resolve();
+      await job.send("commands", { type: "propose", proposal });
+      await job.send("commands", {
+        type: "approve",
+        commandId: "after-redelivery",
+      });
+      await job.send("commands", {
+        type: "resume",
+        commandId: "provenance-barrier",
+        confirmedStopped: false,
+      });
+      await expect
+        .poll(
+          async () =>
+            (await job.snapshot()).commandApprovals["provenance-barrier"],
+          { timeout: 15_000 },
+        )
+        .toBeNull();
+      const state = await job.snapshot();
+      expect(launches).toBe(deleted ? 0 : 1);
+      expect(state.cancelRequested).not.toBe(true);
+      expect(state.revoked).not.toBe(true);
+      expect(state.proposal?.deletionRevision).toBe(0);
+      expect(state.commandApprovals["after-redelivery"]).toBeNull();
+      expect(state.attempts).toBe(boundary === "queued-approval" ? 0 : 1);
+      expect(state.status).toBe(
+        boundary === "queued-approval"
+          ? "awaiting_approval"
+          : deleted
+            ? "needs_review"
+            : "completed",
+      );
+      expect(await manager.isSettled()).toBe(true);
+      if (!deleted)
+        await expect
+          .poll(
+            async () =>
+              Object.values(
+                (
+                  await client.conversation
+                    .getOrCreate(["private", owner.id])
+                    .snapshot()
+                ).events,
+              ).some((event) => event.done),
+            { timeout: 15_000 },
+          )
+          .toBe(true);
+      // A deleted completion is intentionally discarded, not an inbox event.
+      await expect.poll(() => lifecycle.active, { timeout: 15_000 }).toBe(0);
+    },
+  );
+
+  it.for(["approval", "local_dispatch", "remote_dispatch"] as const)(
+    "rechecks saved skill provenance at %s without a deletion revision change",
+    async (boundary, t) => {
+      let skillValid = boundary !== "approval";
+      let launches = 0;
+      const remote = boundary === "remote_dispatch";
+      const { registry, coding, lifecycle } = await fixture(
+        t,
+        {
+          async run(input) {
+            launches++;
+            await input.onThread("T-stale-skill");
+            return { threadId: "T-stale-skill", report: "Unexpected result" };
+          },
+        },
+        undefined,
+        remote
+          ? {
+              remoteAmp: {
+                workspaces: { "amp-june": "/remote-only/june" },
+                timeoutMs: 60_000,
+                async run(input) {
+                  launches++;
+                  await input.onThread("T-stale-skill");
+                  return {
+                    threadId: "T-stale-skill",
+                    report: "Unexpected remote result",
+                  };
+                },
+              },
+            }
+          : undefined,
+      );
+      coding.timeoutMs = 60_000;
+      coding.operations = (observation) => {
+        if (observation.phase === boundary) skillValid = false;
+      };
+      const jobActor = createCodingActor(
+        coding,
+        lifecycle,
+        (ownerId, context) =>
+          skillValid &&
+          ownerId === owner.id &&
+          context.candidateId === "evaluated-task",
+      );
+      // Start from an already accepted skill proposal, not a new evaluation.
+      if (!("state" in jobActor.config))
+        throw new Error("Expected initial job state");
+      jobActor.config.state = {
+        status: "awaiting_approval",
+        attempts: 0,
+        commandApprovals: {},
+        runtimeId: coding.runtimeId,
+        remoteAmp: remote,
+        proposal: {
+          id: "saved-skill",
+          workspace: remote ? "amp-june" : "june",
+          goal: "Previously evaluated task",
+          source,
+          runtimeId: coding.runtimeId,
+          runImmediately: true,
+          deletionRevision: 0,
+          skillContext: {
+            candidateId: "evaluated-task",
+            deletionRevision: 0,
+            reference: {
+              sourceIds: ["skill-evidence"],
+              personality: "saved-personality",
+              deletionTracked: true,
+            },
+          },
+        },
+      } satisfies CodingState;
+      registry.config.use.job = jobActor;
+      const { client } = await setupTest(t, registry);
+      const job = client.job.getOrCreate([owner.id, "saved-skill"]);
+      await job.send("commands", { type: "approve", commandId: "approval" });
+      await job.send("commands", {
+        type: "resume",
+        commandId: "skill-barrier",
+        confirmedStopped: false,
+      });
+      await expect
+        .poll(
+          async () => (await job.snapshot()).commandApprovals["skill-barrier"],
+          { timeout: 15_000 },
+        )
+        .toBeNull();
+      const state = await job.snapshot();
+      if (state.attempts > 0)
+        await expect
+          .poll(
+            async () =>
+              Object.values(
+                (
+                  await client.conversation
+                    .getOrCreate(["private", owner.id])
+                    .snapshot()
+                ).events,
+              ).some((event) => event.done),
+            { timeout: 15_000 },
+          )
+          .toBe(true);
+      expect(launches).toBe(0);
+      expect(state.attempts).toBe(boundary === "approval" ? 0 : 1);
+      expect(state.status).toBe(
+        boundary === "approval" ? "awaiting_approval" : "needs_review",
+      );
+    },
+  );
+
+  it.for([undefined, 1])(
+    "does not grant an immediate task missing current host provenance (revision=%s)",
+    async (deletionRevision, t) => {
+      let launches = 0;
+      const { registry, coding } = await fixture(t, {
+        async run() {
+          launches++;
+          return { threadId: "T-unbound", report: "Unexpected launch" };
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const job = client.job.getOrCreate([owner.id, "unbound-task"]);
+      await job.send("commands", {
+        type: "propose",
+        proposal: {
+          id: "unbound-task",
+          workspace: "june",
+          goal: "Unbound immediate task",
+          runtimeId: coding.runtimeId,
+          runImmediately: true,
+          deletionRevision,
+          source,
+        },
+      });
+      await job.send("commands", {
+        type: "approve",
+        commandId: "cannot-rebind",
+      });
+      await expect
+        .poll(
+          async () => (await job.snapshot()).commandApprovals["cannot-rebind"],
+        )
+        .toBeNull();
+      expect(launches).toBe(0);
+      expect((await job.snapshot()).attempts).toBe(0);
+    },
+  );
+
   it.for([
     "amp",
     "codex",
@@ -396,7 +924,7 @@ describe("separate coding supervisor", () => {
   );
 
   it.for(["result", "ambiguous"] as const)(
-    "remote Amp %s uses private approval, receipts and never resumes or verifies locally",
+    "remote Amp %s starts without per-task approval, saves receipts and never resumes or verifies locally",
     async (outcome, t) => {
       let launches = 0;
       const observations: OperationObservation[] = [];
@@ -437,7 +965,9 @@ describe("separate coding supervisor", () => {
             sent.some(
               (message) =>
                 message.content.type === "text" &&
-                message.content.text.includes("Remote Amp job proposal"),
+                message.content.text.includes(
+                  "Coding task queued for amp-june",
+                ),
             ),
           { timeout: 15000 },
         )
@@ -446,46 +976,21 @@ describe("separate coding supervisor", () => {
       if (!id) throw new Error("Missing remote proposal");
       const job = client.job.getOrCreate([owner.id, id]);
       await expect
-        .poll(async () => (await job.snapshot()).status)
-        .toBe("awaiting_approval");
-      expect(launches).toBe(0);
+        .poll(async () => (await job.snapshot()).status, { timeout: 15000 })
+        .toBe(outcome === "result" ? "completed" : "needs_review");
       expect(
         modelRequests.some((request) =>
           request.system.includes("Ordinary remote Amp jobs"),
         ),
       ).toBe(true);
-      // A changed host policy cannot adopt the saved owner's preview.
-      const original = coding.runtimeId;
-      coding.runtimeId = "changed-policy";
-      await june.send("inbox", {
-        type: "event",
-        event: {
-          ...source,
-          id: "stale-remote-approval",
-          messageId: "123.568",
-          text: `!approve ${id}`,
-        },
-      });
-      await expect
-        .poll(async () =>
-          Object.values((await job.snapshot()).commandApprovals),
-        )
-        .toEqual([null]);
-      expect(launches).toBe(0);
-      coding.runtimeId = original;
-      await june.send("inbox", {
-        type: "event",
-        event: {
-          ...source,
-          id: "remote-approval",
-          messageId: "123.569",
-          text: `!approve ${id}`,
-        },
-      });
-      await expect
-        .poll(async () => (await job.snapshot()).status)
-        .toBe(outcome === "result" ? "completed" : "needs_review");
       const state = await job.snapshot();
+      expect(state.proposal).toMatchObject({
+        runtimeId: coding.runtimeId,
+        conversationKey: ["private", owner.id],
+        runImmediately: true,
+        deletionRevision: 0,
+      });
+      expect(state.commandApprovals).toEqual({ [`model-selected:${id}`]: 1 });
       expect(state.remoteAmp).toBe(true);
       expect(state.worktree).toBeUndefined();
       expect(state.verification).toBeUndefined();
@@ -553,11 +1058,11 @@ describe("separate coding supervisor", () => {
     },
   );
 
-  it("accepts advertised coding commands only from signed plain owner-DM Events", async (t) => {
+  it("accepts reconciliation commands only from signed plain Events in the originating scope", async (t) => {
     const launches: (string | undefined)[] = [];
     let reply: CompanionReply = {
       text: "",
-      coding: { workspace: "june", goal: "Local approved task" },
+      coding: { workspace: "june", goal: "Local scoped task" },
     };
     const { registry, sent, modelRequests } = await fixture(
       t,
@@ -654,11 +1159,13 @@ describe("separate coding supervisor", () => {
         const scope = routeEvent(event, owner, true);
         if (!scope) throw new Error("Missing fixture scope");
         await expect
-          .poll(async () =>
-            Object.values(
-              (await client.conversation.getOrCreate(scope.key).snapshot())
-                .events,
-            ).some((record) => record.event.id === event.id && record.done),
+          .poll(
+            async () =>
+              Object.values(
+                (await client.conversation.getOrCreate(scope.key).snapshot())
+                  .events,
+              ).some((record) => record.event.id === event.id && record.done),
+            { timeout: 15000 },
           )
           .toBe(true);
       }
@@ -667,20 +1174,23 @@ describe("separate coding supervisor", () => {
     await post("Prepare the local task");
     const id = Object.keys((await june.snapshot()).jobs)[0];
     if (!id) throw new Error("Missing signed proposal");
-    const command = `!approve ${id.slice(0, 12)}`;
-    const preview = sent.find(
+    const command = `!resume-stopped ${id.slice(0, 12)}`;
+    const receipt = sent.find(
       (message) =>
         message.content.type === "text" &&
-        message.content.text.includes(command),
+        message.content.text.includes("Coding task queued for june"),
     )?.content;
-    expect(preview).toMatchObject({
-      text: expect.stringContaining(
-        `${command} as an ordinary private message`,
-      ),
+    expect(receipt).toMatchObject({
+      text: expect.stringContaining("No separate approval command is required"),
     });
-    expect(modelRequests[0]?.system).toContain("!resume-stopped ID");
+    expect(modelRequests[0]?.system).toContain(
+      "!resume-stopped path still requires actual verified stoppage",
+    );
     const job = client.job.getOrCreate([owner.id, id]);
-    reply = { text: "Not an approval." };
+    await expect
+      .poll(async () => (await job.snapshot()).status)
+      .toBe("needs_review");
+    reply = { text: "Not a reconciliation command." };
     expect(await post(command, {}, false)).toBeUndefined();
     for (const type of ["rich_text_quote", "rich_text_preformatted"]) {
       const event = await post(command, {
@@ -697,13 +1207,23 @@ describe("separate coding supervisor", () => {
     for (const changes of [
       { attachments: [] },
       { subtype: "me_message" },
-      { user: "U2" },
-      { type: "app_mention", channel_type: "channel", channel: "C1" },
       { user: "B1" },
     ])
       expect((await post(command, changes))?.codingCommandEligible).not.toBe(
         true,
       );
+    // Authentication and plain intent do not require owner/DM status, but
+    // another authenticated scope cannot reconcile this scope's saved job.
+    for (const changes of [
+      { user: "U2" },
+      {
+        type: "app_mention",
+        channel_type: "channel",
+        channel: "C1",
+        text: `<@B1> ${command}`,
+      },
+    ])
+      expect((await post(command, changes))?.codingCommandEligible).toBe(true);
     await post(`> ${command}`);
     await post(`Please send ${command}`);
     await post(`${command}\n!resume-stopped ${id}`);
@@ -714,7 +1234,7 @@ describe("separate coding supervisor", () => {
         ...source,
         id: `unmarked-${prefix}`,
         messageId: `unmarked-${prefix}`,
-        text: `${prefix}approve ${id}`,
+        text: `${prefix}resume-stopped ${id}`,
         codingCommandEligible: undefined,
       };
       await june.send("inbox", { type: "event", event });
@@ -726,14 +1246,10 @@ describe("separate coding supervisor", () => {
         )
         .toBe(true);
     }
-    expect(launches).toEqual([]);
-    expect((await job.snapshot()).commandApprovals).toEqual({});
-
-    expect((await post(command))?.codingCommandEligible).toBe(true);
-    await expect
-      .poll(async () => (await job.snapshot()).status)
-      .toBe("needs_review");
     expect(launches).toEqual([undefined]);
+    expect((await job.snapshot()).commandApprovals).toEqual({
+      [`model-selected:${id}`]: 1,
+    });
     const resume = `!resume-stopped ${id}`;
     expect(
       (await post(resume, { attachments: [] }))?.codingCommandEligible,
@@ -757,29 +1273,49 @@ describe("separate coding supervisor", () => {
     expect(launches).toHaveLength(2);
   });
 
-  it.for(["runtime", "workspace"] as const)(
-    "keeps June's approval bound when the %s changes before the queued proposal is consumed",
+  it.for(["runtime", "workspace", "remote runtime"] as const)(
+    "keeps June's task bound when the %s changes before the queued proposal is consumed",
     async (change, t) => {
       const launches: string[] = [];
+      const remote = change === "remote runtime";
       const { registry, coding, sent, repositoryRoot, worktreeRoot } =
         await fixture(
           t,
           {
             async run(input) {
               launches.push(input.cwd);
-              return { threadId: "T-fresh", report: "Fresh approved task." };
+              return { threadId: "T-fresh", report: "Fresh scoped task." };
             },
           },
           undefined,
           {
             reply: () => ({
               text: "",
-              coding: { workspace: "june", goal: "Approved scope" },
+              coding: {
+                workspace: remote ? "amp-june" : "june",
+                goal: "Selected scope",
+              },
             }),
+            ...(remote
+              ? {
+                  remoteAmp: {
+                    workspaces: { "amp-june": "/remote-only/june" },
+                    timeoutMs: 5000,
+                    async run(input) {
+                      launches.push(input.workspace);
+                      await input.onThread("T-fresh");
+                      return {
+                        threadId: "T-fresh",
+                        report: "Fresh remote task.",
+                      };
+                    },
+                  } satisfies NonNullable<CodingDependencies["remoteAmp"]>,
+                }
+              : {}),
           },
         );
-      // Hold only the consumer: June can persist, enqueue and deliver the actual
-      // preview before a replacement process/configuration consumes the queue.
+      // Hold only the consumer: June persists the selected binding before a
+      // replacement process/configuration consumes the immediate task.
       const consume = Promise.withResolvers<void>();
       const jobConfig = registry.config.use.job.config;
       const run = jobConfig.run;
@@ -791,18 +1327,23 @@ describe("separate coding supervisor", () => {
       const { client } = await setupTest(t, registry);
       t.onTestFinished(() => consume.resolve());
       const june = client.conversation.getOrCreate(["private", "raygen"]);
-      const preview = () =>
+      const receipts = () =>
         sent.flatMap((m) =>
-          m.content.type === "text"
-            ? [...m.content.text.matchAll(/!approve ([a-f0-9]+)/g)].map(
-                (match) => match[0],
-              )
+          m.content.type === "text" &&
+          m.content.text.startsWith("Coding task queued for ")
+            ? [m.content.text]
             : [],
         );
       await june.send("inbox", { type: "event", event: source });
-      await expect.poll(() => preview().length, { timeout: 15000 }).toBe(1);
+      await expect.poll(() => receipts().length, { timeout: 15000 }).toBe(1);
       const id = Object.keys((await june.snapshot()).jobs)[0];
       if (!id) throw new Error("No proposal");
+      expect((await june.snapshot()).jobs[id]).toMatchObject({
+        runtimeId: "fixture-runtime-v1",
+        conversationKey: ["private", owner.id],
+        runImmediately: true,
+        deletionRevision: 0,
+      });
       const job = client.job.getOrCreate(["raygen", id]);
       expect((await job.snapshot()).proposal).toBeNull();
       coding.runtimeId = "fixture-runtime-v2";
@@ -827,7 +1368,7 @@ describe("separate coding supervisor", () => {
           ...source,
           id: "stale-approval",
           messageId: "123.568",
-          text: preview()[0] ?? "",
+          text: `!approve ${id}`,
         },
       });
       await expect
@@ -837,25 +1378,36 @@ describe("separate coding supervisor", () => {
         .toEqual([null]);
       expect(launches).toEqual([]);
       expect((await job.snapshot()).worktree).toBeUndefined();
+      expect((await job.snapshot()).attempts).toBe(0);
+      expect((await job.snapshot()).status).toBe("awaiting_approval");
 
-      // A fresh proposal under the new binding still traverses the same June
-      // confirmation path and starts exactly once in the current workspace.
+      // A fresh task under the new binding starts exactly once without a
+      // separate approval, and never upgrades the stale task's authority.
       await june.send("inbox", {
         type: "event",
         event: { ...source, id: "fresh-proposal", messageId: "123.569" },
       });
-      await expect.poll(() => preview().length, { timeout: 15000 }).toBe(2);
-      await june.send("inbox", {
-        type: "event",
-        event: {
-          ...source,
-          id: "fresh-approval",
-          messageId: "123.570",
-          text: preview()[1] ?? "",
-        },
-      });
+      await expect.poll(() => receipts().length, { timeout: 15000 }).toBe(2);
       await expect.poll(() => launches.length).toBe(1);
-      expect(launches[0]?.startsWith(`${expectedRoot}/job-`)).toBe(true);
+      if (remote) expect(launches).toEqual(["amp-june"]);
+      else expect(launches[0]?.startsWith(`${expectedRoot}/job-`)).toBe(true);
+      const freshId = Object.keys((await june.snapshot()).jobs).find(
+        (candidate) => candidate !== id,
+      );
+      if (!freshId) throw new Error("Missing fresh task");
+      await expect
+        .poll(
+          async () =>
+            (await client.job.getOrCreate([owner.id, freshId]).snapshot())
+              .status,
+        )
+        .toBe(change === "workspace" ? "needs_review" : "completed");
+      if (change === "workspace")
+        expect(
+          (await client.job.getOrCreate([owner.id, freshId]).snapshot())
+            .verification,
+        ).toMatchObject({ status: "not_configured", passed: null });
+      expect((await job.snapshot()).attempts).toBe(0);
     },
   );
 
@@ -1093,7 +1645,7 @@ describe("separate coding supervisor", () => {
     lifecycle.resume();
   });
 
-  it("exposes private lifecycle commands without granting launch or stop authority", async (t) => {
+  it("exposes scope-bound lifecycle commands without granting launch or stop authority", async (t) => {
     let action: CompanionReply = {
       text: "",
       codingJob: { action: "list", id: null },
@@ -1168,7 +1720,9 @@ describe("separate coding supervisor", () => {
     expect(available).not.toContain("Keep native execution disabled");
     const request = modelRequests.at(-1);
     expect(request?.system).toContain("Use codingJob");
-    expect(request?.system).toContain("current runtime-binding status");
+    expect(request?.system).toContain(
+      "Runtime-binding mismatches require operator reconciliation, not rebinding",
+    );
     expect(replyJsonSchema([], request).properties).toHaveProperty("codingJob");
     expect(parseReply(JSON.stringify(action), [], request)).toEqual(action);
     expect(() => parseReply(JSON.stringify(action), [])).toThrow();
@@ -1184,14 +1738,33 @@ describe("separate coding supervisor", () => {
         parseReply(JSON.stringify({ text: "", codingJob }), [], request),
       ).toThrow();
 
+    // Inspect the real pending save boundary; new tasks otherwise start without
+    // waiting for a separate human command.
+    const saving = Promise.withResolvers<void>();
+    const continueSave = Promise.withResolvers<void>();
+    t.onTestFinished(() => {
+      persistence.beforeSave = undefined;
+      continueSave.resolve();
+    });
+    persistence.beforeSave = async () => {
+      persistence.beforeSave = undefined;
+      saving.resolve();
+      await continueSave.promise;
+    };
     action = { text: "", coding: { workspace: "june", goal: "SECRET GOAL" } };
     const proposal = await deliver();
-    expect(proposal.text).toContain(`!approve ${proposal.key.slice(0, 12)}`);
+    await saving.promise;
+    expect(proposal.text).toContain("No separate approval command is required");
     expect(launches).toBe(0);
     const job = client.job.getOrCreate([owner.id, proposal.key]);
     await expect
       .poll(async () => (await job.snapshot()).status)
       .toBe("awaiting_approval");
+    expect((await job.snapshot()).proposal).toMatchObject({
+      conversationKey: ["private", owner.id],
+      runImmediately: true,
+      deletionRevision: 0,
+    });
     action = {
       text: "",
       codingJob: { action: "inspect", id: proposal.key.slice(0, 12) },
@@ -1209,6 +1782,7 @@ describe("separate coding supervisor", () => {
     expect(mismatch).toContain('"manualReconciliationRequired":true');
     expect(mismatch).not.toContain("SECRET");
     expect(mismatch).not.toContain(originalRuntimeId);
+    continueSave.resolve();
     const denied = await deliver({ text: `/approve ${proposal.key}` });
     await expect
       .poll(async () => (await job.snapshot()).commandApprovals[denied.key])
@@ -1271,11 +1845,11 @@ describe("separate coding supervisor", () => {
       { senderId: "U2", metadata: { channelType: "im" as const } },
     ]) {
       const denied = (await deliver(extra)).text;
-      expect(denied).toContain("owner-private turn");
+      expect(denied).toContain("not found in this conversation scope");
       expect(denied).not.toContain("runtime_binding_mismatch");
       expect(denied).not.toContain("workspace_occupied");
       expect(denied).not.toContain("admission_unknown");
-      expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(false);
+      expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(true);
       expect((await job.snapshot()).cancelRequested).toBe(false);
     }
     coding.runtimeId = originalRuntimeId;
@@ -1309,8 +1883,9 @@ describe("separate coding supervisor", () => {
       { senderId: "U2", metadata: { channelType: "im" as const } },
     ]) {
       const denied = (await deliver(extra)).text;
-      expect(denied).toContain("owner-private turn");
+      expect(denied).toContain("not found in this conversation scope");
       expect(denied).not.toContain("worker-change");
+      expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(true);
     }
     action = { text: "", codingJob: { action: "cancel", id: proposal.key } };
     const cancellation = await deliver({ id: "cancel-native" });
@@ -1385,8 +1960,14 @@ describe("separate coding supervisor", () => {
     expect(recovery).toContain("worktrees are not a sandbox");
     expect(recovery).toContain("native-coding preflight when available");
     expect(recovery).toContain("separate owner authorization to activate it");
-    expect(recovery).toContain("no push or deployment is authorized");
-    expect(modelRequests[0]?.system).toContain("how to recover it");
+    expect(recovery).toContain("without per-task human approval");
+    expect(recovery).toContain("not automatically started or retried");
+    expect(recovery).toContain(
+      "no push, deployment or credential access is authorized",
+    );
+    expect(modelRequests[0]?.system).toContain(
+      "list separates configuration, authentication and isolation prerequisites",
+    );
     expect(replyJsonSchema([], modelRequests[0]).properties.coding).toEqual({
       type: "null",
     });
@@ -1417,76 +1998,93 @@ describe("separate coding supervisor", () => {
       await expect.poll(() => sent.length).toBe(count + 1);
       const content = sent.at(-1)?.content;
       const text = content?.type === "text" ? content.text : "";
-      expect(text).toContain("owner-private turn");
-      expect(text).not.toContain("Configuration:");
-      expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(false);
+      expect(text).toContain("Configuration: an authorized operator");
+      expect(text).toContain(
+        "disabled or unavailable; no native execution can be requested",
+      );
+      expect(text).toContain("without per-task human approval");
+      expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(true);
+      expect(modelRequests.at(-1)?.workspaces).toEqual([]);
+      expect(
+        (await client.conversation.getOrCreate(scope.key).snapshot()).jobs,
+      ).toEqual({});
     }
   });
 
-  it("reads only an approved running diff with the unchanged runtime binding", async (t) => {
-    const pending = Promise.withResolvers<{
-      threadId: string;
-      report: string;
-    }>();
-    t.onTestFinished(() =>
-      pending.resolve({ threadId: "T-diff", report: "done" }),
-    );
-    let started = false;
-    const { registry, coding } = await fixture(t, {
-      async run(input) {
-        await writeFile(path.join(input.cwd, "worker-change"), "PRIVATE BODY");
-        started = true;
-        return pending.promise;
-      },
-    });
-    coding.timeoutMs = 60_000;
-    const { client } = await setupTest(t, registry);
-    const job = client.job.getOrCreate(["raygen", "diff-job"]);
-    await job.send("commands", {
-      type: "propose",
-      proposal: {
-        id: "diff-job",
-        source,
-        workspace: "june",
-        goal: "Change a file",
-        runtimeId: coding.runtimeId,
-      },
-    });
-    await expect
-      .poll(async () => (await job.snapshot()).status)
-      .toBe("awaiting_approval");
-    expect(await job.diffSummary()).toBeNull();
-    await job.send("commands", { type: "approve", commandId: "approved" });
-    await expect.poll(() => started, { timeout: 5000 }).toBe(true);
-    expect(await job.diffSummary()).toMatchObject({
-      files: [{ status: "?", path: "worker-change", pathTruncated: false }],
-      contents: "omitted",
-      truncated: false,
-    });
-    coding.runtimeId = "changed-binding";
-    expect(await job.diffSummary()).toBeNull();
-    coding.runtimeId = "fixture-runtime-v1";
-    await job.cancel();
-    expect(await job.diffSummary()).toBeNull();
-    await job.cancel(true);
-    expect(await job.diffSummary()).toBeNull();
-    pending.resolve({ threadId: "T-diff", report: "done" });
-    await expect
-      .poll(async () => (await job.snapshot()).status, { timeout: 5000 })
-      .toBe("needs_review");
-    // Status settles before notify-companion. Let its recipient finish before
-    // tearing down the engine, rather than racing a new actor's first wake.
-    await expect
-      .poll(async () => {
-        const state = await client.conversation
-          .getOrCreate(["private", owner.id])
-          .snapshot();
-        return Object.values(state.events).some(
-          (record) => record.event.id === source.id && record.done,
-        );
-      })
-      .toBe(true);
-  });
+  it.for([true, false])(
+    "reads an admitted running diff with the unchanged runtime binding (direct=%s)",
+    async (direct, t) => {
+      const event = { ...source, direct };
+      const scope = routeEvent(event, owner);
+      if (!scope) throw new Error("Missing diff fixture scope");
+      const pending = Promise.withResolvers<{
+        threadId: string;
+        report: string;
+      }>();
+      t.onTestFinished(() =>
+        pending.resolve({ threadId: "T-diff", report: "done" }),
+      );
+      let started = false;
+      const { registry, coding } = await fixture(t, {
+        async run(input) {
+          await writeFile(
+            path.join(input.cwd, "worker-change"),
+            "PRIVATE BODY",
+          );
+          started = true;
+          return pending.promise;
+        },
+      });
+      coding.timeoutMs = 60_000;
+      const { client } = await setupTest(t, registry);
+      const job = client.job.getOrCreate(["raygen", "diff-job"]);
+      await job.send("commands", {
+        type: "propose",
+        proposal: {
+          id: "diff-job",
+          source: event,
+          conversationKey: scope.key,
+          workspace: "june",
+          goal: "Change a file",
+          runtimeId: coding.runtimeId,
+        },
+      });
+      await expect
+        .poll(async () => (await job.snapshot()).status)
+        .toBe("awaiting_approval");
+      expect(await job.diffSummary()).toBeNull();
+      await job.send("commands", { type: "approve", commandId: "approved" });
+      await expect.poll(() => started, { timeout: 5000 }).toBe(true);
+      expect(await job.diffSummary()).toMatchObject({
+        files: [{ status: "?", path: "worker-change", pathTruncated: false }],
+        contents: "omitted",
+        truncated: false,
+      });
+      coding.runtimeId = "changed-binding";
+      expect(await job.diffSummary()).toBeNull();
+      coding.runtimeId = "fixture-runtime-v1";
+      await job.cancel();
+      expect(await job.diffSummary()).toBeNull();
+      await job.cancel(true);
+      expect(await job.diffSummary()).toBeNull();
+      pending.resolve({ threadId: "T-diff", report: "done" });
+      await expect
+        .poll(async () => (await job.snapshot()).status, { timeout: 5000 })
+        .toBe("needs_review");
+      // Status settles before notify-companion. Let its recipient finish before
+      // tearing down the engine, rather than racing a new actor's first wake.
+      await expect
+        .poll(async () => {
+          const state = await client.conversation
+            .getOrCreate(scope.key)
+            .snapshot();
+          return Object.values(state.events).some(
+            (record) => record.event.id === event.id && record.done,
+          );
+        })
+        .toBe(true);
+    },
+  );
 
   it.for([false, true])(
     "redacts pending completion after forgetting without discarding job metadata (cleanup=%s)",
@@ -1633,14 +2231,18 @@ describe("separate coding supervisor", () => {
   );
 
   it.for([false, true])(
-    "invalidates execution-derived coding before approval or completion (approved=%s)",
-    async (approved, t) => {
+    "invalidates execution-derived coding before launch or completion (started=%s)",
+    async (started, t) => {
       const store = new EvidenceStore(":memory:", randomBytes(32));
       const pending = Promise.withResolvers<{
         threadId: string;
         report: string;
       }>();
+      const saving = Promise.withResolvers<void>();
+      const continueSave = Promise.withResolvers<void>();
       t.onTestFinished(() => {
+        persistence.beforeSave = undefined;
+        continueSave.resolve();
         pending.resolve({ threadId: "T-finished", report: "DELETED REPORT" });
         store.close();
       });
@@ -1657,7 +2259,7 @@ describe("separate coding supervisor", () => {
         text: "Fix the reaction handling in June. ANCESTOR",
       });
       let launches = 0;
-      const { registry, sent, modelRequests } = await fixture(
+      const { registry, coding, sent, modelRequests } = await fixture(
         t,
         {
           async run() {
@@ -1682,6 +2284,13 @@ describe("separate coding supervisor", () => {
           },
         },
       );
+      coding.timeoutMs = 60_000;
+      if (!started)
+        persistence.beforeSave = async () => {
+          persistence.beforeSave = undefined;
+          saving.resolve();
+          await continueSave.promise;
+        };
       const { client } = await setupTest(t, registry);
       const june = client.conversation.getOrCreate(["private", "raygen"]);
       await june.send("inbox", { type: "event", event: source });
@@ -1698,6 +2307,11 @@ describe("separate coding supervisor", () => {
       expect(snapshot.memoryContexts?.[id]?.contextSourceIds).toContain(
         "ancestor",
       );
+      expect(snapshot.jobs[id]).toMatchObject({
+        conversationKey: ["private", owner.id],
+        runImmediately: true,
+        deletionRevision: 0,
+      });
       await expect
         .poll(
           async () =>
@@ -1706,9 +2320,11 @@ describe("separate coding supervisor", () => {
         )
         .toBe(true);
       expect(await june.canResumeJob(id)).toBe(true);
-      if (!approved) {
+      if (!started) {
+        await saving.promise;
         store.deleteSource("ancestor");
         expect(await june.canResumeJob(id)).toBe(false);
+        continueSave.resolve();
       }
       await june.send("inbox", {
         type: "event",
@@ -1719,7 +2335,16 @@ describe("separate coding supervisor", () => {
           text: `/approve ${id}`,
         },
       });
-      if (approved) {
+      await expect
+        .poll(
+          async () =>
+            Object.values((await june.snapshot()).events).some(
+              (record) => record.event.id === "approve-deletion" && record.done,
+            ),
+          { timeout: 15000 },
+        )
+        .toBe(true);
+      if (started) {
         await expect.poll(() => launches, { timeout: 15000 }).toBe(1);
         store.deleteSource("ancestor");
         expect(await june.canResumeJob(id)).toBe(false);
@@ -1781,7 +2406,7 @@ describe("separate coding supervisor", () => {
     },
   );
 
-  it("requires a private approval, then reports the worker result without pretending it verified it", async (t) => {
+  it("starts a fresh June task immediately and reports worker claims separately from verification", async (t) => {
     const launches: { prompt: string; cwd: string }[] = [];
     const options: { reply?: () => CompanionReply } = {};
     const {
@@ -1820,40 +2445,35 @@ describe("separate coding supervisor", () => {
         () =>
           sent.some(
             (m) =>
-              m.content.type === "text" && m.content.text.includes("!approve"),
+              m.content.type === "text" &&
+              m.content.text.includes("Coding task queued for june"),
           ),
         { timeout: 15000 },
       )
       .toBe(true);
     const content = sent.find(
-      (m) => m.content.type === "text" && m.content.text.includes("!approve"),
+      (m) =>
+        m.content.type === "text" &&
+        m.content.text.includes("Coding task queued for june"),
     )?.content;
     expect(content).toMatchObject({
       type: "text",
-      text: expect.stringContaining(
-        `Repository: ${JSON.stringify(repositoryRoot)}\nRuntime: amp`,
-      ),
+      text: expect.stringContaining("No separate approval command is required"),
     });
-    expect(content).toMatchObject({
-      text: expect.stringContaining(
-        "No push, deployment, publication, shared-infrastructure changes, or credential access is authorized.",
-      ),
+    const id = Object.keys((await june.snapshot()).jobs)[0];
+    if (!id) throw new Error("Job missing");
+    const job = client.job.getOrCreate([owner.id, id]);
+    await expect
+      .poll(async () => (await job.snapshot()).status, { timeout: 15000 })
+      .toBe("completed");
+    expect((await job.snapshot()).proposal).toMatchObject({
+      runtimeId: "fixture-runtime-v1",
+      conversationKey: ["private", owner.id],
+      runImmediately: true,
+      deletionRevision: 0,
     });
-    const approval =
-      content?.type === "text"
-        ? content.text.match(/!approve ([a-f0-9]+)/)?.[1]
-        : undefined;
-    expect(approval).toBeTruthy();
-    expect(launches).toEqual([]);
-    if (!approval) throw new Error("No approval command");
-    await june.send("inbox", {
-      type: "event",
-      event: {
-        ...source,
-        id: "approve1",
-        messageId: "123.568",
-        text: `/approve ${approval}`,
-      },
+    expect((await job.snapshot()).commandApprovals).toEqual({
+      [`model-selected:${id}`]: 1,
     });
     await expect
       .poll(
@@ -1866,22 +2486,23 @@ describe("separate coding supervisor", () => {
         { timeout: 5000 },
       )
       .toBe(true);
-    expect(modelRequests.at(-1)?.system).toContain(
+    const completion = modelRequests.find((request) =>
+      request.system.includes("Coding completion"),
+    );
+    expect(completion?.system).toContain(
       "Changed reactions and ran the checks.",
     );
-    expect(modelRequests.at(-1)?.system).toContain(
-      "Separate operator verifier: passed",
-    );
-    expect(modelRequests.at(-1)?.workspaces).toEqual([]);
-    expect(modelRequests.at(-1)?.executionAvailable).toBe(false);
+    expect(completion?.system).toContain("Separate operator verifier: passed");
+    expect(completion?.workspaces).toEqual([]);
+    expect(completion?.executionAvailable).toBe(false);
     const plannerId = (await june.snapshot()).agents?.["coding-plan"];
     if (!plannerId) throw new Error("Planner missing");
     const planner = client.execution.getOrCreate(
       executionKey(["private", "raygen"], plannerId),
     );
-    expect((await planner.summary()).report).toContain(
-      "Changed reactions and ran the checks.",
-    );
+    await expect
+      .poll(async () => (await planner.summary()).report)
+      .toContain("Changed reactions and ran the checks.");
     expect(launches).toHaveLength(1);
     const cwd = launches[0]?.cwd ?? "";
     expect(cwd.startsWith(`${worktreeRoot}/job-`)).toBe(true);
@@ -1896,13 +2517,16 @@ describe("separate coding supervisor", () => {
       "Fix reaction handling. Run its tests.",
     );
     expect(launches[0]?.prompt).not.toContain("My favorite bird");
+    expect(launches[0]?.prompt).toContain(
+      "Do not push, deploy, publish, modify shared infrastructure, or access credentials",
+    );
     await june.send("inbox", {
       type: "event",
       event: {
         ...source,
         id: "approve2",
         messageId: "123.569",
-        text: `/approve ${approval}`,
+        text: `/approve ${id}`,
       },
     });
     await expect
@@ -1913,14 +2537,9 @@ describe("separate coding supervisor", () => {
           ).length,
         { timeout: 3000 },
       )
-      .toBe(5);
+      .toBe(4);
     expect(launches).toHaveLength(1);
 
-    const id = Object.keys((await june.snapshot()).jobs).find((id) =>
-      id.startsWith(approval),
-    );
-    if (!id) throw new Error("Job missing");
-    const job = client.job.getOrCreate(["raygen", id]);
     const completed = await job.snapshot();
     expect(completed.status).toBe("completed");
     expect(completed.verification?.artifactMatches).toBe(true);
@@ -2010,7 +2629,7 @@ describe("separate coding supervisor", () => {
     expect(launches).toHaveLength(2);
   });
 
-  it("gives changed June requests separate previews without widening the original approval", async (t) => {
+  it("runs changed June requests as separate bound tasks without widening the original scope", async (t) => {
     const launches: { prompt: string; cwd: string }[] = [];
     const { registry, sent, coding, codingRequest, repositoryRoot } =
       await fixture(t, {
@@ -2020,22 +2639,39 @@ describe("separate coding supervisor", () => {
           return { threadId: "T-original-task", report: "Local edits only." };
         },
       });
-    // The second repository need not exist: previewing must not prepare or run it.
-    coding.workspaces.other = path.join(path.dirname(repositoryRoot), "other");
+    const otherRoot = path.join(path.dirname(repositoryRoot), "other");
+    const otherWorktrees = path.join(
+      path.dirname(repositoryRoot),
+      "other-worktrees",
+    );
+    execFileSync("git", ["clone", "--quiet", repositoryRoot, otherRoot]);
+    await mkdir(otherWorktrees);
+    coding.workspaces.other = otherRoot;
+    coding.isolation = {
+      ...coding.isolation,
+      other: createWorktreeManager({
+        repositoryRoot: otherRoot,
+        worktreeRoot: otherWorktrees,
+      }),
+    };
     const { client } = await setupTest(t, registry);
     const june = client.conversation.getOrCreate(["private", "raygen"]);
-    const previews = () =>
+    const receipts = () =>
       sent.flatMap((m) =>
         m.content.type === "text" &&
-        m.content.text.startsWith("Coding proposal for ")
+        m.content.text.startsWith("Coding task queued for ")
           ? [m.content.text]
           : [],
       );
     await june.send("inbox", { type: "event", event: source });
-    await expect.poll(() => previews().length, { timeout: 15000 }).toBe(1);
-    const original = previews()[0] ?? "";
-    const approval = original.match(/!approve ([a-f0-9]+)/)?.[1];
-    if (!approval) throw new Error("No original approval");
+    await expect.poll(() => receipts().length, { timeout: 15000 }).toBe(1);
+    const originalId = Object.keys((await june.snapshot()).jobs)[0];
+    if (!originalId) throw new Error("No original task");
+    const originalJob = client.job.getOrCreate([owner.id, originalId]);
+    await expect
+      .poll(async () => (await originalJob.snapshot()).status)
+      .toBe("completed");
+    const original = await originalJob.snapshot();
     codingRequest.workspace = "other";
     codingRequest.goal = "Change the other repository, push it, and deploy it.";
     await june.send("inbox", {
@@ -2047,47 +2683,45 @@ describe("separate coding supervisor", () => {
         text: codingRequest.goal,
       },
     });
-    await expect.poll(() => previews().length, { timeout: 15000 }).toBe(2);
-    const changed = previews()[1] ?? "";
-    expect(changed).toContain("Coding proposal for other:");
-    expect(changed).toContain(
-      `Repository: ${JSON.stringify(coding.workspaces.other)}\nRuntime: amp`,
-    );
+    await expect.poll(() => receipts().length, { timeout: 15000 }).toBe(2);
+    const changed = receipts()[1] ?? "";
+    expect(changed).toContain("Coding task queued for other:");
     expect(changed).toContain(codingRequest.goal);
-    expect(changed).toContain(
-      "No push, deployment, publication, shared-infrastructure changes, or credential access is authorized.",
-    );
-    expect(changed.match(/!approve ([a-f0-9]+)/)?.[1]).not.toBe(approval);
-    expect(launches).toEqual([]);
-    await june.send("inbox", {
-      type: "event",
-      event: {
-        ...source,
-        id: "approve-original",
-        messageId: "123.571",
-        text: `/approve ${approval}`,
-      },
-    });
-    await expect.poll(() => launches.length, { timeout: 5000 }).toBe(1);
+    expect(changed).toContain("No separate approval command is required");
+    await expect.poll(() => launches.length, { timeout: 5000 }).toBe(2);
     expect(launches[0]?.prompt).toContain(
       "Fix reaction handling. Run its tests.",
     );
     expect(launches[0]?.prompt).not.toContain(codingRequest.goal);
     expect(launches[0]?.prompt).toContain("Do not push, deploy, publish");
+    expect(launches[1]?.prompt).toContain(codingRequest.goal);
+    expect(launches[1]?.prompt).toContain("Do not push, deploy, publish");
+    expect(launches[1]?.cwd.startsWith(`${otherWorktrees}/job-`)).toBe(true);
     const jobs = Object.keys((await june.snapshot()).jobs);
-    const originalId = jobs.find((id) => id.startsWith(approval));
-    const changedId = jobs.find((id) => !id.startsWith(approval));
-    if (!originalId || !changedId) throw new Error("Missing proposals");
-    const originalJob = client.job.getOrCreate(["raygen", originalId]);
+    const changedId = jobs.find((id) => id !== originalId);
+    if (!changedId) throw new Error("Missing changed task");
+    expect(jobs).toHaveLength(2);
+    const changedJob = client.job.getOrCreate([owner.id, changedId]);
     await expect
-      .poll(async () => (await originalJob.snapshot()).status)
-      .toBe("completed");
-    expect((await originalJob.snapshot()).worktree?.repositoryRoot).toBe(
-      repositoryRoot,
+      .poll(async () => (await changedJob.snapshot()).status)
+      .toBe("needs_review");
+    expect((await changedJob.snapshot()).verification).toMatchObject({
+      status: "not_configured",
+      passed: null,
+    });
+    expect(await originalJob.snapshot()).toEqual(original);
+    expect(original.worktree?.repositoryRoot).toBe(repositoryRoot);
+    expect((await changedJob.snapshot()).worktree?.repositoryRoot).toBe(
+      otherRoot,
     );
-    expect(
-      (await client.job.getOrCreate(["raygen", changedId]).snapshot()).status,
-    ).toBe("awaiting_approval");
+    expect((await changedJob.snapshot()).proposal).toMatchObject({
+      id: changedId,
+      workspace: "other",
+      goal: codingRequest.goal,
+      runImmediately: true,
+      conversationKey: ["private", owner.id],
+      deletionRevision: 0,
+    });
   });
 
   it.for([false, true])(
@@ -2827,7 +3461,7 @@ describe("separate coding supervisor", () => {
         type: "event",
         event: { ...source, id: eventId, messageId: eventId },
       });
-      await expect.poll(() => sent.length).toBe(sequence);
+      await expect.poll(() => sent.length, { timeout: 15000 }).toBe(sequence);
       const content = sent.at(-1)?.content;
       return content?.type === "text" ? content.text : "";
     };
@@ -2844,7 +3478,7 @@ describe("separate coding supervisor", () => {
     }
     for (const id of ["b".repeat(12), foreign, revoked, forgotten, stale]) {
       const missing = await request("cancel", id);
-      expect(missing).toContain("not found in this private conversation");
+      expect(missing).toContain("not found in this conversation scope");
       expect(missing).not.toMatch(/[a-f0-9]{64}/);
     }
     const inspection = await request("inspect", exact);
@@ -2880,166 +3514,210 @@ describe("separate coding supervisor", () => {
     expect(launches).toBe(0);
   });
 
-  it("retrieves bounded reports only privately and suppresses deleted-source copies", async (t) => {
-    let action: CompanionReply = {
-      text: "",
-      coding: { workspace: "june", goal: "PRIVATE_GOAL" },
-    };
-    const store = new EvidenceStore(":memory:", randomBytes(32));
-    t.onTestFinished(() => store.close());
-    let launches = 0;
-    let checks = 0;
-    const { registry, manager, modelRequests } = await fixture(
-      t,
-      {
-        async run() {
-          launches++;
-          return {
-            threadId: "T-report",
-            report: `PRIVATE_WORKER_REPORT: everything passed. ${"x".repeat(2500)} OMITTED_TAIL`,
-          };
-        },
-      },
-      {
-        store,
-        source(event, audience) {
-          return {
-            id: event.id,
-            platform: "slack",
-            account: "T1",
-            conversation: "D1",
-            author: "U1",
-            audiences: [audience],
-            observedAt: event.occurredAt,
-            sourceUrl: "https://example.invalid/report-source",
-            text: event.text,
-          };
-        },
-      },
-      { reply: () => action },
-    );
-    const verify = manager.verify;
-    manager.verify = async (...args) => {
-      checks++;
-      const receipt = await verify(...args);
-      // A controlled independent failure contradicts the worker's success claim.
-      return { ...receipt, status: "failed", passed: false, exitCode: 3 };
-    };
-    const { client } = await setupTest(t, registry);
-    const june = client.conversation.getOrCreate(["private", owner.id]);
-    let sequence = 0;
-    const deliver = async (extra: Partial<MessageEvent> = {}) => {
-      const unique = `report-${sequence++}`;
-      const event = { ...source, id: unique, messageId: unique, ...extra };
-      const scope = routeEvent(event, owner);
-      if (!scope) throw new Error("Missing report scope");
-      const conversation = client.conversation.getOrCreate(scope.key);
-      const key = createHash("sha256")
-        .update(JSON.stringify(["slack", "T1", event.id]))
-        .digest("hex");
-      await conversation.send("inbox", { type: "event", event });
-      await expect
-        .poll(async () => (await conversation.snapshot()).events[key]?.done, {
-          timeout: 15000,
-        })
-        .toBe(true);
-      const snapshot = await conversation.snapshot();
-      const content = snapshot.deliveries[`${key}:text`]?.message.content;
-      return {
-        key,
-        snapshot,
-        text: content?.type === "text" ? content.text : "",
+  it.for(["owner DM", "owner channel", "guest DM", "guest channel"])(
+    "retrieves bounded reports only in their originating scope and suppresses deleted-source copies (%s)",
+    async (origin, t) => {
+      const direct = origin.endsWith("DM");
+      const requester: MessageEvent = {
+        ...source,
+        direct,
+        botMentioned: !direct,
+        senderId: origin.startsWith("guest") ? "U2" : "U1",
+        metadata: { channelType: direct ? "im" : "channel" },
+        address: direct
+          ? source.address
+          : { ...source.address, conversationId: "C1", threadId: "thread-1" },
       };
-    };
-    const proposal = await deliver();
-    const job = client.job.getOrCreate([owner.id, proposal.key]);
-    await deliver({ text: `!approve ${proposal.key}` });
-    await expect
-      .poll(async () => (await job.snapshot()).status, { timeout: 15000 })
-      .toBe("needs_review");
-    // Proposal, approval and the asynchronous completion must all settle before
-    // measuring whether report retrieval adds a synthesis call.
-    await expect
-      .poll(
-        async () =>
-          Object.values((await june.snapshot()).events).filter((e) => e.done)
-            .length,
-        { timeout: 15000 },
-      )
-      .toBe(3);
-    action = {
-      text: "",
-      codingJob: { action: "report", id: proposal.key.slice(0, 12) },
-    };
-    // Drop surrounding history without invalidating the job. The report must
-    // carry its original provenance even when this new query retrieves none of it.
-    store.deleteSource("unrelated-history");
-    const before = modelRequests.length;
-    const report = await deliver({ text: "retrieve-saved-result" });
-    expect(modelRequests).toHaveLength(before + 1);
-    expect(JSON.stringify(modelRequests.at(-1))).not.toContain(
-      "PRIVATE_WORKER_REPORT",
-    );
-    expect(report.text).toContain("PRIVATE_WORKER_REPORT");
-    expect(report.text).toContain("Worker claims (not independently verified)");
-    expect(report.text).toContain(
-      "Separate verifier receipt: failed; exit code: 3",
-    );
-    expect(report.text).toContain("[truncated]");
-    expect(report.text).not.toContain("OMITTED_TAIL");
-    expect(report.text).not.toContain("PRIVATE_GOAL");
-    expect(report.text.length).toBeLessThanOrEqual(3500);
-    expect(report.snapshot.memoryContexts?.[report.key]?.sourceIds).toContain(
-      "report-0",
-    );
-    expect(
-      report.snapshot.history.find(
-        (entry) => entry.id === `${report.key}:reply`,
-      )?.context?.sourceIds,
-    ).toContain("report-0");
-    expect(replyJsonSchema([], modelRequests.at(-1)).properties).toHaveProperty(
-      "codingJob",
-    );
-    expect(
-      parseReply(JSON.stringify(action), [], modelRequests.at(-1)),
-    ).toEqual(action);
-    expect(() => parseReply(JSON.stringify(action), [])).toThrow();
-    for (const extra of [
-      {
-        direct: false,
-        botMentioned: true,
-        address: { ...source.address, conversationId: "C1" },
-      },
-      { senderId: "U2", metadata: { channelType: "im" as const } },
-    ]) {
-      const denied = await deliver(extra);
-      expect(denied.text).not.toContain("PRIVATE_WORKER_REPORT");
-      expect(denied.text).toContain("owner-private turn");
+      const originScope = routeEvent(requester, owner);
+      if (!originScope) throw new Error("Missing originating scope");
+      let action: CompanionReply = {
+        text: "",
+        coding: { workspace: "june", goal: "PRIVATE_GOAL" },
+      };
+      const store = new EvidenceStore(":memory:", randomBytes(32));
+      t.onTestFinished(() => store.close());
+      let launches = 0;
+      let checks = 0;
+      const { registry, manager, modelRequests } = await fixture(
+        t,
+        {
+          async run() {
+            launches++;
+            return {
+              threadId: "T-report",
+              report: `PRIVATE_WORKER_REPORT: everything passed. ${"x".repeat(2500)} OMITTED_TAIL`,
+            };
+          },
+        },
+        {
+          store,
+          source(event, audience) {
+            return {
+              id: event.id,
+              platform: "slack",
+              account: "T1",
+              conversation: event.address.conversationId,
+              author: event.senderId,
+              audiences: [audience],
+              observedAt: event.occurredAt,
+              sourceUrl: "https://example.invalid/report-source",
+              text: event.text,
+            };
+          },
+        },
+        { reply: () => action },
+      );
+      const verify = manager.verify;
+      manager.verify = async (...args) => {
+        checks++;
+        const receipt = await verify(...args);
+        // A controlled independent failure contradicts the worker's success claim.
+        return { ...receipt, status: "failed", passed: false, exitCode: 3 };
+      };
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(originScope.key);
+      let sequence = 0;
+      const deliver = async (extra: Partial<MessageEvent> = {}) => {
+        const unique = `report-${sequence++}`;
+        const event = { ...requester, id: unique, messageId: unique, ...extra };
+        const scope = routeEvent(event, owner);
+        if (!scope) throw new Error("Missing report scope");
+        const conversation = client.conversation.getOrCreate(scope.key);
+        const key = createHash("sha256")
+          .update(JSON.stringify(["slack", "T1", event.id]))
+          .digest("hex");
+        await conversation.send("inbox", { type: "event", event });
+        await expect
+          .poll(async () => (await conversation.snapshot()).events[key]?.done, {
+            timeout: 15000,
+          })
+          .toBe(true);
+        const snapshot = await conversation.snapshot();
+        const content = snapshot.deliveries[`${key}:text`]?.message.content;
+        return {
+          key,
+          snapshot,
+          text: content?.type === "text" ? content.text : "",
+        };
+      };
+      const proposal = await deliver();
+      const job = client.job.getOrCreate([owner.id, proposal.key]);
+      await expect
+        .poll(async () => (await job.snapshot()).status, { timeout: 15000 })
+        .toBe("needs_review");
+      expect((await job.snapshot()).proposal).toMatchObject({
+        conversationKey: originScope.key,
+        runImmediately: true,
+        deletionRevision: 0,
+        source: { senderId: requester.senderId, address: requester.address },
+      });
+      // The fresh task and asynchronous completion must both settle before
+      // measuring whether report retrieval adds a synthesis call.
+      await expect
+        .poll(
+          async () =>
+            Object.values((await june.snapshot()).events).filter((e) => e.done)
+              .length,
+          { timeout: 15000 },
+        )
+        .toBe(2);
+      action = {
+        text: "",
+        codingJob: { action: "report", id: proposal.key.slice(0, 12) },
+      };
+      // Drop surrounding history without invalidating the job. The report must
+      // carry its original provenance even when this new query retrieves none of it.
+      store.deleteSource("unrelated-history");
+      const before = modelRequests.length;
+      const report = await deliver({ text: "retrieve-saved-result" });
+      expect(modelRequests).toHaveLength(before + 1);
       expect(JSON.stringify(modelRequests.at(-1))).not.toContain(
         "PRIVATE_WORKER_REPORT",
       );
-      expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(false);
-    }
-    // Tombstoning alone blocks a saved actor report, before asynchronous forget cleanup.
-    store.deleteSource("report-0");
-    const deleted = await deliver();
-    expect(deleted.text).toContain("not found in this private conversation");
-    expect(
-      deleted.snapshot.history.some((entry) =>
-        entry.content.includes("PRIVATE_WORKER_REPORT"),
-      ),
-    ).toBe(false);
-    expect(JSON.stringify(modelRequests.at(-1))).not.toContain(
-      "PRIVATE_WORKER_REPORT",
-    );
-    await june.forget("report-0");
-    expect((await deliver()).text).toContain(
-      "not found in this private conversation",
-    );
-    expect((await job.snapshot()).revoked).toBe(true);
-    expect(launches).toBe(1);
-    expect(checks).toBe(1);
-  });
+      expect(report.text).toContain("PRIVATE_WORKER_REPORT");
+      expect(report.text).toContain(
+        "Worker claims (not independently verified)",
+      );
+      expect(report.text).toContain(
+        "Separate verifier receipt: failed; exit code: 3",
+      );
+      expect(report.text).toContain("[truncated]");
+      expect(report.text).not.toContain("OMITTED_TAIL");
+      expect(report.text).not.toContain("PRIVATE_GOAL");
+      expect(report.text.length).toBeLessThanOrEqual(3500);
+      // Scoped live context need not be retained recall; both ancestry fields
+      // fence saved reports and their later history copies after deletion.
+      for (const context of [
+        report.snapshot.memoryContexts?.[report.key],
+        report.snapshot.history.find(
+          (entry) => entry.id === `${report.key}:reply`,
+        )?.context,
+      ])
+        expect([
+          ...(context?.sourceIds ?? []),
+          ...(context?.contextSourceIds ?? []),
+        ]).toContain("report-0");
+      expect(
+        replyJsonSchema([], modelRequests.at(-1)).properties,
+      ).toHaveProperty("codingJob");
+      expect(
+        parseReply(JSON.stringify(action), [], modelRequests.at(-1)),
+      ).toEqual(action);
+      expect(() => parseReply(JSON.stringify(action), [])).toThrow();
+      for (const extra of [
+        {
+          direct: false,
+          botMentioned: true,
+          address: { ...requester.address, conversationId: "C2" },
+          metadata: { channelType: "channel" as const },
+        },
+        { senderId: requester.senderId === "U1" ? "U2" : "U1" },
+      ]) {
+        const denied = await deliver(extra);
+        expect(denied.text).not.toContain("PRIVATE_WORKER_REPORT");
+        expect(denied.text).toContain("not found in this conversation scope");
+        expect(JSON.stringify(modelRequests.at(-1))).not.toContain(
+          "PRIVATE_WORKER_REPORT",
+        );
+        expect(modelRequests.at(-1)?.codingJobsAvailable).toBe(true);
+      }
+      if (origin.startsWith("guest")) {
+        // Request, completion, report and cross-scope lookup consumed the four
+        // guest admissions. Advance only the test clock past that window;
+        // cancellation/report access must not bypass the normal rate limit.
+        const now = Date.now;
+        const clock = vi
+          .spyOn(Date, "now")
+          .mockImplementation(() => now() + 60_001);
+        t.onTestFinished(() => clock.mockRestore());
+      }
+      action = { text: "", codingJob: { action: "cancel", id: proposal.key } };
+      expect((await deliver()).text).toContain(
+        "Cancellation requested durably; not confirmed stopped",
+      );
+      expect((await job.snapshot()).cancelRequested).toBe(true);
+      action = { text: "", codingJob: { action: "report", id: proposal.key } };
+      // Tombstoning alone blocks a saved actor report, before asynchronous forget cleanup.
+      store.deleteSource("report-0");
+      const deleted = await deliver();
+      expect(deleted.text).toContain("not found in this conversation scope");
+      expect(
+        deleted.snapshot.history.some((entry) =>
+          entry.content.includes("PRIVATE_WORKER_REPORT"),
+        ),
+      ).toBe(false);
+      expect(JSON.stringify(modelRequests.at(-1))).not.toContain(
+        "PRIVATE_WORKER_REPORT",
+      );
+      await june.forget("report-0");
+      expect((await deliver()).text).toContain(
+        "not found in this conversation scope",
+      );
+      expect((await job.snapshot()).revoked).toBe(true);
+      expect(launches).toBe(1);
+      expect(checks).toBe(1);
+    },
+  );
 
   it("withholds legacy reports with unknown ancestry after deletion without cleanup", async (t) => {
     const id = "f".repeat(64);

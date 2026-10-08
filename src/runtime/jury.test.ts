@@ -61,7 +61,6 @@ it("mounts one private advisory jury, blocks forged public/synthesis requests an
     memory: { store, source: () => undefined },
     jury: createJuryTool({
       store,
-      scope,
       evidenceMaxAgeMs: 60000,
       executor: new DecisionExecutor(2, 1000),
       providers: {

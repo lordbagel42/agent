@@ -18,7 +18,7 @@ import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
-it("stages through June without publishing and rejects public, guest, stale and forgotten suggestions", async (t) => {
+it("stages through June without publishing and rejects wrong-scope evidence, stale and forgotten suggestions", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "june-suggestion-runtime-"));
   const store = new EvidenceStore(":memory:", randomBytes(32));
   const personality = new CuratedPersonalityStore(
@@ -154,7 +154,7 @@ it("stages through June without publishing and rejects public, guest, stale and 
     { senderId: "U2" },
   ]) {
     await deliver(extra);
-    expect(requests.at(-1)?.personalitySuggestionAvailable).toBe(false);
+    expect(requests.at(-1)?.personalitySuggestionAvailable).toBe(true);
     expect(personality.pendingGlobalProposals(scope)).toHaveLength(1);
   }
   action = {

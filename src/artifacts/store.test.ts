@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
+import type { MessageEvent } from "../core/contracts.js";
 import { redactBrowserPin } from "../core/private-input.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import {
@@ -272,4 +273,83 @@ it("exposes the action to June without exposing PINs, binds the DM, and protects
   ).toBe(401);
   await service.consumePin(owner);
   expect(calls).toHaveLength(4);
+});
+
+it("authorizes workflow creation with its original event while retaining private viewer and PIN controls", async () => {
+  const { store, options } = fixture();
+  const requestContext = context("creator", "workflow");
+  requestContext.event.direct = false;
+  requestContext.event.botMentioned = true;
+  requestContext.event.metadata = { channelType: "channel" };
+  requestContext.event.address.conversationId = "channel";
+  requestContext.event.address.threadId = "thread";
+  const runId = "c".repeat(64);
+  const view = {
+    runId,
+    name: "shared-status",
+    revision: "revision",
+    status: "completed",
+    operations: [{ name: "step:one", status: "completed" }],
+  };
+  const authorizations: (MessageEvent | undefined)[] = [];
+  let revoked = false;
+  let deletionRevision = 0;
+  let sends = 0;
+  let pin = "";
+  const service = new ArtifactService({
+    store,
+    owner: options.owner,
+    origin: "https://artifacts.example.org",
+    deletionRevision: () => deletionRevision,
+    async workflow(id, event?: MessageEvent) {
+      authorizations.push(event);
+      if (id !== runId || (event && event !== requestContext.event))
+        return undefined;
+      return { ...view, status: revoked ? "revoked" : view.status };
+    },
+    async sendSecret(identity, _id, text) {
+      expect(identity).toEqual({
+        channel: "slack",
+        accountId: "team",
+        senderId: "creator",
+      });
+      sends++;
+      pin = /Access PIN: (\d{8})/.exec(text)?.[1] ?? "";
+      return { status: "unknown", code: "timeout" };
+    },
+  });
+  const command = { ...create, kind: "workflow", content: null, runId };
+  const result = await service.request(command, requestContext);
+  expect(authorizations).toEqual([requestContext.event]);
+  expect(result.text).toContain("PIN delivery to the creator: unknown");
+  expect(result.text).not.toContain(pin);
+  await service.request(command, requestContext);
+  expect(sends).toBe(1);
+  await expect(
+    service.request(command, context("owner", "wrong-origin")),
+  ).rejects.toThrow("artifact_workflow_denied");
+  expect(store.db.prepare("SELECT id FROM artifacts").all()).toHaveLength(1);
+
+  const id = result.presentation.id;
+  const app = createArtifactRoutes(service, new ArtifactRenderer("unused"));
+  expect((await app.request(`/artifacts/${id}/data`)).status).toBe(401);
+  const token = store.unlock(id, pin, "viewer");
+  const headers = { cookie: `june_artifact=${token}` };
+  const data = await app.request(`/artifacts/${id}/data`, { headers });
+  expect(data.status).toBe(200);
+  expect((await data.json()).workflow).toEqual(view);
+  expect(authorizations.at(-1)).toBeUndefined();
+  revoked = true;
+  expect((await app.request(`/artifacts/${id}/data`, { headers })).status).toBe(
+    410,
+  );
+  await expect(service.request(command, requestContext)).rejects.toThrow(
+    "artifact_workflow_denied",
+  );
+  revoked = false;
+  deletionRevision++;
+  expect((await app.request(`/artifacts/${id}/data`, { headers })).status).toBe(
+    410,
+  );
+  expect(sends).toBe(1);
 });

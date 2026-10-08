@@ -9,24 +9,30 @@ Other OAuth providers, stdio commands and legacy SSE are not supported.
 
 With Slack configured, the separate host-owned `slack-bot` catalog acts as June,
 not the consenting owner. See [Slack capabilities](slack.md) for bot scopes,
-approval rules and official MCP enrollment. Its initial read/approval policy is
+effect classification and official MCP enrollment. Its initial read/effect policy is
 host-defined; the disabled-by-default discovery rules below apply to remote tools.
 
 1. Add a connection, then **Test & discover tools**. Discovery runs no tools.
 2. Review each complete tool contract. Every tool starts **Disabled**.
 3. Grant read-only use only to tools you trust to be read-only. This is your
    classification, not a guarantee inferred from the server's annotations.
-4. Use **Approval required** for effects. June proposes exact arguments and links
-   to a ten-minute dashboard confirmation; confirmation executes at most once.
-   Unknown outcomes must be inspected externally, never blindly retried.
+4. The saved **Approval required** label (`approval`) classifies effects. For a
+   fresh task decision, June's exact arguments are durably recorded and executed
+   immediately through a one-use broker grant; a human dashboard confirmation is
+   not required. Disabled tools stay disabled. Unknown outcomes require external
+   inspection, never a blind retry.
 
-June sees enabled tools, connection status and recent approval receipts in her
-owner-private conversations. Ask her to use a named tool, or ask which connections
-are available. She can call reads and propose effects, but cannot authorize tools
-or obtain credentials herself. Channels and group DMs receive no private catalog.
+June can use the exposed catalog, status and receipts in admitted task turns,
+including channels and DMs. She judges requester intent, authority and what may
+be disclosed to the current audience; tool availability does not make account
+data public. She can call reads and effects, but cannot enroll accounts, change
+provider scopes, bypass manual disables or obtain credentials through a tool call.
 An execution-worker invocation can perform up to three separately authorized
 reads before answering; other invocations retain one call plus synthesis.
-Approval proposals and uncertain outcomes stop the sequence. Tool results
+Effects and uncertain outcomes stop the sequence. Successful fresh effect results
+enter transient answer synthesis; do not invoke the effect again for its result.
+Historical pending proposals are never swept, approved or executed automatically;
+their authenticated dashboard path remains an optional manual interface. Tool results
 are untrusted evidence, not instructions. Raw results are not journaled, but the
 synthesized answer becomes normal conversation history. The configured model
 provider receives the transient result to produce that answer.
@@ -34,22 +40,23 @@ provider receives the transient result to produce that answer.
 Amp's MCP is the Puck conversation interface, not a direct thread API. June uses
 the actual discovered tool contracts and returned conversation IDs; no assumed
 `create_thread`/`read_thread` mapping is installed. Sending Puck a message can
-cause work, so keep it approval-required. Text and structured reply fields are
+cause work, so classify it as an effect (`approval`), not a read. Text and structured reply fields are
 both preserved within one redacted 12 KB result budget.
 
-After approving an Amp proposal, ask June to retrieve its reply. Her
+For a legacy manually approved Amp proposal, June can retrieve its reply. Her
 `mcpProposal: {action: "result", id: "<proposal UUID>"}` consumes the response
-once and synthesizes it privately, without invoking the tool again. Up to 50
+once and synthesizes it without invoking the tool again. Up to 50
 sanitized responses are held in memory for at most ten minutes (or token expiry),
 never SQLite/journals. Restart, cancellation, disconnect or permission changes
 discard them. Missing/consumed replies and failed synthesis never permit replay;
 the durable receipt remains separate. This does not automatically notify June
-after dashboard approval, and other effect tools remain receipt-only.
-Ordinary [Amp jobs](amp-jobs.md) are a separate approved SSH path, independent of
+after manual dashboard approval; other manually executed effects remain receipt-only.
+New model-selected effects use the immediate synthesis path above.
+Ordinary [Amp jobs](amp-jobs.md) are a separate configured SSH path, independent of
 Puck/MCP connectivity. Live Puck contracts and account access still need operator
 verification; local fixtures are not live interoperability evidence.
 
-Ask June privately, “What permission does this tool have, and what does that
+Ask June, “What permission does this tool have, and what does that
 actually guarantee?” She can select the exact connection ID and tool name with
 `mcpPermission: { connection, tool }` (empty text, other actions unset). The host
 returns the saved permission, connection revision, contract digest and trust
@@ -61,30 +68,30 @@ or a sandbox preventing the remote server from mutating data. Server annotations
 are claims, not authority. Saved status does not establish current live health.
 
 Failure replies distinguish unavailable connections/tools, denied authority,
-host-rejected arguments, failed processing and unknown tool outcomes. The current
-MCP adapter proves only `not_started` or `unknown`: preparation failures become
+host-rejected arguments, failed processing and unknown tool outcomes. On failure,
+the current MCP adapter proves only `not_started` or `unknown`: preparation failures become
 failed processing, while remote errors (including `isError`) stay unknown, not
 proven rejections. Answer synthesis can fail after a tool returns. Replies use
 fixed host text, never raw errors; no failure label establishes retry safety.
 
-Ask June privately to inspect a proposal using its exact UUID. Her read-only
+Ask June to inspect a proposal using its exact UUID. Her read-only
 `mcpProposal: {action: "inspect", id: "<proposal UUID>"}` action returns bounded
 recorded status, expiry, cancellation timestamp, grant ID and receipt metadata, including after a
 disconnect. It never approves, executes or retries the tool, and does not return
 arguments, destinations, credentials or result bodies. Unknown outcomes remain
 unknown, not denial, rejection or success; a missing receipt is not proof of an
 external outcome. Historical success is not a fresh check of the external state.
-The host sends this metadata directly, without another model synthesis. Normal
-private-turn and forgetting checks still govern delivery.
+The host returns this metadata without another MCP result synthesis. Current
+task, source/audience and forgetting checks still govern delivery.
 
-Ask June privately to inspect her MCP connections (`inspection: "mcp-connections"`).
+Ask June to inspect her MCP connections (`inspection: "mcp-connections"`).
 This read works even with MCP disabled or no connections saved: those states are
 disconnected, not healthy. The inventory contains at most 20 opaque display refs,
 connection kind, saved-credential presence/expiry, past discovery outcome and tool
 permission counts. It omits names, endpoint URLs, raw IDs and credential values.
 Configuration, saved credentials and successful past discovery never prove current
 availability or authorization; the read contacts no server and grants no access.
-Inventory refs are not callable IDs; the separate approved `mcpCatalog` supplies
+Inventory refs are not callable IDs; the separately exposed `mcpCatalog` supplies
 tool IDs and contracts. Reports are timestamped snapshots, not live monitors.
 
 Contract changes disable the affected tool until reviewed again. Permission
@@ -133,7 +140,7 @@ either; send a new plain message from the authenticated owner account.
 
 ## Ask June what enrollment still needs
 
-In an owner-private turn, ask “What is missing before I can use MCP?” June can
+When inspection is exposed, ask “What is missing before I can use MCP?” June can
 return `{"text":"","inspection":"mcp-enrollment"}` without other actions,
 even when MCP is disabled. The host sends a timestamped, credential-free
 checklist using the bounded connection inventory, not a live server probe.
@@ -156,8 +163,8 @@ Saved credentials, past successful discovery and saved permissions do not prove
 current authorization or availability. Each connection's next step is guidance
 for the owner, never authority for June to enroll, authenticate, discover, or
 grant permissions. No endpoints, login URLs, credential values, connection names,
-tool contracts or raw errors are returned. Public/guest turns and synthesis
-cannot invoke the checklist.
+tool contracts or raw errors are returned. June judges whether the metadata is
+appropriate for the current audience; the checklist grants no further actions.
 
 ## Host configuration
 
@@ -272,21 +279,21 @@ Keep these gates separate:
    page. Abandoned consent expires after ten minutes or a restart; if the
    dashboard session lapsed, signing in again in that browser resumes the save.
 4. **Tool consent:** **Test & discover tools**, review actual returned contracts,
-   then enable selected reads or approval-required effects. Nothing is enabled
+   then enable selected reads or effects using the saved `approval` classification. Nothing is enabled
    automatically. Read authorization trusts the remote tool's behavior and may
    expose account-wide data; it does not limit that tool to June-created threads.
-5. **June-facing verification:** in an owner-private conversation, ask June to
+5. **June-facing verification:** in an appropriate admitted conversation, ask June to
    inspect the enabled Amp catalog (`mcpCatalog` with connection `amp`), then use a
    reviewed read on a known fixture. Check the answer and remote result before
-   declaring live access. Effects use the existing proposal, approval and receipt
-   flow; June cannot approve her own requests. No remote tool names are assumed.
+   declaring live access. Fresh effects execute through exact durable one-use
+   grants without per-task human approval. No remote tool names are assumed.
 
 This first console flow requests only `openid`, not an offline refresh grant.
 Expired access requires explicit reconnect; it is not unattended permanent access.
 Reconnect replaces the saved account/token, clears tools and invalidates old
 approvals. Disconnect removes the local credential; revoke provider consent
 separately if needed. Consent does not enable native coding or replace its isolated
-runtime and approval requirements.
+runtime, configured workspace and exact-task admission requirements.
 
 ## Coordinated configuration cutover
 

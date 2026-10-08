@@ -99,7 +99,7 @@ function jsonResponse(
 
 describe("createSlackAdapter", () => {
   it.for(["DEBUG", "DEBUGSHARE"])(
-    "admits plain %s from anyone on every known Slack surface without broadening other controls",
+    "admits plain %s from anyone on every known Slack surface without trusting quoted controls",
     async (command) => {
       const adapter = makeAdapter();
       for (const user of ["U_HUMAN", "U_GUEST"]) {
@@ -125,9 +125,7 @@ describe("createSlackAdapter", () => {
             { text: `> ${command} missed reply` },
             { attachments: [] },
             { text: `${command}\nmissed reply` },
-            { text: "CLEARHISTORY" },
           ]) {
-            if (user === "U_HUMAN" && changes.text === "CLEARHISTORY") continue;
             const result = await adapter.receive(
               signedRequest(eventBody({ ...event, ...changes })),
             );
@@ -243,7 +241,7 @@ describe("createSlackAdapter", () => {
     },
   );
 
-  it("admits mentioned session controls only from plain authenticated owner input", async () => {
+  it("admits mentioned session controls only from plain authenticated input", async () => {
     const adapter = makeAdapter();
     for (const command of [
       "PING",
@@ -279,7 +277,11 @@ describe("createSlackAdapter", () => {
             text,
             blocks,
           };
-          for (const changes of [{}, { blocks: undefined }]) {
+          for (const changes of [
+            {},
+            { blocks: undefined },
+            { user: "U_GUEST" },
+          ]) {
             const { events } = await adapter.receive(
               signedRequest(eventBody({ ...event, ...changes })),
             );
@@ -302,7 +304,6 @@ describe("createSlackAdapter", () => {
             );
           }
           for (const changes of [
-            ...(command.startsWith("DEBUG") ? [] : [{ user: "U_GUEST" }]),
             { attachments: [] },
             { subtype: "me_message" },
             { text: `> ${text}` },
@@ -364,6 +365,51 @@ describe("createSlackAdapter", () => {
       field: "sessionCommandEligible" as const,
     },
     {
+      kind: "clear",
+      text: "CLEARHISTORY",
+      field: "sessionCommandEligible" as const,
+    },
+    {
+      kind: "coding approval",
+      text: "!approve job-123",
+      field: "codingCommandEligible" as const,
+    },
+    {
+      kind: "coding resume",
+      text: "/resume-stopped job-123",
+      field: "codingCommandEligible" as const,
+    },
+    {
+      kind: "memory correction",
+      text: "!memory-correct new detail",
+      field: "ownerCorrectionEligible" as const,
+    },
+    {
+      kind: "memory accept",
+      text: "!memory-accept proposal-123",
+      field: "memoryReviewEligible" as const,
+    },
+    {
+      kind: "memory reject",
+      text: "!memory-reject proposal-123",
+      field: "memoryReviewEligible" as const,
+    },
+    {
+      kind: "reflection",
+      text: "!reflection list",
+      field: "reflectionReviewEligible" as const,
+    },
+    {
+      kind: "MCP cancel",
+      text: "!mcp-cancel proposal-123",
+      field: "mcpCommandEligible" as const,
+    },
+    {
+      kind: "MCP reconcile",
+      text: "!mcp-reconcile proposal-123 succeeded",
+      field: "mcpCommandEligible" as const,
+    },
+    {
       kind: "personality",
       text: '!personality revise {"expectedVersion":0,"changes":{"tone":"dry"},"explanation":"Try it","publish":true}',
       field: "personalityCommandEligible" as const,
@@ -384,7 +430,7 @@ describe("createSlackAdapter", () => {
       field: "forgetCommandEligible" as const,
     },
   ])(
-    "marks only fresh plain owner-DM $kind commands as eligible",
+    "marks fresh plain $kind commands from admitted requesters without owner/private gates",
     async ({ text, field }) => {
       const adapter = makeAdapter();
       const event = {
@@ -402,6 +448,21 @@ describe("createSlackAdapter", () => {
         return result.events[0] as MessageEvent;
       };
       expect((await normalize())[field]).toBe(true);
+      for (const user of ["U_HUMAN", "U_GUEST"]) {
+        for (const channel_type of ["im", "mpim", "channel", "group"]) {
+          const shared = channel_type === "channel" || channel_type === "group";
+          const normalized = await normalize({
+            user,
+            channel_type,
+            channel: channel_type === "im" ? "D1" : "C1",
+            type: shared ? "app_mention" : "message",
+            text: shared ? `<@U_BOT> ${text}` : text,
+          });
+          expect(normalized[field], `${user}/${channel_type}`).toBe(true);
+          expect(normalized.text).toBe(text);
+          expect(normalized.senderId).toBe(user);
+        }
+      }
       for (const type of [
         "rich_text_section",
         "rich_text_quote",
@@ -418,8 +479,9 @@ describe("createSlackAdapter", () => {
         expect(normalized[field]).toBe(type === "rich_text_section");
       }
       for (const changes of [
-        { user: "U_GUEST" },
+        { bot_id: "B_OTHER" },
         { attachments: [] },
+        { files: [] },
         { subtype: "me_message" },
         { text: "ordinary chat" },
         {
@@ -443,55 +505,98 @@ describe("createSlackAdapter", () => {
     ...["allow", "deny", "revoke"].map(
       (action) => `!${action} ${"a".repeat(24)}`,
     ),
-  ])(
-    "marks %s eligible only for ordinary signed owner-DM input",
-    async (text) => {
-      const adapter = makeAdapter();
-      const event = {
-        type: "message",
-        channel_type: "im",
-        channel: "D1",
-        user: "U_HUMAN",
-        ts: "123.456",
-        text,
-      };
-      for (const type of [
-        "rich_text_section",
-        "rich_text_quote",
-        "rich_text_preformatted",
-      ]) {
-        const result = await adapter.receive(
-          signedRequest(
-            eventBody({
-              ...event,
-              blocks: [
-                {
-                  type: "rich_text",
-                  elements: [{ type, elements: [{ type: "text", text }] }],
-                },
-              ],
-            }),
-          ),
-        );
-        expect(
-          (result.events[0] as MessageEvent).reflectionReviewEligible,
-        ).toBe(type === "rich_text_section");
+  ])("marks %s eligible only for ordinary signed human input", async (text) => {
+    const adapter = makeAdapter();
+    const event = {
+      type: "message",
+      channel_type: "im",
+      channel: "D1",
+      user: "U_HUMAN",
+      ts: "123.456",
+      text,
+    };
+    const guest = await adapter.receive(
+      signedRequest(eventBody({ ...event, user: "U_GUEST" })),
+    );
+    expect((guest.events[0] as MessageEvent).reflectionReviewEligible).toBe(
+      true,
+    );
+    for (const type of [
+      "rich_text_section",
+      "rich_text_quote",
+      "rich_text_preformatted",
+    ]) {
+      const result = await adapter.receive(
+        signedRequest(
+          eventBody({
+            ...event,
+            blocks: [
+              {
+                type: "rich_text",
+                elements: [{ type, elements: [{ type: "text", text }] }],
+              },
+            ],
+          }),
+        ),
+      );
+      expect((result.events[0] as MessageEvent).reflectionReviewEligible).toBe(
+        type === "rich_text_section",
+      );
+    }
+    for (const changes of [
+      { bot_id: "B_OTHER" },
+      { attachments: [] },
+      { subtype: "me_message" },
+    ]) {
+      const result = await adapter.receive(
+        signedRequest(eventBody({ ...event, ...changes })),
+      );
+      expect(
+        (result.events[0] as MessageEvent | undefined)
+          ?.reflectionReviewEligible,
+      ).not.toBe(true);
+    }
+  });
+
+  it("keeps browser and artifact PIN eligibility private and bound to human secret input", async () => {
+    const adapter = makeAdapter();
+    for (const [text, field] of [
+      ["!browser-pin 123456", "browserPinEligible"],
+      ["!artifact-pin 123456", "artifactPinEligible"],
+    ] as const) {
+      for (const user of ["U_HUMAN", "U_GUEST"]) {
+        for (const channel_type of ["im", "mpim", "channel"]) {
+          const source = {
+            type: "message",
+            user,
+            channel_type,
+            channel: channel_type === "im" ? "D1" : "C1",
+            ts: "123.456",
+            text,
+            ...(channel_type === "channel"
+              ? { thread_ts: "123.000", parent_user_id: botUserId }
+              : {}),
+          };
+          for (const quoted of [false, true]) {
+            const { events } = await adapter.receive(
+              signedRequest(
+                eventBody({
+                  ...source,
+                  ...(quoted ? { attachments: [] } : {}),
+                }),
+              ),
+            );
+            const eligible = (events[0] as MessageEvent | undefined)?.[field];
+            const allowed =
+              !quoted &&
+              channel_type === "im" &&
+              (field === "artifactPinEligible" || user === "U_HUMAN");
+            expect(eligible === true).toBe(allowed);
+          }
+        }
       }
-      for (const changes of [
-        { user: "U_GUEST" },
-        { attachments: [] },
-        { subtype: "me_message" },
-      ]) {
-        const result = await adapter.receive(
-          signedRequest(eventBody({ ...event, ...changes })),
-        );
-        expect(
-          (result.events[0] as MessageEvent | undefined)
-            ?.reflectionReviewEligible,
-        ).not.toBe(true);
-      }
-    },
-  );
+    }
+  });
 
   it("admits subscribed-thread participants while keeping guests scoped", async (t) => {
     const root = mkdtempSync(join(tmpdir(), "june-slack-threads-"));
@@ -989,34 +1094,36 @@ describe("createSlackAdapter", () => {
     },
   );
 
-  it("acknowledges signed guest pings with an hourglass without capturing search authority", async () => {
+  it("acknowledges signed guest pings with an hourglass without consuming search authority", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse({ ok: true }));
     const adapter = makeAdapter(fetchMock, { searchEnabled: true });
     const result = await adapter.receive(
       signedRequest(
-        eventBody({
-          type: "app_mention",
-          user: "U_STRANGER",
-          channel: "C123",
-          ts: "1712345678.000001",
-          text: "<@U_BOT> hey",
-          action_token: "guest-token",
-        }),
+        eventBody(
+          {
+            type: "app_mention",
+            user: "U_STRANGER",
+            channel: "C123",
+            ts: "1800000000.000001",
+            text: "<@U_BOT> hey",
+            action_token: "guest-token",
+          },
+          { eventTime: now / 1000 },
+        ),
       ),
     );
     const event = result.events[0];
     expect(event?.type).toBe("message");
     if (event?.type !== "message") throw new Error("missing guest message");
     expect(event.botMentioned).toBe(true);
-    expect((await adapter.search?.(event, "private info"))?.status).toBe(
-      "unavailable",
-    );
+    expect(adapter.hasSearchToken?.(event)).toBe(true);
     await adapter.setTyping?.(
       { ...event, address: { ...event.address, threadId: event.messageId } },
       true,
     );
+    expect(adapter.hasSearchToken?.(event)).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "https://slack.com/api/reactions.add",
@@ -1507,7 +1614,7 @@ describe("createSlackAdapter", () => {
     },
   );
 
-  it("admits group DM contact without granting private scope or approval authority", async () => {
+  it("admits group DM task commands without changing private routing scope", async () => {
     const fetchMock = vi.fn<typeof globalThis.fetch>();
     const adapter = makeAdapter(fetchMock);
     for (const channel of ["C_GROUP_DM", "G_GROUP_DM"]) {
@@ -1541,11 +1648,11 @@ describe("createSlackAdapter", () => {
           direct: false,
           metadata: { channelType: "mpim" },
         });
-        expect(received.codingCommandEligible).toBeUndefined();
+        expect(received.codingCommandEligible).toBe(
+          text === "!approve job-123" ? true : undefined,
+        );
         if (text === "CLEARHISTORY")
-          expect(sessionCommand(received)).toEqual(
-            user === "U_HUMAN" ? { kind: "clear" } : undefined,
-          );
+          expect(sessionCommand(received)).toEqual({ kind: "clear" });
         expect(
           routeEvent(received, {
             id: "owner",

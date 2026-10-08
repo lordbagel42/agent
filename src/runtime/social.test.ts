@@ -121,19 +121,48 @@ function fixture(
   };
 }
 
-it("withholds approval notices and posts when the originating session is cleared", async (t) => {
+function historicalProposal(
+  options: ReturnType<typeof fixture>["options"],
+  source: MessageEvent,
+  action: Extract<SocialAction, { kind: "outreach" | "request_access" }>,
+) {
+  const id = createHash("sha256")
+    .update(JSON.stringify([source.address.accountId, source.id, "social"]))
+    .digest("hex")
+    .slice(0, 24);
+  const db = new DatabaseSync(options.file);
+  try {
+    db.prepare("INSERT INTO social_proposals VALUES (?, ?)").run(
+      id,
+      JSON.stringify({
+        id,
+        accountId: source.address.accountId,
+        requester: source.senderId,
+        action,
+        status: "pending",
+        created: options.now(),
+        expires: options.now() + 60000,
+      }),
+    );
+  } finally {
+    db.close();
+  }
+  return id;
+}
+
+it("withholds outreach and posts when the originating session is cleared", async (t) => {
   const { social, sent } = fixture(t);
   const gate = Promise.withResolvers<boolean>();
   const pending = social.propose(
     raygen,
-    access,
+    { kind: "outreach", userId: "UOTHER", text: "stale outreach" },
     () => true,
-    "cleared-notice",
+    "cleared-outreach",
     () => true,
     () => gate.promise,
   );
   gate.resolve(false);
-  expect(await pending).toContain("notification rejected");
+  expect(await pending).toContain("delivery rejected");
   expect(
     await social.propose(
       raygen,
@@ -152,123 +181,188 @@ it("withholds approval notices and posts when the originating session is cleared
   expect(sent).toHaveLength(0);
 });
 
-it("stages one private candidate-bound preview without granting or sending, and rechecks deletion", async (t) => {
-  const { social, sent, options } = fixture(t);
-  const candidate: ReflectionCandidate & { evidenceIds: string[] } = {
-    id: "private-source-candidate",
-    requestId: "private-request",
-    evidenceIds: ["source-a", "uncited-source-b"],
-    scope: JSON.stringify(["private", owner.id]),
-    attempt: 1,
-    epoch: 3,
-    mode: "idle",
-    kind: "interruption-candidate",
-    hypothesisOnly: false,
-    createdAt: Date.now(),
-    publication: { version: 1, expiresAt: Date.now() + 60000 },
-    decision: {
-      answer: "yes",
-      rationale: "Private hypothesis",
-      evidenceIds: ["source-a"],
-    },
-  };
-  const input = {
-    candidateId: createHash("sha256").update(candidate.id).digest("hex"),
-    userId: "UGUEST",
-    text: "Exact <@UOTHER> & message",
-  };
-  for (const event of [
-    guest,
-    { ...raygen, direct: false },
-    {
-      ...raygen,
-      address: { ...raygen.address, accountId: "TOTHER" },
-    },
-  ])
-    expect(social.stageInterruption(event, input, candidate, true)).toContain(
-      "private conversation",
-    );
-  for (const invalid of [
-    null,
-    { ...candidate, scope: "public" },
-    { ...candidate, hypothesisOnly: true },
-    { ...candidate, id: "other" },
-    { ...candidate, kind: "proposal" as const },
-  ])
-    expect(social.stageInterruption(raygen, input, invalid, true)).toContain(
-      "unavailable",
-    );
-  expect(social.view(raygen)).toBe("[]");
-  expect(
-    await social.propose(raygen, { kind: "interruption_proposal", ...input }),
-  ).toContain("private reflection gate");
-  expect(social.view(raygen)).toBe("[]");
-  social.rejectInterruption("different-scope", input.candidateId);
-  const preview = social.stageInterruption(raygen, input, candidate, true);
-  expect(preview).toContain('"Exact <@UOTHER> & message"');
-  expect(preview).not.toContain(candidate.decision.rationale);
-  expect(preview).not.toContain(candidate.id);
-  const id = preview.match(/proposal ([a-f0-9]{24})/)?.[1];
-  expect(id).toBeDefined();
-  expect(JSON.parse(social.view(raygen))).toMatchObject([
-    {
-      status: "pending",
-      action: { kind: "outreach", userId: input.userId, text: input.text },
-      reflection: {
-        candidateId: input.candidateId,
-        epoch: 3,
-        evidenceIds: ["source-a", "uncited-source-b"],
-        publication: candidate.publication,
+it.for(["cancel", "clear", "revoke", "forget"] as const)(
+  "revalidates model-selected outreach after an asynchronous %s boundary",
+  async (boundary, t) => {
+    let revision = 0;
+    let current = true;
+    let canStart = true;
+    const { social, sent } = fixture(t, () => revision);
+    const entered = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<boolean>();
+    const sending = social.propose(
+      guest,
+      { kind: "outreach", userId: "UOTHER", text: "Do not send stale text" },
+      () => canStart,
+      "guarded-outreach",
+      () => current,
+      () => {
+        entered.resolve();
+        return gate.promise;
       },
+    );
+    await entered.promise;
+    if (boundary === "cancel") canStart = false;
+    if (boundary === "clear") current = false;
+    if (boundary === "forget") revision++;
+    if (boundary === "revoke") {
+      const [proposal] = JSON.parse(social.view(raygen));
+      await social.decide({ ...raygen, text: `!revoke ${proposal.id}` });
+    }
+    gate.resolve(true);
+    expect(await sending).toContain("delivery rejected");
+    expect(sent).toEqual([]);
+  },
+);
+
+it.for([
+  {
+    label: "owner-private",
+    source: raygen,
+    scope: ["private", "raygen"],
+  },
+  {
+    label: "guest-channel",
+    source: guest,
+    scope: ["guest", "slack", "T1", "C1", "", "UGUEST"],
+  },
+  {
+    label: "guest-dm",
+    source: {
+      ...guest,
+      direct: true,
+      metadata: { channelType: "im" as const },
+      address: { ...guest.address, conversationId: "DGUEST" },
     },
-  ]);
-  expect(social.view(guest)).toBe("[]");
-  expect(await social.decide({ ...raygen, text: `!allow ${id}` })).toContain(
-    "Approval is unchanged",
-  );
-  expect(social.permits(guest, "deep")).toBe(false);
-  const rejected = { ...candidate, id: "rejected-before-staging" };
-  const rejectedInput = {
-    ...input,
-    candidateId: createHash("sha256").update(rejected.id).digest("hex"),
-  };
-  social.rejectInterruption(candidate.scope, rejectedInput.candidateId);
-  let revision = 0;
-  const reopened = new SocialPermissions({
-    ...options,
-    deletionRevision: () => revision,
-  });
-  try {
+    scope: ["guest", "slack", "T1", "DGUEST", "", "UGUEST"],
+  },
+  {
+    label: "owner-channel",
+    source: { ...guest, senderId: RAYGEN_SLACK_ID },
+    scope: ["slack", "T1", "C1", ""],
+  },
+])(
+  "stages one $label candidate-bound preview without granting or sending, and rechecks deletion",
+  async ({ source, scope }, t) => {
+    const { social, sent, options } = fixture(t);
+    const candidate: ReflectionCandidate & { evidenceIds: string[] } = {
+      id: "private-source-candidate",
+      requestId: "private-request",
+      evidenceIds: ["source-a", "uncited-source-b"],
+      scope: JSON.stringify(scope),
+      attempt: 1,
+      epoch: 3,
+      mode: "idle",
+      kind: "interruption-candidate",
+      hypothesisOnly: false,
+      createdAt: Date.now(),
+      publication: { version: 1, expiresAt: Date.now() + 60000 },
+      decision: {
+        answer: "yes",
+        rationale: "Private hypothesis",
+        evidenceIds: ["source-a"],
+      },
+    };
+    const input = {
+      candidateId: createHash("sha256").update(candidate.id).digest("hex"),
+      userId: "UGUEST",
+      text: "Exact <@UOTHER> & message",
+    };
+    for (const event of [
+      { ...guest, botMentioned: false },
+      { ...guest, direct: true },
+      {
+        ...source,
+        address: { ...source.address, accountId: "TOTHER" },
+      },
+    ])
+      expect(social.stageInterruption(event, input, candidate, true)).toContain(
+        "not authorized",
+      );
+    for (const invalid of [
+      null,
+      { ...candidate, scope: "public" },
+      { ...candidate, hypothesisOnly: true },
+      { ...candidate, id: "other" },
+      { ...candidate, kind: "proposal" as const },
+    ])
+      expect(social.stageInterruption(source, input, invalid, true)).toContain(
+        "unavailable",
+      );
+    expect(social.view(raygen)).toBe("[]");
     expect(
-      reopened.stageInterruption(raygen, rejectedInput, rejected, true),
-    ).toContain("rejected");
-    expect(
-      reopened.stageInterruption(
-        { ...raygen, id: "another-turn" },
-        { ...input, userId: "UCHANGED", text: "Changed" },
-        candidate,
-        true,
-      ),
-    ).toBe(preview);
-    expect(
-      reopened.stageInterruption(raygen, input, null, false),
-    ).not.toContain(input.text);
-    expect(
-      reopened.stageInterruption(raygen, input, candidate, false),
-    ).toContain("not currently send-eligible");
-    revision++;
-    expect(
-      await reopened.decide({ ...raygen, text: `!allow ${id}` }),
-    ).toContain("revoked");
-    expect(reopened.view(raygen)).not.toContain(input.text);
-    expect(
-      reopened.stageInterruption(raygen, input, candidate, true),
-    ).toContain("no longer pending");
-  } finally {
-    reopened.close();
-  }
-  expect(sent).toEqual([]);
-});
+      await social.propose(source, { kind: "interruption_proposal", ...input }),
+    ).toContain("scoped reflection gate");
+    expect(social.view(raygen)).toBe("[]");
+    social.rejectInterruption("different-scope", input.candidateId);
+    const preview = social.stageInterruption(source, input, candidate, true);
+    expect(preview).toContain('"Exact <@UOTHER> & message"');
+    expect(preview).not.toContain(candidate.decision.rationale);
+    expect(preview).not.toContain(candidate.id);
+    const id = preview.match(/proposal ([a-f0-9]{24})/)?.[1];
+    expect(id).toBeDefined();
+    expect(JSON.parse(social.view(raygen))).toMatchObject([
+      {
+        status: "pending",
+        requester: source.senderId,
+        action: { kind: "outreach", userId: input.userId, text: input.text },
+        reflection: {
+          candidateId: input.candidateId,
+          scope: candidate.scope,
+          epoch: 3,
+          evidenceIds: ["source-a", "uncited-source-b"],
+          publication: candidate.publication,
+        },
+      },
+    ]);
+    expect(social.view(guest)).toBe("[]");
+    expect(await social.decide({ ...raygen, text: `!allow ${id}` })).toContain(
+      "Approval is unchanged",
+    );
+    expect(social.permits(guest, "deep")).toBe(false);
+    const rejected = { ...candidate, id: "rejected-before-staging" };
+    const rejectedInput = {
+      ...input,
+      candidateId: createHash("sha256").update(rejected.id).digest("hex"),
+    };
+    social.rejectInterruption(candidate.scope, rejectedInput.candidateId);
+    let revision = 0;
+    const reopened = new SocialPermissions({
+      ...options,
+      deletionRevision: () => revision,
+    });
+    try {
+      expect(
+        reopened.stageInterruption(source, rejectedInput, rejected, true),
+      ).toContain("rejected");
+      expect(
+        reopened.stageInterruption(
+          { ...source, id: "another-turn" },
+          { ...input, userId: "UCHANGED", text: "Changed" },
+          candidate,
+          true,
+        ),
+      ).toBe(preview);
+      expect(
+        reopened.stageInterruption(source, input, null, false),
+      ).not.toContain(input.text);
+      expect(
+        reopened.stageInterruption(source, input, candidate, false),
+      ).toContain("not currently send-eligible");
+      revision++;
+      expect(
+        await reopened.decide({ ...raygen, text: `!allow ${id}` }),
+      ).toContain("revoked");
+      expect(reopened.view(raygen)).not.toContain(input.text);
+      expect(
+        reopened.stageInterruption(source, input, candidate, true),
+      ).toContain("no longer pending");
+    } finally {
+      reopened.close();
+    }
+    expect(sent).toEqual([]);
+  },
+);
 
 it("stages strict commands and inert model drafts without reauthorizing stale candidates", async (t) => {
   const store = new EvidenceStore(":memory:", Buffer.alloc(32, 1));
@@ -645,7 +739,7 @@ it("stages strict commands and inert model drafts without reauthorizing stale ca
   expect(JSON.stringify(snapshot.deliveries)).not.toContain("Frozen preview");
 });
 
-it("lets the owner post directly to chosen Slack destinations once, but rejects guests", async (t) => {
+it("lets an admitted channel requester post to the exact chosen destination once without resending unknown outcomes", async (t) => {
   const { social, sent, options, slack } = fixture(t);
   const action = parseReply(
     JSON.stringify({
@@ -661,9 +755,13 @@ it("lets the owner post directly to chosen Slack destinations once, but rejects 
     { socialAvailable: true },
   ).social;
   if (action?.kind !== "post") throw new Error("missing post action");
-  expect(await social.propose(guest, action)).toContain("Only Raygen");
+  for (const rejected of [
+    { ...guest, address: { ...guest.address, accountId: "TOTHER" } },
+    { ...guest, botMentioned: false },
+  ])
+    expect(await social.propose(rejected, action)).toContain("not authorized");
   expect(sent).toEqual([]);
-  expect(await social.propose(raygen, action)).toContain("sent");
+  expect(await social.propose(guest, action)).toContain("sent");
   expect(sent).toHaveLength(1);
   expect(sent[0]?.address).toEqual({
     channel: "slack",
@@ -672,13 +770,13 @@ it("lets the owner post directly to chosen Slack destinations once, but rejects 
     threadId: "777.123",
   });
   expect(sent[0]?.content).toEqual({ type: "text", text: "Hello there." });
-  await social.propose(raygen, action);
+  await social.propose(guest, action);
   expect(sent).toHaveLength(1);
   slack.send = async (message) => {
     sent.push(message);
     return { status: "unknown", code: "timeout" };
   };
-  const uncertain = { ...raygen, id: "uncertain-post" };
+  const uncertain = { ...guest, id: "uncertain-post" };
   expect(await social.propose(uncertain, action)).toContain("unknown");
   const reopened = new SocialPermissions(options);
   try {
@@ -695,9 +793,9 @@ it("lets the owner post directly to chosen Slack destinations once, but rejects 
   }
 });
 
-it("executes June's direct-post tool in one model pass from an owner channel turn", async (t) => {
+it("executes June's direct-post tool in one model pass from a nonowner channel turn", async (t) => {
   const { social, slack, sent } = fixture(t);
-  const source = { ...guest, id: "owner-post", senderId: RAYGEN_SLACK_ID };
+  const source = { ...guest, id: "guest-post" };
   let calls = 0;
   const registry = createJuneRegistry({
     owner,
@@ -723,7 +821,9 @@ it("executes June's direct-post tool in one model pass from an owner channel tur
     },
   });
   const { client } = await setupTest(t, registry);
-  const actor = client.conversation.getOrCreate(["slack", "T1", "C1", ""]);
+  const actor = client.conversation.getOrCreate(
+    routeEvent(source, owner)?.key ?? [],
+  );
   await actor.send("inbox", { type: "event", event: source });
   await expect.poll(() => sent.length).toBe(2);
   expect(calls).toBe(1);
@@ -739,15 +839,37 @@ it("executes June's direct-post tool in one model pass from an owner channel tur
   });
 });
 
-it("requires exact owner approval, isolates scope, persists grants, and revokes or expires them", async (t) => {
+it("makes legacy access requests a no-effect result without notifications or new grants", async (t) => {
+  const { social, sent, options } = fixture(t);
+  for (const source of [guest, raygen]) {
+    const result = await social.propose(source, {
+      ...access,
+      sharedContext: "Do not disclose this context",
+    });
+    expect(result).toContain("request_access is obsolete");
+    expect(result).toContain("exposed tools");
+    expect(result).toContain("scoped context");
+    expect(result).not.toContain("Do not disclose this context");
+    expect(social.grants(guest)).toEqual([]);
+    expect(social.view(raygen)).toBe("[]");
+  }
+  const reopened = new SocialPermissions(options);
+  try {
+    await reopened.propose(guest, access);
+    expect(reopened.view(raygen)).toBe("[]");
+    expect(reopened.permits(guest, "webSearch")).toBe(false);
+  } finally {
+    reopened.close();
+  }
+  expect(sent).toEqual([]);
+});
+
+it("preserves historical exact owner decisions, scoped grants, revocation and expiry", async (t) => {
   const { social, sent, options, expire } = fixture(t);
-  const result = await social.propose(guest, access);
-  const id = result.match(/[a-f0-9]{24}/)?.[0];
-  expect(id).toBeDefined();
-  expect(sent[0]?.address).toEqual({
-    ...guest.address,
-    threadId: guest.messageId,
-  });
+  const id = historicalProposal(options, guest, access);
+  await social.propose(guest, access);
+  expect(JSON.parse(social.view(raygen))[0].status).toBe("pending");
+  expect(sent).toEqual([]);
   expect(social.permits(guest, "webSearch")).toBe(false);
   for (const event of [
     guest,
@@ -784,12 +906,11 @@ it("requires exact owner approval, isolates scope, persists grants, and revokes 
   expect(await social.decide({ ...raygen, text: `!allow ${id}` })).toContain(
     "already revoked",
   );
-  const second = await social.propose(
+  const id2 = historicalProposal(
+    options,
     { ...raygen, id: "owner2" },
     { ...access, sharedContext: "Only this approved excerpt." },
   );
-  const id2 = second.match(/[a-f0-9]{24}/)?.[0];
-  expect(sent.at(-1)?.address.conversationId).toBe(RAYGEN_SLACK_ID);
   expect(social.view(guest)).not.toContain("approved excerpt");
   await social.decide({ ...raygen, text: `!allow ${id2}` });
   expect(social.view(guest)).toContain("Only this approved excerpt.");
@@ -797,32 +918,69 @@ it("requires exact owner approval, isolates scope, persists grants, and revokes 
   expect(social.view(guest)).toBe("[]");
 });
 
-it("prevents guest sharing/outreach and sends a frozen owner-approved message only once", async (t) => {
-  const { social, sent } = fixture(t);
+it("sends model-selected outreach from a nonowner channel once with frozen provenance and no uncertain resend", async (t) => {
+  const { social, sent, slack, options } = fixture(t);
   const outreach: SocialAction = {
     kind: "outreach",
-    userId: "UGUEST",
-    text: "Approved hello.",
+    userId: "UOTHER",
+    text: "Exact <@UOTHER> & hello.",
   };
-  await social.propose(guest, outreach);
-  await social.propose(guest, { ...access, sharedContext: "leaked" });
-  await social.propose(guest, { ...access, userId: "UOTHER" });
-  expect(sent).toHaveLength(0);
-  const pending = await social.propose(raygen, outreach);
-  const id = pending.match(/[a-f0-9]{24}/)?.[0];
-  await social.propose(raygen, {
+  expect(await social.propose(guest, outreach)).toContain("delivery sent");
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toMatchObject({
+    address: { channel: "slack", accountId: "T1", conversationId: "UOTHER" },
+    content: { type: "text", text: outreach.text },
+  });
+  await social.propose(guest, {
     ...outreach,
+    userId: "UCHANGED",
     text: "Replay must not change this",
   });
   expect(sent).toHaveLength(1);
-  expect(sent[0]?.address.conversationId).toBe(RAYGEN_SLACK_ID);
+  const rows = JSON.parse(social.view(raygen));
+  expect(rows[0]).toMatchObject({ requester: "UGUEST", action: outreach });
+  slack.send = async (message) => {
+    sent.push(message);
+    return { status: "unknown", code: "timeout" };
+  };
+  const uncertain = { ...guest, id: "uncertain-outreach" };
+  expect(await social.propose(uncertain, outreach)).toContain(
+    "delivery unknown",
+  );
+  const reopened = new SocialPermissions(options);
+  try {
+    expect(await reopened.propose(uncertain, outreach)).toContain(
+      "delivery unknown",
+    );
+    expect(sent).toHaveLength(2);
+  } finally {
+    reopened.close();
+  }
+  await social.decide({ ...raygen, text: `!revoke ${rows[0].id}` });
+  expect(await social.propose(guest, outreach)).toContain("revoked");
+  expect(sent).toHaveLength(2);
+});
+
+it("retains explicit context-sharing decisions and does not automatically send historical pending outreach", async (t) => {
+  const { social, sent, options } = fixture(t);
+  await social.propose(guest, { ...access, sharedContext: "leaked" });
+  await social.propose(guest, { ...access, userId: "UOTHER" });
+  expect(sent).toHaveLength(0);
+  const outreach = {
+    kind: "outreach" as const,
+    userId: "UGUEST",
+    text: "Legacy hello.",
+  };
+  const id = historicalProposal(options, raygen, outreach);
+  expect(await social.propose(raygen, outreach)).toContain("pending");
+  expect(sent).toHaveLength(0);
   await Promise.all([
     social.decide({ ...raygen, text: `!allow ${id}` }),
     social.decide({ ...raygen, text: `!allow ${id}` }),
   ]);
-  expect(sent).toHaveLength(2);
-  expect(sent[1]?.address.conversationId).toBe("UGUEST");
-  expect(sent[1]?.content).toEqual({ type: "text", text: "Approved hello." });
+  expect(sent).toHaveLength(1);
+  expect(sent[0]?.address.conversationId).toBe("UGUEST");
+  expect(sent[0]?.content).toEqual({ type: "text", text: "Legacy hello." });
 });
 
 it("rechecks interruption approval after the sending-intent flush", async (t) => {
@@ -1086,13 +1244,11 @@ it.for(["held", "interrupted"])(
   "does not resume a %s interruption when the same approval command replays",
   async (boundary, t) => {
     const { social, sent, options } = fixture(t);
-    const pending = await social.propose(raygen, {
+    const id = historicalProposal(options, raygen, {
       kind: "outreach",
       userId: "UGUEST",
       text: "Frozen interruption",
     });
-    const id = pending.match(/[a-f0-9]{24}/)?.[0];
-    if (!id) throw new Error("Missing proposal");
     const db = new DatabaseSync(options.file);
     t.onTestFinished(() => db.close());
     db.prepare(
@@ -1163,12 +1319,11 @@ it("recovers approved outreach after restart only when delivery is known not to 
   const db = new DatabaseSync(options.file);
   t.onTestFinished(() => db.close());
   for (const boundary of ["before_send", "after_send"] as const) {
-    const pending = await social.propose(
+    const id = historicalProposal(
+      options,
       { ...raygen, id: boundary },
       { kind: "outreach", userId: "UGUEST", text: boundary },
     );
-    const id = pending.match(/[a-f0-9]{24}/)?.[0];
-    if (!id) throw new Error("missing proposal id");
     const approval = { ...raygen, text: `!allow ${id}` };
     // Fail the actual durable write, either before dispatch or after Slack
     // accepted it. The latter must leave an uncertain, non-retryable send.
@@ -1211,7 +1366,7 @@ it("recovers approved outreach after restart only when delivery is known not to 
   }
 });
 
-it("runs June's outreach proposal and repeated owner approval through Rivet", async (t) => {
+it("runs June's model-selected channel outreach through Rivet without an owner approval event", async (t) => {
   const { social, slack, sent } = fixture(t);
   let calls = 0;
   const registry = createJuneRegistry({
@@ -1238,39 +1393,15 @@ it("runs June's outreach proposal and repeated owner approval through Rivet", as
     },
   });
   const { client } = await setupTest(t, registry);
-  const actor = client.conversation.getOrCreate(["private", owner.id]);
-  await actor.send("inbox", { type: "event", event: raygen });
+  const actor = client.conversation.getOrCreate(
+    routeEvent(guest, owner)?.key ?? [],
+  );
+  await actor.send("inbox", { type: "event", event: guest });
   await expect.poll(() => sent.length).toBe(2);
-  const notice = sent[0]?.content;
-  const id =
-    notice?.type === "text"
-      ? notice.text.match(/[a-f0-9]{24}/)?.[0]
-      : undefined;
-  expect(id).toBeDefined();
-  expect(
-    sent.every((message) => message.address.conversationId !== "UGUEST"),
-  ).toBe(true);
-  for (const attempt of [1, 2]) {
-    await actor.send("inbox", {
-      type: "event",
-      event: {
-        ...raygen,
-        id: `approval-${attempt}`,
-        messageId: `124.${attempt}`,
-        text: `!allow ${id}`,
-      },
-    });
-    await expect
-      .poll(
-        () =>
-          sent.filter(
-            (message) =>
-              message.content.type === "text" &&
-              message.content.text.includes("Approved outreach: delivery sent"),
-          ).length,
-      )
-      .toBe(attempt);
-  }
+  expect(sent[1]?.content).toEqual({
+    type: "text",
+    text: "Outreach delivery sent. Slack accepted the message.",
+  });
   expect(calls).toBe(1);
   const delivered = sent.filter(
     (message) => message.address.conversationId === "UGUEST",
@@ -1837,7 +1968,7 @@ it("exports provider-compatible social schemas but still validates action limits
   ).toThrow();
 });
 
-it("runs June's access-request interface through real Rivet without forcing guest threads", async (t) => {
+it("returns the obsolete access request to June's channel without an approval workflow", async (t) => {
   const { social, sent, slack, typing } = fixture(t);
   const requests: ModelRequest[] = [];
   const registry = createJuneRegistry({
@@ -1856,7 +1987,7 @@ it("runs June's access-request interface through real Rivet without forcing gues
         requests.push(structuredClone(request));
         expect(request.workspaces).toEqual([]);
         expect(request.searchAvailable).toBe(false);
-        expect(request.webSearchAvailable).toBe(requests.length > 1);
+        expect(request.webSearchAvailable).toBe(true);
         expect(request.socialAvailable).toBe(true);
         expect(replyJsonSchema([], request).properties.social).toBeDefined();
         return requests.length === 1
@@ -1877,28 +2008,27 @@ it("runs June's access-request interface through real Rivet without forcing gues
   await expect
     .poll(
       async () =>
-        Object.values((await actor.snapshot()).events).every(
+        Object.values((await actor.snapshot()).events).filter(
           (event) => event.done,
-        ),
+        ).length,
       { timeout: 5000 },
     )
-    .toBe(true);
-  await expect.poll(() => sent.length, { timeout: 5000 }).toBe(2);
-  const id =
-    sent[0]?.content.type === "text"
-      ? sent[0].content.text.match(/[a-f0-9]{24}/)?.[0]
-      : undefined;
-  expect(typing).toContainEqual({ active: true, thread: undefined });
-  expect(typing).toContainEqual({ active: false, thread: undefined });
-  expect(requests[0]?.system).not.toContain("Owner-private availability:");
-  const ownerActor = client.conversation.getOrCreate(["private", owner.id]);
-  await ownerActor.send("inbox", {
-    type: "event",
-    event: { ...raygen, text: `!allow ${id}` },
+    .toBe(1);
+  await expect.poll(() => sent.length, { timeout: 5000 }).toBe(1);
+  expect(sent[0]).toMatchObject({
+    address: guest.address,
+    content: {
+      type: "text",
+      text: expect.stringContaining("request_access is obsolete"),
+    },
   });
+  expect(social.view(raygen)).toBe("[]");
+  expect(typing).toContainEqual({ active: true, thread: undefined });
   await expect
-    .poll(() => social.permits(guest, "webSearch"), { timeout: 5000 })
-    .toBe(true);
+    .poll(() => typing)
+    .toContainEqual({ active: false, thread: undefined });
+  expect(requests[0]?.system).not.toContain("Owner-private availability:");
+  expect(social.permits(guest, "webSearch")).toBe(false);
   await actor.send("inbox", {
     type: "event",
     event: { ...guest, id: "guest2", messageId: "123.457" },

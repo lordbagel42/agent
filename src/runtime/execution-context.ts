@@ -1,5 +1,4 @@
 import type { MessageEvent } from "../core/contracts.js";
-import { isOwnerRivetDm } from "../core/rivet.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import type { PromptCapabilities } from "./prompt.js";
@@ -27,92 +26,75 @@ export function executionCapabilities(
   event: MessageEvent,
 ): PromptCapabilities {
   const scope = routeEvent(event, deps.owner);
-  if (!scope || !isOwner(event, deps.owner)) return {};
-  const privateTurn = scope.private;
+  if (!scope) return {};
   return {
-    settingsAvailable: privateTurn && !!deps.settings,
-    debugShareResolveAvailable: privateTurn && !!deps.debugShare?.resolve,
-    agentWebhooksAvailable: privateTurn && !!deps.agents,
-    workspaces:
-      privateTurn && deps.coding ? Object.keys(deps.coding.workspaces) : [],
-    codingJobsAvailable: privateTurn,
+    settingsAvailable: !!deps.settings,
+    debugShareResolveAvailable: !!deps.debugShare?.resolve,
+    agentWebhooksAvailable: !!deps.agents,
+    workspaces: deps.coding ? Object.keys(deps.coding.workspaces) : [],
+    codingJobsAvailable: true,
     searchAvailable: !!deps.channels[event.address.channel]?.search,
     slackHistoryAvailable:
       event.address.channel === "slack" && !!deps.channels.slack?.shareHistory,
     webSearchAvailable: !!deps.webSearch?.available,
     javascriptAvailable: true,
-    emojiSearchAvailable: privateTurn && !!deps.emojiSearch?.available,
+    emojiSearchAvailable: !!deps.emojiSearch?.available,
     readImageAvailable:
-      privateTurn &&
-      event.direct &&
       event.address.channel === "slack" &&
-      event.metadata?.channelType === "im" &&
-      !!event.metadata.files?.length &&
+      !!event.metadata?.files?.length &&
       !!deps.channels.slack?.readImage,
     readVideoAvailable:
-      privateTurn &&
-      event.direct &&
       event.address.channel === "slack" &&
-      event.metadata?.channelType === "im" &&
-      !!event.metadata.files?.length &&
+      !!event.metadata?.files?.length &&
       !!deps.channels.slack?.readVideo,
     repositoryAvailable: !!deps.repository,
     releaseAvailable: !!deps.release,
-    modelStatusAvailable: privateTurn && !!deps.modelStatus,
-    ampThreadsAvailable: isOwnerRivetDm(event, deps.owner) && !!deps.ampThreads,
-    mcpAvailable: privateTurn && deps.mcpAvailable === true,
-    latencyAvailable: privateTurn && !!deps.latency,
-    telemetryAvailable: privateTurn && !!deps.telemetry,
-    analyticsAvailable: privateTurn && !!deps.analytics,
-    inspectionAvailable: privateTurn && !!deps.inspection,
-    appsAvailable: privateTurn && !!deps.apps,
+    modelStatusAvailable: !!deps.modelStatus,
+    ampThreadsAvailable: !!deps.ampThreads,
+    mcpAvailable: deps.mcpAvailable === true,
+    latencyAvailable: !!deps.latency,
+    telemetryAvailable: !!deps.telemetry,
+    analyticsAvailable: !!deps.analytics,
+    inspectionAvailable: !!deps.inspection,
+    appsAvailable: !!deps.apps,
     artifactsAvailable: !!deps.artifacts,
-    importCancelAvailable: privateTurn && !!deps.importCancel,
-    memoryAvailable: privateTurn && !!deps.memory,
-    recallAvailable: privateTurn && !!deps.memory,
-    pendingMemoryAvailable: privateTurn && !!deps.memory,
-    personalitySuggestionAvailable: privateTurn && !!deps.memory?.personality,
+    importCancelAvailable: !!(deps.importCancel || deps.importTask),
+    memoryAvailable: !!deps.memory,
+    recallAvailable: !!deps.memory,
+    pendingMemoryAvailable: !!deps.memory,
+    personalitySuggestionAvailable: !!deps.memory?.personality,
     jevObservationAvailable:
-      privateTurn && !!deps.jev && Buffer.byteLength(event.text) <= 4096,
-    reflectionAvailable: privateTurn && !!deps.reflection,
-    reflectionRequestAvailable:
-      privateTurn && !!deps.memory && !!deps.reflection,
+      !!deps.jev && Buffer.byteLength(event.text) <= 4096,
+    reflectionAvailable: !!deps.reflection,
+    reflectionRequestAvailable: !!deps.memory && !!deps.reflection,
     reflectionReviewAvailable:
-      privateTurn && !!deps.memory && !!deps.reflection?.evidenceCurrent,
-    reflectionMemoryAvailable:
-      privateTurn && !!deps.memory && !!deps.reflection,
+      !!deps.memory && !!deps.reflection?.evidenceCurrent,
+    reflectionMemoryAvailable: !!deps.memory && !!deps.reflection,
     reflectionPersonalitySuggestionAvailable:
-      privateTurn &&
-      !!deps.memory?.personality &&
-      !!deps.reflection &&
-      (event.address.channel !== "slack" ||
-        event.metadata?.channelType === "im"),
-    skillEvaluationRequestAvailable:
-      privateTurn && !!deps.memory && !!deps.reflection,
+      !!deps.memory?.personality && !!deps.reflection,
+    skillEvaluationRequestAvailable: !!deps.memory && !!deps.reflection,
     skillCodingProposalAvailable:
-      privateTurn && !!deps.memory && !!deps.reflection && !!deps.coding,
-    juryAvailable: privateTurn && !!deps.memory && !!deps.jury,
-    e2bAvailable: privateTurn && deps.e2b?.available === true,
-    environmentAvailable: privateTurn && deps.environments?.available === true,
-    browserTaskAvailable: privateTurn && !!deps.browserCompanion,
-    researchAvailable: isOwnerRivetDm(event, deps.owner) && !!deps.research,
+      !!deps.memory && !!deps.reflection && !!deps.coding,
+    juryAvailable: !!deps.memory && !!deps.jury,
+    e2bAvailable: deps.e2b?.available === true,
+    environmentAvailable: deps.environments?.available === true,
+    browserTaskAvailable: !!deps.browserCompanion,
+    researchAvailable: !!deps.research,
     webEmbedAvailable:
-      privateTurn &&
       event.address.channel === "slack" &&
       !!deps.channels.slack?.webEmbedOrigins?.length,
-    webEmbedOrigins: privateTurn
-      ? [...(deps.channels.slack?.webEmbedOrigins ?? [])]
-      : [],
-    rivetAvailable: isOwnerRivetDm(event, deps.owner) && !!deps.rivet,
-    browserProposalAvailable: privateTurn && !!deps.browserProposal,
-    personalityPreviewAvailable: privateTurn,
-    forgetPreviewAvailable: privateTurn && !!deps.memory,
-    personalityEvaluateAvailable: privateTurn && !!deps.personalityEvaluation,
-    dashboardLoginAvailable: privateTurn && !!deps.dashboardLogin,
+    webEmbedOrigins: [...(deps.channels.slack?.webEmbedOrigins ?? [])],
+    rivetAvailable: !!deps.rivet,
+    browserProposalAvailable: !!deps.browserProposal,
+    personalityPreviewAvailable: true,
+    forgetPreviewAvailable: !!deps.memory,
+    personalityEvaluateAvailable: !!deps.personalityEvaluation,
+    // A dashboard login issues an authentication credential, not a task action.
+    dashboardLoginAvailable:
+      isOwner(event, deps.owner) && scope.private && !!deps.dashboardLogin,
     socialAvailable: event.address.channel === "slack" && !!deps.social,
-    wakeupAvailable:
-      privateTurn && event.address.channel === "slack" && !!deps.wakeups,
-    workflowAvailable: privateTurn && !!deps.workflows,
+    wakeupAvailable: event.address.channel === "slack" && !!deps.wakeups,
+    workflowAvailable: !!deps.workflows,
   };
 }
 

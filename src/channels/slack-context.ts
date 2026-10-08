@@ -207,6 +207,7 @@ export function createSlackContext({
       (!ownerUserIds.has(event.senderId) &&
         !event.senderId.startsWith("bot:") &&
         !event.botMentioned &&
+        !event.questionAnswered &&
         !(
           event.threadFollowup === true &&
           event.address.threadId &&

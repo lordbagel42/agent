@@ -185,19 +185,20 @@ it("admits only owner-private typed observations, minimizes input and never repe
   for (const extra of [
     { direct: false },
     { senderId: "U2", metadata: { channelType: "im" as const } },
-    { text: "é".repeat(2049) },
   ]) {
-    expect((await deliver(extra)).report).toContain(
-      "require a fresh owner-private",
-    );
-    expect(requests.at(-1)?.jevObservationAvailable).toBe(false);
+    expect((await deliver(extra)).report).toContain('"choice":"yes"');
+    expect(requests.at(-1)?.jevObservationAvailable).toBe(true);
   }
+  expect((await deliver({ text: "é".repeat(2049) })).report).not.toContain(
+    '"choice":"yes"',
+  );
+  expect(requests.at(-1)?.jevObservationAvailable).toBe(false);
   search = true;
   await deliver();
   expect(requests.at(-1)?.usageStage).toBe("synthesis");
   expect(requests.at(-1)?.jevObservationAvailable).toBe(false);
   search = false;
-  expect(payloads).toHaveLength(2);
+  expect(payloads).toHaveLength(4);
   for (const other of [
     { text: "fabricated verdict" },
     { webSearch: "query" },
@@ -222,5 +223,5 @@ it("admits only owner-private typed observations, minimizes input and never repe
   await failed.actor.send("inbox", { type: "event", event: failed.event });
   action = { text: "Next turn flushes the replay." };
   await deliver();
-  expect(payloads).toHaveLength(3);
+  expect(payloads).toHaveLength(5);
 });

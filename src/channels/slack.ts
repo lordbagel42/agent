@@ -232,8 +232,9 @@ async function normalizeEvent(
   const owner = !bot && ownerUserIds.has(senderId);
   const mentioned =
     typeof event.text === "string" && event.text.includes(`<@${botUserId}>`);
-  // DEBUG/DEBUGSHARE are contact in their own right, including guest/group DMs. Other
-  // controls remain owner-only. Validate original rich text before normalization.
+  // DEBUG/DEBUGSHARE are contact in their own right, including guest/group DMs.
+  // Other task commands still need ordinary admission. Validate the original
+  // rich text before removing a mention; no command may come from a bot/quote.
   const prefix = `<@${botUserId}> `;
   const suffix = ` <@${botUserId}>`;
   const text = typeof event.text === "string" ? event.text : "";
@@ -244,8 +245,7 @@ async function normalizeEvent(
       : text;
   const debugCandidate = /^DEBUG(?:SHARE)?(?: [^\r\n]*)?$/.test(sessionText);
   const sessionCandidate =
-    debugCandidate ||
-    (owner && /^(?:PING|PINGMODEL|CLEARHISTORY)$/.test(sessionText));
+    debugCandidate || /^(?:PING|PINGMODEL|CLEARHISTORY)$/.test(sessionText);
   const sessionEligible =
     sessionCandidate && isPlainSlackCommand(event, botUserId);
   const debugEligible = debugCandidate && sessionEligible;
@@ -391,6 +391,36 @@ async function normalizeEvent(
         console.warn("Could not save Slack thread subscription");
       }
     }
+    const plainCommand = isPlainSlackCommand(event, botUserId);
+    const taskCommands = {
+      ...(sessionText.startsWith("!memory-correct")
+        ? { ownerCorrectionEligible: plainCommand }
+        : {}),
+      ...(/^!personality(?:\s|$)/.test(sessionText.trim())
+        ? { personalityCommandEligible: plainCommand }
+        : {}),
+      ...(/^!memory-(?:accept|reject)\b/.test(sessionText)
+        ? { memoryReviewEligible: plainCommand }
+        : {}),
+      ...(/^[!/](approve|resume-stopped)(?:\s|$)/.test(sessionText.trim())
+        ? { codingCommandEligible: plainCommand }
+        : {}),
+      ...(/^!(?:reflection|allow|deny|revoke)(?:\s|$)/.test(sessionText.trim())
+        ? { reflectionReviewEligible: plainCommand }
+        : {}),
+      ...(/^!mcp-(cancel|reconcile)(?:\s|$)/.test(sessionText.trim())
+        ? { mcpCommandEligible: plainCommand }
+        : {}),
+      ...(sessionText === "!memory-backup"
+        ? { memoryBackupEligible: plainCommand }
+        : {}),
+      ...(/^[!/]deploy-app(?:\s|$)/.test(sessionText.trim())
+        ? { appDeploymentEligible: plainCommand }
+        : {}),
+      ...(/^!forget-confirm(?:\s|$)/.test(sessionText.trim())
+        ? { forgetCommandEligible: plainCommand }
+        : {}),
+    };
     return [
       {
         id: slackMessageId(teamId, event.channel, event.ts),
@@ -400,59 +430,21 @@ async function normalizeEvent(
         messageId: event.ts,
         senderId,
         direct: channelType === "im",
-        text: sessionEligible ? sessionText : event.text,
+        text:
+          sessionEligible || Object.values(taskCommands).some(Boolean)
+            ? sessionText
+            : event.text,
         botMentioned: mentioned,
         ...(participatingThread ? { threadFollowup: true } : {}),
         ...(sessionCandidate
           ? { sessionCommandEligible: sessionEligible }
           : {}),
-        ...(event.text.startsWith("!memory-correct")
-          ? { ownerCorrectionEligible: isPlainSlackCommand(event) }
-          : {}),
-        ...(owner &&
-        channelType === "im" &&
-        /^!personality(?:\s|$)/.test(event.text.trim())
-          ? { personalityCommandEligible: isPlainSlackCommand(event) }
-          : {}),
-        ...(/^!memory-(?:accept|reject)\b/.test(event.text)
-          ? {
-              memoryReviewEligible:
-                owner && channelType === "im" && isPlainSlackCommand(event),
-            }
-          : {}),
-        ...(owner &&
-        channelType === "im" &&
-        /^[!/](approve|resume-stopped)(?:\s|$)/.test(event.text.trim())
-          ? { codingCommandEligible: isPlainSlackCommand(event) }
-          : {}),
-        ...(owner &&
-        channelType === "im" &&
-        /^!(?:reflection|allow|deny|revoke)(?:\s|$)/.test(event.text.trim())
-          ? { reflectionReviewEligible: isPlainSlackCommand(event) }
-          : {}),
-        ...(owner &&
-        channelType === "im" &&
-        /^!mcp-(cancel|reconcile)(?:\s|$)/.test(event.text.trim())
-          ? { mcpCommandEligible: isPlainSlackCommand(event) }
-          : {}),
+        ...taskCommands,
         ...(owner && channelType === "im" && /^!browser-pin\b/.test(event.text)
           ? { browserPinEligible: isPlainSlackCommand(event) }
           : {}),
         ...(channelType === "im" && /^!artifact-pin\b/.test(event.text)
           ? { artifactPinEligible: isPlainSlackCommand(event) }
-          : {}),
-        ...(owner && channelType === "im" && event.text === "!memory-backup"
-          ? { memoryBackupEligible: isPlainSlackCommand(event) }
-          : {}),
-        ...(owner &&
-        channelType === "im" &&
-        /^[!/]deploy-app(?:\s|$)/.test(event.text.trim())
-          ? { appDeploymentEligible: isPlainSlackCommand(event) }
-          : {}),
-        ...(owner &&
-        channelType === "im" &&
-        /^!forget-confirm(?:\s|$)/.test(event.text.trim())
-          ? { forgetCommandEligible: isPlainSlackCommand(event) }
           : {}),
         metadata: {
           ...slackMetadata(event, channelType),
@@ -580,13 +572,11 @@ export function createSlackAdapter({
     readImage: createSlackImageReader({
       teamId,
       botToken,
-      ownerUserIds: owners,
       fetch: fetchImpl,
     }),
     readVideo: createSlackVideoReader({
       teamId,
       botToken,
-      ownerUserIds: owners,
       fetch: fetchImpl,
     }),
     async setTyping(event, active, signal) {
@@ -729,7 +719,6 @@ export function createSlackAdapter({
           payload,
           teamId,
           botUserId,
-          owners,
           signingSecret,
           intake?.receivedAt ?? now(),
         );
@@ -784,6 +773,7 @@ export function createSlackAdapter({
       if (
         search !== undefined &&
         isJsonObject(payload.event) &&
+        !isBotEvent(payload.event) &&
         payload.event.hidden !== true &&
         payload.event.subtype !== "message_changed" &&
         payload.event.subtype !== "message_deleted"
@@ -792,7 +782,7 @@ export function createSlackAdapter({
         // https://docs.slack.dev/ai/developing-agents#full-example
         // Capture only after signature, workspace and human normalization.
         for (const event of events) {
-          if (event.type === "message" && owners.has(event.senderId)) {
+          if (event.type === "message") {
             search.capture(event, payload.event.action_token);
           }
         }
@@ -918,14 +908,9 @@ export function createSlackAdapter({
                 unfurl_media: false,
               }
             : {}),
-          ...(!embed && message.content.question && owners.size === 1
+          ...(!embed && message.content.question
             ? {
-                blocks: slackQuestionBlocks(
-                  message,
-                  [...owners][0] as string,
-                  signingSecret,
-                  now(),
-                ),
+                blocks: slackQuestionBlocks(message, signingSecret, now()),
               }
             : {}),
           ...(message.content.plainText || message.content.question
@@ -1079,7 +1064,6 @@ export function createSlackAdapter({
       teamId,
       botUserId,
       botToken,
-      ownerUserIds: owners,
       fetch: fetchImpl,
       send: adapter.send,
     });

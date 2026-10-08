@@ -1,18 +1,27 @@
 # MCP adapter
 
 `src/tools/mcp.ts` uses the pinned official MCP TypeScript SDK (`1.30.1`) and
-Ajv (`8.20.0`). Effect execution defaults to receipt-only; the mounted Amp
-connection additionally captures a bounded transient Puck reply after exact
-owner approval (see [reply retrieval](mcp-connections.md)). With MCP configured,
-`main.ts` mounts the owner-reviewed [Connections](mcp-connections.md) interface,
-including dedicated Amp consent on an HTTPS console. Its generic MCP boundary
-provides June's enabled catalog, private reads and approval-required proposals.
+Ajv (`8.20.0`). With MCP configured, `main.ts` mounts the authenticated
+[Connections](mcp-connections.md) interface, including dedicated Amp consent on
+an HTTPS console. June can use the enabled catalog from admitted tasks, judging
+legitimacy, safety and result disclosure at runtime; an owner-private conversation
+or per-action human approval is not an ordinary prerequisite. Reads run directly.
+Fresh effects retain the stored policy name `approval`, but persist exact arguments
+and execute immediately through a durable one-use grant and receipt. Remote MCP
+adapters can return bounded, sanitized transient results; receipts never store
+those bodies. Legacy pending proposals never auto-execute, disabled tools remain
+disabled, and unknown outcomes never auto-retry.
+
+The explicit public-web research specialist ceiling remains read-only: only
+host-selected enabled read connections are available, with no effects, built-in
+integrations, enrollment or permission changes. Credentials, OAuth consent and
+authenticated administration remain separate controls on every path.
 The optional narrower `createPuckConnection` boundary below is not mounted by the
 default runtime; its presence alone does not establish Amp access.
 
 ## Mounting
 
-Construct one `McpToolAdapter` per approved remote tool from operator-owned
+Construct one `McpToolAdapter` per configured remote tool from operator-owned
 configuration, then register it under exactly `config.tool` in
 `CapabilityBroker`'s `tools` map. Example (identifiers only; not credentials):
 
@@ -37,8 +46,8 @@ argument object itself, **not** a server URL/tool-name/command envelope. Every
 execution compares tool/account/item/origin to the frozen configuration, discovers
 the configured tool, validates the arguments without coercion or defaults, and
 sends that exact argument snapshot. The broker remains responsible for strict
-JSON canonicalization, owner approval, durable intent, revocation, and replay
-prevention. Never call `execute` outside that boundary.
+JSON canonicalization, exact host-issued grants, durable intent, revocation and
+replay prevention. Never call `execute` outside that boundary.
 
 `await adapter.discover(credential)` is an optional **trusted operator probe**.
 It performs initialization and paginated discovery/schema checks, makes no tool
@@ -46,8 +55,12 @@ call, and returns only the configured `{ serverId, tool }`. It does not grant
 authority. Server-supplied names other than the configured name, descriptions,
 annotations, instructions, and results never create permissions. `execute`
 discards result content even on success, consistent with the broker's privacy
-contract. Only the private read boundary below can return bounded, redacted
-evidence; ordinary tool receipts never carry server content into model context.
+contract. `read` returns bounded, redacted evidence under its pinned read contract;
+the mounted effect path uses `executeWithResult` under the exact broker grant.
+Its transient result is not a read classification or permission to repeat an
+effect. Only the synthesized answer enters conversation history. Legacy cached
+Puck replies remain one-use, expire within ten minutes and disappear on restart
+or revocation; absence is not permission to resend.
 
 Call `await adapter.close()` during application shutdown, before closing the
 broker. It rejects new work, requests abort, and drains actual fetches, body reads,
@@ -90,7 +103,8 @@ for offline tests, never a user-configurable transport bypass.
   never remote payloads. Even an explicit tool error can follow a partial effect.
   Neither adapter nor SDK reconnects/retries tool calls. The broker conservatively
   retains its durable unknown receipt on **any** exception; do not retry that
-  grant. Reconcile externally before deciding on a new owner-approved action.
+  grant. Verify external state and worker stoppage, then use authenticated
+  reconciliation before deciding on any new action.
 
 An allowlisted server receives its scoped credential and is trusted to implement
 the selected operation. This is not a network/process sandbox or a restriction
@@ -114,7 +128,8 @@ the exact private audience. A result is a one-use closure for that turn,
 rechecked at consumption, capped at 12 KB and secret-redacted. Treat it as
 untrusted evidence; never persist or journal its text. Capability status reports
 configuration, missing authorization, and the last verified request, not live
-health. Coding requests remain proposals for the existing approval supervisor.
+health. This optional boundary only produces coding proposals; it does not
+execute tasks. The mounted runtime's fresh-task execution policy is separate.
 
 `createPuckOAuth` in `src/tools/puck-oauth.ts` supplies the dedicated bootstrap
 using the SDK's authorization-code/S256/CIMD flow. It pins the Amp issuer and
@@ -129,9 +144,11 @@ console: owner-bound attempt, connection-generation check, signed RS256 ID-token
 verification against Amp's pinned issuer/JWKS, and nonce/audience/expiry checks.
 Only an authenticated same-origin confirmation POST exchanges the code. The
 runtime mounts static client metadata, but an authorized operator must make its
-exact path publicly fetchable through ingress. The owner still needs to consent,
-save, discover actual tool contracts and review permissions. The first console
-flow requests no refresh grant; expired access needs reconnect. See
+exact path publicly fetchable through ingress. The owner still needs to consent
+and save the connection; authenticated discovery supplies actual tool contracts.
+New contracts default to the effect policy, while saved disabled decisions are
+preserved. Discovery and configuration are not proof of live success. The first
+console flow requests no refresh grant; expired access needs reconnect. See
 [activation gates](mcp-connections.md#amp-consent-and-activation-gates).
 
 ## Offline verification

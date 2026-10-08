@@ -21,6 +21,7 @@ import { HistoryImports } from "../imports/index.js";
 import { CuratedPersonalityStore } from "../memory/curated.js";
 import { EvidenceStore } from "../memory/store.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
+import { type CapabilityContext, runCapability } from "./capabilities.js";
 import {
   capabilitySnapshot,
   createInspectionReader,
@@ -60,6 +61,13 @@ it("exposes read-only issue metadata to the existing authorized inspection workf
   expect(await read("debug-issues")).toContain(
     "credential receipt is not proof of GitHub access",
   );
+  for (const target of ["debug-issues", "debug-shares"] as const) {
+    const report = await read(target);
+    expect(report).toContain("Judge disclosure");
+    expect(report).toContain("current audience");
+    expect(report).not.toContain("details remain owner-private");
+    expect(report).not.toContain("receipts owner-private");
+  }
   expect(
     await createInspectionReader({ audience: "private", selections: {} })(
       "debug-issues",
@@ -95,6 +103,92 @@ it("advertises import cancellation only when mounted outside setup mode", () => 
     ).capabilities.find((row) => row.capability === "history-imports");
     expect(row?.juneCallable).toBe(expected);
     expect(row?.liveVerified).toBe("unknown");
+  }
+});
+
+it("does not dispatch inspection or cancellation without grants, integrations or current lifecycle admission", async () => {
+  const owner = {
+    id: "owner",
+    identities: [
+      { channel: "slack" as const, accountId: "T1", senderId: "U1" },
+    ],
+  };
+  const event: MessageEvent = {
+    id: "guest-inspection",
+    type: "message",
+    messageId: "1.1",
+    occurredAt: 1,
+    address: { channel: "slack", accountId: "T1", conversationId: "D2" },
+    senderId: "U2",
+    direct: true,
+    metadata: { channelType: "im" },
+    text: "Inspect your status",
+  };
+  const scope = routeEvent(event, owner);
+  if (!scope) throw new Error("Missing guest fixture scope");
+  const inspection = vi.fn(async () => "SECRET inspection result");
+  const importCancel = vi.fn(() => "SECRET cancellation result");
+  const context: CapabilityContext = {
+    event,
+    scope,
+    audience: JSON.stringify(scope.key),
+    eventId: event.id,
+    origin: "event",
+    phase: "reply",
+    ownerTurn: false,
+    deletionRevision: 0,
+    personalityVersion: undefined,
+    workspaces: [],
+    signal: new AbortController().signal,
+    valid: () => true,
+    model: { reply: async () => ({ text: "" }) },
+    deps: { owner, inspection, importCancel },
+    ports: {} as CapabilityContext["ports"],
+  };
+  const request: ModelRequest = {
+    system: "",
+    messages: [],
+    workspaces: [],
+    inspectionAvailable: true,
+    importCancelAvailable: true,
+  };
+  const noGrants = {
+    inspectionAvailable: false,
+    importCancelAvailable: false,
+  };
+  const cases: [string, Partial<ModelRequest>, Partial<CapabilityContext>][] = [
+    ["disabled grants", noGrants, {}],
+    ["missing integrations", {}, { deps: { owner } }],
+    ["synthesis", noGrants, { phase: "synthesis" }],
+    ["report-only completion", noGrants, { origin: "execution_result" }],
+    ["aborted", {}, { signal: AbortSignal.abort() }],
+    ["invalidated", {}, { valid: () => false }],
+    ["superseded", {}, { canStartAction: () => false }],
+  ];
+  for (const [name, grants, lifecycle] of cases) {
+    const input = { ...request, ...grants };
+    if (grants === noGrants) {
+      expect(replyJsonSchema([], input).properties).not.toHaveProperty(
+        "inspection",
+      );
+      expect(replyJsonSchema([], input).properties).not.toHaveProperty(
+        "importCancel",
+      );
+    }
+    for (const action of [
+      { text: "", inspection: "memory" },
+      { text: "", importCancel: "selection-0" },
+    ] as const) {
+      const result = await runCapability(action, input, {
+        ...context,
+        ...lifecycle,
+      });
+      expect(result.inspection, name).toBeUndefined();
+      expect(result.importCancel, name).toBeUndefined();
+      expect(result.text, name).not.toContain("SECRET");
+      expect(inspection, name).not.toHaveBeenCalled();
+      expect(importCancel, name).not.toHaveBeenCalled();
+    }
   }
 });
 
@@ -503,7 +597,7 @@ it("hides tombstoned interruption receipts before conversation cleanup, includin
 });
 
 // Expanded inspection/cancellation turns exceed 60s; each deliver retains its 5s bound.
-it("inspects bounded metadata through June while enforcing owner, guest, synthesis and read-only boundaries", async (t) => {
+it("inspects bounded metadata for admitted conversations while preserving synthesis, privacy and read-only boundaries", async (t) => {
   const owner = {
     id: "owner",
     identities: [
@@ -691,15 +785,26 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     },
     1,
   );
+  const importProgressSnapshot = () =>
+    Object.fromEntries(
+      Object.keys(selections).map((id) => [id, store.importProgress(id)]),
+    );
+  const importsBeforeInspection = importProgressSnapshot();
+  const proposalsBeforeInspection = store.proposals(audience);
+  const revisionsBeforeInspection = personality.ownerHistory();
   const sent: OutboundMessage[] = [];
   const requests: ModelRequest[] = [];
+  const tokenEvents: MessageEvent[] = [];
   let action: CompanionReply = { text: "", inspection: "memory" };
   let search = false;
+  let unchecked = false;
   let fail = false;
   let disabled = false;
   let extractionEnabled = false;
   let reads = 0;
   let guestCase = 0;
+  let extractions = 0;
+  let reflections = 0;
   let sessions = 0;
   let vaultReads = 0;
   const credentials = createBitwardenCredentialResolver(
@@ -744,48 +849,11 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     model: {
       async reply(request) {
         requests.push(request);
-        expect(
-          Object.hasOwn(replyJsonSchema([], request).properties, "inspection"),
-        ).toBe(request.inspectionAvailable);
-        expect(
-          Object.hasOwn(
-            replyJsonSchema([], request).properties,
-            "importCancel",
-          ),
-        ).toBe(request.importCancelAvailable);
-        if (request.importCancelAvailable)
-          expect(request.system).toContain("set importCancel");
-        if (request.inspectionAvailable) {
-          expect(request.system).toContain(
-            'Set inspection to "memory", "imports", "reflection", or "native-coding"',
-          );
-          expect(request.system).toContain('set inspection to "inference"');
-          expect(request.system).toContain('set inspection to "credentials"');
-          expect(request.system).toContain('Set inspection to "retention"');
-          expect(request.system).toContain("serialized-byte usage/limits");
-          expect(request.system).toContain(
-            "Never retry unknown reflection, assert settlement, or reconcile it yourself",
-          );
-          expect(request.system).toContain(
-            'inspection {target:"imports",selection:null,offset:0}',
-          );
-        }
-        if (
-          request.inspectionAvailable &&
-          action.inspection === "snapshot-retention"
-        ) {
-          expect(request.system).toContain(
-            'set inspection to "snapshot-retention"',
-          );
-          expect(JSON.stringify(replyJsonSchema([], request))).toContain(
-            '"snapshot-retention"',
-          );
-        }
         if (search && request.webSearchAvailable)
           return { text: "", webSearch: "public query" };
         // Exercise provider parsing for valid actions, and host guards against
         // providers that return forbidden or mixed directives without parsing.
-        if (request.inspectionAvailable && !action.release)
+        if (request.inspectionAvailable && !unchecked)
           return parseReply(JSON.stringify(action), [], request);
         return action;
       },
@@ -848,6 +916,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         };
       },
       async decide() {
+        reflections++;
         throw new Error("must not reflect");
       },
     },
@@ -895,8 +964,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     slackSearch: {
       enabled: true,
       hasActionToken: (event) => {
-        expect(event.id).toBe(`in${requests.length - 1}`);
-        expect(event.senderId).toBe("U1");
+        tokenEvents.push(event);
         return true;
       },
     },
@@ -918,11 +986,15 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
       audience,
       {},
       async () => {
+        extractions++;
         throw new Error("Inspection must not invoke extraction");
       },
     ),
   });
   const deliver = async (extra: Partial<MessageEvent> = {}) => {
+    const requestStart = requests.length;
+    const sentStart = sent.length;
+    const tokenStart = tokenEvents.length;
     const event: MessageEvent = {
       id: `in${requests.length}`,
       type: "message",
@@ -951,6 +1023,47 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
         { timeout: 5000 },
       )
       .toBe(done + 1);
+    // Assert outside model.reply so failures cannot become model-unreachable
+    // receipts and obscure the actual prompt/schema regression.
+    for (const request of requests.slice(requestStart)) {
+      expect(
+        Object.hasOwn(replyJsonSchema([], request).properties, "inspection"),
+      ).toBe(request.inspectionAvailable);
+      expect(
+        Object.hasOwn(replyJsonSchema([], request).properties, "importCancel"),
+      ).toBe(request.importCancelAvailable);
+      if (request.importCancelAvailable)
+        expect(request.system).toContain('importCancel:{action:"review"');
+      if (request.inspectionAvailable) {
+        expect(request.system).toContain(
+          'Read-only subsystem inspection uses inspection:"memory"|"imports"|"reflection"|"native-coding"',
+        );
+        expect(request.system).toContain('set inspection to "inference"');
+        expect(request.system).toContain('set inspection to "credentials"');
+        expect(request.system).toContain('Set inspection to "retention"');
+        expect(request.system).toContain("bounded scoped counts/bytes/limits");
+        expect(request.system).toContain(
+          "Memory usage is authorized evidence, not total disk or model context; null quotas are unknown, not unlimited",
+        );
+        expect(request.system).toContain(
+          "Never retry unknown reflection, assert settlement, or reconcile it yourself",
+        );
+        expect(request.system).toContain(
+          'inspection {target:"imports",selection:null,offset:0}',
+        );
+        if (action.inspection === "snapshot-retention") {
+          expect(request.system).toContain(
+            'set inspection to "snapshot-retention"',
+          );
+          expect(JSON.stringify(replyJsonSchema([], request))).toContain(
+            '"snapshot-retention"',
+          );
+        }
+      }
+    }
+    for (const tokenEvent of tokenEvents.slice(tokenStart))
+      expect(tokenEvent).toEqual(event);
+    expect(sent.length).toBeGreaterThan(sentStart);
     const content = sent.at(-1)?.content;
     return content?.type === "text" ? content.text : "";
   };
@@ -1032,7 +1145,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(curiosityReport).toContain('"recordedOutcome":"not-recorded"');
   expect(curiosityReport).toContain("Public search: not performed");
   expect(requests.at(-1)?.system).toContain(
-    'For curiosity progress or provenance, use inspection:"reflection"',
+    'For curiosity progress/provenance, use inspection:"reflection"',
   );
   expect(reads).toBe(3);
   expect(requests).toHaveLength(3);
@@ -1154,7 +1267,7 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(reads).toBe(13);
   expect(requests).toHaveLength(14);
   expect(requests.at(-1)?.system).toContain(
-    'inspection to "capability-matrix"',
+    'use inspection:"capability-matrix"',
   );
   action = { text: "", inspection: "capacity" };
   const capacityReport = await deliver();
@@ -1170,67 +1283,117 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(capacityReport.length).toBeLessThan(3500);
   expect(reads).toBe(14);
   expect(requests).toHaveLength(15);
-  const deniedInspections = [
-    "tombstones",
-    "capability-matrix",
-    "native-coding",
-    "memory",
-    "retention",
-    "capabilities",
-    "inference",
-    "forgetting",
-    "credentials",
-    "slack-search",
-    "snapshot-retention",
-    "operations",
-    "mcp-connections",
-    "mcp-enrollment",
-    { target: "imports", selection: "selection-11", offset: 0 },
-    "capacity",
+  const inspectionCases = [
+    ["tombstones", '"watermark":1'],
+    ["capability-matrix", '"liveVerified":"unknown"'],
+    ["native-coding", "coding.enabled is false (activation gate closed)"],
+    ["memory", '"sources":2,"claims":0'],
+    ["imports", "Configured selections: 12"],
+    ["reflection", '"pending":1,"running":0'],
+    ["retention", "Physical erasure is unverified"],
+    ["capabilities", "Registered tools: 0"],
+    ["inference", "Recorded recovery receipts: 0; showing latest 0"],
+    ["forgetting", '"pending":0,"started":0,"completed":0'],
+    ["credentials", "Configured bindings: 1; showing 1"],
+    ["slack-search", "present and unconsumed in the local cache"],
+    ["snapshot-retention", '"dryRun":true,"automaticDeletion":false'],
+    [
+      "operations",
+      "Process health, idle state and restart do not prove settlement",
+    ],
+    ["mcp-connections", "MCP is disconnected: integration disabled"],
+    ["mcp-enrollment", "Host configuration required"],
+    [
+      { target: "imports", selection: "selection-11", offset: 0 },
+      "owner@example.test",
+    ],
+    ["capacity", '"durableUnknownHolds":null'],
   ] as const;
-  for (const inspection of deniedInspections) {
+  for (const [index, [inspection, expected]] of inspectionCases.entries()) {
     action = { text: "", inspection };
     for (const extra of [
-      {
-        direct: false,
-        address: {
-          channel: "slack" as const,
-          accountId: "T1",
-          conversationId: "C1",
-        },
-      },
-      // Share each actor for at most four cases: exercise the inspection guard
-      // without hitting the guest quota or starting an actor for every target.
-      {
-        senderId: `guest-${Math.floor(guestCase++ / 4)}`,
-        metadata: { channelType: "im" as const },
-      },
-      ...(inspection === "mcp-connections" || inspection === "mcp-enrollment"
-        ? [{ metadata: { channelType: "mpim" as const } }]
+      // Cover every target on an admitted shared/guest surface, not a redundant
+      // Cartesian product. Guest actors receive at most four calls each.
+      index % 2 === 0
+        ? {
+            direct: false,
+            metadata: { channelType: "channel" as const },
+            address: {
+              channel: "slack" as const,
+              accountId: "T1",
+              conversationId: "C1",
+            },
+          }
+        : {
+            senderId: `guest-${Math.floor(guestCase++ / 4)}`,
+            metadata: { channelType: "im" as const },
+          },
+      ...(inspection === "mcp-connections" ||
+      inspection === "mcp-enrollment" ||
+      inspection === "memory" ||
+      inspection === "credentials"
+        ? [
+            {
+              direct: false,
+              senderId: "group-guest",
+              metadata: { channelType: "mpim" as const },
+              address: {
+                channel: "slack" as const,
+                accountId: "T1",
+                conversationId: "G1",
+              },
+            },
+          ]
         : []),
     ]) {
       const before = requests.length;
-      const denied = await deliver(extra);
-      expect(denied).toContain("owner-private turn");
-      expect(denied).not.toContain("owner@example.test");
+      const readsBefore = reads;
+      const report = await deliver(extra);
+      expect(report).toContain(expected);
+      expect(report).not.toMatch(/SECRET|secret-source|another-audience/);
+      expect(report.length).toBeLessThanOrEqual(
+        inspection === "capability-matrix" ? 6000 : 4000,
+      );
       expect(requests).toHaveLength(before + 1);
-      expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-      expect(reads).toBe(14);
+      expect(requests.at(-1)?.inspectionAvailable).toBe(true);
+      expect(requests.at(-1)?.importCancelAvailable).toBe(true);
+      expect(reads).toBe(
+        readsBefore +
+          (inspection === "inference" || inspection === "forgetting" ? 0 : 1),
+      );
+      expect(cancellations).toBe(0);
     }
+  }
+  // The same host gate covers all targets; exercise both local and delegated
+  // readers, including a structured selection, without repeating every surface.
+  for (const inspection of [
+    "memory",
+    "inference",
+    { target: "imports", selection: "selection-11", offset: 0 },
+  ] as const) {
+    action = { text: "", inspection };
+    const readsBeforeDenials = reads;
     search = true;
-    await deliver();
+    expect(await deliver()).toContain(
+      "Subsystem inspection requires an available integration for this task",
+    );
     expect(requests.at(-1)?.usageStage).toBe("synthesis");
     expect(requests.at(-1)?.inspectionAvailable).toBe(false);
-    expect(reads).toBe(14);
+    expect(requests.at(-1)?.importCancelAvailable).toBe(false);
+    expect(reads).toBe(readsBeforeDenials);
     search = false;
+    unchecked = true;
     action = {
       text: "",
       inspection,
       release: { action: "inspect", revision: null },
     };
     expect(await deliver()).toContain("inspection is unavailable");
-    expect(reads).toBe(14);
+    expect(reads).toBe(readsBeforeDenials);
+    expect(cancellations).toBe(0);
+    unchecked = false;
   }
+  const readsAfterShared = reads;
   action = { text: "", inspection: "slack-search" };
   const readiness = await deliver();
   expect(readiness).toContain("Runtime slack.searchEnabled: true");
@@ -1238,12 +1401,12 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(readiness).toContain("actual installed bot grant is unverified");
   expect(readiness).toContain("Live search access is unverified");
   expect(readiness).toContain("No Slack request was made");
-  expect(reads).toBe(15);
+  expect(reads).toBe(readsAfterShared + 1);
   action = { text: "", inspection: "mcp-enrollment" };
   expect(await deliver()).toContain("Host configuration required");
   expect(requests.at(-1)?.system).toContain('inspection to "mcp-enrollment"');
   expect(requests.at(-1)?.mcpAvailable).toBe(false);
-  expect(reads).toBe(16);
+  expect(reads).toBe(readsAfterShared + 2);
   action = { text: "", inspection: "credentials" };
   fail = true;
   expect(await deliver()).toContain("inspection is unavailable");
@@ -1313,10 +1476,15 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     '"review":"/operator/imports/selection-0/extraction"',
   );
   expect(extractionReport).toMatch(/"digest":"[a-f0-9]{64}"/);
-  expect(extractionReport).toContain("{confirmed:true,digest}");
+  expect(extractionReport).toContain(
+    'importCancel:{action:"extract",selection:ID,digest} with extraction.digest',
+  );
+  expect(extractionReport).toContain("not a compulsory human step");
   expect(extractionReport).toContain("pending claims only");
   expect(extractionReport).not.toContain("secret-source");
-  expect(requests.at(-1)?.system).toContain('use inspection:"imports"');
+  expect(requests.at(-1)?.system).toContain(
+    'For extraction status use inspection:"imports"',
+  );
   expect(JSON.stringify(sent)).not.toContain("SECRET");
   expect(JSON.stringify(sent)).not.toContain("secret-source");
   expect(fetches).toBe(1); // Inspection never retried the rejected page.
@@ -1327,8 +1495,9 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   );
   expect(sessions).toBe(0);
   expect(vaultReads).toBe(0);
-  expect(store.importProgress("selection-0")).toEqual(progress);
-  expect(store.proposals(audience)[0]?.status).toBe("pending");
+  expect(importProgressSnapshot()).toEqual(importsBeforeInspection);
+  expect(store.proposals(audience)).toEqual(proposalsBeforeInspection);
+  expect(personality.ownerHistory()).toEqual(revisionsBeforeInspection);
   disabled = false;
   store.deleteSource("SECRET TOMBSTONE ID");
   action = { text: "", inspection: "tombstones" };
@@ -1342,28 +1511,110 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
     "Independent retention and physical purge are not verified",
   );
   expect(tombstoneReport.length).toBeLessThan(1000);
-  expect(requests.at(-1)?.system).toContain('set inspection to "tombstones"');
+  expect(requests.at(-1)?.system).toContain('use inspection:"tombstones"');
   expect(reads).toBe(readsBeforeTombstone + 1);
-  // Unauthorized/custom providers and synthesis must not reach cancellation.
+  // Synthesis and malformed custom-provider actions still cannot cancel.
   action = { text: "", importCancel: "selection-0" };
-  expect(await deliver({ direct: false })).toContain("owner-private turn");
-  // Use an independent guest so admission limits cannot hide this guard.
-  expect(
-    await deliver({ senderId: "U3", metadata: { channelType: "im" } }),
-  ).toContain("owner-private turn");
   search = true;
-  expect(await deliver()).toContain("owner-private turn");
+  expect(await deliver()).toContain(
+    "Import cancellation requires an available integration for this task",
+  );
+  expect(requests.at(-1)?.usageStage).toBe("synthesis");
+  expect(requests.at(-1)?.importCancelAvailable).toBe(false);
   search = false;
-  action = {
-    text: "",
-    importCancel: "selection-0",
-    release: { action: "inspect", revision: null },
-  };
-  expect(await deliver()).toContain("could not be confirmed");
+  unchecked = true;
+  for (const invalid of [
+    { text: "", importCancel: "selection-0", inspection: "memory" },
+    { text: "SECRET UNTRUSTED RECEIPT", importCancel: "selection-0" },
+  ] as const) {
+    action = invalid;
+    expect(await deliver()).toContain("could not be confirmed");
+    expect(requests.at(-1)?.inspectionAvailable).toBe(true);
+    expect(requests.at(-1)?.importCancelAvailable).toBe(true);
+  }
+  action = { text: "SECRET UNTRUSTED STATUS", inspection: "memory" };
+  expect(await deliver()).toContain("inspection is unavailable");
+  unchecked = false;
   expect(cancellations).toBe(0);
+  expect(reads).toBe(readsBeforeTombstone + 1);
+  expect(importProgressSnapshot()).toEqual(importsBeforeInspection);
+
+  // Callability never admits a fabricated conversation or import audience.
+  const requestsBeforeForgery = requests.length;
+  await expect(
+    privateActor.receive({
+      id: "forged-owner-scope",
+      type: "message",
+      messageId: "forged-owner-scope",
+      occurredAt: Date.now(),
+      address: { channel: "slack", accountId: "T1", conversationId: "D3" },
+      senderId: "U3",
+      direct: true,
+      metadata: { channelType: "im" },
+      text: "Inspect your status",
+    }),
+  ).rejects.toThrow();
+  expect(requests).toHaveLength(requestsBeforeForgery);
+  expect(cancellations).toBe(0);
+  expect(reads).toBe(readsBeforeTombstone + 1);
+  for (const selection of ["hidden", "not-configured"]) {
+    action = { text: "", importCancel: selection };
+    const denied = await deliver({
+      senderId: "cancellation-guest",
+      metadata: { channelType: "im" },
+    });
+    expect(denied).toContain("could not be confirmed");
+    expect(denied).not.toMatch(/hidden|not-configured|authorized|SECRET/);
+    expect(importProgressSnapshot()).toEqual(importsBeforeInspection);
+  }
+  expect(cancellations).toBe(2);
+
+  // Each admitted audience cancels a different exact selection. The configured
+  // retention audience stays bound; only that selection's cancelled bit changes.
+  const cancellationCases: [string, Partial<MessageEvent>][] = [
+    ["selection-0", {}],
+    [
+      "selection-2",
+      { senderId: "cancellation-guest", metadata: { channelType: "im" } },
+    ],
+    [
+      "selection-3",
+      {
+        direct: false,
+        senderId: "channel-guest",
+        botMentioned: true,
+        metadata: { channelType: "channel" },
+        address: { channel: "slack", accountId: "T1", conversationId: "C2" },
+      },
+    ],
+    [
+      "selection-4",
+      {
+        direct: false,
+        senderId: "cancellation-group-guest",
+        metadata: { channelType: "mpim" },
+        address: { channel: "slack", accountId: "T1", conversationId: "G2" },
+      },
+    ],
+  ];
+  for (const [selection, extra] of cancellationCases) {
+    store.beginImport(selection, coverage);
+    const before = importProgressSnapshot();
+    const cancellationsBefore = cancellations;
+    action = { text: "", importCancel: selection };
+    expect(await deliver(extra)).toContain("recorded durably");
+    expect(requests.at(-1)?.importCancelAvailable).toBe(true);
+    expect(cancellations).toBe(cancellationsBefore + 1);
+    expect(importProgressSnapshot()).toEqual({
+      ...before,
+      [selection]: { ...before[selection], cancelled: true },
+    });
+  }
+  const afterCancellation = importProgressSnapshot();
   action = { text: "", importCancel: "selection-0" };
   expect(await deliver()).toContain("recorded durably");
-  expect(await deliver()).toContain("recorded durably");
+  expect(cancellations).toBe(7);
+  expect(importProgressSnapshot()).toEqual(afterCancellation);
   expect(store.importProgress("selection-0")).toEqual({
     ...progress,
     cancelled: true,
@@ -1373,6 +1624,9 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(await deliver()).toContain('"cancelled":true');
   expect(fetches).toBe(1); // Cancellation/inspection never retried the conflict.
   expect(JSON.stringify(sent)).not.toContain("SECRET");
+  expect(store.source(audience, retainedSource.id)).toEqual(retainedSource);
+  expect(store.proposals(audience)).toEqual(proposalsBeforeInspection);
+  expect(personality.ownerHistory()).toEqual(revisionsBeforeInspection);
   expect(() =>
     parseReply('{"text":"","importCancel":"selection-0"}', []),
   ).toThrow();
@@ -1400,6 +1654,9 @@ it("inspects bounded metadata through June while enforcing owner, guest, synthes
   expect(failedReadReport).toContain('"read":{"status":"failed"');
   expect(failedReadReport).not.toContain('"sources":0');
   expect(JSON.stringify(sent)).not.toContain("SECRET");
+  expect(JSON.stringify(requests)).not.toContain("SECRET");
+  expect(extractions).toBe(0);
+  expect(reflections).toBe(0);
   for (const inspection of [
     "start",
     "forget",
@@ -1463,7 +1720,9 @@ it("preserves exact cancellation targets with shared prefixes while bounding met
     [],
     { importCancelAvailable: true },
   );
-  imports.cancel(action.importCancel ?? "", "owner");
+  if (typeof action.importCancel !== "string")
+    throw new Error("Expected cancellation ID");
+  imports.cancel(action.importCancel, "owner");
   expect(store.importProgress(longer)?.cancelled).toBe(true);
   expect(store.importProgress(prefix)).toBeUndefined();
 });

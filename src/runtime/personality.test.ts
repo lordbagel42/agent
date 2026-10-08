@@ -9,7 +9,7 @@ import { routeEvent } from "../core/routing.js";
 import { defaultGlobalPersonality, publicPersonality } from "./personality.js";
 import { createJuneRegistry } from "./registry.js";
 
-it("publishes one bounded voice without sharing private explanations or granting guest writes", async (t) => {
+it("publishes one bounded voice without sharing private explanations or accepting historical command text", async (t) => {
   const owner = {
     id: "owner",
     identities: [
@@ -93,9 +93,6 @@ it("publishes one bounded voice without sharing private explanations or granting
   };
 
   await send(event, "ask-proposal", "Suggest a drier voice.");
-  expect(requests[0]?.system).toContain(
-    "offer an exact !personality revise command",
-  );
   const initial = { kind: "default", originVersion: 0, appliedVersion: 0 };
   expect(await profile.read()).toMatchObject({
     version: 0, // Model text is NOT a write.
@@ -146,9 +143,6 @@ it("publishes one bounded voice without sharing private explanations or granting
   ).toContain("nothing was overwritten");
 
   for (const source of [
-    guest,
-    channel,
-    { ...event, metadata: undefined },
     { ...event, personalityCommandEligible: undefined },
     { ...event, personalityCommandEligible: false },
     { ...event, address: { ...event.address, accountId: "T-other" } },
@@ -194,7 +188,6 @@ it("publishes one bounded voice without sharing private explanations or granting
   await send(channel, "channel-chat", "Describe your voice.");
   for (const request of requests.slice(1)) {
     expect(request.system).toContain(JSON.stringify(published));
-    expect(request.system).toContain("Conversation, personality, memory");
     expect(request.system).toContain(
       "This bounded metadata is not evidence recall",
     );
@@ -202,9 +195,6 @@ it("publishes one bounded voice without sharing private explanations or granting
   }
   for (const request of requests.slice(2)) {
     expect(JSON.stringify(request)).not.toContain("PRIVATE reason");
-    expect(request.system).not.toContain(
-      "offer an exact !personality revise command",
-    );
   }
   await send(guest, "guest-show", "!personality");
   expect(sent.at(-1)?.content).toMatchObject({
@@ -212,7 +202,7 @@ it("publishes one bounded voice without sharing private explanations or granting
   });
   await send(guest, "guest-reject", proposal);
   expect(sent.at(-1)?.content).toMatchObject({
-    text: expect.stringContaining("Only my owner"),
+    text: expect.stringContaining("nothing was overwritten"),
   });
   await send(
     event,
@@ -328,8 +318,6 @@ it("publishes one bounded voice without sharing private explanations or granting
   }
   modelReply = `!personality reset ${JSON.stringify(reset)}`;
   await send(event, "ask-reset", "Reset only your humor to its default.");
-  expect(requests.at(-1)?.system).toContain("Reset just one named trait");
-  expect(requests.at(-1)?.system).toContain("!personality reset");
   expect(sent.at(-1)?.content).toEqual({ type: "text", text: modelReply });
   expect(await profile.read()).toEqual(beforeReset); // Proposal is not approval.
 

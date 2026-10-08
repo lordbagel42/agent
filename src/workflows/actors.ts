@@ -22,6 +22,8 @@ interface Definition {
   source: string;
   revision: string;
   deletionRevision: number;
+  scope?: string;
+  scopeKey?: string[];
 }
 interface RunSpec extends Definition {
   id: string;
@@ -72,12 +74,23 @@ const terminal = (status: Status) =>
 const revision = (deps: Dependencies) =>
   deps.memory?.store.deletionRevision() ?? 0;
 const authorized = (deps: Dependencies, origin: MessageEvent) =>
-  routeEvent(origin, deps.owner)?.private === true &&
+  !!routeEvent(origin, deps.owner) &&
   (origin.address.channel !== "agent" ||
     deps.agents?.clientActive(origin.senderId) === true);
+const sourceScope = (origin: MessageEvent, scopeKey: string[]) =>
+  hash([
+    scopeKey,
+    origin.senderId,
+    origin.address.channel,
+    origin.address.accountId,
+    origin.address.conversationId,
+    origin.address.threadId ?? "",
+  ]);
 const current = (deps: Dependencies, spec: RunSpec) =>
   !!deps.workflows &&
   authorized(deps, spec.origin) &&
+  hash(routeEvent(spec.origin, deps.owner)?.key ?? null) ===
+    hash(spec.scopeKey ?? ["private", deps.owner.id]) &&
   spec.deletionRevision === revision(deps);
 
 export function createWorkflowRunActor(deps: Dependencies) {
@@ -135,10 +148,26 @@ export function createWorkflowRunActor(deps: Dependencies) {
         if (!c.state.started && !terminal(c.state.status))
           await c.queue.send("start", null);
       },
-      presentation: (c) => {
+      presentation: (c, event?: MessageEvent) => {
         const spec = c.state.spec;
         if (!spec || !current(deps, spec) || c.state.status === "revoked")
           return null;
+        // Sharing a run is bound to its authenticated original requester and
+        // conversation/thread. Omit the event only for an existing artifact
+        // viewer behind the artifact's own public/PIN access controls.
+        if (event) {
+          const route = routeEvent(event, deps.owner);
+          if (
+            !route ||
+            !authorized(deps, event) ||
+            sourceScope(event, route.key) !==
+              sourceScope(
+                spec.origin,
+                spec.scopeKey ?? ["private", deps.owner.id],
+              )
+          )
+            return null;
+        }
         return {
           runId: spec.id,
           name: spec.name,
@@ -482,7 +511,10 @@ type RunRegistry = Registry<{
 interface LibraryState {
   definitions: Record<string, Definition>;
   runs: Record<string, RunSpec>;
-  receipts: Record<string, string | { deletionRevision: number; text: string }>;
+  receipts: Record<
+    string,
+    string | { deletionRevision: number; text: string; scope?: string }
+  >;
 }
 
 export function createWorkflowLibraryActor(deps: Dependencies) {
@@ -559,14 +591,23 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
         c.vars.tail = lock.promise;
         await previous;
         try {
+          const route = routeEvent(origin, deps.owner);
           if (
             c.key.length !== 1 ||
             c.key[0] !== deps.owner.id ||
             !deps.workflows ||
+            !route ||
             !authorized(deps, origin) ||
             deletionRevision !== revision(deps)
           )
             throw new Error("workflow_denied");
+          const scope = sourceScope(origin, route.key);
+          const inScope = (spec: RunSpec) =>
+            scope ===
+            sourceScope(
+              spec.origin,
+              spec.scopeKey ?? ["private", deps.owner.id],
+            );
           const command = workflowCommandSchema.parse(raw);
           const receiptId = hash([requestId, command]);
           const write = ["define", "start", "signal", "cancel"].includes(
@@ -574,8 +615,14 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
           );
           if (write && Object.hasOwn(c.state.receipts, receiptId)) {
             const receipt = c.state.receipts[receiptId];
-            if (typeof receipt === "string") return receipt;
-            if (!receipt || receipt.deletionRevision !== deletionRevision)
+            // Keep legacy deduplication receipts, but never infer a caller's
+            // source scope from owner-wide records or repeat the old write.
+            if (
+              !receipt ||
+              typeof receipt === "string" ||
+              receipt.scope !== scope ||
+              receipt.deletionRevision !== deletionRevision
+            )
               throw new Error("workflow_revoked");
             return receipt.text;
           }
@@ -587,8 +634,11 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
             throw new Error("workflow_library_limit");
           let report: unknown;
           const name = command.name ?? "";
-          let definition = Object.hasOwn(c.state.definitions, name)
-            ? c.state.definitions[name]
+          const definitionId = hash([scope, name]);
+          // Unbound legacy definitions stay retained for operator review, not
+          // automatically shared with every newly admitted conversation.
+          let definition = Object.hasOwn(c.state.definitions, definitionId)
+            ? c.state.definitions[definitionId]
             : undefined;
           if (command.action === "help")
             report = {
@@ -610,8 +660,10 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
               source: command.source as string,
               revision: hash(command.source),
               deletionRevision: revision(deps),
+              scope,
+              scopeKey: route.key,
             };
-            c.state.definitions[name] = next;
+            c.state.definitions[definitionId] = next;
             report = { name, revision: next.revision, status: "defined" };
           } else if (command.action === "start") {
             const id = hash([deps.owner.id, requestId, "workflow"]);
@@ -629,9 +681,15 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
                   source: command.source,
                   revision: hash(command.source),
                   deletionRevision,
+                  scope,
+                  scopeKey: route.key,
                 };
               }
-              if (!definition || definition.deletionRevision !== revision(deps))
+              if (
+                !definition ||
+                definition.scope !== scope ||
+                definition.deletionRevision !== revision(deps)
+              )
                 throw new Error("workflow_definition_unavailable");
               if (Object.keys(c.state.runs).length >= 128)
                 throw new Error("workflow_run_limit");
@@ -662,16 +720,21 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
                   senderId: origin.senderId,
                   direct: origin.direct,
                   address: origin.address,
+                  botMentioned: origin.botMentioned,
+                  threadFollowup: origin.threadFollowup,
+                  questionAnswered: origin.questionAnswered,
+                  metadata: { channelType: origin.metadata?.channelType },
                   text: "",
                 },
                 createdAt: Date.now(),
                 tools: Object.keys(deps.workflows.tools),
                 abi: 1,
               };
-              c.state.definitions[name] = definition;
+              c.state.definitions[definitionId] = definition;
               c.state.runs[id] = spec;
               await c.saveState({ immediate: true });
             }
+            if (!inScope(spec)) throw new Error("workflow_run_unavailable");
             await c
               .client<RunRegistry>()
               .workflowRun.getOrCreate([deps.owner.id, id])
@@ -685,29 +748,39 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
           } else if (command.action === "list") {
             report = {
               definitions: Object.values(c.state.definitions)
-                .filter((d) => d.deletionRevision === revision(deps))
+                .filter(
+                  (d) =>
+                    d.scope === scope && d.deletionRevision === revision(deps),
+                )
                 .map(({ name, revision }) => ({ name, revision })),
               runs: await Promise.all(
-                Object.keys(c.state.runs).map(async (runId) => ({
-                  runId,
-                  ...(await c
-                    .client<RunRegistry>()
-                    .workflowRun.getOrCreate([deps.owner.id, runId])
-                    .inspect()),
-                  source: undefined,
-                  input: undefined,
-                  operations: undefined,
-                  result: undefined,
-                })),
+                Object.values(c.state.runs)
+                  .filter((spec) => inScope(spec) && current(deps, spec))
+                  .map(async ({ id: runId }) => ({
+                    runId,
+                    ...(await c
+                      .client<RunRegistry>()
+                      .workflowRun.getOrCreate([deps.owner.id, runId])
+                      .inspect()),
+                    source: undefined,
+                    input: undefined,
+                    operations: undefined,
+                    result: undefined,
+                  })),
               ),
             };
           } else if (command.action === "inspect" && !command.runId) {
-            if (!definition || definition.deletionRevision !== revision(deps))
+            if (
+              !definition ||
+              definition.scope !== scope ||
+              definition.deletionRevision !== revision(deps)
+            )
               throw new Error("workflow_definition_unavailable");
             report = definition;
           } else {
             const id = command.runId ?? "";
-            if (!Object.hasOwn(c.state.runs, id))
+            const spec = c.state.runs[id];
+            if (!spec || !inScope(spec) || !current(deps, spec))
               throw new Error("workflow_run_unavailable");
             const run = c
               .client<RunRegistry>()
@@ -727,7 +800,7 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
             throw new Error("workflow_revoked");
           const text = JSON.stringify(report);
           if (write && Object.keys(c.state.receipts).length < 1024) {
-            c.state.receipts[receiptId] = { deletionRevision, text };
+            c.state.receipts[receiptId] = { deletionRevision, text, scope };
             await c.saveState({ immediate: true });
           }
           if (text.length <= 3000 && command.offset === 0) return text;

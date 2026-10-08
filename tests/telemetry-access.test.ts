@@ -8,6 +8,7 @@ import { expect, it, vi } from "vitest";
 import { createAgentMcp } from "../src/agent/mcp.js";
 import { operatorRequest } from "../src/agent/operator.js";
 import { AgentService } from "../src/agent/service.js";
+import { routeEvent } from "../src/core/routing.js";
 import { createHttpApp } from "../src/http/app.js";
 import { parseReply, replyJsonSchema } from "../src/models/provider.js";
 import {
@@ -22,7 +23,7 @@ import { buildModelRequest } from "../src/runtime/prompt.js";
 import type { Dependencies } from "../src/runtime/registry.js";
 import { initializeTelemetry, withSpan } from "../src/telemetry/index.js";
 
-it("keeps all telemetry reads behind current private-owner and MCP authority", async () => {
+it("admits task telemetry while preserving current grants, invalidation and HTTP/MCP authentication", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-otel-access-"));
   // This fixture must never export to an inherited live collector.
   const env = { ...process.env };
@@ -149,15 +150,48 @@ it("keeps all telemetry reads behind current private-owner and MCP authority", a
     expect(observation.rows[0].parentSpanId).toMatch(/^[a-f0-9]{16}$/);
     const traceId = observation.rows[0].traceId;
     query.mockClear();
+    for (const event of [
+      { ...context.event, senderId: "guest" },
+      {
+        ...context.event,
+        direct: false,
+        address: { ...context.event.address, conversationId: "C1" },
+        metadata: { channelType: "channel" as const },
+      },
+      {
+        ...context.event,
+        senderId: "guest",
+        direct: false,
+        botMentioned: true,
+        address: { ...context.event.address, conversationId: "C1" },
+        metadata: { channelType: "channel" as const },
+      },
+    ]) {
+      const scope = routeEvent(event, owner);
+      if (!scope) throw new Error("Missing task scope");
+      const taskRequest = buildModelRequest({
+        ...input,
+        event,
+        agentRole: "execution",
+        capabilities: executionCapabilities(deps, event),
+      });
+      expect(taskRequest.telemetryAvailable).toBe(true);
+      const result = await runCapability(reply, taskRequest, {
+        ...context,
+        event,
+        scope,
+        audience: JSON.stringify(scope.key),
+        ownerTurn: event.senderId === "human",
+      });
+      expect(JSON.parse(result.text).rows).toHaveLength(1);
+    }
+    expect(query).toHaveBeenCalledTimes(3);
+    query.mockClear();
     for (const override of [
-      { scope: { key: ["shared"], private: false } },
-      { event: { ...context.event, senderId: "guest" } },
-      { event: { ...context.event, direct: false } },
       { valid: () => false },
       { signal: AbortSignal.abort() },
       { phase: "synthesis" as const },
       { origin: "wakeup" as const },
-      { ownerTurn: false },
     ]) {
       await runCapability(reply, request, { ...context, ...override });
     }

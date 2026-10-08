@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import type { MessageEvent } from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
 import { parseReply, replyJsonSchema } from "../models/provider.js";
 import type { CapabilityContext } from "./capabilities.js";
 import { createAmpInbox, createDebugDispatcher } from "./debug-dispatch.js";
@@ -209,7 +210,7 @@ it("exposes late independent receipts through actor inspection after observation
   expect(run).toHaveBeenCalledTimes(1);
 });
 
-it("grants resolution only as an exclusive owner-private execution action and runs it through June", async (t) => {
+it("grants resolution as an exclusive task execution action and preserves lifecycle boundaries through June", async (t) => {
   const id = randomUUID();
   const directive = {
     text: "",
@@ -323,26 +324,49 @@ it("grants resolution only as an exclusive owner-private execution action and ru
     deps,
     ports: {} as CapabilityContext["ports"],
   };
+  for (const source of [
+    { ...event, senderId: "guest" },
+    {
+      ...event,
+      direct: false,
+      metadata: { channelType: "mpim" as const },
+    },
+    {
+      ...event,
+      direct: false,
+      metadata: { channelType: "channel" as const },
+    },
+  ]) {
+    const scope = routeEvent(source, owner);
+    if (!scope) throw new Error("Missing task scope");
+    expect(executionCapabilities(deps, source).debugShareResolveAvailable).toBe(
+      true,
+    );
+    const result = await runExecutionCapability(
+      directive,
+      { ...granted, system: "", messages: [], workspaces: [] },
+      {
+        ...context,
+        event: source,
+        scope,
+        audience: JSON.stringify(scope.key),
+        ownerTurn: source.senderId === "U1",
+      },
+      deps,
+      client as Parameters<typeof runExecutionCapability>[4],
+      [],
+      async () => {
+        throw new Error("Unexpected delivery");
+      },
+    );
+    expect(result.text).toContain('"resolved":true');
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(id, expect.any(Function));
+    resolve.mockClear();
+  }
   for (const change of [
-    { event: { ...event, senderId: "guest" } },
-    {
-      event: {
-        ...event,
-        direct: false,
-        metadata: { channelType: "mpim" as const },
-      },
-    },
-    {
-      event: {
-        ...event,
-        direct: false,
-        metadata: { channelType: "channel" as const },
-      },
-    },
     { origin: "wakeup" as const },
     { origin: "execution_result" as const },
     { phase: "synthesis" as const },
-    { ownerTurn: false },
     { valid: () => false },
     { signal: AbortSignal.abort() },
     { canStartAction: () => false },

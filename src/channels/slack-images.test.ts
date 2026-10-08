@@ -36,45 +36,64 @@ function adapter(fetch: typeof globalThis.fetch) {
   });
 }
 
-it("resolves an attached file through Slack and returns bytes outside metadata", async () => {
-  const calls: string[] = [];
-  const slack = adapter(async (input, init) => {
-    const url = String(input);
-    calls.push(url);
-    expect(init?.redirect).toBe("error");
-    expect(new Headers(init?.headers).get("authorization")).toBe(
-      "Bearer private-test-token",
+it.each([
+  ["U1", "im", "D1"],
+  ["UGUEST", "im", "D2"],
+  ["U1", "channel", "C1"],
+  ["UGUEST", "channel", "C1"],
+  ["UGUEST", "group", "G1"],
+  ["UGUEST", "mpim", "G2"],
+] as const)(
+  "reads actual attachments from %s in %s without changing identity",
+  async (senderId, channelType, conversationId) => {
+    const source: MessageEvent = {
+      ...event,
+      senderId,
+      direct: channelType === "im",
+      address: { ...event.address, conversationId },
+      metadata: { ...event.metadata, channelType },
+    };
+    const calls: string[] = [];
+    const slack = adapter(async (input, init) => {
+      const url = String(input);
+      calls.push(url);
+      expect(init?.redirect).toBe("error");
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        "Bearer private-test-token",
+      );
+      if (new URL(url).pathname === "/api/files.info") {
+        if (init?.body || new URL(url).searchParams.get("file") !== "F123")
+          return Response.json({ ok: false, error: "invalid_arguments" });
+        return Response.json({
+          ok: true,
+          file: {
+            id: "F123",
+            mimetype: "image/png",
+            size: png.length,
+            url_private: "https://files.slack.com/files-pri/T1-F123/image.png",
+          },
+        });
+      }
+      return new Response(png, { headers: { "content-type": "image/png" } });
+    });
+    expect(slack.readImage).toBeTypeOf("function");
+    const result = await slack.readImage?.(
+      source,
+      "F123",
+      new AbortController().signal,
     );
-    if (new URL(url).pathname === "/api/files.info") {
-      if (init?.body || new URL(url).searchParams.get("file") !== "F123")
-        return Response.json({ ok: false, error: "invalid_arguments" });
-      return Response.json({
-        ok: true,
-        file: {
-          id: "F123",
-          mimetype: "image/png",
-          size: png.length,
-          url_private: "https://files.slack.com/files-pri/T1-F123/image.png",
-        },
-      });
-    }
-    return new Response(png, { headers: { "content-type": "image/png" } });
-  });
-  expect(slack.readImage).toBeTypeOf("function");
-  const result = await slack.readImage?.(
-    event,
-    "F123",
-    new AbortController().signal,
-  );
-  expect(result).toMatchObject({
-    status: "ready",
-    image: { evidenceId: "slack:F123", mimeType: "image/png" },
-  });
-  if (result?.status !== "ready") throw new Error("Missing image");
-  expect(Buffer.from(result.image.data)).toEqual(png);
-  expect(calls).toHaveLength(2);
-  expect(JSON.stringify(event)).not.toContain("files-pri");
-});
+    expect(result).toMatchObject({
+      status: "ready",
+      image: { evidenceId: "slack:F123", mimeType: "image/png" },
+    });
+    if (result?.status !== "ready") throw new Error("Missing image");
+    expect(Buffer.from(result.image.data)).toEqual(png);
+    expect(calls).toHaveLength(2);
+    expect(source.senderId).toBe(senderId);
+    expect(JSON.stringify(source)).not.toMatch(/files-pri|private-test-token/);
+    expect(JSON.stringify(result)).not.toContain("private-test-token");
+  },
+);
 
 it.for(["readImage", "readVideo"] as const)(
   "%s rejects foreign attachments before IO and bounds downloads",
@@ -87,10 +106,15 @@ it.for(["readImage", "readVideo"] as const)(
     expect(slack[action]).toBeTypeOf("function");
     for (const [source, fileId] of [
       [event, "F999"],
-      [{ ...event, senderId: "guest" }, "F123"],
+      [event, "https://files.slack.com/files-pri/T1-F123/image.png"],
       [{ ...event, address: { ...event.address, accountId: "T2" } }, "F123"],
-      [{ ...event, direct: false }, "F123"],
-    ] as const) {
+      [
+        { ...event, address: { ...event.address, channel: "whatsapp" } },
+        "F123",
+      ],
+      [{ ...event, metadata: undefined }, "F123"],
+      [{ ...event, metadata: { files: [] } }, "F123"],
+    ] satisfies [MessageEvent, string][]) {
       expect(
         await slack[action]?.(source, fileId, new AbortController().signal),
       ).toMatchObject({ status: "unavailable" });
@@ -190,8 +214,11 @@ it("reads an attached MP4 as distinct timestamped keyframes, not every frame or 
     const video = await readFile(path);
     const source = {
       ...event,
+      senderId: "UGUEST",
+      direct: false,
+      address: { ...event.address, conversationId: "G2" },
       metadata: {
-        channelType: "im" as const,
+        channelType: "mpim" as const,
         files: [{ id: "F123", mimetype: "video/mp4" }],
       },
     };

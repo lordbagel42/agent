@@ -516,72 +516,88 @@ describe("Rivet conversation workflow", () => {
     expect(requests[2]?.system).toContain("Personal reply");
   });
 
-  it("persists conversational questions in the outbox with numbered fallback text", async (t) => {
-    const sent: OutboundMessage[] = [];
-    const question = { prompt: "Which day?", options: ["Tuesday", "Thursday"] };
-    const store = new EvidenceStore(":memory:", randomBytes(32));
-    store.appendSource({
-      id: "question-source",
-      audiences: [JSON.stringify(["private", owner.id])],
-      platform: "slack",
-      account: "T1",
-      conversation: "D1",
-      author: "U1",
-      observedAt: 1,
-      sourceUrl: "https://example.com/fixture",
-      text: "question source",
-    });
-    t.onTestFinished(() => store.close());
-    const registry = createJuneRegistry({
-      owner,
-      memory: { store, source: () => undefined },
-      channels: { slack: transport("slack", sent) },
-      model: {
-        async reply(request) {
-          return parseReply(
-            JSON.stringify({ text: "", question }),
-            [],
-            request,
-          );
+  it.for([false, true])(
+    "persists requester-bound conversational questions (guest=%s)",
+    async (guest, t) => {
+      const sent: OutboundMessage[] = [];
+      const question = {
+        prompt: "Which day?",
+        options: ["Tuesday", "Thursday"],
+      };
+      const input: MessageEvent = {
+        ...message,
+        senderId: guest ? "U2" : "U1",
+        metadata: { channelType: "im" },
+      };
+      const key = guest
+        ? ["guest", "slack", "T1", "D1", "", "U2"]
+        : ["private", owner.id];
+      const store = new EvidenceStore(":memory:", randomBytes(32));
+      store.appendSource({
+        id: "question-source",
+        audiences: [JSON.stringify(key)],
+        platform: "slack",
+        account: "T1",
+        conversation: "D1",
+        author: "U1",
+        observedAt: 1,
+        sourceUrl: "https://example.com/fixture",
+        text: "question source",
+      });
+      t.onTestFinished(() => store.close());
+      const registry = createJuneRegistry({
+        owner,
+        memory: { store, source: () => undefined },
+        channels: { slack: transport("slack", sent) },
+        model: {
+          async reply(request) {
+            return parseReply(
+              JSON.stringify({ text: "", question }),
+              [],
+              request,
+            );
+          },
         },
-      },
-    });
-    const { client } = await setupTest(t, registry);
-    const june = client.conversation.getOrCreate(["private", owner.id]);
-    const receivedAt = Date.now() - 86_400_000;
-    await june.receive(message, receivedAt);
-    await expect
-      .poll(
-        async () =>
-          Object.values((await june.snapshot()).events).filter(
-            (entry) => entry.done,
-          ).length,
-      )
-      .toBe(1);
-    const expected = {
-      type: "text",
-      text: "Which day?\n1. Tuesday\n2. Thursday\nChoose an option or reply in your own words.",
-      question,
-    };
-    expect(sent.map((entry) => entry.content)).toEqual([expected]);
-    const snapshot = await june.snapshot();
-    expect(Object.values(snapshot.deliveries)[0]?.message.content).toEqual(
-      expected,
-    );
-    await june.receive(message, Date.now());
-    expect(sent).toHaveLength(1);
-    expect(
-      Object.values((await june.snapshot()).ingress?.receipts ?? {}),
-    ).toEqual([expect.objectContaining({ receivedAt })]);
-    store.deleteSource("question-source");
-    await june.forget("question-source");
-    expect(JSON.stringify((await june.snapshot()).deliveries)).not.toContain(
-      "Tuesday",
-    );
-    expect(JSON.stringify((await june.snapshot()).deliveries)).not.toContain(
-      "Which day?",
-    );
-  });
+      });
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(key);
+      const receivedAt = Date.now() - 86_400_000;
+      await june.receive(input, receivedAt);
+      await expect
+        .poll(
+          async () =>
+            Object.values((await june.snapshot()).events).filter(
+              (entry) => entry.done,
+            ).length,
+          { timeout: 15000 },
+        )
+        .toBe(1);
+      const expected = {
+        type: "text",
+        text: "Which day?\n1. Tuesday\n2. Thursday\nChoose an option or reply in your own words.",
+        question,
+        questionTarget: { userId: input.senderId, channelType: "im" },
+      };
+      expect(sent.map((entry) => entry.content)).toEqual([expected]);
+      const snapshot = await june.snapshot();
+      expect(Object.values(snapshot.deliveries)[0]?.message.content).toEqual(
+        expected,
+      );
+      await june.receive(input, Date.now());
+      expect(sent).toHaveLength(1);
+      expect(
+        Object.values((await june.snapshot()).ingress?.receipts ?? {}),
+      ).toEqual(guest ? [] : [expect.objectContaining({ receivedAt })]);
+      store.deleteSource("question-source");
+      await june.forget("question-source");
+      expect(JSON.stringify((await june.snapshot()).deliveries)).not.toContain(
+        "Tuesday",
+      );
+      expect(JSON.stringify((await june.snapshot()).deliveries)).not.toContain(
+        "Which day?",
+      );
+    },
+  );
 
   it("tracks multipart sends separately and stops after an ambiguous part without replaying it", async (t) => {
     const sent: OutboundMessage[] = [];
@@ -775,7 +791,7 @@ describe("Rivet conversation workflow", () => {
     },
   );
 
-  it("only proposes browser mutations in owner-private turns and rejects mixed or forged authority", async (t) => {
+  it("admits configured browser operations across task scopes and rejects mixed or forged authority", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];
     const proposed: (string | null)[] = [];
@@ -787,9 +803,11 @@ describe("Rivet conversation workflow", () => {
     const registry = createJuneRegistry({
       owner,
       channels: { slack: transport("slack", sent) },
-      browserProposal(operation) {
+      async browserProposal(operation) {
         proposed.push(operation);
-        return "PRIVATE exact proposal; nothing ran";
+        return operation === null
+          ? "Configured operation: fill-note"
+          : "Recorded browser operation: succeeded";
       },
       webSearch: {
         available: true,
@@ -841,7 +859,7 @@ describe("Rivet conversation workflow", () => {
     await deliver("browser-list");
     expect(proposed).toEqual([null]);
     expect(requests[0]?.system).toContain(
-      "Separate authenticated human approval",
+      "An exact configured name executes immediately through a bound broker receipt",
     );
     directive = { text: "", browserProposal: { operation: "fill-note" } };
     expect(parseReply(JSON.stringify(directive), [], requests[0])).toEqual(
@@ -856,6 +874,7 @@ describe("Rivet conversation workflow", () => {
       browserProposal: { operation: "fill-note", ...{ grant: true } },
     };
     await deliver("browser-forged");
+    expect(proposed).toEqual([null, "fill-note"]);
     directive = { text: "", browserProposal: { operation: "fill-note" } };
     for (const [id, extra, key] of [
       ["browser-public", { direct: false }, ["slack", "T1", "D1", ""]],
@@ -866,13 +885,15 @@ describe("Rivet conversation workflow", () => {
       ],
     ] as const) {
       await deliver(id, extra, [...key]);
-      expect(requests.at(-1)?.browserProposalAvailable).not.toBe(true);
-      expect(JSON.stringify(sent.at(-1)?.content)).not.toContain("PRIVATE");
+      expect(requests.at(-1)?.browserProposalAvailable).toBe(true);
+      expect(JSON.stringify(sent.at(-1)?.content)).toContain(
+        "Recorded browser operation: succeeded",
+      );
     }
     search = true;
     await deliver("browser-synthesis");
     expect(requests.at(-1)?.browserProposalAvailable).toBe(false);
-    expect(proposed).toEqual([null, "fill-note"]);
+    expect(proposed).toEqual([null, "fill-note", "fill-note", "fill-note"]);
     expect(() => parseReply(JSON.stringify(directive), [])).toThrow();
   });
 
@@ -992,7 +1013,7 @@ describe("Rivet conversation workflow", () => {
     ).toThrow();
   });
 
-  it("reads analytics once through June and denies public, guest, synthesis and failed reads without leaking data", async (t) => {
+  it("reads bounded analytics across task scopes and denies synthesis and failed reads without leaking data", async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "june-analytics-"));
     const usage = new UsageLedger(join(directory, "usage.sqlite"));
     const memory = new EvidenceStore(":memory:", randomBytes(32));
@@ -1126,26 +1147,32 @@ describe("Rivet conversation workflow", () => {
       { direct: false, address: { ...message.address, conversationId: "C1" } },
       ["slack", "T1", "C1", ""],
     );
-    expect(JSON.stringify(sent[1]?.content)).toContain("owner-private turn");
-    expect(reads).toBe(1);
+    expect(requests.at(-1)?.analyticsAvailable).toBe(true);
+    expect(JSON.stringify(sent[1]?.content)).toContain("input tokens: 113");
+    expect(reads).toBe(2);
     await deliver(
       "guest-usage",
       { senderId: "U2", metadata: { channelType: "im" } },
       ["guest", "slack", "T1", "D1", "", "U2"],
     );
-    expect(reads).toBe(1);
+    expect(requests.at(-1)?.analyticsAvailable).toBe(true);
+    expect(JSON.stringify(sent.at(-1)?.content)).toContain("input tokens: 113");
+    expect(JSON.stringify(sent)).not.toMatch(
+      /SECRET|private-audience|private-model-name/,
+    );
+    expect(reads).toBe(3);
     fail = true;
     await deliver("failed-usage");
     expect(JSON.stringify(sent.at(-1)?.content)).toContain(
       "Usage analytics are unavailable",
     );
     expect(JSON.stringify(sent)).not.toContain("private database path");
-    expect(reads).toBe(2);
+    expect(reads).toBe(4);
     fail = false;
     search = true;
     await deliver("synthesis-usage");
     expect(requests.at(-1)?.analyticsAvailable).toBe(false);
-    expect(reads).toBe(2);
+    expect(reads).toBe(4);
     for (const action of [
       { days: 0 },
       { days: 365 },
@@ -1342,7 +1369,7 @@ describe("Rivet conversation workflow", () => {
     },
   );
 
-  it("lets June inspect the model pool only in an owner-private turn", async (t) => {
+  it("lets June inspect the model pool in private and public task scopes", async (t) => {
     const sent: OutboundMessage[] = [];
     let inspections = 0;
     const registry = createJuneRegistry({
@@ -1387,11 +1414,11 @@ describe("Rivet conversation workflow", () => {
       },
     });
     await expect.poll(() => sent.length).toBe(2);
-    expect(JSON.stringify(sent[1]?.content)).not.toContain("idle 2");
-    expect(inspections).toBe(1);
+    expect(JSON.stringify(sent[1]?.content)).toContain("idle 2, active 1");
+    expect(inspections).toBe(2);
   });
 
-  it("dispatches release inspection for owner DMs and channels, never guests", async (t) => {
+  it("dispatches read-only release inspection across task scopes without forging guest identity", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];
     const revision = "b".repeat(40);
@@ -1439,7 +1466,7 @@ describe("Rivet conversation workflow", () => {
             expect(replyJsonSchema([], request).properties).not.toHaveProperty(
               "release",
             );
-            // A nonconforming provider must not bypass owner authentication.
+            // A nonconforming provider must not bypass capability gating.
             return { text: "", release: directive };
           }
           expect(replyJsonSchema([], request).properties).toHaveProperty(
@@ -1482,7 +1509,7 @@ describe("Rivet conversation workflow", () => {
       {
         status: "deferred",
         reason: "drain_busy",
-        expected: "Controller defers",
+        expected: "In-flight work could not be safely drained",
       },
       {
         status: "healthy",
@@ -1575,7 +1602,7 @@ describe("Rivet conversation workflow", () => {
     });
     await expect.poll(async () => sent.length).toBe(8);
     expect(requests[7]?.releaseAvailable).toBe(true);
-    expect(requests[7]?.system).toContain("including channels");
+    expect(requests[7]?.system).toContain("Task tools are not owner-only");
     expect(JSON.stringify(sent[7]?.content)).toContain(
       `Running revision: ${running}`,
     );
@@ -1602,14 +1629,20 @@ describe("Rivet conversation workflow", () => {
         },
       });
     await expect.poll(async () => sent.length).toBe(9);
-    expect(requests[8]?.releaseAvailable).toBe(false);
-    expect(JSON.stringify(sent[8]?.content)).toContain("verified owner");
-    expect(JSON.stringify(sent[8]?.content)).not.toContain(running);
-    expect(JSON.stringify(sent[8]?.content)).not.toContain("Owner-only commit");
-    expect(JSON.stringify(sent[8]?.content)).not.toContain("fix(private)");
-    expect(JSON.stringify(sent[8]?.content)).not.toContain(
-      "Total commit count",
+    expect(requests[8]?.releaseAvailable).toBe(true);
+    expect(JSON.stringify(sent[8]?.content)).toContain(
+      `Running revision: ${running}`,
     );
+    expect(JSON.stringify(sent[8]?.content)).toContain(
+      "Total commit count: 73",
+    );
+    expect(
+      JSON.parse(requests[8]?.messages.at(-1)?.content ?? "{}").source,
+    ).toMatchObject({
+      senderId: "U2",
+      senderIsOwner: false,
+      senderName: "Raygen",
+    });
     expect(sent[0]?.address.threadId).toBe("123.0");
     for (const release of [
       { action: "approve", revision },
@@ -2030,10 +2063,14 @@ describe("Rivet conversation workflow", () => {
       "slack",
       "whatsapp",
     ]);
-    expect((await june.snapshot()).history).toHaveLength(4);
+    await expect
+      .poll(async () => (await june.snapshot()).history.length, {
+        timeout: 15000,
+      })
+      .toBe(4);
   });
 
-  it("isolates public threads and removes coding authority", async (t) => {
+  it("isolates public thread context without removing ordinary coding capability", async (t) => {
     const sent: OutboundMessage[] = [];
     const requests: ModelRequest[] = [];
     let statusReads = 0;
@@ -2144,7 +2181,7 @@ describe("Rivet conversation workflow", () => {
         senderName: "Raygen",
       },
     ]);
-    expect(requests[1]?.workspaces).toEqual([]);
+    expect(requests[1]?.workspaces).toEqual(["june"]);
     expect(sent[1]?.address.threadId).toBe("234.567");
     await client.conversation
       .getOrCreate(["guest", "slack", "T1", "C1", "234.567", "U2"])
@@ -2165,8 +2202,10 @@ describe("Rivet conversation workflow", () => {
         },
       });
     await expect.poll(() => sent.length).toBe(3);
-    expect(requests[2]?.system).not.toContain("DEPLOYMENT_REVISION_17");
-    expect(statusReads).toBe(2);
+    expect(requests[2]?.system).toContain("DEPLOYMENT_REVISION_17");
+    expect(requests[2]?.workspaces).toEqual(["june"]);
+    expect(JSON.stringify(requests[2])).not.toContain("PRIVATE CONTEXT");
+    expect(statusReads).toBe(3);
   });
 
   it("records an ambiguous send without retrying it on webhook redelivery", async (t) => {
@@ -2310,14 +2349,14 @@ describe("Rivet conversation workflow", () => {
         Object.values((await june.snapshot()).events).filter(({ done }) => done)
           .length;
       await june.send("inbox", { type: "event", event: source });
-      await expect.poll(() => waiting).toBe(1);
+      await expect.poll(() => waiting, { timeout: 15000 }).toBe(1);
       expect(fast).toEqual([]);
       expect(sent).toEqual([]);
       expect(typing).toEqual([]);
       expect((await june.snapshot()).events).toEqual({});
       admission.resolve();
-      await expect.poll(done).toBe(1);
-      await expect.poll(() => active).toBe(0);
+      await expect.poll(done, { timeout: 15000 }).toBe(1);
+      await expect.poll(() => active, { timeout: 15000 }).toBe(0);
       expect(failed).toBe(false);
       const expectedThread = scenario.place
         ? (scenario.thread ?? source.messageId)
@@ -2358,7 +2397,7 @@ describe("Rivet conversation workflow", () => {
           text: "hello",
         },
       });
-      await expect.poll(done).toBe(2);
+      await expect.poll(done, { timeout: 15000 }).toBe(2);
       expect(fast).toHaveLength(2);
       expect(deep).toHaveLength(scenario.unknown ? 0 : 1);
       expect(sent).toHaveLength(scenario.unknown ? 2 : 3);

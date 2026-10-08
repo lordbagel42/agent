@@ -73,7 +73,7 @@ export function parseReflectionReviewCommand(
     : undefined;
 }
 
-/** Internal IDs embed evidence IDs; private review uses bounded opaque tokens. */
+/** Internal IDs embed evidence IDs; scoped review uses bounded opaque tokens. */
 export function reflectionCandidateId(id: string): string {
   return createHash("sha256").update(id).digest("hex");
 }
@@ -242,7 +242,7 @@ export function createReflectionActor(
     return structuredClone(result.evidence);
   }
 
-  /** With a scope, accept only opaque aliases in the configured private audience.
+  /** With a host scope, accept only opaque aliases in that exact audience.
    * Without one, preserve the trusted operator's legacy internal-ID API.
    */
   async function readPublication(
@@ -250,12 +250,7 @@ export function createReflectionActor(
     id: string,
     scope?: string,
   ) {
-    if (
-      scope !== undefined &&
-      (scope !== JSON.stringify(["private", deps.ownerId]) ||
-        !/^[a-f0-9]{64}$/.test(id))
-    )
-      return null;
+    if (scope !== undefined && !/^[a-f0-9]{64}$/.test(id)) return null;
     await c.vars.prepareCandidates();
     const found =
       scope === undefined
@@ -798,10 +793,14 @@ export function createReflectionActor(
     },
     queues: { wake: queue<{ wake: true }>() },
     actions: {
+      /** Scope is authenticated by the host, never selected by the model input.
+       * Omission preserves the legacy owner-private caller contract.
+       */
       requestSkillEvaluation: async (
         c,
         input: NonNullable<CompanionReply["skillEvaluationRequest"]>,
         expectedDeletionRevision: number,
+        scope = JSON.stringify(["private", deps.ownerId]),
       ) => {
         if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
           throw new Error("Wrong reflection owner");
@@ -835,7 +834,6 @@ export function createReflectionActor(
           !c.state.liveActive &&
           !isQuiet(Date.now(), deps.policy.quiet);
         if (!current()) return { status: "unavailable" as const };
-        const scope = JSON.stringify(["private", deps.ownerId]);
         const heldOutEvidenceIds = [...input.heldOutEvidenceIds].sort();
         const read = await evaluationInput(
           c,
@@ -900,12 +898,14 @@ export function createReflectionActor(
           checkedAt: Date.now(),
         };
       },
-      /** June's explicit owner-private request. No model-controlled scope,
-       * evidence body or immediate mode; the existing scheduler owns admission.
+      /** June's explicit request in the host-authenticated scope. No model-controlled
+       * scope, evidence body or immediate mode; the scheduler owns admission.
+       * Omission preserves the legacy owner-private caller contract.
        */
       request: async (
         c,
         input: NonNullable<CompanionReply["reflectionRequest"]>,
+        scope = JSON.stringify(["private", deps.ownerId]),
       ) => {
         if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
           throw new Error("Wrong reflection owner");
@@ -922,7 +922,7 @@ export function createReflectionActor(
         )
           throw new Error("Invalid reflection request");
         const request: ReflectionInput = {
-          scope: JSON.stringify(["private", deps.ownerId]),
+          scope,
           evidenceIds: [...new Set(input.evidenceIds)].sort(),
           mode: input.mode,
           kind: input.kind ?? "reflection",
@@ -967,18 +967,40 @@ export function createReflectionActor(
         c.vars.active.get(id)?.abort();
         return true;
       },
-      /** Trusted owner-private revocation, not cancellation or evidence recall.
+      /** Trusted scope-bound revocation, not cancellation or evidence recall.
        * No evidence/attention gate may prevent revoking an extant candidate.
        */
       rejectCandidate: async (c, scope: string, id: string) => {
         if (
           c.key.length !== 1 ||
           c.key[0] !== deps.ownerId ||
-          scope !== JSON.stringify(["private", deps.ownerId]) ||
           !/^[a-f0-9]{64}$/.test(id)
         )
           return false;
         if (c.state.rejectedCandidateIds?.includes(id)) {
+          // The body is gone, but retained receipts still bind duplicate
+          // revocation to its original audience without requiring live evidence.
+          const invocation = Object.keys(c.state.invocations).find(
+            (key) => reflectionCandidateId(key) === id,
+          );
+          if (!invocation) return false;
+          try {
+            const [requestId, attempt] = JSON.parse(invocation);
+            if (
+              !Number.isSafeInteger(attempt) ||
+              attempt < 1 ||
+              invocation !== JSON.stringify([requestId, attempt]) ||
+              !c.state.reflection.requests.some(
+                (request) =>
+                  request.id === requestId &&
+                  request.scope === scope &&
+                  attempt <= request.attempts,
+              )
+            )
+              return false;
+          } catch {
+            return false;
+          }
           deps.rejectProposals?.(scope, id);
           // A duplicate must still await a flush that may have failed earlier.
           await c.vars.persist();
@@ -1094,19 +1116,15 @@ export function createReflectionActor(
         !c.state.reflection.requests.some((request) =>
           ["running", "cancelling"].includes(request.status),
         ),
-      /** Owner-private metadata only, with the same current-evidence read gates.
+      /** Scope-bound metadata only, with the same current-evidence read gates.
        * Never use the unvalidated status().candidateIds as reviewable candidates.
        */
       listCandidates: async (
         c,
         scope: string,
       ): Promise<ReflectionCandidateList> => {
-        if (
-          c.key.length !== 1 ||
-          c.key[0] !== deps.ownerId ||
-          scope !== JSON.stringify(["private", deps.ownerId])
-        )
-          throw new Error("Private reflection review required");
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
+          throw new Error("Wrong reflection owner");
         await c.vars.prepareCandidates();
         const epoch = c.state.epoch;
         const blocked = (): ReflectionCandidateList["status"] | undefined =>
@@ -1183,16 +1201,12 @@ export function createReflectionActor(
           truncated: truncated || current.length > 10,
         };
       },
-      /** Private metadata only. Current inputs are not proof an attempt succeeded. */
+      /** Scope-bound metadata only. Current inputs do not prove attempt success. */
       curiosityProgress: async (
         c,
         scope: string,
       ): Promise<CuriosityProgress> => {
-        if (
-          c.key.length !== 1 ||
-          c.key[0] !== deps.ownerId ||
-          scope !== JSON.stringify(["private", deps.ownerId])
-        )
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId)
           throw new Error("Wrong reflection audience");
         const requests = c.state.reflection.requests.filter(
           (request) => request.scope === scope && request.kind === "curiosity",
@@ -1243,13 +1257,15 @@ export function createReflectionActor(
         return { truncated: requests.length > 10, rows };
       },
       /** Inert staging may read an older publication, never re-arm its epoch.
-       * No asynchronous gap is allowed between the final fence and store write. */
+       * No asynchronous gap is allowed between the final fence and store write.
+       * Scope comes from the host; omission preserves legacy private callers. */
       stageInterruption: async (
         c,
         event: MessageEvent,
         input: { candidateId: string; userId: string; text: string },
         expectedDeletionRevision: number,
         retained = false,
+        scope = JSON.stringify(["private", deps.ownerId]),
       ): Promise<string> => {
         const unavailable =
           "That interruption candidate is unavailable or blocked. Nothing was staged or sent.";
@@ -1262,7 +1278,6 @@ export function createReflectionActor(
           isQuiet(Date.now(), deps.policy.quiet) ||
           expectedDeletionRevision !== (deps.deletionRevision?.() ?? 0);
         if (!deps.stageInterruption || blocked()) return unavailable;
-        const scope = JSON.stringify(["private", deps.ownerId]);
         const read = await (retained
           ? reviewCandidate(c, input.candidateId, scope)
           : readCandidate(c, input.candidateId, scope));
@@ -1321,8 +1336,7 @@ export function createReflectionActor(
         if (
           !deps.evidenceCurrent ||
           c.key.length !== 1 ||
-          c.key[0] !== deps.ownerId ||
-          scope !== JSON.stringify(["private", deps.ownerId])
+          c.key[0] !== deps.ownerId
         )
           return null;
         await c.vars.prepareCandidates();
@@ -1352,7 +1366,6 @@ export function createReflectionActor(
           !deps.evidenceCurrent ||
           c.key.length !== 1 ||
           c.key[0] !== deps.ownerId ||
-          scope !== JSON.stringify(["private", deps.ownerId]) ||
           references.length > 10 ||
           new Set(references.map((ref) => ref.id)).size !== references.length
         )
@@ -1366,17 +1379,12 @@ export function createReflectionActor(
             reviewDto(read)?.reference.digest === references[index]?.digest,
         );
       },
-      /** Exact owner-private inspection, not evidence or authorization for an effect.
+      /** Exact scope-bound inspection, not evidence or authorization for an effect.
        * Project only after current provenance checks; omit the whole result if it
        * exceeds the byte budget rather than silently clipping the rationale.
        */
       inspectCandidate: async (c, scope: string, id: string) => {
-        if (
-          c.key.length !== 1 ||
-          c.key[0] !== deps.ownerId ||
-          scope !== JSON.stringify(["private", deps.ownerId])
-        )
-          return null;
+        if (c.key.length !== 1 || c.key[0] !== deps.ownerId) return null;
         const read = await reviewWithEvaluation(c, id, scope);
         return read ? reviewDto(read) : null;
       },

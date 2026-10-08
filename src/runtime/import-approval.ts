@@ -44,9 +44,9 @@ export function proposeImportApproval(
       body: { confirmed: true, digest, expectedPages },
     },
   };
-  const text = `One-page import proposal at ${new Date().toISOString()}. No import was started.\n${JSON.stringify(review)}\nfrom/to are configured epoch milliseconds [from,to). A page is not complete account history. Review the exact coverage, digest and expectedPages above. Only an explicit human confirmation using the owner bearer credential at the operator endpoint can start at most one page. This proposal is not authorization; June cannot confirm it. Never send credentials in chat. Changed coverage, credential account, page progress or a host restart invalidates the confirmation; matching display names do not establish account identity. Request a fresh proposal after any such change. Further pages need a fresh review and confirmation.`;
+  const text = `One-page import review at ${new Date().toISOString()}. No import was started.\n${JSON.stringify(review)}\nfrom/to are configured epoch milliseconds [from,to). A page is not complete account history. When importCancel task controls are exposed, June can review the exact selection and decide one start-page using its current digest and expectedPages, without human confirmation. The operator confirmation payload above is an alternative authenticated route, not a task prerequisite; never send credentials in chat. Preserve the configured retention audience. Changed coverage, credential account, page progress or host restart requires a fresh review; matching display names do not establish account identity. Further pages need a new bounded decision, never automatic continuation or retry. Unknown outcomes require operator reconciliation.`;
   // Never offer an approval when the exact coverage cannot fit in the receipt.
   if (text.length > 3500)
-    return "The exact import review is too large for one reply. No approval was proposed and no import was started. Use authenticated GET /operator/imports to review the full coverage before explicitly confirming one page there.";
+    return "The exact import review is too large for one reply. No import was started. Use authenticated GET /operator/imports for the full review; do not infer missing coverage or execute from a partial review.";
   return text;
 }

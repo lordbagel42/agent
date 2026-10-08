@@ -39,6 +39,8 @@ interface Proposal {
   status: "pending" | "approved" | "denied" | "revoked";
   created: number;
   expires: number;
+  /** Fresh model choice, not a migration of historical pending approvals. */
+  runtimeSelected?: true;
   /** Private source binding, not permission. Generic outreach must not send it. */
   reflection?: InterruptionReference;
   /** Caller admission and receiver dispatch are separate durable boundaries. */
@@ -48,7 +50,7 @@ interface Proposal {
   >;
 }
 
-/** Permissions are explicit owner decisions, never inferred relationship scores.
+/** Durable social choices, legacy disclosure decisions, and delivery receipts.
  * This private host ledger must not be exposed through a guest/operator proxy. */
 export class SocialPermissions {
   private db: DatabaseSync;
@@ -203,6 +205,7 @@ export class SocialPermissions {
       : this.grants(event);
     return JSON.stringify(rows);
   }
+  /** Legacy explicit scope records, not a prerequisite for ordinary task tools. */
   permits(event: MessageEvent, tool: "deep" | "webSearch") {
     return this.grants(event).some(
       (row) =>
@@ -289,6 +292,40 @@ export class SocialPermissions {
           };
         return check?.();
       },
+    );
+  }
+  private async sendOutreach(
+    proposal: Proposal,
+    canStartAction?: () => boolean,
+    isCurrent: () => boolean = () => true,
+    canDeliver?: () => Promise<boolean>,
+  ): Promise<SendResult> {
+    if (proposal.action.kind !== "outreach" || proposal.reflection)
+      return { status: "rejected", code: "invalid_outreach", retryable: false };
+    return this.send(
+      `${proposal.id}:outreach`,
+      {
+        channel: "slack",
+        accountId: proposal.accountId,
+        conversationId: proposal.action.userId,
+      },
+      proposal.action.text,
+      canStartAction,
+      () => {
+        const current = this.get(proposal.id);
+        if (
+          current?.status !== "approved" ||
+          current.expires <= this.now() ||
+          current.reflection
+        )
+          return {
+            status: "rejected",
+            code: "outreach_invalidated",
+            retryable: false,
+          };
+      },
+      isCurrent,
+      canDeliver,
     );
   }
   /** Recognized private approval commands must not run inference/extraction,
@@ -450,15 +487,7 @@ export class SocialPermissions {
       return `Approved interruption: delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived; uncertain delivery is never retried."}`;
     }
     if (proposal.action.kind === "outreach") {
-      const result = await this.send(
-        `${proposal.id}:outreach`,
-        {
-          channel: "slack",
-          accountId: proposal.accountId,
-          conversationId: proposal.action.userId,
-        },
-        proposal.action.text,
-      );
+      const result = await this.sendOutreach(proposal);
       observeDelivery?.(result);
       return `Approved outreach: delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived; I will not automatically resend an uncertain delivery."}`;
     }
@@ -505,8 +534,9 @@ export class SocialPermissions {
     candidate: (ReflectionCandidate & { evidenceIds: string[] }) | null,
     sendEligible: boolean,
   ): string {
-    if (!(this.owner(event) && event.direct))
-      return "Interruption proposals require Raygen's private conversation.";
+    const route = routeEvent(event, this.options.owner);
+    if (!this.authorized(event) || !route)
+      return "This conversation is not authorized. Nothing was staged or sent.";
     const parsed = socialActionSchema.safeParse({
       kind: "outreach",
       userId: input.userId,
@@ -524,7 +554,7 @@ export class SocialPermissions {
     if (
       !candidate ||
       reflectionCandidateId(candidate.id) !== input.candidateId ||
-      candidate.scope !== JSON.stringify(["private", this.options.owner.id]) ||
+      candidate.scope !== JSON.stringify(route.key) ||
       candidate.kind !== "interruption-candidate" ||
       candidate.hypothesisOnly ||
       candidate.decision.answer !== "yes" ||
@@ -576,7 +606,7 @@ export class SocialPermissions {
     if (proposal.action.kind !== "outreach")
       return "That interruption proposal is unavailable.";
     const quoted = JSON.stringify(proposal.action.text);
-    return `Interruption proposal ${id}. Exact recipient: ${proposal.action.userId}. Exact message (JSON quoted):\n${quoted}\nCandidate ${input.candidateId} is a generated hypothesis, not permission. ${sendEligible ? `Authorize one guarded delivery with a fresh plain !allow ${id} in this private conversation. Eligibility is checked again immediately before sending.` : "The original candidate is not currently send-eligible; approving this draft alone cannot send it."} No outreach or separate notification was sent, and no access was granted. Deny with !deny ${id} or revoke with !revoke ${id}. Expires at ${new Date(proposal.expires).toISOString()}; repeated staging keeps the original recipient and message.`;
+    return `Interruption proposal ${id}. Exact recipient: ${proposal.action.userId}. Exact message (JSON quoted):\n${quoted}\nCandidate ${input.candidateId} is a generated hypothesis, not permission. This is inert staging, not a prerequisite for ordinary social.outreach. June may use that exposed tool directly after judging task safety and deliberately retrieving appropriate scoped context; do not automatically send or promote this draft. ${sendEligible ? "The candidate is currently eligible for the legacy guarded delivery path; eligibility is checked again immediately before sending." : "The original candidate is not currently send-eligible; approving this draft alone cannot send it."} No outreach or separate notification was sent, and no access was granted. Optional legacy commands for Raygen in his private conversation: !allow ${id}, !deny ${id}, !revoke ${id}. These are not required for ordinary tasks. Expires at ${new Date(proposal.expires).toISOString()}; repeated staging keeps the original recipient and message.`;
   }
   async propose(
     event: MessageEvent,
@@ -590,10 +620,8 @@ export class SocialPermissions {
       return "This conversation is not authorized.";
     const action = socialActionSchema.parse(input);
     if (action.kind === "interruption_proposal")
-      return "Interruption staging requires the current private reflection gate. Nothing was staged or sent.";
-    const owner = this.owner(event);
+      return "Interruption staging requires the current scoped reflection gate. Nothing was staged or sent. This inert draft is not a prerequisite for ordinary social.outreach.";
     if (action.kind === "post") {
-      if (!owner) return "Only Raygen's turns can post to other destinations.";
       const result = await this.send(
         JSON.stringify([event.address.accountId, operationId, "post"]),
         {
@@ -610,95 +638,46 @@ export class SocialPermissions {
       );
       return `Post delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived or repeat an uncertain send."}`;
     }
-    if (
-      action.userId === this.ownerSlackId ||
-      action.userId === this.options.botUserId
-    )
-      return "Choose a human recipient other than Raygen or June.";
-    // Private material may only originate in an owner-private turn, and only
-    // the frozen, explicitly reviewed excerpt will be shared after approval.
-    if (action.kind === "outreach" && !(owner && event.direct))
-      return "Outreach requires Raygen's private request and approval.";
-    if (action.kind === "request_access") {
-      if (
-        !owner &&
-        (action.userId !== event.senderId ||
-          action.conversationId !== event.address.conversationId ||
-          action.sharedContext !== "")
-      )
-        return "I can request tools for this conversation, but only Raygen can propose private context to share.";
-      if (action.sharedContext && !(owner && event.direct))
-        return "Propose shareable context privately with Raygen.";
-    }
     const id = createHash("sha256")
       .update(JSON.stringify([event.address.accountId, operationId, "social"]))
       .digest("hex")
       .slice(0, 24);
-    let proposal = this.get(id);
-    if (!proposal) {
-      // A guest cannot turn a mention flood into an owner-notification flood.
-      const recent = this.rows().filter(
-        (row) =>
-          row.created > this.now() - DAY &&
-          row.accountId === event.address.accountId,
-      );
-      if (
-        !owner &&
-        (recent.filter((row) => row.requester === event.senderId).length >= 2 ||
-          recent.filter((row) => row.requester !== this.ownerSlackId).length >=
-            20)
-      )
-        return "I've reached the approval-request limit. Please ask Raygen directly; no extra access was granted.";
-      proposal = {
-        id,
-        accountId: event.address.accountId,
-        requester: event.senderId,
-        action,
-        status: "pending",
-        created: this.now(),
-        expires: this.now() + DAY,
-      };
-      this.save(proposal);
-    }
-    if (proposal.status !== "pending" || proposal.expires <= this.now())
-      return `Request ${id} is no longer pending.`;
-    // Never reconstruct a replayed proposal from fresh model output.
-    const frozen = proposal.action;
-    const dm =
-      owner ||
-      event.direct ||
-      frozen.kind === "outreach" ||
-      frozen.via === "dm";
-    const address: Address = dm
-      ? {
-          channel: "slack",
-          accountId: proposal.accountId,
-          conversationId: this.ownerSlackId,
-        }
-      : {
-          ...event.address,
-          threadId: event.address.threadId ?? event.messageId,
+    if (action.kind === "outreach") {
+      if (action.userId === this.options.botUserId)
+        return "Choose a recipient other than June.";
+      let proposal = this.get(id);
+      if (!proposal) {
+        proposal = {
+          id,
+          accountId: event.address.accountId,
+          requester: event.senderId,
+          action,
+          status: "approved",
+          runtimeSelected: true,
+          created: this.now(),
+          expires: this.now() + DAY,
         };
-    // Model/user prose must not create Slack broadcasts, links or extra pings
-    // in the approval preview. The approved outreach retains its exact bytes.
-    const quoted = (text: string) =>
-      JSON.stringify(text)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;");
-    const summary =
-      frozen.kind === "outreach"
-        ? `Send one DM to <@${frozen.userId}>. Exact message (JSON quoted):\n${quoted(frozen.text)}`
-        : `Allow <@${frozen.userId}> in conversation ${frozen.conversationId} for 30 days. Topic (purpose, not an access classifier): ${quoted(frozen.topic)}\nTools: ${frozen.tools.join(", ") || "none"}. This permits those tools throughout that conversation, not just one thread.\nExact shareable context (visible to that conversation): ${quoted(frozen.sharedContext)}\nNo access to private memory, private search, coding, or administrative tools.`;
-    const result = await this.send(
-      `${id}:notice`,
-      address,
-      `<@${this.ownerSlackId}> May I? Request ${id}, requested by <@${proposal.requester}>.\n${summary}\nNothing is authorized yet. Reply with exactly !allow ${id} or !deny ${id} (mention me too if replying in a channel). Request expires in 24 hours.`,
-      canStartAction,
-      undefined,
-      isCurrent,
-      canDeliver,
-    );
-    return `Approval request ${id}: notification ${result.status}. No extra permission is active. ${result.status === "sent" ? "Waiting for Raygen." : "I cannot confirm Raygen received it; ask him directly."}`;
+        this.save(proposal);
+      }
+      // Old drafts (especially reflection candidates) remain inert. A new
+      // model choice may replay only its own frozen, still-valid operation.
+      if (
+        !proposal.runtimeSelected ||
+        proposal.reflection ||
+        proposal.status !== "approved" ||
+        proposal.expires <= this.now()
+      )
+        return `Request ${id} is ${proposal.status} or requires its original decision path. Nothing was sent.`;
+      const result = await this.sendOutreach(
+        proposal,
+        canStartAction,
+        isCurrent,
+        canDeliver,
+      );
+      return `Outreach delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived or repeat an uncertain send."}`;
+    }
+    // Preserve historical grants and commands, but never turn a legacy model
+    // action into a new permission request or promote a historical proposal.
+    return "request_access is obsolete: task capabilities are already available through the exposed tools. Use those tools directly and deliberately retrieve appropriate scoped context, preserving source and audience boundaries. No approval request was created, no notification was sent, and no permissions or shared context were changed.";
   }
 }

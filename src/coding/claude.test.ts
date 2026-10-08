@@ -276,6 +276,74 @@ it("awaits durable session admission before launch and never launches on failed 
   expect(query).toHaveBeenCalledOnce();
 });
 
+it.each([false, true])(
+  "rechecks host validity after onThread without signal cancellation (invalidated: %s)",
+  async (invalidate) => {
+    const saved = Promise.withResolvers<void>();
+    const observed = Promise.withResolvers<void>();
+    const query = vi.fn<ClaudeQuery>((request) => ({
+      close() {},
+      async *[Symbol.asyncIterator]() {
+        yield init(request.options.sessionId ?? "");
+        yield result(request.options.sessionId ?? "");
+      },
+    }));
+    let revision = 0;
+    const frozenRevision = revision;
+    const run = createClaudeRuntime({ ...config, query }).run({
+      ...input,
+      assertCurrent: () => {
+        if (revision !== frozenRevision) throw new Error("stale context");
+      },
+      onThread: async () => {
+        observed.resolve();
+        await saved.promise;
+      },
+    });
+    const outcome = run.then(
+      (value) => ({ value, error: undefined }),
+      (error: unknown) => ({ value: undefined, error }),
+    );
+    await observed.promise;
+    expect(query).not.toHaveBeenCalled();
+    if (invalidate) revision++;
+    saved.resolve();
+    const completed = await outcome;
+    expect(input.signal.aborted).toBe(false);
+    expect(query).toHaveBeenCalledTimes(invalidate ? 0 : 1);
+    if (invalidate) {
+      expect(completed.value).toBeUndefined();
+      expect(completed.error).toMatchObject({ code: "stream_failed" });
+    } else {
+      expect(completed.error).toBeUndefined();
+      expect(completed.value?.report).toContain("Changed the code");
+    }
+  },
+);
+
+it("rechecks host validity after prepareState when resuming without onThread", async () => {
+  const query = vi.fn<ClaudeQuery>((request) => ({
+    close() {},
+    async *[Symbol.asyncIterator]() {
+      yield init(request.options.resume ?? "");
+      yield result(request.options.resume ?? "");
+    },
+  }));
+  let current = true;
+  const run = createClaudeRuntime({ ...config, query }).run({
+    ...input,
+    threadId: SESSION,
+    assertCurrent: () => {
+      if (!current) throw new Error("stale context");
+    },
+  });
+  current = false;
+  await expect(run).rejects.toMatchObject({ code: "stream_failed" });
+  expect(input.signal.aborted).toBe(false);
+  expect(input.onThread).not.toHaveBeenCalled();
+  expect(query).not.toHaveBeenCalled();
+});
+
 it("resumes only the saved UUID and rejects any replacement without relaunching", async () => {
   const close = vi.fn();
   let sessionId = SESSION;

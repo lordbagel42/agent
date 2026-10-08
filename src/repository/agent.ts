@@ -46,7 +46,7 @@ export function createRepositoryAgent(options: {
         deadline - performance.now() >
           calls * (options.timeoutMs ?? 75_000) + 5000;
       const budgetReport =
-        "Repository specialist stopped before another model call: insufficient execution time remains for a specialist report and worker summary. No new inference was started. Summarize any earlier confirmed source report with its coverage gaps; do not start another consultation in this task. A fresh owner request can ask a narrower follow-up.";
+        "Repository specialist stopped before another model call: insufficient execution time remains for a specialist report and worker summary. No new inference was started. Summarize any earlier confirmed source report with its coverage gaps; do not start another consultation in this task. A fresh request can ask a narrower follow-up.";
       guard();
       if (!hasTime(3)) return budgetReport;
       let snapshot: RepositorySnapshot;

@@ -17,11 +17,24 @@ import { EvidenceStore, type Source } from "../memory/store.js";
 import { parseReply } from "../models/provider.js";
 import { ConversationContinuity } from "./continuity.js";
 import { executionKey } from "./execution.js";
+import { runExecutionCapability } from "./execution-capabilities.js";
 import type { ExecutionContext } from "./execution-context.js";
 import { createLatencyDiagnostics } from "./latency.js";
 import { createLifecycle } from "./lifecycle.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
-import { executionDispatchText } from "./scope-catalog.js";
+import {
+  createScopeCatalogAuthority,
+  executionDispatchText,
+} from "./scope-catalog.js";
+
+vi.mock("./execution-capabilities.js", async (importOriginal) => {
+  const real =
+    await importOriginal<typeof import("./execution-capabilities.js")>();
+  return {
+    ...real,
+    runExecutionCapability: vi.fn(real.runExecutionCapability),
+  };
+});
 
 const notification = vi.hoisted(() => ({
   before: undefined as undefined | (() => Promise<void>),
@@ -128,6 +141,284 @@ const event = (id: string, text: string): MessageEvent => ({
   senderId: "U1",
   direct: true,
   text,
+});
+
+const taskOrigins = [
+  ["owner DM", "U1", true, ["private", "raygen"]],
+  ["owner channel", "U1", false, ["slack", "T1", "C1", ""]],
+  ["guest DM", "U2", true, ["guest", "slack", "T1", "D1", "", "U2"]],
+  ["guest channel", "U2", false, ["guest", "slack", "T1", "C1", "", "U2"]],
+] as const;
+
+function taskOrigin(senderId: string, direct: boolean): MessageEvent {
+  return {
+    ...event("601", "Review the current task"),
+    senderId,
+    direct,
+    botMentioned: true,
+    address: {
+      channel: "slack",
+      accountId: "T1",
+      conversationId: direct ? "D1" : "C1",
+    },
+    metadata: { channelType: direct ? "im" : "channel" },
+  };
+}
+
+it.each(taskOrigins)(
+  "validates delegated authority without widening the %s scope",
+  (_name, senderId, direct, key) => {
+    const store = new EvidenceStore(":memory:", randomBytes(32));
+    try {
+      const scope = [...key];
+      const audience = JSON.stringify(scope);
+      const source = taskOrigin(senderId, direct);
+      const evidence = slackSource({
+        workspace: "T1",
+        channel: source.address.conversationId,
+        ts: source.messageId,
+        author: senderId,
+        text: source.text,
+        workspaceUrl: "https://fixture.slack.com/",
+        audiences: [audience],
+      });
+      store.appendSource(evidence);
+      let referenceCurrent = true;
+      const authority = createScopeCatalogAuthority({
+        owner,
+        store,
+        current: () => referenceCurrent,
+        personalityDigest: () => "current-personality",
+      });
+      const context: ExecutionContext = {
+        version: 1,
+        scopeKey: scope,
+        audience,
+        conversationKey: scope,
+        originEventId: source.id,
+        deletionRevision: store.deletionRevision(),
+        sourceIds: [evidence.id],
+        contextSourceIds: [],
+        personality: "current-personality",
+        capabilities: { browserTaskAvailable: true },
+      };
+      const state: Parameters<typeof authority.delegatedScope>[0] = {
+        jobs: {},
+        events: { [source.id]: { event: source } },
+        delegations: { task: context },
+        memoryContexts: {
+          [source.id]: {
+            sourceIds: [evidence.id],
+            personality: "current-personality",
+          },
+        },
+      };
+      expect(authority.delegatedScope(state, scope, "task")).toBe(context);
+      for (const change of [
+        { conversationKey: ["different-conversation"] },
+        { scopeKey: ["different-scope"] },
+        { audience: '["different-audience"]' },
+        { originEventId: "missing" },
+        { sourceIds: ["missing-source"] },
+        { deletionRevision: -1 },
+        { personality: "stale-personality" },
+      ]) {
+        expect(() =>
+          authority.delegatedScope(
+            {
+              ...state,
+              delegations: { task: { ...context, ...change } },
+            },
+            scope,
+            "task",
+          ),
+        ).toThrow("Execution authority is no longer current");
+      }
+      expect(() =>
+        authority.delegatedScope(
+          {
+            ...state,
+            events: { [source.id]: { event: { ...source, senderId: "U3" } } },
+          },
+          scope,
+          "task",
+        ),
+      ).toThrow("Execution authority is no longer current");
+      expect(() =>
+        authority.delegatedScope(
+          {
+            ...state,
+            forgottenEvents: [source.id],
+          },
+          scope,
+          "task",
+        ),
+      ).toThrow("Execution authority is no longer current");
+      referenceCurrent = false;
+      expect(() => authority.delegatedScope(state, scope, "task")).toThrow(
+        "Execution authority is no longer current",
+      );
+      referenceCurrent = true;
+      store.deleteSource(evidence.id);
+      expect(() => authority.delegatedScope(state, scope, "task")).toThrow(
+        "Execution authority is no longer current",
+      );
+    } finally {
+      store.close();
+    }
+  },
+);
+
+it.for(taskOrigins)(
+  "admits and runs configured legacy worker tasks in %s",
+  async ([_name, senderId, direct, key], t) => {
+    const requests: ModelRequest[] = [];
+    const lifecycle = createLifecycle();
+    const registry = createJuneRegistry({
+      owner,
+      lifecycle,
+      channels: {},
+      model: { reply: async () => ({ text: "" }) },
+      coding: {
+        runtimeKind: "amp",
+        runtimeId: "fixture",
+        workspaces: { app: "/unused" },
+        timeoutMs: 1000,
+      },
+      execution: {
+        model: {
+          reply: async (input) => {
+            requests.push(input);
+            return { text: "Task complete" };
+          },
+        },
+      },
+    });
+    const { client } = await setupTest(t, registry);
+    const scope = [...key];
+    const worker = client.execution.getOrCreate(executionKey(scope, "task"));
+    const input = {
+      id: `${"a".repeat(64)}:task`,
+      source: taskOrigin(senderId, direct),
+      task: "Use the configured workspace",
+      workspaces: ["app", "removed"],
+      web: false,
+      evidenceIds: [],
+      deletionTracked: true as const,
+    };
+    expect(
+      await client.execution
+        .getOrCreate(executionKey(["different-scope"], "task"))
+        .submit(input),
+    ).toBe(false);
+    expect(
+      await worker.submit({
+        ...input,
+        source: { ...input.source, senderId: "U3" },
+      }),
+    ).toBe(false);
+    expect(await worker.submit(input)).toBe(true);
+    await expect
+      .poll(async () => (await worker.result(input.id))?.status, {
+        timeout: 15000,
+      })
+      .toBe("completed");
+    await expect.poll(() => lifecycle.active, { timeout: 15000 }).toBe(0);
+    expect((await worker.result(input.id))?.source).toEqual(input.source);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.workspaces).toEqual(["app"]);
+    expect(requests[0]?.system).not.toContain(
+      "June will request separate owner approval",
+    );
+  },
+);
+
+it("preserves guest attribution and report-only ceilings after a terminal worker capability", async (t) => {
+  const requests: ModelRequest[] = [];
+  const lifecycle = createLifecycle();
+  vi.mocked(runExecutionCapability).mockClear();
+  const run = vi
+    .fn()
+    .mockResolvedValue({ status: "completed", report: "Confirmed page title" });
+  const registry = createJuneRegistry({
+    owner,
+    lifecycle,
+    channels: {},
+    model: { reply: async () => ({ text: "" }) },
+    mcpAvailable: true,
+    browserCompanion: { run } as unknown as NonNullable<
+      Parameters<typeof createJuneRegistry>[0]["browserCompanion"]
+    >,
+    execution: {
+      model: {
+        reply: async (input) => {
+          requests.push(input);
+          return requests.length === 1
+            ? {
+                text: "",
+                browserTask: {
+                  action: "start" as const,
+                  url: "https://example.com/",
+                  goal: "Read the page title",
+                },
+              }
+            : { text: "Page title confirmed" };
+        },
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const scope = ["guest", "slack", "T1", "C1", "", "U2"];
+  const source = taskOrigin("U2", false);
+  const context: ExecutionContext = {
+    version: 1,
+    scopeKey: scope,
+    audience: JSON.stringify(scope),
+    conversationKey: scope,
+    originEventId: "a".repeat(64),
+    deletionRevision: 0,
+    sourceIds: [],
+    contextSourceIds: [],
+    personality: createHash("sha256").update("{}").digest("hex"),
+    capabilities: {
+      browserTaskAvailable: true,
+      mcpAvailable: true,
+      javascriptAvailable: true,
+    },
+  };
+  const worker = client.execution.getOrCreate(executionKey(scope, "task"));
+  expect(
+    await worker.submit({
+      id: `${context.originEventId}:task`,
+      source,
+      context,
+      task: "Read the page title",
+      workspaces: [],
+      web: false,
+      evidenceIds: [],
+      deletionTracked: true,
+    }),
+  ).toBe(true);
+  await expect
+    .poll(async () => (await worker.summary()).status, { timeout: 15000 })
+    .toBe("completed");
+  await expect.poll(() => lifecycle.active, { timeout: 15000 }).toBe(0);
+  expect(vi.mocked(runExecutionCapability).mock.calls[0]?.[2]).toMatchObject({
+    event: source,
+    ownerTurn: false,
+    scope: { key: scope, private: false },
+    audience: context.audience,
+  });
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(requests).toHaveLength(2);
+  const report = requests[1];
+  expect(
+    Object.entries(report ?? {}).filter(
+      ([name, value]) => name.endsWith("Available") && value,
+    ),
+  ).toEqual([]);
+  expect(report?.workspaces).toEqual([]);
+  expect(report?.messages.at(-1)?.content).toContain("Confirmed page title");
 });
 
 it("keeps a slow execution notification owned until its real RPC settles", async (t) => {
@@ -632,7 +923,7 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
   expect(work[2]?.system).toContain("concise evidence-based reporting");
   expect(work[2]?.system).toContain("not worker instructions");
   expect(work[2]?.system).toContain("Return only the requested JSON");
-  expect(work[2]?.system).toContain(
+  expect(work[2]?.system).not.toContain(
     "June will request separate owner approval",
   );
   expect(work[2]?.system).toContain(
@@ -685,7 +976,7 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
       ),
   ).toBe(true);
   expect(modelStatus).not.toHaveBeenCalled();
-  // Guests never gain paid worker dispatch just because routing now accepts them.
+  // Guests can delegate without inheriting the owner's worker history.
   const guest = {
     ...event("5", "hi"),
     senderId: "U2",
@@ -703,21 +994,27 @@ it("keeps chat responsive, bounds background work, reuses history and exposes st
       { timeout: 15000 },
     )
     .toBe(true);
-  expect(turns.at(-1)?.executionAvailable).toBe(false);
+  expect(turns.at(-1)?.executionAvailable).toBe(true);
+  const guestWorker = client.execution.getOrCreate(
+    executionKey(["guest", "slack", "T1", "D1", "", "U2"], "guest"),
+  );
+  const guestRequestId = `${"a".repeat(64)}:guest`;
   expect(
-    await client.execution
-      .getOrCreate(
-        executionKey(["guest", "slack", "T1", "D1", "", "U2"], "guest"),
-      )
-      .submit({
-        id: `${"a".repeat(64)}:guest`,
-        source: guest,
-        task: "work",
-        workspaces: [],
-        web: true,
-        evidenceIds: [],
-      }),
-  ).toBe(false);
+    await guestWorker.submit({
+      id: guestRequestId,
+      source: guest,
+      task: "work",
+      workspaces: [],
+      web: true,
+      evidenceIds: [],
+    }),
+  ).toBe(true);
+  await expect
+    .poll(async () => (await guestWorker.result(guestRequestId))?.status, {
+      timeout: 15000,
+    })
+    .toBe("completed");
+  expect(work.at(-1)?.messages).toEqual([{ role: "user", content: "work" }]);
 });
 
 it.for(["sent", "unknown", "rejected"] as const)(
@@ -1291,7 +1588,9 @@ it("does not orphan work admitted while forgetting older workers", async (t) => 
     .poll(
       async () =>
         (await june.snapshot()).history.some((entry) =>
-          entry.content.includes("cleanup pending"),
+          entry.content.includes(
+            "I couldn't start that task while earlier context is being cleared.",
+          ),
         ),
       { timeout: 15000 },
     )

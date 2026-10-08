@@ -9,7 +9,7 @@ import { EvidenceStore } from "../memory/store.js";
 import { parseReflectionReviewCommand } from "./reflection.js";
 import { createJuneRegistry, type JuneClientRegistry } from "./registry.js";
 
-it("privately inspects exact hypotheses without retention or inference and revalidates at reads and send retries", async (t) => {
+it("inspects exact scoped hypotheses without retention or inference and revalidates at reads and send retries", async (t) => {
   const owner = {
     id: "owner",
     identities: [
@@ -403,7 +403,8 @@ it("privately inspects exact hypotheses without retention or inference and reval
     ).not.toContain("PRIVATE");
     expect(reads).toBe(previousReads);
   }
-  expect(modelCalls).toBe(2);
+  // Other admitted scopes use the command path too, but cannot read this hypothesis.
+  expect(modelCalls).toBe(0);
   expect(extractionCalls).toBe(0);
   expect(store.proposals(scope)).toEqual([]);
 });

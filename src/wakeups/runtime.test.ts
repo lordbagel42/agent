@@ -6,6 +6,7 @@ import type {
   ModelRequest,
   OutboundMessage,
 } from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
 import type { DeploymentFeed } from "../deployment/feed.js";
 import { slackSource } from "../imports/identity.js";
 import { EvidenceStore } from "../memory/store.js";
@@ -15,6 +16,8 @@ import {
   createJuneRegistry,
   type JuneClientRegistry,
 } from "../runtime/registry.js";
+import { createWakeupActor } from "./runtime.js";
+import { applyAction, initialState } from "./state.js";
 
 const owner = {
   id: "raygen",
@@ -42,6 +45,386 @@ const action = {
     filters: [],
   },
 };
+
+it("never sends owner-private native messages or coding reports to a guest wildcard watch", async (t) => {
+  const sent: OutboundMessage[] = [];
+  const requests: ModelRequest[] = [];
+  const guest: MessageEvent = {
+    ...source,
+    id: "guest-watch",
+    senderId: "U2",
+    direct: false,
+    botMentioned: true,
+    metadata: { channelType: "channel" },
+    address: { ...source.address, conversationId: "C1", threadId: "123.001" },
+  };
+  const guestAudience = '["guest","slack","T1","C1","123.001","U2"]';
+  const registry = createJuneRegistry({
+    owner,
+    wakeups: { sources: ["slack", "coding"], pollMs: 30 },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        async receive() {
+          return { response: new Response(), events: [] };
+        },
+        async send(message) {
+          sent.push(message);
+          return { status: "sent", messageId: `notification-${sent.length}` };
+        },
+      },
+    },
+    model: {
+      async reply(request) {
+        requests.push(request);
+        return { text: "Your scoped event arrived." };
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const wakeups = (client as Client<JuneClientRegistry>).wakeups.getOrCreate([
+    owner.id,
+  ]);
+  for (const nativeSource of ["slack", "coding"]) {
+    await wakeups.manage(
+      {
+        ...action,
+        trigger: {
+          kind: "event",
+          source: nativeSource,
+          type: "*",
+          filters: [],
+        },
+      },
+      guest,
+      `guest-${nativeSource}`,
+    );
+    const native = {
+      id: `owner-${nativeSource}`,
+      source: nativeSource,
+      type: nativeSource === "slack" ? "message" : "result",
+      occurredAt: Date.now(),
+      data: {
+        text: "private-message-canary-8364",
+        report: "private-report-canary-9327",
+        scope: guestAudience,
+        audience: guestAudience,
+      },
+    };
+    await wakeups.publish(native, undefined, '["private","raygen"]');
+    await wakeups.publish({ ...native, id: `unscoped-${nativeSource}` });
+  }
+  expect(Object.values((await wakeups.snapshot()).runs)).toHaveLength(0);
+  expect(requests).toHaveLength(0);
+  for (const nativeSource of ["slack", "coding"]) {
+    const native = {
+      id: `own-${nativeSource}`,
+      source: nativeSource,
+      type: nativeSource === "slack" ? "message" : "result",
+      occurredAt: Date.now(),
+      data: { text: "guest event", report: "guest result" },
+    };
+    await wakeups.publish(native, [], guestAudience);
+    expect(await wakeups.publish(native, [], guestAudience)).toEqual({
+      accepted: true,
+      duplicate: true,
+    });
+  }
+  await expect.poll(() => sent.length, { timeout: 10000 }).toBe(2);
+  expect(requests).toHaveLength(2);
+  expect(JSON.stringify(requests)).not.toContain("private-message-canary-8364");
+  expect(JSON.stringify(requests)).not.toContain("private-report-canary-9327");
+  expect(
+    sent.every(
+      (message) =>
+        JSON.stringify(message.address) === JSON.stringify(guest.address),
+    ),
+  ).toBe(true);
+  expect(
+    Object.values((await wakeups.snapshot()).runs).map((run) => run.audience),
+  ).toEqual([guestAudience, guestAudience]);
+});
+
+it("fences persisted native runs without matching host authority before claim or context inspection", async () => {
+  const config = createWakeupActor({
+    owner,
+    sources: ["slack", "coding", "github"],
+  }).config;
+  if (!("state" in config) || !config.actions)
+    throw new Error("Missing actor fixture");
+  const state = initialState();
+  const now = Date.now();
+  for (const nativeSource of ["slack", "coding", "github"])
+    applyAction(
+      state,
+      {
+        ...action,
+        once: false,
+        trigger: {
+          kind: "event",
+          source: nativeSource,
+          type: "*",
+          filters: [],
+        },
+      },
+      source,
+      nativeSource,
+      now,
+      [nativeSource],
+    );
+  applyAction(
+    state,
+    {
+      ...action,
+      trigger: { kind: "at", at: new Date(now + 1000).toISOString() },
+    },
+    source,
+    "timer",
+    now,
+    [],
+  );
+  for (const [id, eventSource, audience, status, jobId] of [
+    ["legacy-pending", "slack", undefined, "pending", "slack"],
+    ["legacy-queued", "coding", undefined, "queued", "coding"],
+    ["legacy-running", "slack", undefined, "running", "slack"],
+    ["legacy-completed", "slack", undefined, "completed", "slack"],
+    [
+      "wrong-scope",
+      "coding",
+      '["guest","slack","T1","C1","","U2"]',
+      "queued",
+      "coding",
+    ],
+    ["matched", "slack", '["private","raygen"]', "pending", "slack"],
+    ["shared", "github", undefined, "pending", "github"],
+    ["timer", "schedule", undefined, "queued", "timer"],
+  ] as const) {
+    state.runs[id] = {
+      id,
+      jobId,
+      audience,
+      status,
+      createdAt: now,
+      contextSourceIds: [],
+      event: {
+        id,
+        source: eventSource,
+        type: "message",
+        occurredAt: now,
+        data: { text: "retained private event", scope: '["private","raygen"]' },
+      },
+    };
+  }
+  const c = {
+    key: [owner.id],
+    state: JSON.parse(JSON.stringify(state)),
+    vars: { persist: async () => {} },
+  } as unknown as Parameters<typeof config.actions.claim>[0];
+  for (const id of [
+    "legacy-pending",
+    "legacy-queued",
+    "legacy-running",
+    "legacy-completed",
+    "wrong-scope",
+  ]) {
+    expect(await config.actions.runContext(c, id)).toBeNull();
+    expect(await config.actions.claim(c, id)).toBe(false);
+    expect(c.state.runs[id]).toMatchObject({
+      status: id === "legacy-completed" ? "completed" : "cancelled",
+      event: { data: {} },
+    });
+    expect(c.state.runs[id]?.audience).toBe(state.runs[id]?.audience);
+  }
+  for (const id of ["matched", "shared", "timer"]) {
+    expect(await config.actions.runContext(c, id)).toEqual({
+      evidenceIds: [],
+      retentionTracked: true,
+    });
+    expect(await config.actions.claim(c, id)).toBe(true);
+    expect(c.state.runs[id]?.event.data.text).toBe("retained private event");
+  }
+  expect(c.state.jobs.slack?.status).toBe("active");
+});
+
+it("delivers a nonowner channel wakeup only to its saved sender/conversation/thread scope and isolates management", async (t) => {
+  const sent: OutboundMessage[] = [];
+  const requests: ModelRequest[] = [];
+  const store = new EvidenceStore(":memory:", Buffer.alloc(32, 4));
+  t.onTestFinished(() => store.close());
+  const origin: MessageEvent = {
+    ...source,
+    id: "channel-registration",
+    senderId: "U2",
+    direct: false,
+    botMentioned: true,
+    metadata: { channelType: "channel" },
+    address: {
+      channel: "slack",
+      accountId: "T1",
+      conversationId: "C1",
+      threadId: "123.001",
+    },
+  };
+  const registry = createJuneRegistry({
+    owner,
+    wakeups: {
+      sources: ["deployment", "github"],
+      decisionSources: ["github"],
+      pollMs: 30,
+    },
+    memory: {
+      store,
+      source(event, audience) {
+        return {
+          id: event.id,
+          audiences: [audience],
+          platform: "slack",
+          account: event.address.accountId,
+          conversation: event.address.conversationId,
+          author: event.senderId,
+          observedAt: event.occurredAt,
+          sourceUrl: "https://example.invalid/message",
+          text: event.text,
+        };
+      },
+    },
+    channels: {
+      slack: {
+        channel: "slack",
+        capabilities: { text: true, reactions: true, threads: true },
+        async receive() {
+          return { response: new Response(), events: [] };
+        },
+        async send(message) {
+          sent.push(JSON.parse(JSON.stringify(message)));
+          return { status: "sent", messageId: "notification" };
+        },
+      },
+    },
+    model: {
+      async reply(request) {
+        requests.push(request);
+        return { text: "The requested deployment finished." };
+      },
+    },
+  });
+  const { client } = await setupTest(t, registry);
+  const wakeups = (client as Client<JuneClientRegistry>).wakeups.getOrCreate([
+    owner.id,
+  ]);
+  await wakeups.manage(action, origin, "channel-watch");
+  await wakeups.manage(action, origin, "channel-watch");
+  expect((await wakeups.snapshot()).jobs["channel-watch"]?.source).toEqual(
+    origin,
+  );
+  const listed = JSON.parse(
+    await wakeups.manage({ action: "list" }, origin, "list"),
+  );
+  expect(listed.jobs.map((job: { id: string }) => job.id)).toEqual([
+    "channel-watch",
+  ]);
+  expect(await wakeups.dependencies({ action: "list" }, origin)).toEqual([
+    "channel-registration",
+  ]);
+  await expect(wakeups.dependencies({ action: "list" })).rejects.toThrow();
+  for (const caller of [
+    { ...origin, senderId: "U3" },
+    { ...origin, address: { ...origin.address, conversationId: "C2" } },
+    { ...origin, address: { ...origin.address, threadId: "123.002" } },
+    { ...origin, address: { ...origin.address, threadId: undefined } },
+    source,
+  ]) {
+    const other = JSON.parse(
+      await wakeups.manage({ action: "list" }, caller, "other-list"),
+    );
+    expect(other.jobs.map((job: { id: string }) => job.id)).not.toContain(
+      "channel-watch",
+    );
+    expect(await wakeups.dependencies({ action: "list" }, caller)).toEqual([]);
+    for (const operation of ["inspect", "pause", "resume", "cancel"] as const)
+      await expect(
+        wakeups.manage(
+          { action: operation, id: "channel-watch" },
+          caller,
+          operation,
+        ),
+      ).rejects.toThrow();
+    await expect(
+      wakeups.manage(action, caller, "channel-watch"),
+    ).rejects.toThrow();
+  }
+  await expect(
+    wakeups.manage(
+      { action: "pause", id: "decision:github" },
+      origin,
+      "decision-pause",
+    ),
+  ).rejects.toThrow();
+  await wakeups.manage(
+    { action: "pause", id: "channel-watch" },
+    origin,
+    "pause",
+  );
+  await wakeups.publish({
+    id: "paused",
+    source: "deployment",
+    type: "healthy",
+    occurredAt: Date.now(),
+    data: {},
+  });
+  expect(Object.values((await wakeups.snapshot()).runs)).toHaveLength(0);
+  await wakeups.manage(
+    { action: "resume", id: "channel-watch" },
+    origin,
+    "resume",
+  );
+  const event = {
+    id: "deploy-channel",
+    source: "deployment",
+    type: "healthy",
+    occurredAt: Date.now(),
+    data: { revision: "abc123" },
+  };
+  await wakeups.publish(event);
+  await wakeups.publish(event);
+  await expect.poll(() => sent.length, { timeout: 10000 }).toBe(1);
+  expect(sent[0]).toMatchObject({
+    address: origin.address,
+    content: { text: "The requested deployment finished." },
+  });
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    socialAvailable: false,
+    wakeupAvailable: false,
+    mcpAvailable: false,
+    executionAvailable: false,
+  });
+  const conversation = client.conversation.getOrCreate(
+    routeEvent(origin, owner)?.key ?? [],
+  );
+  expect(Object.values((await conversation.snapshot()).events)).toHaveLength(1);
+  const inspected = JSON.parse(
+    await wakeups.manage(
+      { action: "inspect", id: "channel-watch" },
+      origin,
+      "inspect",
+    ),
+  );
+  await expect
+    .poll(
+      async () =>
+        JSON.parse(
+          await wakeups.manage(
+            { action: "inspect", id: "channel-watch" },
+            origin,
+            "inspect",
+          ),
+        ).recentRuns[0]?.status,
+    )
+    .toBe("completed");
+  expect(inspected.job.instruction).toBe(action.instruction);
+});
 
 it("admits unwatched provider decisions, preserves tool grants and deduplicates silent turns", async (t) => {
   const requests: ModelRequest[] = [];
@@ -137,7 +520,9 @@ it("admits unwatched provider decisions, preserves tool grants and deduplicates 
     .receive({ ...managementSource, text: "List my wakeups" });
   await expect.poll(() => sent.length, { timeout: 10000 }).toBe(1);
   expect(JSON.stringify(sent[0]?.content)).toContain("decision:github");
-  expect(await wakeups.dependencies({ action: "list" })).toEqual([]);
+  expect(
+    await wakeups.dependencies({ action: "list" }, managementSource),
+  ).toEqual([]);
   const listed = JSON.parse(
     await wakeups.manage(
       { action: "list" },
@@ -252,10 +637,9 @@ it("exposes a private June-callable watch and wakes her exactly once through the
       action,
       {
         ...source,
-        direct: false,
-        address: { ...source.address, conversationId: "C1" },
+        address: { ...source.address, accountId: "TOTHER" },
       },
-      "public",
+      "wrong-workspace",
     ),
   ).rejects.toThrow();
   const event = {
@@ -276,7 +660,7 @@ it("exposes a private June-callable watch and wakes her exactly once through the
     .toBe("completed");
   expect(requests).toHaveLength(2);
   expect(requests[1]?.system).toContain("automated wakeup");
-  expect(requests[1]?.system).toContain("not a new message from Raygen");
+  expect(requests[1]?.system).toContain("notification-only");
   expect(requests[1]?.wakeupAvailable).toBe(false);
   expect(requests[1]?.socialAvailable).toBe(false);
   expect(requests[1]?.mcpAvailable).toBe(false);
@@ -404,6 +788,13 @@ it("wakes on native reactions and polled deployments, honors drain, and reports 
   const wakeups = (client as Client<JuneClientRegistry>).wakeups.getOrCreate([
     owner.id,
   ]);
+  // Reactions have an authenticated surface scope, not owner-private authority.
+  const reactionSource: MessageEvent = {
+    ...source,
+    direct: false,
+    metadata: { channelType: "channel" },
+    address: { ...source.address, conversationId: "C1" },
+  };
   await wakeups.manage(
     {
       ...action,
@@ -414,19 +805,19 @@ it("wakes on native reactions and polled deployments, honors drain, and reports 
         filters: [{ path: "emoji", value: "eyes" }],
       },
     },
-    source,
+    reactionSource,
     "reaction",
   );
   await expect
     .poll(async () => (await wakeups.snapshot()).deploymentIssue)
     .toBe("feed_unavailable");
-  const reactions = client.conversation.getOrCreate(["slack", "T1", "D1", ""]);
+  const reactions = client.conversation.getOrCreate(["slack", "T1", "C1", ""]);
   await reactions.send("inbox", {
     type: "event",
     event: {
       type: "reaction",
       id: "reaction-1",
-      address: source.address,
+      address: reactionSource.address,
       messageId: source.messageId,
       occurredAt: Date.now(),
       senderId: "U1",

@@ -13,6 +13,7 @@ import type {
   Owner,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
+import type { SocialAction } from "../core/social.js";
 import { createMemoryRoutes } from "../http/memory.js";
 import { slackSource } from "../imports/index.js";
 import { EvidenceStore } from "../memory/store.js";
@@ -114,10 +115,38 @@ function fixture(t: { onTestFinished(fn: () => void): void }) {
   return { social, store, evidence, sent, slack, options };
 }
 
+function historicalProposal(
+  file: string,
+  id: string,
+  action: Extract<SocialAction, { kind: "request_access" | "outreach" }>,
+) {
+  const db = new DatabaseSync(file);
+  try {
+    db.prepare("INSERT INTO social_proposals VALUES (?, ?)").run(
+      id,
+      JSON.stringify({
+        id,
+        accountId: "T1",
+        requester: RAYGEN_SLACK_ID,
+        action,
+        status: "pending",
+        created: Date.now(),
+        expires: Date.now() + 60000,
+      }),
+    );
+  } finally {
+    db.close();
+  }
+  return id;
+}
+
 it.for([false, true])(
   "forgets owner and guest projections/history with platform context=$0, retaining fresh input and independent evidence",
   async (platformContext, t) => {
-    const { social, store, evidence, sent, slack } = fixture(t);
+    const { social, store, evidence, sent, slack, options } = fixture(t);
+    const id = historicalProposal(options.file, "a".repeat(24), access);
+    await social.decide({ ...event, text: `!allow ${id}` });
+    expect(social.view(guest)).toContain(secret);
     const requests: ModelRequest[] = [];
     const extracted: string[] = [];
     if (platformContext)
@@ -151,11 +180,9 @@ it.for([false, true])(
       model: {
         async reply(request) {
           requests.push(structuredClone(request));
-          return requests.length === 1
-            ? { text: "", social: access }
-            : {
-                text: request.system.includes(secret) ? secret : "clean reply",
-              };
+          return {
+            text: request.system.includes(secret) ? secret : "clean reply",
+          };
         },
       },
     });
@@ -165,20 +192,18 @@ it.for([false, true])(
       routeEvent(guest, owner)?.key ?? [],
     );
     await ownerActor.send("inbox", { type: "event", event });
-    await expect.poll(() => sent.length).toBe(2);
-    const id = social.view(event).match(/[a-f0-9]{24}/)?.[0];
-    await social.decide({ ...event, text: `!allow ${id}` });
+    await expect.poll(() => sent.length).toBe(1);
     await guestActor.send("inbox", { type: "event", event: guest });
-    await expect.poll(() => sent.length).toBe(3);
+    await expect.poll(() => sent.length).toBe(2);
     expect(requests[1]?.system).toContain(secret);
     await expect
       .poll(async () => JSON.stringify((await guestActor.snapshot()).history))
       .toContain(secret);
-    const pending = await social.propose(
-      { ...event, id: "outreach" },
-      { kind: "outreach", userId: "UOTHER", text: secret },
-    );
-    const outreachId = pending.match(/[a-f0-9]{24}/)?.[0];
+    const outreachId = historicalProposal(options.file, "b".repeat(24), {
+      kind: "outreach",
+      userId: "UOTHER",
+      text: secret,
+    });
     const routes = createMemoryRoutes({
       store,
       audience: () => scope,
@@ -196,6 +221,9 @@ it.for([false, true])(
     expect(
       await social.decide({ ...event, text: `!allow ${outreachId}` }),
     ).toContain("revoked");
+    expect(
+      sent.filter((message) => message.address.conversationId === "UOTHER"),
+    ).toEqual([]);
     expect(social.view(event)).not.toContain(secret);
     expect(social.view(guest)).not.toContain(secret);
     await ownerActor.send("inbox", {
@@ -260,9 +288,9 @@ it.for([false, true])(
 
 it("reconciles legacy social copies after a tombstone/callback crash and preserves dedupe across restart", async (t) => {
   const { social, store, evidence, sent, options } = fixture(t);
-  const pending = await social.propose(event, access);
-  const id = pending.match(/[a-f0-9]{24}/)?.[0];
+  const id = historicalProposal(options.file, "a".repeat(24), access);
   await social.decide({ ...event, text: `!allow ${id}` });
+  expect(social.view(guest)).toContain(secret);
   await social.propose(
     { ...event, id: "outreach" },
     { kind: "outreach", userId: "UOTHER", text: secret },
@@ -291,15 +319,20 @@ it("reconciles legacy social copies after a tombstone/callback crash and preserv
       { kind: "post", conversationId: "C2", threadId: null, text: secret },
     );
     expect(sent).toHaveLength(count);
-    const fresh = await reopened.propose(
-      { ...event, id: "fresh" },
-      { ...access, topic: retained, sharedContext: retained },
+    expect(
+      await reopened.propose(
+        { ...event, id: "fresh" },
+        { ...access, topic: retained, sharedContext: retained },
+      ),
+    ).toContain("request_access is obsolete");
+    expect(sent).toHaveLength(count);
+    expect(reopened.view(guest)).toBe("[]");
+    await reopened.propose(
+      { ...event, id: "fresh-outreach" },
+      { kind: "outreach", userId: "UOTHER", text: retained },
     );
-    await reopened.decide({
-      ...event,
-      text: `!allow ${fresh.match(/[a-f0-9]{24}/)?.[0]}`,
-    });
-    expect(reopened.view(guest)).toContain(retained);
+    expect(sent).toHaveLength(count + 1);
+    expect(sent.at(-1)?.content).toEqual({ type: "text", text: retained });
     const requests: ModelRequest[] = [];
     const registry = createJuneRegistry({
       owner,
@@ -363,12 +396,11 @@ it.for(["before-dispatch", "during-send"] as const)(
   "blocks forgotten outreach $0 and cannot restore a late delivery payload",
   async (when, t) => {
     const { social, store, evidence, slack, sent, options } = fixture(t);
-    const pending = await social.propose(event, {
-      kind: "outreach",
+    const outreach = {
+      kind: "outreach" as const,
       userId: "UOTHER",
       text: secret,
-    });
-    const id = pending.match(/[a-f0-9]{24}/)?.[0];
+    };
     const finish = Promise.withResolvers<{
       status: "sent";
       messageId: string;
@@ -380,22 +412,24 @@ it.for(["before-dispatch", "during-send"] as const)(
       sent.push(structuredClone(message));
       return finish.promise;
     };
-    const decision = social.decide({ ...event, text: `!allow ${id}` });
-    if (when === "during-send") await expect.poll(() => sent.length).toBe(2);
+    const sending = social.propose(event, outreach);
+    if (when === "during-send") await expect.poll(() => sent.length).toBe(1);
+    const id = JSON.parse(social.view(event))[0].id;
     store.deleteSource(evidence.id);
     social.forget();
     finish.resolve({ status: "sent", messageId: "late" });
-    await decision;
-    expect(sent).toHaveLength(when === "during-send" ? 2 : 1);
+    await sending;
+    expect(await social.propose(event, outreach)).toContain("revoked");
+    expect(sent).toHaveLength(when === "during-send" ? 1 : 0);
     expect(await social.decide({ ...event, text: `!allow ${id}` })).toContain(
       "revoked",
     );
     const db = new DatabaseSync(options.file);
     try {
       const rows = db.prepare("SELECT value FROM social_deliveries").all();
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(1);
       expect(JSON.stringify(rows)).not.toContain(secret);
-      expect(JSON.parse(String(rows[1]?.value)).result.code).toBe("forgotten");
+      expect(JSON.parse(String(rows[0]?.value)).result.code).toBe("forgotten");
     } finally {
       db.close();
     }

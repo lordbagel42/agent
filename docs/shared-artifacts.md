@@ -1,7 +1,10 @@
 # Shared artifacts
 
 June can create hosted HTML documents, shared Excalidraw boards, and live,
-read-only workflow views through `artifact`. This is opt-in source support,
+read-only workflow views through `artifact` in admitted conversations where it is
+exposed, without an owner/private-DM task gate or compulsory human approval. June
+judges the request, authority and appropriate publication audience; availability
+does not authorize disclosure of unrelated private material. This is opt-in source support,
 not evidence that a presentation host or Slack inline rendering is enabled.
 
 ## Configure
@@ -58,7 +61,12 @@ deletions remain as tombstones. Reconnect retries scene writes, not external
 effects. This is shared drawing, not a presence/cursor service or workflow editor.
 
 `inspect` reads an existing creator/owner-managed artifact. `update` edits its
-title/content. Workflow creation requires an authorized owner-private run ID;
+title/content. Creating a workflow artifact requires the run's original
+authenticated requester and source scope (audience, channel/account and
+conversation/thread), not merely knowledge of its ID or owner identity. The host
+passes the actual originating event for that check; unbound legacy runs cannot
+be shared through a newly admitted source. Existing artifact viewers instead use
+the artifact's own public/PIN access controls. For an authorized run,
 the projection exposes only name, revision, status and operation names/statuses,
 never raw inputs, source, results or signal payloads. Deletion-revision changes
 or revoked runs invalidate its data and previews. Workflow pages cannot execute,

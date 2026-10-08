@@ -130,22 +130,88 @@ function fixture(
   return { adapter, calls, posted, fetch };
 }
 
-it("rejects other people, workspaces and platforms before any Slack read", async () => {
+it("rejects bots, foreign workspaces and platforms before any Slack read", async () => {
   const f = fixture();
   for (const input of [
-    { ...event, senderId: "U2" },
+    { ...event, senderId: "bot:B1" },
     { ...event, senderId: "UBOT" },
     { ...event, address: { ...event.address, accountId: "T2" } },
     { ...event, address: { ...event.address, channel: "whatsapp" as const } },
   ]) {
     expect(
       await f.adapter.shareHistory?.(input, lookup, "op", () => true),
-    ).toMatchObject({ status: "rejected", code: "history_owner_required" });
+    ).toMatchObject({ status: "rejected", code: "history_requester_required" });
   }
   expect(
     await f.adapter.shareHistory?.(event, lookup, "op", () => false),
   ).toMatchObject({ status: "rejected" });
   expect(f.fetch).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["im", "D2"],
+  ["channel", "C1"],
+  ["mpim", "G1"],
+] as const)(
+  "delivers a nonowner %s request only to the verified requester's DM",
+  async (channelType, conversationId) => {
+    const f = fixture();
+    const source: MessageEvent = {
+      ...event,
+      senderId: "U2",
+      direct: channelType === "im",
+      address: { ...event.address, conversationId },
+      metadata: { channelType },
+    };
+    expect(
+      await f.adapter.shareHistory?.(source, lookup, "guest-op", () => true),
+    ).toEqual({ status: "sent", messageId: "1800000001.000001" });
+    expect(f.posted).toHaveLength(1);
+    expect(f.posted[0]).toMatchObject({
+      channel: "D2",
+      client_msg_id: "guest-op",
+    });
+    expect(f.posted[0]).not.toHaveProperty("thread_ts");
+    expect(f.posted[0]?.text).toContain("PRIVATE_FIXTURE");
+    expect(source.senderId).toBe("U2");
+    expect(
+      f.calls.filter((call) => call.method === "conversations.info"),
+    ).toEqual([
+      { method: "conversations.info", body: { channel: "D2" } },
+      { method: "conversations.info", body: { channel: "D2" } },
+    ]);
+  },
+);
+
+it("never falls back to the owner's DM when a guest DM is missing or changes recipient", async () => {
+  for (const scenario of ["missing", "wrong-recipient", "changed-recipient"]) {
+    let destinationReads = 0;
+    const f = fixture((method, body) => {
+      if (scenario === "missing" && method === "conversations.list")
+        return { ok: true, channels: [{ id: "D1", is_im: true, user: "U1" }] };
+      if (method === "conversations.info" && body.channel === "D2") {
+        destinationReads++;
+        if (scenario === "wrong-recipient" || destinationReads > 1)
+          return { ok: true, channel: { id: "D2", is_im: true, user: "U1" } };
+      }
+      return undefined;
+    });
+    expect(
+      await f.adapter.shareHistory?.(
+        { ...event, senderId: "U2" },
+        lookup,
+        "op",
+        () => true,
+      ),
+    ).toMatchObject({
+      status: "rejected",
+      code: "history_requester_dm_unavailable",
+    });
+    expect(f.posted).toEqual([]);
+    expect(
+      f.calls.filter((call) => call.method === "conversations.history"),
+    ).toHaveLength(scenario === "changed-recipient" ? 1 : 0);
+  }
 });
 
 it("verifies paginated Enterprise Grid workspace grants and scopes discovery to that workspace", async () => {
@@ -420,7 +486,7 @@ it("reads only the selected thread and cursor, without falling back to another s
   );
 });
 
-it("runs June's owner-channel directive once, without retaining contents or exposing the tool to guests", async (t) => {
+it("runs owner and guest channel directives once with requester-private delivery and no retained contents", async (t) => {
   const f = fixture();
   delete f.adapter.context;
   const requests: ModelRequest[] = [];
@@ -447,7 +513,7 @@ it("runs June's owner-channel directive once, without retaining contents or expo
         expect(replyJsonSchema([], request).properties).not.toHaveProperty(
           "slackHistory",
         );
-        // A provider ignoring the schema still cannot give another user access.
+        // Receipt/synthesis turns cannot repeat the history operation.
         return { text: "", slackHistory: lookup };
       },
     },
@@ -487,6 +553,7 @@ it("runs June's owner-channel directive once, without retaining contents or expo
   const guestActor = client.conversation.getOrCreate(
     routeEvent(guest, owner)?.key ?? [],
   );
+  const beforeGuest = requests.length;
   await guestActor.send("inbox", { type: "event", event: guest });
   await expect
     .poll(
@@ -497,11 +564,21 @@ it("runs June's owner-channel directive once, without retaining contents or expo
       { timeout: 10000 },
     )
     .toBe(1);
-  expect(requests.at(-1)?.slackHistoryAvailable).toBe(false);
+  expect(
+    requests
+      .slice(beforeGuest)
+      .some((request) => request.slackHistoryAvailable),
+  ).toBe(true);
   expect(
     f.calls.filter((call) => call.method === "conversations.history"),
-  ).toHaveLength(1);
+  ).toHaveLength(2);
+  expect(
+    f.posted
+      .filter((post) => String(post.text).includes("PRIVATE_FIXTURE"))
+      .map((post) => post.channel),
+  ).toEqual(["D1", "D2"]);
   expect(JSON.stringify(await guestActor.snapshot())).not.toContain(
     "PRIVATE_FIXTURE",
   );
+  expect(JSON.stringify(requests)).not.toContain("PRIVATE_FIXTURE");
 });

@@ -172,8 +172,12 @@ it("lists only current private candidates without inference, extraction, retenti
     truncated: false,
   });
   expect(reads).toBe(2);
-  await expect(reflection.listCandidates("other-audience")).rejects.toThrow();
-  expect(reads).toBe(2);
+  expect(await reflection.listCandidates("other-audience")).toMatchObject({
+    status: "ready",
+    ids: [ids[2]],
+    truncated: false,
+  });
+  expect(reads).toBe(3);
 
   let eventIndex = 0;
   const deliver = async (extra: Partial<MessageEvent> = {}) => {
@@ -253,7 +257,7 @@ it("lists only current private candidates without inference, extraction, retenti
   await reflection.occupancy("concurrent-live", false);
   expect((await deliver()).text).toContain("showing 0");
 
-  // Non-private/quoted input cannot select the review bypass.
+  // Commands are available in other admitted scopes, but candidates stay scoped.
   for (const extra of [
     { senderId: "G", metadata: { channelType: "im" as const } },
     {
@@ -264,13 +268,22 @@ it("lists only current private candidates without inference, extraction, retenti
         conversationId: "C",
       },
     },
+  ]) {
+    const readCount = reads;
+    const result = await deliver(extra);
+    expect(result.text).toContain("showing 0");
+    for (const id of ids) expect(result.text).not.toContain(id);
+    expect(reads).toBe(readCount);
+  }
+  // Quoted and untrusted ingress still cannot select the command bypass.
+  for (const extra of [
     { text: "Please say !reflection list" },
     { reflectionReviewEligible: false },
   ])
     expect((await deliver(extra)).text).toBe("ordinary reply");
-  expect(modelCalls).toBe(4);
+  expect(modelCalls).toBe(2);
   expect(extractionCalls).toBe(2);
   deps.reflection = undefined;
   expect((await deliver()).text).toContain("Reflection is unavailable");
-  expect(modelCalls).toBe(4);
+  expect(modelCalls).toBe(2);
 });

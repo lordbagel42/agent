@@ -6,8 +6,10 @@
 receipt-only recipe broker below. June's interaction agent delegates to an
 existing durable execution worker. That worker calls
 `browserTask: { action: "start", url, goal }`, then `status` or `cancel` with the
-returned `taskId`. Only a current owner-private request can use this capability;
-guest, public, automated-event and synthesis turns cannot start it.
+returned `taskId`. Available task turns in admitted conversations can use it;
+June judges intent, authority and disclosure to the current audience. Tasks and
+their status are bound to the original requester, conversation/thread and routed
+audience, not an owner-wide task list. Report-only turns cannot start new work.
 
 The companion owns one fresh sandboxed Chromium session and a restricted Codex
 0.157.1 thread. Codex gets host-defined navigation, observation, scroll, native
@@ -20,7 +22,9 @@ Slack HTML embedding is not implemented here.
 
 For a supported PIN form, June relays the returned question including
 `!browser-pin <taskId> <challengeId> <PIN>`. Send that as a plain reply in the same
-owner DM/thread. The verified host consumes the challenge/message once, removes
+owner DM/thread. This credential-input control and the owner-authenticated console
+remain separate from task eligibility: shared/guest task admission does not grant
+PIN submission or console login. The verified host consumes the challenge/message once, removes
 the command before ordinary history/memory ingestion, and buffers the PIN only
 in memory. June then resumes the existing task using `status`. A wrong PIN needs
 a new challenge and fresh message; redelivery cannot submit again. Quoted,
@@ -138,13 +142,15 @@ an operator's classification, not proof an endpoint cannot change remote state.
 `browser.timeoutMs` defaults to 15000 (100–60000 allowed). Do not put credentials
 in URLs, selectors, or success text.
 
-June can answer owner-private capability questions using
+June can answer capability questions when inspection is exposed, using
 `inspection: "capabilities"`, including requested activation, host gate,
 registration and bounded operation-name metadata. This lookup launches no
 browser and grants nothing. Without the host gate a configured browser remains
 blocked. Configuration is not live verification. The authenticated operator uses
 the existing `/operator/capabilities` proposal/grant/execute routes with the exact
-action from `adapter.action(name)`; every read still needs its own owner grant.
+action from `adapter.action(name)` for manual broker operations, including these
+anonymous reads. `readOperations` are not in the `browserProposal` task catalog;
+the mutation/credential task path below creates its own exact one-use grant.
 This slice deliberately returns **receipts only**, not webpage text to June.
 Anonymous adapter output is capped at 4096 UTF-16 units but the broker discards
 it. Authenticated vault operations and mutations are separate capabilities, not
@@ -167,13 +173,15 @@ nonsecret configuration. Use a typed `login` step for both username and password
 submission is a separately configured click, never appended automatically.
 The entire recipe is digest-bound, including exact requests and use budgets.
 
-June's owner-private `browserProposal` list/proposal path includes these recipes
-as credentialed proposals containing only configuration references and the exact
-action. It cannot read credentials, mint grants or execute. The owner must approve
-and execute through the authenticated capability routes. A credentialed recipe
+June's `browserProposal` catalog includes these named recipes. Selecting an exact
+name executes immediately through a host-created durable one-use grant, without
+compulsory human approval. Only configured credential references enter the action;
+the host resolves their values after authorization checks. June cannot read or
+enroll credentials through this interface. A credentialed recipe
 never returns page text, screenshots, vault item bodies or errors, only a receipt.
 An anonymous recipe sharing its account/item/origin still never reads the vault.
-No credential recipe, default binding or approval is installed automatically.
+No credential recipe or default binding is installed automatically. The authenticated
+operator routes remain optional manual interfaces, not prerequisites for June's task.
 
 ## Integration
 
@@ -339,7 +347,7 @@ Authoritative APIs consulted:
 - https://playwright.dev/docs/api/class-browsercontext#browser-context-route-web-socket
 - https://playwright.dev/docs/api/class-browsertype#browser-type-launch
 
-## One exact mutation proposal
+## One exact configured task
 
 `browser.mutationOperations` is a separate, empty-by-default opt-in under the same
 browser execution/isolation gates. It never changes `readOperations` permissions.
@@ -347,32 +355,34 @@ Each mutation recipe has exactly one nonsecret literal `fill` or one `click`.
 A fill cannot allow non-GET requests or append a submit; a click may allow at most
 one exact non-GET URL/method, with a one-use request budget. Login, credentials,
 page-text output and multi-step sequences are not supported on this surface.
-Recipes are limited to 1400 serialized JSON characters; startup also rejects a
-complete escaped review that exceeds 3500 characters instead of truncating it.
+Recipes are limited to 1400 serialized JSON characters; the discovery catalog and
+escaped execution receipts are bounded to 3500 characters, never silently clipped.
 Up to 16 named mutations are supported;
 names use a lowercase letter followed by up to 63 lowercase letters, digits,
-underscores or hyphens. Values are nonsecret configuration and appear in the
-owner-private proposal/history, not a channel or guest reply.
+underscores or hyphens. Values must be nonsecret configuration. Task replies expose
+names and receipt metadata, not recipe payloads, page contents or credentials.
 
-June discovers names with `browserProposal: { "operation": null }` and proposes
+June discovers names with `browserProposal: { "operation": null }` and executes
 one with `browserProposal: { "operation": "exact-name" }`, leaving text empty
-and other actions unset. This path only calls the broker's `propose`; it does not
-grant, resolve credentials, open a browser or execute. The host returns the
-entire configured recipe and exact `ToolAction` directly for human review. JSON
-Unicode escapes keep URLs and markup inert; JSON decoding restores exact values.
-The preview must match the adapter's full recipe digest and account/origin scope.
-June cannot invent selectors, URLs, form values or recipe steps at runtime.
+and other actions unset. Null is discovery only: it grants nothing, resolves no
+credentials and opens no browser. A named operation persists its invocation and
+exact-action binding, creates a one-use broker grant and runs the configured
+recipe. June decides whether that action fits the actual request and audience;
+there is no blanket owner/private-DM or per-action human approval requirement.
+June cannot invent selectors, URLs, form values or recipe steps at runtime. The
+broker binds the full recipe digest, account, item and origin, not broad browsing
+authority. Changed recipes invalidate old actions even under the same name.
 
-The human must separately authenticate to `POST /operator/capabilities/grants`
+For optional manual execution, an operator authenticates to `POST /operator/capabilities/grants`
 with `{ "audience": "<owner id>", "action": <reviewed action>, "expiresAt":
 <Unix milliseconds within five minutes> }`, then POST the identical action to
 `/operator/capabilities/grants/<grantId>/execute`. Never give June the operator
-token. The broker binds tool/account/item/origin and arguments including the full
-recipe digest, not a broad browsing scope. An approved read cannot authorize a
-mutation; a changed recipe invalidates the old action even under the same name.
-Receipts are durable and one-use: retrying the same grant does not repeat the
-effect, including after restart. An unknown receipt requires inspection and
-reconciliation, not a new automatic grant or retry.
+token. A read grant cannot authorize a mutation. Receipts are durable and one-use:
+replaying an invocation only inspects its saved grant/receipt, including after
+restart. Missing or unknown receipts never authorize redispatch with the same or
+a new operation ID. Historical proposals are not swept or executed automatically.
+Unknown outcomes require independent stoppage/outcome verification and authenticated
+reconciliation, not a replacement grant or another provider.
 
 Every action uses a fresh browser context: filling in one action does not retain
 the field for a later click. A click acts on the configured page as loaded, not
@@ -382,8 +392,7 @@ only known endpoints and an exact post-action confirmation. Do not label an
 endpoint with side effects as a read.
 
 `src/tools/browser-proposals.test.ts` uses only a disposable local HTTPS form,
-self-signed fixture certificate and local broker database. It checks that a
-proposal does nothing, unauthenticated approval is denied, read/wrong-scope
-grants cannot mutate, a fill cannot submit POSTs even from an input handler, and
-an approved click sends exactly once across broker restart. `src/runtime/registry.test.ts` checks June's private
-proposal path and denial in guest, public, mixed-directive and synthesis turns.
+self-signed fixture certificate and local broker database to exercise discovery,
+exact execution and replay protection. `src/runtime/registry.test.ts` covers the
+June-facing directive boundary. Local fixtures are not evidence of live browser
+activation, credential access or a real site's business outcome.

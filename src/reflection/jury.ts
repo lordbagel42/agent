@@ -23,10 +23,9 @@ export const juryRequestSchema = z.strictObject({
 });
 export type JuryRequest = z.infer<typeof juryRequestSchema>;
 
-/** Owner scope and providers are fixed by the host, never request arguments. */
+/** The host supplies the authenticated audience separately from model input. */
 export function createJuryTool(options: {
   store: EvidenceStore;
-  scope: string;
   executor: DecisionExecutor;
   providers: JuryProviders;
   evidenceMaxAgeMs: number;
@@ -34,6 +33,7 @@ export function createJuryTool(options: {
   return async (
     value: JuryRequest,
     signal: AbortSignal,
+    scope: string,
   ): Promise<JuryResult | null> => {
     const parsed = juryRequestSchema.safeParse(value);
     if (!parsed.success || signal.aborted) return null;
@@ -50,12 +50,12 @@ export function createJuryTool(options: {
       )
         return null;
       const evidence = options.store.reflectionEvidence(
-        options.scope,
+        scope,
         request.evidenceIds,
         options.evidenceMaxAgeMs,
       );
       const input = {
-        scope: options.scope,
+        scope,
         question: request.question,
         prompt: request.prompt,
         now: Date.now(),

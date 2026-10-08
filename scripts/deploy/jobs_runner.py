@@ -1,7 +1,7 @@
 """Separately keyed ordinary-job forced command; NEVER install on the recovery key.
 
 Install this, runner.py and deploy.py root-owned together outside releases.
-The authenticated June host is trusted to enforce exact owner-private approval.
+The authenticated June host admits and binds each exact task and originating scope.
 """
 
 import base64
@@ -55,7 +55,7 @@ def command(original, config):
     ):
         raise ValueError("invalid_job_policy")
     prompt = (
-        "You are executing one owner-approved ordinary June Amp job, NOT deployment recovery. "
+        "You are executing one host-admitted ordinary June Amp job, NOT deployment recovery. "
         "June requires the Fast thread feature without changing reasoning mode. "
         "Only perform this task in the configured workspace. Follow repository guidance, "
         "preserve others' changes, use an isolated worktree for edits, and run relevant checks. "

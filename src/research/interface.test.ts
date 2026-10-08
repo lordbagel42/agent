@@ -189,7 +189,7 @@ it("keeps research exclusive and empty-text, and filters required fields with ro
   expect(replyJsonSchema([]).properties).not.toHaveProperty("research");
 });
 
-it("admits research only in a configured verified owner Slack IM and intersects the saved ceiling", () => {
+it("admits research on configured routes without owner-private eligibility and intersects the saved ceiling", () => {
   expect(executionCapabilities(deps, event).researchAvailable).toBe(true);
   expect(
     executionCapabilities({ ...deps, research: undefined }, event)
@@ -212,7 +212,17 @@ it("admits research only in a configured verified owner Slack IM and intersects 
     { senderId: "guest" },
     { metadata: undefined },
     { direct: false, metadata: { channelType: "channel" as const } },
-    { direct: true, metadata: { channelType: "mpim" as const } },
+    {
+      senderId: "guest",
+      direct: false,
+      botMentioned: true,
+      metadata: { channelType: "channel" as const },
+    },
+    {
+      senderId: "guest",
+      direct: false,
+      metadata: { channelType: "mpim" as const },
+    },
     {
       address: {
         channel: "whatsapp" as const,
@@ -222,25 +232,46 @@ it("admits research only in a configured verified owner Slack IM and intersects 
     },
   ]) {
     const source = { ...event, ...change };
-    expect(executionCapabilities(deps, source).researchAvailable).not.toBe(
-      true,
-    );
+    expect(executionCapabilities(deps, source).researchAvailable).toBe(true);
     const request = buildModelRequest({
       ...input,
       event: source,
       agentRole: "execution",
     });
-    expect(request.researchAvailable).toBe(false);
-    expect(() =>
-      parseReply(JSON.stringify({ text: "", research: start }), [], request),
-    ).toThrow();
+    expect(request.researchAvailable).toBe(true);
+    expect(
+      parseReply(JSON.stringify({ text: "", research: start }), [], request)
+        .research,
+    ).toEqual(start);
   }
-  expect(
-    executionCapabilities(deps, {
+  for (const source of [
+    { ...event, senderId: "guest", metadata: undefined },
+    {
       ...event,
-      address: { ...event.address, accountId: "other" },
-    }).researchAvailable,
-  ).not.toBe(true);
+      senderId: "guest",
+      direct: false,
+      metadata: { channelType: "channel" as const },
+    },
+    {
+      ...event,
+      senderId: "guest",
+      direct: true,
+      metadata: { channelType: "mpim" as const },
+    },
+    { ...event, address: { ...event.address, accountId: "other" } },
+  ]) {
+    expect(executionCapabilities(deps, source).researchAvailable).not.toBe(
+      true,
+    );
+    // Unadmitted input has no prompt at all, rather than a tool-less prompt.
+    expect(() =>
+      buildModelRequest({
+        ...input,
+        event: source,
+        agentRole: "execution",
+      }),
+    ).toThrow("Prompt requires an authorized event");
+  }
   const report = buildModelRequest({
     ...input,
     agentRole: "execution",
@@ -312,7 +343,7 @@ it.for([
 );
 
 it.for(["event", "job_result", "execution_result", "wakeup"] as const)(
-  "projects activity research capability only from live owner messages, not %s authority",
+  "projects activity research capability only from live messages, not %s authority",
   async (kind, t) => {
     const store = new EvidenceStore(":memory:", randomBytes(32));
     t.onTestFinished(() => store.close());

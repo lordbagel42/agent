@@ -343,10 +343,18 @@ test.each([false, true])(
   async (catalogFirst) => {
     const f = await fixture();
     await f.store
-      .wrap({ reply: async () => f.call(f.unselected, "change") })
+      .wrap({
+        reply: async (request) =>
+          request.usageStage === "synthesis"
+            ? { text: "Ordinary write completed." }
+            : f.call(f.unselected, "change"),
+      })
       .reply({ ...f.request, mcpReadScope: undefined });
     const proposal = f.store.proposals()[0];
     assert(proposal);
+    expect(proposal.status).toBe("succeeded");
+    expect(f.calls).toHaveLength(1);
+    const previousCalls = [...f.calls];
     const before = f.store.proposals();
     const replies: CompanionReply[] = [
       { text: "", mcpPermission: { connection: f.unselected, tool: "change" } },
@@ -380,7 +388,7 @@ test.each([false, true])(
           .reply(f.request),
       ).rejects.toThrow("invalid_response");
       expect(prompts.join("\n")).not.toContain(proposal.id);
-      expect(f.calls).toEqual([]);
+      expect(f.calls).toEqual(previousCalls);
       expect(f.observations).toEqual([]);
       expect(f.store.proposals()).toEqual(before);
     }
@@ -619,7 +627,7 @@ test.each(["permission", "typing"])(
   },
 );
 
-test("ordinary MCP reads, approval proposals and permission inspection keep working without research observations", async () => {
+test("ordinary MCP reads, immediate ledger writes and permission inspection work without research observations", async () => {
   const f = await fixture();
   const request = { ...f.request, mcpReadScope: undefined };
   const read = await f.store
@@ -632,11 +640,20 @@ test("ordinary MCP reads, approval proposals and permission inspection keep work
     .reply(request);
   expect(read.text).toBe("Ordinary read.");
   const proposal = await f.store
-    .wrap({ reply: async () => f.call(f.unselected, "change") })
+    .wrap({
+      reply: async (input) => {
+        if (input.usageStage === "synthesis") {
+          expect(input.system).toContain("Fresh MCP execution receipt");
+          expect(input.system).toContain("do not repeat it");
+          return { text: "Ordinary write completed." };
+        }
+        return f.call(f.unselected, "change");
+      },
+    })
     .reply(request);
-  expect(proposal.text).toContain("Nothing has run");
+  expect(proposal.text).toBe("Ordinary write completed.");
   expect(f.store.proposals()).toHaveLength(1);
-  expect(f.store.proposals()[0]?.status).toBe("awaiting_approval");
+  expect(f.store.proposals()[0]?.status).toBe("succeeded");
   const permission = await f.store
     .wrap({
       reply: async () => ({
@@ -646,6 +663,10 @@ test("ordinary MCP reads, approval proposals and permission inspection keep work
     })
     .reply(request);
   expect(permission.text).toContain('"permission":"approval"');
-  expect(f.calls).toHaveLength(1);
+  expect(f.calls).toHaveLength(2);
+  expect(f.calls[1]).toMatchObject({
+    name: "change",
+    arguments: { id: "record-9" },
+  });
   expect(f.observations).toEqual([]);
 });

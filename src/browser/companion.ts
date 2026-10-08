@@ -7,6 +7,7 @@ import type {
   ModelImageInput,
   Owner,
 } from "../core/contracts.js";
+import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import { deleteBrowserThread, runBrowserTurn } from "./codex.js";
 import { type BrowserCommand, browserCommandSchema } from "./contracts.js";
@@ -16,6 +17,9 @@ interface Task {
   id: string;
   operation: string;
   address: MessageEvent["address"];
+  senderId?: string;
+  scopeKey?: string[];
+  pinRepliesAllowed?: boolean;
   status:
     | "running"
     | "waiting_for_input"
@@ -129,11 +133,14 @@ export class BrowserCompanion {
     const row = this.db.prepare("SELECT value FROM tasks WHERE id=?").get(id);
     return row ? (JSON.parse(String(row.value)) as Task) : undefined;
   }
-  list(): Task[] {
+  /** Omit event only for host maintenance/operator inspection. Model-facing
+   * rosters must pass the original authenticated event, not a reply address. */
+  list(event?: MessageEvent): Task[] {
     return this.db
       .prepare("SELECT value FROM tasks")
       .all()
-      .map((row) => JSON.parse(String(row.value)) as Task);
+      .map((row) => JSON.parse(String(row.value)) as Task)
+      .filter((task) => !event || this.taskScope(task, event));
   }
   private sameAddress(a: MessageEvent["address"], b: MessageEvent["address"]) {
     return (
@@ -143,7 +150,18 @@ export class BrowserCompanion {
       a.threadId === b.threadId
     );
   }
-  private authorized(event: MessageEvent) {
+  private taskScope(task: Task, event: MessageEvent) {
+    const scope = routeEvent(event, this.options.owner);
+    // Legacy tasks did not retain a sender. Keep their receipts, but do not
+    // guess an identity or expose them through a newly admitted conversation.
+    return (
+      !!scope &&
+      task.senderId === event.senderId &&
+      this.sameAddress(task.address, event.address) &&
+      JSON.stringify(task.scopeKey) === JSON.stringify(scope.key)
+    );
+  }
+  private ownerDirect(event: MessageEvent) {
     return (
       isOwner(event, this.options.owner) &&
       event.direct &&
@@ -187,7 +205,9 @@ export class BrowserCompanion {
       report: task.report,
       ...(pending
         ? {
-            question: `${pending.question} Reply with !browser-pin ${task.id} ${pending.challengeId} <PIN>. This authorizes the single login submission to ${pending.origin}; the chat platform may retain your reply.`,
+            question: task.pinRepliesAllowed
+              ? `${pending.question} Reply with !browser-pin ${task.id} ${pending.challengeId} <PIN>. This authorizes the single login submission to ${pending.origin}; the chat platform may retain your reply.`
+              : "Browser login needs a PIN, but this task's original route cannot accept credentials. Do not send PINs here or start a replacement to replay the login; inspect or cancel this task.",
           }
         : {}),
       liveView: this.options.origin
@@ -216,7 +236,7 @@ export class BrowserCompanion {
     const live = task ? this.live.get(task.id) : undefined;
     let accepted =
       !this.closed &&
-      this.authorized(event) &&
+      this.ownerDirect(event) &&
       event.browserPinEligible === true &&
       !!match &&
       !!task &&
@@ -226,7 +246,7 @@ export class BrowserCompanion {
       task.status === "waiting_for_input" &&
       task.revision === (this.options.revision?.() ?? 0) &&
       task.expiresAt > Date.now() &&
-      this.sameAddress(task.address, event.address) &&
+      this.taskScope(task, event) &&
       live.session.pendingInput()?.challengeId === match[2];
     if (accepted && match?.[2]) {
       // Commit nonsecret receipts before buffering any secret. Redelivery must
@@ -343,8 +363,9 @@ export class BrowserCompanion {
       context.valid() &&
       (!task ||
         (task.expiresAt > Date.now() &&
-          task.revision === (this.options.revision?.() ?? 0))) &&
-      this.authorized(context.event);
+          task.revision === (this.options.revision?.() ?? 0) &&
+          this.taskScope(task, context.event))) &&
+      !!routeEvent(context.event, this.options.owner);
     if (!usable()) throw new Error("Browser request unavailable");
     if (command.action === "start") {
       if (!this.options.navigationOrigins.includes(new URL(command.url).origin))
@@ -355,8 +376,12 @@ export class BrowserCompanion {
       const existing = this.db
         .prepare("SELECT value FROM tasks WHERE operation=?")
         .get(operation);
-      if (existing)
-        return this.view(JSON.parse(String(existing.value)) as Task);
+      if (existing) {
+        const saved = JSON.parse(String(existing.value)) as Task;
+        if (!this.taskScope(saved, context.event))
+          throw new Error("Browser task unavailable");
+        return this.view(saved);
+      }
       if (
         this.live.size > 0 ||
         this.active.size > 0 ||
@@ -376,6 +401,9 @@ export class BrowserCompanion {
         id: randomUUID(),
         operation,
         address: context.event.address,
+        senderId: context.event.senderId,
+        scopeKey: routeEvent(context.event, this.options.owner)?.key,
+        pinRepliesAllowed: this.ownerDirect(context.event),
         url: command.url,
         goal: command.goal,
         status: "running",
@@ -430,7 +458,7 @@ export class BrowserCompanion {
       }
     } else {
       task = this.get(command.taskId);
-      if (!task || !this.sameAddress(task.address, context.event.address))
+      if (!task || !this.taskScope(task, context.event))
         throw new Error("Browser task unavailable");
       if (command.action === "cancel") {
         if (task.status === "needs_review" && !this.live.has(task.id))

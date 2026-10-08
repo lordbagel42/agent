@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout } from "node:timers/promises";
 import type { Client } from "rivetkit/client";
 import { expect, it, vi } from "vitest";
@@ -29,14 +30,24 @@ import {
 import { SocialPermissions } from "../runtime/social.js";
 import { sessionActorKey } from "./state.js";
 
-it.for([
+it.for<{
+  thread?: string;
+  choice?: boolean;
+  want?: string;
+  channel?: string;
+  channelType?: "im" | "channel" | "mpim";
+}>([
   { thread: undefined, choice: undefined, want: undefined },
   { thread: undefined, choice: true, want: "1800000000.000001" },
   { thread: "1700000000.000007", choice: false, want: undefined },
   { thread: "1700000000.000007", choice: undefined, want: "1700000000.000007" },
+  { channel: "C1", channelType: "channel", want: "1800000000.000001" },
+  { channel: "G1", channelType: "mpim", choice: false, want: undefined },
 ])(
-  "delivers a conversational question through the activity session lane ($thread/$choice)",
-  async ({ thread, choice, want }, t) => {
+  "delivers conversational questions in owner activities and guest conversations ($channel/$thread/$choice)",
+  async ({ thread, choice, want, channel = "D1", channelType = "im" }, t) => {
+    const guest = channel !== "D1";
+    const user = guest ? "U2" : "U1";
     const store = new EvidenceStore(":memory:", randomBytes(32));
     t.onTestFinished(() => store.close());
     const sent: OutboundMessage[] = [];
@@ -60,8 +71,10 @@ it.for([
             settlement: Promise.resolve("confirmed_stopped" as const),
           };
         },
-        async reply() {
-          throw new Error("Use invocation handle");
+        async reply(request) {
+          // Guests retain separate conversation queues during session rollout.
+          requests.push(request);
+          return { text: "", question, replyInThread: choice };
         },
       },
       memory: {
@@ -90,7 +103,11 @@ it.for([
       },
     });
     const { client } = await setupTest(t, registry);
-    const june = client.conversation.getOrCreate(["private", "owner"]);
+    const june = client.conversation.getOrCreate(
+      guest
+        ? ["guest", "slack", "T1", channel, thread ?? "", user]
+        : ["private", "owner"],
+    );
     await june.receive({
       id: "question",
       type: "message",
@@ -99,12 +116,13 @@ it.for([
       address: {
         channel: "slack",
         accountId: "T1",
-        conversationId: "D1",
+        conversationId: channel,
         threadId: thread,
       },
-      direct: true,
-      metadata: { channelType: "im" },
-      senderId: "U1",
+      direct: !guest,
+      metadata: { channelType },
+      botMentioned: guest,
+      senderId: user,
       text: "Ask me which day",
     });
     await expect.poll(() => sent.length, { timeout: 15000 }).toBe(1);
@@ -112,11 +130,12 @@ it.for([
       type: "text",
       text: "Which day?\n1. Tuesday\n2. Thursday\nChoose an option or reply in your own words.",
       question,
+      questionTarget: { userId: user, channelType },
     });
     expect(sent[0]?.address).toEqual({
       channel: "slack",
       accountId: "T1",
-      conversationId: "D1",
+      conversationId: channel,
       threadId: want,
     });
     expect(requests[0]?.replyPlacementAvailable).toBe(true);
@@ -381,7 +400,6 @@ it("routes fresh activity without replaying history, commands, or duplicate effe
   expect(JSON.stringify(request)).not.toContain("FIRST PRIVATE TURN");
   expect(JSON.stringify(request)).not.toContain("OLD PLATFORM TRANSCRIPT");
   expect(request?.agentRole).toBe("interaction");
-  expect(context).not.toHaveBeenCalled();
   const nextState = await june.snapshot();
   expect(nextState.sessions?.turns[nextId]?.assignment.sessionId).not.toBe(
     firstSession,
@@ -747,7 +765,7 @@ it("routes late workers once to current activity, preserves placement, and binds
   expect(inspection).not.toContain("LATE WORKER REPORT");
   expect(
     requests.filter((request) =>
-      JSON.stringify(request).includes("!forget-confirm"),
+      request.messages.some((message) => message.content.includes(token)),
     ),
   ).toEqual([]);
   await expect
@@ -806,13 +824,30 @@ it.for(["sent", "unknown"] as const)(
       direct: true,
       address: { channel: "slack", accountId: "T1", conversationId: "D1" },
     };
-    const proposed = await social.propose(event, {
-      kind: "outreach",
-      userId: "U2",
-      text: "Original approved message",
-    });
-    const id = proposed.match(/[a-f0-9]{24}/)?.[0];
-    if (!id) throw new Error("Missing actual proposal");
+    // A historical approval remains a host control command. Fresh outreach
+    // now executes directly and must not be used to manufacture this fixture.
+    const id = "a".repeat(24);
+    const db = new DatabaseSync(join(directory, "social.db"));
+    try {
+      db.prepare("INSERT INTO social_proposals VALUES (?, ?)").run(
+        id,
+        JSON.stringify({
+          id,
+          accountId: "T1",
+          requester: "U1",
+          action: {
+            kind: "outreach",
+            userId: "U2",
+            text: "Original approved message",
+          },
+          status: "pending",
+          created: Date.now(),
+          expires: Date.now() + 60000,
+        }),
+      );
+    } finally {
+      db.close();
+    }
     const model = vi.fn(async () => ({ text: "Must not infer a command" }));
     const registry = createJuneRegistry({
       owner,

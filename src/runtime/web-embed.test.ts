@@ -7,7 +7,7 @@ import { currentExecutionCapabilities } from "./execution-context.js";
 import { createJuneRegistry, type Dependencies } from "./registry.js";
 
 it.for([false, true])(
-  "delivers an owner embed once through durable delivery (worker=%s), and blocks guests",
+  "delivers each requester's embed once through durable delivery (worker=%s)",
   async (worker, t) => {
     const sent: OutboundMessage[] = [];
     const origins = ["https://demo.example.org"];
@@ -54,7 +54,7 @@ it.for([false, true])(
             };
           if (worker && request.agentRole === "interaction")
             return { text: "Preview delivery was accepted." };
-          // Bypass parsing deliberately: host must reject forged guest directives.
+          // Exercise host dispatch with custom-provider output too.
           return { text: "", webEmbed: embed };
         },
       },
@@ -64,7 +64,7 @@ it.for([false, true])(
               model: {
                 async reply(request) {
                   workerTurns++;
-                  if (workerTurns === 1) {
+                  if (request.webEmbedAvailable) {
                     expect(request.webEmbedOrigins).toEqual(origins);
                     return parseReply(
                       JSON.stringify({ text: "", webEmbed: embed }),
@@ -126,13 +126,13 @@ it.for([false, true])(
         ),
       )
       .toBe(true);
-    expect(embeds()).toHaveLength(1);
+    await expect.poll(() => embeds().length).toBe(2);
     expect(
       currentExecutionCapabilities(deps, event, {
         webEmbedAvailable: true,
         webEmbedOrigins: ["https://other.example.org"],
       }),
     ).toMatchObject({ webEmbedOrigins: [], webEmbedAvailable: false });
-    if (worker) await expect.poll(() => workerTurns).toBe(2);
+    if (worker) await expect.poll(() => workerTurns).toBe(4);
   },
 );

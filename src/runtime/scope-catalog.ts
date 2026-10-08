@@ -6,7 +6,6 @@ import type {
   Owner,
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
-import { isOwner } from "../core/social.js";
 import type { EvidenceStore } from "../memory/store.js";
 import { type CompressedJson, eventRecord } from "./conversation-storage.js";
 import { type ExecutionRequest, executionLimits } from "./execution.js";
@@ -22,6 +21,10 @@ export interface ScopeCatalog {
       preview?: string;
       /** Frozen origin for a candidate-keyed proposal, including queue retries. */
       source?: MessageEvent;
+      conversationKey?: string[];
+      /** Only newly selected work may bypass the legacy pending queue. */
+      runImmediately?: true;
+      deletionRevision?: number;
     }
   >;
   agents?: Record<string, string>;
@@ -41,6 +44,8 @@ export interface ScopeCatalog {
       expiresAt: number;
       commandEventId?: string;
       status: "pending" | "started" | "completed";
+      /** Fresh host-admitted model decision, never assigned to historical previews. */
+      runtimeSelected?: true;
     }
   >;
 }
@@ -78,7 +83,6 @@ export function createScopeCatalogAuthority(
       !context ||
       !event ||
       !scope ||
-      !isOwner(event, deps.owner) ||
       state.forgottenEvents?.includes(id) ||
       JSON.stringify(context.conversationKey) !== JSON.stringify(key) ||
       JSON.stringify(context.scopeKey) !== JSON.stringify(scope.key) ||

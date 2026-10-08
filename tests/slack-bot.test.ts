@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { createCipheriv, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { expect, test } from "vitest";
 import type { ModelRequest } from "../src/core/contracts.js";
 import { McpConnections } from "../src/tools/connections.js";
@@ -17,7 +19,105 @@ test("the bot catalog and installation template do not request link unfurl acces
   expect(slackBotTools.some((tool) => tool.name === "chat.unfurl")).toBe(false);
 });
 
-test("changing the host bot identity revokes saved grants and pending proposals", async () => {
+test("bot catalog upgrades enable newly discovered tools but preserve disabled records", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "june-bot-upgrade-"));
+  const options = {
+    directory,
+    key: Buffer.alloc(32, 7),
+    owner: "owner",
+    origin: "https://june.example",
+  };
+  const calls: string[] = [];
+  const dependencies = {
+    slackBot: { token: "xoxb-test", teamId: "T1", botUserId: "U1" },
+    fetch: async (url: Parameters<typeof fetch>[0]) => {
+      calls.push(String(url));
+      return Response.json({ ok: true, team_id: "T1", user_id: "U1" });
+    },
+  };
+  let store = new McpConnections(options, dependencies);
+  try {
+    const saved = store.list()[0];
+    assert(saved);
+    // Older installations have no record for newly added tools; removed disabled
+    // tools are retained as revocations, including if the host later restores them.
+    const {
+      authenticated: _authenticated,
+      refreshable: _refreshable,
+      ...legacy
+    } = saved;
+    legacy.tools = legacy.tools.filter(
+      (tool) => tool.contract.name !== "pins.add",
+    );
+    const disabled = legacy.tools.find(
+      (tool) => tool.contract.name === "pins.remove",
+    );
+    assert(disabled);
+    disabled.permission = "disabled";
+    legacy.tools.push({
+      contract: { name: "retired.method", inputSchema: { type: "object" } },
+      permission: "disabled",
+    });
+    const iv = randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", options.key, iv);
+    cipher.setAAD(Buffer.from(saved.id));
+    const encrypted = Buffer.concat([
+      cipher.update(JSON.stringify(legacy)),
+      cipher.final(),
+    ]);
+    const db = new DatabaseSync(join(directory, "connections.sqlite"));
+    try {
+      db.prepare("UPDATE connections SET value=? WHERE id=?").run(
+        Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString("base64"),
+        saved.id,
+      );
+    } finally {
+      db.close();
+    }
+    await store.close();
+    store = new McpConnections(options, dependencies);
+    expect(
+      store
+        .list()[0]
+        ?.tools.find((tool) => tool.contract.name === "retired.method")
+        ?.permission,
+    ).toBe("disabled");
+    for (const tool of ["pins.remove", "pins.add"]) {
+      await store
+        .wrap({
+          reply: async (request) =>
+            request.mcpAvailable
+              ? {
+                  text: "",
+                  mcp: {
+                    connection: "slack-bot",
+                    tool,
+                    argumentsJson: '{"channel":"C1","timestamp":"123.456"}',
+                  },
+                }
+              : { text: "Done." },
+        })
+        .reply({
+          system: "",
+          messages: [],
+          workspaces: [],
+          mcpAvailable: true,
+        });
+    }
+    expect(calls).toEqual([
+      "https://slack.com/api/auth.test",
+      "https://slack.com/api/pins.add",
+    ]);
+    expect(store.proposals()).toMatchObject([
+      { status: "succeeded", tool: "pins.add" },
+    ]);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("changing the host bot identity disables tools without erasing consumed receipts", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-bot-identity-"));
   const options = {
     directory,
@@ -61,9 +161,19 @@ test("changing the host bot identity revokes saved grants and pending proposals"
     expect(
       store.list()[0]?.tools.every((entry) => entry.permission === "disabled"),
     ).toBe(true);
-    await expect(store.confirm(proposal.id)).rejects.toThrow(
-      "proposal_expired",
-    );
+    expect(await store.confirm(proposal.id)).toBe("unknown");
+    await store
+      .wrap({
+        reply: async () => ({
+          text: "",
+          mcp: {
+            connection: "slack-bot",
+            tool: "pins.add",
+            argumentsJson: '{"channel":"C1","timestamp":"123.456"}',
+          },
+        }),
+      })
+      .reply({ system: "", messages: [], workspaces: [], mcpAvailable: true });
     expect(calls).toBe(0);
   } finally {
     await store.close();
@@ -71,7 +181,7 @@ test("changing the host bot identity revokes saved grants and pending proposals"
   }
 });
 
-test("June reads canvases, proposes pins and canvas edits, and executes only confirmed exact arguments", async () => {
+test("June executes model-selected pins and canvas edits once without confirmation, and reads canvases", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-slack-bot-"));
   const calls: { url: string; body: unknown; authorization: string | null }[] =
     [];
@@ -121,22 +231,32 @@ test("June reads canvases, proposes pins and canvas edits, and executes only con
       mcpAvailable: true,
     } as unknown as ModelRequest;
     const wrapped = store.wrap({
-      reply: async () => ({
-        text: "",
-        mcp: {
-          connection: "slack-bot",
-          tool: "pins.add",
-          argumentsJson: JSON.stringify({
-            channel: "C123",
-            timestamp: "123.456",
-          }),
-        },
-      }),
+      reply: async (input) => {
+        if (!input.mcpAvailable) {
+          expect(input.system).toContain('"status":"succeeded"');
+          expect(input.system).not.toContain("xoxb-test-only");
+          return { text: "Pinned the message." };
+        }
+        return {
+          text: "",
+          mcp: {
+            connection: "slack-bot",
+            tool: "pins.add",
+            argumentsJson: JSON.stringify({
+              channel: "C123",
+              timestamp: "123.456",
+            }),
+          },
+        };
+      },
     });
-    expect((await wrapped.reply(request)).text).toContain("Nothing has run");
-    expect(calls).toEqual([]);
+    expect((await wrapped.reply(request)).text).toBe("Pinned the message.");
+    expect(calls.filter((call) => call.url.endsWith("/pins.add"))).toHaveLength(
+      1,
+    );
     const proposal = store.proposals()[0];
     assert(proposal);
+    expect(proposal.status).toBe("succeeded");
     expect(await store.confirm(proposal.id)).toBe("succeeded");
     expect(await store.confirm(proposal.id)).toBe("succeeded");
     expect(calls.filter((call) => call.url.endsWith("/pins.add"))).toEqual([
@@ -198,18 +318,22 @@ test("June reads canvases, proposes pins and canvas edits, and executes only con
     };
     await store
       .wrap({
-        reply: async () => ({
-          text: "",
-          mcp: {
-            connection: "slack-bot",
-            tool: "canvases.edit",
-            argumentsJson: JSON.stringify(canvasArgs),
-          },
-        }),
+        reply: async (input) =>
+          input.mcpAvailable
+            ? {
+                text: "",
+                mcp: {
+                  connection: "slack-bot",
+                  tool: "canvases.edit",
+                  argumentsJson: JSON.stringify(canvasArgs),
+                },
+              }
+            : { text: "Canvas updated." },
       })
       .reply(request);
     const canvasProposal = store.proposals()[0];
     assert(canvasProposal);
+    expect(canvasProposal.status).toBe("succeeded");
     expect(await store.confirm(canvasProposal.id)).toBe("succeeded");
     expect(calls.at(-1)?.body).toEqual(canvasArgs);
     expect(calls.at(-1)?.url).toBe("https://slack.com/api/canvases.edit");
@@ -297,7 +421,7 @@ test("bot reads verify org workspace access, report scoped capabilities and reje
   }
 });
 
-test("June pages the bot catalog and synthesizes a read, while private turns, revocation and disconnect survive restarts", async () => {
+test("June pages the bot catalog and synthesizes a read; disabled and disconnected tools never dispatch after restart", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-slack-state-"));
   const options = {
     directory,
@@ -366,30 +490,31 @@ test("June pages the bot catalog and synthesizes a read, while private turns, re
         },
       })
       .reply({ ...request, mcpAvailable: false });
-    const pin = store.wrap({
-      reply: async () => ({
-        text: "",
-        mcp: {
-          connection: "slack-bot",
-          tool: "pins.add",
-          argumentsJson: '{"channel":"C123","timestamp":"123.456"}',
-        },
-      }),
-    });
-    await pin.reply(request);
-    const proposal = store.proposals()[0];
+    const pin = () =>
+      store
+        .wrap({
+          reply: async () => ({
+            text: "",
+            mcp: {
+              connection: "slack-bot",
+              tool: "pins.add",
+              argumentsJson: '{"channel":"C123","timestamp":"123.456"}',
+            },
+          }),
+        })
+        .reply(request);
     const connection = store.list()[0];
-    assert(proposal && connection);
+    assert(connection);
     store.permit(connection.id, connection.revision, "pins.add", "disabled");
-    await expect(store.confirm(proposal.id)).rejects.toThrow(
-      "proposal_expired",
-    );
+    expect((await pin()).text).toContain("denied");
+    expect(store.proposals()).toHaveLength(0);
     await store.close();
     store = new McpConnections(options, dependencies);
     expect(
       store.list()[0]?.tools.find((tool) => tool.contract.name === "pins.add")
         ?.permission,
     ).toBe("disabled");
+    expect((await pin()).text).toContain("denied");
     expect(calls).toBe(1);
     const saved = store.list()[0];
     assert(saved);
@@ -397,6 +522,9 @@ test("June pages the bot catalog and synthesizes a read, while private turns, re
     await store.close();
     store = new McpConnections(options, dependencies);
     expect(store.list()).toEqual([]);
+    expect((await pin()).text).toContain("unavailable");
+    expect(calls).toBe(1);
+    expect(store.proposals()).toHaveLength(0);
     const input = { name: "June bot", url: "https://slack.com/api/" };
     expect(store.add(input, "reconnect-command")).toBe("slack-bot");
     expect(store.list()).toHaveLength(1);
@@ -411,29 +539,28 @@ test("June pages the bot catalog and synthesizes a read, while private turns, re
   }
 });
 
-test("uncertain bot writes are not retried on repeated confirmation", async () => {
+test("uncertain model-selected bot writes execute once and are not retried on receipt replay or restart", async () => {
   const directory = await mkdtemp(join(tmpdir(), "june-slack-failure-"));
   let mutations = 0;
-  const store = new McpConnections(
-    {
-      directory,
-      key: Buffer.alloc(32, 8),
-      owner: "owner",
-      origin: "https://june.example",
+  const options = {
+    directory,
+    key: Buffer.alloc(32, 8),
+    owner: "owner",
+    origin: "https://june.example",
+  };
+  const dependencies = {
+    slackBot: { token: "xoxb-test", teamId: "T123", botUserId: "U123" },
+    fetch: async (url: Parameters<typeof fetch>[0]) => {
+      if (String(url).endsWith("pins.add")) {
+        mutations++;
+        throw new Error("connection_lost_after_dispatch");
+      }
+      return Response.json({ ok: true, team_id: "T123", user_id: "U123" });
     },
-    {
-      slackBot: { token: "xoxb-test", teamId: "T123", botUserId: "U123" },
-      fetch: async (url) => {
-        if (String(url).endsWith("pins.add")) {
-          mutations++;
-          throw new Error("connection_lost_after_dispatch");
-        }
-        return Response.json({ ok: true, team_id: "T123", user_id: "U123" });
-      },
-    },
-  );
+  };
+  let store = new McpConnections(options, dependencies);
   try {
-    await store
+    const answer = await store
       .wrap({
         reply: async () => ({
           text: "",
@@ -451,6 +578,14 @@ test("uncertain bot writes are not retried on repeated confirmation", async () =
       } as unknown as ModelRequest);
     const proposal = store.proposals()[0];
     assert(proposal);
+    expect(answer.text).toContain(proposal.id);
+    expect(answer.text).toContain("MCP request unknown:");
+    expect(answer.text).not.toContain("connection_lost_after_dispatch");
+    expect(proposal.status).toBe("unknown");
+    expect(mutations).toBe(1);
+    await store.close();
+    store = new McpConnections(options, dependencies);
+    expect(mutations).toBe(1);
     expect(await store.confirm(proposal.id)).toBe("unknown");
     expect(await store.confirm(proposal.id)).toBe("unknown");
     expect(mutations).toBe(1);
