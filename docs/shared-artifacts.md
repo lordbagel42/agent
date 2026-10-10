@@ -51,6 +51,22 @@ edge-level rate limits. Slack must be able to fetch `preview.png` from this
 origin for image blocks. No proxy, service, app scopes or secrets are
 provisioned by this feature.
 
+### Homelab ingress
+
+The live deployment uses origin `https://june-share.raygen.dev`, port 3086 and
+`/var/lib/june/artifacts`. `scripts/deploy/june-artifacts-proxy.cfg` and
+`june-artifacts-proxy.service` run an independent HAProxy on private LAN port
+`192.168.0.215:3087` that forwards only that Host, paths under `/artifacts/` and
+GET/HEAD/POST to `127.0.0.1:3086`. It never retries, logs nothing and has no
+access to June's configuration or state. Consul service `june-artifacts`
+(synthetic node `june-artifacts-svc`) gives the homelab Traefik a matching
+router with access logs off; the existing wildcard `raygen.dev` tunnel record
+reaches it. Install the proxy with the stock `haproxy.service` masked, as for
+the [MCP ingress](agent-mcp.md#bluegreen-https-ingress). Chromium for the slot
+user lives in `/var/lib/june/.cache/ms-playwright` and must match the release's
+Playwright version; after a Playwright upgrade, reinstall it from the new
+release or previews fall back to links.
+
 Private artifacts currently require a Slack creator and the bot's `im:write`
 and `chat:write` permissions. Other clients get public images/links; they cannot
 create private artifacts until a safe creator-DM transport exists.

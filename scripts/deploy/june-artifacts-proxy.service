@@ -1,0 +1,28 @@
+[Unit]
+Description=June shared-artifact ingress to the active slot
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/june-artifacts-proxy/haproxy.cfg
+
+[Service]
+Type=exec
+DynamicUser=true
+ExecStartPre=/usr/sbin/haproxy -c -f /etc/june-artifacts-proxy/haproxy.cfg
+ExecStart=/usr/sbin/haproxy -db -f /etc/june-artifacts-proxy/haproxy.cfg
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+InaccessiblePaths=-/etc/june -/var/lib/june -/var/lib/june-deploy -/opt/june
+
+[Install]
+WantedBy=multi-user.target
