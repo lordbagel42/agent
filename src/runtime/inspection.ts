@@ -60,6 +60,7 @@ export function capabilitySnapshot(
     | "inspection"
     | "importCancel"
     | "apps"
+    | "channels"
   >,
   importsMounted: boolean,
   env: NodeJS.ProcessEnv = process.env,
@@ -97,6 +98,13 @@ export function capabilitySnapshot(
         "Independent live capability attestation. No such attestation is wired into this view; absence is unknown, not failure or success.",
     },
     capabilities: [
+      row(
+        "whatsapp",
+        !!runtime.channels.whatsapp,
+        turn && !!runtime.channels.whatsapp,
+        !!config.whatsapp && !!runtime.channels.whatsapp,
+        `${config.whatsapp ? "Cloud API account configured; provider access and public webhook subscription are not probed." : "Not connected: whatsapp configuration is absent. Required setup (provider enrollment is not checked here): Meta app/business phone-number registration, phoneNumberId, supported apiVersion, appSecretEnv/verifyTokenEnv/accessTokenEnv and a matching digits-only owner sender identity. Provision referenced secrets privately and subscribe the app's messages webhooks to the public HTTPS /webhooks/whatsapp endpoint; see docs/whatsapp.md."} Replies and Unicode reactions to the verified owner use the ordinary reply action, not arbitrary-recipient sendMessages. Text and reactions only on ingress; no media reads, personal-account pairing, groups, templates or typing. Free-form sends require an inbound owner text within 24 hours. Legacy owner Slack DMs share continuity; activitySessions is incompatible. June can request the missing setup from Raygen in a private conversation, never secret values in chat; account consent and coordinated configuration/credential installation belong to the authorized operator. Unknown sends require reconciliation, not another attempt.`,
+      ),
       row(
         "native-coding",
         !!runtime.coding,
@@ -496,10 +504,24 @@ export function createInspectionReader(deps: {
       }
       case "debug-shares":
         return `${heading}\n${JSON.stringify((await deps.debugShares?.()) ?? { status: "unavailable" })}\nAt most ten private DEBUG/DEBUGSHARE receipts, including reports from other Slack surfaces. Saved means a DEBUG snapshot was stored without starting an investigation. Queued/running is not success; completed means the investigator returned, not that a fix was deployed. Resolved:true is an explicit verified-resolution attestation by the investigator or an authorized owner/operator, not an independent host verification. ResolutionNotification separately records the generic origin-thread notice's send outcome; owner one-on-one DMs are excluded. The host owns this notice; do not duplicate it. Unknown requires operator investigation, not automatic retry. Snapshot bodies are excluded; missing notification outcomes do not prove delivery. Optional website metadata is separate: pending means the host owns upload/retry, saved means the independent archive acknowledged it, rejected needs operator reconciliation. Its URL requires separate viewer sign-in; absence does not prove the website is installed. Do not duplicate uploads, recapture to retry or infer current site health from a saved receipt. Judge disclosure of receipt metadata to the current audience. Anyone can submit a fresh plain DEBUGSHARE command; DEBUG and this inspection do not launch an investigation.`;
-      case "capability-matrix":
+      case "capability-matrix": {
+        // Direct inspection replies must fit WhatsApp's single-message limit.
+        // Keep every status; only omit unrelated capabilities' long help text.
+        if (event?.address.channel === "whatsapp" && deps.capabilityMatrix) {
+          const snapshot = deps.capabilityMatrix();
+          return `${heading}\n${snapshot.scope}\nimplemented = source support; integrated = mounted here; callable = model action route (turn guards apply); enabled = configuration/gates, not approval or provider health; liveVerified = independent attestation.\n${snapshot.capabilities
+            .map(
+              (row) =>
+                `${row.capability}: implemented=${row.implemented}, integrated=${row.hostIntegrated}, callable=${row.juneCallable}, enabled=${row.enabled}, liveVerified=${row.liveVerified}`,
+            )
+            .join(
+              "\n",
+            )}\n${snapshot.capabilities.find((row) => row.capability === "whatsapp")?.detail ?? "WhatsApp setup detail unavailable."}\nCompact WhatsApp view: other capabilities' help text omitted. No provider probe or mutation performed.`;
+        }
         return deps.capabilityMatrix
           ? `${heading}\n${JSON.stringify(deps.capabilityMatrix())}`
           : `${heading}\nCapability matrix is unavailable; implementation, integration, callability, activation and live verification are unknown.`;
+      }
       case "capabilities":
         return `${heading}\n${deps.capabilities?.() ?? "Generic capabilities are disabled; no generic capability routes or tools are mounted. Opaque action links are also disabled. Inspection grants nothing and does not enable them."}`;
       case "credentials": {

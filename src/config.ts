@@ -729,6 +729,19 @@ export function parseConfig(input: unknown): Config {
         "Configure exactly one Slack owner in the configured workspace",
       );
   }
+  if (config.whatsapp) {
+    const identities = config.owner.identities.filter(
+      (identity) => identity.channel === "whatsapp",
+    );
+    if (
+      identities.length !== 1 ||
+      identities[0]?.accountId !== config.whatsapp.phoneNumberId ||
+      !/^\d+$/.test(identities[0]?.senderId ?? "")
+    )
+      throw new Error(
+        "Configure exactly one WhatsApp owner with an international digits-only sender ID and the configured phone-number ID",
+      );
+  }
   return config;
 }
 

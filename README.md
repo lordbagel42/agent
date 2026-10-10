@@ -49,8 +49,10 @@ support for a feature does not mean it is enabled, live-tested, or safe to expos
   configuration, receipts, pending work, and diagnostics without treating a
   model’s report as proof of success.
 
-Slack is the primary channel. A WhatsApp Cloud API adapter remains in the source
-but is shelved; Linq/RCS is not a registered runtime integration.
+Slack is the primary channel. [WhatsApp](docs/whatsapp.md) uses Meta's official
+Cloud API for owner text/reactions and shared private conversation continuity.
+It requires Meta account/phone enrollment and private credentials; source support
+does not establish a live connection. Linq/RCS is not a registered integration.
 
 ## How it fits together
 

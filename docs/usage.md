@@ -9,10 +9,9 @@ TypeScript, Node 24, Rivet actors and journaled workflows. No Temporal and no
 custom workflow engine. See the [architecture](architecture.md) for
 the evidence graph, Git memory, personality, dreaming, and later capabilities.
 
-Slack is the active rollout target. WhatsApp is shelved at the owner's request;
-its existing adapter is not configured in the startup examples or deployment.
-Linq's Android/RCS support is being evaluated as its replacement, not yet wired
-into June or tested with a real account.
+Slack is the primary channel. [WhatsApp Cloud API setup](whatsapp.md) supports
+owner text/reactions once Meta enrollment and private credentials are supplied.
+Linq's Android/RCS prototype is not wired into June or tested with a real account.
 
 ## Task access and evidence
 
@@ -921,23 +920,16 @@ production adapter. Actual line provisioning, carrier support, webhooks, and
 reactions require account-specific validation. Do not add a `linq` config block
 yet; the runtime does not register that channel.
 
-**WhatsApp (shelved):** retained implementation notes only; do not provision an
-account for the current rollout. This is a **Business Platform Cloud API** adapter, not
-pairing to your personal WhatsApp account. Section 4.7 of
-[Meta's terms](https://www.facebook.com/legal/Meta-Terms-for-WhatsApp-Business-Platform),
-updated September 23, 2026 and reviewed September 26, restricts general-purpose
-AI assistants when AI is their primary functionality, with country-specific
-exceptions. See the linked [AI-provider policy](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing/ai-providers).
-Confirm June's actual account/region eligibility **before deploying or buying a
-number**; implementing the protocol does not establish permission to use it.
-
-For an eligible setup, configure a Meta app and business phone number, subscribe
-its `messages` webhooks at `/webhooks/whatsapp`, and choose a private verification
-token. Supply the app secret, access token, phone-number ID, and a supported Graph
-API version. Allowlist the owner's WhatsApp sender ID (international digits).
-Only user-initiated free-form conversations are supported; sending at or beyond
-24 hours from the last incoming user message is rejected locally. Business-initiated
-templates and personal-account bridges need separate implementations and policy review.
+**WhatsApp:** use the official **Business Platform Cloud API**, not personal
+account pairing. Follow [the setup and verification procedure](whatsapp.md) for
+the Meta app, business phone number, signed webhook subscription and private
+credentials. Exactly one digits-only owner sender identity must match the
+configured phone-number ID. Text and reactions share private continuity with
+the owner's Slack DMs; activity sessions remain incompatible. Sending at or
+beyond 24 hours from the last incoming owner text is rejected locally. Templates,
+groups, inbound media, history retrieval and typing are not implemented.
+June's `inspection:"capability-matrix"` exposes setup requirements even without
+a connection; mounted credentials do not prove enrollment or live messaging.
 
 ## Coding and operator access
 

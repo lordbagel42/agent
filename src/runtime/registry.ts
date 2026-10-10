@@ -142,6 +142,7 @@ import {
   DEBUG_RESOLUTION_KNOWLEDGE,
   type PromptInput,
   TASK_OWNERSHIP_HELP,
+  WHATSAPP_KNOWLEDGE,
 } from "./prompt.js";
 import {
   createReflectionActor,
@@ -3647,7 +3648,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 searchAvailable,
                                 // Memory is constructed here, never returned to the journal.
                               };
-                              modelRequest.system += `\n\n${CONVERSATIONAL_CURIOSITY_HELP}\n\n${TASK_OWNERSHIP_HELP}\n\n${DEBUG_RESOLUTION_KNOWLEDGE}`;
+                              modelRequest.system += `\n\n${CONVERSATIONAL_CURIOSITY_HELP}\n\n${TASK_OWNERSHIP_HELP}\n\n${DEBUG_RESOLUTION_KNOWLEDGE}\n\n${WHATSAPP_KNOWLEDGE}`;
                               let executionCapacity: CapacityContext["execution"] =
                                 {
                                   enabled: !!deps.execution,

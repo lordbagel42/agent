@@ -434,20 +434,16 @@ async function sendToGraph(options: {
   phoneNumberId: string;
 }): Promise<SendResult> {
   const controller = new AbortController();
-  const timeoutMarker = Symbol("graph request timeout");
-  let timedOut = false;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_resolve, rejectPromise) => {
-    timeout = setTimeout(() => {
-      timedOut = true;
-      rejectPromise(timeoutMarker);
-      controller.abort();
-    }, GRAPH_REQUEST_TIMEOUT_MS);
-    timeout.unref?.();
-  });
-
+  const timeout = setTimeout(
+    () => controller.abort(),
+    GRAPH_REQUEST_TIMEOUT_MS,
+  );
+  timeout.unref?.();
   const endpoint = `https://graph.facebook.com/${encodeURIComponent(options.apiVersion)}/${encodeURIComponent(options.phoneNumberId)}/messages`;
-  const request = async (): Promise<SendResult> => {
+
+  try {
+    // Keep lifecycle admission until the raw request AND response body settle.
+    // Racing a timeout would let deployment drain while a send is still live.
     const response = await options.fetch(endpoint, {
       method: "POST",
       headers: {
@@ -457,13 +453,12 @@ async function sendToGraph(options: {
       body: JSON.stringify(options.payload),
       signal: controller.signal,
     });
-    return classifyGraphResponse(response, options.now);
-  };
-
-  try {
-    return await Promise.race([request(), timeoutPromise]);
-  } catch (error) {
-    return error === timeoutMarker || timedOut
+    // Error classification needs only headers. Close even a stalled error body
+    // before releasing admission; a failed cleanup leaves the outcome unknown.
+    if (!response.ok) await response.body?.cancel();
+    return await classifyGraphResponse(response, options.now);
+  } catch {
+    return controller.signal.aborted
       ? { status: "unknown", code: "timeout" }
       : { status: "unknown", code: "network_error" };
   } finally {

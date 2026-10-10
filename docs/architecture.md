@@ -15,7 +15,7 @@ facts; planned or in-flight changes do not establish any of them.
 
 ```diagram
 ┌──────────────────────────────────────────────────────┐
-│ Slack · dormant WhatsApp · future channel adapters    │
+│ Slack · WhatsApp Cloud API · future channel adapters  │
 └────────────────────────┬─────────────────────────────┘
                          ▼
 ┌──────────────────────────────────────────────────────┐
@@ -81,23 +81,20 @@ Sources (reviewed 2026-09-26):
 
 ## First increment
 
-Start with Slack Events API. WhatsApp remains dormant; Linq is an experimental
-alternative transport.
+Slack Events API and the official WhatsApp Cloud API are registered transports.
+Linq is an experimental alternative transport.
 Linq Partner API V3 documents RCS with SMS fallback; the offline text/webhook
 prototype is not wired into June. Real account/carrier validation and durable
 integration are still required, and conflicting RCS reaction documentation must
 be resolved before enabling reactions on that transport.
 
-The existing official WhatsApp Cloud API adapter remains dormant. Its 24-hour
-customer-service window is enforced; proactive template messaging is a separate
-capability. This is a Business Platform integration, not personal-account pairing.
-If that transport is reconsidered later,
-[Meta's terms, section 4.7](https://www.facebook.com/legal/Meta-Terms-for-WhatsApp-Business-Platform)
-(updated September 23, 2026; reviewed September 26) restrict general-purpose AI
-assistants as a primary use case, with country-specific exceptions. The actual
-account/region must qualify under the linked
-[AI-provider policy](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing/ai-providers)
-before activating June's WhatsApp adapter.
+The [WhatsApp setup](whatsapp.md) binds exactly one owner to the business phone
+number. Its 24-hour customer-service window is enforced; proactive templates,
+inbound media and groups are not implemented. This is a Business Platform
+integration, not personal-account pairing. A narrow blue/green ingress forwards
+signed webhooks to the ready slot; Meta retries unavailable ingress rather than
+a second local durable queue. Configuration and enrollment remain separate from
+source support, and June can inspect the missing setup through her capability matrix.
 
 The cross-channel design links verified owner identities. Bind the Slack owner
 to an explicit user ID in the configured workspace through

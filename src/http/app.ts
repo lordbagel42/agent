@@ -378,17 +378,18 @@ export function createHttpApp(deps: HttpDependencies) {
   // admission but ahead of the smaller generic request limit.
   if (deps.github)
     app.route("/webhooks/github", createGitHubWebhooks(deps.github));
-  app.use(
-    "*",
+  app.use("*", (c, next) =>
     bodyLimit({
-      maxSize: 1_048_576,
+      // Meta batches message/status events in webhook payloads up to 3 MB.
+      // Keep the existing bound for every other route.
+      maxSize: c.req.path === "/webhooks/whatsapp" ? 3_000_000 : 1_048_576,
       onError: (c) => {
         const original = c.get("slackRequest");
         if (original)
           deps.slackIngressDiagnostics?.record(original, "body_too_large");
         return c.json({ error: "body_too_large" }, 413);
       },
-    }),
+    })(c, next),
   );
   app.get("/health", async (c) => {
     const ready =

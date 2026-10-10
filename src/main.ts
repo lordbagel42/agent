@@ -1739,7 +1739,7 @@ async function main() {
           // Coding now fences launches and checks current-root leases, but
           // legacy sessions/removed roots still need independent reconciliation.
           // Other optional paths can also outlive a cancelled actor callback.
-          supported: !coding && !reflection && !channels.whatsapp && !browser,
+          supported: !coding && !reflection && !browser,
         }
       : undefined,
     slackIngressDiagnostics,
