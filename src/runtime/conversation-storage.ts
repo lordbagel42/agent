@@ -230,6 +230,7 @@ export function compactConversation(state: ConversationState) {
   // including unfinished admissions; compression never certifies settlement.
   if (
     state.ingress &&
+    Object.keys(state.ingress.receipts).length > 0 &&
     (state.ingress.receiptsArchive ||
       Buffer.byteLength(JSON.stringify(state.ingress.receipts)) > 64 * 1024)
   ) {
@@ -240,67 +241,102 @@ export function compactConversation(state: ConversationState) {
   }
   // Lane IDs are append-only; finished coverage has no live callback owner.
   // Keep unfinished turn objects live and preserve every uncertainty flag.
-  const legacy: LegacyRecords = {
-    admissions: readLegacyAdmissions(state),
-    turns: Object.fromEntries(
-      Object.entries(readLegacyCoverage(state)?.turns ?? {}).filter(
-        ([, turn]) => turn.finished,
-      ),
-    ),
-  };
   if (
-    state.legacyArchive ||
-    Buffer.byteLength(JSON.stringify(legacy)) > 64 * 1024
+    state.legacyAdmissions?.length ||
+    Object.values(state.legacyCoverage?.turns ?? {}).some(
+      (turn) => turn.finished,
+    )
   ) {
-    state.legacyArchive = compress(legacy);
-    if (state.legacyAdmissions) state.legacyAdmissions = [];
-    for (const id of Object.keys(legacy.turns))
-      delete state.legacyCoverage?.turns[id];
+    const legacy: LegacyRecords = {
+      admissions: readLegacyAdmissions(state),
+      turns: Object.fromEntries(
+        Object.entries(readLegacyCoverage(state)?.turns ?? {}).filter(
+          ([, turn]) => turn.finished,
+        ),
+      ),
+    };
+    if (
+      state.legacyArchive ||
+      Buffer.byteLength(JSON.stringify(legacy)) > 64 * 1024
+    ) {
+      state.legacyArchive = compress(legacy);
+      if (state.legacyAdmissions) state.legacyAdmissions = [];
+      for (const id of Object.keys(legacy.turns))
+        delete state.legacyCoverage?.turns[id];
+    }
   }
   // These scalar replay markers have no retained mutable callback object.
   // Live overlays can demote archived settled markers to uncertain on replay.
   // Never discard a key or interpret "settled" as a natural-drain certificate.
-  const settledModels = Object.fromEntries(
-    Object.entries(readModelInvocations(state) ?? {}).filter(
-      ([, marker]) => marker === "settled",
-    ),
-  );
+  // An unchanged compact prefix needs no inflate/parse/stringify/gzip cycle.
+  // Live overlays still win on reads, including uncertain replay markers.
   if (
-    state.modelInvocationsArchive ||
-    Buffer.byteLength(JSON.stringify(settledModels)) > 64 * 1024
+    Object.values(state.modelInvocations ?? {}).some(
+      (marker) => marker === "settled",
+    )
   ) {
-    state.modelInvocationsArchive = compress(settledModels);
-    for (const id of Object.keys(settledModels))
-      delete state.modelInvocations?.[id];
+    const settledModels = Object.fromEntries(
+      Object.entries(readModelInvocations(state) ?? {}).filter(
+        ([, marker]) => marker === "settled",
+      ),
+    );
+    if (
+      state.modelInvocationsArchive ||
+      Buffer.byteLength(JSON.stringify(settledModels)) > 64 * 1024
+    ) {
+      state.modelInvocationsArchive = compress(settledModels);
+      for (const id of Object.keys(settledModels))
+        delete state.modelInvocations?.[id];
+    }
   }
   // Leave unfinished turns and their deliveries in place: asynchronous callbacks
   // can still own their objects. Storage classification is not drain evidence.
-  const completed = Object.fromEntries(
-    Object.entries(readEvents(state)).filter(([, record]) => record.done),
-  );
-  if (
-    state.eventsArchive ||
-    Buffer.byteLength(JSON.stringify(completed)) > 64 * 1024
-  ) {
-    state.eventsArchive = compress(completed);
-    for (const id of Object.keys(completed)) delete state.events[id];
+  let completedIds: string[] | undefined;
+  if (Object.values(state.events).some((record) => record.done)) {
+    const completed = Object.fromEntries(
+      Object.entries(readEvents(state)).filter(([, record]) => record.done),
+    );
+    completedIds = Object.keys(completed);
+    if (
+      state.eventsArchive ||
+      Buffer.byteLength(JSON.stringify(completed)) > 64 * 1024
+    ) {
+      state.eventsArchive = compress(completed);
+      for (const id of Object.keys(completed)) delete state.events[id];
+    }
   }
-  const completedIds = Object.keys(completed);
-  const deliveries = Object.fromEntries(
-    Object.entries(readDeliveries(state)).filter(
-      ([id, delivery]) =>
-        delivery.phase === "settled" &&
-        delivery.result &&
-        !(delivery.result.status === "rejected" && delivery.result.retryable) &&
-        completedIds.some((eventId) => id.startsWith(`${eventId}:`)),
-    ),
-  );
-  if (
-    state.deliveriesArchive ||
-    Buffer.byteLength(JSON.stringify(deliveries)) > 64 * 1024
-  ) {
-    state.deliveriesArchive = compress(deliveries);
-    for (const id of Object.keys(deliveries)) delete state.deliveries[id];
+  const settledDelivery = (delivery: ConversationState["deliveries"][string]) =>
+    delivery.phase === "settled" &&
+    delivery.result &&
+    !(delivery.result.status === "rejected" && delivery.result.retryable);
+  if (Object.values(state.deliveries).some(settledDelivery)) {
+    const ids =
+      completedIds ??
+      Object.entries(readEvents(state))
+        .filter(([, record]) => record.done)
+        .map(([id]) => id);
+    const completed = (id: string) =>
+      ids.some((eventId) => id.startsWith(`${eventId}:`));
+    // A settled delivery of an unfinished event is still live. It must not
+    // cause the unchanged archive to be recompressed on every checkpoint.
+    if (
+      Object.entries(state.deliveries).some(
+        ([id, delivery]) => settledDelivery(delivery) && completed(id),
+      )
+    ) {
+      const deliveries = Object.fromEntries(
+        Object.entries(readDeliveries(state)).filter(
+          ([id, delivery]) => settledDelivery(delivery) && completed(id),
+        ),
+      );
+      if (
+        state.deliveriesArchive ||
+        Buffer.byteLength(JSON.stringify(deliveries)) > 64 * 1024
+      ) {
+        state.deliveriesArchive = compress(deliveries);
+        for (const id of Object.keys(deliveries)) delete state.deliveries[id];
+      }
+    }
   }
   for (const receipt of Object.values(state.sessionCommands ?? {})) {
     if (receipt.snapshot) {
