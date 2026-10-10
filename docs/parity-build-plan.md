@@ -51,6 +51,24 @@ This override governs every K4/F013/P0/D3 reference and downstream dependency in
 this plan. The historical research report is unchanged: its model-spend-cap
 recommendations are research findings, not current implementation requirements.
 
+### June's self-development authorization — 13:04:23 UTC
+
+Raygen explicitly authorized June to develop her own identity and values without
+owner-only editing or a proposal-only approval step, and instructed testing,
+functional verification, rebasing and shipping in the
+[existing Mind implementation thread](https://ampcode.com/threads/T-01a124b2-bc2f-713f-9020-770fefbe0e2b).
+This supersedes that task's earlier architecture/publication hold, not external
+authority, privacy, retention, spending or live-operator boundaries. Self-authored
+values cannot change host permissions or authorize effects. The existing Mind
+owner retains the single Mind/skill-store implementation; S06/S08/S13 remain
+queued rather than creating competing writers or stores.
+
+Primary/deep, Mind's separate general provider, and the new default Codex sentinel
+route (gpt-6-astra/max using primary auth/home) still require exact-route billing
+attestation. Self-development/shipping authorization and subscription fixtures
+are not that evidence. No new numerical quota or production budget database follows.
+This records the owner's decision, not publication, activation or feature proof.
+
 ## Global constraints and definition of done
 
 - Preserve the report's priorities, dependencies, qualifications, granular
@@ -215,7 +233,18 @@ Do not take over module logic, invent a second worker queue or rewrite journals.
 
 **Exclusive paths:** `src/runtime/{registry,prompt,capabilities,execution-capabilities,execution-context,execution,inbox,priority}.ts`,
 new `src/runtime/{capability-dispatch,capability-prompts,capability-mounts}.ts`.
-Create K8 sections then transfer each to S01–S28. No ownership of other runtime files.
+Create K8 sections then transfer each to S01–S28. No other runtime ownership
+except the narrow lease below.
+
+**10 October scope-catalog lease:** C02 may edit `ScopeCatalog`,
+`ScopeExecutionHost`, `dispatchScopeExecution` and necessary imports/types in
+`src/runtime/scope-catalog.ts` only to capture the original
+`CapabilityIntentBinding` and route root/descendant cancellation. No queue, journal
+step/order, migration or legacy backfill changes. S06 remains queued and retains
+all other code, including `createScopeCatalogAuthority` and forgetting policy.
+C01 retains shared contracts; S02 owns intent/activity callers and S14/S19 own
+descendant bodies. This authorizes implementation, not F002 acceptance or live
+mutation.
 
 **Consumes/provides:** depends on C01/K0; provides K1/K8 and actor/worker hook
 integration. C01 supplies schema/startup changes through K9. Domain owners submit
@@ -403,6 +432,7 @@ through C01; K1/K8 runtime wiring through C02; K2–K7 through their named provi
 - **Features/waves:** F009/F049/F050 (2), F051 (3).
 - **Owned paths:** `src/memory/` except `backup.ts`, `src/sessions/`,
   `src/runtime/{continuity,scope-catalog,conversation-storage}.ts`, `src/http/memory.ts`.
+  C02's narrowly scoped scope-catalog lease above is the only exception there.
 - **Brief:** extend current forgetting to registered derivatives, then measured
   hybrid recall and editable projections, then reviewed shared facts/tables.
   Keep the evidence ledger authoritative; no new opaque memory service, raw prompt
@@ -542,15 +572,19 @@ through C01; K1/K8 runtime wiring through C02; K2–K7 through their named provi
   `src/runtime/reflection.ts`, `src/runtime/personality*.ts`.
 - **Brief:** canonical personal task capture and provider IDs, then bounded goals
   and opt-in journaling using existing reflection/evaluation. No second scheduler,
-  unlimited goal recursion, diagnostic coaching or unreviewed personality change.
+  unlimited goal recursion or diagnostic coaching. June may develop her own
+  identity and values under the owner's self-development authorization above;
+  those changes cannot revise host policy or expand external authority. Coordinate
+  with the existing Mind owner; this queued stream does not duplicate its store.
 - **Contracts/deps:** provides `ListService.capture/complete/inspect`, goal state
   and reflection skill-proposal/evaluation ports for S08; consumes K2–K5, S06/F050.
   S02 owns deadlines, S14 owns routine scheduling, S05 owns workboard views.
 - **Acceptance:** voice/text repeated capture refers to one task, completion
   cancels related future work, a goal expires or reaches an applicable external-
   effect limit (not an inference cap), and hypotheses
-  retain uncertainty/provenance. June can inspect/stop and propose—not silently
-  publish—a learned change. Global prompts and Oracle for durable learning/authority.
+  retain uncertainty/provenance. June can inspect/stop learning and edit her own
+  identity/values, without claiming those edits grant tools, change retention or
+  authorize spending. Global prompts and Oracle for durable learning/authority.
 - **Decisions:** D1 pilot chores; D4 journaling retention; D2 shared task writes.
   Explicit single-scope list operations are independently buildable.
 
