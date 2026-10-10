@@ -79,6 +79,17 @@ export type CapabilityAvailability = z.infer<
 
 export const intentReferenceSchema = z.strictObject({ id, version: timestamp });
 export type IntentReference = z.infer<typeof intentReferenceSchema>;
+/** Optional host-only provenance for new descendants, frozen at owner admission.
+ * Derive from the saved root/delegation admission, never model output, a resumed
+ * job's new generation, deletionRevision, session UUID or legacy backfill. This
+ * routes to the original owner; it does not grant authority or prove a root fence.
+ * Existing source/audience/deletion bindings remain independently authoritative. */
+export interface CapabilityIntentBinding {
+  reference: IntentReference;
+  origin: Pick<ExecutionContext, "conversationKey" | "originEventId"> & {
+    delegation?: { agentId: string; requestId: string };
+  };
+}
 export const effectOutcomeSchema = z.enum([
   "not_started",
   "succeeded",
@@ -362,6 +373,8 @@ export const taskViewSchema = z.strictObject({
     "blocked",
     "unknown",
     "complete",
+    "failed",
+    "cancelled",
   ]),
   delivery: z.enum(["not_requested", "pending", "sent", "failed", "unknown"]),
   operationIds: z.array(id).max(1000),
