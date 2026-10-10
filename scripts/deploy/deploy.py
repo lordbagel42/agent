@@ -745,6 +745,12 @@ class Deployer:
                     # falsely claim that this exact revision was deployed.
                     s.event(target, "superseded")
                 return
+            # Documentation/companion-only pushes do not change the source
+            # exported into an app release. Keep serving the actual loaded SHA;
+            # a skipped candidate must never become an artificial healthy receipt.
+            if not h.git("diff", "--name-only", previous, target, "--", *SOURCE):
+                s.event(target, "superseded")
+                return
             h.prune(s.obsolete({previous, target}))
             # Check before recording preparation so capacity deferrals do not
             # spam the feed or latch a terminal failed revision.

@@ -123,6 +123,13 @@ artifact-transfer planning.
 
 ## Opt-in warm standby and durable Slack intake
 
+The updated controller skips app preparation and cutover when a descendant push
+does not change any exported app source inputs (`SOURCE` in `deploy.py`). The
+candidate receives `superseded`, not `healthy`; the active SHA and process stay
+unchanged. This covers documentation and independently installed companions,
+not runtime/configuration source, dependencies or tests. Companion updates still
+need their own installation and verification. This is not a runtime health check.
+
 The default remains the single `june.service` rollout described below. An
 operator can instead install **blue/green slots** with independent durable Slack
 intake. Source support is not live enablement. This keeps old June serving during
