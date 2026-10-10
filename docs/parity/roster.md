@@ -1,49 +1,42 @@
 # Parity implementation roster
 
 Coordinator: [parity implementation thread](https://ampcode.com/threads/T-01a124f5-c5f2-73d6-88dc-f3674cfba9a2).
-Last reconciled: 10 October 2026, 13:16 UTC.
+Policy corrected: 10 October 2026, 13:47 UTC; runtime corrections are in progress.
 
 The owner authorized implementation of the [build plan](../parity-build-plan.md)
 with GPT-6 Astra Max stream owners. This roster records dispatch and evidence;
 it does not grant provider consent or replace the plan's exact path ownership,
 feature dependencies, acceptance checks or D1–D8 decisions.
 
-## Current funding policy overrides earlier D3 proposals
+## Purchases are prohibited; configured tools and inference remain authorized
 
-Existing authorized subscription/included inference has no artificial token quota,
-model-use dollar cap or missing-price gate, including useful background work.
-Provider limits/backoff, bounded concurrency, cancellation, recovery fences and
-foreground responsiveness still apply. Do not create purposeless model loops or
-report unknown usage/cost as zero.
+Raygen clarified that the spending restriction means no autonomous purchases,
+such as DoorDash orders, not new limits on June's built-in tools. The earlier
+default-unknown billing gates were an implementation-team scope error, not his
+requirement. This correction supersedes this roster's earlier funding directions
+and the historical interpretations in the progression log below.
 
-Owner-funded external spending is prohibited now, including through Stripe Link.
-Future owner-funded transactions require Stripe Link **and** fresh explicit
-authorization; availability or login is not approval. No alternate saved cards,
-paid fallback, quota purchases, top-ups, paid tool/compute provisioning, phone
-charges, purchases or financial commitments are authorized. Separately metered
-API billing ambiguity must be surfaced before charging; uncapped tokens do not
-make those calls free. June-earned funds are only a possible future policy, not
-permission to earn, transact, spend or relabel owner funds/credits now.
+Ordinary configured model and tool use is authorized without a billing-classification
+or no-charge-attestation prerequisite. This includes primary/deep/Mind/Sentinel
+inference, API-key JSON/Decision/Jev providers, TinyFish/Tavily search and E2B.
+Restore those configured paths; do not substitute account-by-account billing
+audits or numerical token/model-use dollar caps. Actual provider quotas/rate
+limits, credentials, integration enablement, permissions, privacy, cancellation,
+uncertain-effect holds and recovery fences remain. Do not claim costs are zero.
 
-The proposed production `budgets.sqlite` schema is not approved. S04 implements
-shared static funding policy and honest inspection, not that ledger. Actual route
-guards belong to C01 (root/JSON provider), S04 (Hot Codex and other model adapters),
-S03 (broker/MCP and a narrow Tavily search lease) and S19 (E2B allocation).
-No global spending fence is accepted until the actual dispatch paths are verified.
-Other scoped consent/retention/device/provider decisions remain; lack of new D3
-limits does not block included inference.
+Autonomous purchases, orders, transfers and new financial commitments remain
+prohibited, including new subscriptions, wallet funding and quota top-ups.
+Future owner-funded transactions still require Stripe Link **and** fresh explicit
+authorization; existing configured tool invocation is not such a transaction.
+No new production budget database, provider enrollment or expansion of authority,
+data retention or sharing follows from this clarification.
 
-Primary/deep Codex route billing remains unattested. Codex 0.157.1's
-[`ordinaryUsageAllowed`](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/app-server-protocol/src/protocol/v2/account.rs#L328-L345)
-is a backend included-use permission snapshot validated against the active account;
-null means unavailable. Its
-[`turn/start` contract](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/app-server-protocol/src/protocol/v2/turn.rs#L162-L279)
-has no atomic included-only/no-credit-consumption precondition. Protocol, login,
-plan metadata and credits alone prove neither included billing nor a charge.
-The parent's route/account attestation question remains open. C01/S04 report that
-default-unknown Hot Codex admission would stop the currently configured primary/
-deep paths; the owner must resolve that route-specific enforcement decision before
-activation. This is not a numerical quota request.
+Existing owners are removing the added adapter denials and correcting the actual
+runtime knowledge: C01 JSON/root/plan; C02 shared runtime integration; S03 search
+and unpublished broker/browser changes; S04 Decision/Jev and shared analytics
+policy; S19 E2B; S01 readiness metadata; S14 workflow/research; Mind its own paths.
+Published denial slices are regressions to correct, not feature acceptance.
+This policy correction alone is not proof that code has shipped or is live.
 
 ## Delivery states are separate
 
@@ -81,15 +74,15 @@ Their local branches track `origin/main`; publication uses normal
 
 | Stream | Builder | Worktree suffix under `/home/amp/workspaces/` | Current slice |
 | --- | --- | --- | --- |
-| C01 | [contracts](https://ampcode.com/threads/T-01a1258c-a582-775f-902f-f9d0c03bcf89) | `agent-parity-c01-01a124f5` | Strict reply/turn/ID ceilings, root config and K2 signatures published; inspection binding and funding integration next. |
-| C02 | [runtime](https://ampcode.com/threads/T-01a1258c-ae10-74e0-893b-da2169a07f1d) | `agent-parity-c02-01a124f5` | K8/config bridge published; bounded metadata dispatch consumes C01/S01 without spoofing transport source. |
+| C01 | [contracts](https://ampcode.com/threads/T-01a1258c-a582-775f-902f-f9d0c03bcf89) | `agent-parity-c01-01a124f5` | Contracts published; removing added JSON funding denial and correcting plan/runtime policy. |
+| C02 | [runtime](https://ampcode.com/threads/T-01a1258c-ae10-74e0-893b-da2169a07f1d) | `agent-parity-c02-01a124f5` | Bounded metadata dispatcher and corrected built-in-tool guidance published; root binding remains C01 work. |
 | S01 | [readiness](https://ampcode.com/threads/T-01a1258c-b622-71e3-9bd3-54c461dca806) | `agent-parity-s01-01a124f5` | Readiness reader/module published; named root binding and modular dispatch remain C01/C02 work. |
-| S02 | [intent](https://ampcode.com/threads/T-01a12593-906a-73f6-8635-622f413619e6) | `agent-parity-s02-01a124f5` | Queued-only stop; running-stop probe exposes legacy late send, retained ancestry fix remains local. |
-| S03 | [authority](https://ampcode.com/threads/T-01a1258c-c2ca-77ec-8d87-00df03836d2d) | `agent-parity-s03-01a124f5` | Existing authority hardening published; Tavily/broker funding guards follow, exact CI integration passed after publication. |
-| S04 | [funding policy](https://ampcode.com/threads/T-01a12593-978f-7054-afe7-27b0b3caf9c4) | `agent-parity-s04-01a124f5` | Static policy/readiness published; direct decision/Jev guards next, no new store. |
+| S02 | [intent](https://ampcode.com/threads/T-01a12593-906a-73f6-8635-622f413619e6) | `agent-parity-s02-01a124f5` | Queued generations and sticky first-admission receipts published; admitted legacy work remains unfenced/unsettled. |
+| S03 | [authority](https://ampcode.com/threads/T-01a1258c-c2ca-77ec-8d87-00df03836d2d) | `agent-parity-s03-01a124f5` | Configured search restored in published source; unpublished billing draft withdrawn, security-only browser work continues. |
+| S04 | [funding policy](https://ampcode.com/threads/T-01a12593-978f-7054-afe7-27b0b3caf9c4) | `agent-parity-s04-01a124f5` | Removing Decision/Jev funding denials; narrowing shared policy to purchases and new commitments. |
 | S05 | [task views](https://ampcode.com/threads/T-01a125de-7cfc-702f-b355-659a665f5650) | `agent-parity-s05-01a124f5` | Source-scoped projection drafted; task mount blocked because presentation RPC can wake workflows. |
 | S14 | [workflow/research](https://ampcode.com/threads/T-01a125a1-4116-75d8-a052-220d1369fee1) | `agent-parity-s14-01a124f5` | F002 consumer support before later workflow/routine features. |
-| S19 | [coding/compute](https://ampcode.com/threads/T-01a125a1-4b85-7079-811e-1abaad094046) | `agent-parity-s19-01a124f5` | Local coding cancellation and E2B denial published; cross-owner F002 still needs carrier/root integration. |
+| S19 | [coding/compute](https://ampcode.com/threads/T-01a125a1-4b85-7079-811e-1abaad094046) | `agent-parity-s19-01a124f5` | Coding cancellation/provenance retained; restoring configured E2B while root F002 integration continues. |
 
 At launch the runner had 3 CPUs, 12 GiB RAM and about 1.2 GiB free disk. Matching
 existing dependency trees are shared through local, Git-excluded symlinks and
@@ -156,12 +149,12 @@ after C01/C02 handoff. The coordinator alone edits this roster.
 
 | ID | Waves | Features | State / next technical frontier | Scoped decisions or ownership boundary |
 | --- | --- | --- | --- | --- |
-| C01 | 0, integration | K0/K2–K7/K9 | Contracts, reply schema and root config published; named inspection/funding composition next. | No migration, dependency or provider decision implied. |
-| C02 | 0, integration | K1/K8 | K8/config bridge published; K1 dispatcher remains under integration. | Preserve concurrent additive mind/WhatsApp/Slack integration. |
+| C01 | 0, integration | K0/K2–K7/K9 | Contracts/root config published; inspection composition and funding-scope correction underway. | No migration, dependency or provider decision implied. |
+| C02 | 0, integration | K1/K8 | Metadata-only execution dispatcher published; real root port binding and task source remain. | Preserve concurrent additive mind/WhatsApp/Slack integration. |
 | S01 | 1/2/3/5 | F001/F006/F096/F100 | First reader/module increment published; combined modular F001 integration and live proof pending. | D5/D8 for new hosting/packaging; existing recovery owners keep their fence. |
-| S02 | 1 | F002/F003/F005 | Running intent tranche; legacy late-send failure remains explicit. | D7 gates changed quiet/catch-up defaults, not deterministic previews. |
-| S03 | 1/3 | F007/F008/F010/F012/F065/F101 | Existing authority slice published; direct spending guards and F002 remain. | D2/D4/D6 for new authority/accounts/processors; F065 also needs takeover. |
-| S04 | 1/2/3 | F013–F017 | Static policy/readiness published; full claims need actual route guards. | Current D3 prohibits owner spend, not included inference; no ledger approval. |
+| S02 | 1 | F002/F003/F005 | Queued-generation/stop receipts published; admitted legacy work and full root settlement remain unproven. | D7 gates changed quiet/catch-up defaults, not deterministic previews. |
+| S03 | 1/3 | F007/F008/F010/F012/F065/F101 | Authority and corrected search published; browser freshness and full F002 remain. | D2/D4/D6 for new authority/accounts/processors; F065 also needs takeover. |
+| S04 | 1/2/3 | F013–F017 | Correcting overbroad model/tool denials and policy knowledge; financial-action controls remain scoped. | Purchases/new commitments prohibited, ordinary configured tool use authorized; no ledger approval. |
 | S05 | 1/2/3 | F004/F011/F018/F080/F081 | Projection drafted; no safe no-wake reader mounted, plus F001/F002/F003 receipts pending. | No new scheduler/store; debug incident stays with its owner, D3/D8 for new value/support commitments. |
 | S06 | 2/3 | F009/F049–F051 | Queued; F008 then scoped deletion. | Existing mind owner retains its approved store; D4 for expanded retention, D2 for sharing. |
 | S07 | 3 | F052/F053/F099 | Queued behind deletion/recall and bounded files/parsers. | D4/D6 source/processor choice, D8 format priority. |
@@ -174,15 +167,15 @@ after C01/C02 handoff. The coordinator alone edits this roster.
 | S14 | 2/3 | F031/F032/F034–F036 | Running F002 workflow/research support; later routines still depend on intent/time/policy. | Preserve Rivet wrappers and uncertain receipts; no paid/background quota added. |
 | S15 | 2/3/5 | F037–F042 | Existing WhatsApp owner's source increment published; no new parity builder. | WhatsApp provider selected in its own task, enrollment missing; other transports D1/D6, SDK D8. |
 | S16 | 2/3/4/5 | F043–F048 | Queued behind private files and policy/processor metadata. | D3/D4/D6 audio provider/cost/retention; D8 recording/ambient. |
-| S17 | 2/3 | F061/F062 | Queued behind F008/F001; S03 has only the final-dispatch browser authorization lease. | No browser billing attestation; D2/D5/D6 pilot origins/accounts/execution host. |
+| S17 | 2/3 | F061/F062 | Queued behind F008/F001; S03 has only the final-dispatch browser authorization lease. | D2/D5/D6 pilot origins/accounts/execution host; no invented billing gate. |
 | S18 | 3/5 | F063/F064/F066/F093 | Parked for owner scope before device implementation. | D5/D8; D4 before sensor retention. |
-| S19 | 2/3 | F067/F068/F070/F071 | Local coding F002/F071 and F013/F067 E2B denial slices published; full intent/compute not accepted. | Local BoxLite is separate; no paid fallback/provisioning, D5/D6 still scoped. |
-| S20 | 2 | F069 | Queued behind F007/F009/F010/F013; disposable selected files first. | External storage spending prohibited; D4 retention/processors, no expanded retention before restore proof. |
+| S19 | 2/3 | F067/F068/F070/F071 | Local coding intent slices published; E2B funding regression being removed; full intent/compute not accepted. | Configured E2B use authorized; preserve environment permissions/cleanup and scoped D5/D6 decisions. |
+| S20 | 2 | F069 | Queued behind F007/F009/F010/F013; disposable selected files first. | No new storage purchase/commitment; D4 retention/processors, no expanded retention before restore proof. |
 | S21 | 2 | F073/F074 | Queued behind files/content barriers and verified isolated parser execution. | D4/D6 processor/license, D5 execution; dependency approval through C01. |
-| S22 | 3 | F075/F076 | Queued behind policy/spending-denial/files; reuse S16 transcription. | D3/D4/D6 provider/entitlement/retention; runner image tools do not prove June eligibility. |
+| S22 | 3 | F075/F076 | Queued behind policy/files; reuse S16 transcription. | D3 for new purchases; D4/D6 provider/retention; runner image tools do not prove June eligibility. |
 | S23 | 3 | F072/F077/F078 | Queued behind files/documents, VM and export prerequisites. | D2/D4/D5 actions/data/publication/hosting. |
-| S24 | 3/5 | F079/F082–F084 | Queued behind intent/policy/spending-denial/skills; bounded roles first. | D2/D6 shared identities; D1/D8 before tenancy. |
-| S25 | 3/4/5 | F030/F085–F090 | Parked; read-only F030 is distinct from consequential work. | Owner-funded spending prohibited even through Link; future Link + fresh approval, no earnings authorization. |
+| S24 | 3/5 | F079/F082–F084 | Queued behind intent/policy/skills; bounded roles first. | D2/D6 shared identities; D1/D8 before tenancy. |
+| S25 | 3/4/5 | F030/F085–F090 | Parked; read-only F030 is distinct from consequential work. | Autonomous purchases/orders/transfers/new commitments prohibited; future Link + fresh approval. |
 | S26 | 2/3 | F091/F092/F094/F095/F102 | Queued behind readiness/authority/time; Slack-first setup can precede mobile. | Preserve existing Slack owner's narrow hunks; D1/D6 enrollment, D8 native versus PWA. |
 | S27 | 2 | F097/F098 | Queued behind deletion/recall/files and recovery evidence. | D4 data policy; D5 off-host destination/key custody. |
 | S28 | 5 | F104–F107 | Parked until a pack/use case/maintainer is selected. | D8 plus each pack's actual D2–D6 actions/data/providers. |
@@ -200,8 +193,8 @@ parity coordinator; published changes arrive only through remote `main`.
   instruction; it supersedes the earlier architecture/publication hold.
   S06/S08/S13 remain queued and must not create a competing writer/store.
   The existing owner retains provisioning and companion/runtime verification.
-  Exact-route inference billing and the live-operator handoff remain separate;
-  no activation or expanded external authority is inferred from shipping approval.
+  The later funding clarification removes invented billing-attestation gates;
+  the live-operator handoff and actual privacy/permission boundaries remain.
 - [WhatsApp owner](https://ampcode.com/threads/T-01a12483-df20-749d-8c00-1b0044114aa2):
   published official API/drain/setup work in
   [`da2c00e`](https://github.com/lordbagel42/agent/commit/da2c00e4ff81668adc240d9cc0cd6b2e02b919f6).
@@ -227,6 +220,9 @@ parity coordinator; published changes arrive only through remote `main`.
   observed live failure has been escalated, not taken over by parity.
 
 ## Progression and evidence log
+
+Entries before the 13:47 policy correction are historical observations and team
+interpretations, not authority to retain the withdrawn model/tool funding gates.
 
 - **11:23 UTC:** C01/C02/S01/S03 launched; direct contract-owner communication
   established. Existing owner boundaries recorded. Next launch frontier is
@@ -408,8 +404,42 @@ parity coordinator; published changes arrive only through remote `main`.
   intent or cutover record. The existing schema/probe owner was notified and
   retains the mutation window; coordinator deployment follow-up continues without
   takeover or a new readiness claim.
-- **Pending:** C01 named inspection binding; C02 new dispatcher proof; S01 combined
-  F001 integration/live receipt; remaining model/MCP/browser/Tavily spending guards.
+- **13:47 UTC:** Raygen directly clarified purchases versus built-in tool use.
+  Existing stream owners received the correction above; the team withdrew the
+  account-by-account audit/attestation direction, including primary/deep/Mind/
+  Sentinel. No new permission, privacy exception or recovery handoff follows.
+- **13:52 UTC:** S02 published
+  [`d0474ff`](https://github.com/lordbagel42/agent/commit/d0474fffdbe97aae1cfc165e46a43f9fb97bed06).
+  Never-admitted stopped work can report fenced/settled, while admitted, legacy
+  and unknown admission histories remain false/false. The owner reports real
+  isolated host/engine and combined-source verification. This does not attest
+  provider settlement for legacy notification or the full F002 contract.
+- **13:56 UTC:** C02 published the metadata dispatcher in
+  [`1c74c34`](https://github.com/lordbagel42/agent/commit/1c74c347b17f54740b27d402d88d47b60e14a89a)
+  and corrected interaction guidance in
+  [`225561d`](https://github.com/lordbagel42/agent/commit/225561dcf98833fc7222fb19628ee41acfc2ff0a).
+  Coordinator source inspection confirms original-event/port identity and current
+  authority checks around actual dispatch and settlement, no metadata fallback,
+  and a complete 64 KiB observation ceiling. The owner reports real isolated
+  Slack/WhatsApp/held-read-cancellation worker proof; C01's root binding and live
+  workflow proof remain separate. The unpushed E2B host gate never shipped.
+- **14:02 UTC:** S03 published the search correction in
+  [`832279b`](https://github.com/lordbagel42/agent/commit/832279b40516c076e0753c7df39192417890905c).
+  Coordinator inspected removal of the shared TinyFish/Tavily denial and legacy
+  failure rows without removal of query/privacy/cancellation/quota safeguards.
+  The owner reports loopback HTTP plus real isolated worker success/quota checks
+  for both providers, without real provider traffic. Deployment is not verified.
+- **Combined correction baseline:** on published
+  [`4515065`](https://github.com/lordbagel42/agent/commit/4515065f71957b410d9a725a5ad3edf7d30eb1ca),
+  the coordinator independently reproduced all ten configured route variants
+  denying dispatch without extra attestation: JSON and Decision on both protocols,
+  Jev, both direct/selector search providers, and E2B. Five classification-positive
+  model controls returned valid typed outputs. All five real prompt-builder paths
+  included withdrawn restrictions. This used local injected transports and an E2B
+  SDK boundary fixture, not live providers; combined after-proof remains pending.
+- **Pending:** C01 named inspection binding; S01 combined
+  F001 integration/live receipt; removal of added model/tool funding gates and
+  correction of runtime knowledge under the 13:47 owner clarification.
   Full F002 requires consumer admission/settlement evidence, not queued-stop metadata.
   A production Slack worker probe still needs owner-authorized conversation/action.
   No P0 exit or global spending-enforcement claim is accepted.
