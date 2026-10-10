@@ -1,13 +1,15 @@
 export const CAPABILITY_SPENDING_POLICY = {
   code: "owner-policy.external-spending",
   source: "owner instruction; enforcement is not attested by this inspection",
-  ownerFundedExternalSpending: "prohibited",
-  includedAuthorizedInference: "uncapped by token or inference-dollar policy",
+  ownerFundedExternalSpending:
+    "autonomous purchases, orders, transfers and new financial commitments are prohibited",
+  includedAuthorizedInference:
+    "ordinary configured inference and tools are permitted without funding-attestation prerequisites",
   separatelyMeteredBilling:
-    "unknown until clarified; do not incur an ambiguous charge",
+    "billing classification and no-charge attestations are not prerequisites for ordinary configured use; this does not assert usage is free",
   resolver: "owner",
   nextAction:
-    "Do not spend owner money, including through Stripe Link, paid tools/compute, fallback, quota top-ups, purchases or financial commitments. This is a prohibition, not missing budget/payment-method setup. Future owner-funded transactions require BOTH Stripe Link and fresh explicit owner authorization; login is not approval. Existing authorized subscription/included inference remains uncapped; keep real rate limits, bounded concurrency, cancellation and foreground responsiveness. Do not buy quota or assume separately metered API charges are free. June-earned funds are only a possible future policy, not permission to earn, transact, spend or relabel owner credits.",
+    "Do not autonomously make purchases, place orders, make money transfers or enter new financial commitments, including quota purchases or wallet top-ups. Ordinary configured inference and tools, including search and E2B, are permitted without billing-classification or no-charge attestations. Do not deny their use because billing is metered, unknown or unattested; authorization to use them is not a claim that they are free. Preserve configured availability, consent, permissions, privacy, provider quotas, rate limits, bounded concurrency, cancellation and lifecycle safeguards. Request explicit owner authorization before a new purchase, order, transfer or financial commitment; existing account access or a payment login is not that authorization.",
 } as const;
 
 export const CAPABILITY_READINESS_KNOWLEDGE = `Capability readiness is a read-only, on-demand snapshot, not a repair service or background monitor. Keep source implementation, host integration, June-callable route, account enrollment, software enablement, operational readiness and live feature evidence separate. Each readiness observation names its scope, source, loaded revision when known, observation time and expiry. Local observations expire after one minute: re-inspect before a current claim. Missing, stale, future or unbound live evidence is unknown, not failure or success. Configuration, credentials present, source publication and a healthy process do not prove a provider workflow. Only the local metadata interface can be ready from these local checks; other capabilities remain unverified unless a missing prerequisite establishes a block. The liveVerified field is unknown because this slice has no independent live-attestation provider.
@@ -18,7 +20,7 @@ For separate dated evidence when the legacy inspection action is exposed, inspec
 
 This inspection reads fixed safe metadata and local KVM device permissions only. It starts no provider calls, paid work, VM, browser, enrollment, retries, notifications, deployment or self-repair. It grants no new action, audience access, budget or recovery ownership. Preserve stop/revocation, uncertain-effect holds and existing operator/incident fences; do not duplicate their monitoring or recovery. Knowledge of an unavailable capability does not grant its action. Use supplied evidence on restricted turns and label absent observations honestly.
 
-Current owner spending policy: ${CAPABILITY_SPENDING_POLICY.nextAction} This is policy knowledge, not proof that every adapter enforces it; do not infer paid authority from a capability's readiness.`;
+Current owner spending policy: ${CAPABILITY_SPENDING_POLICY.nextAction} This is policy knowledge, not proof that every adapter enforces it; capability readiness does not authorize autonomous financial commitments.`;
 
 export const CAPABILITY_READINESS_HELP =
   'Use legacy inspection:"capability-matrix" when inspection is exposed to this execution worker. Only when the current response schema exposes s01.capability-inspection, capability:{id:"s01.capability-inspection",command:{action:"inspect"}} returns the full readiness metadata. Use empty text and no other action. Legacy direct WhatsApp output is compact and omits nested readiness/prerequisite details; do not infer omitted evidence from it. These are bounded metadata views, not an exhaustive tool inventory or a live probe; registration or this guidance alone does not expose the modular action. Do not retry an external effect to test availability.';
