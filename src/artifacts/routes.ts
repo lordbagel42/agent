@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { HttpBindings } from "@hono/node-server";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -26,9 +27,16 @@ export function createArtifactRoutes(
     )
   )
     throw new Error("artifact_https_required");
-  const app = new Hono<{ Variables: { nonce: string } }>();
-  let viewers = 0;
+  const app = new Hono<{
+    Bindings: Partial<HttpBindings>;
+    Variables: { nonce: string };
+  }>();
+  const viewers = new Map<
+    string,
+    { count: number; artifacts: Map<string, number> }
+  >();
   const writes = new Map<string, { count: number; until: number }>();
+  let pruneWritesAt = 0;
   app.onError((_error, c) => c.json({ error: "artifact_unavailable" }, 503));
   app.use("*", bodyLimit({ maxSize: 1_100_000 }));
   app.use("*", async (c, next) => {
@@ -174,6 +182,11 @@ export function createArtifactRoutes(
   });
   app.post("/artifacts/:id/scene", async (c) => {
     const id = c.req.param("id");
+    if (Date.now() >= pruneWritesAt) {
+      for (const [key, budget] of writes)
+        if (budget.until <= Date.now()) writes.delete(key);
+      pruneWritesAt = Date.now() + 60_000;
+    }
     const budget = writes.get(id);
     if (budget && budget.until > Date.now()) {
       if (++budget.count > 30) return c.json({ error: "rate_limited" }, 429);
@@ -200,12 +213,57 @@ export function createArtifactRoutes(
     return c.json({ revision: updated.revision });
   });
   app.get("/artifacts/:id/events", (c) => {
-    if (viewers >= 64) return c.json({ error: "viewer_limit" }, 503);
     const id = c.req.param("id");
-    const generation = service.store.get(id)?.generation;
+    const record = service.store.get(id);
+    if (!record) return c.notFound();
+    // A guest's public artifacts cannot consume the owner's viewer allowance.
+    const scope = JSON.stringify([
+      record.creator.channel,
+      record.creator.accountId,
+      record.creator.senderId,
+    ]);
+    // The socket peer is normally our reverse proxy, not an end viewer.
+    // Split by artifact instead of trusting client-supplied forwarding headers.
+    const budget = viewers.get(scope) ?? { count: 0, artifacts: new Map() };
+    const count = budget.artifacts.get(id) ?? 0;
+    if (budget.count >= 2048 || count >= 128)
+      return c.json({ error: "viewer_limit" }, 503);
+    viewers.set(scope, budget);
+    budget.count++;
+    budget.artifacts.set(id, count + 1);
+    const generation = record.generation;
     const token = getCookie(c, "june_artifact");
-    viewers++;
     return streamSSE(c, async (stream) => {
+      // Abort also releases a stalled writer, not just a cooperative reader.
+      // EventSource reconnects normally after the five-minute lease ends.
+      const outgoing = c.env?.outgoing;
+      const abort = () => {
+        stream.abort();
+        // Internal stream cancellation alone cannot release an adapter stalled
+        // waiting for socket drain. Terminate this response's transport too.
+        outgoing?.destroy();
+      };
+      const expiry = setTimeout(abort, 300_000);
+      expiry.unref();
+      options.shutdown?.addEventListener("abort", abort, { once: true });
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        clearTimeout(expiry);
+        options.shutdown?.removeEventListener("abort", abort);
+        outgoing?.off("finish", release);
+        outgoing?.off("close", release);
+        budget.count--;
+        const remaining = (budget.artifacts.get(id) ?? 1) - 1;
+        if (remaining) budget.artifacts.set(id, remaining);
+        else budget.artifacts.delete(id);
+        if (!budget.count) viewers.delete(scope);
+      };
+      outgoing?.once("finish", release);
+      outgoing?.once("close", release);
+      if (options.shutdown?.aborted) abort();
+      if (outgoing?.destroyed) release();
       try {
         while (!stream.aborted && !options.shutdown?.aborted) {
           if (
@@ -219,7 +277,9 @@ export function createArtifactRoutes(
           await stream.sleep(2000);
         }
       } finally {
-        viewers--;
+        // A terminal "locked" event may still be stalled in the Node adapter.
+        // Retain its lease/accounting until the response really finishes.
+        if (!outgoing) release();
       }
     });
   });
