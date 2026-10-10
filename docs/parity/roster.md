@@ -1,7 +1,7 @@
 # Parity implementation roster
 
 Coordinator: [parity implementation thread](https://ampcode.com/threads/T-01a124f5-c5f2-73d6-88dc-f3674cfba9a2).
-Last reconciled: 10 October 2026, 12:44 UTC.
+Last reconciled: 10 October 2026, 12:52 UTC.
 
 The owner authorized implementation of the [build plan](../parity-build-plan.md)
 with GPT-6 Astra Max stream owners. This roster records dispatch and evidence;
@@ -53,7 +53,7 @@ revision and dated June-facing workflow evidence separately. A source registrati
 passing build, healthy process or worker assertion is not feature acceptance.
 Partial coverage stays partial. An existing capability is not a new parity delivery.
 
-Eight implementation threads have launched. C02 published the inert K8 knowledge
+Nine implementation threads have launched. C02 published the inert K8 knowledge
 slots in [`5d4cacd`](https://github.com/lordbagel42/agent/commit/5d4cacdb49d041e019aaf0743eb1ff8b12fd7ee0);
 C01 published the strict contracts/configuration and 28 inert module slots in
 [`74fdcef`](https://github.com/lordbagel42/agent/commit/74fdcefd3345addab273d9e4945416c7d25cc6ac).
@@ -87,6 +87,7 @@ Their local branches track `origin/main`; publication uses normal
 | S02 | [intent](https://ampcode.com/threads/T-01a12593-906a-73f6-8635-622f413619e6) | `agent-parity-s02-01a124f5` | Queued-only stop; running-stop probe exposes legacy late send, retained ancestry fix remains local. |
 | S03 | [authority](https://ampcode.com/threads/T-01a1258c-c2ca-77ec-8d87-00df03836d2d) | `agent-parity-s03-01a124f5` | Existing authority hardening published; Tavily/broker funding guards follow, exact CI integration passed after publication. |
 | S04 | [funding policy](https://ampcode.com/threads/T-01a12593-978f-7054-afe7-27b0b3caf9c4) | `agent-parity-s04-01a124f5` | Static policy/readiness published; direct decision/Jev guards next, no new store. |
+| S05 | [task views](https://ampcode.com/threads/T-01a125de-7cfc-702f-b355-659a665f5650) | `agent-parity-s05-01a124f5` | Source-scoped workflow status projection first; real host reader/mount and full F004 prerequisites remain explicit. |
 | S14 | [workflow/research](https://ampcode.com/threads/T-01a125a1-4116-75d8-a052-220d1369fee1) | `agent-parity-s14-01a124f5` | F002 consumer support before later workflow/routine features. |
 | S19 | [coding/compute](https://ampcode.com/threads/T-01a125a1-4b85-7079-811e-1abaad094046) | `agent-parity-s19-01a124f5` | Local coding cancellation and E2B denial published; cross-owner F002 still needs carrier/root integration. |
 
@@ -154,7 +155,7 @@ after C01/C02 handoff. The coordinator alone edits this roster.
 | S02 | 1 | F002/F003/F005 | Running intent tranche; legacy late-send failure remains explicit. | D7 gates changed quiet/catch-up defaults, not deterministic previews. |
 | S03 | 1/3 | F007/F008/F010/F012/F065/F101 | Existing authority slice published; direct spending guards and F002 remain. | D2/D4/D6 for new authority/accounts/processors; F065 also needs takeover. |
 | S04 | 1/2/3 | F013–F017 | Static policy/readiness published; full claims need actual route guards. | Current D3 prohibits owner spend, not included inference; no ledger approval. |
-| S05 | 1/2/3 | F004/F011/F018/F080/F081 | Queued after F001/F002/F003; source-scoped task projections first. | Do not take over debug incident; D3/D8 for new value/support commitments. |
+| S05 | 1/2/3 | F004/F011/F018/F080/F081 | Running source-scoped read-only projection; full F004 still waits for F001/F002/F003 receipts. | No new scheduler/store; debug incident stays with its owner, D3/D8 for new value/support commitments. |
 | S06 | 2/3 | F009/F049–F051 | Queued; F008 then scoped deletion. | Existing mind owner review pending; D4 for expanded retention, D2 for sharing. |
 | S07 | 3 | F052/F053/F099 | Queued behind deletion/recall and bounded files/parsers. | D4/D6 source/processor choice, D8 format priority. |
 | S08 | 2/3/5 | F055–F059/F108 | Queued behind F007/F010/F013; reconcile mind skills boundary first. | D5 scripts, D8 public catalog/payouts; do not duplicate unpublished mind work. |
@@ -353,6 +354,15 @@ parity coordinator; published changes arrive only through remote `main`.
   recovery reconciliation remains with its existing owner and monitoring continues.
   This process/routing observation does not accept any parity feature or establish
   that later S01/E2B code is loaded.
+- **12:52 UTC:** S05 launched on freshly fetched published
+  [`30feff2`](https://github.com/lordbagel42/agent/commit/30feff282081b9edc1a5cf7fe55ae58090fd0b28),
+  bringing the active roster to nine. Its first slice projects existing workflow
+  status through the authenticated `presentation(event)` reader, not raw results,
+  an eventless artifact exception or a new job store. C01/C02 own the named task
+  reader/mount; S14 retains actor-body ownership and S02 intent/settlement semantics.
+  Delivery without a linked receipt stays unknown. Full F004 acceptance still
+  requires its listed prerequisites and a real June-callable workflow; dispatching
+  the owner does not satisfy those gates or authorize new retention/effects.
 - **Pending:** C01 named inspection binding; C02 new dispatcher proof; S01 combined
   F001 integration/live receipt; remaining model/MCP/browser/Tavily spending guards.
   Full F002 requires consumer admission/settlement evidence, not queued-stop metadata.
