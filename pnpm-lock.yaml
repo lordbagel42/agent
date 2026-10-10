@@ -323,35 +323,35 @@ packages:
   '@agentos-software/tar@0.3.5':
     resolution: {integrity: sha512-hSf6PY4q1luIomFSDgVHxVDDIPdAVZxdgwrQFEYH4aIE6TXX9qatVmzR36uYLWpnFGAZTR6srREGoTnmOGV4Lg==}
 
-  '@ampcode/cli-darwin-arm64@0.0.1791619249-g722a12':
-    resolution: {integrity: sha512-np4AQZTb3EBWpst0/K6zgpBUAoECzKkEWN45kWZN7xe3orLpXDEMrYhTaPRvvvhvHBqzjxNiXtmQbIcDwlZgNw==}
+  '@ampcode/cli-darwin-arm64@0.0.1790683256-gc25f8e':
+    resolution: {integrity: sha512-X496OZDlTj60xKTlMsxDapcyfzYVdDk09RnAdCzRfwBvJ1DMlt6wrv8COg/ruG+QSCPFQ4K2m/zveDTvVHM1mA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@ampcode/cli-darwin-x64@0.0.1791619249-g722a12':
-    resolution: {integrity: sha512-S5mCPNEHuQ3EnBsfFDROiWkQoxSBnvpMUuIQrjFCwL7khD9bSWz3f6d8lYNaal0gGDmtOBuK785EDuaNgIDQ5w==}
+  '@ampcode/cli-darwin-x64@0.0.1790683256-gc25f8e':
+    resolution: {integrity: sha512-ui0uXzrbOP8FF49hlzgL2trGnwKtsDrvCaDTXLNPgF/JOCOa7s0zuz/WU735VIxt+IUGWTIwx0j1UvTcmkl/Tw==}
     cpu: [x64]
     os: [darwin]
 
-  '@ampcode/cli-linux-arm64@0.0.1791619249-g722a12':
-    resolution: {integrity: sha512-eKbGn0dTrMt90PrBZH9cMcl8nQ9vmZMvQUfPtEr9W2QmUqP4RH++POUi01mSZPGvL/IgrlkHC5cLqxs76FBaFw==}
+  '@ampcode/cli-linux-arm64@0.0.1790683256-gc25f8e':
+    resolution: {integrity: sha512-Nq7y29naTTvSQTL1RVAiTPYuXNmqyF7Yja9aTn24+oXfeJR892W7fEFTmxDRX5IRCGLVNPEQuWQmVbhUBN6eaA==}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@ampcode/cli-linux-x64@0.0.1791619249-g722a12':
-    resolution: {integrity: sha512-CuxnRi8YFN1FFijWuvtyn8v+ZhvgyYuLzw0QRfageMTJkPIJekThM8eeS/KhB9Z5kk5sclV9saFZt8bfIElPXg==}
+  '@ampcode/cli-linux-x64@0.0.1790683256-gc25f8e':
+    resolution: {integrity: sha512-8yjazl6Zg45eGUhC6ZxzrvrdOGhd7Wic7sewoJKmY2Ol4HiB+v/92g0tCnG3foBqWEaiiABk0hboH6vyzEH+Zw==}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@ampcode/cli-win32-x64@0.0.1791619249-g722a12':
-    resolution: {integrity: sha512-nvolkRrvca5r5vF8PmqzG5TQIu7hkMZsbTronJ1zZohtBWo/tOVsJyTyKAYjyiEF/JHswaXCj6Yaid+3rtx5YQ==}
+  '@ampcode/cli-win32-x64@0.0.1790683256-gc25f8e':
+    resolution: {integrity: sha512-ruMEQHYmTtlil60xLDrwPK1NAklhEghsQBx0LYUCV6YlWHlHdQkRdCh/WJ7GnkZkZUQddFNBKFa5lWWzPDyvqA==}
     cpu: [x64]
     os: [win32]
 
-  '@ampcode/cli@0.0.1791619249-g722a12':
-    resolution: {integrity: sha512-M5nvSNjjG1F58zdMnpNUWojof7fIskVbPIgHECT8i/b27meTs8ofZoTe/J8ET8wkj+XRI27sWw6wGJsZUvpNMQ==}
+  '@ampcode/cli@0.0.1790683256-gc25f8e':
+    resolution: {integrity: sha512-OxxB4ssE1tt8KS0FPBWeoginih6vsElae5KLxlDw9V+xt5L2M2PbizBYf3nP25G4kCAJPWryN6gFBu/4SzvjOw==}
     hasBin: true
 
   '@ampcode/sdk@0.1.0-20260918210405-g81edbf0':
@@ -5744,32 +5744,32 @@ snapshots:
 
   '@agentos-software/tar@0.3.5': {}
 
-  '@ampcode/cli-darwin-arm64@0.0.1791619249-g722a12':
+  '@ampcode/cli-darwin-arm64@0.0.1790683256-gc25f8e':
     optional: true
 
-  '@ampcode/cli-darwin-x64@0.0.1791619249-g722a12':
+  '@ampcode/cli-darwin-x64@0.0.1790683256-gc25f8e':
     optional: true
 
-  '@ampcode/cli-linux-arm64@0.0.1791619249-g722a12':
+  '@ampcode/cli-linux-arm64@0.0.1790683256-gc25f8e':
     optional: true
 
-  '@ampcode/cli-linux-x64@0.0.1791619249-g722a12':
+  '@ampcode/cli-linux-x64@0.0.1790683256-gc25f8e':
     optional: true
 
-  '@ampcode/cli-win32-x64@0.0.1791619249-g722a12':
+  '@ampcode/cli-win32-x64@0.0.1790683256-gc25f8e':
     optional: true
 
-  '@ampcode/cli@0.0.1791619249-g722a12':
+  '@ampcode/cli@0.0.1790683256-gc25f8e':
     optionalDependencies:
-      '@ampcode/cli-darwin-arm64': 0.0.1791619249-g722a12
-      '@ampcode/cli-darwin-x64': 0.0.1791619249-g722a12
-      '@ampcode/cli-linux-arm64': 0.0.1791619249-g722a12
-      '@ampcode/cli-linux-x64': 0.0.1791619249-g722a12
-      '@ampcode/cli-win32-x64': 0.0.1791619249-g722a12
+      '@ampcode/cli-darwin-arm64': 0.0.1790683256-gc25f8e
+      '@ampcode/cli-darwin-x64': 0.0.1790683256-gc25f8e
+      '@ampcode/cli-linux-arm64': 0.0.1790683256-gc25f8e
+      '@ampcode/cli-linux-x64': 0.0.1790683256-gc25f8e
+      '@ampcode/cli-win32-x64': 0.0.1790683256-gc25f8e
 
   '@ampcode/sdk@0.1.0-20260918210405-g81edbf0(patch_hash=64878c449c2f28bfdc27e759c52a052497b756299c2473db98b5b87a863ef9b3)':
     dependencies:
-      '@ampcode/cli': 0.0.1791619249-g722a12
+      '@ampcode/cli': 0.0.1790683256-gc25f8e
       zod: 3.25.76
 
   '@antfu/install-pkg@2.1.0':
