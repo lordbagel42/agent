@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { CronExpressionParser } from "cron-parser";
 import { z } from "zod";
 import type { MessageEvent } from "../core/contracts.js";
+import {
+  fenceWakeup,
+  inspectWakeupIntent,
+  wakeupStopReceipt,
+} from "../intent/wakeups.js";
 
 const name = z.string().min(1).max(100);
 // Plain unions emit provider-supported anyOf; literal tags still disambiguate.
@@ -76,12 +81,18 @@ export interface WakeupJob {
   createdAt: number;
   updatedAt: number;
   status: "active" | "paused" | "cancelled" | "completed";
+  /** Additive cancellation generation; old jobs and runs read as generation 0. */
+  intentVersion?: number;
+  /** Monotone, content-free evidence. Missing means legacy history unavailable. */
+  admissionEvidence?: "never_admitted" | "may_have_started";
   nextAt?: number;
   coalesced: number;
 }
 export interface WakeupRun {
   id: string;
   jobId: string;
+  /** Frozen at enqueue. Never inferred from the job after pause/resume. */
+  intentVersion?: number;
   event: WakeupEvent;
   /** Producer scope supplied out of band by the host, never from event.data. */
   audience?: string;
@@ -201,6 +212,8 @@ export function applyAction(
       createdAt: now,
       updatedAt: now,
       status: "active",
+      intentVersion: 0,
+      admissionEvidence: "never_admitted",
       nextAt,
       coalesced: 0,
     };
@@ -214,6 +227,10 @@ export function applyAction(
     const { source: _source, ...view } = job;
     return JSON.stringify({
       job: view,
+      intent: inspectWakeupIntent(state, job),
+      stop: wakeupStopReceipt(state, job),
+      effectReceipts:
+        "Retained run status is not a provider-effect receipt. Model, tool and delivery owners retain their own receipts; sent effects cannot be undone. Running consumers are not yet acknowledged fenced.",
       recentRuns: Object.values(state.runs)
         .filter((run) => run.jobId === job.id)
         .sort((a, b) => b.createdAt - a.createdAt)
@@ -237,6 +254,7 @@ export function applyAction(
         "Only paused wakeups can resume; create a new one for a completed or cancelled job",
       );
     if (job.trigger.kind === "cron") job.nextAt = nextCron(job.trigger, now);
+    fenceWakeup(job);
     // Paused event watches do not backfill old source events.
     job.status = "active";
   } else {
@@ -244,13 +262,15 @@ export function applyAction(
       throw new Error(
         "Only active wakeups can pause; create a new one for a completed or cancelled job",
       );
+    fenceWakeup(job);
     job.status = action.action === "pause" ? "paused" : "cancelled";
     for (const run of Object.values(state.runs))
       if (run.jobId === job.id && ["pending", "queued"].includes(run.status))
         run.status = "cancelled";
   }
   job.updatedAt = now;
-  return `Wakeup ${job.id}: ${job.status}. Already-running work is not interrupted.`;
+  const stop = wakeupStopReceipt(state, job);
+  return `Wakeup ${job.id}: ${job.status}. Intent version ${job.intentVersion ?? 0}. ${action.action === "resume" ? "New runs use this generation; cancelled runs are not resumed. Existing missed-run behavior is unchanged." : `Stop receipt: fenced=${stop.fenced}, settled=${stop.settled}. Unclaimed runs from the invalidated generation are blocked. Previously admitted work may still execute or send. Live-consumer fencing and effect settlement are not acknowledged by this wakeup owner. Unknown outcomes are not retried; previously sent effects cannot be undone. Inspect for retained runs and unavailable evidence.`}`;
 }
 
 function enqueue(
@@ -277,6 +297,7 @@ function enqueue(
   state.runs[id] = {
     id,
     jobId: job.id,
+    intentVersion: job.intentVersion ?? 0,
     event,
     ...(audience !== undefined ? { audience } : {}),
     ...(contextSourceIds

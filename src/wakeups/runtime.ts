@@ -4,6 +4,11 @@ import type { MessageEvent, Owner } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import type { DeploymentFeed } from "../deployment/feed.js";
 import {
+  currentWakeupRun,
+  fenceWakeup,
+  wakeupIntent,
+} from "../intent/wakeups.js";
+import {
   guardWorkflowActor,
   terminalWorkflowError,
 } from "../runtime/lifecycle.js";
@@ -100,10 +105,25 @@ export function createWakeupActor(
       ? deps.memory?.source(job.source, JSON.stringify(scope.key))
       : undefined;
   };
+  const runEvidenceCurrent = (job: WakeupJob, run: WakeupRun) =>
+    // Clock runs are intrinsic to their saved job, including legacy timers.
+    // Native runs retain their producer scope; recipients cannot supply it.
+    ((run.event.source === "schedule" &&
+      job.trigger.kind !== "event" &&
+      run.audience === undefined) ||
+      eventAudienceMatches(job, run.event, run.audience)) &&
+    !run.contextSourceIds?.some(
+      (id) =>
+        !deps.memory ||
+        (id.startsWith("volatile-context:continuity:")
+          ? deps.continuity?.valid(id) !== true
+          : deps.memory.store.isDeleted(id)),
+    );
   const revoke = (state: WakeupState, ids: string[]) => {
     for (const id of ids) {
       const job = state.jobs[id];
       if (!job?.instruction) continue;
+      fenceWakeup(job);
       job.status = "cancelled";
       job.updatedAt = Date.now();
       job.name = "Forgotten wakeup";
@@ -113,7 +133,8 @@ export function createWakeupActor(
       if (job.trigger.kind === "event") job.trigger.filters = [];
       for (const run of Object.values(state.runs)) {
         if (run.jobId !== id) continue;
-        if (pending(run)) run.status = "cancelled";
+        if (["pending", "queued"].includes(run.status))
+          run.status = "cancelled";
         run.event.data = {};
       }
     }
@@ -132,6 +153,8 @@ export function createWakeupActor(
         trigger: { kind: "event", source, type: "*", filters: [] },
         once: false,
         status: "active",
+        intentVersion: 0,
+        admissionEvidence: "never_admitted",
         createdAt: now,
         updatedAt: now,
         evidenceIds: [],
@@ -174,34 +197,29 @@ export function createWakeupActor(
     );
     for (const run of Object.values(state.runs)) {
       const job = state.jobs[run.jobId];
-      // Clock runs are intrinsic to their saved job, including legacy timers.
-      // Every native run needs its own producer scope even after queue ACK or
-      // restart; missing scope is not upgraded to the subscriber's authority.
-      const recipientAllowed =
-        job &&
-        ((run.event.source === "schedule" &&
-          job.trigger.kind !== "event" &&
-          run.audience === undefined) ||
-          eventAudienceMatches(job, run.event, run.audience));
       if (
-        !recipientAllowed ||
-        run.contextSourceIds?.some(
-          (id) =>
-            !deps.memory ||
-            (id.startsWith("volatile-context:continuity:")
-              ? deps.continuity?.valid(id) !== true
-              : deps.memory.store.isDeleted(id)),
-        )
-      ) {
-        if (pending(run)) run.status = "cancelled";
+        job &&
+        ["pending", "queued"].includes(run.status) &&
+        !currentWakeupRun(job, run)
+      )
+        run.status = "cancelled";
+      if (!job || !runEvidenceCurrent(job, run)) {
+        if (["pending", "queued"].includes(run.status))
+          run.status = "cancelled";
         run.event.data = {};
       }
     }
   };
   const definition = actor({
     state: initialState(),
-    createVars: (c): { persist: () => Promise<void> } => ({
+    createVars: (
+      c,
+    ): {
+      persist: () => Promise<void>;
+      claims: Map<string, { mode?: "decision"; result: Promise<boolean> }>;
+    } => ({
       persist: () => c.saveState({ immediate: true }),
+      claims: new Map(),
     }),
     queues: { wake: queue<{ wake: true }>() },
     actions: {
@@ -343,12 +361,14 @@ export function createWakeupActor(
         if (
           !run ||
           !job?.instruction ||
-          !pending(run) ||
-          ["paused", "cancelled"].includes(job.status)
+          !authorized(job.source, job.evidenceIds, job.mode) ||
+          !runEvidenceCurrent(job, run) ||
+          !currentWakeupRun(job, run)
         )
           return null;
         const source = sourceEvidence(job);
         return {
+          intent: wakeupIntent(job),
           ...(job.mode ? { mode: job.mode } : {}),
           evidenceIds: [
             ...new Set([
@@ -360,23 +380,68 @@ export function createWakeupActor(
           retentionTracked: run.contextSourceIds !== undefined,
         };
       },
-      async claim(c, id: string, mode?: "decision") {
+      /** Source-bound observation, not atomic permission to dispatch an effect. */
+      async currentRun(c, id: string, source: MessageEvent) {
         guard(c.key);
+        if (!authorized(source)) return false;
         invalidate(c.state);
         await c.vars.persist();
         const run = c.state.runs[id];
         const job = run && c.state.jobs[run.jobId];
-        if (
-          !run ||
-          !job ||
-          job.mode !== mode ||
-          !pending(run) ||
-          ["paused", "cancelled"].includes(job.status)
-        )
-          return false;
-        run.status = "running";
-        await c.vars.persist();
-        return true;
+        return !!(
+          job?.instruction &&
+          run &&
+          authorized(source) &&
+          authorized(job.source, job.evidenceIds, job.mode) &&
+          canManage(source, job) &&
+          runEvidenceCurrent(job, run) &&
+          currentWakeupRun(job, run)
+        );
+      },
+      async claim(c, id: string, mode?: "decision") {
+        guard(c.key);
+        const previous = c.vars.claims.get(id);
+        if (previous) return previous.mode === mode ? previous.result : false;
+        // Concurrent claims observe one admission result. A withheld first
+        // admission cannot retire a run another invocation already released.
+        const result = Promise.resolve().then(async () => {
+          invalidate(c.state);
+          await c.vars.persist();
+          const run = c.state.runs[id];
+          const job = run && c.state.jobs[run.jobId];
+          if (
+            !run ||
+            !job ||
+            job.mode !== mode ||
+            !authorized(job.source, job.evidenceIds, job.mode) ||
+            !runEvidenceCurrent(job, run) ||
+            !currentWakeupRun(job, run)
+          )
+            return false;
+          const first = run.status !== "running";
+          // Same-owner admission point, before yielding: a concurrent stop must
+          // report unacknowledged fencing even if this save's response is delayed.
+          job.admissionEvidence = "may_have_started";
+          run.status = "running";
+          await c.vars.persist();
+          const admitted =
+            authorized(job.source, job.evidenceIds, job.mode) &&
+            runEvidenceCurrent(job, run) &&
+            currentWakeupRun(job, run);
+          if (!admitted && first && run.status === "running") {
+            // No positive claim escaped this invocation. Retire only this
+            // known-unreleased run so future events are not coalesced forever.
+            run.status = "cancelled";
+            await c.vars.persist();
+          }
+          return admitted;
+        });
+        c.vars.claims.set(id, { mode, result });
+        try {
+          return await result;
+        } finally {
+          c.vars.claims.delete(id);
+        }
       },
       async complete(
         c,
@@ -388,7 +453,11 @@ export function createWakeupActor(
       ) {
         guard(c.key);
         const run = c.state.runs[id];
-        if (run && pending(run)) run.status = status;
+        if (run && pending(run)) {
+          const job = c.state.jobs[run.jobId];
+          if (job) job.admissionEvidence = "may_have_started";
+          run.status = status;
+        }
         await c.vars.persist();
       },
     },
@@ -492,7 +561,11 @@ export function createWakeupActor(
                 for (const run of Object.values(step.state.runs)) {
                   if (run.status !== "pending") continue;
                   const job = step.state.jobs[run.jobId];
-                  if (!job || ["paused", "cancelled"].includes(job.status))
+                  if (
+                    !job ||
+                    !currentWakeupRun(job, run) ||
+                    !runEvidenceCurrent(job, run)
+                  )
                     continue;
                   const scope = routeEvent(job.source, deps.owner);
                   if (
