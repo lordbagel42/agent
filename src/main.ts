@@ -61,6 +61,7 @@ import { createDebugSiteDeploymentInspection } from "./diagnostics/deployment.js
 import { OperationJournal } from "./diagnostics/operation-journal.js";
 import { createOperationReader } from "./diagnostics/operation-reader.js";
 import { createDebugSitePublisher } from "./diagnostics/publisher.js";
+import { type JuneRuntime, makeJuneRuntime } from "./effect/runtime.js";
 import { createBoxLiteProvider } from "./environments/boxlite.js";
 import { openBoxLiteHost } from "./environments/boxlite-host.js";
 import { inspectSandboxes } from "./environments/inspection.js";
@@ -143,6 +144,15 @@ let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
 const hotProviders: ReturnType<typeof createHotCodexProvider>[] = [];
 let slotActivated = false;
 let telemetry: Telemetry | undefined;
+let effectRuntime: JuneRuntime | undefined;
+// Effect spans export through telemetry, so the runtime closes first.
+const closeTelemetry = async () => {
+  try {
+    await effectRuntime?.dispose();
+  } finally {
+    await telemetry?.shutdown();
+  }
+};
 let operationJournal: OperationJournal | undefined;
 let failStartup: (() => void) | undefined;
 
@@ -316,6 +326,7 @@ async function main() {
     path: join(process.env.RIVETKIT_STORAGE_PATH, "diagnostics", "otel.sqlite"),
     revision: release?.revision,
   });
+  effectRuntime = makeJuneRuntime();
   recordEvent("june.process.started");
   const readDeployment = config.deployment
     ? createDeploymentReader({
@@ -2364,12 +2375,12 @@ async function main() {
       async () => {
         diagnosticLog?.lifecycle("process_stopped");
         diagnosticLog?.close();
-        await telemetry?.shutdown();
+        await closeTelemetry();
         exitOrRetainOwnership(Number(process.exitCode ?? 0));
       },
       async () => {
         diagnosticLog?.lifecycle("shutdown_failed");
-        await telemetry?.shutdown();
+        await closeTelemetry();
         console.error("June could not finish a graceful shutdown.");
         exitOrRetainOwnership(1);
       },
@@ -2398,7 +2409,7 @@ await main().catch(async () => {
     "june.phase": "shutdown_failed",
     "june.outcome": "error",
   });
-  await telemetry?.shutdown();
+  await closeTelemetry();
   // Provider/transport exceptions can contain credentials or message bodies.
   console.error(`June startup failed at ${startupStage}.`);
   process.exitCode = 1;

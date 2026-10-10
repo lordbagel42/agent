@@ -6,6 +6,7 @@ import {
   ROOT_CONTEXT,
   type Span,
   SpanStatusCode,
+  type Tracer,
   trace,
 } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
@@ -67,7 +68,11 @@ const milliseconds = (time: [number, number]) => time[0] * 1000 + time[1] / 1e6;
 
 /** A private provider means third-party instrumentations cannot inject arbitrary
  * records. The active/callback Span is a redacting facade, never the SDK span. */
-function facade(raw: Span, guard: (run: () => void) => void): Span {
+function facade(
+  raw: Span,
+  guard: (run: () => void) => void,
+  ownsEnd = false,
+): Span {
   const span: Span = {
     spanContext: () => ({
       traceId: raw.spanContext().traceId,
@@ -118,11 +123,45 @@ function facade(raw: Span, guard: (run: () => void) => void): Span {
     recordException() {
       /* Deliberately do not retain messages, stacks or types. */
     },
-    end() {
-      /* withSpan owns the one and only end. */
+    end(time) {
+      /* Otherwise withSpan owns the one and only end. */
+      if (ownsEnd) guard(() => raw.end(time));
     },
   };
   return span;
+}
+
+/** Effect's OpenTelemetry bridge starts and ends its own spans. Route them
+ * through the same facade so both privacy boundaries still apply. */
+export function effectTracer(): Tracer | undefined {
+  const backend = active;
+  if (!backend) return undefined;
+  const tracer: Pick<Tracer, "startSpan"> = {
+    startSpan(name, options, parent) {
+      try {
+        const raw = backend.tracer.startSpan(
+          safeName(name),
+          {
+            kind: options?.kind,
+            startTime: options?.startTime,
+            attributes: safeAttributes(options?.attributes),
+          },
+          parent,
+        );
+        return facade(raw, (action) => backend.guard(action), true);
+      } catch {
+        backend.sdkFailures++;
+        return noop;
+      }
+    },
+  };
+  // The bridge only calls startSpan; refuse the callback API rather than bypass the facade.
+  return {
+    ...tracer,
+    startActiveSpan() {
+      throw new Error("effect_tracer_active_span_unsupported");
+    },
+  } as Tracer;
 }
 
 export async function withSpan<T>(
