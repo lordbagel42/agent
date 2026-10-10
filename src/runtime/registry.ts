@@ -2149,6 +2149,12 @@ export function createJuneRegistry(deps: Dependencies) {
               body.type === "event" &&
               event.type === "message" &&
               !!deps.social?.interruptionCommand(event);
+            const admissionScope = JSON.stringify([
+              event.address.channel,
+              event.address.accountId,
+              event.address.conversationId,
+              event.address.threadId ?? "",
+            ]);
             if (version >= 5 && !ownerTurn) {
               const admitted = await loop.step("guest-admission", async () =>
                 priority.acceptGuest(
@@ -2156,14 +2162,16 @@ export function createJuneRegistry(deps: Dependencies) {
                     event.address.accountId,
                     event.type === "receipt" ? "" : event.senderId,
                   ]),
-                  event.address.channel === "slack" &&
-                    event.type === "message" &&
-                    event.senderId.startsWith("bot:"),
+                  admissionScope,
                 ),
               );
               if (!admitted) return;
             }
-            releasePriority = await priority.enter(ownerTurn, ctx.abortSignal);
+            releasePriority = await priority.enter(
+              ownerTurn,
+              ctx.abortSignal,
+              admissionScope,
+            );
             let grantFingerprint: string | undefined;
             let deletionRevision = deps.memory?.store.deletionRevision() ?? 0;
             const audience = JSON.stringify(scope.key);
