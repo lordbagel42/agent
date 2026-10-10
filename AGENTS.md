@@ -30,8 +30,9 @@
 - Agents have standing permission to commit and push ready changes directly to
   remote `main` without asking for approval each time. This permission does not
   authorize force-pushing, discarding others' work, or unrelated external actions.
-- Fetch the latest remote `main` before pushing and integrate concurrent changes
-  safely, rerunning affected checks. Use normal, non-force pushes only.
+- Fetch the latest remote `main` and rebase onto it before pushing code, then
+  integrate concurrent changes safely, rerunning affected checks. Use normal,
+  non-force pushes only.
 - Preserve other sessions' work. If an existing shared checkout is on another
   branch, do not switch it out from under them or ship their unreviewed changes;
   use a separate checkout on `main` instead.
