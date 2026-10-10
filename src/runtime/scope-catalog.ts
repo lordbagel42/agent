@@ -7,7 +7,11 @@ import type {
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import type { EvidenceStore } from "../memory/store.js";
-import { type CompressedJson, eventRecord } from "./conversation-storage.js";
+import {
+  type CompressedJson,
+  delegationRecord,
+  eventRecord,
+} from "./conversation-storage.js";
 import { type ExecutionRequest, executionLimits } from "./execution.js";
 import type { ExecutionContext } from "./execution-context.js";
 import type { ConversationState, MemoryReference } from "./registry.js";
@@ -30,6 +34,8 @@ export interface ScopeCatalog {
   agents?: Record<string, string>;
   jobAgents?: Record<string, { agentId: string; requestId: string }>;
   delegations?: Record<string, ExecutionContext>;
+  /** Lossless frozen authority; not worker status or settlement evidence. */
+  delegationsArchive?: CompressedJson;
   /** Immutable content-free retention classification, not confirmation authority. */
   controlCompletions?: string[];
   forgetConfirmations?: Record<
@@ -51,7 +57,7 @@ export interface ScopeCatalog {
 }
 
 interface CatalogAuthorityState
-  extends Pick<ScopeCatalog, "jobs" | "delegations"> {
+  extends Pick<ScopeCatalog, "jobs" | "delegations" | "delegationsArchive"> {
   events: Record<string, { event: ChannelEvent }>;
   eventsArchive?: CompressedJson;
   forgottenEvents?: string[];
@@ -75,7 +81,7 @@ export function createScopeCatalogAuthority(
     key: string[],
     requestId: string,
   ) {
-    const context = state.delegations?.[requestId];
+    const context = delegationRecord(state, requestId);
     const id = context?.originEventId ?? "";
     const event = eventRecord(state, id)?.event;
     const scope = event && routeEvent(event, deps.owner);
@@ -125,7 +131,11 @@ export function createScopeCatalogAuthority(
 interface ScopeExecutionHost {
   state: Pick<
     ConversationState,
-    "agents" | "delegations" | "memoryContexts" | "forgetCleanups"
+    | "agents"
+    | "delegations"
+    | "delegationsArchive"
+    | "memoryContexts"
+    | "forgetCleanups"
   >;
   conversationKey: string[];
   scopeKey: string[];
@@ -222,18 +232,23 @@ export async function dispatchScopeExecution(
           capabilities: plan.workerCapabilities,
         }
       : undefined;
-    if (context) {
+    if (context && !delegationRecord(state, requestId)) {
       state.delegations ??= {};
-      state.delegations[requestId] ??= context;
+      state.delegations[requestId] = context;
     }
     await host.persist();
     if (!host.canStartAction()) break;
+    const savedContext = context
+      ? delegationRecord(state, requestId)
+      : undefined;
+    if (context && !savedContext)
+      throw new Error("Execution authority is no longer retained");
     const accepted = await host.worker(id).submit({
       id: requestId,
       source: host.event,
       replyAddress: host.replyAddress,
       task: command.task,
-      ...(context ? { context: state.delegations?.[requestId] } : {}),
+      ...(savedContext ? { context: savedContext } : {}),
       workspaces: plan.workspaces,
       web: !!plan.web,
       deletionTracked: true,

@@ -857,6 +857,16 @@ Compression provides finite headroom under Rivet's 512 KiB atomic checkpoint
 budget, not unbounded retention. Keep recovery fenced until the affected workflow,
 actual process revision and readiness are verified.
 
+Frozen conversation-catalog authority also uses lossless `delegationsArchive`.
+This includes active workers: RPC gives each worker its own mutable request
+context, while catalog authority stays first-write immutable. Dispatch replay,
+scope checks, notifications, snapshots and forgetting read the complete catalog;
+forgetting removes revoked records from both representations. This is another
+forward-only format: never authorize rollback to a reader without its support.
+History tails, legacy records and delegation maps compact at 16 KiB rather than
+waiting until the remaining atomic transaction budget can be exhausted. It is
+finite headroom, not permission to prune evidence or infer worker settlement.
+
 ## Application lifecycle and private status
 
 `main.ts` wires the lifecycle fence for HTTP requests and conversation turns.

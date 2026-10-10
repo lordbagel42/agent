@@ -8,6 +8,7 @@ import { isMemoryCorrectionCommand } from "../memory/correction.js";
 import { personId } from "../mind/places.js";
 import type { MindRecall } from "../mind/service.js";
 import {
+  delegationRecord,
   editEvent,
   eventRecord,
   readDeliveries,
@@ -420,7 +421,7 @@ export function createSessionCatalog(
         : input.type === "wakeup"
           ? (input.wakeup.originEventId ?? input.wakeup.jobId)
           : input.type === "execution_result"
-            ? host.state.delegations?.[input.requestId]?.originEventId
+            ? delegationRecord(host.state, input.requestId)?.originEventId
             : undefined;
     const origin = originId ? host.state.memoryContexts?.[originId] : undefined;
     if (

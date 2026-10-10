@@ -139,6 +139,41 @@ export function readDeliveries<T>(state: {
     : state.deliveries;
 }
 
+/** Frozen catalog authority only; worker-owned request contexts stay mutable. */
+export function readDelegations<T>(state: {
+  delegations?: Record<string, T>;
+  delegationsArchive?: CompressedJson;
+}): Record<string, T> {
+  return state.delegationsArchive
+    ? {
+        ...expand<Record<string, T>>(state.delegationsArchive),
+        ...state.delegations,
+      }
+    : (state.delegations ?? {});
+}
+
+export function delegationRecord<T>(
+  state: {
+    delegations?: Record<string, T>;
+    delegationsArchive?: CompressedJson;
+  },
+  id: string,
+): T | undefined {
+  return state.delegations?.[id] ?? readDelegations(state)[id];
+}
+
+/** Forgetting must remove authority from the complete catalog, not a projection. */
+export function editDelegations(
+  state: Pick<ConversationState, "delegations" | "delegationsArchive">,
+) {
+  if (state.delegationsArchive) {
+    state.delegations = JSON.parse(JSON.stringify(readDelegations(state)));
+    delete state.delegationsArchive;
+  }
+  state.delegations ??= {};
+  return state.delegations;
+}
+
 /** Immutable ingress evidence, including original lane, order and receipt time. */
 export function readIngressReceipts<T>(ingress?: {
   receipts: Record<string, T>;
@@ -191,6 +226,7 @@ export function conversationSnapshot(
   const {
     eventsArchive: _events,
     deliveriesArchive: _deliveries,
+    delegationsArchive: _delegations,
     modelInvocationsArchive: _models,
     legacyArchive: _legacy,
     ...rest
@@ -199,6 +235,9 @@ export function conversationSnapshot(
     ...rest,
     events: readEvents(state),
     deliveries: readDeliveries(state),
+    ...(state.delegations || state.delegationsArchive
+      ? { delegations: readDelegations(state) }
+      : {}),
     ...(state.ingress
       ? {
           ingress: {
@@ -222,9 +261,22 @@ export function conversationSnapshot(
 
 /** Run before persistence and synchronously before legacy workflow replay. */
 export function compactConversation(state: ConversationState) {
-  if (Buffer.byteLength(JSON.stringify(state.history)) > 64 * 1024) {
+  // Keep the live tail below the remaining atomic checkpoint headroom.
+  if (Buffer.byteLength(JSON.stringify(state.history)) > 16 * 1024) {
     state.historyArchive = compress(readHistory(state));
     state.history = [];
+  }
+  // Catalog contexts are immutable first-write authority, including those for
+  // active workers. RPC gives workers independent mutable copies. This storage
+  // change neither revokes authority nor certifies that their effects settled.
+  if (
+    state.delegations &&
+    Object.keys(state.delegations).length > 0 &&
+    (state.delegationsArchive ||
+      Buffer.byteLength(JSON.stringify(state.delegations)) > 16 * 1024)
+  ) {
+    state.delegationsArchive = compress(readDelegations(state));
+    state.delegations = {};
   }
   // Receipts are append-only, not mutable turn objects. Keep all identities,
   // including unfinished admissions; compression never certifies settlement.
@@ -257,7 +309,7 @@ export function compactConversation(state: ConversationState) {
     };
     if (
       state.legacyArchive ||
-      Buffer.byteLength(JSON.stringify(legacy)) > 64 * 1024
+      Buffer.byteLength(JSON.stringify(legacy)) > 16 * 1024
     ) {
       state.legacyArchive = compress(legacy);
       if (state.legacyAdmissions) state.legacyAdmissions = [];
