@@ -50,6 +50,7 @@ export function executionCapabilities(
       !!event.metadata?.files?.length &&
       !!deps.channels.slack?.readVideo,
     repositoryAvailable: !!deps.repository,
+    mindAvailable: !!deps.mind,
     releaseAvailable: !!deps.release,
     modelStatusAvailable: !!deps.modelStatus,
     ampThreadsAvailable: !!deps.ampThreads,

@@ -285,6 +285,10 @@ export interface CompanionReply {
   repository?: string;
   /** Specialist-only reads from the host's pinned public source snapshot. */
   repositoryRead?: import("../repository/contracts.js").RepositoryRead;
+  /** Execution-worker read of June's mind, projected for the origin place. */
+  mind?: import("../mind/contracts.js").MindQuery;
+  /** Background reflection step; never accepted outside agentRole "mind". */
+  mindStep?: import("../mind/contracts.js").MindStep;
   social?: import("./social.js").SocialAction;
   coding?: CodingRequest;
   /** Scoped reports, metadata/diff or cancellation; never replay authority. */
@@ -474,7 +478,7 @@ export interface ModelRequest {
   agentWebhooksAvailable?: boolean;
   artifactsAvailable?: boolean;
   /** Host-enforced action boundary; omitted preserves legacy mixed-role turns. */
-  agentRole?: "interaction" | "execution" | "repository";
+  agentRole?: "interaction" | "execution" | "repository" | "mind";
   system: string;
   messages: ConversationMessage[];
   /** Host-only scoped images: at most 8, 5 MiB each and 20 MiB total.
@@ -482,7 +486,7 @@ export interface ModelRequest {
    * Never serialize bytes into text prompts, history, or journals. */
   images?: ModelImageInput[];
   /** Host-only accounting label, never part of a provider prompt. */
-  usageStage?: "fast" | "deep" | "synthesis" | "execution";
+  usageStage?: "fast" | "deep" | "synthesis" | "execution" | "reflection";
   /** Host diagnostics callback only; never serialize into prompts or journals.
    * Retirement may be observed after reply resolves and the turn finishes. */
   onProviderTiming?: (stage: ProviderTimingStage) => void;
@@ -553,6 +557,10 @@ export interface ModelRequest {
   readVideoAvailable?: boolean;
   repositoryAvailable?: boolean;
   repositoryReadAvailable?: boolean;
+  /** Execution-worker read access to June's git-backed mind. */
+  mindAvailable?: boolean;
+  /** Background reflection steps only (agentRole "mind"). */
+  mindStepAvailable?: boolean;
 }
 
 /** Prospective inference liveness only, never proof of delivery/tool outcome or

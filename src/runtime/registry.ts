@@ -32,6 +32,7 @@ import {
 } from "../memory/correction.js";
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import type { EvidenceStore, Source } from "../memory/store.js";
+import { personId } from "../mind/places.js";
 import type { JevObserver, JevQuestion } from "../models/jev.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type { createJuryTool } from "../reflection/jury.js";
@@ -199,6 +200,8 @@ export interface Dependencies {
   agents?: import("../agent/service.js").AgentService;
   owner: Owner;
   continuity?: import("./continuity.js").ConversationContinuity;
+  /** June's git-backed long-term memory; capture never blocks a turn. */
+  mind?: import("../mind/service.js").Mind;
   debugShare?: DebugInvestigator;
   automaticRepairs?: ReturnType<
     typeof import("./debug-dispatch.js").createAutomaticRepairs
@@ -2448,6 +2451,12 @@ export function createJuneRegistry(deps: Dependencies) {
                 if (
                   retainHistory &&
                   event.type === "message" &&
+                  body.type === "event"
+                )
+                  deps.mind?.observe(event);
+                if (
+                  retainHistory &&
+                  event.type === "message" &&
                   !stopParticipation
                 )
                   stopParticipation = deps.lifecycle?.participate?.(event);
@@ -4110,7 +4119,37 @@ export function createJuneRegistry(deps: Dependencies) {
                                 const models = deps.models ?? {
                                   current: unknownModel,
                                 };
+                                // Read-only, place-projected notes; failure
+                                // degrades to "nothing yet", never blocks a turn.
+                                const mindNotes =
+                                  deps.mind && event.type === "message"
+                                    ? await deps.mind
+                                        .recall(
+                                          event,
+                                          history.flatMap(({ source }) =>
+                                            source?.senderId &&
+                                            source.address.channel ===
+                                              "slack" &&
+                                            source.address.conversationId ===
+                                              event.address.conversationId
+                                              ? [
+                                                  personId(
+                                                    source.address.accountId,
+                                                    source.senderId,
+                                                  ),
+                                                ]
+                                              : [],
+                                          ),
+                                        )
+                                        .catch(() => "")
+                                    : undefined;
+                                if (!valid(step.state) || signal.aborted)
+                                  return {
+                                    reply: { text: "" },
+                                    retryable: false,
+                                  };
                                 modelRequest = buildModelRequest({
+                                  mind: mindNotes,
                                   continuity,
                                   liveInput: body.type === "event",
                                   ...(plan.workerCapabilities && !decisionTurn
@@ -4177,6 +4216,10 @@ export function createJuneRegistry(deps: Dependencies) {
                                       body.type === "event" &&
                                       phase !== "synthesis" &&
                                       !!deps.repository,
+                                    mindAvailable:
+                                      body.type === "event" &&
+                                      phase !== "synthesis" &&
+                                      !!deps.mind,
                                     ampThreadsAvailable:
                                       body.type === "event" &&
                                       phase !== "synthesis" &&
@@ -6704,6 +6747,17 @@ export function createJuneRegistry(deps: Dependencies) {
                       );
                       continue;
                     }
+                    if (
+                      text.result?.status === "sent" &&
+                      !text.ephemeral &&
+                      event.type === "message"
+                    )
+                      deps.mind?.observeReply(
+                        event,
+                        text.message.address,
+                        text.message.id,
+                        text.message.content.text,
+                      );
                     const epoch =
                       step.state.memoryContexts?.[eventId]?.continuityEpoch;
                     if (

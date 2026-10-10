@@ -78,6 +78,7 @@ import {
 } from "./imports/index.js";
 import { CuratedPersonalityStore } from "./memory/curated.js";
 import { EvidenceStore, extractMemory } from "./memory/store.js";
+import { Mind } from "./mind/service.js";
 import { createHotCodexProvider } from "./models/codex-hot.js";
 import { createDecisionProvider } from "./models/decision.js";
 import { createCodexDecisionProvider } from "./models/decision-codex.js";
@@ -746,6 +747,15 @@ async function main() {
   };
   const model = provider(config.model);
   const deepModel = config.deepModel && provider(config.deepModel);
+  // Reflection writes whole notes, so it gets its own provider and timeout
+  // instead of competing with live turns under the deep model's limit.
+  const mindModel =
+    config.mind && !config.setupMode
+      ? provider({
+          ...(config.deepModel ?? config.model),
+          timeoutMs: config.mind.timeoutMs,
+        })
+      : undefined;
   startupStage = "hot Codex initialization";
   await Promise.all(hotProviders.map((provider) => provider.ready()));
   startupStage = "private MCP connections";
@@ -1538,8 +1548,15 @@ async function main() {
       }
     },
   });
+  let mind: Mind | undefined;
+  if (config.mind && mindModel) {
+    startupStage = "mind repository";
+    mind = new Mind(config.mind, owner, mindModel, () => lifecycle.ready);
+    await mind.start();
+  }
   const dependencies: Dependencies = {
     sentinel,
+    mind,
     settings,
     capabilityConfig: config.moduleConfig,
     artifacts,
@@ -2331,6 +2348,8 @@ async function main() {
       diagnosticLog?.lifecycle("process_stopping");
       try {
         if (pump) clearInterval(pump);
+        // Abort background reflection first; it redoes interrupted work later.
+        await mind?.close().catch(() => undefined);
         diagnosticLog?.lifecycle("shutdown_http_close_started");
         browserViewShutdown.abort();
         artifactShutdown.abort();

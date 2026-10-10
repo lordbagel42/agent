@@ -518,6 +518,28 @@ const schema = z
           .optional(),
       })
       .optional(),
+    mind: z
+      .strictObject({
+        directory: absolutePath,
+        reflectIdleMs: z
+          .number()
+          .int()
+          .min(60_000)
+          .max(7 * 24 * 60 * 60 * 1000)
+          .default(10 * 60 * 1000),
+        timezone: nonempty
+          .refine((zone) => {
+            try {
+              new Intl.DateTimeFormat("en-US", { timeZone: zone });
+              return true;
+            } catch {
+              return false;
+            }
+          }, "Use an IANA time zone")
+          .default("America/Boise"),
+        timeoutMs: z.number().int().min(30_000).max(300_000).default(300_000),
+      })
+      .optional(),
     imports: z
       .record(
         name,

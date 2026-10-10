@@ -1244,6 +1244,51 @@ provide a second per-scope voice on new turns. No private evidence is promoted.
 This slice does not autonomously infer or publish traits, edit free-form biography,
 or claim a real-provider behavioral evaluation from its runtime fixture checks.
 
+## June's mind (git-backed memory, reflection and skills)
+
+`mind` is absent by default. When present, June keeps a git repository of
+markdown notes at `mind.directory`:
+
+- people;
+- Slack conversations;
+- skills she wrote herself;
+- improvements she noticed;
+- her journal.
+
+The host appends admitted human Slack messages and June's sent replies to
+gitignored transcripts. It skips `##` messages, `!` commands, DEBUG/PING
+controls, bot senders and text that looks like a credential. Once a conversation
+has been quiet for `reflectIdleMs` (default ten minutes), a background reflection
+updates the notes and commits them. It uses its own provider built from
+`deepModel` (or `model`) with `timeoutMs` (default five minutes).
+
+Notes are projected for each conversation. A person's `## Private — <place>`
+sections appear only in that place. The journal appears only in Raygen's DM.
+
+Every interaction, execution and automated-event prompt receives:
+
+- the briefing for the current conversation;
+- notes on its people;
+- the skill index.
+
+Execution workers can also use the read-only
+`mind:{action:"status"|"list"|"read"|"search"|"log",path,query}`.
+
+```json
+"mind": {
+  "directory": "/var/lib/june/mind",
+  "reflectIdleMs": 600000,
+  "timezone": "America/Boise",
+  "timeoutMs": 300000
+}
+```
+
+Adding this block changes the deployment's protected configuration binding.
+Older releases also reject the unknown key, so rollback past this code needs the
+block removed. Coordinate activation as an operator config change. The design
+and planned increments (dreams, a growing self, self-improvement through Amp) are
+in [the mind design](superpowers/specs/2026-10-10-june-mind-design.md).
+
 ## Optional scoped memory and reflection
 
 `memory` is absent by default. Activation requires an existing canonical,

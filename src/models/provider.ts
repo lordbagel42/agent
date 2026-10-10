@@ -33,6 +33,7 @@ import {
   ENVIRONMENT_HELP,
   environmentCommandSchema,
 } from "../environments/contracts.js";
+import { mindQuerySchema, mindStepSchema } from "../mind/contracts.js";
 import {
   globalProposalInputSchema,
   reflectionPersonalitySuggestionSchema,
@@ -176,6 +177,8 @@ const companionReplySchema = z.strictObject({
   readVideo: readImageSchema.optional(),
   repository: repositoryQuestionSchema.optional(),
   repositoryRead: repositoryReadSchema.optional(),
+  mind: mindQuerySchema.optional(),
+  mindStep: mindStepSchema.optional(),
   execution: z
     .array(
       z
@@ -530,6 +533,8 @@ export type ReplyCapabilities = Pick<
   | "readVideoAvailable"
   | "repositoryAvailable"
   | "repositoryReadAvailable"
+  | "mindAvailable"
+  | "mindStepAvailable"
 >;
 
 function replyCapabilities(
@@ -619,6 +624,9 @@ function rolePermitsField(
     return role === "execution";
   if (role === "repository") return key === "text" || key === "repositoryRead";
   if (key === "repositoryRead") return false;
+  if (role === "mind") return key === "text" || key === "mindStep";
+  if (key === "mindStep") return false;
+  if (key === "mind") return role === "execution";
   if (key === "repository") return role === "execution";
   if (key === "browserTask") return role === "execution";
   if (key === "environment") return role === "execution";
@@ -712,6 +720,8 @@ function legacyReplyJsonSchema(
     readVideoAvailable,
     repositoryAvailable,
     repositoryReadAvailable,
+    mindAvailable,
+    mindStepAvailable,
   } = replyCapabilities(capabilities);
   const { $schema: _previewSchema, ...previewSchema } = z.toJSONSchema(
     personalityPreviewSchema.nullable(),
@@ -975,6 +985,75 @@ function legacyReplyJsonSchema(
               required: ["action", "path", "query", "offset"],
               description:
                 "Specialist-only snapshot read/search. read: exact inventory path, empty query, zero-based character offset. search: path prefix (empty for all), literal case-insensitive query, zero-based match offset. Use returned nextOffset to paginate. Empty text, no other actions.",
+            },
+          }
+        : {}),
+      ...(mindAvailable
+        ? {
+            mind: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                action: {
+                  type: "string",
+                  enum: ["status", "list", "read", "search", "log"],
+                },
+                path: { type: "string" },
+                query: { type: "string" },
+              },
+              required: ["action", "path", "query"],
+              description:
+                "Read June's own long-term memory (git-backed notes), projected for the originating conversation. status: what is stored and reflection state. list: path prefix such as people/, conversations/, skills/, improvements/, self/. read: exact path. search: case-insensitive phrase within an optional path prefix. log: recent commits, optionally for one path. Use empty strings for unused fields. Empty text, no other actions.",
+            },
+          }
+        : {}),
+      ...(mindStepAvailable
+        ? {
+            mindStep: {
+              type: ["object", "null"],
+              additionalProperties: false,
+              properties: {
+                reads: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      action: {
+                        type: "string",
+                        enum: ["read", "list", "search"],
+                      },
+                      path: { type: "string" },
+                      query: { type: "string" },
+                    },
+                    required: ["action", "path", "query"],
+                  },
+                  description: "At most 8 reads answered in the next step.",
+                },
+                writes: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      path: { type: "string" },
+                      mode: { type: "string", enum: ["replace", "append"] },
+                      content: { type: "string" },
+                    },
+                    required: ["path", "mode", "content"],
+                  },
+                  description:
+                    "At most 8 staged note writes; content at most 14000 characters each.",
+                },
+                done: { type: "boolean" },
+                summary: {
+                  type: "string",
+                  description: "At most 2000 characters.",
+                },
+              },
+              required: ["reads", "writes", "done", "summary"],
+              description:
+                "One reflection step: reads to answer next, writes to stage, and whether to commit now.",
             },
           }
         : {}),
@@ -2393,6 +2472,8 @@ function legacyReplyJsonSchema(
       ...(readVideoAvailable ? ["readVideo"] : []),
       ...(repositoryAvailable ? ["repository"] : []),
       ...(repositoryReadAvailable ? ["repositoryRead"] : []),
+      ...(mindAvailable ? ["mind"] : []),
+      ...(mindStepAvailable ? ["mindStep"] : []),
       ...(executionAvailable ? ["execution"] : []),
       ...(releaseAvailable ? ["release"] : []),
       ...(ampThreadsAvailable ? ["ampThread"] : []),
@@ -2656,6 +2737,8 @@ export function parseReply(
     readVideoAvailable,
     repositoryAvailable,
     repositoryReadAvailable,
+    mindAvailable,
+    mindStepAvailable,
   } = replyCapabilities(capabilities);
   let value: unknown;
   try {
@@ -2697,6 +2780,8 @@ export function parseReply(
     "readVideo",
     "repository",
     "repositoryRead",
+    "mind",
+    "mindStep",
     "execution",
     "coding",
     "codingJob",
@@ -2879,6 +2964,8 @@ export function parseReply(
     (reply.emojiSearch !== undefined && !emojiSearchAvailable) ||
     (reply.repository !== undefined && !repositoryAvailable) ||
     (reply.repositoryRead !== undefined && !repositoryReadAvailable) ||
+    (reply.mind !== undefined && !mindAvailable) ||
+    (reply.mindStep !== undefined && !mindStepAvailable) ||
     ((reply.messages !== undefined ||
       reply.interrupt !== undefined ||
       reply.question !== undefined) &&
@@ -2902,6 +2989,8 @@ export function parseReply(
     Number(reply.readVideo !== undefined) +
     Number(reply.repository !== undefined) +
     Number(reply.repositoryRead !== undefined) +
+    Number(reply.mind !== undefined) +
+    Number(reply.mindStep !== undefined) +
     Number(reply.modelStatus === true) +
     Number(reply.mcp !== undefined) +
     Number(reply.mcpPermission !== undefined) +
@@ -2976,6 +3065,8 @@ export function parseReply(
       reply.readVideo !== undefined ||
       reply.repository !== undefined ||
       reply.repositoryRead !== undefined ||
+      reply.mind !== undefined ||
+      reply.mindStep !== undefined ||
       reply.search !== undefined ||
       reply.slackHistory !== undefined ||
       reply.modelStatus === true ||

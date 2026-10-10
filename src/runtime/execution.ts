@@ -505,6 +505,13 @@ export function createExecutionActor(
                           .read();
                         const personality =
                           publicPersonality(globalPersonality);
+                        // Same place projection as June's own turn; read once.
+                        const mindNotes =
+                          deps.mind && request.context
+                            ? await deps.mind
+                                .recall(request.source, [])
+                                .catch(() => "")
+                            : undefined;
                         let reportOnly = false;
                         for (let turn = 0; turn < 6; turn++) {
                           if (!usable())
@@ -549,6 +556,7 @@ export function createExecutionActor(
                               now: new Date(),
                               owner: deps.owner,
                               globalPersonality,
+                              mind: mindNotes,
                               models: deps.models ?? {
                                 current: {
                                   provider: "configured",
