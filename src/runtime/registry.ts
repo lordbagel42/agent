@@ -4121,6 +4121,24 @@ export function createJuneRegistry(deps: Dependencies) {
                                 };
                                 // Read-only, place-projected notes; failure
                                 // degrades to "nothing yet", never blocks a turn.
+                                if (deps.mind && event.type === "message") {
+                                  const reference =
+                                    step.state.memoryContexts?.[eventId];
+                                  if (reference) {
+                                    reference.contextSourceIds = [
+                                      ...new Set([
+                                        ...(reference.contextSourceIds ?? []),
+                                        "volatile-context:mind",
+                                      ]),
+                                    ];
+                                    await step.vars.persist();
+                                  }
+                                }
+                                if (!valid(step.state) || signal.aborted)
+                                  return {
+                                    reply: { text: "" },
+                                    retryable: false,
+                                  };
                                 const mindNotes =
                                   deps.mind && event.type === "message"
                                     ? await deps.mind

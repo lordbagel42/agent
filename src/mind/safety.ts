@@ -6,6 +6,8 @@ const safetySchema = z.strictObject({
   version: z.literal(1),
   deletionRevision: z.number().int().nonnegative(),
   pending: z.strictObject({ id: z.uuid(), at: z.number().int() }).nullable(),
+  settlementUnknown: z.boolean().default(false),
+  sync: z.enum(["pending", "conflict"]).nullable().default(null),
   blocked: z
     .enum(["retention_quarantined", "model_settlement_unknown"])
     .nullable(),
@@ -25,7 +27,7 @@ export class MindSafety {
     private readonly revision: () => number,
   ) {}
 
-  async load(initial?: { hasNotes: boolean }) {
+  async load(initial?: { fresh: boolean }) {
     try {
       const value = await this.transcripts.readState("safety");
       if (value === undefined && initial) {
@@ -34,7 +36,9 @@ export class MindSafety {
           deletionRevision: this.revision(),
           pending: null,
           // Restoring Git alone cannot restore deletion or effect receipts.
-          blocked: initial.hasNotes ? "retention_quarantined" : null,
+          settlementUnknown: !initial.fresh,
+          sync: null,
+          blocked: initial.fresh ? null : "retention_quarantined",
         });
       } else this.state = safetySchema.parse(value);
     } catch {
@@ -64,9 +68,19 @@ export class MindSafety {
   get blocked() {
     if (this.failed || !this.state) return "safety_state_unavailable";
     if (!this.readable) return "retention_quarantined";
-    if (this.state.pending && !this.ownsPending)
+    if (
+      this.state.settlementUnknown ||
+      (this.state.pending && !this.ownsPending)
+    )
       return "model_settlement_unknown";
-    return this.state.blocked;
+    return (
+      this.state.blocked ??
+      (this.state.sync === "conflict"
+        ? "git_conflict"
+        : this.state.sync === "pending"
+          ? "git_sync_unresolved"
+          : null)
+    );
   }
 
   async isSettled() {
@@ -75,6 +89,7 @@ export class MindSafety {
       !this.failed &&
       !!this.state &&
       !this.state.pending &&
+      !this.state.settlementUnknown &&
       this.state.blocked !== "model_settlement_unknown"
     );
   }
@@ -104,5 +119,19 @@ export class MindSafety {
   async block(reason: NonNullable<State["blocked"]>) {
     if (!this.state) throw new Error("mind_state_unavailable");
     await this.save({ ...this.state, blocked: reason });
+  }
+
+  /** Write before Git can merge; a crash or failed fetch cannot erase a hold. */
+  async syncStarted() {
+    if (!this.state) throw new Error("mind_state_unavailable");
+    await this.save({ ...this.state, sync: this.state.sync ?? "pending" });
+  }
+
+  async syncFinished(state: "synced" | "merged" | "conflict") {
+    if (!this.state) throw new Error("mind_state_unavailable");
+    await this.save({
+      ...this.state,
+      sync: state === "conflict" ? "conflict" : null,
+    });
   }
 }

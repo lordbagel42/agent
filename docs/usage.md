@@ -1351,7 +1351,11 @@ design](superpowers/specs/2026-10-10-june-mind-design.md).
 lock stealing, and holds lifecycle admission through settlement. A fsynced
 `state/safety.json` intent precedes every inference; missing/corrupt state,
 crash-interrupted calls and unknown settlement block replay. Reconcile the
-provider under the lock, never clear the record simply to retry. Failed reflection
+provider under the lock, never clear the record simply to retry. A missing journal
+on a nonempty store cannot certify deployment settlement, even when repository
+startup fails. Git sync persists a hold before merging: conflicts, failed fetches
+and interrupted syncs pause new work across restarts until positive reconciliation.
+Failed reflection
 keeps its pending batch and backs off. A crash between Git commit and local
 cursor update may repeat reflection; this is not an exactly-once transaction.
 Git retains deleted facts, raw transcripts have no automatic retention policy,
@@ -1367,6 +1371,9 @@ never advance the deletion watermark to regain forgotten data. Configured Mind
 inference and built-in tools need no billing audit, no-charge attestation,
 token quota or inference-dollar gate. This is not purchase authority: autonomous
 orders, transfers, purchases and new financial commitments remain prohibited.
+Independent prompt and worker Mind reads mark their outputs as volatile, so the
+session archive retains delivery receipts but omits derivative reply text whose
+deletion ancestry cannot be proven.
 
 ## Optional scoped memory and reflection
 

@@ -506,6 +506,26 @@ export function createExecutionActor(
                         const personality =
                           publicPersonality(globalPersonality);
                         // Same place projection as June's own turn; read once.
+                        // This independent acquisition must carry its own
+                        // archive exclusion even if catalog recall failed.
+                        if (deps.mind && request.context) {
+                          if (!usable())
+                            throw new Error("Execution invalidated");
+                          request.context.contextSourceIds = [
+                            ...new Set([
+                              ...request.context.contextSourceIds,
+                              "volatile-context:mind",
+                            ]),
+                          ];
+                          step.state.evidenceIds = [
+                            ...new Set([
+                              ...step.state.evidenceIds,
+                              "volatile-context:mind",
+                            ]),
+                          ];
+                          await step.vars.persist();
+                        }
+                        if (!usable()) throw new Error("Execution invalidated");
                         const mindNotes =
                           deps.mind && request.context
                             ? await deps.mind

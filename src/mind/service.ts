@@ -162,9 +162,12 @@ export class Mind {
   async start() {
     if (!(await this.lock.acquire())) throw new Error("mind_busy");
     try {
+      const fresh = await this.transcripts.fresh();
       await this.repo.init();
       await this.safety.load({
-        hasNotes: (await this.repo.list()).some((path) => path !== "README.md"),
+        fresh:
+          fresh &&
+          !(await this.repo.list()).some((path) => path !== "README.md"),
       });
       if (!this.safety.readable) return;
       const missing: Change[] = [];
@@ -488,10 +491,7 @@ export class Mind {
   }
 
   private blocked() {
-    return (
-      this.safety.blocked ??
-      (this.lastSync?.state === "conflict" ? "git_conflict" : null)
-    );
+    return this.safety.blocked;
   }
 
   /** Persist intent before dispatch; only a provider receipt can clear it.
@@ -534,7 +534,10 @@ export class Mind {
     if (!this.settings.remote) return;
     if (!force && this.lastSync && Date.now() - this.lastSync.at < SYNC_MS)
       return;
+    await this.safety.syncStarted();
     const state = await this.repo.sync(() => this.safety.readable);
+    if (state === "synced" || state === "merged" || state === "conflict")
+      await this.safety.syncFinished(state);
     if (state !== this.lastSync?.state) this.log("mind_sync", { state });
     this.lastSync = { at: Date.now(), state };
   }

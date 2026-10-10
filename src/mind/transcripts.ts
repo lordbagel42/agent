@@ -44,6 +44,14 @@ export class Transcripts {
 
   constructor(private readonly root: string) {}
 
+  /** Called under MindLock, before initialization creates anything else. */
+  async fresh() {
+    const entries = await readdir(this.root);
+    if (entries.some((name) => name !== "state")) return false;
+    const state = await readdir(join(this.root, "state"));
+    return state.every((name) => name === "mind.lock");
+  }
+
   private file(place: string) {
     return join(this.root, "transcripts", `${place}.jsonl`);
   }

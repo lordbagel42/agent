@@ -527,11 +527,12 @@ async function main() {
   let browserCompanion: BrowserCompanion | undefined;
   let environments: EnvironmentService | undefined;
   let mind: Mind | undefined;
+  let mindSettlement: Pick<Mind, "isSettled"> | undefined;
   let mindReady = false;
   const lifecycle = createLifecycle(async () => {
     if (browserCompanion && !browserCompanion.isSettled()) return false;
     if (environments && !environments.isSettled()) return false;
-    if (mind && !(await mind.isSettled())) return false;
+    if (mindSettlement && !(await mindSettlement.isSettled())) return false;
     for (const manager of Object.values(isolation)) {
       if (!(await manager.isSettled())) return false;
     }
@@ -1590,6 +1591,9 @@ async function main() {
           : {}),
       },
     );
+    // Availability is not proof of settlement: retain this guard even when
+    // repository setup fails and the conversational capability is disabled.
+    mindSettlement = mind;
     try {
       await mind.start();
     } catch {
