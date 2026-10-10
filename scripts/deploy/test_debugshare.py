@@ -397,7 +397,7 @@ raise SystemExit(1 if mode == 'lost-exit' else 0)
                 argv[1:9],
                 [
                     "--mode",
-                    "ultra",
+                    "gpt-6-astra-max",
                     "--features",
                     "fast",
                     "--executor",
@@ -455,7 +455,7 @@ if sys.argv[1:] == ['runner', 'dirs', 'list', '--runner-id', 'homelab-amp']:
         raise SystemExit(1)
     print(str(root))
     raise SystemExit(0)
-assert sys.argv[1:9] == ['--mode', 'ultra', '--features', 'fast',
+assert sys.argv[1:9] == ['--mode', 'gpt-6-astra-max', '--features', 'fast',
                           '--executor', 'runner:homelab-amp', '--runner-dir', str(root)]
 with (root / 'launch').open('x'):
     pass

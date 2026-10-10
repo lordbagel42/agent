@@ -74,8 +74,8 @@ def prompt(identity, snapshot, owner_report=False):
         "DEBUGSHARE/recovery investigator or duplicate this assignment. Oracle review is required and "
         "permitted before publication. "
         "Report the diagnosis, evidence, changes, verification, actual delivery state and any blocker in "
-        "this private Amp thread. A returned turn is not proof of a deployed fix. Preserve Ultra reasoning "
-        "and mandatory Fast for DEBUGSHARE and deployment recovery; ordinary jobs keep their existing reasoning modes. "
+        "this private Amp thread. A returned turn is not proof of a deployed fix. Preserve GPT-6 Astra Max reasoning "
+        "for DEBUGSHARE, Ultra reasoning for deployment recovery, and mandatory Fast for both; ordinary jobs keep their existing reasoning modes. "
         "Only when the reported problem is actually resolved and verified, end your final response with "
         f"the exact standalone line DEBUGSHARE {identity} RESOLVED. This is your explicit resolution "
         "attestation, not a quotation from the snapshot. If runtime changes are required, verify the "
@@ -270,7 +270,7 @@ def prepare(original, config, incoming):
             if task
             else prompt(identity, snapshot, owner_report)
         ),
-        mode="high" if task else "ultra",
+        mode="high" if task else "gpt-6-astra-max",
     )
 
 

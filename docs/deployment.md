@@ -1203,7 +1203,7 @@ complete remote command, preserving argument boundaries. Omit `ssh` only when
 an authenticated CLI is installed locally. The controller supplies
 `--mode ultra --features fast --executor runner:homelab-amp --runner-dir ...
 --stream-json --no-archive-after-execute --title TITLE --execute PROMPT`.
-Recovery and DEBUGSHARE use `ultra` reasoning; ordinary Amp jobs retain `high`.
+Recovery uses `ultra` reasoning; DEBUGSHARE investigators use `gpt-6-astra-max`; ordinary Amp jobs retain `high`.
 Fast remains mandatory for all of them, including the recovery transport
 self-test; Fast is independent of reasoning mode. Install the matching
 `deploy.py` on the controller and `runner.py`/`deploy.py` on the SSH host under
@@ -1498,7 +1498,7 @@ them as diagnostic repairs. Old dispatchers ignore the filename; old endpoints
 reject the command before receiving payloads. Both cases preserve pending work
 without falling back to diagnostic authority. The runner validates owner
 provenance, uses High/Fast, fixes the executable/directory itself and instructs
-Amp to follow only the original request's authority. DEBUGSHARE stays Ultra/Fast.
+Amp to follow only the original request's authority. DEBUGSHARE stays GPT-6 Astra Max/Fast.
 
 Install the matching runner scripts, then coordinate a dispatcher update/restart
 around active transports under the usual operator lock/ownership rules, and
@@ -1650,8 +1650,9 @@ of pushing source. Preserve existing recovery and ordinary-job keys/config:
 
    Verify the actual executable, checkout and pinned operator SSH workflow on
    the runner; these paths are deployment examples, not provisioning commands.
-   The runner reuses only recovery's Ultra/Fast CLI arguments and sanitized exec
-   environment. DEBUGSHARE owns its own prompt, admission and snapshots.
+   The runner uses the shared Amp launch mechanism and sanitized exec environment,
+   but DEBUGSHARE passes `gpt-6-astra-max` while recovery passes `ultra`. DEBUGSHARE
+   owns its own prompt, admission and snapshots.
    Install the updated `debugshare_runner.py` alongside the app that emits
    host-authenticated `reporter` metadata to preserve owner-reason trust. The
    dedicated transport attests that metadata; the runner never derives ownership

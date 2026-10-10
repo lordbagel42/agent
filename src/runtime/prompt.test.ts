@@ -566,7 +566,7 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain("operationsDatabase");
     expect(request.system).toContain("separately installed DEBUGSHARE service");
     expect(request.system).toContain(
-      "Independent DEBUGSHARE investigators and automatic deployment-recovery agents use Ultra reasoning (--mode ultra)",
+      "Independent DEBUGSHARE investigators use GPT-6 Astra Max reasoning (--mode gpt-6-astra-max); automatic deployment-recovery agents use Ultra reasoning (--mode ultra)",
     );
     expect(request.system).toContain("--features fast");
     expect(request.system).toContain(

@@ -159,7 +159,7 @@ reasoning effort, Codex service tier, output limits, ordinary request timeouts,
 continuity/activity idle time and reflection cadence. It does **not** enable
 missing subsystems or edit credentials, identities, endpoints, storage paths,
 feature gates, permission lists, safety/admission budgets, native coding limits,
-or deployment/recovery controls. DEBUGSHARE/recovery Ultra/Fast and ordinary Amp
+or deployment/recovery controls. DEBUGSHARE GPT-6 Astra Max/Fast, recovery Ultra/Fast, and ordinary Amp
 job modes are unchanged. Personality and typing keep their existing controls.
 
 Saved preferences apply only on the next **authorized activation**, after the

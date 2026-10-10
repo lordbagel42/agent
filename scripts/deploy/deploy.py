@@ -1179,7 +1179,7 @@ def recovery_prompt(number, commit, reason):
         "the triggering fault first. Require an Oracle review before publishing code. "
         "If blocked, report the blocker and retain ownership; never clear the fence "
         "just because this turn ends. Do not spawn another recovery thread. "
-        "June launches DEBUGSHARE investigators and deployment-recovery agents in Ultra "
+        "June launches DEBUGSHARE investigators in GPT-6 Astra Max and deployment-recovery agents in Ultra "
         "reasoning mode with the mandatory Fast thread feature. Preserve this policy "
         "in any launcher repairs; ordinary jobs keep their existing reasoning modes."
         + issue_tools_prompt(source=f"recovery:{number}")

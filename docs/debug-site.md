@@ -310,7 +310,7 @@ her ingest credential; interaction agents delegate the read to an execution work
   policy or grant deployment, restart, infrastructure or secret authority.
   Both the updated independent issue worker and debug service/API must be
   installed for this behavior; repository publication alone does not activate it.
-  Existing DEBUGSHARE/recovery Ultra + Fast and operator rules are unchanged.
+  Existing DEBUGSHARE GPT-6 Astra Max + Fast, recovery Ultra + Fast and operator rules are unchanged.
 - Assigned Amp threads use `issue_comment` for progress/blockers and
   `issue_complete` after shipping reviewed code. Completion verifies a full
   40-character commit is an ancestor of remote `main`, posts a completion comment,
