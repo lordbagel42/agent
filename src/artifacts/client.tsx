@@ -9,7 +9,14 @@ import { createRoot } from "react-dom/client";
 import type { WorkflowView } from "./contracts.js";
 import { mergeScene, parseScene, type SceneElement } from "./scene.js";
 
-Object.assign(window, { EXCALIDRAW_ASSET_PATH: "/artifacts/assets/" });
+// Model-written text often omits fontFamily; Excalidraw then never loads a
+// font for it and draws a system fallback. Default to Excalifont (5).
+const withFont = (elements: SceneElement[]) =>
+  elements.map((element) =>
+    element.type === "text" && typeof element.fontFamily !== "number"
+      ? { ...element, fontFamily: 5 }
+      : element,
+  );
 const id = document.body.dataset.artifact;
 const base = `/artifacts/${id}`;
 const content = document.getElementById("content");
@@ -146,7 +153,7 @@ async function sync() {
             zenModeEnabled={preview}
             initialData={{
               elements: restoreElements(
-                elements as Parameters<typeof restoreElements>[0],
+                withFont(elements) as Parameters<typeof restoreElements>[0],
                 null,
               ),
               scrollToContent: true,
@@ -196,7 +203,7 @@ async function sync() {
           observed = sceneVersion(merged);
           api.updateScene({
             elements: restoreElements(
-              merged as Parameters<typeof restoreElements>[0],
+              withFont(merged) as Parameters<typeof restoreElements>[0],
               null,
             ),
             captureUpdate: CaptureUpdateAction.NEVER,

@@ -10,7 +10,7 @@ export async function buildArtifactClient(outdir: string) {
     fileURLToPath(new URL(file, import.meta.url));
   await mkdir(outdir, { recursive: true });
   await build({
-    entryPoints: [source("./client.tsx")],
+    entryPoints: [source("./asset-path.ts"), source("./client.tsx")],
     outdir,
     bundle: true,
     splitting: true,
