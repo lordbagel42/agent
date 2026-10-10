@@ -3962,7 +3962,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                       body.type === "event" &&
                                       phase !== "synthesis",
                                     emojiSearchAvailable:
-                                      body.type === "event" &&
+                                      (body.type === "event" || decisionTurn) &&
                                       phase !== "synthesis" &&
                                       !!deps.emojiSearch?.available,
                                     readImageAvailable:

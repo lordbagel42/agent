@@ -898,7 +898,6 @@ async function dispatchCapability(
     if (
       modelRequest.emojiSearchAvailable &&
       deps.emojiSearch?.available &&
-      origin === "event" &&
       phase !== "synthesis" &&
       canStartAction()
     ) {

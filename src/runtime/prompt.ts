@@ -449,7 +449,8 @@ export function buildModelRequest({
   const javascriptAvailable =
     !wakeup && capabilities.javascriptAvailable === true;
   const emojiSearchAvailable =
-    !wakeup && capabilities.emojiSearchAvailable === true;
+    (!wakeup || wakeup.mode === "decision") &&
+    capabilities.emojiSearchAvailable === true;
   const readImageAvailable =
     !wakeup &&
     event.address.channel === "slack" &&
