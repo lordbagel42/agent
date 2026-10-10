@@ -60,6 +60,7 @@ import {
 import {
   type ActivityAssignment,
   type ActivityCatalog,
+  type ActivityStopReceipt,
   createActivityActor,
 } from "../sessions/runtime.js";
 import { sessionActorKey } from "../sessions/state.js";
@@ -687,7 +688,7 @@ export function createJuneRegistry(deps: Dependencies) {
   ): SessionHost => ({
     state: c.state,
     key: c.key,
-    ...{ abortSignal: c.abortSignal },
+    abortSignal: c.abortSignal,
     persist: c.vars.persist,
     rememberRequest: (request) => {
       c.vars.debugRequest = {
@@ -705,6 +706,15 @@ export function createJuneRegistry(deps: Dependencies) {
       client.activity
         .getOrCreate(sessionActorKey(c.key, assignment.sessionId))
         .receive(assignment),
+    // Stop only the existing exact owner; absence is not a completed stop.
+    stopActivity: (assignment) =>
+      client.activity
+        .get(sessionActorKey(c.key, assignment.sessionId))
+        .stop(assignment),
+    activityStopStatus: (assignment) =>
+      client.activity
+        .get(sessionActorKey(c.key, assignment.sessionId))
+        .stopStatus(assignment),
     enqueue: (input) => c.queue.send("inbox", input),
     schedule: c.vars.schedule,
     wakeupContext: async (id) =>
@@ -1060,6 +1070,22 @@ export function createJuneRegistry(deps: Dependencies) {
         assignment: ActivityAssignment,
       ): Awaited<ReturnType<ActivityCatalog["assignmentStatus"]>> =>
         sessions.status(
+          sessionHost(c, c.client<JuneClientRegistry>()),
+          assignment,
+        ),
+      activityStop: (
+        c,
+        assignment: ActivityAssignment,
+      ): Promise<ActivityStopReceipt> =>
+        sessions.stop(
+          sessionHost(c, c.client<JuneClientRegistry>()),
+          assignment,
+        ),
+      activityStopStatus: (
+        c,
+        assignment: ActivityAssignment,
+      ): Promise<ActivityStopReceipt> =>
+        sessions.stopStatus(
           sessionHost(c, c.client<JuneClientRegistry>()),
           assignment,
         ),
@@ -7047,7 +7073,7 @@ export function createJuneRegistry(deps: Dependencies) {
       conversation,
       typing: createTypingActor(deps.channels),
       activity: createActivityActor({
-        ...{ effectRuntime: deps.effectRuntime },
+        effectRuntime: deps.effectRuntime,
         sentinel: deps.sentinel,
         agentActive: (id) => deps.agents?.clientActive(id) === true,
         owner: deps.owner,
@@ -7078,6 +7104,12 @@ export function createJuneRegistry(deps: Dependencies) {
           return {
             assignmentStatus: (assignment) =>
               catalog.activityStatus(assignment),
+            stop: (assignment) =>
+              catalog.activityStop?.(assignment) ??
+              Promise.resolve({ fenced: false, settled: false }),
+            stopStatus: (assignment) =>
+              catalog.activityStopStatus?.(assignment) ??
+              Promise.resolve({ fenced: false, settled: false }),
             pingAllowed: (assignment) =>
               catalog.activityPingAllowed(assignment),
             prepare: (assignment, history) =>
