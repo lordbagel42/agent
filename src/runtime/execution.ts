@@ -988,6 +988,8 @@ export function createExecutionActor(
                           const code = deadlineSignal.aborted
                             ? "deadline"
                             : failure.code;
+                          if (!signal.aborted && !(error instanceof ModelError))
+                            void deps.automaticRepairs?.report("execution");
                           console.error(
                             JSON.stringify({
                               event: "execution_failed",

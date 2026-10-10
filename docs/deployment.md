@@ -1551,11 +1551,16 @@ to 30 seconds. This local control-socket check is not proof of Amp-server
 connectivity or a reservation. A later failure remains uncertain, even without a
 thread ID. Neither side retries a committed launch automatically.
 
-The runner durably admits each UUID once before starting Amp. Each distinct UUID
-gets its own concurrent dispatcher worker on the next two-second inbox scan when
-its retry deadline is due; ten shares can start ten investigations without waiting
-for any to finish. The single dispatcher lock prevents competing daemons, not
-parallel investigations. Each worker publishes its thread ID as soon as Amp emits
+The runner durably admits each UUID once before starting Amp. The dispatcher
+admits at most two active or uncertain launches and four starts per rolling hour,
+shared across DEBUGSHARE, automatic app incidents and ordinary Amp tasks. A durable
+`<UUID>.launch.json` timestamp and serialized admission enforce the limits across
+workers and restarts without changing the app-facing receipt schema. Queued
+requests wait for capacity on the two-second scan. Unknown outcomes, including
+historical unknown receipts, retain capacity until an operator establishes the
+actual thread outcome and reconciles the receipt; elapsed time is not permission
+to free capacity or replay. The single dispatcher lock excludes competing daemons.
+Each worker publishes its thread ID as soon as Amp emits
 it, independently of completion. Snapshot transfer and Amp startup still take
 time; the initial queued acknowledgment is not a launch receipt.
 Deployment locks and operator/recovery ownership still serialize live mutations.
@@ -1574,6 +1579,36 @@ only the readiness command: an old endpoint rejects it and leaves the request
 queued, never falling back to an unsafe launch. Rolling the dispatcher back to
 an older version strands queued receipts until it is upgraded again; it does not
 authorize replay. Installing source is not runtime activation.
+
+Automatic app incidents use the configured DEBUGSHARE transport
+(`config.debugShare` and `JUNE_ALLOW_DEBUGSHARE=1`) when a valid release identity
+is loaded outside setup mode. Model failures except cancellation/capacity
+rejection, caught execution exceptions and HTTP handler exceptions publish through
+the same immutable inbox. One deterministic UUID per release coalesces failures
+across sources, processes and restarts; distinct faults on that release require
+investigation in the existing thread, not another automatic launch. Lifecycle and
+deployment failures retain controller recovery and its existing ownership fence.
+This is not coverage for every caught tool rejection or arbitrary log line.
+
+Automatic evidence contains only a host-selected source, capture time and release,
+not thrown messages, provider payloads, URLs, prompts, conversations or credentials.
+The investigator reads bounded private diagnostics itself. Reporting failures never
+generate incidents; failed publication backs off one minute until a subsequent app
+failure. Publication is best effort, independent of error delivery and model
+settlement; process termination before publication can lose that observation.
+No inference or user operation is retried. The first immutable incident
+remains the reference even after completion. Private `inspection:"debug-shares"`
+includes the current release's automatic receipt, or
+`automatic_repairs_unavailable` when configuration/release prerequisites are
+missing. Receipts do not prove live thread activity or verified repairs.
+
+Automatic requests use `<UUID>.incident.json`, which old dispatchers ignore;
+they remain queued until the bounded standalone dispatcher is installed. No
+fallback to an unbounded launcher is allowed. Inspect unresolved historical receipts
+before rollout, and never erase them to make capacity available. This companion
+update is separate from the automatic application deployment. Automatic incidents
+have no Slack origin and do not emit host launch/resolution notices. The spawned
+thread owns its verified-shipping DM; June must not duplicate it.
 
 New DEBUGSHARE reports outside the owner's one-on-one DMs receive a generic
 `DEBUGSHARE <UUID> was resolved.` reply in their originating Slack thread. For a

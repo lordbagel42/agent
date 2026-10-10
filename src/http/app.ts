@@ -64,6 +64,12 @@ export interface HttpDependencies {
   browserViewShutdown?: AbortSignal;
   revision?: string;
   lifecycle?: Lifecycle;
+  automaticRepairs?: Pick<
+    ReturnType<
+      typeof import("../runtime/debug-dispatch.js").createAutomaticRepairs
+    >,
+    "report"
+  >;
   deployment?: {
     token: string;
     intakeToken?: string;
@@ -137,7 +143,10 @@ export function createHttpApp(deps: HttpDependencies) {
   )
     throw new Error("GitHub requires a separate signing credential");
   const app = new Hono<HttpEnvironment>();
-  app.onError((_error, c) => c.json({ error: "request_failed" }, 500));
+  app.onError((_error, c) => {
+    void deps.automaticRepairs?.report("http");
+    return c.json({ error: "request_failed" }, 500);
+  });
   app.use("*", (c, next) =>
     withSpan(
       "june.http.request",

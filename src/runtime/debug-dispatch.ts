@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { link, open, readFile, realpath, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
 import { z } from "zod";
-import type { DebugInvestigator } from "./session-controls.js";
+import type { DebugInvestigator, DebugSnapshot } from "./session-controls.js";
 
 const idSchema = z.string().uuid();
 export const debugShareResolutionSchema = z.strictObject({
@@ -34,11 +34,16 @@ const receiptSchema = z.strictObject({
 /** Only publishes private files and observes receipts. Never launches Amp. */
 export function createAmpInbox(
   settings: { directory: string },
-  kind: "debugshare" | "amp-task" | "debug-resolution" = "debugshare",
+  kind:
+    | "debugshare"
+    | "automatic-repair"
+    | "amp-task"
+    | "debug-resolution" = "debugshare",
 ) {
   // Dispatchers must never interpret a task or resolution as a new repair.
   const suffix = {
     debugshare: ".json",
+    "automatic-repair": ".incident.json",
     "amp-task": ".task.json",
     "debug-resolution": ".resolution.json",
   }[kind];
@@ -46,8 +51,9 @@ export function createAmpInbox(
     id: string,
   ): Promise<z.infer<typeof receiptSchema> | undefined> => {
     idSchema.parse(id);
+    let receipt: z.infer<typeof receiptSchema> | undefined;
     try {
-      const receipt = receiptSchema.parse(
+      receipt = receiptSchema.parse(
         JSON.parse(
           await readFile(
             join(settings.directory, `${id}.receipt.json`),
@@ -56,9 +62,11 @@ export function createAmpInbox(
         ),
       );
       if (receipt.id !== id) throw new Error("Debug receipt identity mismatch");
-      if (receipt.kind && receipt.kind !== kind)
+      if (
+        receipt.kind &&
+        receipt.kind !== (kind === "automatic-repair" ? "debugshare" : kind)
+      )
         throw new Error("Debug receipt kind mismatch");
-      return receipt;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const request = await stat(
@@ -67,8 +75,26 @@ export function createAmpInbox(
         if (error.code !== "ENOENT") throw error;
         return undefined;
       });
-      return request ? { id, status: "queued" as const } : undefined;
+      receipt = request ? { id, status: "queued" as const } : undefined;
     }
+    if (receipt && (kind === "debugshare" || kind === "automatic-repair")) {
+      try {
+        const resolution = resolutionSchema.parse(
+          JSON.parse(
+            await readFile(
+              join(settings.directory, `${id}.resolution.json`),
+              "utf8",
+            ),
+          ),
+        );
+        if (resolution.id !== id)
+          throw new Error("Resolution identity mismatch");
+        receipt.resolved = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    return receipt;
   };
   return {
     inspect,
@@ -114,6 +140,71 @@ export function createAmpInbox(
   };
 }
 
+/** Content-free host incidents reuse DEBUGSHARE's transport and launch fence.
+ * One immutable request per release, even across processes and restarts. */
+export function createAutomaticRepairs(
+  settings: { directory: string } | undefined,
+  revision: string | undefined,
+) {
+  const sources = ["model", "execution", "http"] as const;
+  type Source = (typeof sources)[number];
+  const inbox = settings && createAmpInbox(settings, "automatic-repair");
+  const enabled = !!inbox && !!revision && /^[a-f0-9]{40}$/.test(revision);
+  let pending: Promise<void> | undefined;
+  let retryAt = 0;
+  let published = false;
+  const hash = createHash("sha256")
+    .update(`june-automatic-repair:${revision}`)
+    .digest("hex");
+  const id = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+  return {
+    async report(source: Source): Promise<void> {
+      if (!enabled || !inbox || !revision || !sources.includes(source)) return;
+      if (pending) return pending;
+      if (published || retryAt > Date.now()) return;
+      const work = (async () => {
+        try {
+          if (await inbox.inspect(id)) {
+            published = true;
+            return;
+          }
+          const snapshot: DebugSnapshot = {
+            id,
+            sessionId: `automatic:${source}`,
+            capturedAt: new Date().toISOString(),
+            revision,
+            scope: ["automatic-repair", source],
+            reason: `The June host observed an unhandled ${source} failure. Investigate the existing telemetry and bounded service logs around capturedAt. This is not permission to repeat the failed operation. Coordinate with any existing repair or recovery owner; do not spawn another investigator.`,
+            data: { automatic: true, source },
+            exclusions: [
+              "Error messages, provider payloads, prompts, conversation bodies, credentials and request URLs are deliberately excluded.",
+            ],
+          };
+          await inbox.publish(snapshot);
+          published = true;
+        } catch {
+          // Reporting must neither mask the original failure nor recursively
+          // report itself. Only unpublished requests retry on a later failure.
+          retryAt = Date.now() + 60_000;
+          console.error("automatic_repair_publication_unavailable");
+        }
+      })();
+      pending = work;
+      try {
+        await work;
+      } finally {
+        pending = undefined;
+      }
+    },
+    async inspect() {
+      if (!enabled || !inbox)
+        return [{ status: "automatic_repairs_unavailable" }];
+      const receipt = await inbox.inspect(id);
+      return receipt ? [{ ...receipt, source: "automatic" }] : [];
+    },
+  };
+}
+
 export function createDebugDispatcher(settings: {
   directory: string;
   timeoutMs: number;
@@ -130,7 +221,13 @@ export function createDebugDispatcher(settings: {
         "utf8",
       ).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "ENOENT") throw error;
-        return undefined;
+        return readFile(
+          join(settings.directory, `${id}.incident.json`),
+          "utf8",
+        ).catch((missing: NodeJS.ErrnoException) => {
+          if (missing.code !== "ENOENT") throw missing;
+          return undefined;
+        });
       });
       if (!snapshot) return false;
       const request = JSON.parse(snapshot);
@@ -146,21 +243,6 @@ export function createDebugDispatcher(settings: {
       const receipt = await inbox.inspect(id);
       if (!receipt) return;
       const { id: _id, kind: _kind, result: _result, ...metadata } = receipt;
-      try {
-        const resolution = resolutionSchema.parse(
-          JSON.parse(
-            await readFile(
-              join(settings.directory, `${id}.resolution.json`),
-              "utf8",
-            ),
-          ),
-        );
-        if (resolution.id !== id)
-          throw new Error("Resolution identity mismatch");
-        metadata.resolved = true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
       return metadata;
     },
     async run(snapshot, signal, onThread) {

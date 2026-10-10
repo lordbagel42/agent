@@ -76,8 +76,9 @@ import { EvidenceStore, extractMemory } from "./memory/store.js";
 import { createHotCodexProvider } from "./models/codex-hot.js";
 import { createDecisionProvider } from "./models/decision.js";
 import { createMemoryExtractor } from "./models/extraction.js";
+import { wrapModelProvider } from "./models/invocation.js";
 import { createJevObserver } from "./models/jev.js";
-import { createModelProvider } from "./models/provider.js";
+import { createModelProvider, ModelError } from "./models/provider.js";
 import { UsageLedger } from "./models/usage.js";
 import { type Evidence, freshEvidence } from "./reflection/domain.js";
 import {
@@ -92,7 +93,10 @@ import {
   createPrivacyFilter,
 } from "./runtime/continuity.js";
 import { editHistory } from "./runtime/conversation-storage.js";
-import { createDebugDispatcher } from "./runtime/debug-dispatch.js";
+import {
+  createAutomaticRepairs,
+  createDebugDispatcher,
+} from "./runtime/debug-dispatch.js";
 import { DiagnosticLog } from "./runtime/diagnostics.js";
 import { createImportTask } from "./runtime/import-task.js";
 import {
@@ -660,6 +664,12 @@ async function main() {
   const usage = new UsageLedger(
     join(process.env.RIVETKIT_STORAGE_PATH, "usage.sqlite"),
   );
+  const automaticRepairs = createAutomaticRepairs(
+    !config.setupMode && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
+      ? config.debugShare
+      : undefined,
+    release?.revision,
+  );
   startupStage = "model credentials";
   const provider = (selection: typeof config.model): ModelProvider => {
     if (config.setupMode) {
@@ -681,6 +691,21 @@ async function main() {
         apiKey: secret(selection.apiKeyEnv),
       });
     }
+    model = wrapModelProvider(model, (child) => async (request, signal) => {
+      try {
+        return await child.reply(request, signal);
+      } catch (error) {
+        if (
+          !signal?.aborted &&
+          !(
+            error instanceof ModelError &&
+            ["cancelled", "provider_busy"].includes(error.code)
+          )
+        )
+          void automaticRepairs.report("model");
+        throw error; // Observation never retries inference or changes settlement.
+      }
+    });
     return loginLinks ? loginLinks.wrapModel(model) : model;
   };
   const model = provider(config.model);
@@ -1383,6 +1408,7 @@ async function main() {
     owner,
     agents,
     continuity,
+    automaticRepairs,
     debugShare:
       config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
         ? createDebugDispatcher(config.debugShare)
@@ -1738,6 +1764,7 @@ async function main() {
     owner,
     channels,
     operatorToken,
+    automaticRepairs,
     sandboxes: () => inspectSandboxes(environments, release?.revision),
     resolveDebugShare: dependencies.debugShare?.resolve,
     capabilities,

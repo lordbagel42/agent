@@ -185,6 +185,9 @@ export interface Dependencies {
   owner: Owner;
   continuity?: import("./continuity.js").ConversationContinuity;
   debugShare?: DebugInvestigator;
+  automaticRepairs?: ReturnType<
+    typeof import("./debug-dispatch.js").createAutomaticRepairs
+  >;
   ampThreads?: ReturnType<typeof import("./amp-threads.js").createAmpThreads>;
   debugSite?: DebugSitePublisher;
   /** Host-injected handoff only; not exposed by production config until the
@@ -989,26 +992,30 @@ export function createJuneRegistry(deps: Dependencies) {
             })
             .slice(-10),
         );
-        return (
-          await Promise.all(
-            [
-              ...new Set([
-                ...receipts.keys(),
-                ...(c.state.debugShareIndex ?? []).map((entry) => entry.id),
-              ]),
-            ].map(async (id) => ({
-              ...(await c
-                .client<JuneClientRegistry>()
-                .debugShare.getOrCreate([id])
-                .inspect()),
-              notification: receipts.get(id)?.debugLink?.delivery?.result,
-            })),
+        const automatic = (await deps.automaticRepairs?.inspect()) ?? [];
+        return [
+          ...automatic,
+          ...(
+            await Promise.all(
+              [
+                ...new Set([
+                  ...receipts.keys(),
+                  ...(c.state.debugShareIndex ?? []).map((entry) => entry.id),
+                ]),
+              ].map(async (id) => ({
+                ...(await c
+                  .client<JuneClientRegistry>()
+                  .debugShare.getOrCreate([id])
+                  .inspect()),
+                notification: receipts.get(id)?.debugLink?.delivery?.result,
+              })),
+            )
           )
-        )
-          .sort((a, b) =>
-            (a.capturedAt ?? "").localeCompare(b.capturedAt ?? ""),
-          )
-          .slice(-10);
+            .sort((a, b) =>
+              (a.capturedAt ?? "").localeCompare(b.capturedAt ?? ""),
+            )
+            .slice(-10),
+        ];
       },
       notifyDebugShare: (c, id: string, at: number): void => {
         c.vars.notifyDebugShare(id, at);
