@@ -35,6 +35,35 @@ export const workflowCommandSchema = z
   );
 export type WorkflowCommand = z.infer<typeof workflowCommandSchema>;
 
+export type WorkflowRunStatus =
+  | "empty"
+  | "queued"
+  | "running"
+  | "waiting"
+  | "completed"
+  | "failed"
+  | "needs_review"
+  | "cancelled"
+  | "revoked";
+export type WorkflowOperationStatus =
+  | "started"
+  | "completed"
+  | "not_started"
+  | "failed"
+  | "unknown";
+
+/** Host-only, content-free observation, not a delivery or settlement receipt. */
+export interface WorkflowPresentationSnapshot {
+  readonly runId: string;
+  /** Pinned workflow definition, never the loaded service revision. */
+  readonly revision: string;
+  readonly status: WorkflowRunStatus;
+  readonly operationStatuses: readonly WorkflowOperationStatus[];
+  readonly capturedAt: number;
+  readonly deletionRevision: number;
+  readonly sourceScope: string;
+}
+
 /** Effect accounting is independent of whether its result may still publish. */
 export class WorkflowToolError extends Error {
   constructor(
@@ -64,6 +93,14 @@ export interface WorkflowTool {
 }
 export interface WorkflowDependencies {
   tools: Record<string, WorkflowTool>;
+  /** Optional process-local metadata sink. Recheck readable with the authenticated
+   * source on every read; false means unavailable, never a reason to wake a run.
+   * The synchronous guard can read existing source/deletion authority stores.
+   * Preserve capturedAt, bound retention and do not persist snapshots/readers. */
+  observePresentation?(
+    snapshot: WorkflowPresentationSnapshot,
+    readable: (source: MessageEvent) => boolean,
+  ): void;
 }
 
 export const WORKFLOW_HELP = `Workflows are available in admitted channels and DMs when configured. June judges task safety and audience-appropriate disclosure at runtime; owner-private conversation is not a task eligibility requirement. Author JavaScript function bodies with workflow and input in scope. Return JSON.

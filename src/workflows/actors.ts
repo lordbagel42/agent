@@ -7,7 +7,10 @@ import { routeEvent } from "../core/routing.js";
 import type { Dependencies } from "../runtime/registry.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import {
+  type WorkflowRunStatus as Status,
   WORKFLOW_HELP,
+  type WorkflowOperationStatus,
+  type WorkflowPresentationSnapshot,
   WorkflowToolError,
   workflowCommandSchema,
 } from "./contracts.js";
@@ -37,19 +40,9 @@ interface RunSpec extends Definition {
   tools: string[];
   abi: 1;
 }
-type Status =
-  | "empty"
-  | "queued"
-  | "running"
-  | "waiting"
-  | "completed"
-  | "failed"
-  | "needs_review"
-  | "cancelled"
-  | "revoked";
 interface Receipt {
   signature: string;
-  status: "started" | "completed" | "not_started" | "failed" | "unknown";
+  status: WorkflowOperationStatus;
   value?: Json;
 }
 interface RunState {
@@ -63,6 +56,9 @@ interface RunState {
   error?: string;
 }
 interface Binding {
+  incarnation: symbol;
+  publication: number;
+  signal: AbortSignal;
   state: () => RunState;
   persist: () => Promise<void>;
   complete: (
@@ -98,11 +94,93 @@ const current = (deps: Dependencies, spec: RunSpec) =>
     hash(spec.scopeKey ?? ["private", deps.owner.id]) &&
   spec.deletionRevision === revision(deps);
 
+function presentationFailed() {
+  try {
+    console.warn("workflow_presentation_failed");
+  } catch {
+    /* Metadata failures never change workflow execution or storage outcomes. */
+  }
+}
+
+function presentationSnapshot(
+  deps: Dependencies,
+  state: RunState,
+): WorkflowPresentationSnapshot | null {
+  try {
+    const spec = state.spec;
+    if (
+      !spec?.scopeKey ||
+      !spec.scope ||
+      state.status === "revoked" ||
+      !current(deps, spec) ||
+      spec.scope !== sourceScope(spec.origin, spec.scopeKey)
+    )
+      return null;
+    return Object.freeze({
+      runId: spec.id,
+      revision: spec.revision,
+      status: state.status,
+      operationStatuses: Object.freeze(
+        Object.values(state.operations).map((receipt) => receipt.status),
+      ),
+      capturedAt: Date.now(),
+      deletionRevision: spec.deletionRevision,
+      sourceScope: spec.scope,
+    });
+  } catch {
+    presentationFailed();
+    return null;
+  }
+}
+
+/** Separate lexical scope: a retained reader must not retain c, a Binding or
+ * private payloads. Resolve only the current live incarnation without any RPC. */
+function presentationReader(
+  deps: Dependencies,
+  bindings: WeakRef<Map<string, Binding>>,
+  key: string,
+  incarnation: symbol,
+  publication: number,
+  snapshot: WorkflowPresentationSnapshot,
+) {
+  return (event: MessageEvent): boolean => {
+    try {
+      const binding = bindings.deref()?.get(key);
+      if (
+        !binding ||
+        binding.incarnation !== incarnation ||
+        binding.publication !== publication ||
+        binding.signal.aborted
+      )
+        return false;
+      const state = binding.state();
+      const spec = state.spec;
+      const route = routeEvent(event, deps.owner);
+      return !!(
+        spec?.scopeKey &&
+        state.status !== "revoked" &&
+        spec.id === snapshot.runId &&
+        spec.revision === snapshot.revision &&
+        spec.deletionRevision === snapshot.deletionRevision &&
+        spec.scope === snapshot.sourceScope &&
+        sourceScope(spec.origin, spec.scopeKey) === snapshot.sourceScope &&
+        current(deps, spec) &&
+        route &&
+        authorized(deps, event) &&
+        sourceScope(event, route.key) === snapshot.sourceScope
+      );
+    } catch {
+      return false;
+    }
+  };
+}
+
 export function createWorkflowRunActor(deps: Dependencies) {
   // Ephemeral steps also replay cached outputs. Keep non-serializable live
   // bindings per actor incarnation, while registering the native workflow
   // handler directly so Rivet's workflow inspector remains available.
   const bindings = new Map<string, Binding>();
+  const liveBindings = new WeakRef(bindings);
   return actor({
     state: {
       spec: null,
@@ -113,12 +191,43 @@ export function createWorkflowRunActor(deps: Dependencies) {
       consumed: {},
     } as RunState,
     createVars: (c): Binding => {
+      const key = JSON.stringify(c.key);
+      const incarnation = Symbol("workflow_binding");
       const binding: Binding = {
+        incarnation,
+        publication: 0,
+        signal: c.abortSignal,
         state: () => c.state,
-        persist: () => c.saveState({ immediate: true }),
+        persist: async () => {
+          // Invalidate readers before yielding, even if the save later fails.
+          const publication = ++binding.publication;
+          const snapshot = deps.workflows?.observePresentation
+            ? presentationSnapshot(deps, c.state)
+            : null;
+          await c.saveState({ immediate: true });
+          if (!snapshot) return;
+          const readable = presentationReader(
+            deps,
+            liveBindings,
+            key,
+            incarnation,
+            publication,
+            snapshot,
+          );
+          const origin = c.state.spec?.origin;
+          if (!origin || !readable(origin)) return;
+          try {
+            // Also contain accidentally async sink failures; never await them.
+            void Promise.resolve(
+              deps.workflows?.observePresentation?.(snapshot, readable),
+            ).catch(presentationFailed);
+          } catch {
+            presentationFailed();
+          }
+        },
         complete: (id, name) => c.queue.complete({ id: BigInt(id), name }),
       };
-      bindings.set(JSON.stringify(c.key), binding);
+      bindings.set(key, binding);
       return binding;
     },
     onSleep: (c) => {
