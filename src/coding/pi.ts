@@ -220,6 +220,7 @@ export function createPiRuntime(options: PiRuntimeOptions): CodingRuntime {
         if (input.threadId)
           await checkSession(sessionFile, cwd, input.threadId);
         if (input.signal.aborted) throw new PiRuntimeError("cancelled");
+        input.assertCurrent?.();
         child = (options.spawnProcess ?? spawn)(
           options.executable,
           [

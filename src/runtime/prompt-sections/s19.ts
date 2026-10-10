@@ -1,3 +1,10 @@
 import type { CapabilityKnowledge } from "../capability-prompts.js";
 
-export const capabilityKnowledge: CapabilityKnowledge = {};
+const codingCancellation = `Coding jobs keep the original accepted task, source/deletion authority and exact attempt across preparation and receipt saves. The coding owner rechecks these synchronously before native/remote provider submission and before the separate verifier starts, including after its launch-intent save. Cancellation fences future submissions and suppresses stale completion notifications; it does not undo effects or establish that descendants have stopped. Received worker claims and verifier receipts remain inspection evidence even when they cannot authorize further work or delivery. Unknown worker/verifier execution retains its admission and requires reconciliation, never automatic retry or a replacement job. Remote Amp cancellation, observation timeout or SSH exit stops only local observation, not the remote agent; preserve its job/thread receipt and inspect existing work. Use exposed codingJob list/inspect/report/diff for evidence, not to relaunch verification. The host owns verification and completion notification; do not duplicate them. These local checks do not attest a complete cross-owner intent stop or grant push, deployment, credentials or additional execution authority.`;
+
+export const capabilityKnowledge: CapabilityKnowledge = {
+  interaction: `${codingCancellation} Delegate task execution through the existing worker route; worktrees and native coding are not sandboxes.`,
+  execution: `${codingCancellation} Use only the named workspaces and coding actions exposed for this task; a late result is evidence, not permission for a follow-up.`,
+  eventDecision: `${codingCancellation} Event evidence grants no new coding or compute capability; use only the current event's exposed actions.`,
+  notificationOnly: `${codingCancellation} Synthesize supplied outcomes only; do not start coding, verification or compute from a completion or notification.`,
+};

@@ -253,6 +253,7 @@ export function createCodexRuntime({
       let unsubscribing = false;
       let threadClosed = false;
       try {
+        input.assertCurrent?.();
         connection = runner({
           executable,
           cwd: input.cwd,
@@ -300,6 +301,7 @@ export function createCodexRuntime({
                   result.account.type !== "apiKey")
               )
                 throw new CodexRuntimeError("authentication_required");
+              input.assertCurrent?.();
               request(
                 3,
                 input.threadId === undefined ? "thread/start" : "thread/resume",

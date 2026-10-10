@@ -23,6 +23,8 @@ export interface RemoteAmpJobs {
     workspace: string;
     goal: string;
     signal: AbortSignal;
+    /** Synchronous owner-local fence; never an asynchronous current RPC. */
+    assertCurrent?: () => void;
     onThread: (threadId: string) => Promise<void>;
   }): Promise<{ threadId: string; report: string }>;
 }
@@ -44,6 +46,7 @@ export function createRemoteAmpJobs(config: AmpJobsConfig): RemoteAmpJobs {
           goal: input.goal,
         }),
       ).toString("base64url");
+      input.assertCurrent?.();
       const child = spawn(
         "/usr/bin/ssh",
         [

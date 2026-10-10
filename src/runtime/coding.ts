@@ -673,6 +673,29 @@ export function createCodingActor(
                 }
                 const proposal = step.state.proposal;
                 if (!proposal) return;
+                // Freeze the accepted origin/authority before any admission save.
+                // Cancellation mutates this owner's state before its save/abort;
+                // an awaited current RPC would leave a check-to-dispatch race.
+                const frozenProposal = JSON.parse(
+                  JSON.stringify(proposal),
+                ) as JobProposal;
+                const assertAttemptCurrent = (signal: AbortSignal) => {
+                  signal.throwIfAborted();
+                  if (
+                    step.state.revoked ||
+                    step.state.cancelRequested ||
+                    step.state.status !== "running" ||
+                    step.state.attempts !== approved ||
+                    !isDeepStrictEqual(
+                      JSON.parse(JSON.stringify(step.state.proposal)),
+                      frozenProposal,
+                    ) ||
+                    frozenProposal.runtimeId !== coding.runtimeId ||
+                    step.state.runtimeId !== coding.runtimeId ||
+                    !provenanceCurrent(step.key[0] ?? "", frozenProposal)
+                  )
+                    throw new Error("Execution binding needs reconciliation");
+                };
                 return withSpan(
                   "june.coding.supervise",
                   {
@@ -705,6 +728,8 @@ export function createCodingActor(
                             remote?.timeoutMs ?? coding.timeoutMs,
                           ),
                         ]);
+                        const assertCurrent = () =>
+                          assertAttemptCurrent(signal);
                         try {
                           if (!remote)
                             throw new Error("Remote job binding unavailable");
@@ -713,27 +738,20 @@ export function createCodingActor(
                             { "june.phase": "remote" },
                             async () => {
                               // No await between this check and external dispatch.
-                              signal.throwIfAborted();
-                              if (
-                                step.state.revoked ||
-                                step.state.cancelRequested ||
-                                proposal.runtimeId !== coding.runtimeId ||
-                                step.state.runtimeId !== coding.runtimeId ||
-                                !provenanceCurrent(step.key[0] ?? "", proposal)
-                              )
-                                throw new Error(
-                                  "Remote job binding unavailable",
-                                );
+                              assertCurrent();
                               return remote.run({
                                 id: proposal.id,
                                 workspace: proposal.workspace,
                                 goal: proposal.goal,
                                 signal,
+                                assertCurrent,
                                 onThread: async (threadId) => {
-                                  signal.throwIfAborted();
+                                  // Receipts remain evidence after cancellation;
+                                  // saving one does not authorize another effect.
                                   if (
-                                    step.state.threadId &&
-                                    step.state.threadId !== threadId
+                                    step.state.attempts !== approved ||
+                                    (step.state.threadId &&
+                                      step.state.threadId !== threadId)
                                   )
                                     throw new Error("Remote receipt changed");
                                   step.state.threadId = threadId;
@@ -749,13 +767,13 @@ export function createCodingActor(
                               });
                             },
                           );
-                          signal.throwIfAborted();
                           if (
                             !step.state.threadId ||
                             result.threadId !== step.state.threadId
                           )
                             throw new Error("Remote receipt missing");
                           step.state.workerClaim = result.report;
+                          assertCurrent();
                           step.state.report =
                             "The coding task returned a result, not independently verified. No local artifact, push or deployment evidence.";
                           // Completed means transport returned a result, never verified code.
@@ -786,12 +804,6 @@ export function createCodingActor(
                           );
                         return;
                       }
-                      // Preserve the exact accepted task and original deletion
-                      // fence across worktree/session persistence. Never refresh
-                      // its authority from the context at dispatch time.
-                      const frozenProposal = JSON.parse(
-                        JSON.stringify(proposal),
-                      ) as JobProposal;
                       const manager = coding.isolation?.[proposal.workspace];
                       step.state.status = "running";
                       step.state.attempts = approved;
@@ -814,6 +826,7 @@ export function createCodingActor(
                         step.abortSignal,
                         AbortSignal.timeout(coding.timeoutMs),
                       ]);
+                      const assertCurrent = () => assertAttemptCurrent(signal);
                       let admissionAttempted = false;
                       let admitted = false;
                       let launched = false;
@@ -840,7 +853,7 @@ export function createCodingActor(
                         if (!manager || !coding.runtime)
                           throw new Error("Isolation is not configured");
                         if (step.state.cancelRequested) controller.abort();
-                        signal.throwIfAborted();
+                        assertCurrent();
                         // A legacy saved thread belongs to the shared checkout. Never
                         // silently continue it in a new worktree after a code upgrade.
                         if (step.state.threadId && !step.state.worktree)
@@ -854,7 +867,7 @@ export function createCodingActor(
                           command.type === "resume" && command.confirmedStopped,
                         );
                         admitted = true;
-                        signal.throwIfAborted();
+                        assertCurrent();
                         const { manifest } = await manager.prepare(proposal.id);
                         if (
                           manifest.repositoryRoot !==
@@ -876,28 +889,6 @@ export function createCodingActor(
                           "worktree_prepared",
                         );
                         const runtime = coding.runtime;
-                        const assertCurrent = () => {
-                          signal.throwIfAborted();
-                          if (
-                            step.state.revoked ||
-                            step.state.cancelRequested ||
-                            step.state.status !== "running" ||
-                            step.state.attempts !== approved ||
-                            !isDeepStrictEqual(
-                              JSON.parse(JSON.stringify(step.state.proposal)),
-                              frozenProposal,
-                            ) ||
-                            frozenProposal.runtimeId !== coding.runtimeId ||
-                            step.state.runtimeId !== coding.runtimeId ||
-                            !provenanceCurrent(
-                              step.key[0] ?? "",
-                              frozenProposal,
-                            )
-                          )
-                            throw new Error(
-                              "Execution binding needs reconciliation",
-                            );
-                        };
                         const execution = withSpan(
                           "june.coding.dispatch",
                           { "june.phase": "local" },
@@ -952,7 +943,6 @@ export function createCodingActor(
                         ]).finally(() => {
                           acceptingThread = false;
                         });
-                        signal.throwIfAborted();
                         settled = true;
                         if (
                           step.state.threadId &&
@@ -971,40 +961,50 @@ export function createCodingActor(
                           "running",
                           "report_returned_unverified",
                         );
+                        assertCurrent();
                         const appArtifact = proposal.appId
                           ? await readAppArtifact(manifest.cwd, proposal.appId)
                           : undefined;
+                        assertCurrent();
                         settled = false;
                         const verification = await Promise.race([
-                          manager.verify(proposal.id, signal, approved),
+                          manager.verify(
+                            proposal.id,
+                            signal,
+                            approved,
+                            assertCurrent,
+                          ),
                           interrupted,
                         ]);
                         settled = verification.status !== "needs_review";
                         step.state.verification = verification;
+                        // Keep the real receipt even when its late result cannot
+                        // authorize an artifact or a completion notification.
+                        assertCurrent();
                         step.state.report = verification.replayed
                           ? "Only a historical verifier receipt is available; current workspace changes are not verified."
                           : `Separate operator verifier: ${verification.status}. This is evidence only for that command at ${verification.finishedAt}, not approval to push or deploy.`;
                         if (verification.artifact) {
                           step.state.report += ` Source artifact SHA-256: ${verification.artifact.digest}; HEAD: ${verification.artifact.headCommit}; artifact match: ${verification.artifactMatches ?? "unknown"}. Scope: tracked and nonignored untracked files only; ignored files and external dependencies excluded. Deployment is not verified.`;
                         }
-                        step.state.status =
+                        const completed =
                           verification.status === "passed" &&
                           verification.artifactMatches === true &&
-                          !verification.replayed &&
-                          !signal.aborted
-                            ? "completed"
-                            : "needs_review";
-                        if (appArtifact && step.state.status === "completed") {
+                          !verification.replayed;
+                        if (appArtifact && completed) {
                           const after = await readAppArtifact(
                             manifest.cwd,
                             appArtifact.appId,
                           );
                           if (after.digest !== appArtifact.digest)
                             throw new Error("verified_app_changed");
-                          signal.throwIfAborted();
+                          assertCurrent();
                           // Retain exact verified bytes, never mutable worker paths.
                           step.state.appArtifact = appArtifact;
                         }
+                        step.state.status = completed
+                          ? "completed"
+                          : "needs_review";
                         terminalReason =
                           step.state.status === "completed"
                             ? "verified_result"
@@ -1097,7 +1097,18 @@ export function createCodingActor(
             await loop.step("notify-companion", async (step): Promise<void> => {
               const { proposal, status, report, attempts, workerClaim } =
                 step.state;
-              if (!proposal) return;
+              // Suppress publication, not the original operation's evidence.
+              if (
+                !proposal ||
+                step.abortSignal.aborted ||
+                step.state.revoked ||
+                step.state.cancelRequested ||
+                attempts !== approved ||
+                proposal.runtimeId !== coding.runtimeId ||
+                step.state.runtimeId !== coding.runtimeId ||
+                !provenanceCurrent(step.key[0] ?? "", proposal)
+              )
+                return;
               const text =
                 version < 2
                   ? status === "completed"

@@ -711,6 +711,7 @@ export function createWorktreeManager(input: WorktreeConfig) {
       jobId: string,
       signal?: AbortSignal,
       attempt?: number,
+      assertCurrent?: () => void,
     ): Promise<VerificationResult> {
       const manifest = await owned(jobId);
       const { record } = locations(jobId);
@@ -822,6 +823,10 @@ export function createWorktreeManager(input: WorktreeConfig) {
           resolve(result("aborted"));
           return;
         }
+        // The launch-intent fsync yields. The owning actor may already have
+        // fenced this attempt even before its abort signal reaches the adapter.
+        // Keep the started receipt if this throws; replay must not launch it.
+        assertCurrent?.();
         let stopped: "aborted" | "timed_out" | undefined;
         const child = spawn(
           verifier.argv[0] as string,
