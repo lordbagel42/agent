@@ -8,6 +8,7 @@ import type {
   ModelSettlement,
   SendResult,
 } from "../core/contracts.js";
+import { DEBUG_COMMAND } from "../core/routing.js";
 import {
   type DebugSiteOutbox,
   publishDebugSite,
@@ -116,7 +117,7 @@ export function sessionCommand(event: MessageEvent) {
   if (event.text === "CLEARHISTORY") return { kind: "clear" as const };
   if (event.text === "PING" || event.text === "PINGMODEL")
     return { kind: "ping" as const, model: event.text === "PINGMODEL" };
-  const match = /^(DEBUG|DEBUGSHARE)(?: ([^\r\n]*))?$/.exec(event.text);
+  const match = DEBUG_COMMAND.exec(event.text);
   if (match)
     return {
       kind: "debug" as const,

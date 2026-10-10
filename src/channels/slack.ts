@@ -9,6 +9,7 @@ import type {
 } from "../core/contracts.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
+import { DEBUG_COMMAND } from "../core/routing.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 import { allowedWebEmbed } from "../core/web-embed.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
@@ -67,7 +68,7 @@ export function isPlainSlackCommand(
   const command = event.text.startsWith(prefix)
     ? event.text.slice(prefix.length)
     : event.text;
-  const diagnosticReason = /^DEBUG(?:SHARE)? /.test(command);
+  const diagnosticReason = /^DEBUG(?:SHARE)?[ \r\n]/.test(command);
   if (
     event.text.includes("`") &&
     (!diagnosticReason || event.text.includes("```"))
@@ -243,7 +244,7 @@ async function normalizeEvent(
     : text.endsWith(suffix)
       ? text.slice(0, -suffix.length)
       : text;
-  const debugCandidate = /^DEBUG(?:SHARE)?(?: [^\r\n]*)?$/.test(sessionText);
+  const debugCandidate = DEBUG_COMMAND.test(sessionText);
   const sessionCandidate =
     debugCandidate || /^(?:PING|PINGMODEL|CLEARHISTORY)$/.test(sessionText);
   const sessionEligible =

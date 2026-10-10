@@ -15,9 +15,10 @@ import type {
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import { ENVIRONMENT_KNOWLEDGE } from "../environments/contracts.js";
-import { parseReply } from "../models/provider.js";
+import { ModelError, parseReply } from "../models/provider.js";
 import { RepositoryError } from "../repository/contracts.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
+import type { WebSearchResult } from "../tools/web-search.js";
 import { type Delivery, deliver } from "./delivery.js";
 import { runExecutionCapability } from "./execution-capabilities.js";
 import {
@@ -40,6 +41,75 @@ export interface ExecutionDependencies {
   model: ModelProvider;
 }
 export const executionLimits = { pending: 4, perWorker: 4, roster: 32 };
+
+const SEARCH_FAILURES: Record<
+  Exclude<WebSearchResult, { status: "ready" }>["code"],
+  string
+> = {
+  not_configured: "web search is not configured on this host",
+  authorization_required: "the search provider rejected June's credential",
+  rate_limited: "the search provider rate-limited the request",
+  quota_exceeded: "the search provider's plan or credit quota is exhausted",
+  invalid_query:
+    "the query was empty, over 500 characters or contained control characters",
+  cancelled: "the search was cancelled",
+  timeout: "the search provider did not respond before the timeout",
+  transport: "the network request to the search provider failed",
+  http: "the search provider returned an unexpected HTTP error",
+  invalid_response: "the search provider's response could not be parsed",
+  response_too_large: "the search provider's response exceeded the size limit",
+};
+
+const HOST_FAILURES: Record<string, [string, string]> = {
+  "Execution disabled": ["execution_disabled", "execution is not configured"],
+  "Execution invalidated": [
+    "execution_invalidated",
+    "the request was cancelled, revoked or its source was forgotten",
+  ],
+  "Search unavailable": [
+    "search_unavailable",
+    "the worker requested web search but no provider is configured",
+  ],
+  "Unsupported worker action": [
+    "unsupported_worker_action",
+    "the model requested an action execution workers cannot perform",
+  ],
+  "Environment storage changed; reconciliation required": [
+    "environment_changed",
+    "environment storage changed and needs operator reconciliation",
+  ],
+};
+
+/** Host-generated classification only: never expose raw errors, provider
+ * bodies or private text in reports, logs or traces. */
+function executionFailure(error: unknown): {
+  code: string;
+  detail: string;
+} {
+  if (error instanceof ModelError) {
+    const code = /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "error";
+    return {
+      code: `model_${code}`,
+      detail:
+        code === "malformed_response"
+          ? "the model's reply was not valid JSON"
+          : code === "invalid_response"
+            ? "the model's reply failed validation, for example by requesting an action or field this worker is not granted"
+            : `the model provider call failed (${code})`,
+    };
+  }
+  const known =
+    error instanceof Error && Object.hasOwn(HOST_FAILURES, error.message)
+      ? HOST_FAILURES[error.message]
+      : undefined;
+  return known
+    ? { code: known[0], detail: known[1] }
+    : {
+        code: "unclassified",
+        detail:
+          "an unclassified error occurred; the host could not identify its cause",
+      };
+}
 /** Rivet's native key transport splits commas; never use raw JSON as a segment. */
 export function executionKey(scope: readonly string[], id: string): string[] {
   return [createHash("sha256").update(JSON.stringify(scope)).digest("hex"), id];
@@ -514,12 +584,22 @@ export function createExecutionActor(
                             if (!usable())
                               throw new Error("Execution invalidated");
                             if (result.status !== "ready") {
+                              console.error(
+                                JSON.stringify({
+                                  event: "execution_web_search_failed",
+                                  code: result.code,
+                                  requestState: result.requestState,
+                                }),
+                              );
+                              span.setAttribute(
+                                "error.type",
+                                `web_search_${result.code}`,
+                              );
                               request.status =
                                 result.requestState === "possibly_sent"
                                   ? "needs_review"
                                   : "failed";
-                              request.report =
-                                "Public search did not produce a confirmed result. No automatic retry was made; ask for a new attempt if needed.";
+                              request.report = `Public web search failed: ${SEARCH_FAILURES[result.code]} (code ${result.code}; the request was ${result.requestState === "possibly_sent" ? "possibly sent to" : "not sent to"} the provider). No automatic retry was made; ask for a new attempt if needed${result.status === "unavailable" ? ", but it will likely fail the same way until the provider issue is resolved" : ""}.`;
                               break;
                             }
                             step.state.history.push({
@@ -900,11 +980,23 @@ export function createExecutionActor(
                             request.operation?.status === "started"
                               ? "needs_review"
                               : "failed";
+                          const failure = executionFailure(error);
+                          const code = deadlineSignal.aborted
+                            ? "deadline"
+                            : failure.code;
+                          console.error(
+                            JSON.stringify({
+                              event: "execution_failed",
+                              code,
+                              status: request.status,
+                            }),
+                          );
+                          span.setAttribute("error.type", code);
                           request.report = deadlineSignal.aborted
                             ? "Execution reached its five-minute deadline. Unfinished work was cancelled; this does not confirm that upstream inference stopped or that the requested capability is absent. Any unfinished started operation remains unconfirmed. No automatic retry was made; another attempt requires a fresh request."
                             : error instanceof RepositoryError
                               ? error.message
-                              : "Execution did not produce a confirmed result. No automatic retry was made; ask for another attempt if needed.";
+                              : `Execution did not produce a confirmed result: ${failure.detail} (code ${failure.code}).${request.operation?.status === "started" ? " A started operation's outcome is unconfirmed." : ""} No automatic retry was made; ask for another attempt if needed.`;
                         }
                       } finally {
                         try {

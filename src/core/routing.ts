@@ -1,6 +1,9 @@
 import type { ChannelEvent, Owner } from "./contracts.js";
 import { isOwner } from "./social.js";
 
+/** Plain DEBUG/DEBUGSHARE, optionally followed by a reason that may span lines. */
+export const DEBUG_COMMAND = /^(DEBUG|DEBUGSHARE)(?:[ \r\n]+([\s\S]*))?$/;
+
 export interface Scope {
   key: string[];
   private: boolean;
@@ -23,7 +26,7 @@ export function routeEvent(
     const debug =
       event.type === "message" &&
       event.sessionCommandEligible === true &&
-      /^DEBUG(?:SHARE)?(?: [^\r\n]*)?$/.test(event.text);
+      DEBUG_COMMAND.test(event.text);
     if (
       event.type !== "message" ||
       address.channel !== "slack" ||

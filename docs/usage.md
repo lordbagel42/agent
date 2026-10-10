@@ -188,7 +188,7 @@ separate. Quoted commands, attachments, edited messages and guests cannot reset 
 Anyone can send `DEBUGSHARE` or `DEBUGSHARE a short explanation` in any Slack
 conversation June receives: public/private channels, threads, DMs and group DMs.
 June's actual mention may appear at either end, separated by a space; no mention
-is required for a plain command. The single-line reason may contain inline code
+is required for a plain command. The reason may span multiple lines and may contain inline code
 (for example, a code-formatted identifier), but `DEBUGSHARE` itself must stay
 plain. The same rule applies to `DEBUG`. Slack authentication, workspace checks
 and quote/code-block/attachment/edit rejection still apply. This does not
