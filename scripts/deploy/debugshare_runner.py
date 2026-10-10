@@ -73,6 +73,8 @@ def prompt(identity, snapshot, owner_report=False):
         "files, public output and logs. Use existing credential mechanisms only. Do not launch another "
         "DEBUGSHARE/recovery investigator or duplicate this assignment. Oracle review is required and "
         "permitted before publication. "
+        "Do not recursively trigger DEBUGSHARE or automatic repair dispatch for failures of this "
+        "repair; retain ownership and report the blocker in this thread instead. "
         "Report the diagnosis, evidence, changes, verification, actual delivery state and any blocker in "
         "this private Amp thread. A returned turn is not proof of a deployed fix. Preserve GPT-6 Astra Max reasoning "
         "for DEBUGSHARE, Ultra reasoning for deployment recovery, and mandatory Fast for both; ordinary jobs keep their existing reasoning modes. "
@@ -92,6 +94,7 @@ def prompt(identity, snapshot, owner_report=False):
         "credentials or post diagnostic details. This idempotent endpoint records resolution only, "
         "does not rerun Amp, and does not prove Slack delivery. Follow docs/deployment.md."
         + runner.deploy.issue_tools_prompt(source=f"debug:{identity}")
+        + runner.deploy.SHIPPING_NOTIFICATION_PROMPT
     )
 
 
@@ -267,6 +270,7 @@ def prepare(original, config, incoming):
             "deliverable, evidence, verification limits and actual delivery state in your final "
             "response, or a precise blocker. June can inspect the bounded final response later "
             "only for the same requester and source scope."
+            + runner.deploy.SHIPPING_NOTIFICATION_PROMPT
             if task
             else prompt(identity, snapshot, owner_report)
         ),

@@ -1,11 +1,17 @@
 """The SSH identity can dispatch fixed recovery work, not arbitrary Amp prompts."""
 
+import base64
+import hashlib
 import importlib.util
+import io
+import json
 import shlex
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class RunnerCommand(unittest.TestCase):
@@ -69,6 +75,101 @@ class RunnerCommand(unittest.TestCase):
             with self.subTest(reason=reason), self.assertRaises(ValueError):
                 self.runner.command(shlex.join(changed), self.config)
 
+    def test_spawned_prompts_assign_shipping_dm_without_expanding_authority(self):
+        def load(name):
+            spec = importlib.util.spec_from_file_location(
+                name, Path(__file__).with_name(f"{name}.py")
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+
+        debug = load("debugshare_runner")
+        prompts = {
+            "recovery": self.runner.deploy.recovery_prompt(
+                17, "b" * 40, "health_failed"
+            ),
+            "issue": load("issues").job_argv(
+                self.config,
+                {
+                    "number": 37,
+                    "url": "https://github.com/lordbagel42/agent/issues/37",
+                    "ownerRequest": False,
+                    "title": "Repair",
+                    "body": "Investigate",
+                },
+            )[-1],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            config = {**self.config, "snapshotDirectory": directory}
+            for kind in ("debugshare", "amp-task"):
+                identity = "12345678-1234-4234-8234-123456789" + (
+                    "012" if kind == "debugshare" else "013"
+                )
+                payload = {"id": identity}
+                if kind == "amp-task":
+                    payload.update(
+                        {
+                            "kind": kind,
+                            "title": "Task",
+                            "prompt": "Fix",
+                            "ownerRequest": "Fix",
+                            "reporter": {
+                                "channel": "slack",
+                                "isOwner": True,
+                                "accountId": "T123",
+                                "senderId": "U123",
+                            },
+                        }
+                    )
+                data = json.dumps(payload).encode()
+                command = (
+                    f"june-{kind}-ready {identity} {hashlib.sha256(data).hexdigest()}"
+                )
+                with (
+                    patch.object(debug.subprocess, "run"),
+                    patch("sys.stdout", new_callable=io.StringIO),
+                ):
+                    prompts[kind] = debug.prepare(command, config, io.BytesIO(data))[-1]
+        payload = {
+            "id": "a" * 64,
+            "workspace": "amp-june",
+            "directory": "/tmp/june",
+            "policyRevision": "v1",
+            "goal": "Fix",
+        }
+        encoded = (
+            base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        )
+        prompts["ordinary"] = load("jobs_runner").command(
+            "june-job " + encoded,
+            {
+                "command": self.config["command"],
+                "workspaces": {"amp-june": "/tmp/june"},
+                "policyRevision": "v1",
+            },
+        )[2][-1]
+        for kind, prompt in prompts.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(prompt.count("U08R4KDL6UF"), 1)
+                for requirement in (
+                    "postAs: bot",
+                    "you, the spawned Amp thread",
+                    "Implementation completion alone is not shipping",
+                    "loaded revision",
+                    "thread URL",
+                    "change links",
+                    "Do not retry an uncertain send",
+                    "Record the successful DM",
+                    "does not grant permission to ship",
+                    "Do not duplicate",
+                ):
+                    self.assertIn(requirement, prompt)
+        self.assertIn("Do not push, publish, deploy", prompts["ordinary"])
+        self.assertIn("Do not send that notice yourself", prompts["debugshare"])
+        for kind in ("debugshare", "recovery"):
+            self.assertIn("Do not recursively trigger", prompts[kind])
+
     def test_probe_has_no_incident_or_mutation_authority(self):
         argv = self.runner.command("june-recovery-self-test", self.config)
         self.assertEqual(
@@ -88,6 +189,7 @@ class RunnerCommand(unittest.TestCase):
         self.assertIn("No production incident exists", argv[-1])
         self.assertIn("Do not use tools", argv[-1])
         self.assertIn("JUNE_RECOVERY_TRANSPORT_OK", argv[-1])
+        self.assertNotIn("U08R4KDL6UF", argv[-1])
         with self.assertRaises(ValueError):
             self.runner.command("june-recovery-self-test extra", self.config)
 

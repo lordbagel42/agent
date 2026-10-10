@@ -1165,6 +1165,28 @@ def issue_tools_prompt(*, source=None, number=None, can_complete=True):
     return text
 
 
+SHIPPING_NOTIFICATION_PROMPT = (
+    " Shipping notification: you, the spawned Amp thread, must directly DM Raygen on Slack "
+    "(user U08R4KDL6UF) using Amp's slack_write tool with postAs: bot once you have actually "
+    "shipped a change. Include a concise, disclosure-safe change summary, this Amp thread URL, "
+    "and change links (published commit/PR and deployment evidence where applicable). "
+    "Implementation completion alone is not shipping: local edits, passing tests, a returned "
+    "Amp turn or an unmerged PR do not qualify. Verify publication to the intended remote "
+    "branch; for runtime changes also verify deployment, the loaded revision, readiness and "
+    "affected live behavior before sending. This notification instruction does not grant permission to ship "
+    "or expand the task's authority; if shipping is forbidden or blocked, report that here and "
+    "do not send a shipped DM. Do not delegate this DM to June, Puck or another thread. "
+    "Send one summary per shipped change, not one per commit, check or continuation. Before sending, "
+    "inspect this thread's prior send receipts and any handoff for the same change. Record the successful DM "
+    "receipt and shipped revision in this thread so continuations or a new owner do not resend it. "
+    "Do not retry an uncertain send or switch identities/routes; reconcile its outcome first. "
+    "If Slack is unavailable, report the notification blocker here without claiming delivery. "
+    "Do not duplicate host-owned launch-link, generic DEBUGSHARE resolution, deployment-status "
+    "or ordinary completion notices; this private shipping summary is separate. Never include "
+    "credentials, diagnostic snapshots or unrelated private conversation content."
+)
+
+
 def recovery_prompt(number, commit, reason):
     return (
         f"June deployment failed. Incident {number}, revision {commit}, "
@@ -1196,10 +1218,13 @@ def recovery_prompt(number, commit, reason):
         "the triggering fault first. Require an Oracle review before publishing code. "
         "If blocked, report the blocker and retain ownership; never clear the fence "
         "just because this turn ends. Do not spawn another recovery thread. "
+        "Do not recursively trigger DEBUGSHARE or automatic repair dispatch for failures of this "
+        "repair; retain ownership and report the blocker in this thread instead. "
         "June launches DEBUGSHARE investigators in GPT-6 Astra Max and deployment-recovery agents in Ultra "
         "reasoning mode with the mandatory Fast thread feature. Preserve this policy "
         "in any launcher repairs; ordinary jobs keep their existing reasoning modes."
         + issue_tools_prompt(source=f"recovery:{number}")
+        + SHIPPING_NOTIFICATION_PROMPT
     )
 
 

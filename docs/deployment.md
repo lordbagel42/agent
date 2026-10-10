@@ -1605,6 +1605,25 @@ updated standalone dispatcher, and update the runner prompt as part of the same
 authorized rollout. Older running investigators do not receive new instructions;
 do not restart transports or replay investigations to obtain an attestation.
 
+Generated DEBUGSHARE, recovery, admitted Amp-task, ordinary-job and GitHub-issue
+prompts assign the spawned Amp thread itself a separate shipping-summary DM to
+Raygen (`U08R4KDL6UF`) through Amp's `slack_write` with `postAs: bot`. It includes
+a concise safe summary, the Amp thread URL and published change links. Local
+implementation, tests, returned turns and unmerged PRs are not shipping; runtime
+changes also require verified deployment, loaded revision, readiness and affected
+live behavior. This grants no additional publication/deployment authority, so
+restricted ordinary jobs do not send shipped notices. Existing host launch links,
+generic resolution notices and deployment announcements remain host-owned.
+The thread checks previous send receipts/handoffs and records a successful DM
+with its shipped revision, once per change, including across continuations.
+An uncertain send must be reconciled before retrying; an unavailable Slack tool
+is a notification blocker, not permission to delegate or claim delivery. This is
+agent prompt guidance, not a new host delivery receipt or exactly-once guarantee.
+Install matching `deploy.py` on the controller and recovery runner to preserve
+canonical prompt validation, update the DEBUGSHARE/ordinary runner siblings, and
+update the issue companion through its managed updater. Publication alone does
+not install these prompts or alter already-running threads.
+
 Installation is a separate authorized, coordinated operation, not a consequence
 of pushing source. Preserve existing recovery and ordinary-job keys/config:
 
