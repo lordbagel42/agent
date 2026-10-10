@@ -71,8 +71,10 @@ when a deployment fence changes.
 ## The mind repository
 
 A git repository at `mind.directory` (production: `/var/lib/june/mind`, mode
-0700, owned by `june`), mirrored to a private GitHub repository. The proposed
-name `lordbagel42/june-mind` is not yet confirmed or provisioned.
+0700, owned by `june`), mirrored to a private GitHub repository. The implementer
+selected `lordbagel42/june-mind`; its private visibility and repository-only
+write deploy key were verified during provisioning on 2026-10-10. This receipt
+does not establish runtime activation or successful synchronization.
 
 - **Credentials.** June pushes over SSH with a deploy key scoped to that one
   repository, and pinned GitHub host keys.

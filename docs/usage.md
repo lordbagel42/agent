@@ -1334,8 +1334,10 @@ and permission rules stay in code. Execution workers can read notes and request 
 
 **Review state.** Raygen approved testing and shipping, including autonomous
 values and identity changes. Source support is not live activation. The
-repository name above is proposed, not yet provisioned. Real-model quality,
-private GitHub sync, Amp launch and owner-DM delivery remain unverified.
+private `lordbagel42/june-mind` repository and its repository-only write deploy
+key were provisioned on 2026-10-10. Real-model reflection and dream probes passed
+locally; live capture, private Git synchronization, Amp launch and owner-DM
+delivery require separate activation receipts.
 
 **Activation after review.** Confirm that the chosen GitHub repository is
 private; SSH transport does not attest visibility. Provision a write-enabled deploy key for that one private
@@ -1343,8 +1345,13 @@ repository. Keep it mode 0600, owned by `june`, under `/var/lib/june`, with
 GitHub's pinned host keys. Adding this block changes the deployment's protected
 configuration binding, and older releases reject the unknown key, so a rollback
 past this code needs the block removed. Coordinate activation as an operator
-config change. Install the runner script on homelab-amp along with the app
-release. The design is in [the mind
+config change: obtain explicit handoff and the documented locks/hold, preserve
+all other config and environment values (including `artifacts` and
+`JUNE_ARTIFACT_*`), and prepare a new, previously unprepared forward revision
+under the new binding. Never rewrite an existing release marker to rebind it.
+Install the reviewed runner script on homelab-amp along with the app release;
+app readiness alone does not establish the installed `june-self` handler.
+The design is in [the mind
 design](superpowers/specs/2026-10-10-june-mind-design.md).
 
 **Recovery and limits.** The scheduler uses Linux `flock`, with no age-based
