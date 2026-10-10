@@ -1,7 +1,7 @@
 # Parity implementation roster
 
 Coordinator: [parity implementation thread](https://ampcode.com/threads/T-01a124f5-c5f2-73d6-88dc-f3674cfba9a2).
-Last reconciled: 10 October 2026, 12:52 UTC.
+Last reconciled: 10 October 2026, 13:16 UTC.
 
 The owner authorized implementation of the [build plan](../parity-build-plan.md)
 with GPT-6 Astra Max stream owners. This roster records dispatch and evidence;
@@ -87,7 +87,7 @@ Their local branches track `origin/main`; publication uses normal
 | S02 | [intent](https://ampcode.com/threads/T-01a12593-906a-73f6-8635-622f413619e6) | `agent-parity-s02-01a124f5` | Queued-only stop; running-stop probe exposes legacy late send, retained ancestry fix remains local. |
 | S03 | [authority](https://ampcode.com/threads/T-01a1258c-c2ca-77ec-8d87-00df03836d2d) | `agent-parity-s03-01a124f5` | Existing authority hardening published; Tavily/broker funding guards follow, exact CI integration passed after publication. |
 | S04 | [funding policy](https://ampcode.com/threads/T-01a12593-978f-7054-afe7-27b0b3caf9c4) | `agent-parity-s04-01a124f5` | Static policy/readiness published; direct decision/Jev guards next, no new store. |
-| S05 | [task views](https://ampcode.com/threads/T-01a125de-7cfc-702f-b355-659a665f5650) | `agent-parity-s05-01a124f5` | Source-scoped workflow status projection first; real host reader/mount and full F004 prerequisites remain explicit. |
+| S05 | [task views](https://ampcode.com/threads/T-01a125de-7cfc-702f-b355-659a665f5650) | `agent-parity-s05-01a124f5` | Source-scoped projection drafted; task mount blocked because presentation RPC can wake workflows. |
 | S14 | [workflow/research](https://ampcode.com/threads/T-01a125a1-4116-75d8-a052-220d1369fee1) | `agent-parity-s14-01a124f5` | F002 consumer support before later workflow/routine features. |
 | S19 | [coding/compute](https://ampcode.com/threads/T-01a125a1-4b85-7079-811e-1abaad094046) | `agent-parity-s19-01a124f5` | Local coding cancellation and E2B denial published; cross-owner F002 still needs carrier/root integration. |
 
@@ -120,9 +120,9 @@ Apps dependencies, then restored the original pin in
 At 12:29 UTC the coordinator compared every required installed lock entry:
 1,161 package records, 1,169 snapshots and all three workspace importer bindings
 match. The old tree contains unused removed packages; it is a compatible superset,
-not a new frozen install. A separate offline frozen validation tree is being
-prepared without mutating that shared tree; consumers wait for its completion
-receipt before using it. The earlier esbuild dev-to-runtime move changed no version.
+not a new frozen install. A separate offline frozen installation was started
+without mutating that shared tree. Its final outcome is recorded below.
+The earlier esbuild dev-to-runtime move changed no version.
 
 The owner-directed restore in
 [`c7e9fc0`](https://github.com/lordbagel42/agent/commit/c7e9fc0cb0ad5c54d91caeb22624d11d72baee2b)
@@ -130,10 +130,17 @@ reinstates Rivet Dynamic Apps. At 12:41 UTC the coordinator independently compar
 the restored lock: all 1,203 package records, 1,212 snapshots, three patches and
 every importer dependency binding match the existing installed tree, with no
 missing or extra packages. Only esbuild's dependency category differs. Builders
-retain their immutable links; the unfinished separate install now validates only
-the earlier revision, not the restored graph. The slow install is making progress
-under heavy-check serialization; observed disk I/O pressure is not a new dependency
-or network failure. This compatibility check is not a frozen reinstall receipt.
+retain their immutable links. This compatibility check is not a frozen reinstall
+receipt, and the separate installation no longer represents the restored graph.
+
+At 13:01 UTC the separate installation finished: 973 packages, zero downloads,
+matching source/installed lock hashes, and a missing transitive Pi CLI binary
+warning. Subsequent lint failed with zero files processed because its source
+export was inside Git-ignored `.amp/in`; typecheck did not run. The resource lock
+was released and queued builders resumed. This is not a validated dependency tree
+and must not replace the existing shared links. The coordinator retained the
+failed-check evidence rather than bypassing lint or relabeling the install as
+current-main verification.
 
 Start later owners when their first real slice is ready, not 30 agents producing
 unavailable stubs. Existing non-parity owners retain their work. Each publisher
@@ -155,19 +162,19 @@ after C01/C02 handoff. The coordinator alone edits this roster.
 | S02 | 1 | F002/F003/F005 | Running intent tranche; legacy late-send failure remains explicit. | D7 gates changed quiet/catch-up defaults, not deterministic previews. |
 | S03 | 1/3 | F007/F008/F010/F012/F065/F101 | Existing authority slice published; direct spending guards and F002 remain. | D2/D4/D6 for new authority/accounts/processors; F065 also needs takeover. |
 | S04 | 1/2/3 | F013–F017 | Static policy/readiness published; full claims need actual route guards. | Current D3 prohibits owner spend, not included inference; no ledger approval. |
-| S05 | 1/2/3 | F004/F011/F018/F080/F081 | Running source-scoped read-only projection; full F004 still waits for F001/F002/F003 receipts. | No new scheduler/store; debug incident stays with its owner, D3/D8 for new value/support commitments. |
-| S06 | 2/3 | F009/F049–F051 | Queued; F008 then scoped deletion. | Existing mind owner review pending; D4 for expanded retention, D2 for sharing. |
+| S05 | 1/2/3 | F004/F011/F018/F080/F081 | Projection drafted; no safe no-wake reader mounted, plus F001/F002/F003 receipts pending. | No new scheduler/store; debug incident stays with its owner, D3/D8 for new value/support commitments. |
+| S06 | 2/3 | F009/F049–F051 | Queued; F008 then scoped deletion. | Existing mind owner retains its approved store; D4 for expanded retention, D2 for sharing. |
 | S07 | 3 | F052/F053/F099 | Queued behind deletion/recall and bounded files/parsers. | D4/D6 source/processor choice, D8 format priority. |
 | S08 | 2/3/5 | F055–F059/F108 | Queued behind F007/F010/F013; reconcile mind skills boundary first. | D5 scripts, D8 public catalog/payouts; do not duplicate unpublished mind work. |
 | S09 | 2/3 | F060/F103 | Queued behind authority/enrollment; existing HTTPS discovery first. | D6 provider scopes, D8 maintained adapter list. |
 | S10 | 2/3 | F019–F022/F024 | Queued behind authority/spending-policy P0; ephemeral read before writes. | D2/D4/D6 account, scopes and retention; no mailbox enrollment inferred. |
 | S11 | 2/3 | F023/F029 | Queued behind F019/F007/F003; ambiguous identity remains unresolved. | D2/D4/D6 sources/sharing. |
 | S12 | 2/3 | F025/F026/F028 | Queued behind F005/F007/F008; availability before invitations. | D2/D6 provider/write scopes; D7 changed time defaults. |
-| S13 | 2/3 | F027/F033/F054 | Queued behind F002/F005/F007; explicit local lists first. | Mind/reflection owner received included-inference policy; review hold and D1/D2/D4 remain. |
+| S13 | 2/3 | F027/F033/F054 | Queued behind F002/F005/F007; explicit local lists first. | June-editable values approved in existing mind work; unrelated D1/D2/D4 choices remain. |
 | S14 | 2/3 | F031/F032/F034–F036 | Running F002 workflow/research support; later routines still depend on intent/time/policy. | Preserve Rivet wrappers and uncertain receipts; no paid/background quota added. |
 | S15 | 2/3/5 | F037–F042 | Existing WhatsApp owner's source increment published; no new parity builder. | WhatsApp provider selected in its own task, enrollment missing; other transports D1/D6, SDK D8. |
 | S16 | 2/3/4/5 | F043–F048 | Queued behind private files and policy/processor metadata. | D3/D4/D6 audio provider/cost/retention; D8 recording/ambient. |
-| S17 | 2/3 | F061/F062 | Queued behind F008/F001; secret-safe takeover first. | D2/D5/D6 pilot origins/accounts/execution host. |
+| S17 | 2/3 | F061/F062 | Queued behind F008/F001; S03 has only the final-dispatch browser authorization lease. | No browser billing attestation; D2/D5/D6 pilot origins/accounts/execution host. |
 | S18 | 3/5 | F063/F064/F066/F093 | Parked for owner scope before device implementation. | D5/D8; D4 before sensor retention. |
 | S19 | 2/3 | F067/F068/F070/F071 | Local coding F002/F071 and F013/F067 E2B denial slices published; full intent/compute not accepted. | Local BoxLite is separate; no paid fallback/provisioning, D5/D6 still scoped. |
 | S20 | 2 | F069 | Queued behind F007/F009/F010/F013; disposable selected files first. | External storage spending prohibited; D4 retention/processors, no expanded retention before restore proof. |
@@ -188,8 +195,13 @@ parity coordinator; published changes arrive only through remote `main`.
 
 - [Memory/mind owner](https://ampcode.com/threads/T-01a124b2-bc2f-713f-9020-770fefbe0e2b):
   local-only `src/mind/` and additive core/model/config/runtime integration;
-  architecture review explicitly blocks publication. Reconcile S06/S08/S13
-  boundaries after that review. Do not publish it under parity authorization.
+  Raygen's direct 13:04 UTC instruction approves testing, rebase and shipping,
+  explicitly including June-editable values. The coordinator verified that
+  instruction; it supersedes the earlier architecture/publication hold.
+  S06/S08/S13 remain queued and must not create a competing writer/store.
+  The existing owner retains provisioning and companion/runtime verification.
+  Exact-route inference billing and the live-operator handoff remain separate;
+  no activation or expanded external authority is inferred from shipping approval.
 - [WhatsApp owner](https://ampcode.com/threads/T-01a12483-df20-749d-8c00-1b0044114aa2):
   published official API/drain/setup work in
   [`da2c00e`](https://github.com/lordbagel42/agent/commit/da2c00e4ff81668adc240d9cc0cd6b2e02b919f6).
@@ -356,13 +368,46 @@ parity coordinator; published changes arrive only through remote `main`.
   that later S01/E2B code is loaded.
 - **12:52 UTC:** S05 launched on freshly fetched published
   [`30feff2`](https://github.com/lordbagel42/agent/commit/30feff282081b9edc1a5cf7fe55ae58090fd0b28),
-  bringing the active roster to nine. Its first slice projects existing workflow
+  bringing the active roster to nine. Its initial design proposed existing workflow
   status through the authenticated `presentation(event)` reader, not raw results,
-  an eventless artifact exception or a new job store. C01/C02 own the named task
+  an eventless artifact exception or a new job store; the later audit below rejects
+  that reader as a no-wake source. C01/C02 own the named task
   reader/mount; S14 retains actor-body ownership and S02 intent/settlement semantics.
   Delivery without a linked receipt stays unknown. Full F004 acceptance still
   requires its listed prerequisites and a real June-callable workflow; dispatching
   the owner does not satisfy those gates or authorize new retention/effects.
+- **13:09 UTC:** fresh coordinator evidence confirms ready/routed green
+  [`58e6c75`](https://github.com/lordbagel42/agent/commit/58e6c75e3723e4c478f81021af20746c791a2ad5),
+  matching MainPID/release/health, unpaused settled intake and empty recovery,
+  block, intent, cutover and operator-hold records. Native `june/deploy` succeeded
+  for that loaded revision. Later coordinator revisions are superseded, not
+  loaded; monitoring continues through their descendant's activation. The schema
+  repair owner retains its explicit app/probe window despite an empty hold;
+  parity and the mind owner must coordinate, not infer a live-mutation handoff.
+- **13:11 UTC:** C01 published
+  [`805bef5`](https://github.com/lordbagel42/agent/commit/805bef55a1dbce13874eda34f9a7b348a3a6e0f2).
+  Coordinator inspected the optional host-only `CapabilityIntentBinding` carrier
+  and additive `failed`/`cancelled` task states. The carrier preserves original
+  admission provenance; it grants no authority and proves no root fence.
+  This unblocks consumer source integration, not F002/F004 acceptance or migration.
+- **Task reader correction:** C02's RivetKit 2.3.21 upstream audit established
+  that `get(key)` avoids creation but an action RPC can still
+  [wake the existing actor](https://github.com/rivet-dev/rivet/blob/v2.3.21/engine/packages/guard/src/routing/pegboard_gateway/mod.rs#L518-L578)
+  and [run its workflow](https://github.com/rivet-dev/rivet/blob/v2.3.21/rivetkit-typescript/packages/rivetkit/src/workflow/mod.ts#L247-L262).
+  Authentication inside `presentation(event)` does not make that invocation
+  side-effect-free. The coordinator inspected the audit, not a live wake probe.
+  C02 leaves the task port unavailable while S05/S14 investigate a bounded,
+  existing-owner-fed in-memory projection with source/deletion checks and honest
+  expiry/restart unknown states. No raw-KV workaround, durable store or F004
+  acceptance is implied.
+- **13:16 UTC:** fresh coordinator observation now finds blue MainPID 1670681
+  loading [`70942af`](https://github.com/lordbagel42/agent/commit/70942afabef1b0f31ac0e9bb734043670d475020),
+  but HTTP 503 with `ready:false`; green is inactive. Intake still forwards to
+  that revision on 3081, unpaused and settled. Historical healthy event 1066 is
+  not current readiness. An operator hold is present, with no recovery, block,
+  intent or cutover record. The existing schema/probe owner was notified and
+  retains the mutation window; coordinator deployment follow-up continues without
+  takeover or a new readiness claim.
 - **Pending:** C01 named inspection binding; C02 new dispatcher proof; S01 combined
   F001 integration/live receipt; remaining model/MCP/browser/Tavily spending guards.
   Full F002 requires consumer admission/settlement evidence, not queued-stop metadata.
