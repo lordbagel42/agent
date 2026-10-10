@@ -63,7 +63,7 @@ audience; there is no compulsory human approval.
    or `rivetkit`. `jobId` may replace `files` for a verified coding-job build
    when native coding and `dynamicApps.workspace` are configured.
 2. **deploy** `{action:"deploy", appId, receiptId}` builds and deploys exactly
-   that receipt's source and audience, then waits up to about 90 s for the
+   that receipt's source and audience, then waits up to about 150 s (builds on the ARM host can take over a minute) for the
    outcome. Repeating it returns the same receipt. A build rejected by the SDK
    (install, build, invalid handler, entrypoint, size) is `failed`: nothing
    reached the engine and the previous release keeps serving. Any other failure

@@ -318,7 +318,7 @@ export function createAppsClient(options: {
       }),
     );
     // Wait briefly so June can usually report the final outcome in one step.
-    const deadline = Date.now() + (options.deployWaitMs ?? 90_000);
+    const deadline = Date.now() + (options.deployWaitMs ?? 150_000);
     while (current.status === "deploying" && Date.now() < deadline) {
       await sleep(3000);
       if (!isCurrent()) break;
