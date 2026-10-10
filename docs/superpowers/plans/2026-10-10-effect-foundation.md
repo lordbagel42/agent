@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Put an Effect 4 runtime under June with privacy-preserving telemetry, and serve her main HTTP listener through Effect while the existing Hono app keeps handling every route.
+**Goal:** Put an Effect 4 runtime under June with privacy-preserving telemetry, and move the first HTTP route group to Effect `HttpApi` behind the existing Hono listener.
 
-**Architecture:** One process-wide `ManagedRuntime` built from a telemetry Layer that bridges Effect spans into June's existing private OpenTelemetry backend. The main listener becomes an Effect `NodeHttpServer` whose only route forwards to the Hono app's `fetch`, so routes can move to `HttpApi` one group at a time in later plans.
+**Architecture:** One process-wide `ManagedRuntime` built from a telemetry Layer that bridges Effect spans into June's existing private OpenTelemetry backend. Hono keeps the socket and mounts each migrated group's `HttpApi` web handler, so routes move one group at a time; the listener switches to `NodeHttpServer` only after Hono has no routes left (see the spec's HTTP section).
 
 **Tech Stack:** `effect` 4.0.2, `@effect/platform-node` 4.0.2, `@effect/opentelemetry` 4.0.2, `@effect/vitest` 4.0.2, Node 24.21.0, RivetKit 2.3.21, Hono 4.13.9 (until removed).
 
@@ -28,8 +28,8 @@
 - Modify: `AGENTS.md` (new "Effect" section)
 - Modify: `docs/superpowers/specs/2026-10-10-effect-migration-design.md` (record spike results)
 
-- [ ] **Step 1:** `pnpm add -w --save-exact effect@4.0.2 @effect/platform-node@4.0.2 @effect/opentelemetry@4.0.2` and `pnpm add -w -D --save-exact @effect/vitest@4.0.2`, with the two overrides above in `pnpm-workspace.yaml`. Confirm the lockfile diff only adds Effect, its transitive `undici`/`redis` peers and the required `ws` 8.22.0.
-- [ ] **Step 2:** Add to `AGENTS.md`:
+- [x] **Step 1:** `pnpm add -w --save-exact effect@4.0.2 @effect/platform-node@4.0.2 @effect/opentelemetry@4.0.2` and `pnpm add -w -D --save-exact @effect/vitest@4.0.2`, with the two overrides above in `pnpm-workspace.yaml`. Confirm the lockfile diff only adds Effect, its transitive `undici`/`redis` peers and the required `ws` 8.22.0.
+- [x] **Step 2:** Add to `AGENTS.md`:
 
 ```markdown
 ## Effect
@@ -50,9 +50,9 @@
   as `june.operation`.
 ```
 
-- [ ] **Step 3:** Record in the spec's Phase 0 that the spikes passed: `flock` on a Node-held descriptor is already used by `src/deployment/standby.ts`; a root `spawn` with `uid`/`gid` leaves no supplementary groups; aborting the `signal` given to `ManagedRuntime.runPromise` interrupts the fiber and runs finalizers.
-- [ ] **Step 4:** `pnpm format && pnpm lint && pnpm typecheck`. Expected: clean.
-- [ ] **Step 5:** Commit `build(effect): add Effect 4 and agent conventions`.
+- [x] **Step 3:** Record in the spec's Phase 0 that the spikes passed: `flock` on a Node-held descriptor is already used by `src/deployment/standby.ts`; a root `spawn` with `uid`/`gid` leaves no supplementary groups; aborting the `signal` given to `ManagedRuntime.runPromise` interrupts the fiber and runs finalizers.
+- [x] **Step 4:** `pnpm format && pnpm lint && pnpm typecheck`. Expected: clean.
+- [x] **Step 5:** Commit `build(effect): add Effect 4 and agent conventions`.
 
 ### Task 2: Process runtime and telemetry bridge
 
@@ -65,7 +65,7 @@
 - Produces: `effectTracer(): import("@opentelemetry/api").Tracer | undefined` — a redacting tracer over the active private backend.
 - Produces: `TelemetryLayer: Layer.Layer<never>` and `makeJuneRuntime(): ManagedRuntime.ManagedRuntime<never, never>` from `src/effect/runtime.ts`.
 
-- [ ] **Step 1:** In `src/telemetry/index.ts`, give `facade(raw, guard, ownsEnd = false)` a third parameter; when `ownsEnd` is true its `end(time)` calls `guard(() => raw.end(time))`. Add:
+- [x] **Step 1:** In `src/telemetry/index.ts`, give `facade(raw, guard, ownsEnd = false)` a third parameter; when `ownsEnd` is true its `end(time)` calls `guard(() => raw.end(time))`. Add:
 
 ```ts
 /** Effect's OpenTelemetry bridge starts and ends spans itself; keep both privacy boundaries. */
@@ -92,10 +92,11 @@ export function effectTracer(): Tracer | undefined {
 }
 ```
 
-- [ ] **Step 2:** Create `src/effect/runtime.ts`:
+- [x] **Step 2:** Create `src/effect/runtime.ts`:
 
 ```ts
-import { OtelTracer } from "@effect/opentelemetry";
+// Not the package index: it loads NodeSdk, which needs @opentelemetry/sdk-trace-node.
+import * as OtelTracer from "@effect/opentelemetry/OtelTracer";
 import { Layer, ManagedRuntime } from "effect";
 import { effectTracer } from "../telemetry/index.js";
 
@@ -112,26 +113,30 @@ export const TelemetryLayer = Layer.suspend(() => {
 export const makeJuneRuntime = () => ManagedRuntime.make(TelemetryLayer);
 ```
 
-- [ ] **Step 3:** In `src/main.ts`, `const effectRuntime = makeJuneRuntime();` right after `initializeTelemetry`, and `await effectRuntime.dispose();` in the shutdown chain immediately before `await telemetry?.shutdown()`.
-- [ ] **Step 4:** Throwaway probe `.amp/in/probes/telemetry.ts`: initialize telemetry on a temp path, run an `Effect.fn("june.probe")` span that calls legacy `withSpan` inside it and is itself started inside a legacy `withSpan`; fail one span with an error message. Query the store and confirm: one trace, correct parent IDs in both directions, unknown names recorded as `june.operation`, no message/stack text anywhere in the SQLite file. Delete the probe.
-- [ ] **Step 5:** `pnpm format && pnpm lint && pnpm typecheck`; commit `feat(effect): add process runtime with private telemetry bridge`.
+- [x] **Step 3:** In `src/main.ts`, `const effectRuntime = makeJuneRuntime();` right after `initializeTelemetry`, and `await effectRuntime.dispose();` in the shutdown chain immediately before `await telemetry?.shutdown()`.
+- [x] **Step 4:** Throwaway probe `.amp/in/probes/telemetry.ts`: initialize telemetry on a temp path, run an `Effect.fn("june.probe")` span that calls legacy `withSpan` inside it and is itself started inside a legacy `withSpan`; fail one span with an error message. Query the store and confirm: one trace, correct parent IDs in both directions, unknown names recorded as `june.operation`, no message/stack text anywhere in the SQLite file. Delete the probe.
+- [x] **Step 5:** `pnpm format && pnpm lint && pnpm typecheck`; commit `feat(effect): add process runtime with private telemetry bridge`.
 
-### Task 3: Serve the main listener through Effect
+### Task 3: First `HttpApi` group inside Hono (operator reflection)
+
+Superseded the earlier "serve the listener through Effect" task: that put all traffic through `toWeb`/`fromWeb` conversion before any route benefited. The listener swap moves to the final HTTP plan.
 
 **Files:**
-- Create: `src/http/server.ts`
-- Modify: `src/main.ts` (replace the main `serve(...)` call and its `server.close` in shutdown; the artifact server stays on `@hono/node-server` until its routes migrate)
+- Create: `src/http/reflection-api.ts` (the `HttpApi` group, its handlers and its web handler)
+- Modify: `src/main.ts` (replace the five `/operator/reflection*` Hono routes with one mount)
+- Modify: `src/telemetry/privacy.ts` (allowlist the group's span names)
 
-**Interfaces:**
-- Consumes: `makeJuneRuntime()` from Task 2.
-- Produces: `startHttpServer(runtime, options: { fetch: (request: Request) => Response | Promise<Response>; host: string; port: number; onListen: () => void }): { close(): Promise<void> }`.
+**Contract to preserve exactly** (current routes in `src/main.ts` under `if (reflection)`):
+- `GET /operator/reflection` → 200 `actor.status()`.
+- `POST /operator/reflection/enqueue` with strict body `{ scope?: string, evidenceIds: string[1..100] of 1..2048 chars, kind: "curiosity"|"reflection", mode: "interaction"|"idle"|"deep" }` → 200 `actor.enqueue({ ...input, scope: audience(input.scope) })`.
+- `POST /operator/reflection/cancel` `{ id }` (1..250000 chars) → 200 `{ cancelled }`; `/candidate` `{ id }` → 200 `actor.candidate(id)`; `/reconcile` `{ id, confirmedStopped: true, live?: boolean = false }` → 200 `{ reconciled }` with the existing `live` branch.
+- Unknown keys, invalid bodies and thrown actor errors all currently reach `app.onError`: `automaticRepairs.report("http")` and 500 `{"error":"request_failed"}`. Keep that. Hono's `/operator/*` auth, `cache-control: no-store`, lifecycle fence and `june.http.request` span stay in front because Hono still routes the request.
 
-- [ ] **Step 1:** Create `src/http/server.ts`: an `HttpRouter` with one `*` route that converts the `HttpServerRequest` to a web `Request` (`HttpServerRequest.toWeb` with an `AbortSignal` that aborts when the handler fiber is interrupted), awaits `options.fetch`, and returns `HttpServerResponse.fromWeb`. Serve it with `HttpRouter.serve(..., { disableLogger: true })` on `NodeHttpServer.layer(() => createServer(), { host, port })`, with request tracing disabled. Launch with `runtime.runFork(Layer.launch(...))`; `close()` interrupts that fiber and resolves after the server has closed. Call `onListen` once the listener is bound.
-- [ ] **Step 2:** Before wiring it in, run a throwaway parity probe `.amp/in/probes/http.ts` serving one small Hono app through both `@hono/node-server` and `startHttpServer`, and compare: raw-body HMAC over identical bytes; a `bodyLimit` rejection on an oversized chunked body without buffering it whole; a streamed response arriving incrementally; client disconnect aborting `c.req.raw.signal`; two `Set-Cookie` headers; 404 and thrown-error status codes; `HEAD`. Fix any difference before continuing. Delete the probe.
-- [ ] **Step 3:** In `src/main.ts`, replace `const server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, () => {...})` with `startHttpServer(effectRuntime, { fetch: app.fetch, host: config.host, port: config.port, onListen: () => {...same logs...} })`, and the shutdown's `server.close` promise with `await server.close()`, keeping its position in the shutdown order.
-- [ ] **Step 4:** `pnpm format && pnpm lint && pnpm typecheck`, then the protected startup and lifecycle suites: `pnpm vitest run tests/startup.test.ts src/runtime/lifecycle.test.ts src/runtime/delivery.test.ts src/core/routing.test.ts src/deployment`.
-- [ ] **Step 5:** Oracle review of the server swap (high impact: every request goes through it). Commit `feat(http): serve June's listener through Effect`.
+- [ ] **Step 1:** Read `node_modules/effect/ai-docs/src/51_http-server/` (basics, testing, fixtures) for v4 `HttpApi`, `HttpApiGroup`, `HttpApiEndpoint`, `HttpApiBuilder` and `toWebHandler` usage. Write `src/http/reflection-api.ts`: Schema structs mirroring the zod bodies (strict: reject excess properties), handlers calling the reflection actor passed in, every failure (decode or handler) mapped to a single 500 `{"error":"request_failed"}` response that also calls the `report` callback passed in. Handlers use `Effect.fn("june.http.reflection.<endpoint>")`; add those names to `privacy.ts`.
+- [ ] **Step 2:** In `src/main.ts`, build the web handler once and replace the five routes with `app.all("/operator/reflection", h)` and `app.all("/operator/reflection/*", h)`, where `h = (c) => handler(c.req.raw)`.
+- [ ] **Step 3:** Throwaway parity probe `.amp/in/probes/reflection.ts`: build the old Hono routes and the new mount around the same fake actor and compare status, headers and JSON for: valid status/enqueue/cancel/candidate/reconcile (live and not); missing field; extra field; wrong enum; empty `evidenceIds`; 101 IDs; non-JSON body; actor throwing. Every pair must match, including the repair-report call count. Delete the probe.
+- [ ] **Step 4:** `pnpm format && pnpm lint && pnpm typecheck` and the protected suites; Oracle review; commit `refactor(http): serve operator reflection routes through Effect HttpApi`.
 
 ### Delivery
 
-Push each task to `main` when it passes (Task 1 and 2 may go together). After each push, follow the deployment to a verified live revision per `AGENTS.md` (`june/deploy` check, `/health` ready with the loaded revision, intake routed), and for Task 3 confirm a real Slack round trip and a `/health` probe through the new listener.
+Push each task to `main` when it passes (Tasks 1 and 2 shipped together as `1613613` and `b690dae`). After each push, follow the deployment to a verified live revision per `AGENTS.md` (`june/deploy` check, `/health` ready with the loaded revision, intake routed). For Task 3, also call each migrated route on the live slot with the operator token and compare with the pre-migration responses.

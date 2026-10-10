@@ -81,8 +81,13 @@ built-in tracing everywhere, without changing what June does.
   Schema. `ajv` remains only for validating third-party JSON Schema such as MCP
   tool inputs.
 - **HTTP.** `effect/http-api` defines the API and `@effect/platform-node`
-  serves it. While routes migrate, the remaining Hono app is mounted as a
-  fallback web handler so routes move one group at a time. Webhook routes
+  serves it. While routes migrate, Hono keeps the socket and mounts each
+  migrated group's `HttpApi` web handler (`toWebHandler`), so routes move one
+  group at a time behind Hono's existing auth, span and error middleware. Once
+  Hono has no routes left, the listener switches to `NodeHttpServer` and Hono
+  is removed. This avoids pushing all traffic through a request/response
+  conversion layer before any route benefits. Each migrated group matches its
+  current error responses exactly; status-code fixes ship separately. Webhook routes
   (Slack, GitHub, WhatsApp, wakeups) keep signature verification over the raw
   request bytes. The lifecycle fence becomes middleware. Rivet's registry
   handler is mounted the same way it is today.
