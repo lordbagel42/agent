@@ -6,6 +6,7 @@ import {
   artifactCommandSchema,
 } from "../artifacts/contracts.js";
 import { BROWSER_HELP, browserCommandSchema } from "../browser/contracts.js";
+import { type SpendingClass, spendingAdmission } from "../budgets/policy.js";
 import { capabilityCommandSchema } from "../capabilities/catalog.js";
 import type {
   CompanionReply,
@@ -3026,6 +3027,9 @@ export function parseReply(
 
 export interface JsonProviderOptions {
   usage?: UsageLedger;
+  /** Host-attested billing for this exact account/model/route, never model input.
+   * Absence is unknown, not zero cost or included entitlement. */
+  spendingClass?: SpendingClass;
   protocol: "openai" | "anthropic";
   model: string;
   apiKey: string;
@@ -3042,6 +3046,7 @@ export interface JsonProviderOptions {
  * Parse inside tracking so completion means a usable result, not just HTTP success. */
 export function createJsonProvider({
   usage,
+  spendingClass = "unknown",
   protocol,
   model,
   apiKey,
@@ -3077,6 +3082,8 @@ export function createJsonProvider({
     lifecycle?: { dispatched(): void; terminal(): void },
   ): Promise<T> => {
     signal?.throwIfAborted();
+    const admission = spendingAdmission(spendingClass);
+    if (!admission.allowed) throw new ModelError(admission.code, false);
     const images = encodeModelImages(request.images);
     return observeUsage(
       usage,
