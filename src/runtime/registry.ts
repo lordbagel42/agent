@@ -180,6 +180,7 @@ import {
 
 export interface Dependencies {
   settings?: import("../settings/store.js").SettingsStore;
+  capabilityConfig?: import("../capabilities/config.js").CapabilityConfig;
   agents?: import("../agent/service.js").AgentService;
   owner: Owner;
   continuity?: import("./continuity.js").ConversationContinuity;
