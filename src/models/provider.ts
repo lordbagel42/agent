@@ -817,7 +817,34 @@ function legacyReplyJsonSchema(
       ...(replyCapabilities(capabilities).agentWebhooksAvailable
         ? {
             agentWebhook: {
-              anyOf: [z.toJSONSchema(agentWebhookSchema), { type: "null" }],
+              anyOf: [
+                z.toJSONSchema(agentWebhookSchema, {
+                  target: "draft-7",
+                  override({ jsonSchema }) {
+                    // Action literals keep these branches disjoint. Providers
+                    // accept anyOf, not Zod's discriminated-union oneOf.
+                    if (jsonSchema.oneOf) {
+                      jsonSchema.anyOf = jsonSchema.oneOf;
+                      delete jsonSchema.oneOf;
+                    }
+                    // Keep bounds/UUID validation in Zod, as for wakeups above.
+                    for (const key of [
+                      "minLength",
+                      "maxLength",
+                      "pattern",
+                      "format",
+                    ] as const) {
+                      const limit = jsonSchema[key];
+                      if (limit !== undefined) {
+                        jsonSchema.description =
+                          `${jsonSchema.description ?? ""} ${key}: ${limit}.`.trim();
+                        delete jsonSchema[key];
+                      }
+                    }
+                  },
+                }),
+                { type: "null" },
+              ],
             },
           }
         : {}),
