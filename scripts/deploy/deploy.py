@@ -28,11 +28,13 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -753,7 +755,16 @@ class Deployer:
                 self.statuses.flush()
             if s.get("recovery"):
                 return
-            candidate = h.prepare(target)
+
+            def verify_prior():
+                # Hash the 4+ GiB previous release during the build, not after
+                # it; idle priority keeps CPU for the build and live June.
+                os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)
+                return h.manifest(previous)
+
+            with ThreadPoolExecutor(1) as pool:
+                prior_check = pool.submit(verify_prior)
+                candidate = h.prepare(target)
         except InsufficientDisk:
             self.defer(target, "insufficient_disk")
             return
@@ -767,7 +778,7 @@ class Deployer:
             s.event(target, "failed", "preflight_failed")
             return
         try:
-            prior = h.manifest(previous)
+            prior = prior_check.result()
         except Exception:  # noqa: BLE001 - private filesystem/integrity errors become fixed codes
             s.block(target, "prior_release_invalid")
             return

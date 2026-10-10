@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { serve } from "@hono/node-server";
+import { setup } from "rivetkit";
 import { createClient } from "rivetkit/client";
 import { z } from "zod";
 import { createAgentMcp } from "./agent/mcp.js";
@@ -251,6 +252,36 @@ async function main() {
   }
   startupStage = "private runtime preferences";
   process.env.RIVETKIT_STORAGE_PATH ??= resolve(".data");
+  // Intake stays paused from activation until this slot is ready, so overlap
+  // the engine's database recovery with the rest of startup.
+  const activatedAt = performance.now();
+  const logActivation = (step: string) => {
+    if (slotActivated)
+      console.info(
+        `slot_activation ${step} ${Math.round(performance.now() - activatedAt)}ms`,
+      );
+  };
+  const engineSettings = {
+    startEngine: !process.env.RIVET_ENDPOINT && !process.env.RIVET_ENGINE,
+    engineHost: "127.0.0.1",
+  };
+  const slotEngineEndpoint = slot
+    ? setup({ use: {}, ...engineSettings }).parseConfig().endpoint
+    : undefined;
+  let slotEngineFailed = false;
+  const slotEngine =
+    slot && engineSettings.startEngine && slotEngineEndpoint
+      ? startSlotEngine({
+          endpoint: slotEngineEndpoint,
+          storagePath: process.env.RIVETKIT_STORAGE_PATH,
+          onFailure: () => {
+            slotEngineFailed = true;
+            failStartup?.();
+          },
+        })
+      : undefined;
+  // Awaited below; a rejection before then must not crash and release FD9.
+  slotEngine?.catch(() => {});
   const settings = new SettingsStore({
     path: join(process.env.RIVETKIT_STORAGE_PATH, "settings.sqlite"),
     base: settingsBaseline,
@@ -486,6 +517,7 @@ async function main() {
       : true;
   });
   failStartup = lifecycle.fail;
+  if (slotEngineFailed) lifecycle.fail();
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);
   if (operatorToken.length < 32) throw new Error("Short operator token");
@@ -1623,8 +1655,7 @@ async function main() {
   };
   const registry = createJuneRegistry(dependencies);
   Object.assign(registry.config, {
-    startEngine: !process.env.RIVET_ENDPOINT && !process.env.RIVET_ENGINE,
-    engineHost: "127.0.0.1",
+    ...engineSettings,
     noWelcome: true,
     shutdown: { disableSignalHandlers: true },
   });
@@ -1991,16 +2022,16 @@ async function main() {
   }
   if (slot) {
     startupStage = "owned slot engine recovery";
+    logActivation("initialized");
     if (runtime.startEngine) {
-      if (!runtime.endpoint) throw new Error("slot_engine_endpoint_missing");
-      await startSlotEngine({
-        endpoint: runtime.endpoint,
-        storagePath: process.env.RIVETKIT_STORAGE_PATH,
-        onFailure: lifecycle.fail,
-      });
+      if (!slotEngine || runtime.endpoint !== slotEngineEndpoint)
+        throw new Error("slot_engine_endpoint_mismatch");
+      await slotEngine;
     }
+    logActivation("engine_ready");
     startupStage = "slot registry registration";
     await registry.startAndWait();
+    logActivation("registered");
   } else registry.start();
   if (!config.setupMode) {
     startupStage = "authored workflow recovery";

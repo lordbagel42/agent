@@ -141,6 +141,11 @@ MainPID/lock rather than releasing ownership while children might remain.
 
 After activation, a locally managed slot starts one pinned Rivet engine itself
 and waits up to 60 seconds for engine health before registering the actor runtime.
+Engine recovery now overlaps application initialization after exclusive runtime
+ownership is acquired; neither starts before activation. Registration still waits
+for engine readiness, and early failures retain ownership and latch admission.
+Content-free `slot_activation` journal timings mark initialization, engine readiness
+and registration relative to activation; they do not prove intake has resumed.
 RivetKit 2.3.21's native cold-start path has a fixed ten-second deadline that kills
 an engine still recovering its database WAL. The slot preserves the same database,
 credentials, loopback ports and engine defaults, but owns the longer observation
@@ -172,7 +177,10 @@ recorded. A standby failure blocks recovery without stopping or draining old
 June. A lost activation acknowledgment blocks rather than activating twice.
 
 Full release-byte verification happens before intake forwarding pauses. Within
-that single locked attempt, the controller reuses the verified manifests of the
+preparation, the previous release's verification runs on a low-priority thread
+alongside candidate preparation. Both must finish before standby or cutover;
+verification failure still blocks the attempt without stopping old June.
+Within that single locked attempt, the controller reuses the verified manifests of the
 sealed, root-owned releases instead of hashing both trees again during cutover.
 It still checks current runtime binding and standby after drain. A later attempt
 verifies retained releases again; this is not a persistent integrity cache.
