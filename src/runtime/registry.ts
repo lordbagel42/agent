@@ -3,6 +3,7 @@ import { actor, type Client, queue, type Registry, setup } from "rivetkit";
 import { db } from "rivetkit/db";
 import { workflow } from "rivetkit/workflow";
 import type { createAppsClient } from "../apps/client.js";
+import { isQuestionHandoffCurrent } from "../core/agent-question.js";
 import type {
   Address,
   Channel,
@@ -1088,6 +1089,33 @@ export function createJuneRegistry(deps: Dependencies) {
         // Serialize admission only, never inference or delivery. Concurrent
         // webhook completions cannot reorder the latest-input marker.
         const receiving = c.vars.receiving.then(async () => {
+          const questionCurrent = () => {
+            if (
+              !isQuestionHandoffCurrent(
+                event,
+                deps.memory?.store.deletionRevision() ?? 0,
+              )
+            )
+              return false;
+            // Forgetting freezes its targets before advancing the ledger epoch.
+            // Keep a late handoff in the durable holding queue until that
+            // decision settles, rather than admit it outside the frozen set.
+            const revision =
+              event.type === "message"
+                ? event.agentQuestionRevision
+                : undefined;
+            if (
+              revision !== undefined &&
+              Object.values(c.state.forgetCleanups ?? {}).some(
+                (cleanup) =>
+                  !cleanup.completed &&
+                  cleanup.beforeDeletionRevision > revision,
+              )
+            )
+              throw new Error("question_handoff_forgetting");
+            return true;
+          };
+          if (!questionCurrent()) return;
           const input = { type: "event" as const, event };
           const id = conversationInputId(input);
           const command =
@@ -1107,6 +1135,7 @@ export function createJuneRegistry(deps: Dependencies) {
               const release = await deps.lifecycle?.enter(c.abortSignal, event);
               let stopPing: (() => Promise<void>) | undefined;
               try {
+                if (!questionCurrent()) return;
                 if (
                   event.botMentioned &&
                   !eventRecord(c.state, id) &&
@@ -1140,6 +1169,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 // epoch so a concurrent tombstone cannot export stale evidence.
                 const deletionRevision =
                   deps.memory?.store.deletionRevision() ?? 0;
+                if (!questionCurrent()) return;
                 const snapshot =
                   command.kind === "debug"
                     ? (savedSnapshot ??
@@ -1201,6 +1231,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 const snapshotRef = snapshot
                   ? await c.vars.debugBodies.put(id, snapshot)
                   : undefined;
+                if (!questionCurrent()) return;
                 if (command.kind === "clear") {
                   deps.continuity?.clear();
                   resetConversation(c.state, receivedAt);
@@ -1372,6 +1403,7 @@ export function createJuneRegistry(deps: Dependencies) {
               return;
             await prepareHandoff(c.state, c.key, c.vars.persist);
             if (
+              !questionCurrent() ||
               eventRecord(c.state, id) ||
               c.state.forgottenEvents?.includes(id) ||
               (source && deps.memory?.store.isDeleted(source.id))

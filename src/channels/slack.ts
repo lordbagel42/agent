@@ -448,6 +448,12 @@ async function normalizeEvent(
             ? sessionText
             : event.text,
         botMentioned: mentioned,
+        agentQuestionAnswerEligible:
+          !bot &&
+          event.type === "message" &&
+          event.subtype === undefined &&
+          event.attachments === undefined &&
+          event.files === undefined,
         ...(participatingThread ? { threadFollowup: true } : {}),
         ...(sessionCandidate
           ? { sessionCommandEligible: sessionEligible }
@@ -529,6 +535,7 @@ export function createSlackAdapter({
   latency,
   threads,
   sessions,
+  withholdAgentQuestionContext,
   fetch: fetchImpl = globalThis.fetch,
   now = () => Date.now(),
 }: {
@@ -542,6 +549,7 @@ export function createSlackAdapter({
   participateInOwnerChannels?: boolean;
   /** Same-channel/thread reads, including the enriched initiating message. */
   contextEnabled?: boolean;
+  withholdAgentQuestionContext?: (channel: string, thread: string) => boolean;
   searchEnabled?: boolean;
   webEmbedOrigins?: readonly string[];
   artifactOrigin?: string;
@@ -563,6 +571,7 @@ export function createSlackAdapter({
     botToken,
     botUserId,
     ownerUserIds: owners,
+    withholdAgentQuestionContext,
     fetch: fetchImpl,
     now,
   });

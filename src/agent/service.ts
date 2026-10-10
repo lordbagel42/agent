@@ -11,6 +11,7 @@ import type { ChannelAdapter, MessageEvent } from "../core/contracts.js";
 import { readHistory } from "../runtime/conversation-storage.js";
 import type { ConversationState } from "../runtime/registry.js";
 import type { ActivityReadProjection } from "../sessions/runtime.js";
+import { AgentQuestions, type QuestionDelivery } from "./questions.js";
 import type {
   WebhookDestination,
   WebhookTransport,
@@ -33,6 +34,7 @@ type Admission = {
 /** Host-owned administrative identities, not model-controlled routing claims. */
 export class AgentService {
   readonly webhooks: WebhookService;
+  readonly questions: AgentQuestions;
   readonly adapter: ChannelAdapter;
   private readonly db: DatabaseSync;
   private readonly credentials: Array<{
@@ -51,6 +53,7 @@ export class AgentService {
       ownerId: string;
       clients: AgentClient[];
       destinations: WebhookDestination[];
+      questionDelivery?: QuestionDelivery;
       deletionRevision?(): number;
       submit(event: MessageEvent): Promise<void>;
       snapshot(): Promise<ConversationState>;
@@ -113,6 +116,14 @@ export class AgentService {
       },
       transport,
     );
+    this.questions = new AgentQuestions({
+      path: `${options.directory}/questions.sqlite`,
+      key: options.key,
+      delivery: options.questionDelivery,
+      submit: options.submit,
+      deletionRevision: options.deletionRevision,
+      clientActive: (id) => this.clientActive(id),
+    });
     this.adapter = {
       channel: "agent",
       capabilities: { text: true, reactions: false, threads: false },
@@ -404,6 +415,9 @@ export class AgentService {
   }
 
   async close() {
+    // HTTP is drained first; let admitted sends settle before clientActive()
+    // starts returning false, otherwise an orderly stop revokes their bodies.
+    await this.questions.close();
     this.stopped = true;
     await this.recovery;
     await this.webhooks.close();

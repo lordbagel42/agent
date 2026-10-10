@@ -12,6 +12,7 @@ import { createClient } from "rivetkit/client";
 import { z } from "zod";
 import { createAgentMcp } from "./agent/mcp.js";
 import { operatorRequest } from "./agent/operator.js";
+import { slackQuestionDelivery } from "./agent/question-delivery.js";
 import { AgentService } from "./agent/service.js";
 import { createAppsClient } from "./apps/client.js";
 import { buildArtifactClient } from "./artifacts/build.js";
@@ -35,6 +36,7 @@ import { createRemoteAmpJobs } from "./coding/remote-amp.js";
 import { createWorktreeManager } from "./coding/worktree.js";
 import { parseConfig, secret } from "./config.js";
 import { createConsoleLoginLinks } from "./console/session.js";
+import { isQuestionHandoffCurrent } from "./core/agent-question.js";
 import type {
   Channel,
   ChannelAdapter,
@@ -1157,6 +1159,7 @@ async function main() {
         })
       : undefined;
   const channels: Partial<Record<Channel, ChannelAdapter>> = {};
+  let agents: AgentService | undefined;
   startupStage = "private diagnostic log";
   let diagnosticLog: DiagnosticLog | undefined;
   try {
@@ -1203,6 +1206,8 @@ async function main() {
       latency,
       threads: slackThreads,
       sessions: slackSessions,
+      withholdAgentQuestionContext: (channel, thread) =>
+        agents?.questions.withholdContext(channel, thread) ?? false,
     });
   }
   if (config.whatsapp) {
@@ -1214,7 +1219,6 @@ async function main() {
       accessToken: secret(config.whatsapp.accessTokenEnv),
     });
   }
-  let agents: AgentService | undefined;
   if (config.agentMcp) {
     startupStage = "owner-trusted MCP storage and credentials";
     await privateDirectory(config.agentMcp.directory);
@@ -1234,6 +1238,22 @@ async function main() {
         ownerId: owner.id,
         clients,
         destinations: config.agentMcp.destinations,
+        questionDelivery:
+          config.slack &&
+          channels.slack &&
+          owner.identities.some(
+            (identity) =>
+              identity.channel === "slack" &&
+              identity.accountId === config.slack?.teamId,
+          )
+            ? slackQuestionDelivery(
+                owner,
+                config.slack.teamId,
+                secret(config.slack.botTokenEnv),
+                channels.slack,
+                config.slack.botUserId,
+              )
+            : undefined,
         deletionRevision: () => memory?.store.deletionRevision() ?? 0,
         async submit(event) {
           const scope = routeEvent(event, owner);
@@ -1537,6 +1557,11 @@ async function main() {
         : undefined,
     inspection: createInspectionReader({
       audience: ownerAudience,
+      agentQuestions: () =>
+        agents?.questions.inspect() ?? {
+          enabled: false,
+          reason: "inbound_mcp_required",
+        },
       debugShares: () => june.debugShares(),
       debugIssues: async () => dependencies.debugSite?.inspectIssues?.(),
       sandboxes: () => inspectSandboxes(environments, release?.revision),
@@ -1728,6 +1753,7 @@ async function main() {
   ) => {
     let event = incoming;
     const revision = memory?.store.deletionRevision() ?? 0;
+    if (!isQuestionHandoffCurrent(event, revision)) return;
     // Share verified actor intake with HTTP, including PIN redaction and memory
     // filtering. Never bypass receive's durable ingress/latest-input contract.
     if (event.type === "message") {
@@ -1745,6 +1771,8 @@ async function main() {
         };
     }
     // Forgetting or client revocation may happen during asynchronous preparation.
+    if (!isQuestionHandoffCurrent(event, memory?.store.deletionRevision() ?? 0))
+      return;
     if (
       event.address.channel === "agent" &&
       (event.type !== "message" ||
@@ -1773,6 +1801,8 @@ async function main() {
     channels,
     operatorToken,
     automaticRepairs,
+    consumeAgentQuestion: (event) =>
+      agents?.questions.consume(event) ?? Promise.resolve(false),
     sandboxes: () => inspectSandboxes(environments, release?.revision),
     resolveDebugShare: dependencies.debugShare?.resolve,
     capabilities,
@@ -2057,6 +2087,7 @@ async function main() {
         capabilities: {
           messaging: true,
           webhooks: true,
+          questions: agents?.questions.inspect(),
           coding: !!coding,
           memory: !!memory,
           imports: !!imports,
@@ -2131,6 +2162,7 @@ async function main() {
         pumping = service
           .recover()
           .then(() => service.webhooks.drain(1))
+          .then(() => service.questions.recover())
           .catch(() =>
             console.error(
               "Agent queue recovery unavailable; durable work retained.",

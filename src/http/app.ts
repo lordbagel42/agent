@@ -26,6 +26,7 @@ import type {
   Channel,
   ChannelAdapter,
   ChannelEvent,
+  MessageEvent,
   Owner,
 } from "../core/contracts.js";
 import { routeEvent, type Scope } from "../core/routing.js";
@@ -79,6 +80,7 @@ export interface HttpDependencies {
     intakeDelivery?(redacted: boolean): void;
   };
   slackIngressDiagnostics?: SlackIngressDiagnostics;
+  consumeAgentQuestion?(event: MessageEvent): Promise<boolean>;
   latency?: LatencyDiagnostics;
   telemetry?: Telemetry;
   sandboxes?: () => Promise<unknown>;
@@ -438,6 +440,14 @@ export function createHttpApp(deps: HttpDependencies) {
             scope ? "owner_accepted" : "owner_filtered",
           );
           if (!scope) continue;
+          // Only authenticated adapter events can answer an MCP question. Do
+          // not also retain the answer as a conversation/model task.
+          if (
+            channel === "slack" &&
+            event.type === "message" &&
+            (await deps.consumeAgentQuestion?.(event))
+          )
+            continue;
           if (event.type === "message") {
             deps.latency?.begin(event, c.get("arrival"));
             deps.latency?.mark(event, "submission_started");

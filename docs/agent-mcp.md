@@ -47,7 +47,7 @@ Provision secrets with your normal secret manager:
   client's token. Maximum 32 configured identities.
 - `JUNE_AGENT_STORAGE_KEY`: 32 random bytes encoded as standard base64, distinct
   from client credentials. This encrypts webhook URLs, signing keys and payloads
-  with AES-256-GCM, and keys message-idempotency digests. Back it up separately.
+  and question/answer bodies with AES-256-GCM, and keys idempotency digests. Back it up separately.
   Wrong keys fail startup. There is no automatic encryption-key migration.
 
 Clients send `Authorization: Bearer <client-token>` on **every** request. The
@@ -120,13 +120,16 @@ Add the bearer connection to the owner's **personal** Amp MCP settings, never
 the workspace. Enroll its token through Amp's private secret input/settings,
 not chat, URLs, or command arguments. The caller receives owner-level access,
 not an isolated test conversation. Polling June's reply is supported; a tracked
-human-question/answer relay and verified Amp callback receiver are not implied.
+human-question/answer relay uses the separate tools below. A verified Amp callback
+receiver is not implied.
 
 ## Tools and message lifecycle
 
 | Tool | Purpose |
 | --- | --- |
 | `get_status` | Read readiness and enabled capabilities. |
+| `ask_question` | Send `{idempotencyKey, question, threadUrl?}` to the configured owner's Slack DM. |
+| `get_question`, `cancel_question` | Poll or cancel the calling client's human-question receipt by UUID. |
 | `send_message` | Submit `{idempotencyKey, conversationId, text}` to the shared owner conversation. |
 | `get_message` | Inspect an admitted message by returned UUID, including reply, local delivery and callback receipts. |
 | `read_messages` | Page through shared private history with optional `after` cursor and `limit` (1–50). |
@@ -162,6 +165,84 @@ by forgetting, so a removed pagination cursor returns `cursor_expired`.
 Tool results have `{result: ...}` structured content and an equivalent text block.
 Tool failures set `isError`. An operator result also includes its HTTP `status`:
 inspect that status before claiming an operation succeeded.
+
+## Asking the human owner
+
+`ask_question` asks the human, whereas `send_message` asks June. It uses June's
+existing Slack bot and the host-configured owner identity; the caller cannot
+choose a recipient, workspace or channel. No additional flag or subscription
+is required when inbound MCP and the owner's Slack adapter are configured.
+`get_status.capabilities.questions` and June's `inspection: "agent-questions"`
+report configuration and recent content-free receipts, not proof of Slack delivery.
+Missing Slack returns `question_slack_unavailable`; the operator must configure
+the existing integration. The relay does not change app permissions or installation.
+
+Supply a UUID `idempotencyKey`, a nonblank plain-text `question` (up to 4,000
+JavaScript string units), and optionally a canonical
+`https://ampcode.com/threads/T-<UUID>` `threadUrl`. The message identifies the
+authenticated client and asks the owner to **reply in that Slack message's thread**.
+Only the first nonempty text reply by the configured human owner in that exact
+DM thread answers it. Bots, other people/workspaces, unthreaded DM chat, edits,
+attachments, PIN commands and pre-admission messages cannot answer it. Replies
+are limited to 32,000 string units; unsupported replies leave it waiting. Captured
+replies are not also submitted to June's model or memory, and subsequent replies
+in the known question thread are ignored. Use ordinary DM chat for a new June task.
+
+Poll `get_question({id})` using the UUID returned by `ask_question`. Results have
+`id`, `status`, `createdAt`, `expiresAt`, `question` and `answer`; an answer is
+`{text,messageId,at}` using the actual human text, not an LLM paraphrase. Times
+are epoch milliseconds. An unknown ID or another client's ID returns `null`.
+Client scoping prevents accidental cross-thread handling; it does not remove
+the credential's broader owner-equivalent administrative authority.
+
+States are `sending`, `waiting`, `answered`, `rejected`, `unknown`, `cancelled`,
+`expired`, `revoked` or `forgotten`. `waiting` means Slack accepted the question,
+not that the human answered or approved anything. Transport failure or a crash
+after admission may leave `unknown`: **no send is automatically retried**. Reuse
+the same key and exact input after a lost response to retrieve the original
+receipt. Different input with that key fails. Do not use a new key to bypass
+uncertainty; reconcile the existing Slack message first. When a threaded reply
+arrives after a lost send response, the host may recover correlation through a
+bounded `conversations.replies` read of the bot-authored root's question marker.
+This never resends or restores cancelled/retired bodies. If that read is unavailable
+or lacks the existing DM-history permission, replies stay in an encrypted,
+deduplicated holding queue, not the global Slack intake FIFO or a model task.
+HTTP acknowledges only after saving the input. The existing lifecycle-accounted
+one-second agent pump processes one due thread head per tick; unavailable roots
+back off for a minute without blocking other threads. First admission order within
+each thread is preserved. A positively verified non-relay message resumes normal
+admission using its original event ID and deletion revision, rechecked after
+asynchronous preparation and inside serialized conversation admission. An
+unfinished forgetting decision defers handoff until its boundary is resolved;
+committed deletion retires the old input rather than admitting it afterwards.
+The queue holds at most 256 inputs of 128 KiB each for seven days, retiring on
+forgetting or owner-binding changes;
+`heldReplies` exposes its count. Content-free reply receipts survive retirement
+and restart, so redelivery cannot resurrect forgotten input; `replyReceipts`
+reports their lifetime count, capped at 16,384. Never delete receipts to retry old
+input. Storage/capacity failures return HTTP 503 rather than losing input.
+Ordinary unthreaded DM chat bypasses the relay. Question
+roots and their threads are excluded from automatic Slack model context, including
+after cancellation and when a PIN command takes its separate host path. An
+unresolved send also withholds automatic context for that DM's other threads.
+
+`cancel_question` stops a pending question and retires its body, but cannot
+recall a dispatched message. Answered and other terminal states are unchanged.
+Bodies become unavailable after seven days from admission, client revocation,
+owner-binding changes or any memory deletion-revision change. Retirement is
+checked on startup and access, not a background physical purge. Slack copies,
+backups and old encrypted database pages are not erased by cancellation/forgetting.
+Admission/idempotency tombstones remain, capped at 4,096 for the store lifetime;
+exhaustion rejects new questions instead of evicting dedupe state. The separate
+private `questions.sqlite` uses the existing agent storage key and adds no
+conversation or existing-database migration.
+
+Polling is the only return path in this increment: no Amp wake-up, answer
+callback, Slack buttons, or model turn. An answer is untrusted human input, not
+a protected-action grant; the caller still applies the actual task's authorization
+requirements. Waiting, timeout and a missing answer never mean consent. June's
+runtime instructions explain host ownership and metadata inspection across
+interaction, execution and automated turns; no extra tools are granted to a turn.
 
 ## Owner operations
 

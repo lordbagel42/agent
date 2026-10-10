@@ -1,3 +1,4 @@
+import { AGENT_QUESTION_PREFIX } from "../core/agent-question.js";
 import type {
   ChannelAudience,
   ConversationMessage,
@@ -93,6 +94,7 @@ export function createSlackContext({
   botToken,
   botUserId,
   ownerUserIds,
+  withholdAgentQuestionContext,
   fetch: fetchImpl,
   now,
 }: {
@@ -100,6 +102,7 @@ export function createSlackContext({
   botToken: string;
   botUserId: string;
   ownerUserIds: ReadonlySet<string>;
+  withholdAgentQuestionContext?: (channel: string, thread: string) => boolean;
   fetch: typeof globalThis.fetch;
   now: () => number;
 }) {
@@ -208,6 +211,14 @@ export function createSlackContext({
   ): Promise<ConversationMessage[]> {
     const type = event.metadata?.channelType;
     if (
+      event.address.threadId &&
+      withholdAgentQuestionContext?.(
+        event.address.conversationId,
+        event.address.threadId,
+      )
+    )
+      return [];
+    if (
       event.text.startsWith("##") ||
       event.text.includes(RIVET_REPLY_PREFIX) ||
       event.address.channel !== "slack" ||
@@ -278,6 +289,22 @@ export function createSlackContext({
     )
       return [];
 
+    // The marker also protects old relay roots when inbound MCP is disabled.
+    // A root excluded from context must exclude its replies, not just itself.
+    if (
+      thread &&
+      Array.isArray(history?.messages) &&
+      history.messages.some(
+        (message) =>
+          isObject(message) &&
+          message.ts === thread &&
+          message.user === botUserId &&
+          typeof message.text === "string" &&
+          message.text.startsWith(AGENT_QUESTION_PREFIX),
+      )
+    )
+      return [];
+
     const channelMetadata: MessageMetadata = {
       channelType: info?.type ?? type,
       ...((info?.name ?? event.metadata?.channelName)
@@ -302,6 +329,7 @@ export function createSlackContext({
           (message.user === botUserId &&
             typeof message.text === "string" &&
             (message.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX) ||
+              message.text.startsWith(AGENT_QUESTION_PREFIX) ||
               message.text.startsWith(PRIVATE_REFLECTION_REVIEW_PREFIX))) ||
           (typeof message.text === "string" &&
             (message.text.startsWith("##") ||

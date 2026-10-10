@@ -46,6 +46,10 @@ export interface MessageEvent extends EventBase {
   threadFollowup?: boolean;
   /** Verified, recipient-bound Slack question choice; conversational admission only. */
   questionAnswered?: boolean;
+  /** Verified human Slack text with no attachment/file/subtype provenance. */
+  agentQuestionAnswerEligible?: boolean;
+  /** Host-only original deletion epoch when a held non-relay input resumes. */
+  agentQuestionRevision?: number;
   /** Verified live Slack text, not a quote/code block, attachment or subtype.
    * Absent on historical/context events and old inbox records. */
   ownerCorrectionEligible?: boolean;
@@ -347,6 +351,7 @@ export interface CompanionReply {
     | "debug-shares"
     | "debug-issues"
     | "sandboxes"
+    | "agent-questions"
     | "debug-operations"
     | "debug-site-deployment"
     | "capacity"
