@@ -147,8 +147,12 @@ const hotProviders: ReturnType<typeof createHotCodexProvider>[] = [];
 let slotActivated = false;
 let telemetry: Telemetry | undefined;
 let effectRuntime: JuneRuntime | undefined;
+let effectRuntimeShared = false;
 // Effect spans export through telemetry, so the runtime closes first.
-const closeTelemetry = async () => {
+const closeTelemetry = async (failed = false) => {
+  // A failed registry may still own raw work, even if shutdown returned.
+  // Retain both resources until the existing recovery owner stops the process.
+  if (failed && effectRuntimeShared) return;
   try {
     await effectRuntime?.dispose();
   } finally {
@@ -328,7 +332,8 @@ async function main() {
     path: join(process.env.RIVETKIT_STORAGE_PATH, "diagnostics", "otel.sqlite"),
     revision: release?.revision,
   });
-  effectRuntime = makeJuneRuntime();
+  const juneRuntime = makeJuneRuntime();
+  effectRuntime = juneRuntime;
   recordEvent("june.process.started");
   const readDeployment = config.deployment
     ? createDeploymentReader({
@@ -1598,6 +1603,7 @@ async function main() {
     }
   }
   const dependencies: Dependencies = {
+    effectRuntime: juneRuntime,
     sentinel,
     mind,
     settings,
@@ -1904,6 +1910,7 @@ async function main() {
     environments,
     coding,
   };
+  effectRuntimeShared = true;
   const registry = createJuneRegistry(dependencies);
   Object.assign(registry.config, {
     ...engineSettings,
@@ -2329,6 +2336,7 @@ async function main() {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     } catch (error) {
+      lifecycle.fail();
       await client.dispose();
       await registry.shutdown();
       throw error;
@@ -2444,8 +2452,9 @@ async function main() {
         exitOrRetainOwnership(Number(process.exitCode ?? 0));
       },
       async () => {
+        lifecycle.fail();
         diagnosticLog?.lifecycle("shutdown_failed");
-        await closeTelemetry();
+        await closeTelemetry(true);
         console.error("June could not finish a graceful shutdown.");
         exitOrRetainOwnership(1);
       },
@@ -2474,7 +2483,7 @@ await main().catch(async () => {
     "june.phase": "shutdown_failed",
     "june.outcome": "error",
   });
-  await closeTelemetry();
+  await closeTelemetry(true);
   // Provider/transport exceptions can contain credentials or message bodies.
   console.error(`June startup failed at ${startupStage}.`);
   process.exitCode = 1;
