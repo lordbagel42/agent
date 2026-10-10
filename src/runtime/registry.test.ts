@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
 import { createSlackAdapter } from "../channels/slack.js";
 import { createConsoleLoginLinks } from "../console/session.js";
@@ -2780,6 +2780,99 @@ describe("Rivet conversation workflow", () => {
       lifecycle.resume();
     }
   });
+
+  it.for(["lookup", "lost-action-reply"] as const)(
+    "only ambiguous typing work fences admission after %s failure",
+    async (fault, t) => {
+      const lifecycle = createLifecycle();
+      const sent: OutboundMessage[] = [];
+      const typing: boolean[] = [];
+      let replies = 0;
+      const registry = createJuneRegistry({
+        owner,
+        lifecycle,
+        model: {
+          async reply() {
+            replies++;
+            return { text: "Still answering." };
+          },
+        },
+        channels: {
+          slack: {
+            ...transport("slack", sent),
+            async setTyping(_event, active) {
+              typing.push(active);
+            },
+          },
+        },
+      });
+      const { client } = await setupTest(t, registry);
+      const june = client.conversation.getOrCreate(["private", "raygen"]);
+      const fetch = globalThis.fetch;
+      let inject = true;
+      const interception = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (input, init) => {
+          const request = new Request(
+            input instanceof Request ? input.clone() : input,
+            init,
+          );
+          const path = new URL(request.url).pathname;
+          const pulse = path.endsWith("/action/pulse");
+          const resolvingTyping =
+            request.method === "PUT" &&
+            path === "/actors" &&
+            (await request.clone().json()).name === "typing";
+          if (inject && fault === "lookup" && (resolvingTyping || pulse))
+            return Response.json(
+              {
+                group: "pegboard",
+                code: "route_resolve_query_timeout",
+                message: "Timed out resolving actor query route.",
+              },
+              { status: 500 },
+            );
+          const response = await fetch(input, init);
+          if (inject && fault === "lost-action-reply" && pulse) {
+            await response.arrayBuffer();
+            throw new Error("Typing action reply lost after dispatch");
+          }
+          return response;
+        });
+      try {
+        await june.send("inbox", { type: "event", event: message });
+        await expect.poll(() => sent.length).toBe(1);
+        await expect.poll(() => lifecycle.active).toBe(0);
+        expect(sent[0]?.content).toEqual({
+          type: "text",
+          text: "Still answering.",
+        });
+        expect(replies).toBe(1);
+        if (fault === "lost-action-reply") {
+          expect(typing).toContain(true);
+          expect(lifecycle.failure).toBe("explicit_failure");
+          expect(await lifecycle.drain()).toBe(false);
+        } else {
+          expect(typing).toEqual([]);
+          expect(lifecycle.failure).toBeUndefined();
+          expect(await lifecycle.drain()).toBe(true);
+          lifecycle.resume();
+          inject = false;
+          await june.send("inbox", {
+            type: "event",
+            event: { ...message, id: "next", messageId: "123.457" },
+          });
+          await expect.poll(() => sent.length).toBe(2);
+          await expect.poll(() => lifecycle.active).toBe(0);
+          expect(typing).toEqual([true, false]);
+          expect(replies).toBe(2);
+        }
+      } finally {
+        interception.mockRestore();
+        lifecycle.resume();
+      }
+    },
+  );
 
   it("registers legacy participation after eligibility, never for completed replay", async (t) => {
     const lifecycle = createLifecycle();

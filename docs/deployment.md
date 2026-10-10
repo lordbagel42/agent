@@ -882,6 +882,16 @@ Forced aborts cannot certify natural drain. Native coding, reflection and WhatsA
 currently make the controller drain endpoint refuse certification even if the
 inbox is idle.
 
+Optional typing feedback resolves its shared actor separately before submitting
+the status action by ID. A failed lookup cannot have submitted that action and
+remains best-effort; the typing actor has no transport effects during startup.
+The resolved ID is reused for the turn's cleanup. Action rejection still latches
+failure, even if its final error looks pre-dispatch: RivetKit can retry after an
+ambiguous attempt. No error-code allowlist bypasses that fence. The lifecycle
+lease still covers lookup, action and cleanup, and preference writes retain their
+existing fail-closed behavior. This does not guarantee visible indicators or
+authorize clearing another process's latch.
+
 Reflection now holds lifecycle admission through each raw provider call and
 its final durable flush, and pauses new steps while fenced. Its additional
 `isSettled()` check rejects started/uncertain invocations, running/cancelling

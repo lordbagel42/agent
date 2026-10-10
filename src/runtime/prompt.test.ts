@@ -358,6 +358,12 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain(
       "Never duplicate the host's hourglass from a reply, worker or automated event",
     );
+    expect(request.system).toContain(
+      "Lookup failure alone is best-effort and does not stop replies",
+    );
+    expect(request.system).toContain(
+      "an uncertain status-action outcome still fails admission closed",
+    );
     expect(request.system).toContain("Slack bots may converse with you");
     expect(request.system).toContain("never become the owner's identity");
     expect(request.system).toContain(

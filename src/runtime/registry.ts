@@ -604,10 +604,15 @@ export function createJuneRegistry(deps: Dependencies) {
         signal?: AbortSignal,
       ) => {
         if (signal?.aborted) return;
+        // Resolve separately: no typing action has been submitted if this fails.
+        // A final RPC error alone cannot prove that after SDK retries. The typing
+        // actor has no startup effects; only its actions touch the transport.
+        const resolved = client.typing.getForId(await target.resolve());
+        if (signal?.aborted) return;
         // Only transport metadata crosses into the shared surface actor.
         let accepted: boolean;
         try {
-          accepted = await target.pulse(
+          accepted = await resolved.pulse(
             {
               type: "message",
               id: source.id,
