@@ -31,6 +31,7 @@ import {
   codingJobReport,
   DISABLED_CODING_RECOVERY,
 } from "./coding.js";
+import type { ExecutionContext } from "./execution-context.js";
 import type { CapacityContext } from "./inspection.js";
 import { type GlobalPersonality, previewPersonality } from "./personality.js";
 import {
@@ -64,6 +65,8 @@ export type CapabilityDependencies = Pick<
   | "importCancel"
   | "importTask"
   | "inspection"
+  | "capabilityConfig"
+  | "capabilityInspection"
   | "dashboardLogin"
   | "release"
   | "analytics"
@@ -235,6 +238,8 @@ export interface CapabilityContext {
   canStartAction?(): boolean;
   /** Coordinator fence for worker replies across a conversation reset. */
   canDeliver?(): Promise<boolean>;
+  /** Captured host ceiling; absent on legacy/contextless and conversational work. */
+  execution?: ExecutionContext;
   model: ModelProvider;
   deps: CapabilityDependencies;
   ports: CapabilityPorts;
@@ -282,6 +287,10 @@ async function dispatchCapability(
   const reflection = ports.reflection;
   const canStartAction = () =>
     !signal.aborted && valid() && (context.canStartAction?.() ?? true);
+  // Modular actions enter only through the bounded execution dispatcher. No
+  // interaction, legacy conversational or automated path inherits that grant.
+  if (generated.capability !== undefined)
+    return { text: "Modular capability dispatch is unavailable in this turn." };
   const guard =
     modelRequest.effectGuard ??
     deps.sentinel?.context(event, modelRequest, signal, canStartAction);

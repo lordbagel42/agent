@@ -1,6 +1,7 @@
 import type { MessageEvent } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
+import { availableMetadataCapabilityIds } from "./capability-mounts.js";
 import type { PromptCapabilities } from "./prompt.js";
 import type { Dependencies } from "./registry.js";
 
@@ -28,6 +29,7 @@ export function executionCapabilities(
   const scope = routeEvent(event, deps.owner);
   if (!scope) return {};
   return {
+    capabilityIds: availableMetadataCapabilityIds(deps),
     settingsAvailable: !!deps.settings,
     debugShareResolveAvailable: !!deps.debugShare?.resolve,
     agentWebhooksAvailable: !!deps.agents,
@@ -105,6 +107,9 @@ export function currentExecutionCapabilities(
 ): PromptCapabilities {
   const available = executionCapabilities(deps, event);
   return {
+    capabilityIds: (ceiling.capabilityIds ?? []).filter((id) =>
+      available.capabilityIds?.includes(id),
+    ),
     ...Object.fromEntries(
       Object.entries(available)
         .filter(([name, value]) => name.endsWith("Available") && value === true)

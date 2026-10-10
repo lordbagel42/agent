@@ -8,6 +8,7 @@ import type {
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { parseReply } from "../models/provider.js";
 import { type CapabilityContext, runCapability } from "./capabilities.js";
+import { runModularCapability } from "./capability-dispatch.js";
 import type { Dependencies, JuneClientRegistry } from "./registry.js";
 
 /** Results excluded from ordinary model context stay inside the delivery
@@ -36,6 +37,8 @@ export async function runExecutionCapability(
     terminal: true,
   });
   if (!current()) throw new Error("Execution invalidated");
+  if (reply.capability !== undefined)
+    return runModularCapability(reply, input, context);
   if (reply.debugShareResolve) {
     if (
       !input.debugShareResolveAvailable ||

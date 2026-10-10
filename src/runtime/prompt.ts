@@ -1,5 +1,7 @@
 import { ARTIFACT_HELP, ARTIFACT_UNAVAILABLE } from "../artifacts/contracts.js";
 import { BROWSER_HELP } from "../browser/contracts.js";
+import { findCapability } from "../capabilities/catalog.js";
+import type { CapabilityTurn } from "../capabilities/contracts.js";
 import type {
   ConversationMessage,
   MessageEvent,
@@ -113,6 +115,7 @@ export interface PromptModel {
 
 /** Availability for this invocation, not an inventory of installed modules. */
 export interface PromptCapabilities {
+  capabilityIds?: readonly string[];
   settingsAvailable?: boolean;
   debugShareResolveAvailable?: boolean;
   agentRole?: ModelRequest["agentRole"];
@@ -990,6 +993,7 @@ export function buildModelRequest({
       )
       .map(([name]) => name.replace(/Available$/, ""));
     if (workspaces.length) workerCapabilities.push("coding");
+    workerCapabilities.push(...(capabilities.capabilityIds ?? []));
     if (capabilities.executionWebSearchAvailable && !webSearchAvailable) {
       workerCapabilities.push("webSearch");
     }
@@ -1343,18 +1347,35 @@ The private dashboard automates mechanical sign-in steps, not consent. A June si
     "\nInbound owner-agent MCP admission is counted only after authentication: 6,000 requests per client per minute, 16 active per client and 128 active overall. Failed anonymous requests do not consume another client's allowance. Console token sign-ins allow 120 authenticated attempts per principal per minute; invalid tokens do not consume that budget. Existing browser session capacity and all origin, CSRF and permission checks remain. Rate rejection is not permission to change identity or repeat an uncertain effect.";
   // Activity completions reuse an interaction role and original source event,
   // but are not live inputs. Never infer a fresh request from that role alone.
+  const capabilityTurn: CapabilityTurn = wakeup
+    ? wakeup.mode === "decision"
+      ? "event-decision"
+      : "notification-only"
+    : agentRole === "execution"
+      ? "execution"
+      : liveInput
+        ? "interaction"
+        : "notification-only";
+  request.capabilityTurn = capabilityTurn;
+  // Wave 0 mounts metadata for execution only. Event decisions gain no modular
+  // actions until their owner-fenced enrollment is integrated separately.
+  request.capabilityIds =
+    agentRole === "execution" && capabilityTurn === "execution"
+      ? [...(capabilities.capabilityIds ?? [])]
+      : [];
   const capabilityKnowledge = capabilityKnowledgeForTurn(
-    wakeup
-      ? wakeup.mode === "decision"
-        ? "eventDecision"
-        : "notificationOnly"
-      : agentRole === "execution"
-        ? "execution"
-        : liveInput
-          ? "interaction"
-          : "notificationOnly",
+    capabilityTurn === "event-decision"
+      ? "eventDecision"
+      : capabilityTurn === "notification-only"
+        ? "notificationOnly"
+        : capabilityTurn,
   );
   if (capabilityKnowledge) request.system += `\n\n${capabilityKnowledge}`;
+  for (const id of request.capabilityIds) {
+    const definition = findCapability(id);
+    if (definition)
+      request.system += `\n\nModular capability ${id}: ${definition.help}`;
+  }
   request.system +=
     "\nSlack conversational replies in one-to-one DMs default to the main conversation. Continue an incoming DM thread, and start a new DM thread only when explicitly requested. Channels and group DMs still default to threads: continue the existing thread or start one on the incoming message. Top-level channel/group-DM replies should be uncommon, reserved for an explicit request or a clear need to address the main conversation. This is a placement preference, not an obligation to reply or permission to broaden an audience. Workers cannot change reply placement; automated and completion turns keep their host-selected or saved destination. Do not duplicate a reply to move it, relocate a pending delivery, or infer live activation from source publication.";
   request.system +=

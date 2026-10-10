@@ -797,6 +797,7 @@ export function createExecutionActor(
                                 valid: usable,
                                 canStartAction: usable,
                                 canDeliver,
+                                execution: context,
                                 model: deps.execution.model,
                                 deps,
                                 ports: {

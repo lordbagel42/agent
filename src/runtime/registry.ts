@@ -190,6 +190,8 @@ export interface Dependencies {
   sentinel?: import("../sentinel/service.js").InjectionSentinel;
   settings?: import("../settings/store.js").SettingsStore;
   capabilityConfig?: import("../capabilities/config.js").CapabilityConfig;
+  /** Full worker metadata, distinct from transport-sized direct inspection. */
+  capabilityInspection?: import("../capabilities/contracts.js").CapabilityHostPorts["inspection"];
   agents?: import("../agent/service.js").AgentService;
   owner: Owner;
   continuity?: import("./continuity.js").ConversationContinuity;
@@ -4111,6 +4113,8 @@ export function createJuneRegistry(deps: Dependencies) {
                                       : {}),
                                   },
                                   capabilities: {
+                                    capabilityIds:
+                                      plan.workerCapabilities?.capabilityIds,
                                     agentWebhooksAvailable:
                                       body.type === "event" &&
                                       phase !== "synthesis" &&
