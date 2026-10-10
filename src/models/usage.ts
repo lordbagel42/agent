@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { budgetReadinessReport } from "../budgets/readiness.js";
 import { withSpan } from "../telemetry/index.js";
 
 export type UsageStage =
@@ -236,6 +237,7 @@ export class UsageLedger {
       `Call duration p50/p95: ${count(snapshot.p50)}/${count(snapshot.p95)} ms (includes provider/process overhead, not end-to-end reply latency).`,
       `Ledger write failures this process: ${snapshot.writeFailures}.`,
       "Billing cost, subscription quota, and remaining balance: unavailable. This is token telemetry, not a billing statement.",
+      budgetReadinessReport(snapshot),
     ].join("\n");
   }
 
