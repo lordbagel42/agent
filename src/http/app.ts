@@ -16,12 +16,10 @@ import {
   type ConsoleSnapshot,
   createConsoleRoutes,
 } from "../console/routes.js";
-import { contentSecurityPolicy } from "../console/security.js";
 import {
   createConsoleLoginLinks,
   createConsoleSessionBridge,
 } from "../console/session.js";
-import { messagePage } from "../console/view.js";
 import type {
   Channel,
   ChannelAdapter,
@@ -303,36 +301,6 @@ export function createHttpApp(deps: HttpDependencies) {
       c.header("Referrer-Policy", "no-referrer");
       c.header("X-Robots-Tag", "noindex, nofollow, noarchive");
       return c.redirect(`/console/session/link/${c.req.param("id")}`, 303);
-    });
-    let windowStart = 0;
-    let loginAttempts = 0;
-    app.use("/console/session/login", async (c, next) => {
-      if (c.req.method === "POST") {
-        if (Date.now() - windowStart >= 60_000) {
-          windowStart = Date.now();
-          loginAttempts = 0;
-        }
-        if (++loginAttempts > 10) {
-          const nonce = randomBytes(18).toString("base64url");
-          c.header("Cache-Control", "no-store, private");
-          c.header("Referrer-Policy", "no-referrer");
-          c.header("X-Content-Type-Options", "nosniff");
-          c.header("X-Frame-Options", "DENY");
-          c.header("X-Robots-Tag", "noindex, nofollow, noarchive");
-          c.header("Content-Security-Policy", contentSecurityPolicy(nonce));
-          c.header("Retry-After", "60");
-          return c.html(
-            messagePage(
-              nonce,
-              "Too many sign-in attempts",
-              "Wait one minute, then return to the private sign-in page. No new session was created.",
-              429,
-            ),
-            429,
-          );
-        }
-      }
-      await next();
     });
     // Session routes must precede console authentication. Cookies never authorize
     // Bearer-only operator endpoints; action forms additionally require a proof.

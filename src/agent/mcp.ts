@@ -27,8 +27,7 @@ export function createAgentMcp(options: {
     string,
     { start: number; count: number; active: number }
   >();
-  let globalStart = 0;
-  let globalCount = 0;
+  let pruneAt = 0;
   let active = 0;
   const tools = {
     get_status: {
@@ -166,11 +165,6 @@ export function createAgentMcp(options: {
     const fail = (status: number, error: string) =>
       Response.json({ error }, { status, headers });
     const now = Date.now();
-    if (now - globalStart >= 60_000) {
-      globalStart = now;
-      globalCount = 0;
-    }
-    if (++globalCount > 600) return fail(429, "rate_limited");
     // Ignore forwarded headers; ingress must preserve the explicitly configured Host.
     if (
       (request.headers.get("host") ?? new URL(request.url).host) !==
@@ -185,6 +179,12 @@ export function createAgentMcp(options: {
     );
     if (!client) return fail(401, "unauthorized");
     if (request.method !== "POST") return fail(405, "post_only");
+    if (now >= pruneAt) {
+      for (const [id, window] of windows)
+        if (window.active === 0 && now - window.start >= 60_000)
+          windows.delete(id);
+      pruneAt = now + 60_000;
+    }
     let window = windows.get(client);
     if (!window) {
       window = { start: now, count: 0, active: 0 };
@@ -194,8 +194,9 @@ export function createAgentMcp(options: {
       window.start = now;
       window.count = 0;
     }
-    if (++window.count > 120 || window.active >= 4 || active >= 16)
+    if (window.count >= 6000 || window.active >= 16 || active >= 128)
       return fail(429, "rate_limited");
+    window.count++;
     window.active++;
     active++;
     const server = new Server(
@@ -278,9 +279,12 @@ export function createAgentMcp(options: {
     } catch {
       return fail(500, "mcp_request_failed");
     } finally {
-      await server.close();
-      window.active--;
-      active--;
+      try {
+        await server.close();
+      } finally {
+        window.active--;
+        active--;
+      }
     }
   };
 }

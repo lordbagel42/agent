@@ -1330,6 +1330,8 @@ The private dashboard automates mechanical sign-in steps, not consent. A June si
   request.system += `\n\n${TASK_ACTION_HELP}`;
   request.system += `\n\n${TASK_OWNERSHIP_HELP}`;
   request.system += `\n\n${DEBUG_OPERATIONS_HELP}`;
+  request.system +=
+    "\nInbound owner-agent MCP admission is counted only after authentication: 6,000 requests per client per minute, 16 active per client and 128 active overall. Failed anonymous requests do not consume another client's allowance. Console token sign-ins allow 120 authenticated attempts per principal per minute; invalid tokens do not consume that budget. Existing browser session capacity and all origin, CSRF and permission checks remain. Rate rejection is not permission to change identity or repeat an uncertain effect.";
   // Activity completions reuse an interaction role and original source event,
   // but are not live inputs. Never infer a fresh request from that role alone.
   const capabilityKnowledge = capabilityKnowledgeForTurn(

@@ -89,6 +89,7 @@ export function createConsoleSessionBridge(
   )
     throw new Error("Console path must be a local absolute path");
   const sessions = new Map<string, { token: string; expires: number }>();
+  const logins = new Map<string, { until: number; count: number }>();
   const secure = security.origin.startsWith("https:");
   const cookie = secure ? "__Host-june-console" : "june-console-dev";
   // A validated local path to continue after the next sign-in, including one
@@ -106,6 +107,8 @@ export function createConsoleSessionBridge(
   const prune = () => {
     for (const [id, session] of sessions)
       if (session.expires <= Date.now()) sessions.delete(id);
+    for (const [principal, window] of logins)
+      if (window.until <= Date.now()) logins.delete(principal);
   };
   const setSession = (c: Context, token: string) => {
     const previous = getCookie(c, cookie);
@@ -311,6 +314,26 @@ export function createConsoleSessionBridge(
         401,
       );
     prune();
+    // Anonymous failures never consume another principal's sign-in budget.
+    const window = logins.get(principal) ?? {
+      until: Date.now() + 60_000,
+      count: 0,
+    };
+    logins.set(principal, window);
+    if (window.count >= 120) {
+      c.header("Retry-After", "60");
+      return c.html(
+        messagePage(
+          c.get("nonce"),
+          "Too many sign-in attempts",
+          "Wait one minute before signing in again. No new session was created.",
+          429,
+          recovery,
+        ),
+        429,
+      );
+    }
+    window.count++;
     if (sessions.size >= 64)
       return c.html(
         messagePage(
