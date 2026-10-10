@@ -25,6 +25,7 @@ import { recallSessions } from "../sessions/recall.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import { formatE2BResult } from "../tools/e2b.js";
 import { runJavaScript } from "../tools/javascript.js";
+import type { CapabilityOutputController } from "./capability-output.js";
 import {
   type CodingState,
   codingJobMetadata,
@@ -243,6 +244,8 @@ export interface CapabilityContext {
   canDeliver?(): Promise<boolean>;
   /** Captured host ceiling; absent on legacy/contextless and conversational work. */
   execution?: ExecutionContext;
+  /** Worker-owned first-publication controls; never pass this object to a producer. */
+  readonly outputGuards?: CapabilityOutputController;
   model: ModelProvider;
   deps: CapabilityDependencies;
   ports: CapabilityPorts;

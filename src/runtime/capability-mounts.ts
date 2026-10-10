@@ -5,6 +5,7 @@ import type {
   CapabilityHostPorts,
   CapabilityInvocationContext,
 } from "../capabilities/contracts.js";
+import type { CapabilityOutputController } from "./capability-output.js";
 import type { Dependencies } from "./registry.js";
 
 type MetadataDependencies = Pick<
@@ -33,6 +34,7 @@ const taskUnavailable = () =>
 export function mountCapabilityPorts(
   deps: MetadataDependencies,
   invocation?: CapabilityInvocationContext,
+  outputGuards?: CapabilityOutputController,
 ): CapabilityHostPorts {
   const inspection = deps.capabilityInspection;
   const read = inspection?.capabilityMatrix;
@@ -78,6 +80,7 @@ export function mountCapabilityPorts(
                 deps.effectRuntime === runtime &&
                 deps.capabilityTasks === tasks &&
                 tasks.inspect === inspect &&
+                outputGuards?.current() !== false &&
                 invocation.valid() &&
                 invocation.canStartAction();
               if (!invocation || !inspect || !current())
@@ -88,11 +91,24 @@ export function mountCapabilityPorts(
               // one callback. Effect interruption must await raw settlement,
               // while the original signal still reaches a cooperative reader.
               const result = await inspect.call(tasks, invocation, id);
+              // Claim this exact return before another await. Prior registrations
+              // cannot certify a different result from an overlapping read.
+              if (
+                result !== null &&
+                (!outputGuards ||
+                  invocation.outputGuards !== outputGuards.producer ||
+                  !outputGuards.claim(result))
+              )
+                throw taskUnavailable();
               if (!current() || !(await invocation.canDeliver()) || !current())
                 throw taskUnavailable();
               return result;
             },
-            catch: taskUnavailable,
+            catch: () => {
+              // A handler catching a port failure cannot publish a partial view.
+              outputGuards?.invalidate();
+              return taskUnavailable();
+            },
           }),
         ),
     );

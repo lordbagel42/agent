@@ -7,17 +7,9 @@ import {
   availableMetadataCapabilityIds,
   mountCapabilityPorts,
 } from "./capability-mounts.js";
+import { unavailableCapabilityObservation as unavailable } from "./capability-output.js";
 
 const observationLimit = 64 * 1024;
-const unavailable = (code: string) => ({
-  text: JSON.stringify({
-    status: "unavailable",
-    code,
-    instruction:
-      "No complete capability observation is available. Do not infer readiness, repair anything or repeat an uncertain operation.",
-  }),
-  terminal: true,
-});
 
 /** Uses the worker's existing started receipt and raw callback lifetime. This
  * adds no journal, retry, timeout race or effect authority. Non-metadata and
@@ -61,6 +53,10 @@ export async function runModularCapability(
     input.capabilityIds?.includes(id) === true &&
     execution.capabilities.capabilityIds?.includes(id) === true &&
     availableMetadataCapabilityIds(context.deps).includes(id);
+  // A producer guard may itself check admission. Keep publication separate so
+  // its synchronous source predicate cannot recursively call this collector.
+  const publishable = () =>
+    current() && context.outputGuards?.current() !== false;
   if (!definition || !current()) return unavailable("capability_not_current");
   const canDeliver = context.canDeliver;
   try {
@@ -77,15 +73,16 @@ export async function runModularCapability(
       valid: context.valid,
       turn: "execution",
       execution,
+      outputGuards: context.outputGuards?.producer,
       canStartAction: current,
       canDeliver: async () => current() && (await canDeliver()) && current(),
     };
     const handler = definition.create(
-      mountCapabilityPorts(context.deps, invocation),
+      mountCapabilityPorts(context.deps, invocation, context.outputGuards),
     );
     if (!handler || !current()) return unavailable("capability_not_current");
     const text = await handler.execute(command.command, invocation);
-    if (!current() || !(await canDeliver()) || !current())
+    if (!publishable() || !(await canDeliver()) || !publishable())
       return unavailable("invocation_not_current");
     if (typeof text !== "string" || Buffer.byteLength(text) > observationLimit)
       return unavailable("observation_exceeds_64_kib");
