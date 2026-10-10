@@ -11,7 +11,11 @@ export interface Viewer {
 
 /** The projected file a viewer may see, or undefined when it is invisible. */
 export async function view(repo: MindRepo, path: string, viewer: Viewer) {
-  if (path.startsWith("self/journal/") && !viewer.ownerDm) return undefined;
+  if (
+    (path.startsWith("self/journal/") || path.startsWith("self/reports/")) &&
+    !viewer.ownerDm
+  )
+    return undefined;
   const text = await repo.read(path);
   if (text === undefined) return undefined;
   const conversation = /^conversations\/([A-Za-z0-9-]+)\.md$/.exec(path);

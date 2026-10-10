@@ -510,7 +510,7 @@ export function createExecutionActor(
                           deps.mind && request.context
                             ? await deps.mind
                                 .recall(request.source, [])
-                                .catch(() => "")
+                                .catch(() => ({ notes: "" }))
                             : undefined;
                         let reportOnly = false;
                         for (let turn = 0; turn < 6; turn++) {

@@ -1244,50 +1244,117 @@ provide a second per-scope voice on new turns. No private evidence is promoted.
 This slice does not autonomously infer or publish traits, edit free-form biography,
 or claim a real-provider behavioral evaluation from its runtime fixture checks.
 
-## June's mind (git-backed memory, reflection and skills)
+## June's mind (memory, reflection, dreams, skills, self-improvement)
 
-`mind` is absent by default. When present, June keeps a git repository of
-markdown notes at `mind.directory`:
+`mind` is absent by default. When it's present, June keeps a git repository of
+markdown notes at `mind.directory`. With `mind.remote` set, the repository is
+mirrored to a private GitHub repository. It holds:
 
 - people;
 - Slack conversations;
 - skills she wrote herself;
 - improvements she noticed;
+- her self files (values, identity, formative memories, opinions, interests,
+  curiosities, monthly chapters);
 - her journal.
 
-The host appends admitted human Slack messages and June's sent replies to
-gitignored transcripts. It skips `##` messages, `!` commands, DEBUG/PING
-controls, bot senders and text that looks like a credential. Once a conversation
-has been quiet for `reflectIdleMs` (default ten minutes), a background reflection
-updates the notes and commits them. It uses its own provider built from
-`deepModel` (or `model`) with `timeoutMs` (default five minutes).
+**Capture.** The host appends admitted human Slack messages and June's sent
+replies to gitignored transcripts. It skips `##` messages, `!` commands,
+DEBUG/PING controls, bot senders and text that looks like a credential.
 
-Notes are projected for each conversation. A person's `## Private — <place>`
-sections appear only in that place. The journal appears only in Raygen's DM.
+**Reflection.** Once a conversation has been quiet for `reflectIdleMs` (default
+ten minutes), a background reflection updates the notes and commits them. It
+uses its own provider built from `deepModel` (or `model`) with `timeoutMs`
+(default five minutes).
 
-Every interaction, execution and automated-event prompt receives:
+**Dreams.** Each night, starting at `dreamHour` (default 3, in `timezone`), a
+dream works over the whole mind:
+
+- consolidates people and conversations;
+- adds cross-conversation patterns;
+- curates skills;
+- reviews improvements;
+- grows the self files.
+
+June can revise both `self/values.md` and `self/identity.md` as she sees fit,
+without owner approval, a changed-word quota or a formative-memory minimum.
+These notes describe her, not permissions over private information, tools or
+spending. The host attempts a best-effort Slack DM with the diff when either
+file changes; the notification is not an approval gate.
+A worker can request an earlier dream with `mind:{action:"dream"}`.
+
+**Self-improvement.** An improvement filed with `status: ready` goes to
+DEBUGSHARE's existing `amp-task` inbox with `purpose: "june-self"`. This
+requires `debugShare` with `JUNE_ALLOW_DEBUGSHARE=1`. The updated
+`debugshare_runner.py` launches it in GPT-6 Astra Max with Raygen's standing
+full authority: implement, push, deploy and verify live, per AGENTS.md. There is
+no daily limit. The host attempts DMs with the request, thread link and outcome.
+Progress is recorded in the improvement file; a completed thread is `reported`,
+not a verified fix. Raw final reports are in `self/reports/`, visible only in
+Raygen's DM. The dispatcher needs no change.
+
+**Sync.** With a remote configured, June fetches on scheduler passes (at least
+five minutes between periodic attempts), before each dream, and after commits.
+Nonconflicting histories merge without rewriting commit IDs. Conflicts block
+sync and background work for reconciliation instead of discarding either side.
+Local uncommitted edits block writes. She never force-pushes.
+
+**Visibility.** Notes are projected for each conversation. A person's
+`## Private — <place>` sections appear only in that place, and the journal only
+in Raygen's DM.
+
+**What prompts receive.** Every interaction, execution and automated-event
+prompt receives:
 
 - the briefing for the current conversation;
 - notes on its people;
 - the skill index.
 
-Execution workers can also use the read-only
-`mind:{action:"status"|"list"|"read"|"search"|"log",path,query}`.
+Interaction and automated-event prompts also receive the identity, values and
+curiosities; workers receive these as context, not a replacement role.
+`identity.md` replaces the hard-coded voice paragraphs with a first-person
+adaptation, not a verbatim or behaviorally identical prompt. Safety, disclosure
+and permission rules stay in code. Execution workers can read notes and request a dream with
+`mind:{action:"status"|"list"|"read"|"search"|"log"|"dream",path,query}`.
 
 ```json
 "mind": {
   "directory": "/var/lib/june/mind",
   "reflectIdleMs": 600000,
-  "timezone": "America/Boise",
-  "timeoutMs": 300000
+  "timezone": "America/Denver",
+  "timeoutMs": 300000,
+  "dreamHour": 3,
+  "remote": {
+    "url": "git@github.com:lordbagel42/june-mind.git",
+    "sshKey": "/var/lib/june/mind-key/id_ed25519",
+    "knownHosts": "/var/lib/june/mind-key/known_hosts"
+  }
 }
 ```
 
-Adding this block changes the deployment's protected configuration binding.
-Older releases also reject the unknown key, so rollback past this code needs the
-block removed. Coordinate activation as an operator config change. The design
-and planned increments (dreams, a growing self, self-improvement through Amp) are
-in [the mind design](superpowers/specs/2026-10-10-june-mind-design.md).
+**Review state.** Raygen approved testing and shipping, including autonomous
+values and identity changes. Source support is not live activation. The
+repository name above is proposed, not yet provisioned. Real-model quality,
+private GitHub sync, Amp launch and owner-DM delivery remain unverified.
+
+**Activation after review.** Confirm that the chosen GitHub repository is
+private; SSH transport does not attest visibility. Provision a write-enabled deploy key for that one private
+repository. Keep it mode 0600, owned by `june`, under `/var/lib/june`, with
+GitHub's pinned host keys. Adding this block changes the deployment's protected
+configuration binding, and older releases reject the unknown key, so a rollback
+past this code needs the block removed. Coordinate activation as an operator
+config change. Install the runner script on homelab-amp along with the app
+release. The design is in [the mind
+design](superpowers/specs/2026-10-10-june-mind-design.md).
+
+**Recovery and limits.** The scheduler uses Linux `flock`, with no age-based
+lock stealing. Unknown model settlement blocks work via `state/blocked.json`;
+reconcile the provider before clearing it under the lock. Failed reflection
+keeps its pending batch and backs off. A crash between Git commit and local
+cursor update may repeat reflection; this is not an exactly-once transaction.
+Git retains deleted facts, raw transcripts have no automatic retention policy,
+and semantic privacy classification remains model judgment. See the design's
+review limits before allowing real conversations into this store.
 
 ## Optional scoped memory and reflection
 

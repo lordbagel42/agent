@@ -1,12 +1,15 @@
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import {
   appendFile,
+  type FileHandle,
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
-  rm,
   stat,
-  utimes,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -109,6 +112,24 @@ export class Transcripts {
     }
   }
 
+  async readState<T>(name: string): Promise<T | undefined> {
+    try {
+      return JSON.parse(
+        await readFile(join(this.root, "state", `${name}.json`), "utf8"),
+      ) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async writeState(name: string, value: unknown) {
+    const target = join(this.root, "state", `${name}.json`);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    await mkdir(join(this.root, "state"), { recursive: true, mode: 0o700 });
+    await writeFile(temporary, JSON.stringify(value), { mode: 0o600 });
+    await rename(temporary, target);
+  }
+
   async saveCursor(place: string, cursor: Cursor) {
     const all = await this.cursors();
     all[place] = { ...cursor, ids: cursor.ids.slice(-300) };
@@ -119,53 +140,52 @@ export class Transcripts {
   }
 }
 
-/** Cross-process lease so overlapping blue/green slots never reflect at once. */
+/** Kernel-owned lock using the same inherited-FD flock pattern as standby.ts.
+ * No expiry or unlink: a slow owner cannot lose its lock to another slot. */
 export class MindLock {
-  private held = false;
-  constructor(
-    private readonly root: string,
-    private readonly staleMs = 20 * 60_000,
-  ) {}
+  private file: FileHandle | undefined;
+  constructor(private readonly root: string) {}
 
   private get path() {
-    return join(this.root, "state", "lock");
+    return join(this.root, "state", "mind.lock");
   }
 
   async acquire() {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        await mkdir(this.path, { mode: 0o700 });
-        await writeFile(
-          join(this.path, "lease"),
-          JSON.stringify({ pid: process.pid, slot: process.env.JUNE_SLOT }),
-          { mode: 0o600 },
-        );
-        this.held = true;
-        return true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const age =
-          Date.now() -
-          ((await stat(join(this.path, "lease")).catch(() => undefined))
-            ?.mtimeMs ??
-            (await stat(this.path).catch(() => undefined))?.mtimeMs ??
-            Date.now());
-        if (age < this.staleMs) return false;
-        await rm(this.path, { recursive: true, force: true });
-      }
+    if (this.file) return false;
+    await mkdir(join(this.root, "state"), { recursive: true, mode: 0o700 });
+    const file = await open(
+      this.path,
+      constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      const acquired = await new Promise<boolean>((resolve, reject) => {
+        const child = spawn("/usr/bin/flock", ["-n", "3"], {
+          stdio: ["ignore", "ignore", "ignore", file.fd],
+        });
+        child.once("error", reject);
+        child.once("exit", (code) => {
+          if (code === 0) resolve(true);
+          else if (code === 1) resolve(false);
+          else reject(new Error("mind_lock_failed"));
+        });
+      });
+      if (acquired) this.file = file;
+      else await file.close();
+      return acquired;
+    } catch (error) {
+      await file.close();
+      throw error;
     }
-    return false;
   }
 
   async heartbeat() {
-    if (!this.held) return;
-    const now = new Date();
-    await utimes(join(this.path, "lease"), now, now).catch(() => undefined);
+    if (!this.file) throw new Error("mind_lock_not_held");
   }
 
   async release() {
-    if (!this.held) return;
-    this.held = false;
-    await rm(this.path, { recursive: true, force: true });
+    const file = this.file;
+    this.file = undefined;
+    await file?.close();
   }
 }

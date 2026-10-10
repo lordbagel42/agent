@@ -101,6 +101,7 @@ import {
 } from "./runtime/continuity.js";
 import { editHistory } from "./runtime/conversation-storage.js";
 import {
+  createAmpInbox,
   createAutomaticRepairs,
   createDebugDispatcher,
 } from "./runtime/debug-dispatch.js";
@@ -1551,8 +1552,42 @@ async function main() {
   let mind: Mind | undefined;
   if (config.mind && mindModel) {
     startupStage = "mind repository";
-    mind = new Mind(config.mind, owner, mindModel, () => lifecycle.ready);
-    await mind.start();
+    const ownerSlack = owner.identities.find(
+      (identity) => identity.channel === "slack",
+    );
+    const slack = channels.slack;
+    mind = new Mind(config.mind, owner, mindModel, () => lifecycle.ready, {
+      // Self-improvement rides the existing DEBUGSHARE amp-task transport.
+      ...(config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
+        ? { selfImprovement: createAmpInbox(config.debugShare, "amp-task") }
+        : {}),
+      ...(slack && ownerSlack
+        ? {
+            // Slack accepts the owner's user ID as a DM destination.
+            notify: async (text: string) => {
+              const result = await slack.send({
+                id: crypto.randomUUID(),
+                address: {
+                  channel: "slack",
+                  accountId: ownerSlack.accountId,
+                  conversationId: ownerSlack.senderId,
+                },
+                lastInboundAt: Date.now(),
+                content: { type: "text", text },
+              });
+              if (result.status !== "sent") throw new Error(result.status);
+            },
+          }
+        : {}),
+    });
+    try {
+      await mind.start();
+    } catch {
+      // Memory setup failure must not take the conversational service down.
+      console.error(JSON.stringify({ event: "mind_start_failed" }));
+      await mind.close().catch(() => undefined);
+      mind = undefined;
+    }
   }
   const dependencies: Dependencies = {
     sentinel,

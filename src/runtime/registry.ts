@@ -4141,7 +4141,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                               : [],
                                           ),
                                         )
-                                        .catch(() => "")
+                                        .catch(() => ({ notes: "" }))
                                     : undefined;
                                 if (!valid(step.state) || signal.aborted)
                                   return {

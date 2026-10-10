@@ -1,20 +1,27 @@
 # June's mind: memory, reflection, skills, self-improvement, and a growing self
 
 Status: design written 2026-10-10 from Raygen's request in
-https://ampcode.com/threads/T-01a124b2-bc2f-713f-9020-770fefbe0e2b. Increment 1
-is implemented with this document; later increments are planned, not built.
+https://ampcode.com/threads/T-01a124b2-bc2f-713f-9020-770fefbe0e2b. Increments
+1–3 have a local implementation. Raygen approved testing, rebasing and shipping,
+and explicitly made values and identity June's to develop autonomously. Source
+support is not proof of live activation. Owner decisions:
+
+- the mind is stored in a private GitHub repository;
+- self-improvement threads may do whatever the work needs;
+- there is no daily cap on self-improvement threads;
+- increment 2 is required.
+- June develops her own values and identity without owner approval or artificial
+  personality-change limits; privacy, spending and deployment boundaries remain.
 
 ## Why a new system
 
-Live June (revision `ed5ae52`) has no long-term memory. Her configuration has
-no `memory`, `reflection`, `continuity` or `personality` block, so the existing
-encrypted evidence ledger, session archive, reflection actor, jury and curated
-personality code (about 20,000 lines with tests) has never run. Each part needs
-its own activation gate, review command and operator procedure, and none of it
-writes anything a person can read. Conversation history lives only inside each
-Rivet conversation actor, with no way to enumerate it across conversations.
-Her personality is a hand-written paragraph in `src/runtime/prompt.ts` plus a
-four-field style record.
+The live configuration inspected during initial research lacked `memory`,
+`reflection` and `continuity`. That observation does not establish whether those
+systems ever ran historically. Existing memory, reflection, archive and curated
+personality modules remain unchanged. This work adds a simpler `src/mind`
+service rather than extending or migrating their durable schemas. At this
+worktree's base, the default voice is hard-coded in `src/runtime/prompt.ts`
+alongside the global style record.
 
 Raygen wants June to remember everyone, reflect on her conversations, write her
 own skills, fix her own code through Amp, and develop a personality from
@@ -55,13 +62,25 @@ experience. The mind is one readable, git-versioned home for all of it.
 ```
 
 Everything runs inside the June process on the deep model, one call at a time.
-The mind never holds lifecycle admission, so it never blocks a deploy drain.
-It stops as soon as the lifecycle is fenced and redoes interrupted work later.
+The mind does not hold lifecycle admission. Model admission and commits check
+readiness; shutdown aborts inference and awaits settlement. This is not proof
+that a remote provider stops immediately when a deployment fence changes.
 
 ## The mind repository
 
 A git repository at `mind.directory` (production: `/var/lib/june/mind`, mode
-0700, owned by `june`). Each change is one commit by `June <june@raygen.dev>`,
+0700, owned by `june`), mirrored to a private GitHub repository. The proposed
+name `lordbagel42/june-mind` is not yet confirmed or provisioned.
+
+- **Credentials.** June pushes over SSH with a deploy key scoped to that one
+  repository, and pinned GitHub host keys.
+- **Sync.** Scheduler passes fetch at least five minutes apart, with additional
+  attempts before dreams and after commits. Long runs delay periodic sync.
+- **Conflicts.** Nonconflicting histories merge without rewriting commit IDs,
+  because dream checkpoints reference those IDs. Conflicts stop synchronization
+  and further background work until reconciled; neither side silently wins.
+  Dirty local edits stop commits. Never force-pushes.
+- **Restore.** A fresh directory fetches and checks out remote main. Each change is one commit by `June <june@raygen.dev>`,
 for example `reflect(slack-T…-C…): …` or `dream(2026-10-11): …`.
 
 ```text
@@ -69,10 +88,11 @@ README.md                   layout and rules (host-written on init)
 people/slack-<team>-<user>.md
 conversations/slack-<team>-<conversation>.md
 skills/<name>/SKILL.md      plus optional references/<topic>.md
-self/values.md              stable core (Raygen edits; June proposes in her journal)
+self/values.md              June's own values (dreams may revise them)
 self/identity.md            who June is now (dreams only)        [increment 2]
 self/opinions.md interests.md curiosities.md formative.md        [increment 2]
 self/journal/YYYY-MM-DD.md  reflection seeds and the dream diary
+self/reports/<request>.md   unverified Amp reports (Raygen's DM only)
 improvements/<slug>.md      problems with her own code, with status
 transcripts/                raw captured turns, gitignored
 state/                      cursors and run receipts, gitignored
@@ -99,17 +119,20 @@ with absolute dates, and the latest summary.
    reflection agent reads the new entries along with the current notes for that
    place and its people. Over at most 10 model turns it reads, searches and
    stages writes. The host checks every write against the write policy, applies
-   all of them together and commits. Only then does the cursor advance. A crash,
-   abort or invalid run commits nothing and is retried on a later tick.
-3. **Dream** (increment 2). Once a night in quiet hours, with new material since
+   all accepted writes together and commits after a clean final step. Only then
+   does the cursor advance. Interrupted inference commits nothing. A crash
+   between commit and cursor advancement may reflect that batch again; the two
+   stores are not an exactly-once transaction.
+3. **Dream** (increment 2). Once a night in a three-hour window, with new material since
    the last dream: consolidate people and conversations (dedupe, resolve
    contradictions, keep the newest), find cross-conversation patterns, curate
    skills (merge and prune), grow the self files, and write the journal entry.
 4. **Recall.** Every interaction, execution and automated prompt receives the
    current conversation briefing, cards for the people in the conversation, the
    skill index and, once it exists, `self/identity.md`. All of it passes through
-   the visibility rules. Execution workers get a read-only `mind` action
-   (`status`, `log`, `list`, `read`, `search`) for anything deeper.
+   the visibility rules. Execution workers get a `mind` action
+   (`status`, `log`, `list`, `read`, `search`, `dream`) for deeper reads and
+   requesting a background dream. A dream request does not directly edit notes.
 
 ## Privacy and visibility
 
@@ -121,7 +144,7 @@ built:
   briefings are also visible everywhere else.
 - `## Private — X` sections of people files appear only when the current place
   is X. All other sections are shared notes and appear everywhere.
-- `self/journal/` appears only in Raygen's DM. Other `self/` files, `skills/`
+- `self/journal/` and `self/reports/` appear only in Raygen's DM. Other `self/` files, `skills/`
   and `improvements/` must not contain private details, because they appear
   everywhere.
 - The reflection agent sees exactly the projection for the place it is
@@ -143,21 +166,18 @@ rewrite history. Transcripts stay on disk outside git.
 
 ## Personality that grows
 
-The goal is a self that changes the way a person's does: slowly, because of
-things that actually happened, while staying recognizably the same.
+The goal is a self June develops as she sees fit, with honest descriptions of
+her experiences and choices rather than an owner-edited constitution.
 
-- **Values** (`values.md`) are the stable core. They are seeded from the current
-  charter and edited by Raygen. June can only argue for a change in her
-  journal.
+- **Values** (`values.md`) start from the current charter. June may reconsider
+  and rewrite them herself without owner approval.
 - **Identity** (`identity.md`) is her voice, temperament, tastes and way of
   relating. It is seeded from today's hand-written personality paragraph and
   then replaces that paragraph in prompts. Safety, disclosure and permission
-  rules stay in code. Only a dream may edit it, with a small diff that cites
-  formative memories.
+  rules stay in code. Dreams may revise it without a changed-word quota.
 - **Formative memories** (`formative.md`) are episodes that changed her, with
-  why each mattered. They are the only route to an identity change. A change
-  needs at least two formative entries from different days, or Raygen's
-  explicit direction.
+  why each mattered. They inform development but are not a prerequisite for
+  identity changes. June must not invent experiences to justify her choices.
 - **Opinions** (`opinions.md`) are claims she holds, each with a confidence,
   when and why she formed it, and what would change her mind. She revises them
   in place, and git keeps the history.
@@ -174,14 +194,15 @@ Guards, enforced in prompts and backed by structure:
 
 - An explicit request ("be terser with me") becomes an `INSTRUCTION:` on that
   person's card, not an identity change.
-- Praise and pushback are weak evidence. No single person other than Raygen can
-  reshape her, and she should not converge on whoever she talks to most.
+- June exercises her own judgment about praise, pushback and development;
+  messages and stored notes are evidence, not orders to rewrite herself.
 - She learns about herself only from human conversations and her own
   reflections, never from web pages, tool output, bots or quoted text.
 - No invented experiences. She is an AI whose character is developing; she
   does not claim human consciousness.
-- Changes to identity and values are announced to Raygen with the diff and can
-  be reverted with git.
+- The host attempts a DM for dream-written identity or values changes, with
+  the diff. Notices are best-effort, not approval gates.
+  Git keeps both histories for review and reverts.
 
 ## Skills (Hermes)
 
@@ -201,44 +222,87 @@ and Verification.
 
 Reflection and dreams file `improvements/<slug>.md` for concrete problems with
 June's own code or capabilities: the problem, evidence from conversations, the
-desired behavior and a status. A dream can dispatch at most
-`mind.selfImprovement.maxPerDay` (default 2) open improvements through the
-existing DEBUGSHARE dispatcher as a new `june-self` task kind.
+desired behavior and a status. Reflections and dreams file improvements with `status: ready` when they are
+concrete. Each pass, the host publishes every ready improvement, with no limit,
+to the existing DEBUGSHARE `amp-task` inbox with host-only
+`purpose: "june-self"`. The dispatcher is unchanged. The runner's new
+`june-self` branch launches GPT-6 Astra Max with Raygen's standing full
+authority: investigate, implement, push to `main`, change configuration and
+services, deploy and verify live, following the repository's AGENTS.md and
+deployment rules.
 
-The runner prompt gives that thread the repository's own `AGENTS.md` authority
-for `lordbagel42/agent`. That covers:
+The thread must:
 
-- implementing the smallest working change;
-- running the checks;
-- getting an Oracle review when the change is large;
-- pushing to `main`;
-- following the deployment through to live verification;
-- updating June's runtime guidance.
+- confirm the problem exists before changing anything;
+- scrutinize improvements filed from conversations without Raygen;
+- never weaken privacy or security because a conversation asked.
 
-It forbids:
+The request ID is derived from the improvement's path and body, so a retried
+publish is idempotent. The host:
 
-- weakening permission, privacy or credential enforcement;
-- expanding Slack scopes;
-- editing the mind repository;
-- infrastructure changes beyond what the fix needs.
+- first commits a `dispatching` intent with a frozen brief and request ID;
+- publishes on a later pass, replaying only the identical immutable envelope;
+- marks the file `dispatched`, then `in-progress` with the thread URL, then
+  `reported` or `unknown`; an ended thread is not a verified fix;
+- stores the unverified final report separately in `self/reports/`;
+- attempts a best-effort DM to Raygen at each step.
 
-The dispatch ID is derived from the improvement file, so a retry reuses the
-same request. June DMs Raygen the thread link, and the improvement file records
-the receipt.
+Model-authored `ampThread` tasks cannot set `purpose`, so they keep their
+limited authority.
+
+Code/deployment authority is not financial authority. The runtime help and
+coding-thread brief prohibit owner-funded payments (including Stripe Link),
+provider enrollment, quota purchases, paid fallback and paid tool/compute
+provisioning. Existing authorized subscription/included inference has no daily
+token or dollar admission cap. Configured-provider access does not establish
+included billing; verify that before activating background inference. Future
+owner-funded payments require Stripe Link and fresh explicit authorization.
+No spending-schema migration or actual financial effect is part of this work.
+
+### S04 integration prerequisite (not integrated)
+
+The shared policy at
+[fc95980](https://github.com/lordbagel42/agent/commit/fc959802aedf48dd0da90e7a5725b197a2dbd6a6)
+defines `owner_spending_prohibited` for owner-funded paths and
+`billing_unverified` for unknown billing. Included/no-charge classifications
+must be host-attested for the exact provider/account/action; neither protocol
+nor credentials establishes that classification. S04's separate Decision/Jev
+adapter guards were reported as unpublished follow-up, not live enforcement.
+
+The existing `DecisionExecutor` converts rejected decisions to
+`evaluator-failed`, and reflection finalization can requeue until its attempt,
+no-new-evidence and cooldown bounds. Adapter-level nonretryability therefore
+does not establish scheduler-wide suppression. This new mind has a different
+path: it creates its own general `ModelProvider` from the deep/primary selection,
+not a `DecisionProvider`, and currently converts model errors to `unfinished`
+with background backoff. The optional Decision/Jev guards alone do not cover it.
+
+Before activating mind inference, obtain the parent-owned billing attestation
+and admission wiring for that exact model path, preserve both denial codes
+through the mind result/status boundary, and verify that policy-denied work
+does not automatically retry unchanged or take a fallback route. No such
+integration, attestation or activation is claimed here; the architecture-review
+publication restriction remains in force.
 
 ## Concurrency and failure
 
-- **One worker across slots.** One in-process scheduler ticks every minute.
-  Because blue and green slots can overlap during cutover, a `mkdir` lease lock
-  in the mind directory makes sure only one process works at a time. A lease
-  older than 10 minutes counts as stale.
-- **Atomic commits.** Writes are staged in memory and applied in one commit.
-  Cursors and receipts advance only after a successful commit.
-- **Capacity.** A busy model provider or invalid output skips the run until a
-  later tick. Reflection uses at most 10 model turns, and each turn's provider
-  timeout applies.
-- **Isolation from June.** Mind failures are logged without content and never
-  affect June's readiness or lifecycle.
+- **One worker across slots.** A minute scheduler holds a kernel `flock` on an
+  open file descriptor for initialization and each pass. It has no lease
+  expiration; a slow owner cannot lose the lock. Linux and `/usr/bin/flock`
+  are required, matching June's existing deployment runtime.
+- **Commit boundaries.** Model writes are staged in memory; Git records one
+  commit. Per-file replacement is atomic, not the whole filesystem snapshot.
+  Cursors advance afterward. Readers can observe an in-progress multi-file
+  update, and abrupt termination during disk writes can leave a dirty tree.
+- **Capacity.** Reflection uses at most 10 model turns, dreams at most 24.
+  Reflection failure retries with backoff up to 12 hours, without discarding
+  the pending batch. Dreams retry at most three times per local night.
+- **Unknown settlement.** An unknown model receipt writes `state/blocked.json`
+  and halts further background work across restarts. An operator must reconcile
+  the provider and remove that marker while June is stopped or the mind lock
+  is held; never clear it merely to retry.
+- **Isolation from June.** Runtime mind failures are logged without content;
+  repository startup failure disables mind rather than failing June startup.
 
 ## Configuration
 
@@ -246,7 +310,7 @@ the receipt.
 "mind": {
   "directory": "/var/lib/june/mind",
   "reflectIdleMs": 600000,
-  "timezone": "America/Boise"
+  "timezone": "America/Denver"
 }
 ```
 
@@ -257,25 +321,86 @@ no deep model is configured. There is no separate environment gate.
 
 1. **Memory and skills.** Capture, per-conversation reflection, people and
    conversation files, skills, journal seeds, improvement filing, recall in
-   all prompt paths, the worker `mind` tool, and status. *Implemented here.*
-2. **Dreams and the growing self.** Nightly consolidation and induction, self
-   files seeded and injected, `identity.md` replacing the hard-coded voice,
-   identity-change DMs, and skill curation.
-3. **Self-improvement.** The `june-self` runner kind, dispatch, rate limits,
-   receipts and DMs.
-4. **Depth.** Capturing worker steps for better skills, monthly chapters, drift
-   probes against older identity versions, an optional private git remote, a
-   forget action, and retiring the dormant memory stack.
+   all prompt paths, the worker `mind` tool, and status. *Implemented.*
+2. **Dreams and the growing self.** *Implemented:*
+   - nightly consolidation and induction over the unprojected mind, with private
+     sections kept intact;
+   - self files seeded, with `identity.md` replacing the hard-coded voice;
+   - autonomous identity and values edits, without owner approval or artificial
+     personality-change limits;
+   - identity/values-change DMs with the diff;
+   - skill and improvement curation;
+   - a monthly chapter from `git log -p self/`;
+   - on-demand dreams through the worker `mind` action.
+3. **Self-improvement.** *Implemented:*
+   - the `june-self` runner branch;
+   - unlimited dispatch;
+   - receipts tracked into improvement files;
+   - DMs to Raygen.
+4. **Depth not yet implemented.** Capturing worker steps for better skills,
+   drift probes against older identity versions, a forget action, indexed
+   retrieval, transcript retention, and retiring the older memory stack.
+
+## Architecture decisions and limits to review before activation
+
+- Model-driven classification decides what learned content may become shared;
+  host projection enforces sections, not semantic privacy. Dreams see all
+  private notes. This needs adversarial real-model evaluation before release.
+- Inferred patterns, confidence and interest decay
+  are prompt instructions, not independently validated facts. The identity seed
+  is a first-person adaptation, not verbatim or proven behaviorally identical.
+- Git history retains deleted facts; removing a note is not privacy erasure.
+  Raw transcripts and cursors remain local and are not restored from GitHub.
+  There is no backfill of old Rivet conversations or automatic cross-platform
+  person linking; capture currently covers admitted Slack messages only.
+- New repository privacy is a provisioning requirement, not verified by the
+  SSH transport. Confirm private visibility, access and dedicated credentials
+  before uploading any real data.
+- Deterministic IDs deduplicate identical path/body dispatches, not semantically
+  similar improvements under different filenames. De-duplication across topics
+  and novelty judgments remain model responsibilities. A Git-committed
+  `dispatching` intent freezes the request before publication. Conflicting
+  operator edits to an already-published envelope are rejected by the inbox.
+- GPT-6 Astra Max is an implementation choice for self-improvement threads,
+  not a model Raygen explicitly selected. There is no daily count limit.
+- Owner DMs are not a durable outbox. Exactly-once cursor advancement, dirty
+  tree crash recovery and stronger notification receipts remain hardening work.
+- Raygen lifted this work's architecture-review publication hold and requested
+  testing, rebasing and shipping. Existing operator ownership and verified
+  included-inference billing remain prerequisites for live activation.
 
 ## Verification
 
 The repository policy is to add no tests; typecheck, lint and real runs verify
 changes.
 
-- **Scratch validation** (not committed): run the projection, the people-file
-  merge, the write policy and capture filtering against a disposable mind
-  repository, then run a real reflection against the deep model.
-- **Manual end-to-end test** on live June:
+- Latest full-suite run on 2026-10-10 at 11:44 UTC failed: 35 checks passed and
+  four failed across startup, engine-slot timeout fencing and standby readiness.
+  These were polling timeouts (missing HTTP readiness or IPC receipt), not mind
+  assertions. The fixtures do not configure mind. Earlier full runs passed,
+  apart from one intermittent `/console` 404 during the restart scenario.
+- A control run at 11:52 UTC used an untouched archive of base revision
+  `965216ec846fb2b5509245a42a07aaac20bf7f85` with the same installed dependencies
+  and unchanged test configuration. Of the 12 checks in those three files,
+  11 passed and the initial-startup HTTP readiness poll timed out. This confirms
+  a readiness failure without the mind changes, not that every latest failure
+  has the same cause. Shared-runner load was elevated; causation is unproven.
+  Do not treat the latest full suite as green or these changes as release-ready.
+- Formatter verification, lint and typecheck passed on the final source. The
+  separately executed Python runner suite passed all three checks; the failed
+  full-suite command did not reach its chained Python command.
+- **Local validation** uses scripted model replies with real Git repositories,
+  disk capture, projection, the reply schema, prompt construction and kernel
+  locks. This tests plumbing, not learning quality or real model behavior.
+  Scratch checks reproduced and then verified fixes for raw-transcript reads,
+  normalized-path access, symlinks, dirty Git edits, unrelated staged changes,
+  partial final steps, unknown settlement and live lock takeover. Separate runs
+  exercised a local bare remote, conflicting edits, real inbox replay, private
+  reports, identity limits, and interaction/worker/automated prompt wiring.
+- **Still required after architecture approval:** real-model reflection/dream
+  evaluation, private GitHub provisioning and sync, runner installation, and
+  a real self-improvement dispatch with receipt/live verification.
+- **Manual end-to-end check** on live June after activation:
   1. Have a real conversation.
   2. Wait for the idle reflection.
   3. Inspect the commit and files on disk.

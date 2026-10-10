@@ -996,14 +996,14 @@ function legacyReplyJsonSchema(
               properties: {
                 action: {
                   type: "string",
-                  enum: ["status", "list", "read", "search", "log"],
+                  enum: ["status", "list", "read", "search", "log", "dream"],
                 },
                 path: { type: "string" },
                 query: { type: "string" },
               },
               required: ["action", "path", "query"],
               description:
-                "Read June's own long-term memory (git-backed notes), projected for the originating conversation. status: what is stored and reflection state. list: path prefix such as people/, conversations/, skills/, improvements/, self/. read: exact path. search: case-insensitive phrase within an optional path prefix. log: recent commits, optionally for one path. Use empty strings for unused fields. Empty text, no other actions.",
+                "Read June's own long-term memory (git-backed notes), projected for the originating conversation. status: what is stored and reflection state. list: path prefix such as people/, conversations/, skills/, improvements/, self/. read: exact path. search: case-insensitive phrase within an optional path prefix. log: recent commits, optionally for one path. dream: ask for a dream on the next scheduler tick instead of waiting for the night. Use empty strings for unused fields. Empty text, no other actions.",
             },
           }
         : {}),
@@ -1037,7 +1037,10 @@ function legacyReplyJsonSchema(
                     additionalProperties: false,
                     properties: {
                       path: { type: "string" },
-                      mode: { type: "string", enum: ["replace", "append"] },
+                      mode: {
+                        type: "string",
+                        enum: ["replace", "append", "delete"],
+                      },
                       content: { type: "string" },
                     },
                     required: ["path", "mode", "content"],

@@ -536,8 +536,25 @@ const schema = z
               return false;
             }
           }, "Use an IANA time zone")
-          .default("America/Boise"),
+          .default("America/Denver"),
         timeoutMs: z.number().int().min(30_000).max(300_000).default(300_000),
+        dreamHour: z.number().int().min(0).max(23).default(3),
+        remote: z
+          .strictObject({
+            url: z
+              .string()
+              .regex(
+                /^(?:git@github\.com:[\w.-]+\/[\w.-]+\.git|\/[^\s]+)$/,
+                "Use git@github.com:owner/repo.git (or an absolute path for local checks)",
+              ),
+            sshKey: absolutePath.optional(),
+            knownHosts: absolutePath.optional(),
+          })
+          .refine(
+            (remote) => !remote.sshKey === !remote.knownHosts,
+            "sshKey and knownHosts go together",
+          )
+          .optional(),
       })
       .optional(),
     imports: z
