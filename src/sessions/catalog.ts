@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { Effect, Schema } from "effect";
 import type {
   Address,
   CompanionReply,
@@ -37,7 +38,11 @@ import {
 } from "../runtime/scope-catalog.js";
 import { nativeChannelEvent, type WakeupEvent } from "../wakeups/state.js";
 import { type ArchiveEvidence, produceSessionArchiveTurn } from "./producer.js";
-import type { ActivityAssignment, ActivityCatalog } from "./runtime.js";
+import type {
+  ActivityAssignment,
+  ActivityCatalog,
+  ActivityStopReceipt,
+} from "./runtime.js";
 import {
   acknowledgeSessionArchive,
   initialSessionDirectory,
@@ -64,6 +69,8 @@ export interface SessionCatalogState {
       applying?: CompanionReply;
       untrackedEffect?: true;
       revoked?: true;
+      /** Only new admissions have complete knowledge of this catalog's effects. */
+      stopTracked?: true;
     }
   >;
 }
@@ -95,6 +102,8 @@ interface Worker {
 export interface SessionHost {
   state: ConversationState;
   key: string[];
+  /** The original actor/step lifetime, never a replacement stop controller. */
+  abortSignal?: AbortSignal;
   persist(): Promise<void>;
   rememberRequest?(request: Interaction["request"]): void;
   typing?(address: Address): {
@@ -104,6 +113,11 @@ export interface SessionHost {
   worker(id: string): Worker;
   personality(): Promise<GlobalPersonality>;
   publish(assignment: ActivityAssignment): Promise<unknown>;
+  /** Existing activity owner only; absent hooks never mean a completed stop. */
+  stopActivity?(assignment: ActivityAssignment): Promise<ActivityStopReceipt>;
+  activityStopStatus?(
+    assignment: ActivityAssignment,
+  ): Promise<ActivityStopReceipt>;
   enqueue(input: ConversationInput): Promise<unknown>;
   schedule(at: number): Promise<unknown>;
   publishNative(event: WakeupEvent, contextSourceIds: string[]): Promise<void>;
@@ -155,12 +169,175 @@ export function isControl(
   );
 }
 
+class ActivityCatalogError extends Schema.TaggedError<ActivityCatalogError>()(
+  "ActivityCatalogError",
+  { cause: Schema.Defect() },
+) {}
+
 export function createSessionCatalog(
   deps: Dependencies,
   current: (audience: string, reference: MemoryReference) => boolean,
   personalityDigest: (audience: string) => string,
 ) {
   const audience = (host: SessionHost) => JSON.stringify(host.key);
+  const calls = new Map<string, number>();
+  const stops = new Map<string, Promise<void>>();
+  const key = (host: SessionHost, assignment: ActivityAssignment) =>
+    JSON.stringify([host.key, assignment.eventId]);
+  function assigned(host: SessionHost, assignment: ActivityAssignment) {
+    const turn = host.state.sessions?.turns[assignment.eventId];
+    return turn &&
+      isDeepStrictEqual(turn.assignment, assignment) &&
+      isDeepStrictEqual(host.key, assignment.scopeKey)
+      ? turn
+      : undefined;
+  }
+  const trackOperation = Effect.fn("june.activity.catalog.track")(
+    function* <T>(host: SessionHost, work: () => Promise<T>) {
+      if (host.abortSignal?.aborted)
+        return yield* new ActivityCatalogError({
+          cause: new Error("Activity host stopped"),
+        });
+      return yield* Effect.tryPromise({
+        try: work,
+        catch: (cause) => new ActivityCatalogError({ cause }),
+      });
+    },
+    // An interrupted waiter cannot retire the raw catalog callback it admitted.
+    Effect.uninterruptible,
+  );
+  function track<T>(
+    host: SessionHost,
+    assignment: ActivityAssignment,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    if (!deps.effectRuntime || host.abortSignal?.aborted)
+      return Promise.reject(
+        new ActivityCatalogError({
+          cause: new Error("Activity runtime unavailable"),
+        }),
+      );
+    const id = key(host, assignment);
+    calls.set(id, (calls.get(id) ?? 0) + 1);
+    return deps.effectRuntime
+      .runPromise(trackOperation(host, work), { signal: host.abortSignal })
+      .finally(() => {
+        // The protected wait returned, or interruption prevented admission.
+        const remaining = (calls.get(id) ?? 1) - 1;
+        if (remaining) calls.set(id, remaining);
+        else calls.delete(id);
+      });
+  }
+  function stopped(
+    host: SessionHost,
+    assignment: ActivityAssignment,
+    receipt?: ActivityStopReceipt,
+  ): ActivityStopReceipt {
+    const turn = assigned(host, assignment);
+    if (
+      !turn?.revoked ||
+      !turn.stopTracked ||
+      turn.untrackedEffect ||
+      turn.applying ||
+      calls.has(key(host, assignment)) ||
+      stops.has(key(host, assignment)) ||
+      turn.mode !== "interaction" ||
+      Object.values(host.state.delegations ?? {}).some(
+        (context) => context.originEventId === assignment.eventId,
+      )
+    )
+      return { fenced: false, settled: false };
+    return {
+      fenced: receipt?.fenced === true,
+      settled: receipt?.settled === true && receipt.fenced === true,
+    };
+  }
+  const finishStop = Effect.fn("june.activity.catalog.stop")(
+    function* (
+      host: SessionHost,
+      assignment: ActivityAssignment,
+      id: string,
+      previous: Promise<void> | undefined,
+      saved: PromiseWithResolvers<void>,
+    ) {
+      if (previous)
+        yield* Effect.tryPromise({
+          try: () => previous,
+          catch: (cause) => new ActivityCatalogError({ cause }),
+        }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      yield* Effect.tryPromise({
+        try: () => host.persist(),
+        catch: (cause) => new ActivityCatalogError({ cause }),
+      });
+      saved.resolve();
+      if (stops.get(id) === saved.promise) stops.delete(id);
+      const receipt = yield* Effect.tryPromise({
+        try: async () => host.stopActivity?.(assignment),
+        catch: (cause) => new ActivityCatalogError({ cause }),
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      return stopped(host, assignment, receipt);
+    },
+    // Once admitted, own the entire save-to-stop tail through interruption.
+    // Before admission no raw persistence may escape runtime initialization.
+    Effect.uninterruptible,
+  );
+  function stop(
+    host: SessionHost,
+    assignment: ActivityAssignment,
+  ): Promise<ActivityStopReceipt> {
+    const turn = assigned(host, assignment);
+    if (!turn) return Promise.resolve({ fenced: false, settled: false });
+    turn.revoked = true;
+    const id = key(host, assignment);
+    const previous = stops.get(id);
+    const saved = Promise.withResolvers<void>();
+    stops.set(id, saved.promise);
+    void saved.promise.catch(() => {});
+    const rejectAfterPrevious = (error: unknown) => {
+      // A failed replacement still owns every predecessor's pending raw save.
+      void (previous ?? Promise.resolve())
+        .catch(() => {})
+        .then(() => saved.reject(error));
+    };
+    if (!deps.effectRuntime) {
+      rejectAfterPrevious(
+        new ActivityCatalogError({
+          cause: new Error("Activity runtime unavailable"),
+        }),
+      );
+      return Promise.resolve({ fenced: false, settled: false });
+    }
+    return deps.effectRuntime
+      .runPromise(finishStop(host, assignment, id, previous, saved), {
+        signal: host.abortSignal,
+      })
+      .catch((error) => {
+        // The caller may fail now; only the complete predecessor chain can
+        // release a later explicit stop to retry this flush.
+        rejectAfterPrevious(error);
+        throw error;
+      });
+  }
+  const readStop = Effect.fn("june.activity.catalog.stop_status")(function* (
+    host: SessionHost,
+    assignment: ActivityAssignment,
+  ) {
+    const receipt = yield* Effect.tryPromise({
+      try: async () => host.activityStopStatus?.(assignment),
+      catch: (cause) => new ActivityCatalogError({ cause }),
+    }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    return stopped(host, assignment, receipt);
+  }, Effect.uninterruptible);
+  function stopStatus(
+    host: SessionHost,
+    assignment: ActivityAssignment,
+  ): Promise<ActivityStopReceipt> {
+    if (!assigned(host, assignment)?.revoked || !deps.effectRuntime)
+      return Promise.resolve({ fenced: false, settled: false });
+    return deps.effectRuntime.runPromise(readStop(host, assignment), {
+      signal: host.abortSignal,
+    });
+  }
   function status(
     host: SessionHost,
     assignment: ActivityAssignment,
@@ -176,6 +353,7 @@ export function createSessionCatalog(
     const receipt = session?.directory.receipts[assignment.eventId];
     if (receipt?.status === "settled") return "acknowledged";
     if (host.state.clearedInputs?.[assignment.eventId]) return "cleared";
+    if (turn.revoked) return "revoked";
     const input = savedInput(host.state, assignment.eventId);
     const source =
       turn.context?.source ??
@@ -219,6 +397,7 @@ export function createSessionCatalog(
   ) {
     return (
       status(host, assignment) === "active" &&
+      !host.abortSignal?.aborted &&
       !host.state.sessions?.turns[assignment.eventId]?.revoked &&
       agentActive(host, assignment) &&
       !host.state.forgottenEvents?.includes(assignment.eventId) &&
@@ -298,6 +477,7 @@ export function createSessionCatalog(
     if (!session) throw new Error("Assigned activity unavailable");
     const source = input.type === "event" ? input.event : input.source;
     sessions.turns[receipt.id] ??= {
+      stopTracked: true,
       assignment: {
         scopeKey: [...host.key],
         sessionId: receipt.sessionId,
@@ -338,6 +518,10 @@ export function createSessionCatalog(
     await host.persist();
     const turn = sessions.turns[receipt.id];
     if (!turn) throw new Error("Assigned turn unavailable");
+    if (turn.revoked) {
+      await host.publish(turn.assignment);
+      return;
+    }
     if (!turn.mode) {
       let control = isControl(input, deps);
       if (input.type === "execution_result") {
@@ -354,7 +538,8 @@ export function createSessionCatalog(
       turn.mode = control ? "control" : "interaction";
       await host.persist();
     }
-    if (turn.mode === "control" && !turn.control) await host.enqueue(input);
+    if (turn.mode === "control" && !turn.control && !turn.revoked)
+      await host.enqueue(input);
     else await host.publish(turn.assignment);
   }
   async function prepare(
@@ -362,10 +547,9 @@ export function createSessionCatalog(
     assignment: ActivityAssignment,
     history: Parameters<ActivityCatalog["prepare"]>[1],
   ): Promise<Preparation> {
-    const turn =
-      status(host, assignment) === "cleared"
-        ? host.state.sessions?.turns[assignment.eventId]
-        : active(host, assignment);
+    const turn = ["cleared", "revoked"].includes(status(host, assignment))
+      ? assigned(host, assignment)
+      : active(host, assignment);
     if (!turn) throw new Error("Missing activity turn");
     // Only an interaction that never started can be suppressed here. A control
     // may already own an independent effect; only its workflow can attest it.
@@ -391,6 +575,10 @@ export function createSessionCatalog(
     };
     if (status(host, assignment) === "cleared") return suppress();
     if (turn.control) return { control: turn.control };
+    // A legacy preparation may have dispatched effects without recording them.
+    // Revocation permits reading saved receipts, not inventing an empty one.
+    if (turn.revoked && !turn.stopTracked)
+      throw new Error("Legacy activity outcome unavailable");
     if (turn.mode === "control") {
       if (!turn.control) throw new Error("Control receipt unavailable");
       return { control: turn.control };
@@ -409,6 +597,8 @@ export function createSessionCatalog(
       input.type === "wakeup" &&
       (!wakeup || wakeup.mode !== input.wakeup.mode)
     )
+      return suppress();
+    if (host.abortSignal?.aborted || status(host, assignment) !== "active")
       return suppress();
     const decision = input.type === "wakeup" && wakeup?.mode === "decision";
     const scope = audience(host);
@@ -456,7 +646,12 @@ export function createSessionCatalog(
       return suppress();
     // Worker recall can expand ancestry after dispatch; the original turn's
     // reference is not the authoritative dependency set of a scheduled run.
-    if (!agentActive(host, assignment)) return suppress();
+    if (
+      host.abortSignal?.aborted ||
+      status(host, assignment) !== "active" ||
+      !agentActive(host, assignment)
+    )
+      return suppress();
     if (
       input?.type === "wakeup" &&
       (!wakeup || !(await host.claimWakeup(input.wakeup.runId, wakeup.mode)))
@@ -516,6 +711,7 @@ export function createSessionCatalog(
               !entry.address.threadId)),
       )
       .slice(-30);
+    if (!valid(host, assignment, reference, revision)) return suppress();
     const continuity =
       input.type === "event"
         ? await deps.continuity?.prepare(
@@ -722,6 +918,11 @@ export function createSessionCatalog(
                   report: result?.report?.slice(0, 3500) ?? "",
                 },
               };
+      // Native subscribers have independent owners; publication is not their
+      // cancellation acknowledgement. Root integration must account for them.
+      turn.untrackedEffect = true;
+      await host.persist();
+      if (!valid(host, assignment, reference, revision)) return suppress();
       await host.publishNative(native, [
         ...reference.sourceIds,
         ...(reference.contextSourceIds ?? []),
@@ -765,7 +966,11 @@ export function createSessionCatalog(
     if (turn.applying && !isDeepStrictEqual(turn.applying, reply))
       throw new Error("Activity output conflict");
     turn.applying ??= reply;
+    if (reply.execution?.length || reply.typingEnabled !== undefined)
+      turn.untrackedEffect = true;
     await host.persist();
+    if (!valid(host, assignment, context.reference, context.deletionRevision))
+      return { text: "" };
     const input = savedInput(host.state, assignment.eventId);
     let replyAddress = context.replyAddress;
     if (
@@ -866,7 +1071,9 @@ export function createSessionCatalog(
     // A manual reset retires the conversation lane, not the external effects.
     // Keep original receipts/holds; do not falsely settle the cleared directory.
     if (status(host, assignment) === "cleared") return;
-    const turn = active(host, assignment);
+    const turn = assigned(host, assignment);
+    if (!turn || !["active", "revoked"].includes(status(host, assignment)))
+      throw new Error("Activity assignment is not accountable");
     const archive = deps.memory?.store.sessionArchiveReceipt(
       audience(host),
       assignment.sessionId,
@@ -946,6 +1153,7 @@ export function createSessionCatalog(
     if (
       input?.type === "event" &&
       input.event.type === "message" &&
+      !turn.revoked &&
       !("control" in outcome) &&
       turn.context?.reference.continuityEpoch
     ) {
@@ -1035,9 +1243,19 @@ export function createSessionCatalog(
   return {
     pump,
     status,
+    stop,
+    stopStatus,
     pingAllowed,
-    prepare,
-    apply,
+    prepare: (
+      host: SessionHost,
+      assignment: ActivityAssignment,
+      history: Parameters<ActivityCatalog["prepare"]>[1],
+    ) => track(host, assignment, () => prepare(host, assignment, history)),
+    apply: (
+      host: SessionHost,
+      assignment: ActivityAssignment,
+      reply: CompanionReply,
+    ) => track(host, assignment, () => apply(host, assignment, reply)),
     acknowledge,
     controlFinished,
     evidence,

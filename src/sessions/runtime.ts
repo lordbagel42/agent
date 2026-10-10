@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { Effect, Schema } from "effect";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
+import type { IntentPort } from "../capabilities/contracts.js";
 import type {
   ChannelAdapter,
   CompanionReply,
@@ -16,6 +18,7 @@ import { messageDestinations } from "../core/messaging.js";
 import { questionText } from "../core/question.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
+import type { JuneRuntime } from "../effect/runtime.js";
 import type { EvidenceStore } from "../memory/store.js";
 import { beginModelReply } from "../models/invocation.js";
 import { parseReply } from "../models/provider.js";
@@ -77,6 +80,9 @@ interface ControlReceipt {
   effects: "confirmed" | "unknown";
 }
 
+/** Local-owner acknowledgment, not an attestation about root descendants. */
+export type ActivityStopReceipt = Awaited<ReturnType<IntentPort["stop"]>>;
+
 /** Trusted metadata interface; implementations stay on the stable coordinator.
  * prepare freezes provenance/capabilities there before returning. apply is keyed
  * by this assignment and may dispatch idempotent worker requests, not tools.
@@ -87,7 +93,10 @@ export interface ActivityCatalog {
    * permission. Keep it available after release, revocation and lost RPC ACKs. */
   assignmentStatus(
     assignment: ActivityAssignment,
-  ): Promise<"active" | "acknowledged" | "cleared" | "unavailable">;
+  ): Promise<"active" | "revoked" | "acknowledged" | "cleared" | "unavailable">;
+  /** Host-only exact assignment. Missing integration cannot attest a stop. */
+  stop?(assignment: ActivityAssignment): Promise<ActivityStopReceipt>;
+  stopStatus?(assignment: ActivityAssignment): Promise<ActivityStopReceipt>;
   pingAllowed?(assignment: ActivityAssignment): Promise<boolean>;
   prepare(
     assignment: ActivityAssignment,
@@ -124,6 +133,12 @@ export interface ActivityCatalog {
 
 interface ActivityTurn {
   assignment: ActivityAssignment;
+  /** Only a fresh admission has a complete local catalog/effect history. */
+  stopTracked?: true;
+  /** Monotone local dispatch fence; never inferred from a root reference ID. */
+  stopped?: true;
+  /** Lost catalog RPCs retain occupancy across restart; never replay on timeout. */
+  catalog?: Partial<Record<"prepare" | "apply", "started" | "returned">>;
   pingStarted?: true;
   context?: TurnContext;
   control?: ControlReceipt;
@@ -137,7 +152,13 @@ interface ActivityTurn {
   archive?: { input: SessionArchiveInput; deletionRevision: number };
   archivedThrough?: number;
   acknowledged?: true;
-  hold?: "inference" | "delivery" | "provenance" | "control" | "tools";
+  hold?:
+    | "inference"
+    | "delivery"
+    | "provenance"
+    | "control"
+    | "tools"
+    | "catalog";
 }
 
 interface ActivityState {
@@ -169,6 +190,8 @@ export interface ActivityReadProjection {
 }
 
 export interface ActivityDependencies {
+  /** Injected process runtime; absent setup/fixture wiring cannot attest stop. */
+  effectRuntime?: JuneRuntime;
   sentinel?: import("../sentinel/service.js").InjectionSentinel;
   owner: Owner;
   model: ModelProvider;
@@ -187,6 +210,8 @@ export interface ActivityDependencies {
       conversation: {
         getOrCreate(key: string[]): {
           activityStatus: ActivityCatalog["assignmentStatus"];
+          activityStop?: ActivityCatalog["stop"];
+          activityStopStatus?: ActivityCatalog["stopStatus"];
           activityPingAllowed: NonNullable<ActivityCatalog["pingAllowed"]>;
           activityPrepare: ActivityCatalog["prepare"];
           activityApply: ActivityCatalog["apply"];
@@ -202,6 +227,11 @@ export interface ActivityDependencies {
     current(audience: string, reference: MemoryReference): boolean;
   };
 }
+
+class ActivityStopError extends Schema.TaggedError<ActivityStopError>()(
+  "ActivityStopError",
+  { cause: Schema.Defect() },
+) {}
 
 /** New actor only: no legacy journal is reinterpreted as an activity workflow.
  * Owns interaction state, never a worker/proposal catalog. Runtime registration
@@ -223,6 +253,43 @@ export function createActivityActor(deps: ActivityDependencies) {
       key,
       sessionActorKey(assignment.scopeKey, assignment.sessionId),
     );
+  const stopReceipt = (
+    turn: ActivityTurn,
+    running: boolean,
+  ): ActivityStopReceipt => {
+    const settled =
+      turn.stopped === true &&
+      turn.stopTracked === true &&
+      !running &&
+      // Typing exposes best-effort completion, not raw transport settlement.
+      // Its independent cleanup runs outside this local carrier's lifetime.
+      !turn.pingStarted &&
+      Object.values(turn.catalog ?? {}).every(
+        (phase) => phase === "returned",
+      ) &&
+      (turn.inference === undefined ||
+        ["not_started", "confirmed_stopped"].includes(turn.inference)) &&
+      Object.values(turn.effects ?? {}).every((outcome) =>
+        ["not_started", "confirmed"].includes(outcome),
+      ) &&
+      (!turn.control ||
+        (turn.control.effects === "confirmed" &&
+          !turn.control.input.turn.data.incomplete &&
+          !turn.control.input.turn.data.entries.some(
+            (entry) =>
+              entry.role === "assistant" && entry.delivery === "unknown",
+          ))) &&
+      (turn.deliveries ?? []).every(
+        (delivery) =>
+          delivery.phase === "settled" &&
+          delivery.result &&
+          delivery.result.status !== "unknown" &&
+          !(delivery.result.status === "rejected" && delivery.result.retryable),
+      );
+    // Unknown raw provider/tool/delivery work may still have a dispatch carrier.
+    // This owner deliberately does not upgrade it to fenced on restart.
+    return { fenced: settled, settled };
+  };
   const definition = actor({
     state: {
       turns: {},
@@ -233,6 +300,8 @@ export function createActivityActor(deps: ActivityDependencies) {
       persist: () => c.saveState({ immediate: true }),
       signal: c.abortSignal,
       receiving: Promise.resolve(),
+      controllers: new Map<string, AbortController>(),
+      stops: new Map<string, Promise<void>>(),
     }),
     queues: {
       turns: queue<{ eventId: string }>(),
@@ -245,6 +314,82 @@ export function createActivityActor(deps: ActivityDependencies) {
           });
     },
     actions: {
+      stop: (
+        c,
+        assignment: ActivityAssignment,
+      ): Promise<ActivityStopReceipt> => {
+        const turn = c.state.turns[assignment.eventId];
+        if (
+          !keyMatches(c.key, assignment) ||
+          !turn ||
+          !isDeepStrictEqual(turn.assignment, assignment)
+        )
+          return Promise.resolve({ fenced: false, settled: false });
+        turn.stopped = true;
+        const previous = c.vars.stops.get(assignment.eventId);
+        const saved = Promise.withResolvers<void>();
+        c.vars.stops.set(assignment.eventId, saved.promise);
+        void saved.promise.catch(() => {});
+        const rejectAfterPrevious = (error: unknown) => {
+          // A failed replacement still owns every predecessor's pending save.
+          void (previous ?? Promise.resolve())
+            .catch(() => {})
+            .then(() => saved.reject(error));
+        };
+        if (!deps.effectRuntime) {
+          rejectAfterPrevious(
+            new ActivityStopError({
+              cause: new Error("Activity runtime unavailable"),
+            }),
+          );
+          return Promise.resolve({ fenced: false, settled: false });
+        }
+        const finishStop = Effect.fn("june.activity.stop")(
+          function* () {
+            if (previous)
+              yield* Effect.tryPromise({
+                try: () => previous,
+                catch: (cause) => new ActivityStopError({ cause }),
+              }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+            yield* Effect.tryPromise({
+              try: () => c.vars.persist(),
+              catch: (cause) => new ActivityStopError({ cause }),
+            });
+            saved.resolve();
+            if (c.vars.stops.get(assignment.eventId) === saved.promise)
+              c.vars.stops.delete(assignment.eventId);
+            c.vars.controllers.get(assignment.eventId)?.abort();
+            return stopReceipt(
+              turn,
+              c.vars.controllers.has(assignment.eventId) ||
+                c.vars.stops.has(assignment.eventId),
+            );
+          },
+          // Own raw persistence and provider abort together, only after the
+          // runtime admits this region. An interrupted cold wait starts neither.
+          Effect.uninterruptible,
+        );
+        return deps.effectRuntime
+          .runPromise(finishStop(), { signal: c.vars.signal })
+          .catch((error) => {
+            // Do not let an interrupted replacement sever earlier occupancy.
+            rejectAfterPrevious(error);
+            throw error;
+          });
+      },
+      stopStatus: (c, assignment: ActivityAssignment): ActivityStopReceipt => {
+        const turn = c.state.turns[assignment.eventId];
+        return deps.effectRuntime &&
+          keyMatches(c.key, assignment) &&
+          turn &&
+          isDeepStrictEqual(turn.assignment, assignment)
+          ? stopReceipt(
+              turn,
+              c.vars.controllers.has(assignment.eventId) ||
+                c.vars.stops.has(assignment.eventId),
+            )
+          : { fenced: false, settled: false };
+      },
       readProjection: (
         c,
         scopeKey: string[],
@@ -298,7 +443,7 @@ export function createActivityActor(deps: ActivityDependencies) {
           projection.turns.push({
             eventId: turn.assignment.eventId,
             status:
-              context && !agentActive(context.source)
+              turn.stopped || (context && !agentActive(context.source))
                 ? "revoked"
                 : context && !current(turn.assignment, context)
                   ? "forgotten"
@@ -447,7 +592,10 @@ export function createActivityActor(deps: ActivityDependencies) {
               )
                 throw new Error("Previous activity input is not acknowledged");
               c.state.binding ??= binding;
-              c.state.turns[assignment.eventId] = { assignment };
+              c.state.turns[assignment.eventId] = {
+                assignment,
+                stopTracked: true,
+              };
             }
             await c.vars.persist();
             await c.queue.send("turns", {
@@ -502,6 +650,7 @@ export function createActivityActor(deps: ActivityDependencies) {
             effects: turn.effects ?? {},
             archivedThrough: turn.archivedThrough ?? 0,
             acknowledged: turn.acknowledged === true,
+            stopped: turn.stopped === true,
             hold: turn.hold ?? null,
           })),
       }),
@@ -524,6 +673,13 @@ export function createActivityActor(deps: ActivityDependencies) {
               run: async (step) => {
                 const turn = step.state.turns[message.body.eventId];
                 if (!turn || turn.acknowledged) return;
+                const controller = new AbortController();
+                if (turn.stopped) controller.abort();
+                step.vars.controllers.set(message.body.eventId, controller);
+                const signal = AbortSignal.any([
+                  step.abortSignal,
+                  controller.signal,
+                ]);
                 return withSpan(
                   "june.activity.interaction",
                   {
@@ -550,7 +706,11 @@ export function createActivityActor(deps: ActivityDependencies) {
                       await step.vars.persist();
                       return;
                     }
-                    if (status !== "active") return;
+                    if (status === "revoked") {
+                      turn.stopped = true;
+                      await step.vars.persist();
+                      controller.abort();
+                    } else if (status !== "active") return;
                     if (assignment.conversation)
                       stopParticipation = deps.lifecycle?.participate?.(
                         assignment.conversation,
@@ -566,29 +726,45 @@ export function createActivityActor(deps: ActivityDependencies) {
                         assignment.scopeKey,
                       ) &&
                       !turn.pingStarted &&
-                      !turn.inference
+                      !turn.inference &&
+                      !turn.stopped
                     ) {
                       turn.pingStarted = true;
                       await step.vars.persist();
-                      if (await catalog.pingAllowed?.(assignment))
-                        stopPing = startTyping(
-                          deps.channel,
-                          ping,
-                          step.abortSignal,
-                        );
+                      if (
+                        (await catalog.pingAllowed?.(assignment)) &&
+                        !turn.stopped &&
+                        !signal.aborted
+                      )
+                        stopPing = startTyping(deps.channel, ping, signal);
                     }
                     if (turn.control) {
                       await finishControl();
                       return;
                     }
                     // An answer or a lost callback is not a settlement receipt. Never
-                    // reopen a paid call or release another turn after interruption.
+                    // reopen a provider call or release another turn after interruption.
                     if (turn.inference === "started") {
                       turn.inference = "unknown";
                       turn.hold = "inference";
                       await step.vars.persist();
                     }
                     if (!turn.inference) {
+                      // A catalog-revoked turn may still own a saved control receipt.
+                      // Only that metadata path survives local cancellation; an
+                      // uncertain prior RPC is never permission to call it again.
+                      const receiptOnly = status === "revoked";
+                      if (
+                        turn.catalog?.prepare ||
+                        (!receiptOnly && (!turn.stopTracked || turn.stopped))
+                      ) {
+                        turn.hold =
+                          turn.catalog?.prepare || !turn.stopTracked
+                            ? "catalog"
+                            : "provenance";
+                        await step.vars.persist();
+                        return;
+                      }
                       for (const [index, entry] of [
                         ...step.state.history.entries(),
                       ].reverse())
@@ -602,10 +778,29 @@ export function createActivityActor(deps: ActivityDependencies) {
                           ...(source ? { source } : {}),
                           reference: context.reference,
                         }));
-                      const prepared = await catalog.prepare(
-                        assignment,
-                        history,
-                      );
+                      turn.catalog ??= {};
+                      turn.catalog.prepare = "started";
+                      await step.vars.persist();
+                      if (
+                        step.abortSignal.aborted ||
+                        (!receiptOnly && (turn.stopped || signal.aborted))
+                      ) {
+                        turn.catalog.prepare = "returned";
+                        turn.inference = "not_started";
+                        await step.vars.persist();
+                        return;
+                      }
+                      let prepared: Awaited<
+                        ReturnType<ActivityCatalog["prepare"]>
+                      >;
+                      try {
+                        prepared = await catalog.prepare(assignment, history);
+                      } catch {
+                        turn.hold = "catalog";
+                        await step.vars.persist();
+                        return;
+                      }
+                      turn.catalog.prepare = "returned";
                       if ("control" in prepared) {
                         const parsed = sessionArchiveInputSchema.safeParse(
                           prepared.control.input,
@@ -685,6 +880,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                                 ),
                             ),
                         ) ||
+                        turn.stopped ||
                         !current(assignment, context)
                       ) {
                         turn.hold = "provenance";
@@ -695,7 +891,8 @@ export function createActivityActor(deps: ActivityDependencies) {
                       turn.inference = "started";
                       await step.vars.persist();
                       const valid = () =>
-                        !step.abortSignal.aborted &&
+                        !signal.aborted &&
+                        !turn.stopped &&
                         current(assignment, context);
                       if (!valid()) {
                         turn.inference = "not_started";
@@ -707,11 +904,8 @@ export function createActivityActor(deps: ActivityDependencies) {
                         context.source,
                       );
                       const sourceSignal = sourceWatch
-                        ? AbortSignal.any([
-                            step.abortSignal,
-                            sourceWatch.signal,
-                          ])
-                        : step.abortSignal;
+                        ? AbortSignal.any([signal, sourceWatch.signal])
+                        : signal;
                       const invocation = beginModelReply(
                         deps.model,
                         withSentinelContext(
@@ -752,7 +946,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                             }
                             const result = await deps.webSearch.search(
                               answer.webSearch,
-                              step.abortSignal,
+                              sourceSignal,
                             );
                             await observeEffect(
                               "web",
@@ -828,6 +1022,18 @@ export function createActivityActor(deps: ActivityDependencies) {
                     }
                     const context = turn.context;
                     if (
+                      (!turn.stopTracked && !turn.deliveries) ||
+                      Object.values(turn.catalog ?? {}).some(
+                        (phase) => phase === "started",
+                      )
+                    ) {
+                      // Legacy missing receipts and lost apply responses may still
+                      // own effects. Revocation cannot acknowledge an empty turn.
+                      turn.hold = "catalog";
+                      await step.vars.persist();
+                      return;
+                    }
+                    if (
                       Object.values(turn.effects ?? {}).some(
                         (outcome) =>
                           outcome === "started" || outcome === "unknown",
@@ -837,7 +1043,11 @@ export function createActivityActor(deps: ActivityDependencies) {
                       await step.vars.persist();
                       return;
                     }
-                    if (!context || !current(assignment, context)) {
+                    if (
+                      turn.stopped ||
+                      !context ||
+                      !current(assignment, context)
+                    ) {
                       if (context && turn.inference !== "unknown") {
                         // Revocation prevents new effects, but a prospective known
                         // settlement can still account for omitted receipts. Never
@@ -1143,15 +1353,40 @@ export function createActivityActor(deps: ActivityDependencies) {
                       if (
                         !turn?.context ||
                         !turn.reply ||
+                        turn.stopped ||
                         !current(assignment, turn.context)
                       )
                         return;
                       if (!turn.deliveries) {
+                        if (!turn.stopTracked || turn.catalog?.apply) {
+                          turn.hold = "catalog";
+                          await step.vars.persist();
+                          return;
+                        }
+                        turn.catalog ??= {};
+                        turn.catalog.apply = "started";
+                        await step.vars.persist();
+                        if (
+                          turn.stopped ||
+                          signal.aborted ||
+                          !current(assignment, turn.context)
+                        ) {
+                          turn.catalog.apply = "returned";
+                          await step.vars.persist();
+                          return;
+                        }
                         const output = await catalog.apply(
                           assignment,
                           turn.reply,
                         );
-                        if (!current(assignment, turn.context)) return;
+                        turn.catalog.apply = "returned";
+                        if (
+                          turn.stopped ||
+                          !current(assignment, turn.context)
+                        ) {
+                          await step.vars.persist();
+                          return;
+                        }
                         const context = turn.context;
                         const replyAddress =
                           output.replyAddress ?? context.replyAddress;
@@ -1239,7 +1474,8 @@ export function createActivityActor(deps: ActivityDependencies) {
                               !turn?.context ||
                               (await catalog.assignmentStatus(assignment)) !==
                                 "active" ||
-                              step.abortSignal.aborted ||
+                              signal.aborted ||
+                              turn.stopped ||
                               !current(assignment, turn.context)
                             ) {
                               if (outbound.content.type === "text")
@@ -1281,7 +1517,15 @@ export function createActivityActor(deps: ActivityDependencies) {
                       }
                     }
                   },
-                );
+                ).finally(() => {
+                  // Keep occupancy through all raw RPC/provider settlement, not
+                  // merely until an abort signal or action deadline fires.
+                  if (
+                    step.vars.controllers.get(message.body.eventId) ===
+                    controller
+                  )
+                    step.vars.controllers.delete(message.body.eventId);
+                });
               },
             });
           } finally {
