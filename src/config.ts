@@ -162,7 +162,8 @@ const schema = z
         ),
         port: z.number().int().min(1024).max(65535),
         directory: absolutePath,
-        assets: absolutePath,
+        /** Optional prebuilt client; omitted means build from this release at startup. */
+        assets: absolutePath.optional(),
         encryptionKeyEnv: envName,
         pepperEnv: envName,
         experimentalSlackEmbed: z.boolean().default(false),
@@ -678,10 +679,13 @@ const schema = z
   .refine(
     (config) =>
       !config.artifacts ||
-      (!config.deployment?.blueGreen &&
-        !config.setupMode &&
-        config.artifacts.port !== config.port),
-    "Artifacts require a separate listener, active channels, and non-queued PIN ingress (blue-green is unsupported)",
+      (!config.setupMode &&
+        config.artifacts.port !== config.port &&
+        !(
+          config.deployment?.blueGreen &&
+          [3081, 3082, 3083].includes(config.artifacts.port)
+        )),
+    "Artifacts require active channels and their own listener port, distinct from June and blue-green slot/intake ports",
   )
   .refine(
     (config) =>

@@ -25,7 +25,29 @@ export async function artifactAsset(root: string, path: string) {
 export class ArtifactRenderer {
   private busy = false;
   private cache = new Map<string, Buffer>();
-  constructor(readonly assets: string) {}
+  /** Content-free status for June's capability inspection. */
+  readonly status: {
+    client: "building" | "ready" | "failed";
+    preview: "untested" | "ok" | "failed";
+  } = { client: "building", preview: "untested" };
+  readonly assets: Promise<string>;
+  constructor(assets: string | Promise<string>) {
+    this.assets = Promise.resolve(assets).then(
+      (root) => {
+        this.status.client = "ready";
+        return root;
+      },
+      (error: unknown) => {
+        this.status.client = "failed";
+        throw error;
+      },
+    );
+    // Asset requests and renders observe the failure themselves.
+    this.assets.catch(() => {});
+  }
+  async asset(path: string) {
+    return artifactAsset(await this.assets, path);
+  }
   async render(
     record: ArtifactRecord,
     workflow?: WorkflowView,
@@ -68,8 +90,7 @@ export class ArtifactRenderer {
           return route.abort();
         try {
           if (url.pathname.startsWith("/artifacts/assets/")) {
-            const asset = await artifactAsset(
-              this.assets,
+            const asset = await this.asset(
               url.pathname.slice("/artifacts/assets/".length),
             );
             return route.fulfill({
@@ -134,7 +155,11 @@ export class ArtifactRenderer {
       if (bytes.length > 4_194_304) throw new Error("artifact_preview_limit");
       if (this.cache.size >= 16) this.cache.clear();
       this.cache.set(key, bytes);
+      this.status.preview = "ok";
       return bytes;
+    } catch (error) {
+      this.status.preview = "failed";
+      throw error;
     } finally {
       clearTimeout(timeout);
       await browser?.close();

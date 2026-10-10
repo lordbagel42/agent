@@ -30,10 +30,34 @@ CONTROL_PATH = "/operator/deployment/intake"
 SWAP_PATH = "/operator/deployment/swap-notice"
 PAUSE_WAIT = 1.0
 RECEIPT_LIMIT = 100_000
+# Artifact PINs (chosen commands and the bot's own DM echoes) must never reach
+# durable storage. Matches June's src/core/private-input.ts detection.
+PIN_SECRET = re.compile(
+    r"!artifact-pin\b|Access PIN:\s*\d{8}\b|\[June private artifact access\]", re.I
+)
+INTAKE_REDACTED_PIN = "!artifact-pin [removed by durable intake]"
 
 
 def matches(pattern, value):
     return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def redact_pins(value):
+    """Replace every PIN-bearing string, including block and edit copies."""
+    if isinstance(value, str):
+        return INTAKE_REDACTED_PIN if PIN_SECRET.search(value) else value
+    if isinstance(value, list):
+        return [redact_pins(item) for item in value]
+    if isinstance(value, dict):
+        redacted = {key: redact_pins(item) for key, item in value.items()}
+        # Styled text splits a command across block elements, so an unmarked
+        # sibling can still hold the digits: drop every rich copy.
+        if "text" in value and redacted != value:
+            redacted["text"] = INTAKE_REDACTED_PIN
+            for key in ("blocks", "attachments", "files"):
+                redacted.pop(key, None)
+        return redacted
+    return value
 
 
 class Responder:
@@ -256,6 +280,7 @@ class Responder:
                     "x-june-intake-token": self.queue["token"],
                     "x-june-received-at": received_at,
                     "x-june-revision": route["revision"],
+                    "x-june-intake-redaction": "artifact-pin-v1",
                 },
             )
             response = connection.getresponse()
@@ -541,6 +566,9 @@ class Responder:
             if keys:
                 # Keep callback identities distinct; the app owns message dedup.
                 identity = hashlib.sha256(json.dumps(keys[0]).encode()).hexdigest()
+                redacted = redact_pins(payload)
+                if redacted != payload:
+                    raw = json.dumps(redacted, separators=(",", ":")).encode()
             elif content_type.startswith("application/x-www-form-urlencoded"):
                 values = parse_qs(raw.decode(), max_num_fields=8)
                 if len(values.get("payload", [])) != 1:

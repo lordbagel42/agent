@@ -61,6 +61,7 @@ export function capabilitySnapshot(
     | "importCancel"
     | "apps"
     | "channels"
+    | "artifacts"
   >,
   importsMounted: boolean,
   env: NodeJS.ProcessEnv = process.env,
@@ -120,6 +121,15 @@ export function capabilitySnapshot(
           config.coding.enabled &&
           env.JUNE_ALLOW_NATIVE_CODING === "1",
         `${config.dynamicApps ? "dynamicApps is configured." : "Not connected: dynamicApps is not configured."} apps build/prepare/inspect uses a separate app host; interaction agents delegate to execution workers. June judges task legitimacy and publication audience; ordinary effects need no compulsory approval. Verified source/audience bindings and host activation remain required. Public or any-signed-in viewing grants no authoring rights. App-host connectivity, viewer routing and login are not probed.`,
+      ),
+      row(
+        "shared-artifacts",
+        !!runtime.artifacts,
+        turn && !!runtime.artifacts,
+        !!config.artifacts,
+        config.artifacts
+          ? `artifact creates public/private Excalidraw boards, HTML pages and workflow views at ${config.artifacts.origin}. Supported Slack delivery: static PNG preview plus "Open shared space" link in the same thread; the live board opens in a browser. Client build: ${runtime.artifacts?.options.status?.().client ?? "unknown"}; last preview render: ${runtime.artifacts?.options.status?.().preview ?? "unknown"} (failed usually means Playwright Chromium is missing or its sandbox is blocked; links still work). Inline Slack embedding is ${config.artifacts.experimentalSlackEmbed ? "on but experimental: it needs links.embed:write and the origin as an unfurl domain, and falls back to the image when Slack rejects it" : "off (experimental; needs Slack app links.embed:write plus the origin as an unfurl domain)"}. ${config.deployment?.blueGreen ? "Blue-green: private PINs need the updated Slack responder's redaction attestation; chosen-PIN DMs are always removed." : ""} HTTPS proxy routing is not probed.`
+          : "Not connected: artifacts is not configured. Raygen must add config.artifacts (dedicated HTTPS origin proxied to its loopback port, persistent directory under /var/lib/june, encryption and pepper secrets) and install Playwright Chromium for previews; see docs/shared-artifacts.md. Do not invent artifact links.",
       ),
       row(
         "retained-memory",

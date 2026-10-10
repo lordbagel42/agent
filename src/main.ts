@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { open, readFile, realpath, stat } from "node:fs/promises";
+import { mkdtemp, open, readFile, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +14,7 @@ import { createAgentMcp } from "./agent/mcp.js";
 import { operatorRequest } from "./agent/operator.js";
 import { AgentService } from "./agent/service.js";
 import { createAppsClient } from "./apps/client.js";
+import { buildArtifactClient } from "./artifacts/build.js";
 import { ArtifactRenderer } from "./artifacts/render.js";
 import { createArtifactRoutes } from "./artifacts/routes.js";
 import { ArtifactService } from "./artifacts/service.js";
@@ -1324,8 +1325,20 @@ async function main() {
     }
   }
   const artifactRenderer = config.artifacts
-    ? new ArtifactRenderer(config.artifacts.assets)
+    ? new ArtifactRenderer(
+        config.artifacts.assets ??
+          // Releases ship source only; build this revision's client privately.
+          mkdtemp(join(tmpdir(), "june-artifacts-")).then(buildArtifactClient),
+      )
     : undefined;
+  artifactRenderer?.assets.catch((error: unknown) =>
+    console.error(
+      `Artifact client build failed; boards cannot load: ${error instanceof Error ? error.message : String(error)}`,
+    ),
+  );
+  // Blue-green intake persists raw Slack events. Private PINs need an intake
+  // that attests redaction on its latest delivery; direct ingress needs none.
+  const intakeRedaction = { attested: !config.deployment?.blueGreen };
   const artifactShutdown = new AbortController();
   const artifacts = config.artifacts
     ? new ArtifactService({
@@ -1338,6 +1351,7 @@ async function main() {
           pepper: secret(config.artifacts.pepperEnv),
         }),
         deletionRevision: () => memory?.store.deletionRevision() ?? 0,
+        privatePins: () => intakeRedaction.attested,
         workflow: async (id, event) =>
           (await client.workflowRun
             .getOrCreate([config.owner.id, id])
@@ -1352,6 +1366,8 @@ async function main() {
               code: "artifact_dm_unavailable",
               retryable: false,
             }),
+        status: () =>
+          artifactRenderer?.status ?? { client: "failed", preview: "untested" },
         preview: async (record, workflow) => {
           await artifactRenderer?.render(
             record,
@@ -1736,6 +1752,11 @@ async function main() {
             ? secret(config.deployment.intakeTokenEnv)
             : undefined,
           read: readDeployment,
+          intakeDelivery: config.deployment.blueGreen
+            ? (redacted: boolean) => {
+                intakeRedaction.attested = redacted;
+              }
+            : undefined,
           // Coding now fences launches and checks current-root leases, but
           // legacy sessions/removed roots still need independent reconciliation.
           // Other optional paths can also outlive a cancelled actor callback.

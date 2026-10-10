@@ -6,7 +6,7 @@ import { getCookie, setCookie } from "hono/cookie";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { artifactId } from "./contracts.js";
-import { type ArtifactRenderer, artifactAsset } from "./render.js";
+import type { ArtifactRenderer } from "./render.js";
 import { mergeScene, parseScene } from "./scene.js";
 import type { ArtifactService } from "./service.js";
 import { artifactPage, HTML_CSP } from "./view.js";
@@ -50,8 +50,7 @@ export function createArtifactRoutes(
   });
   app.get("/artifacts/assets/*", async (c) => {
     try {
-      const asset = await artifactAsset(
-        renderer.assets,
+      const asset = await renderer.asset(
         c.req.path.slice("/artifacts/assets/".length),
       );
       return new Response(asset.bytes, {

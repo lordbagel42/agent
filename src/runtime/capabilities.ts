@@ -468,9 +468,15 @@ async function dispatchCapability(
         isCurrent: canStartAction,
       });
       return { text: result.text, artifactPresentation: result.presentation };
-    } catch {
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "";
       return {
-        text: "The artifact request was not confirmed. Inspect its existing receipt before retrying; no PIN is available in chat context.",
+        text:
+          reason === "artifact_private_intake_unverified"
+            ? "Private artifacts and PIN changes are unavailable: the blue-green Slack intake has not attested PIN redaction (its responder needs the updated install). Public artifacts still work; ask Raygen to update the responder."
+            : reason === "artifact_private_delivery_unavailable"
+              ? "Private artifacts need a Slack creator for PIN delivery. Create a public artifact or ask from Slack."
+              : "The artifact request was not confirmed. Inspect its existing receipt before retrying; no PIN is available in chat context.",
       };
     }
   }

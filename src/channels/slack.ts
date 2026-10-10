@@ -794,7 +794,10 @@ export function createSlackAdapter({
         events,
       };
     },
-    async send(message: OutboundMessage): Promise<SendResult> {
+    async send(
+      message: OutboundMessage,
+      inline = experimentalArtifactEmbed,
+    ): Promise<SendResult> {
       if (message.address.channel !== "slack") {
         return rejected("wrong_channel");
       }
@@ -876,7 +879,7 @@ export function createSlackAdapter({
           ...(artifact?.imageUrl
             ? {
                 blocks: [
-                  ...(experimentalArtifactEmbed
+                  ...(inline
                     ? [
                         {
                           type: "video",
@@ -1060,6 +1063,28 @@ export function createSlackAdapter({
       }
     },
   };
+  if (experimentalArtifactEmbed) {
+    const sendOnce = adapter.send as (
+      message: OutboundMessage,
+      inline?: boolean,
+    ) => Promise<SendResult>;
+    // A definitive Slack rejection posted nothing, so falling back to the
+    // supported image preview once cannot duplicate the message.
+    adapter.send = async (message) => {
+      const result = await sendOnce(message);
+      if (
+        result.status !== "rejected" ||
+        result.retryable ||
+        message.content.type !== "text" ||
+        !message.content.artifact?.imageUrl
+      )
+        return result;
+      console.warn(
+        `Slack rejected the experimental inline artifact embed (${result.code}); sending the image preview.`,
+      );
+      return sendOnce(message, false);
+    };
+  }
   if (owners.size > 0)
     adapter.shareHistory = createSlackHistory({
       teamId,

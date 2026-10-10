@@ -13,8 +13,11 @@ import {
   artifactCommandSchema,
   type WorkflowView,
 } from "./contracts.js";
-import { parseScene } from "./scene.js";
+import { completeScene } from "./scene.js";
 import type { ArtifactStore } from "./store.js";
+
+/** Must match INTAKE_REDACTED_PIN in scripts/deploy/slack_responder.py. */
+export const INTAKE_REDACTED_PIN = "!artifact-pin [removed by durable intake]";
 
 export class ArtifactService {
   constructor(
@@ -23,11 +26,15 @@ export class ArtifactService {
       origin: string;
       owner: Owner;
       deletionRevision(): number;
+      /** False while a durable intake could persist PIN DMs unredacted. */
+      privatePins?(): boolean;
       workflow(
         id: string,
         event?: MessageEvent,
       ): Promise<WorkflowView | undefined>;
       preview?(record: ArtifactRecord, workflow?: WorkflowView): Promise<void>;
+      /** Content-free client build and preview renderer status. */
+      status?(): { client: string; preview: string };
       sendSecret(
         identity: Identity,
         operationId: string,
@@ -63,15 +70,22 @@ export class ArtifactService {
     const command = artifactCommandSchema.parse(input);
     const previous = command.id ? this.store.get(command.id) : undefined;
     if (
+      command.content !== null &&
+      (command.kind === "board" || previous?.kind === "board")
+    )
+      command.content = JSON.stringify(
+        completeScene(JSON.parse(command.content)),
+      );
+    if (
       (command.visibility === "private" || command.action === "change_pin") &&
       (previous?.creator.channel ?? context.event.address.channel) !== "slack"
     )
       throw new Error("artifact_private_delivery_unavailable");
     if (
-      command.content !== null &&
-      (command.kind === "board" || previous?.kind === "board")
+      (command.visibility === "private" || command.action === "change_pin") &&
+      this.options.privatePins?.() === false
     )
-      parseScene(JSON.parse(command.content));
+      throw new Error("artifact_private_intake_unverified");
     if (command.kind === "workflow") {
       const view = command.runId
         ? await this.options.workflow(command.runId, context.event)
@@ -147,7 +161,9 @@ export class ArtifactService {
     if (!/!artifact-pin\b/i.test(event.text)) return event;
     const clean = {
       ...event,
-      text: "Artifact PIN command removed before history. No change was confirmed.",
+      text: event.text.includes(INTAKE_REDACTED_PIN)
+        ? "Chosen artifact PIN command removed by the durable deployment intake before storage; no PIN changed. Use artifact change_pin to DM the creator a new random PIN."
+        : "Artifact PIN command removed before history. No change was confirmed.",
     };
     const match = /^!artifact-pin ([a-f0-9]{32}) (\d{8})$/.exec(
       event.text.trim(),

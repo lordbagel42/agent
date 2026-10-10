@@ -48,6 +48,50 @@ export function parseScene(input: unknown): SceneElement[] {
     throw new Error("artifact_scene_limit");
   return elements;
 }
+const DIGITS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+/** Complete model-authored elements: array order becomes layer order. */
+export function completeScene(input: unknown): SceneElement[] {
+  if (!Array.isArray(input)) return parseScene(input);
+  // Models send null for unused fields; treat host-filled nulls as omitted.
+  const filled = [
+    "id",
+    "index",
+    "version",
+    "versionNonce",
+    "isDeleted",
+    "width",
+    "height",
+  ];
+  const entries = input.map((entry) =>
+    typeof entry === "object" && entry !== null
+      ? Object.fromEntries(
+          Object.entries(entry).filter(
+            ([key, value]) => value !== null || !filled.includes(key),
+          ),
+        )
+      : entry,
+  );
+  const reindex = entries.some((entry) => entry?.index === undefined);
+  return parseScene(
+    entries.map((entry: Record<string, unknown>, position) => ({
+      isDeleted: false,
+      version: 1,
+      versionNonce: position,
+      width: 0,
+      height: 0,
+      ...entry,
+      id: entry?.id ?? `june-${position}`,
+      ...(reindex
+        ? {
+            index:
+              position < 62
+                ? `a${DIGITS[position]}`
+                : `b${DIGITS[Math.floor(position / 62)]}${DIGITS[position % 62]}`,
+          }
+        : {}),
+    })),
+  );
+}
 export function mergeScene(
   saved: SceneElement[],
   incoming: SceneElement[],

@@ -69,6 +69,8 @@ export interface HttpDependencies {
     intakeToken?: string;
     supported: boolean;
     read?: ReturnType<typeof createDeploymentReader>;
+    /** Records whether the durable intake attests secret redaction. */
+    intakeDelivery?(redacted: boolean): void;
   };
   slackIngressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
@@ -481,6 +483,9 @@ export function createHttpApp(deps: HttpDependencies) {
           at > Date.now() + 60_000
         )
           return c.json({ error: "invalid_received_at" }, 400);
+        deps.deployment?.intakeDelivery?.(
+          c.req.header("x-june-intake-redaction") === "artifact-pin-v1",
+        );
         c.set("intake", { receivedAt: at });
         c.set("arrival", { at, monotonic: performance.now() });
         c.set("slackRequest", c.req.raw);

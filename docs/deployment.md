@@ -249,6 +249,9 @@ preparation, blocked recovery, missing/invalid markers and upstream failure alon
 do not trigger replies. Notice failures cannot reject already-persisted input. It
 starts paused without a destination. Its private SQLite database contains message
 bodies until application acceptance; protect it as private conversation data.
+Before storing, it replaces shared-artifact PIN strings (chosen-PIN commands and
+the bot's PIN DM echoes) and attests that on delivery; see
+[shared artifacts](shared-artifacts.md#blue-green-durable-intake).
 Queue defaults are 10,000 events and 64 MiB of raw bodies/content types, not a
 filesystem quota. Capacity/storage failures return 503, never a false ACK.
 Pending events do not expire; completed hash receipts retain at most 48 hours and

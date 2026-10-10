@@ -143,14 +143,24 @@ async function sync() {
           <Excalidraw
             theme="light"
             viewModeEnabled={preview}
+            zenModeEnabled={preview}
             initialData={{
               elements: restoreElements(
                 elements as Parameters<typeof restoreElements>[0],
                 null,
               ),
+              scrollToContent: true,
             }}
             excalidrawAPI={(value: ExcalidrawImperativeAPI) => {
               api = value;
+              // Frame the drawing for the static chat preview.
+              if (preview)
+                setTimeout(() =>
+                  value.scrollToContent(undefined, {
+                    fitToContent: true,
+                    animate: false,
+                  }),
+                );
             }}
             UIOptions={{
               tools: { image: false },
