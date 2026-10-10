@@ -53,11 +53,13 @@ export interface ToolAdapter {
   ): Promise<unknown>;
   /** Optional deferred path: validate the exact operation before requesting its
    * credential. Await the one-use callback before any external effect; never
-   * retain it or return its result. The broker rechecks authorization on release. */
+   * retain it or return its result. Recheck the host predicate after preparation
+   * awaits, synchronously at every external dispatch and credential write. */
   executeWithCredentialResolver?(
     action: ToolAction,
     resolveCredential: () => Promise<unknown>,
     signal?: AbortSignal,
+    authorized?: () => boolean,
   ): Promise<unknown>;
 }
 export interface BrokerOptions {
@@ -475,6 +477,7 @@ export class CapabilityBroker {
               action,
               resolveCredential,
               controller.signal,
+              authorized,
             );
           else {
             const credential = await resolveCredential();

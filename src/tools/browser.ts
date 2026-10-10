@@ -235,11 +235,13 @@ export class BrowserAdapter implements ToolAdapter {
     action: ToolAction,
     credential: unknown,
     signal?: AbortSignal,
+    authorized?: () => boolean,
   ): Promise<BrowserResult> {
     return this.executeWithCredentialResolver(
       action,
       async () => credential,
       signal,
+      authorized,
     );
   }
 
@@ -247,6 +249,7 @@ export class BrowserAdapter implements ToolAdapter {
     action: ToolAction,
     resolveCredential: () => Promise<unknown>,
     signal?: AbortSignal,
+    authorized?: () => boolean,
   ): Promise<BrowserResult> {
     let browser: Browser | undefined;
     let context: BrowserContext | undefined;
@@ -300,8 +303,12 @@ export class BrowserAdapter implements ToolAdapter {
     const abort = () => {
       void cancel();
     };
+    // Missing host authority is not legacy permission. Cancellation requests
+    // cleanup; this predicate independently fences each prepared dispatch.
+    const current = () =>
+      !stopped && !signal?.aborted && authorized?.() === true;
     try {
-      if (this.#closed || signal?.aborted) denied();
+      if (this.#closed || !current()) denied();
       const args = z
         .strictObject({
           operation: z.string(),
@@ -344,7 +351,7 @@ export class BrowserAdapter implements ToolAdapter {
       signal?.addEventListener("abort", abort, { once: true });
       timer = setTimeout(abort, this.#timeout);
       const credential = await resolveCredential();
-      if (stopped || signal?.aborted) denied();
+      if (!current()) denied();
       const secret = bearer
         ? bearerCredential.parse(credential).bearerToken
         : undefined;
@@ -358,13 +365,13 @@ export class BrowserAdapter implements ToolAdapter {
         executablePath: this.#executablePath,
         env: this.#environment,
       });
-      if (stopped) denied();
+      if (!current()) denied();
       context = await browser.newContext({
         acceptDownloads: false,
         serviceWorkers: "block",
         permissions: [],
       });
-      if (stopped) denied();
+      if (!current()) denied();
       context.setDefaultTimeout(this.#timeout);
       context.setDefaultNavigationTimeout(this.#timeout);
       // Never connect a routed WebSocket to its server.
@@ -372,7 +379,9 @@ export class BrowserAdapter implements ToolAdapter {
         void track(Promise.resolve(socket.close()).catch(failedCleanup));
         abort();
       });
+      if (!current()) denied();
       const page = await context.newPage();
+      if (!current()) denied();
       context.on("page", (other) => {
         if (other !== page) abort();
       });
@@ -402,7 +411,7 @@ export class BrowserAdapter implements ToolAdapter {
               );
               const rule = recipe.requests[index];
               if (
-                stopped ||
+                !current() ||
                 !rule ||
                 request.frame() !== page.mainFrame() ||
                 request.redirectedFrom()
@@ -412,11 +421,12 @@ export class BrowserAdapter implements ToolAdapter {
               if (count > rule.maxUses) throw new Error();
               used.set(index, count);
               const headers = await request.allHeaders();
-              // Cancellation may arrive while request metadata is being retrieved.
-              if (stopped) throw new Error();
               delete headers.authorization;
               delete headers["proxy-authorization"];
               if (rule.credential) headers.authorization = `Bearer ${secret}`;
+              // Header preparation yields. No await may separate this host
+              // intent/grant check from actual outbound dispatch.
+              if (!current()) throw new Error();
               // route.continue follows redirects without re-routing: never use it here.
               const response = await route.fetch({
                 headers,
@@ -427,7 +437,7 @@ export class BrowserAdapter implements ToolAdapter {
               try {
                 if (response.status() >= 300 && response.status() < 400)
                   throw new Error();
-                if (stopped) throw new Error();
+                if (!current()) throw new Error();
                 await route.fulfill({ response });
               } finally {
                 await response.dispose();
@@ -439,9 +449,10 @@ export class BrowserAdapter implements ToolAdapter {
           })(),
         ),
       );
+      if (!current()) denied();
       await page.goto(recipe.url, { waitUntil: "domcontentloaded" });
       for (const step of recipe.steps) {
-        if (stopped) denied();
+        if (!current()) denied();
         if (step.kind === "login") {
           if (!credentials) denied();
           for (const [selector, value] of [
@@ -450,24 +461,33 @@ export class BrowserAdapter implements ToolAdapter {
           ] as const) {
             // The origin check and secret write run synchronously in the same
             // document, not a check-then-fill across a navigation race.
-            await page.locator(selector).evaluate(
-              (element, input) => {
-                if (
-                  element.ownerDocument.location.origin !== input.origin ||
-                  !(element instanceof HTMLInputElement)
-                )
-                  throw new Error("invalid_login_target");
-                const setter = Object.getOwnPropertyDescriptor(
-                  HTMLInputElement.prototype,
-                  "value",
-                )?.set;
-                if (!setter) throw new Error("invalid_login_target");
-                setter.call(element, input.value);
-                element.dispatchEvent(new Event("input", { bubbles: true }));
-                element.dispatchEvent(new Event("change", { bubbles: true }));
-              },
-              { origin: recipe.origin, value },
-            );
+            const target = await page.locator(selector).elementHandle();
+            if (!target) denied();
+            try {
+              // Resolve the selector before the host check; never release a
+              // credential across a preparation await after authority is lost.
+              if (!current()) denied();
+              await target.evaluate(
+                (element, input) => {
+                  if (
+                    element.ownerDocument.location.origin !== input.origin ||
+                    !(element instanceof HTMLInputElement)
+                  )
+                    throw new Error("invalid_login_target");
+                  const setter = Object.getOwnPropertyDescriptor(
+                    HTMLInputElement.prototype,
+                    "value",
+                  )?.set;
+                  if (!setter) throw new Error("invalid_login_target");
+                  setter.call(element, input.value);
+                  element.dispatchEvent(new Event("input", { bubbles: true }));
+                  element.dispatchEvent(new Event("change", { bubbles: true }));
+                },
+                { origin: recipe.origin, value },
+              );
+            } finally {
+              await target.dispose();
+            }
           }
           continue;
         }
@@ -475,16 +495,19 @@ export class BrowserAdapter implements ToolAdapter {
         if (step.kind === "click") await target.click();
         else await target.fill(step.value);
       }
+      if (!current()) denied();
       const confirmation = page.locator(recipe.success.selector);
       await confirmation.waitFor({ state: "visible" });
+      if (!current()) denied();
       if ((await confirmation.textContent()) !== recipe.success.text) denied();
+      if (!current()) denied();
       let untrustedText: string | undefined;
       if (recipe.outputSelector) {
         untrustedText = await page
           .locator(recipe.outputSelector)
           .evaluate((element) => (element.textContent ?? "").slice(0, 4096));
       }
-      if (stopped || signal?.aborted) denied();
+      if (!current()) denied();
       result = {
         operation: recipe.name,
         status: "confirmed",
