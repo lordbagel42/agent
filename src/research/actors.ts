@@ -3,6 +3,10 @@ import { actor, queue, type Registry } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type { MessageEvent, ModelProvider } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
+import {
+  guardWorkflowActor,
+  terminalWorkflowError,
+} from "../runtime/lifecycle.js";
 import type { createPriorityAdmission } from "../runtime/priority.js";
 import type { Dependencies } from "../runtime/registry.js";
 import {
@@ -105,7 +109,7 @@ export function createResearchSessionActor(
   priority: ReturnType<typeof createPriorityAdmission>,
 ) {
   const now = () => deps.research?.now?.() ?? Date.now();
-  return actor({
+  const definition = actor({
     state: {
       spec: null,
       status: "paused",
@@ -409,8 +413,8 @@ export function createResearchSessionActor(
         });
       },
       {
-        onError: async (c) => {
-          if (c.abortSignal.aborted) return;
+        onError: async (c, event) => {
+          if (c.abortSignal.aborted || !terminalWorkflowError(event)) return;
           deps.lifecycle?.fail();
           if (c.state.status === "active") {
             c.state.status = "needs_review";
@@ -421,6 +425,7 @@ export function createResearchSessionActor(
       },
     ),
   });
+  return guardWorkflowActor(definition, deps.lifecycle);
 }
 
 type ResearchRegistry = Registry<{

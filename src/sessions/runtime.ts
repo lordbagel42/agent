@@ -20,7 +20,13 @@ import type { EvidenceStore } from "../memory/store.js";
 import { beginModelReply } from "../models/invocation.js";
 import { parseReply } from "../models/provider.js";
 import { type Delivery, deliver } from "../runtime/delivery.js";
-import type { ConversationActivity, Lifecycle } from "../runtime/lifecycle.js";
+import {
+  type ConversationActivity,
+  guardWorkflowActor,
+  type Lifecycle,
+  serializeAdmittedWork,
+  terminalWorkflowError,
+} from "../runtime/lifecycle.js";
 import type {
   JuneClientRegistry,
   MemoryReference,
@@ -217,7 +223,7 @@ export function createActivityActor(deps: ActivityDependencies) {
       key,
       sessionActorKey(assignment.scopeKey, assignment.sessionId),
     );
-  return actor({
+  const definition = actor({
     state: {
       turns: {},
       history: [],
@@ -225,6 +231,7 @@ export function createActivityActor(deps: ActivityDependencies) {
     } as ActivityState,
     createVars: (c) => ({
       persist: () => c.saveState({ immediate: true }),
+      signal: c.abortSignal,
       receiving: Promise.resolve(),
     }),
     queues: {
@@ -391,56 +398,65 @@ export function createActivityActor(deps: ActivityDependencies) {
           !isDeepStrictEqual(assignment.scopeKey, ["private", deps.owner.id])
         )
           throw new Error("Invalid activity assignment");
-        const receive = c.vars.receiving.then(async () => {
-          if (
-            (await deps
-              .catalog(assignment.scopeKey, c.client<JuneClientRegistry>())
-              .assignmentStatus(assignment)) === "unavailable"
-          )
-            throw new Error("Unassigned activity input");
-          const binding = {
-            scopeKey: assignment.scopeKey,
-            sessionId: assignment.sessionId,
-            openedAt: assignment.openedAt,
-          };
-          if (c.state.binding && !isDeepStrictEqual(c.state.binding, binding))
-            throw new Error("Activity binding conflict");
-          const previous = c.state.turns[assignment.eventId];
-          if (previous) {
-            if (!isDeepStrictEqual(previous.assignment, assignment))
-              throw new Error("Activity assignment conflict");
-          } else {
-            // The catalog may publish a successor before the preceding ACK RPC
-            // returns. Repair only its exact historical receipt, never effects.
-            for (const turn of Object.values(c.state.turns)) {
-              if (turn.acknowledged) continue;
-              if (
-                (await deps
-                  .catalog(assignment.scopeKey, c.client<JuneClientRegistry>())
-                  .assignmentStatus(turn.assignment)) !== "acknowledged"
-              )
-                continue;
-              turn.acknowledged = true;
-              delete turn.hold;
-              c.state.acknowledgedThrough = Math.max(
-                c.state.acknowledgedThrough,
-                turn.assignment.sequence,
-              );
-            }
+        const receive = serializeAdmittedWork(
+          deps.lifecycle,
+          c.vars.signal,
+          c.vars.receiving,
+          async () => {
             if (
-              assignment.sequence !== c.state.acknowledgedThrough + 1 ||
-              Object.values(c.state.turns).some((turn) => !turn.acknowledged)
+              (await deps
+                .catalog(assignment.scopeKey, c.client<JuneClientRegistry>())
+                .assignmentStatus(assignment)) === "unavailable"
             )
-              throw new Error("Previous activity input is not acknowledged");
-            c.state.binding ??= binding;
-            c.state.turns[assignment.eventId] = { assignment };
-          }
-          await c.vars.persist();
-          await c.queue.send("turns", {
-            eventId: assignment.eventId,
-          });
-        });
+              throw new Error("Unassigned activity input");
+            const binding = {
+              scopeKey: assignment.scopeKey,
+              sessionId: assignment.sessionId,
+              openedAt: assignment.openedAt,
+            };
+            if (c.state.binding && !isDeepStrictEqual(c.state.binding, binding))
+              throw new Error("Activity binding conflict");
+            const previous = c.state.turns[assignment.eventId];
+            if (previous) {
+              if (!isDeepStrictEqual(previous.assignment, assignment))
+                throw new Error("Activity assignment conflict");
+            } else {
+              // The catalog may publish a successor before the preceding ACK RPC
+              // returns. Repair only its exact historical receipt, never effects.
+              for (const turn of Object.values(c.state.turns)) {
+                if (turn.acknowledged) continue;
+                if (
+                  (await deps
+                    .catalog(
+                      assignment.scopeKey,
+                      c.client<JuneClientRegistry>(),
+                    )
+                    .assignmentStatus(turn.assignment)) !== "acknowledged"
+                )
+                  continue;
+                turn.acknowledged = true;
+                delete turn.hold;
+                c.state.acknowledgedThrough = Math.max(
+                  c.state.acknowledgedThrough,
+                  turn.assignment.sequence,
+                );
+              }
+              if (
+                assignment.sequence !== c.state.acknowledgedThrough + 1 ||
+                Object.values(c.state.turns).some((turn) => !turn.acknowledged)
+              )
+                throw new Error("Previous activity input is not acknowledged");
+              c.state.binding ??= binding;
+              c.state.turns[assignment.eventId] = { assignment };
+            }
+            await c.vars.persist();
+            await c.queue.send("turns", {
+              eventId: assignment.eventId,
+            });
+          },
+        );
         c.vars.receiving = receive.catch(() => {});
+        void c.keepAwake(c.vars.receiving);
         await receive;
       },
       forget: async (c, eventIds: string[]) => {
@@ -1279,10 +1295,12 @@ export function createActivityActor(deps: ActivityDependencies) {
         });
       },
       {
-        onError: (c) => {
-          if (!c.abortSignal.aborted) deps.lifecycle?.fail();
+        onError: (c, event) => {
+          if (!c.abortSignal.aborted && terminalWorkflowError(event))
+            deps.lifecycle?.fail();
         },
       },
     ),
   });
+  return guardWorkflowActor(definition, deps.lifecycle);
 }

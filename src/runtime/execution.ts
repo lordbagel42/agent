@@ -28,6 +28,7 @@ import {
   currentExecutionCapabilities,
   type ExecutionContext,
 } from "./execution-context.js";
+import { guardWorkflowActor, terminalWorkflowError } from "./lifecycle.js";
 import { publicPersonality } from "./personality.js";
 import { createPersonalityComparison } from "./personality-comparison.js";
 import type { createPriorityAdmission } from "./priority.js";
@@ -204,7 +205,7 @@ export function createExecutionActor(
           ? deps.continuity?.valid(id) === true
           : !deps.memory.store.isDeleted(id)),
     );
-  return actor({
+  const definition = actor({
     state: {
       requests: {},
       history: [],
@@ -1107,10 +1108,12 @@ export function createExecutionActor(
         });
       },
       {
-        onError(ctx) {
-          if (!ctx.abortSignal.aborted) deps.lifecycle?.fail();
+        onError(ctx, event) {
+          if (!ctx.abortSignal.aborted && terminalWorkflowError(event))
+            deps.lifecycle?.fail();
         },
       },
     ),
   });
+  return guardWorkflowActor(definition, deps.lifecycle);
 }

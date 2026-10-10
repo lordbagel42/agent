@@ -3,6 +3,10 @@ import { workflow } from "rivetkit/workflow";
 import type { MessageEvent, Owner } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import type { DeploymentFeed } from "../deployment/feed.js";
+import {
+  guardWorkflowActor,
+  terminalWorkflowError,
+} from "../runtime/lifecycle.js";
 import type { Dependencies, JuneClientRegistry } from "../runtime/registry.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import {
@@ -194,7 +198,7 @@ export function createWakeupActor(
       }
     }
   };
-  return actor({
+  const definition = actor({
     state: initialState(),
     createVars: (c): { persist: () => Promise<void> } => ({
       persist: () => c.saveState({ immediate: true }),
@@ -547,10 +551,12 @@ export function createWakeupActor(
         });
       },
       {
-        onError(ctx) {
-          if (!ctx.abortSignal.aborted) deps.lifecycle?.fail();
+        onError(ctx, event) {
+          if (!ctx.abortSignal.aborted && terminalWorkflowError(event))
+            deps.lifecycle?.fail();
         },
       },
     ),
   });
+  return guardWorkflowActor(definition, deps.lifecycle);
 }

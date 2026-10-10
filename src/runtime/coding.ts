@@ -21,7 +21,11 @@ import type {
 import type { OperationObservation } from "../diagnostics/operations.js";
 import type { SkillChangeProposal } from "../reflection/domain.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
-import type { Lifecycle } from "./lifecycle.js";
+import {
+  guardWorkflowActor,
+  type Lifecycle,
+  terminalWorkflowError,
+} from "./lifecycle.js";
 import type {
   JuneClientRegistry,
   JuneRegistry,
@@ -407,7 +411,7 @@ export function createCodingActor(
       skillCurrent?.(ownerId, proposal.skillContext) === true
     );
   };
-  return actor({
+  const definition = actor({
     state: {
       proposal: null,
       status: "empty",
@@ -511,148 +515,164 @@ export function createCodingActor(
           try {
             const command = message.body;
             if (command.type === "propose") {
-              await loop.step("propose", async (step) => {
-                if (
-                  step.state.proposal ||
-                  step.state.revoked ||
-                  command.proposal.id !== step.key[1] ||
-                  (command.proposal.appId !== undefined &&
-                    (command.proposal.workspace !== coding.appsWorkspace ||
-                      !appIdSchema.safeParse(command.proposal.appId)
-                        .success)) ||
-                  !Object.hasOwn(coding.workspaces, command.proposal.workspace)
-                )
-                  return;
-                const context = command.proposal.skillContext;
-                if (context) {
-                  const ownerId = step.key[0] ?? "";
-                  if (!skillCurrent?.(ownerId, context)) return;
-                  const evaluated = await step
-                    .client<JuneClientRegistry>()
-                    .reflection.getOrCreate([ownerId])
-                    .skillEvaluation(
-                      context.candidateId,
-                      context.audience ?? JSON.stringify(["private", ownerId]),
-                    )
-                    .catch(() => null);
-                  const skill = evaluated?.candidate.skillChange;
-                  const expected =
-                    skill &&
-                    skillCodingRequest(
-                      ownerId,
-                      command.proposal.workspace,
-                      skill,
-                    );
+              await loop.step({
+                name: "propose",
+                timeout: 0,
+                run: async (step) => {
                   if (
-                    !evaluated?.eligible ||
-                    !expected ||
-                    expected.id !== command.proposal.id ||
-                    expected.goal !== command.proposal.goal ||
-                    !evaluated.evidenceIds.every((id) =>
-                      context.reference.sourceIds.includes(id),
+                    step.state.proposal ||
+                    step.state.revoked ||
+                    command.proposal.id !== step.key[1] ||
+                    (command.proposal.appId !== undefined &&
+                      (command.proposal.workspace !== coding.appsWorkspace ||
+                        !appIdSchema.safeParse(command.proposal.appId)
+                          .success)) ||
+                    !Object.hasOwn(
+                      coding.workspaces,
+                      command.proposal.workspace,
                     )
                   )
                     return;
-                }
-                // Queue delivery and the skill getter both yield. Recheck frozen
-                // caller authority at the actual proposal-write boundary.
-                if (
-                  step.abortSignal.aborted ||
-                  step.state.revoked ||
-                  !provenanceCurrent(step.key[0] ?? "", command.proposal)
-                )
-                  return;
-                step.state.proposal = command.proposal;
-                // Only the producer knows the configuration selected for this task.
-                // Legacy queued proposals cannot adopt the consumer's configuration.
-                step.state.runtimeId = command.proposal.runtimeId;
-                step.state.remoteAmp = Object.hasOwn(
-                  coding.remoteAmp?.workspaces ?? {},
-                  command.proposal.workspace,
-                );
-                step.state.status = "awaiting_approval";
-                await step.vars.persist();
-              });
-              if (command.proposal.runImmediately === true)
-                await loop.step("enqueue-model-task", async (step) => {
-                  const proposal = step.state.proposal;
-                  // Repair a save -> queue gap only for the exact fresh task.
-                  // Never upgrade old pending work or relaunch an uncertain run.
+                  const context = command.proposal.skillContext;
+                  if (context) {
+                    const ownerId = step.key[0] ?? "";
+                    if (!skillCurrent?.(ownerId, context)) return;
+                    const evaluated = await step
+                      .client<JuneClientRegistry>()
+                      .reflection.getOrCreate([ownerId])
+                      .skillEvaluation(
+                        context.candidateId,
+                        context.audience ??
+                          JSON.stringify(["private", ownerId]),
+                      )
+                      .catch(() => null);
+                    const skill = evaluated?.candidate.skillChange;
+                    const expected =
+                      skill &&
+                      skillCodingRequest(
+                        ownerId,
+                        command.proposal.workspace,
+                        skill,
+                      );
+                    if (
+                      !evaluated?.eligible ||
+                      !expected ||
+                      expected.id !== command.proposal.id ||
+                      expected.goal !== command.proposal.goal ||
+                      !evaluated.evidenceIds.every((id) =>
+                        context.reference.sourceIds.includes(id),
+                      )
+                    )
+                      return;
+                  }
+                  // Queue delivery and the skill getter both yield. Recheck frozen
+                  // caller authority at the actual proposal-write boundary.
                   if (
-                    version < 2 ||
-                    !proposal ||
-                    !isDeepStrictEqual(proposal, command.proposal) ||
-                    proposal.id !== step.key[1] ||
-                    step.state.status !== "awaiting_approval" ||
-                    step.state.attempts !== 0 ||
                     step.abortSignal.aborted ||
                     step.state.revoked ||
-                    step.state.cancelRequested ||
-                    proposal.runtimeId !== coding.runtimeId ||
-                    step.state.runtimeId !== coding.runtimeId ||
-                    !Object.hasOwn(coding.workspaces, proposal.workspace) ||
-                    !provenanceCurrent(step.key[0] ?? "", proposal)
+                    !provenanceCurrent(step.key[0] ?? "", command.proposal)
                   )
                     return;
-                  await step
-                    .client<JuneRegistry>()
-                    .job.getOrCreate([step.key[0] ?? "", proposal.id])
-                    .send("commands", {
-                      type: "approve",
-                      commandId: `model-selected:${proposal.id}`,
-                    });
+                  step.state.proposal = command.proposal;
+                  // Only the producer knows the configuration selected for this task.
+                  // Legacy queued proposals cannot adopt the consumer's configuration.
+                  step.state.runtimeId = command.proposal.runtimeId;
+                  step.state.remoteAmp = Object.hasOwn(
+                    coding.remoteAmp?.workspaces ?? {},
+                    command.proposal.workspace,
+                  );
+                  step.state.status = "awaiting_approval";
+                  await step.vars.persist();
+                },
+              });
+              if (command.proposal.runImmediately === true)
+                await loop.step({
+                  name: "enqueue-model-task",
+                  timeout: 0,
+                  run: async (step) => {
+                    const proposal = step.state.proposal;
+                    // Repair a save -> queue gap only for the exact fresh task.
+                    // Never upgrade old pending work or relaunch an uncertain run.
+                    if (
+                      version < 2 ||
+                      !proposal ||
+                      !isDeepStrictEqual(proposal, command.proposal) ||
+                      proposal.id !== step.key[1] ||
+                      step.state.status !== "awaiting_approval" ||
+                      step.state.attempts !== 0 ||
+                      step.abortSignal.aborted ||
+                      step.state.revoked ||
+                      step.state.cancelRequested ||
+                      proposal.runtimeId !== coding.runtimeId ||
+                      step.state.runtimeId !== coding.runtimeId ||
+                      !Object.hasOwn(coding.workspaces, proposal.workspace) ||
+                      !provenanceCurrent(step.key[0] ?? "", proposal)
+                    )
+                      return;
+                    await step
+                      .client<JuneRegistry>()
+                      .job.getOrCreate([step.key[0] ?? "", proposal.id])
+                      .send("commands", {
+                        type: "approve",
+                        commandId: `model-selected:${proposal.id}`,
+                      });
+                  },
                 });
               return;
             }
-            const approved = await loop.step("check-approval", async (step) => {
-              // Replaying this step returns the same grant; a duplicate queue entry
-              // cannot grant another attempt after an uncertain worker has stopped.
-              if (
-                Object.hasOwn(step.state.commandApprovals, command.commandId)
-              ) {
-                return step.state.commandApprovals[command.commandId] ?? null;
-              }
-              if (
-                command.type === "resume" &&
-                !step.state.remoteAmp &&
-                command.confirmedStopped &&
-                step.state.status === "completed" &&
-                step.state.proposal &&
-                !step.state.revoked &&
-                step.state.runtimeId === coding.runtimeId
-              ) {
-                const manager =
-                  coding.isolation?.[step.state.proposal.workspace];
-                const matches = step.state.verification
-                  ? await manager?.checkArtifact(
-                      step.state.proposal.id,
-                      step.state.verification,
-                    )
-                  : null;
-                // Inspection stays read-only. Only this explicit resume reconciles
-                // durable completion with a stale/unknown source artifact.
-                if (matches !== true) step.state.status = "needs_review";
-              }
-              const allowed =
-                step.state.proposal &&
-                !step.state.revoked &&
-                !step.abortSignal.aborted &&
-                provenanceCurrent(step.key[0] ?? "", step.state.proposal) &&
-                step.state.proposal.runtimeId === coding.runtimeId &&
-                step.state.runtimeId === coding.runtimeId &&
-                (!step.state.remoteAmp || command.type === "approve") &&
-                (command.type === "approve"
-                  ? step.state.status === "awaiting_approval"
-                  : command.confirmedStopped &&
-                    step.state.status === "needs_review" &&
-                    (!!step.state.threadId ||
-                      (version >= 2 && !step.state.worktree)));
-              const attempt = allowed ? step.state.attempts + 1 : null;
-              step.state.commandApprovals[command.commandId] = attempt;
-              if (attempt && command.type === "resume")
-                step.state.cancelRequested = false;
-              await step.vars.persist();
-              return attempt;
+            const approved = await loop.step({
+              name: "check-approval",
+              timeout: 0,
+              run: async (step) => {
+                // Replaying this step returns the same grant; a duplicate queue entry
+                // cannot grant another attempt after an uncertain worker has stopped.
+                if (
+                  Object.hasOwn(step.state.commandApprovals, command.commandId)
+                ) {
+                  return step.state.commandApprovals[command.commandId] ?? null;
+                }
+                if (
+                  command.type === "resume" &&
+                  !step.state.remoteAmp &&
+                  command.confirmedStopped &&
+                  step.state.status === "completed" &&
+                  step.state.proposal &&
+                  !step.state.revoked &&
+                  step.state.runtimeId === coding.runtimeId
+                ) {
+                  const manager =
+                    coding.isolation?.[step.state.proposal.workspace];
+                  const matches = step.state.verification
+                    ? await manager?.checkArtifact(
+                        step.state.proposal.id,
+                        step.state.verification,
+                      )
+                    : null;
+                  // Inspection stays read-only. Only this explicit resume reconciles
+                  // durable completion with a stale/unknown source artifact.
+                  if (matches !== true) step.state.status = "needs_review";
+                }
+                const allowed =
+                  step.state.proposal &&
+                  !step.state.revoked &&
+                  !step.abortSignal.aborted &&
+                  provenanceCurrent(step.key[0] ?? "", step.state.proposal) &&
+                  step.state.proposal.runtimeId === coding.runtimeId &&
+                  step.state.runtimeId === coding.runtimeId &&
+                  (!step.state.remoteAmp || command.type === "approve") &&
+                  (command.type === "approve"
+                    ? step.state.status === "awaiting_approval"
+                    : command.confirmedStopped &&
+                      step.state.status === "needs_review" &&
+                      (!!step.state.threadId ||
+                        (version >= 2 && !step.state.worktree)));
+                const attempt = allowed ? step.state.attempts + 1 : null;
+                step.state.commandApprovals[command.commandId] = attempt;
+                if (attempt && command.type === "resume")
+                  step.state.cancelRequested = false;
+                await step.vars.persist();
+                return attempt;
+              },
             });
             if (!approved) return;
             await loop.step({
@@ -1109,39 +1129,43 @@ export function createCodingActor(
                 );
               },
             });
-            await loop.step("notify-companion", async (step): Promise<void> => {
-              const { proposal, status, report, attempts, workerClaim } =
-                step.state;
-              // Suppress publication, not the original operation's evidence.
-              if (
-                !proposal ||
-                step.abortSignal.aborted ||
-                step.state.revoked ||
-                step.state.cancelRequested ||
-                attempts !== approved ||
-                proposal.runtimeId !== coding.runtimeId ||
-                step.state.runtimeId !== coding.runtimeId ||
-                !provenanceCurrent(step.key[0] ?? "", proposal)
-              )
-                return;
-              const text =
-                version < 2
-                  ? status === "completed"
-                    ? `Work summary (not independently verified):\n${report ?? "No report supplied."}`
-                    : `Coding job ${proposal.id.slice(0, 12)} needs review. ${report ?? ""}`
-                  : `Coding job ${proposal.id.slice(0, 12)}: ${status}.\n${report ?? "No verification evidence."}${step.state.appArtifact ? `\nDynamic App ${step.state.appArtifact.appId}: artifact ${step.state.appArtifact.digest}. Job ID ${proposal.id}. June can prepare an exact source-and-audience receipt, inspect it, then separately decide whether to deploy it with the apps tool. This coding result does not itself deploy or authorize other destinations.` : ""}\n\nWork summary (not independently verified):\n${workerClaim?.slice(0, 2200) ?? "No confirmed result."}`;
-              await step
-                .client<JuneRegistry>()
-                .conversation.getOrCreate(
-                  proposal.conversationKey ?? ["private", step.key[0] ?? ""],
+            await loop.step({
+              name: "notify-companion",
+              timeout: 0,
+              run: async (step): Promise<void> => {
+                const { proposal, status, report, attempts, workerClaim } =
+                  step.state;
+                // Suppress publication, not the original operation's evidence.
+                if (
+                  !proposal ||
+                  step.abortSignal.aborted ||
+                  step.state.revoked ||
+                  step.state.cancelRequested ||
+                  attempts !== approved ||
+                  proposal.runtimeId !== coding.runtimeId ||
+                  step.state.runtimeId !== coding.runtimeId ||
+                  !provenanceCurrent(step.key[0] ?? "", proposal)
                 )
-                .notify({
-                  type: "job_result",
-                  jobId: proposal.id,
-                  attempt: attempts,
-                  source: proposal.source,
-                  text: [...text].slice(0, 3500).join(""),
-                });
+                  return;
+                const text =
+                  version < 2
+                    ? status === "completed"
+                      ? `Work summary (not independently verified):\n${report ?? "No report supplied."}`
+                      : `Coding job ${proposal.id.slice(0, 12)} needs review. ${report ?? ""}`
+                    : `Coding job ${proposal.id.slice(0, 12)}: ${status}.\n${report ?? "No verification evidence."}${step.state.appArtifact ? `\nDynamic App ${step.state.appArtifact.appId}: artifact ${step.state.appArtifact.digest}. Job ID ${proposal.id}. June can prepare an exact source-and-audience receipt, inspect it, then separately decide whether to deploy it with the apps tool. This coding result does not itself deploy or authorize other destinations.` : ""}\n\nWork summary (not independently verified):\n${workerClaim?.slice(0, 2200) ?? "No confirmed result."}`;
+                await step
+                  .client<JuneRegistry>()
+                  .conversation.getOrCreate(
+                    proposal.conversationKey ?? ["private", step.key[0] ?? ""],
+                  )
+                  .notify({
+                    type: "job_result",
+                    jobId: proposal.id,
+                    attempt: attempts,
+                    source: proposal.source,
+                    text: [...text].slice(0, 3500).join(""),
+                  });
+              },
             });
           } finally {
             // Callback completion is not native settlement: uncertain execution
@@ -1151,10 +1175,12 @@ export function createCodingActor(
         });
       },
       {
-        onError(ctx) {
-          if (!ctx.abortSignal.aborted) lifecycle?.fail();
+        onError(ctx, event) {
+          if (!ctx.abortSignal.aborted && terminalWorkflowError(event))
+            lifecycle?.fail();
         },
       },
     ),
   });
+  return guardWorkflowActor(definition, lifecycle);
 }

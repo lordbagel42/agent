@@ -35,7 +35,11 @@ import {
   validateDecision,
 } from "../reflection/evaluator.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
-import type { Lifecycle } from "./lifecycle.js";
+import {
+  guardWorkflowActor,
+  type Lifecycle,
+  terminalWorkflowError,
+} from "./lifecycle.js";
 import type { InterruptionReference, SocialPermissions } from "./social.js";
 
 export type ReflectionMode = "interaction" | "idle" | "deep";
@@ -667,7 +671,7 @@ export function createReflectionActor(
     return changed;
   }
 
-  return actor({
+  const definition = actor({
     state: {
       reflection: initialState(),
       modes: {},
@@ -1934,10 +1938,12 @@ export function createReflectionActor(
       },
       {
         // Normal durable queue/timer suspension is not a workflow failure.
-        onError(ctx) {
-          if (!ctx.abortSignal.aborted) lifecycle?.fail();
+        onError(ctx, event) {
+          if (!ctx.abortSignal.aborted && terminalWorkflowError(event))
+            lifecycle?.fail();
         },
       },
     ),
   });
+  return guardWorkflowActor(definition, lifecycle);
 }

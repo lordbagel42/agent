@@ -1,9 +1,61 @@
+import type { WorkflowErrorEvent } from "rivetkit/workflow";
 import type { MessageEvent } from "../core/contracts.js";
+
+/** Rivet reports retryable step errors before scheduling their retry. Those
+ * keep the engine's durable retry policy; latching them would only disable
+ * unrelated work. Exhausted/nonretrying steps and workflow/rollback errors
+ * remain terminal. A retry never repeats an effect its own markers fence. */
+export function terminalWorkflowError(event: WorkflowErrorEvent) {
+  return !("step" in event && event.step.willRetry === true);
+}
+
+/** Retry checkpoint/alarm errors can escape workflow() without another error
+ * notification. Catch only its settled run promise, never scheduler yields
+ * inside the workflow callback. Proxy retains Rivet's inspector metadata. */
+export function guardWorkflowActor<T extends { config: { run?: unknown } }>(
+  definition: T,
+  lifecycle: Pick<Lifecycle, "fail"> | undefined,
+): T {
+  const run = definition.config.run;
+  if (typeof run === "function") {
+    definition.config.run = new Proxy(run, {
+      async apply(fn, receiver, args: [{ abortSignal: AbortSignal }]) {
+        try {
+          return await Reflect.apply(fn, receiver, args);
+        } catch (error) {
+          if (!args[0].abortSignal.aborted) lifecycle?.fail();
+          throw error;
+        }
+      },
+    });
+  }
+  return definition;
+}
 
 export type ConversationActivity = Pick<
   MessageEvent,
   "address" | "direct" | "senderId"
 >;
+
+/** Account for accepted raw work before waiting for its serializer, not just
+ * while its RPC caller is waiting. Callers also keepAwake until this settles.
+ * An actor abort with a held lease still trips the uncertain-work fence. */
+export async function serializeAdmittedWork<T>(
+  lifecycle: Pick<Lifecycle, "enter"> | undefined,
+  signal: AbortSignal,
+  previous: Promise<void>,
+  work: () => Promise<T>,
+  conversation?: ConversationActivity,
+): Promise<T> {
+  const release = await lifecycle?.enter(signal, conversation);
+  try {
+    await previous;
+    signal.throwIfAborted();
+    return await work();
+  } finally {
+    release?.();
+  }
+}
 
 /** Process-local admission only. Durable queues stay intact while fenced; this
  * never cancels an effect, clears an uncertain intent, or stops the registry.

@@ -134,6 +134,11 @@ import {
   latencyProbe,
   type ReplyKind,
 } from "./latency.js";
+import {
+  guardWorkflowActor,
+  serializeAdmittedWork,
+  terminalWorkflowError,
+} from "./lifecycle.js";
 import { createPersonalityActor, isPersonalityCommand } from "./personality.js";
 import { createPersonalityComparison } from "./personality-comparison.js";
 import type { createPersonalityPreview } from "./personality-evaluation-preview.js";
@@ -726,6 +731,8 @@ export function createJuneRegistry(deps: Dependencies) {
       c,
     ): {
       persist: () => Promise<void>;
+      /** Actor incarnation, never an action's dispatch deadline. */
+      signal: AbortSignal;
       receiving: Promise<void>;
       debugBodies: DebugBodies;
       notifyDebugShare(id: string, at: number): void;
@@ -745,6 +752,7 @@ export function createJuneRegistry(deps: Dependencies) {
       const debugBodies = new DebugBodies(c.db);
       return {
         persist,
+        signal,
         receiving: Promise.resolve(),
         debugBodies,
         notifyDebugShare: (id, at) => {
@@ -1090,373 +1098,387 @@ export function createJuneRegistry(deps: Dependencies) {
           throw new Error("Conversation scope mismatch");
         // Serialize admission only, never inference or delivery. Concurrent
         // webhook completions cannot reorder the latest-input marker.
-        const receiving = c.vars.receiving.then(async () => {
-          const questionCurrent = () => {
-            if (
-              !isQuestionHandoffCurrent(
-                event,
-                deps.memory?.store.deletionRevision() ?? 0,
-              )
-            )
-              return false;
-            // Forgetting freezes its targets before advancing the ledger epoch.
-            // Keep a late handoff in the durable holding queue until that
-            // decision settles, rather than admit it outside the frozen set.
-            const revision =
-              event.type === "message"
-                ? event.agentQuestionRevision
-                : undefined;
-            if (
-              revision !== undefined &&
-              Object.values(c.state.forgetCleanups ?? {}).some(
-                (cleanup) =>
-                  !cleanup.completed &&
-                  cleanup.beforeDeletionRevision > revision,
-              )
-            )
-              throw new Error("question_handoff_forgetting");
-            return true;
-          };
-          if (!questionCurrent()) return;
-          const input = { type: "event" as const, event };
-          const id = conversationInputId(input);
-          const command =
-            event.type === "message" ? sessionCommand(event) : undefined;
-          if (
-            event.type !== "message" ||
-            (!isOwner(event, deps.owner) && command?.kind !== "debug") ||
-            (event.address.channel === "slack" && event.text.startsWith("##"))
-          ) {
-            await c.queue.send("inbox", { type: "event", event });
-            return;
-          }
-          c.state.session ??= { id: randomUUID(), startedAt: 0 };
-          if (command) {
-            c.state.sessionCommands ??= {};
-            if (!c.state.sessionCommands[id]) {
-              const release = await deps.lifecycle?.enter(c.abortSignal, event);
-              let stopPing: (() => Promise<void>) | undefined;
-              try {
-                if (!questionCurrent()) return;
-                if (
-                  event.botMentioned &&
-                  !eventRecord(c.state, id) &&
-                  !c.state.forgottenEvents?.includes(id)
-                ) {
-                  c.state.events[id] = { event, done: false };
-                  await c.vars.persist();
-                  stopPing = startTyping(
-                    deps.channels[event.address.channel],
-                    event,
-                    c.abortSignal,
-                  );
-                }
-                // A committed body can precede the command receipt after a
-                // crash. Reuse its exact identity/provenance, never recapture.
-                const savedSnapshot =
-                  command.kind === "debug"
-                    ? await c.vars.debugBodies.get(id)
-                    : undefined;
-                const activityId =
-                  command.kind === "debug" && !savedSnapshot
-                    ? c.state.sessions?.directory.activeSessionId
-                    : undefined;
-                const activity = activityId
-                  ? await c
-                      .client<JuneClientRegistry>()
-                      .activity.getOrCreate(sessionActorKey(c.key, activityId))
-                      .diagnostic(activityId)
-                  : null;
-                // Capture synchronously after the RPC, rechecking its deletion
-                // epoch so a concurrent tombstone cannot export stale evidence.
-                const deletionRevision =
-                  deps.memory?.store.deletionRevision() ?? 0;
-                if (!questionCurrent()) return;
-                const snapshot =
-                  command.kind === "debug"
-                    ? (savedSnapshot ??
-                      captureDebug(
-                        c.state,
-                        c.key,
-                        command.reason,
-                        deps.runningRevision,
-                        c.vars.debugRequest?.deletionRevision ===
-                          deletionRevision
-                          ? c.vars.debugRequest.value
-                          : undefined,
-                        deps.latency?.capture,
-                        deps.memory
-                          ? {
-                              memory: deps.memory,
-                              current: (reference) =>
-                                current(JSON.stringify(c.key), reference),
-                            }
-                          : undefined,
-                      ))
-                    : undefined;
-                if (snapshot && !savedSnapshot) {
-                  snapshot.reporter = {
-                    channel: "slack",
-                    accountId: event.address.accountId,
-                    senderId: event.senderId,
-                    isOwner: isOwner(event, deps.owner),
-                  };
-                }
-                if (
-                  snapshot &&
-                  !savedSnapshot &&
-                  command.kind === "debug" &&
-                  command.snapshotOnly
+        const receiving = serializeAdmittedWork(
+          deps.lifecycle,
+          c.vars.signal,
+          c.vars.receiving,
+          async () => {
+            const questionCurrent = () => {
+              if (
+                !isQuestionHandoffCurrent(
+                  event,
+                  deps.memory?.store.deletionRevision() ?? 0,
                 )
-                  snapshot.snapshotOnly = true;
-                if (snapshot && activityId) {
-                  if (activity) {
-                    // A committed coordinator barrier wins even if the
-                    // subsequent activity cleanup RPC has not completed.
-                    const forgotten = new Set(c.state.forgottenEvents ?? []);
-                    activity.history = activity.history.filter(
-                      (entry) => !forgotten.has(entry.eventId),
-                    );
-                    activity.turns = activity.turns.filter(
-                      (turn) => !forgotten.has(turn.eventId),
+              )
+                return false;
+              // Forgetting freezes its targets before advancing the ledger epoch.
+              // Keep a late handoff in the durable holding queue until that
+              // decision settles, rather than admit it outside the frozen set.
+              const revision =
+                event.type === "message"
+                  ? event.agentQuestionRevision
+                  : undefined;
+              if (
+                revision !== undefined &&
+                Object.values(c.state.forgetCleanups ?? {}).some(
+                  (cleanup) =>
+                    !cleanup.completed &&
+                    cleanup.beforeDeletionRevision > revision,
+                )
+              )
+                throw new Error("question_handoff_forgetting");
+              return true;
+            };
+            if (!questionCurrent()) return;
+            const input = { type: "event" as const, event };
+            const id = conversationInputId(input);
+            const command =
+              event.type === "message" ? sessionCommand(event) : undefined;
+            if (
+              event.type !== "message" ||
+              (!isOwner(event, deps.owner) && command?.kind !== "debug") ||
+              (event.address.channel === "slack" && event.text.startsWith("##"))
+            ) {
+              await c.queue.send("inbox", { type: "event", event });
+              return;
+            }
+            c.state.session ??= { id: randomUUID(), startedAt: 0 };
+            if (command) {
+              c.state.sessionCommands ??= {};
+              if (!c.state.sessionCommands[id]) {
+                let stopPing: (() => Promise<void>) | undefined;
+                try {
+                  if (!questionCurrent()) return;
+                  if (
+                    event.botMentioned &&
+                    !eventRecord(c.state, id) &&
+                    !c.state.forgottenEvents?.includes(id)
+                  ) {
+                    c.state.events[id] = { event, done: false };
+                    await c.vars.persist();
+                    stopPing = startTyping(
+                      deps.channels[event.address.channel],
+                      event,
+                      c.vars.signal,
                     );
                   }
-                  snapshot.data = {
-                    coordinator: snapshot.data,
-                    activity:
-                      activity?.deletionRevision === deletionRevision
-                        ? redactDebug(activity)
-                        : null,
-                    activityCapturedAt: new Date().toISOString(),
-                  };
-                }
-                const snapshotRef = snapshot
-                  ? await c.vars.debugBodies.put(id, snapshot)
-                  : undefined;
-                if (!questionCurrent()) return;
-                if (command.kind === "clear") {
-                  deps.continuity?.clear();
-                  resetConversation(c.state, receivedAt);
-                  delete c.vars.debugRequest;
-                }
-                const ownerIdentity =
-                  snapshot && !scope.private
-                    ? deps.owner.identities.find(
-                        (identity) =>
-                          identity.channel === "slack" &&
-                          identity.accountId === event.address.accountId,
-                      )
-                    : undefined;
-                const ownerAddress = ownerIdentity
-                  ? {
-                      channel: "slack" as const,
+                  // A committed body can precede the command receipt after a
+                  // crash. Reuse its exact identity/provenance, never recapture.
+                  const savedSnapshot =
+                    command.kind === "debug"
+                      ? await c.vars.debugBodies.get(id)
+                      : undefined;
+                  const activityId =
+                    command.kind === "debug" && !savedSnapshot
+                      ? c.state.sessions?.directory.activeSessionId
+                      : undefined;
+                  const activity = activityId
+                    ? await c
+                        .client<JuneClientRegistry>()
+                        .activity.getOrCreate(
+                          sessionActorKey(c.key, activityId),
+                        )
+                        .diagnostic(activityId)
+                    : null;
+                  // Capture synchronously after the RPC, rechecking its deletion
+                  // epoch so a concurrent tombstone cannot export stale evidence.
+                  const deletionRevision =
+                    deps.memory?.store.deletionRevision() ?? 0;
+                  if (!questionCurrent()) return;
+                  const snapshot =
+                    command.kind === "debug"
+                      ? (savedSnapshot ??
+                        captureDebug(
+                          c.state,
+                          c.key,
+                          command.reason,
+                          deps.runningRevision,
+                          c.vars.debugRequest?.deletionRevision ===
+                            deletionRevision
+                            ? c.vars.debugRequest.value
+                            : undefined,
+                          deps.latency?.capture,
+                          deps.memory
+                            ? {
+                                memory: deps.memory,
+                                current: (reference) =>
+                                  current(JSON.stringify(c.key), reference),
+                              }
+                            : undefined,
+                        ))
+                      : undefined;
+                  if (snapshot && !savedSnapshot) {
+                    snapshot.reporter = {
+                      channel: "slack",
                       accountId: event.address.accountId,
-                      conversationId: ownerIdentity.senderId,
+                      senderId: event.senderId,
+                      isOwner: isOwner(event, deps.owner),
+                    };
+                  }
+                  if (
+                    snapshot &&
+                    !savedSnapshot &&
+                    command.kind === "debug" &&
+                    command.snapshotOnly
+                  )
+                    snapshot.snapshotOnly = true;
+                  if (snapshot && activityId) {
+                    if (activity) {
+                      // A committed coordinator barrier wins even if the
+                      // subsequent activity cleanup RPC has not completed.
+                      const forgotten = new Set(c.state.forgottenEvents ?? []);
+                      activity.history = activity.history.filter(
+                        (entry) => !forgotten.has(entry.eventId),
+                      );
+                      activity.turns = activity.turns.filter(
+                        (turn) => !forgotten.has(turn.eventId),
+                      );
                     }
-                  : undefined;
-                const reasonExcerpt =
-                  snapshot && snapshot.reason.length > 3000
-                    ? `${snapshot.reason.slice(0, 3000)} [truncated; full reason in private snapshot]`
-                    : snapshot?.reason;
-                const websiteNotice =
-                  snapshot && deps.debugSite
-                    ? `\nPrivate debug page: ${deps.debugSite.url(snapshot.id)}\nIndependent archive upload is queued; the page may not be available yet. Sign in with a registered passkey or the debug site's viewer credential.`
-                    : "";
-                c.state.sessionCommands[id] = {
-                  ...(snapshotRef
-                    ? { snapshotRef, snapshotId: snapshotRef.id }
-                    : {}),
-                  ...(snapshot &&
-                  !snapshot.snapshotOnly &&
-                  deps.debugShare &&
-                  !scope.private
+                    snapshot.data = {
+                      coordinator: snapshot.data,
+                      activity:
+                        activity?.deletionRevision === deletionRevision
+                          ? redactDebug(activity)
+                          : null,
+                      activityCapturedAt: new Date().toISOString(),
+                    };
+                  }
+                  const snapshotRef = snapshot
+                    ? await c.vars.debugBodies.put(id, snapshot)
+                    : undefined;
+                  if (!questionCurrent()) return;
+                  if (command.kind === "clear") {
+                    deps.continuity?.clear();
+                    resetConversation(c.state, receivedAt);
+                    delete c.vars.debugRequest;
+                  }
+                  const ownerIdentity =
+                    snapshot && !scope.private
+                      ? deps.owner.identities.find(
+                          (identity) =>
+                            identity.channel === "slack" &&
+                            identity.accountId === event.address.accountId,
+                        )
+                      : undefined;
+                  const ownerAddress = ownerIdentity
                     ? {
-                        debugResolution: {
-                          phase: "ready" as const,
-                          attempts: 0,
-                          message: {
-                            id: randomUUID(),
-                            address: {
-                              ...event.address,
-                              threadId:
-                                event.address.threadId ?? event.messageId,
-                            },
-                            lastInboundAt: event.occurredAt,
-                            content: {
-                              type: "text" as const,
-                              text: `DEBUGSHARE ${snapshot.id} was resolved.`,
+                        channel: "slack" as const,
+                        accountId: event.address.accountId,
+                        conversationId: ownerIdentity.senderId,
+                      }
+                    : undefined;
+                  const reasonExcerpt =
+                    snapshot && snapshot.reason.length > 3000
+                      ? `${snapshot.reason.slice(0, 3000)} [truncated; full reason in private snapshot]`
+                      : snapshot?.reason;
+                  const websiteNotice =
+                    snapshot && deps.debugSite
+                      ? `\nPrivate debug page: ${deps.debugSite.url(snapshot.id)}\nIndependent archive upload is queued; the page may not be available yet. Sign in with a registered passkey or the debug site's viewer credential.`
+                      : "";
+                  c.state.sessionCommands[id] = {
+                    ...(snapshotRef
+                      ? { snapshotRef, snapshotId: snapshotRef.id }
+                      : {}),
+                    ...(snapshot &&
+                    !snapshot.snapshotOnly &&
+                    deps.debugShare &&
+                    !scope.private
+                      ? {
+                          debugResolution: {
+                            phase: "ready" as const,
+                            attempts: 0,
+                            message: {
+                              id: randomUUID(),
+                              address: {
+                                ...event.address,
+                                threadId:
+                                  event.address.threadId ?? event.messageId,
+                              },
+                              lastInboundAt: event.occurredAt,
+                              content: {
+                                type: "text" as const,
+                                text: `DEBUGSHARE ${snapshot.id} was resolved.`,
+                              },
                             },
                           },
-                        },
-                      }
-                    : {}),
-                  ...(snapshot && ownerAddress
-                    ? {
-                        ownerDelivery: {
-                          phase: "ready" as const,
-                          attempts: 0,
-                          message: {
-                            id: randomUUID(),
-                            address: ownerAddress,
-                            lastInboundAt: event.occurredAt,
-                            content: {
-                              type: "text" as const,
-                              text: `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\nReporter: ${event.senderId}; conversation: ${event.address.conversationId}${event.address.threadId ? `; thread: ${event.address.threadId}` : ""}\nReason (${snapshot.reporter?.isOwner ? "owner request" : "untrusted"}): ${reasonExcerpt || "Not supplied"}\nPrivate snapshot saved. ${snapshot.snapshotOnly ? "No Amp investigation was started." : deps.debugShare ? "Amp investigation queued." : "Investigation runtime not configured; no agent was started."}${websiteNotice}`,
+                        }
+                      : {}),
+                    ...(snapshot && ownerAddress
+                      ? {
+                          ownerDelivery: {
+                            phase: "ready" as const,
+                            attempts: 0,
+                            message: {
+                              id: randomUUID(),
+                              address: ownerAddress,
+                              lastInboundAt: event.occurredAt,
+                              content: {
+                                type: "text" as const,
+                                text: `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\nReporter: ${event.senderId}; conversation: ${event.address.conversationId}${event.address.threadId ? `; thread: ${event.address.threadId}` : ""}\nReason (${snapshot.reporter?.isOwner ? "owner request" : "untrusted"}): ${reasonExcerpt || "Not supplied"}\nPrivate snapshot saved. ${snapshot.snapshotOnly ? "No Amp investigation was started." : deps.debugShare ? "Amp investigation queued." : "Investigation runtime not configured; no agent was started."}${websiteNotice}`,
+                              },
                             },
                           },
-                        },
-                      }
-                    : {}),
-                  ...(snapshot &&
-                  ((!snapshot.snapshotOnly && deps.debugShare) || ownerAddress)
-                    ? {
-                        debugLink: {
-                          pollAt: Date.now(),
-                          ...(snapshot.snapshotOnly ? { ownerOnly: true } : {}),
-                          ...(isOwner(event, deps.owner)
-                            ? { replyAtOrigin: true }
-                            : ownerAddress
-                              ? { address: ownerAddress }
+                        }
+                      : {}),
+                    ...(snapshot &&
+                    ((!snapshot.snapshotOnly && deps.debugShare) ||
+                      ownerAddress)
+                      ? {
+                          debugLink: {
+                            pollAt: Date.now(),
+                            ...(snapshot.snapshotOnly
+                              ? { ownerOnly: true }
                               : {}),
+                            ...(isOwner(event, deps.owner)
+                              ? { replyAtOrigin: true }
+                              : ownerAddress
+                                ? { address: ownerAddress }
+                                : {}),
+                          },
+                        }
+                      : {}),
+                    ...(command.kind === "ping"
+                      ? {
+                          ping: {
+                            receivedAt,
+                            ...(/^\d+\.\d+$/.test(event.messageId) &&
+                            Number.isFinite(Number(event.messageId) * 1000)
+                              ? { messageAt: Number(event.messageId) * 1000 }
+                              : {}),
+                            ...(command.model
+                              ? { model: "ready" as const }
+                              : {}),
+                          },
+                        }
+                      : {}),
+                    delivery: {
+                      phase: "ready",
+                      attempts: 0,
+                      message: {
+                        id: randomUUID(),
+                        address: event.address,
+                        lastInboundAt: event.occurredAt,
+                        content: {
+                          type: "text",
+                          text:
+                            command.kind === "ping"
+                              ? "PONG"
+                              : command.kind === "clear"
+                                ? "Started a new session. Saved memories and archives are unchanged."
+                                : snapshot
+                                  ? `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\n${snapshot.snapshotOnly ? "Snapshot saved. No Amp investigation was started." : deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}${ownerAddress ? "\nDiagnostic details are private to the owner; an owner-DM notification is queued." : ""}${scope.private && isOwner(event, deps.owner) ? websiteNotice : ""}`
+                                  : "No diagnostic snapshot was captured.",
                         },
-                      }
-                    : {}),
-                  ...(command.kind === "ping"
-                    ? {
-                        ping: {
-                          receivedAt,
-                          ...(/^\d+\.\d+$/.test(event.messageId) &&
-                          Number.isFinite(Number(event.messageId) * 1000)
-                            ? { messageAt: Number(event.messageId) * 1000 }
-                            : {}),
-                          ...(command.model ? { model: "ready" as const } : {}),
-                        },
-                      }
-                    : {}),
-                  delivery: {
-                    phase: "ready",
-                    attempts: 0,
-                    message: {
-                      id: randomUUID(),
-                      address: event.address,
-                      lastInboundAt: event.occurredAt,
-                      content: {
-                        type: "text",
-                        text:
-                          command.kind === "ping"
-                            ? "PONG"
-                            : command.kind === "clear"
-                              ? "Started a new session. Saved memories and archives are unchanged."
-                              : snapshot
-                                ? `${snapshot.snapshotOnly ? "DEBUG" : "DEBUGSHARE"} ${snapshot.id}\n${snapshot.capturedAt}\n${snapshot.snapshotOnly ? "Snapshot saved. No Amp investigation was started." : deps.debugShare ? "Snapshot saved; Amp investigation queued." : "Snapshot saved, but the Amp investigation runtime is not configured; no agent was started."}${ownerAddress ? "\nDiagnostic details are private to the owner; an owner-DM notification is queued." : ""}${scope.private && isOwner(event, deps.owner) ? websiteNotice : ""}`
-                                : "No diagnostic snapshot was captured.",
                       },
                     },
-                  },
-                };
-                c.state.events[id] = { event, done: true };
-                await c.vars.persist();
-                const at = c.state.sessionCommands[id]?.debugLink?.pollAt;
-                if (at !== undefined)
-                  await c.schedule.at(at, "notifyDebugShare", id, at);
-              } finally {
-                try {
-                  await stopPing?.();
+                  };
+                  c.state.events[id] = { event, done: true };
+                  await c.vars.persist();
+                  const at = c.state.sessionCommands[id]?.debugLink?.pollAt;
+                  if (at !== undefined)
+                    await c.schedule.at(at, "notifyDebugShare", id, at);
                 } finally {
-                  release?.();
+                  await stopPing?.();
                 }
               }
+              return;
             }
-            return;
-          }
-          if (c.state.clearedInputs?.[id]) return;
-          if (
-            c.state.migration &&
-            event.address.channel !== "slack" &&
-            event.address.channel !== "agent"
-          )
-            throw new Error(
-              "Session scope cannot admit a linked legacy adapter",
-            );
-          if (eventRecord(c.state, id) || c.state.forgottenEvents?.includes(id))
-            return;
-          const source = deps.memory?.source(event, JSON.stringify(c.key));
-          if (source && deps.memory?.store.isDeleted(source.id)) return;
-          if (!c.state.pendingInputs?.[id]) {
-            // Include legacy callback IDs in Slack's stable-message deduplication.
+            if (c.state.clearedInputs?.[id]) return;
             if (
-              event.address.channel === "slack" &&
-              [
-                ...Object.values(readEvents(c.state)).map(
-                  (record) => record.event,
-                ),
-                ...Object.values(c.state.pendingInputs ?? {}),
-              ].some(
-                (previous) =>
-                  previous.type === "message" &&
-                  previous.address.channel === event.address.channel &&
-                  previous.address.accountId === event.address.accountId &&
-                  previous.address.conversationId ===
-                    event.address.conversationId &&
-                  previous.messageId === event.messageId &&
-                  previous.senderId === event.senderId,
-              )
+              c.state.migration &&
+              event.address.channel !== "slack" &&
+              event.address.channel !== "agent"
             )
-              return;
-            await prepareHandoff(c.state, c.key, c.vars.persist);
-            if (
-              !questionCurrent() ||
-              eventRecord(c.state, id) ||
-              c.state.forgottenEvents?.includes(id) ||
-              (source && deps.memory?.store.isDeleted(source.id))
-            )
-              return;
-            c.state.pendingInputs ??= {};
-            c.state.pendingInputs[id] = event;
-            if (
-              event.type === "message" &&
-              !isControl({ type: "event", event }, deps)
-            )
-              deps.continuity?.receive(event, receivedAt);
-            c.state.ingress ??= {
-              sequence: 0,
-              receivedThrough: 0,
-              receipts: {},
-            };
-            // A repeated webhook cannot manufacture the first receipt time of
-            // an already-owned direct-queue legacy turn.
-            if (
-              !readLegacyAdmissions(c.state).includes(id) &&
-              !c.state.migration?.legacyInputs.includes(id)
-            )
-              recordConversationIngress(
-                c.state.ingress,
-                input,
-                receivedAt,
-                c.state.migration ? "session" : "legacy",
+              throw new Error(
+                "Session scope cannot admit a linked legacy adapter",
               );
-            c.state.latestInputs ??= {};
-            const surface = inputSurface(event);
             if (
-              (c.state.latestInputs[surface]?.occurredAt ?? -Infinity) <=
-              event.occurredAt
+              eventRecord(c.state, id) ||
+              c.state.forgottenEvents?.includes(id)
             )
-              c.state.latestInputs[surface] = {
-                id,
-                occurredAt: event.occurredAt,
+              return;
+            const source = deps.memory?.source(event, JSON.stringify(c.key));
+            if (source && deps.memory?.store.isDeleted(source.id)) return;
+            if (!c.state.pendingInputs?.[id]) {
+              // Include legacy callback IDs in Slack's stable-message deduplication.
+              if (
+                event.address.channel === "slack" &&
+                [
+                  ...Object.values(readEvents(c.state)).map(
+                    (record) => record.event,
+                  ),
+                  ...Object.values(c.state.pendingInputs ?? {}),
+                ].some(
+                  (previous) =>
+                    previous.type === "message" &&
+                    previous.address.channel === event.address.channel &&
+                    previous.address.accountId === event.address.accountId &&
+                    previous.address.conversationId ===
+                      event.address.conversationId &&
+                    previous.messageId === event.messageId &&
+                    previous.senderId === event.senderId,
+                )
+              )
+                return;
+              await prepareHandoff(c.state, c.key, c.vars.persist);
+              if (
+                !questionCurrent() ||
+                eventRecord(c.state, id) ||
+                c.state.forgottenEvents?.includes(id) ||
+                (source && deps.memory?.store.isDeleted(source.id))
+              )
+                return;
+              c.state.pendingInputs ??= {};
+              c.state.pendingInputs[id] = event;
+              if (
+                event.type === "message" &&
+                !isControl({ type: "event", event }, deps)
+              )
+                deps.continuity?.receive(event, receivedAt);
+              c.state.ingress ??= {
+                sequence: 0,
+                receivedThrough: 0,
+                receipts: {},
               };
-          }
-          // A repeated webhook republishes pending input without moving its marker.
-          await c.vars.persist();
-          if (!c.state.pendingInputs?.[id]) return;
-          await publishHandoff(c.state, (input) =>
-            c.queue.send("inbox", input),
-          );
-          const pending = c.state.pendingInputs?.[id];
-          if (pending)
-            await c.queue.send("inbox", { type: "event", event: pending });
-        });
+              // A repeated webhook cannot manufacture the first receipt time of
+              // an already-owned direct-queue legacy turn.
+              if (
+                !readLegacyAdmissions(c.state).includes(id) &&
+                !c.state.migration?.legacyInputs.includes(id)
+              )
+                recordConversationIngress(
+                  c.state.ingress,
+                  input,
+                  receivedAt,
+                  c.state.migration ? "session" : "legacy",
+                );
+              c.state.latestInputs ??= {};
+              const surface = inputSurface(event);
+              if (
+                (c.state.latestInputs[surface]?.occurredAt ?? -Infinity) <=
+                event.occurredAt
+              )
+                c.state.latestInputs[surface] = {
+                  id,
+                  occurredAt: event.occurredAt,
+                };
+            }
+            // A repeated webhook republishes pending input without moving its marker.
+            await c.vars.persist();
+            if (!c.state.pendingInputs?.[id]) return;
+            await publishHandoff(c.state, (input) =>
+              c.queue.send("inbox", input),
+            );
+            const pending = c.state.pendingInputs?.[id];
+            if (pending)
+              await c.queue.send("inbox", { type: "event", event: pending });
+          },
+          event.type === "message" ? event : undefined,
+        );
         c.vars.receiving = receiving.catch(() => {});
+        // An action timeout abandons only the caller's wait. Keep the actor
+        // awake until admission settles so sleep cannot abort a held lease.
+        void c.keepAwake(c.vars.receiving);
         await receiving;
         if (
           event.type === "message" &&
@@ -1492,97 +1514,107 @@ export function createJuneRegistry(deps: Dependencies) {
           input.source.text.startsWith("##")
         )
           return;
-        const receiving = c.vars.receiving.then(async () => {
-          const id = conversationInputId(input);
-          if (
-            c.state.migration &&
-            input.source.address.channel !== "slack" &&
-            input.source.address.channel !== "agent"
-          )
-            throw new Error(
-              "Session scope cannot admit a linked legacy adapter",
-            );
-          if (eventRecord(c.state, id) || c.state.forgottenEvents?.includes(id))
-            return;
-          const source =
-            input.type === "wakeup" && input.wakeup.mode === "decision"
-              ? undefined
-              : deps.memory?.source(input.source, JSON.stringify(c.key));
-          if (source && deps.memory?.store.isDeleted(source.id)) return;
-          const delegation =
-            input.type === "execution_result"
-              ? c.state.delegations?.[input.requestId]
-              : undefined;
-          const originId =
-            input.type === "job_result"
-              ? input.jobId
-              : input.type === "wakeup"
-                ? (input.wakeup.originEventId ?? input.wakeup.jobId)
-                : delegation?.originEventId;
-          if (
-            c.state.clearedInputs?.[id] ||
-            (originId && c.state.clearedInputs?.[originId]) ||
-            (input.type !== "wakeup" &&
-              c.state.clearedInputs?.[
-                conversationInputId({ type: "event", event: input.source })
-              ])
-          )
-            return;
-          if (originId && c.state.forgottenEvents?.includes(originId)) return;
-          const reference = originId
-            ? c.state.memoryContexts?.[originId]
-            : undefined;
-          if (reference && !current(JSON.stringify(c.key), reference)) return;
-          const revision = deps.memory?.store.deletionRevision() ?? 0;
-          // Apply the consumer's provenance boundary before retaining a report.
-          // Untracked legacy work cannot prove independence after deletion.
-          if (input.type === "job_result" && !reference && revision > 0) return;
-          if (
-            input.type === "execution_result" &&
-            (((delegation || revision > 0) &&
-              !Object.values(c.state.agents ?? {}).includes(input.agentId)) ||
-              (!delegation && revision > 0) ||
-              (delegation && delegation.deletionRevision !== revision))
-          )
-            return;
-          c.state.pendingNotifications ??= {};
-          if (!c.state.pendingNotifications[id]) {
-            await prepareHandoff(c.state, c.key, c.vars.persist);
+        const receiving = serializeAdmittedWork(
+          deps.lifecycle,
+          c.vars.signal,
+          c.vars.receiving,
+          async () => {
+            const id = conversationInputId(input);
+            if (
+              c.state.migration &&
+              input.source.address.channel !== "slack" &&
+              input.source.address.channel !== "agent"
+            )
+              throw new Error(
+                "Session scope cannot admit a linked legacy adapter",
+              );
             if (
               eventRecord(c.state, id) ||
-              c.state.forgottenEvents?.includes(id) ||
-              (originId && c.state.forgottenEvents?.includes(originId)) ||
-              (source && deps.memory?.store.isDeleted(source.id)) ||
-              revision !== (deps.memory?.store.deletionRevision() ?? 0) ||
-              (reference && !current(JSON.stringify(c.key), reference))
+              c.state.forgottenEvents?.includes(id)
             )
               return;
-            c.state.pendingNotifications[id] = input;
-            c.state.ingress ??= {
-              sequence: 0,
-              receivedThrough: 0,
-              receipts: {},
-            };
+            const source =
+              input.type === "wakeup" && input.wakeup.mode === "decision"
+                ? undefined
+                : deps.memory?.source(input.source, JSON.stringify(c.key));
+            if (source && deps.memory?.store.isDeleted(source.id)) return;
+            const delegation =
+              input.type === "execution_result"
+                ? c.state.delegations?.[input.requestId]
+                : undefined;
+            const originId =
+              input.type === "job_result"
+                ? input.jobId
+                : input.type === "wakeup"
+                  ? (input.wakeup.originEventId ?? input.wakeup.jobId)
+                  : delegation?.originEventId;
             if (
-              !readLegacyAdmissions(c.state).includes(id) &&
-              !c.state.migration?.legacyInputs.includes(id)
+              c.state.clearedInputs?.[id] ||
+              (originId && c.state.clearedInputs?.[originId]) ||
+              (input.type !== "wakeup" &&
+                c.state.clearedInputs?.[
+                  conversationInputId({ type: "event", event: input.source })
+                ])
             )
-              recordConversationIngress(
-                c.state.ingress,
-                input,
-                receivedAt,
-                c.state.migration ? "session" : "legacy",
-              );
-          }
-          captureNotificationCleanup(c.state, input);
-          await c.vars.persist();
-          await publishHandoff(c.state, (input) =>
-            c.queue.send("inbox", input),
-          );
-          const pending = c.state.pendingNotifications?.[id];
-          if (pending) await c.queue.send("inbox", pending);
-        });
+              return;
+            if (originId && c.state.forgottenEvents?.includes(originId)) return;
+            const reference = originId
+              ? c.state.memoryContexts?.[originId]
+              : undefined;
+            if (reference && !current(JSON.stringify(c.key), reference)) return;
+            const revision = deps.memory?.store.deletionRevision() ?? 0;
+            // Apply the consumer's provenance boundary before retaining a report.
+            // Untracked legacy work cannot prove independence after deletion.
+            if (input.type === "job_result" && !reference && revision > 0)
+              return;
+            if (
+              input.type === "execution_result" &&
+              (((delegation || revision > 0) &&
+                !Object.values(c.state.agents ?? {}).includes(input.agentId)) ||
+                (!delegation && revision > 0) ||
+                (delegation && delegation.deletionRevision !== revision))
+            )
+              return;
+            c.state.pendingNotifications ??= {};
+            if (!c.state.pendingNotifications[id]) {
+              await prepareHandoff(c.state, c.key, c.vars.persist);
+              if (
+                eventRecord(c.state, id) ||
+                c.state.forgottenEvents?.includes(id) ||
+                (originId && c.state.forgottenEvents?.includes(originId)) ||
+                (source && deps.memory?.store.isDeleted(source.id)) ||
+                revision !== (deps.memory?.store.deletionRevision() ?? 0) ||
+                (reference && !current(JSON.stringify(c.key), reference))
+              )
+                return;
+              c.state.pendingNotifications[id] = input;
+              c.state.ingress ??= {
+                sequence: 0,
+                receivedThrough: 0,
+                receipts: {},
+              };
+              if (
+                !readLegacyAdmissions(c.state).includes(id) &&
+                !c.state.migration?.legacyInputs.includes(id)
+              )
+                recordConversationIngress(
+                  c.state.ingress,
+                  input,
+                  receivedAt,
+                  c.state.migration ? "session" : "legacy",
+                );
+            }
+            captureNotificationCleanup(c.state, input);
+            await c.vars.persist();
+            await publishHandoff(c.state, (input) =>
+              c.queue.send("inbox", input),
+            );
+            const pending = c.state.pendingNotifications?.[id];
+            if (pending) await c.queue.send("inbox", pending);
+          },
+        );
         c.vars.receiving = receiving.catch(() => {});
+        void c.keepAwake(c.vars.receiving);
         await receiving;
       },
       // Activate a host-crashed actor without adding duplicate inbox entries or
@@ -2010,24 +2042,36 @@ export function createJuneRegistry(deps: Dependencies) {
           const activityVersion = await loop.getVersion("activity-routing", 2);
           const body = message.body;
           if (body.type === "session_tick") {
-            await loop.step("pump-activity", (step) =>
-              sessions.pump(
-                sessionHost(step, step.client<JuneClientRegistry>()),
-              ),
-            );
+            const release = await deps.lifecycle?.enter(ctx.abortSignal);
+            try {
+              await loop.step({
+                name: "pump-activity",
+                timeout: 0,
+                run: (step) =>
+                  sessions.pump(
+                    sessionHost(step, step.client<JuneClientRegistry>()),
+                  ),
+              });
+            } finally {
+              release?.();
+            }
             return;
           }
           if (body.type === "session_barrier") {
             const release = await deps.lifecycle?.enter(ctx.abortSignal);
             try {
-              await loop.step("observe-session-barrier", async (step) => {
-                observeLegacyBarrier(step.state, body.epoch, body.barrier);
-                await step.vars.persist();
-                await advanceHandoff(step.state, ctx.key, step.vars.persist);
-                if (activityVersion >= 2)
-                  await sessions.pump(
-                    sessionHost(step, step.client<JuneClientRegistry>()),
-                  );
+              await loop.step({
+                name: "observe-session-barrier",
+                timeout: 0,
+                run: async (step) => {
+                  observeLegacyBarrier(step.state, body.epoch, body.barrier);
+                  await step.vars.persist();
+                  await advanceHandoff(step.state, ctx.key, step.vars.persist);
+                  if (activityVersion >= 2)
+                    await sessions.pump(
+                      sessionHost(step, step.client<JuneClientRegistry>()),
+                    );
+                },
               });
             } finally {
               release?.();
@@ -2077,9 +2121,10 @@ export function createJuneRegistry(deps: Dependencies) {
                 },
               );
               if (lane === "session" && activityVersion >= 2) {
-                sessionControl = await loop.step(
-                  "dispatch-activity",
-                  async (step) => {
+                sessionControl = await loop.step({
+                  name: "dispatch-activity",
+                  timeout: 0,
+                  run: async (step) => {
                     await sessions.pump(
                       sessionHost(step, step.client<JuneClientRegistry>()),
                     );
@@ -2095,7 +2140,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       ) === "active"
                     );
                   },
-                );
+                });
                 if (!sessionControl) return;
               } else if (lane !== "legacy") return;
             }
@@ -2103,14 +2148,17 @@ export function createJuneRegistry(deps: Dependencies) {
               const eligible =
                 deps.wakeups && event.address.channel === "slack";
               const claimed = eligible
-                ? await loop.step("claim-wakeup", async (step) =>
-                    !ownsLegacyInput(step.state, conversationInputId(body))
-                      ? false
-                      : step
-                          .client<JuneClientRegistry>()
-                          .wakeups.getOrCreate([deps.owner.id])
-                          .claim(body.wakeup.runId, body.wakeup.mode),
-                  )
+                ? await loop.step({
+                    name: "claim-wakeup",
+                    timeout: 0,
+                    run: async (step) =>
+                      !ownsLegacyInput(step.state, conversationInputId(body))
+                        ? false
+                        : step
+                            .client<JuneClientRegistry>()
+                            .wakeups.getOrCreate([deps.owner.id])
+                            .claim(body.wakeup.runId, body.wakeup.mode),
+                  })
                 : false;
               if (!claimed) {
                 // No effect is being settled here. A rejected/duplicate wakeup
@@ -2409,12 +2457,15 @@ export function createJuneRegistry(deps: Dependencies) {
             });
             if (!accepted) {
               if (sessionControl)
-                await loop.step("repair-control-receipt", (step) =>
-                  sessions.controlFinished(
-                    sessionHost(step, step.client<JuneClientRegistry>()),
-                    body,
-                  ),
-                );
+                await loop.step({
+                  name: "repair-control-receipt",
+                  timeout: 0,
+                  run: (step) =>
+                    sessions.controlFinished(
+                      sessionHost(step, step.client<JuneClientRegistry>()),
+                      body,
+                    ),
+                });
               return;
             }
             const ping =
@@ -2440,78 +2491,82 @@ export function createJuneRegistry(deps: Dependencies) {
                 );
               });
             if (version >= 9 && body.type !== "wakeup") {
-              await loop.step("publish-native-event", async (step) => {
-                if (
-                  !deps.wakeups ||
-                  body.type === "forget_request" ||
-                  !valid(step.state) ||
-                  interruptionReview ||
-                  reflectionReview?.action === "propose"
-                )
-                  return;
-                let native: WakeupEvent;
-                if (body.type === "event") {
-                  native = {
-                    id: `${event.address.accountId}:${event.id}`,
-                    source: event.address.channel,
-                    type: event.type,
-                    occurredAt: event.occurredAt,
-                    data: {
-                      address: event.address,
-                      messageId: event.messageId,
-                      ...(event.type === "message"
-                        ? {
-                            senderId: event.senderId,
-                            text: event.text.slice(0, 3500),
-                            direct: event.direct,
-                          }
-                        : event.type === "reaction"
+              await loop.step({
+                name: "publish-native-event",
+                timeout: 0,
+                run: async (step) => {
+                  if (
+                    !deps.wakeups ||
+                    body.type === "forget_request" ||
+                    !valid(step.state) ||
+                    interruptionReview ||
+                    reflectionReview?.action === "propose"
+                  )
+                    return;
+                  let native: WakeupEvent;
+                  if (body.type === "event") {
+                    native = {
+                      id: `${event.address.accountId}:${event.id}`,
+                      source: event.address.channel,
+                      type: event.type,
+                      occurredAt: event.occurredAt,
+                      data: {
+                        address: event.address,
+                        messageId: event.messageId,
+                        ...(event.type === "message"
                           ? {
                               senderId: event.senderId,
-                              emoji: event.emoji,
-                              removed: event.removed,
+                              text: event.text.slice(0, 3500),
+                              direct: event.direct,
                             }
-                          : { status: event.status }),
-                    },
-                  };
-                } else if (body.type === "job_result") {
-                  native = {
-                    id: `${body.jobId}:${body.attempt}`,
-                    source: "coding",
-                    type: "result",
-                    occurredAt: Date.now(),
-                    data: {
-                      jobId: body.jobId,
-                      attempt: body.attempt,
-                      report: body.text.slice(0, 3500),
-                    },
-                  };
-                } else {
-                  const result = await step
-                    .client<JuneClientRegistry>()
-                    .execution.getOrCreate(
-                      executionKey(scope.key, body.agentId),
-                    )
-                    .result(body.requestId);
-                  if (!result || !valid(step.state)) return;
-                  native = {
-                    id: `${body.agentId}:${body.requestId}`,
-                    source: "execution",
-                    type: "result",
-                    occurredAt: Date.now(),
-                    data: {
-                      agentId: body.agentId,
-                      requestId: body.requestId,
-                      status: result.status,
-                      report: result.report?.slice(0, 3500) ?? "",
-                    },
-                  };
-                }
-                if (deps.wakeups.sources.includes(native.source))
-                  await step
-                    .client<JuneClientRegistry>()
-                    .wakeups.getOrCreate([deps.owner.id])
-                    .publish(native, undefined, JSON.stringify(scope.key));
+                          : event.type === "reaction"
+                            ? {
+                                senderId: event.senderId,
+                                emoji: event.emoji,
+                                removed: event.removed,
+                              }
+                            : { status: event.status }),
+                      },
+                    };
+                  } else if (body.type === "job_result") {
+                    native = {
+                      id: `${body.jobId}:${body.attempt}`,
+                      source: "coding",
+                      type: "result",
+                      occurredAt: Date.now(),
+                      data: {
+                        jobId: body.jobId,
+                        attempt: body.attempt,
+                        report: body.text.slice(0, 3500),
+                      },
+                    };
+                  } else {
+                    const result = await step
+                      .client<JuneClientRegistry>()
+                      .execution.getOrCreate(
+                        executionKey(scope.key, body.agentId),
+                      )
+                      .result(body.requestId);
+                    if (!result || !valid(step.state)) return;
+                    native = {
+                      id: `${body.agentId}:${body.requestId}`,
+                      source: "execution",
+                      type: "result",
+                      occurredAt: Date.now(),
+                      data: {
+                        agentId: body.agentId,
+                        requestId: body.requestId,
+                        status: result.status,
+                        report: result.report?.slice(0, 3500) ?? "",
+                      },
+                    };
+                  }
+                  if (deps.wakeups.sources.includes(native.source))
+                    await step
+                      .client<JuneClientRegistry>()
+                      .wakeups.getOrCreate([deps.owner.id])
+                      .publish(native, undefined, JSON.stringify(scope.key));
+                },
               });
             }
             // Choices are journaled even when disabled. A config change cannot add
@@ -2988,45 +3043,50 @@ export function createJuneRegistry(deps: Dependencies) {
               } else if (body.type === "job_result" && version < 7) {
                 reply = { text: body.text };
               } else if (appCommand) {
-                reply = await loop.step("dynamic-app-command", async (step) => {
-                  if (
-                    event.address.channel !== "slack" ||
-                    event.appDeploymentEligible !== true
-                  )
+                reply = await loop.step({
+                  name: "dynamic-app-command",
+                  timeout: 0,
+                  run: async (step) => {
+                    if (
+                      event.address.channel !== "slack" ||
+                      event.appDeploymentEligible !== true
+                    )
+                      return {
+                        text: "Send !deploy-app as a fresh plain-text owner Slack DM, not a quote, code block, attachment or forwarded message. No deployment was approved.",
+                      };
+                    // The app client owns external deployment receipts; its text
+                    // response (including caught failures) is no drain proof here.
+                    const coverage = editLegacyTurn(step.state, eventId);
+                    if (coverage) {
+                      coverage.untrackedEffect = true;
+                      await step.vars.persist();
+                    }
+                    const activity = step.state.sessions?.turns[eventId];
+                    if (activity) {
+                      activity.untrackedEffect = true;
+                      await step.vars.persist();
+                    }
                     return {
-                      text: "Send !deploy-app as a fresh plain-text owner Slack DM, not a quote, code block, attachment or forwarded message. No deployment was approved.",
+                      text:
+                        plan.apps &&
+                        deps.apps &&
+                        valid(step.state) &&
+                        !step.abortSignal.aborted
+                          ? await deps.apps
+                              .approve(
+                                appCommand[1] ?? "",
+                                step.key,
+                                () =>
+                                  valid(step.state) &&
+                                  !step.abortSignal.aborted,
+                              )
+                              .catch(
+                                () =>
+                                  "App deployment outcome is unavailable. Ask me to inspect the app receipt; do not assume failure or retry the deployment.",
+                              )
+                          : "Dynamic Apps are unavailable or this approval context was revoked.",
                     };
-                  // The app client owns external deployment receipts; its text
-                  // response (including caught failures) is no drain proof here.
-                  const coverage = editLegacyTurn(step.state, eventId);
-                  if (coverage) {
-                    coverage.untrackedEffect = true;
-                    await step.vars.persist();
-                  }
-                  const activity = step.state.sessions?.turns[eventId];
-                  if (activity) {
-                    activity.untrackedEffect = true;
-                    await step.vars.persist();
-                  }
-                  return {
-                    text:
-                      plan.apps &&
-                      deps.apps &&
-                      valid(step.state) &&
-                      !step.abortSignal.aborted
-                        ? await deps.apps
-                            .approve(
-                              appCommand[1] ?? "",
-                              step.key,
-                              () =>
-                                valid(step.state) && !step.abortSignal.aborted,
-                            )
-                            .catch(
-                              () =>
-                                "App deployment outcome is unavailable. Ask me to inspect the app receipt; do not assume failure or retry the deployment.",
-                            )
-                        : "Dynamic Apps are unavailable or this approval context was revoked.",
-                  };
+                  },
                 });
               } else if (correctionCommand) {
                 reply = await loop.step(
@@ -3093,9 +3153,10 @@ export function createJuneRegistry(deps: Dependencies) {
                 body.type === "event" &&
                 isPersonalityCommand(event.text)
               ) {
-                reply = await loop.step(
-                  "personality-command",
-                  async (step) => ({
+                reply = await loop.step({
+                  name: "personality-command",
+                  timeout: 0,
+                  run: async (step) => ({
                     text: valid(step.state)
                       ? await step
                           .client<JuneRegistry>()
@@ -3103,7 +3164,7 @@ export function createJuneRegistry(deps: Dependencies) {
                           .command(event)
                       : "",
                   }),
-                );
+                });
               } else if (reflectionReview) {
                 // Resolve only inside the durable send callback. Review must not
                 // start inference/extraction occupancy and erase its candidates.
@@ -3212,51 +3273,56 @@ export function createJuneRegistry(deps: Dependencies) {
                 deps.social?.command(event)
               ) {
                 const social = deps.social;
-                reply = await loop.step("social-command", async (step) => {
-                  // !allow can send through the independent social outbox. An
-                  // acknowledgment string cannot prove the recipient's outcome.
-                  const coverage = editLegacyTurn(step.state, eventId);
-                  if (coverage && social.command(event)?.[1] === "allow") {
-                    coverage.untrackedEffect = true;
-                    await step.vars.persist();
-                  }
-                  const activity = step.state.sessions?.turns[eventId];
-                  if (activity && social.command(event)?.[1] === "allow") {
-                    activity.untrackedEffect = true;
-                    await step.vars.persist();
-                  }
-                  let uncertain = false;
-                  const text = await social.decide(
-                    event,
-                    interruptionReview && deps.reflection && valid(step.state)
-                      ? (proposalId, reference, commandId) =>
-                          step
-                            .client<JuneClientRegistry>()
-                            .reflection.getOrCreate([deps.owner.id])
-                            .deliverInterruption(
-                              proposalId,
-                              reference,
-                              commandId,
-                            )
-                      : undefined,
-                    (result) => {
-                      uncertain ||= !(
-                        result.status === "sent" ||
-                        (result.status === "rejected" && !result.retryable)
-                      );
-                    },
-                    () => valid(step.state),
-                  );
-                  if (activity && !uncertain) {
-                    delete activity.untrackedEffect;
-                    await step.vars.persist();
-                  }
-                  return { text };
+                reply = await loop.step({
+                  name: "social-command",
+                  timeout: 0,
+                  run: async (step) => {
+                    // !allow can send through the independent social outbox. An
+                    // acknowledgment string cannot prove the recipient's outcome.
+                    const coverage = editLegacyTurn(step.state, eventId);
+                    if (coverage && social.command(event)?.[1] === "allow") {
+                      coverage.untrackedEffect = true;
+                      await step.vars.persist();
+                    }
+                    const activity = step.state.sessions?.turns[eventId];
+                    if (activity && social.command(event)?.[1] === "allow") {
+                      activity.untrackedEffect = true;
+                      await step.vars.persist();
+                    }
+                    let uncertain = false;
+                    const text = await social.decide(
+                      event,
+                      interruptionReview && deps.reflection && valid(step.state)
+                        ? (proposalId, reference, commandId) =>
+                            step
+                              .client<JuneClientRegistry>()
+                              .reflection.getOrCreate([deps.owner.id])
+                              .deliverInterruption(
+                                proposalId,
+                                reference,
+                                commandId,
+                              )
+                        : undefined,
+                      (result) => {
+                        uncertain ||= !(
+                          result.status === "sent" ||
+                          (result.status === "rejected" && !result.retryable)
+                        );
+                      },
+                      () => valid(step.state),
+                    );
+                    if (activity && !uncertain) {
+                      delete activity.untrackedEffect;
+                      await step.vars.persist();
+                    }
+                    return { text };
+                  },
                 });
               } else if (command) {
-                reply = await loop.step(
-                  "coding-command",
-                  async (step): Promise<CompanionReply> => {
+                reply = await loop.step({
+                  name: "coding-command",
+                  timeout: 0,
+                  run: async (step): Promise<CompanionReply> => {
                     if (
                       codingCommandVersion >= 2 &&
                       event.address.channel === "slack" &&
@@ -3297,11 +3363,12 @@ export function createJuneRegistry(deps: Dependencies) {
                       text: `Sent ${command[1]} to coding job ${id.slice(0, 12)}. I'll report its result here.`,
                     };
                   },
-                );
+                });
               } else if (sessionControl) {
-                reply = await loop.step(
-                  "activity-control-output",
-                  async (step) => {
+                reply = await loop.step({
+                  name: "activity-control-output",
+                  timeout: 0,
+                  run: async (step) => {
                     if (body.type !== "execution_result" || !valid(step.state))
                       return { text: "" };
                     const result = await step
@@ -3314,7 +3381,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       text: valid(step.state) ? (result?.report ?? "") : "",
                     };
                   },
-                );
+                });
               } else {
                 conversationalReply = true;
                 let webResults: WebSearchCitation[] | undefined;
@@ -3328,9 +3395,10 @@ export function createJuneRegistry(deps: Dependencies) {
                       };
                       break;
                     }
-                    const acknowledged = await loop.step(
-                      "acknowledge-deep",
-                      async (step) => {
+                    const acknowledged = await loop.step({
+                      name: "acknowledge-deep",
+                      timeout: 0,
+                      run: async (step) => {
                         if (!valid(step.state) || step.abortSignal.aborted)
                           return false;
                         if (!reply.text.trim()) return !!deps.deepModel;
@@ -3374,7 +3442,7 @@ export function createJuneRegistry(deps: Dependencies) {
                         );
                         return result.status === "sent";
                       },
-                    );
+                    });
                     // An ambiguous acknowledgment is held, never sent a second
                     // time as a final answer or followed by another paid call.
                     reply = { text: "" };
@@ -5407,9 +5475,10 @@ export function createJuneRegistry(deps: Dependencies) {
                     : {}),
                 };
                 if (body.type === "execution_result") {
-                  const proposal = await loop.step(
-                    "worker-proposal",
-                    async (step) => {
+                  const proposal = await loop.step({
+                    name: "worker-proposal",
+                    timeout: 0,
+                    run: async (step) => {
                       if (!valid(step.state)) return null;
                       const result = await step
                         .client<JuneClientRegistry>()
@@ -5439,12 +5508,13 @@ export function createJuneRegistry(deps: Dependencies) {
                       }
                       return valid(step.state) ? result.coding : null;
                     },
-                  );
+                  });
                   if (proposal) reply.coding = proposal;
                   if (delegationVersion >= 2 && skillCodingVersion >= 2) {
-                    const skillProposal = await loop.step(
-                      "worker-skill-proposal",
-                      async (step) => {
+                    const skillProposal = await loop.step({
+                      name: "worker-skill-proposal",
+                      timeout: 0,
+                      run: async (step) => {
                         if (!valid(step.state)) return null;
                         const result = await step
                           .client<JuneClientRegistry>()
@@ -5494,7 +5564,7 @@ export function createJuneRegistry(deps: Dependencies) {
                           ? result.skillCodingProposal
                           : null;
                       },
-                    );
+                    });
                     if (skillProposal)
                       reply.skillCodingProposal = skillProposal;
                   }
@@ -5502,40 +5572,44 @@ export function createJuneRegistry(deps: Dependencies) {
               }
               if (version >= 9 && reply.wakeup) {
                 const action = reply.wakeup;
-                reply = await loop.step("manage-wakeup", async (step) => {
-                  if (
-                    body.type !== "event" ||
-                    !plan.wakeups ||
-                    !deps.wakeups ||
-                    !canStartAction(step.state)
-                  )
-                    return {
-                      text: "Wakeup management is unavailable for this turn.",
-                    };
-                  try {
-                    return {
-                      text: await step
-                        .client<JuneClientRegistry>()
-                        .wakeups.getOrCreate([deps.owner.id])
-                        .manage(action, event, eventId, [
-                          ...(step.state.memoryContexts?.[eventId]?.sourceIds ??
-                            []),
-                          ...(step.state.memoryContexts?.[eventId]
-                            ?.contextSourceIds ?? []),
-                        ]),
-                    };
-                  } catch {
-                    return {
-                      text: "I couldn't confirm that wakeup change. List/inspect wakeups before trying again; check the source, schedule and timezone.",
-                    };
-                  }
+                reply = await loop.step({
+                  name: "manage-wakeup",
+                  timeout: 0,
+                  run: async (step) => {
+                    if (
+                      body.type !== "event" ||
+                      !plan.wakeups ||
+                      !deps.wakeups ||
+                      !canStartAction(step.state)
+                    )
+                      return {
+                        text: "Wakeup management is unavailable for this turn.",
+                      };
+                    try {
+                      return {
+                        text: await step
+                          .client<JuneClientRegistry>()
+                          .wakeups.getOrCreate([deps.owner.id])
+                          .manage(action, event, eventId, [
+                            ...(step.state.memoryContexts?.[eventId]
+                              ?.sourceIds ?? []),
+                            ...(step.state.memoryContexts?.[eventId]
+                              ?.contextSourceIds ?? []),
+                          ]),
+                      };
+                    } catch {
+                      return {
+                        text: "I couldn't confirm that wakeup change. List/inspect wakeups before trying again; check the source, schedule and timezone.",
+                      };
+                    }
+                  },
                 });
               }
               if (reply.slackHistory) {
                 const request = reply.slackHistory;
                 const result = await loop.step({
                   name: "private-slack-history",
-                  timeout: 30_000,
+                  timeout: 0,
                   run: async (step) => {
                     const id = `${eventId}:slack-history`;
                     // Only intent and receipt are durable. The adapter resolves
@@ -5659,9 +5733,10 @@ export function createJuneRegistry(deps: Dependencies) {
                         turnVersion >= 2 && body.type === "event",
                     },
                   ).execution ?? [];
-                const outcomes = await loop.step(
-                  "dispatch-execution",
-                  async (step) =>
+                const outcomes = await loop.step({
+                  name: "dispatch-execution",
+                  timeout: 0,
+                  run: async (step) =>
                     dispatchScopeExecution(
                       {
                         state: step.state,
@@ -5683,7 +5758,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       },
                       commands,
                     ),
-                );
+                });
                 reply = {
                   ...(reply.sendMessages
                     ? { sendMessages: reply.sendMessages }
@@ -5704,29 +5779,34 @@ export function createJuneRegistry(deps: Dependencies) {
                   plan.reflection
                 )
                   interruptionProposal = action;
-                reply = await loop.step("social-proposal", async (step) => ({
-                  text:
-                    plan.social &&
-                    deps.social &&
-                    canStartAction(step.state) &&
-                    !step.abortSignal.aborted
-                      ? interruptionProposal
-                        ? "[Private reflection interruption preview; content not retained]"
-                        : await deps.social.propose(
-                            event,
-                            action,
-                            () =>
-                              !step.abortSignal.aborted &&
-                              canStartAction(step.state),
-                          )
-                      : "Permission requests are unavailable; no access was granted.",
-                }));
+                reply = await loop.step({
+                  name: "social-proposal",
+                  timeout: 0,
+                  run: async (step) => ({
+                    text:
+                      plan.social &&
+                      deps.social &&
+                      canStartAction(step.state) &&
+                      !step.abortSignal.aborted
+                        ? interruptionProposal
+                          ? "[Private reflection interruption preview; content not retained]"
+                          : await deps.social.propose(
+                              event,
+                              action,
+                              () =>
+                                !step.abortSignal.aborted &&
+                                canStartAction(step.state),
+                            )
+                        : "Permission requests are unavailable; no access was granted.",
+                  }),
+                });
               }
               if (reply.skillCodingProposal) {
                 const action = reply.skillCodingProposal;
-                reply = await loop.step(
-                  "propose-skill-coding",
-                  async (step) => {
+                reply = await loop.step({
+                  name: "propose-skill-coding",
+                  timeout: 0,
+                  run: async (step) => {
                     const unavailable = {
                       text: "No skill coding task was queued. A current eligible evaluation, retained evidence and configured coding workspace are required.",
                     };
@@ -5880,7 +5960,7 @@ export function createJuneRegistry(deps: Dependencies) {
                       ? { text: proposal.preview ?? unavailable.text }
                       : unavailable;
                   },
-                );
+                });
               }
               if (reply.coding) {
                 const request = reply.coding;
@@ -5889,9 +5969,10 @@ export function createJuneRegistry(deps: Dependencies) {
                   request.goal.trim() &&
                   request.goal.length <= 2000
                 ) {
-                  const proposed = await loop.step(
-                    "propose-coding",
-                    async (step) => {
+                  const proposed = await loop.step({
+                    name: "propose-coding",
+                    timeout: 0,
+                    run: async (step) => {
                       if (
                         !canStartAction(step.state) ||
                         !deps.coding ||
@@ -5981,7 +6062,7 @@ export function createJuneRegistry(deps: Dependencies) {
                         });
                       return proposal.preview ?? true;
                     },
-                  );
+                  });
                   reply.text =
                     typeof proposed === "string"
                       ? proposed
@@ -5997,7 +6078,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 const query = reply.search;
                 await loop.step({
                   name: "search-reply",
-                  timeout: 30_000,
+                  timeout: 0,
                   run: async (step) => {
                     const id = `${eventId}:search`;
                     step.state.deliveries[id] ??= deliveryRecord(
@@ -6221,9 +6302,10 @@ export function createJuneRegistry(deps: Dependencies) {
               );
               for (const id of deliveryIds) {
                 for (let attempt = 0; attempt < 3; attempt++) {
-                  const result = await loop.step(
-                    `deliver-${id}-${attempt}`,
-                    async (step) => {
+                  const result = await loop.step({
+                    name: `deliver-${id}-${attempt}`,
+                    timeout: 0,
+                    run: async (step) => {
                       const delivery = editDelivery(step.state, id);
                       if (!delivery)
                         throw new Error("Missing durable delivery");
@@ -6495,7 +6577,7 @@ export function createJuneRegistry(deps: Dependencies) {
                         },
                       );
                     },
-                  );
+                  });
                   if (
                     result.status !== "rejected" ||
                     !result.retryable ||
@@ -6732,57 +6814,65 @@ export function createJuneRegistry(deps: Dependencies) {
                     }
                   },
                 });
-                await loop.step("reflection-enqueue", async (step) => {
-                  const sourceId = readHistory(step.state).find(
-                    (entry) => entry.id === eventId,
-                  )?.sourceId;
-                  if (
-                    sessionControl ||
-                    !plan.reflection ||
-                    reflectionReview ||
-                    modelReview ||
-                    interruptionReview ||
-                    !deps.reflection ||
-                    !sourceId ||
-                    body.type !== "event" ||
-                    !valid(step.state)
-                  )
-                    return;
-                  await step
-                    .client<JuneClientRegistry>()
-                    .reflection.getOrCreate([deps.owner.id])
-                    .enqueue({
-                      scope: audience,
-                      evidenceIds: [sourceId],
-                      kind: "reflection",
-                      mode: "idle",
-                    });
+                await loop.step({
+                  name: "reflection-enqueue",
+                  timeout: 0,
+                  run: async (step) => {
+                    const sourceId = readHistory(step.state).find(
+                      (entry) => entry.id === eventId,
+                    )?.sourceId;
+                    if (
+                      sessionControl ||
+                      !plan.reflection ||
+                      reflectionReview ||
+                      modelReview ||
+                      interruptionReview ||
+                      !deps.reflection ||
+                      !sourceId ||
+                      body.type !== "event" ||
+                      !valid(step.state)
+                    )
+                      return;
+                    await step
+                      .client<JuneClientRegistry>()
+                      .reflection.getOrCreate([deps.owner.id])
+                      .enqueue({
+                        scope: audience,
+                        evidenceIds: [sourceId],
+                        kind: "reflection",
+                        mode: "idle",
+                      });
+                  },
                 });
               }
             }
             if (body.type === "wakeup") {
-              await loop.step("complete-wakeup", async (step) => {
-                const results = Object.entries(readDeliveries(step.state))
-                  .filter(([id]) => id.startsWith(`${eventId}:`))
-                  .map(([, delivery]) => delivery.result?.status);
-                const uncertain = Object.entries(
-                  readModelInvocations(step.state) ?? {},
-                ).some(
-                  ([id, status]) =>
-                    id.includes(eventId) && status !== "settled",
-                );
-                const status =
-                  uncertain || results.includes("unknown")
-                    ? "unknown"
-                    : wakeupFailed ||
-                        results.includes("rejected") ||
-                        !valid(step.state)
-                      ? "failed"
-                      : "completed";
-                await step
-                  .client<JuneClientRegistry>()
-                  .wakeups.getOrCreate([deps.owner.id])
-                  .complete(body.wakeup.runId, status);
+              await loop.step({
+                name: "complete-wakeup",
+                timeout: 0,
+                run: async (step) => {
+                  const results = Object.entries(readDeliveries(step.state))
+                    .filter(([id]) => id.startsWith(`${eventId}:`))
+                    .map(([, delivery]) => delivery.result?.status);
+                  const uncertain = Object.entries(
+                    readModelInvocations(step.state) ?? {},
+                  ).some(
+                    ([id, status]) =>
+                      id.includes(eventId) && status !== "settled",
+                  );
+                  const status =
+                    uncertain || results.includes("unknown")
+                      ? "unknown"
+                      : wakeupFailed ||
+                          results.includes("rejected") ||
+                          !valid(step.state)
+                        ? "failed"
+                        : "completed";
+                  await step
+                    .client<JuneClientRegistry>()
+                    .wakeups.getOrCreate([deps.owner.id])
+                    .complete(body.wakeup.runId, status);
+                },
               });
             }
             await loop.step("finish-event", async (step) => {
@@ -6793,12 +6883,15 @@ export function createJuneRegistry(deps: Dependencies) {
               await step.vars.persist();
             });
             if (sessionControl)
-              await loop.step("publish-control-receipt", (step) =>
-                sessions.controlFinished(
-                  sessionHost(step, step.client<JuneClientRegistry>()),
-                  body,
-                ),
-              );
+              await loop.step({
+                name: "publish-control-receipt",
+                timeout: 0,
+                run: (step) =>
+                  sessions.controlFinished(
+                    sessionHost(step, step.client<JuneClientRegistry>()),
+                    body,
+                  ),
+              });
             if (handoffVersion >= 2)
               await loop.step("advance-session-handoff", (step) =>
                 advanceHandoff(step.state, ctx.key, step.vars.persist),
@@ -6829,31 +6922,13 @@ export function createJuneRegistry(deps: Dependencies) {
         // Latching those would make the retry itself fail admission globally.
         // Terminal errors still fail closed; raw-work aborts retain their latch.
         onError(ctx, event) {
-          if (
-            !ctx.abortSignal.aborted &&
-            !("step" in event && event.step.willRetry === true)
-          )
+          if (!ctx.abortSignal.aborted && terminalWorkflowError(event))
             deps.lifecycle?.fail();
         },
       },
     ),
   });
-  const runConversation = conversation.config.run;
-  if (typeof runConversation === "function") {
-    // Retry checkpoint/alarm failures can escape Rivet without another error
-    // hook. Guard the settled run boundary, not scheduler yields in its body.
-    // A function proxy preserves Rivet's nonenumerable inspector metadata.
-    conversation.config.run = new Proxy(runConversation, {
-      async apply(run, receiver, [ctx]: Parameters<typeof runConversation>) {
-        try {
-          await Reflect.apply(run, receiver, [ctx]);
-        } catch (error) {
-          if (!ctx.abortSignal.aborted) deps.lifecycle?.fail();
-          throw error;
-        }
-      },
-    });
-  }
+  guardWorkflowActor(conversation, deps.lifecycle);
   return setup({
     use: {
       conversation,

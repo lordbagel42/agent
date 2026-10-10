@@ -901,14 +901,33 @@ after provisioning its dedicated credential and an immutable release marker:
 
 Conversation admission remains held through status/typing cleanup and final
 persistence. Normal Rivet queue/sleep suspension is not a workflow failure;
-the public workflow error hook also reports retryable step errors. Those retain
-the engine's existing durable retry policy without latching global admission.
+the public workflow error hook also reports retryable step errors. In the
+conversation, execution, coding, reflection, wakeups, activity and research
+workflows those retain the engine's existing durable retry policy without
+latching global admission (`terminalWorkflowError` in `src/runtime/lifecycle.ts`).
 Exhausted/nonretrying steps and workflow/rollback failures still latch it, as do
-unexpected run failures outside that hook, including failed retry checkpoints.
+unexpected run failures outside that hook: `guardWorkflowActor` also fences a
+failed retry checkpoint or alarm write after a retryable error notification.
 This does not authorize repeating uncertain effects or change their durable guards.
 Forced aborts cannot certify natural drain. Native coding, reflection and WhatsApp
 currently make the controller drain endpoint refuse certification even if the
 inbox is idle.
+
+RivetKit 2.3.21's default 30-second step timeout is only a race: it marks the
+step exhausted and fires the error hook while the body keeps running, so a slow
+actor wake would abandon a live RPC and latch June (incidents 680 and 714).
+Steps that call another actor, Slack, an app host or a provider therefore use
+`timeout: 0`; Guard, provider and Slack requests retain their own deadlines.
+The callee's 60-second action deadline bounds the RPC wait, **not** its JavaScript
+body or external effects. Local persistence-only steps retain their existing
+timeouts in this increment; it does not guarantee all actor actions settle on
+timeout. An action-scoped `c.abortSignal` aborts at that dispatch deadline.
+Conversation `receive`/`notify` and activity `receive` therefore take an
+actor-lifetime lifecycle lease before waiting on their admission serializer,
+hold it until the raw body settles, and also register `keepAwake`. Both queued
+and executing admissions prevent a successful drain after their callers time
+out. `keepAwake` alone is not drain accounting; forced actor abort with a held
+lease still fails closed. No durable journal names or ordering change.
 
 Optional typing feedback resolves its shared actor separately before submitting
 the status action by ID. A failed lookup cannot have submitted that action and
