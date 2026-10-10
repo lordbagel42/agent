@@ -361,31 +361,40 @@ no deep model is configured. There is no separate environment gate.
 The repository policy is to add no tests; typecheck, lint and real runs verify
 changes.
 
-- Latest full-suite run on 2026-10-10 at 11:44 UTC failed: 35 checks passed and
-  four failed across startup, engine-slot timeout fencing and standby readiness.
-  These were polling timeouts (missing HTTP readiness or IPC receipt), not mind
-  assertions. The fixtures do not configure mind. Earlier full runs passed,
-  apart from one intermittent `/console` 404 during the restart scenario.
-- A control run at 11:52 UTC used an untouched archive of base revision
-  `965216ec846fb2b5509245a42a07aaac20bf7f85` with the same installed dependencies
-  and unchanged test configuration. Of the 12 checks in those three files,
-  11 passed and the initial-startup HTTP readiness poll timed out. This confirms
-  a readiness failure without the mind changes, not that every latest failure
-  has the same cause. Shared-runner load was elevated; causation is unproven.
-  Do not treat the latest full suite as green or these changes as release-ready.
-- Formatter verification, lint and typecheck passed on the final source. The
-  separately executed Python runner suite passed all three checks; the failed
-  full-suite command did not reach its chained Python command.
+- The post-rebase full suite at 14:31 UTC on 2026-10-10 passed all 39 existing
+  checks. Formatter, lint and typecheck passed after refreshing the frozen
+  dependency installation for the concurrently published Effect packages.
+  The install warned about two missing transitive Pi CLI bins; those are not
+  used by the Mind probes. The separate Python runner suite passed four checks.
+- Earlier full runs had startup/engine/standby polling failures; an untouched
+  base control also timed out on startup. That evidence establishes a preexisting
+  readiness failure, not a proven cause for every earlier timeout. The final
+  run did not suppress or alter those checks.
 - **Local validation** uses scripted model replies with real Git repositories,
   disk capture, projection, the reply schema, prompt construction and kernel
   locks. This tests plumbing, not learning quality or real model behavior.
   Scratch checks reproduced and then verified fixes for raw-transcript reads,
   normalized-path access, symlinks, dirty Git edits, unrelated staged changes,
   partial final steps, unknown settlement and live lock takeover. Separate runs
-  exercised a local bare remote, conflicting edits, real inbox replay, private
-  reports, identity limits, and interaction/worker/automated prompt wiring.
-- **Still required before completion:** real-model reflection/dream
-  evaluation, private GitHub provisioning and sync, runner installation, and
+  exercised a local bare remote, conflicting edits across failed fetch/restart,
+  real inbox replay, private reports, autonomous values/identity edits, and
+  interaction/worker/automated prompt wiring. Missing recovery journals and
+  independent worker read provenance failed before their fixes and passed after.
+- **Real model:** two synthetic-DM runs with the configured tool-disabled Hot
+  Codex provider (GPT-6 Astra/high) committed person/conversation notes, reflected
+  a private canary only into its DM, and dreamed a journal and reusable skill.
+  The post-rebase reflection took 28 seconds and dream 41 seconds. Public recall
+  and shared self/skills/improvements excluded the canary. This exercises real
+  inference and Git, not live Slack ingress or production account configuration;
+  two examples do not prove semantic privacy for arbitrary inputs.
+- **Real local host:** isolated June processes with real Rivet/HTTP returned
+  ready HTTP 200 for fresh, missing-journal and failed-Git-init cases. Fresh Mind
+  drained with HTTP 200; the two uncertain cases denied drain with HTTP 409 and
+  kept foreground readiness. No live services or real messages were used.
+- **Review:** Oracle found no source-publication blockers after the final
+  journal, ancestry and conflict-hold corrections. This is not live clearance.
+- **Still required before completion:** private GitHub provisioning and sync,
+  runner installation, live capture/recall, and
   a real self-improvement dispatch with receipt/live verification.
 - **Manual end-to-end check** on live June after activation:
   1. Have a real conversation.
