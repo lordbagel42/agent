@@ -4,7 +4,7 @@ import {
   createHash,
   randomBytes,
   randomInt,
-  scryptSync,
+  scrypt,
   timingSafeEqual,
 } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
@@ -20,6 +20,12 @@ import {
 
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
+const derivePin = (value: string, salt: string): Promise<Buffer> =>
+  new Promise((resolve, reject) => {
+    scrypt(value, salt, 32, (error, key) =>
+      error ? reject(error) : resolve(key),
+    );
+  });
 const same = (a: Identity, b: Identity) =>
   a.channel === b.channel &&
   a.accountId === b.accountId &&
@@ -107,10 +113,12 @@ export class ArtifactStore {
         isOwner(context.event, this.options.owner))
     );
   }
-  private protect(record: Stored, pin: string) {
-    if (!/^\d{8}$/.test(pin)) throw new Error("artifact_pin_invalid");
-    const salt = randomBytes(16).toString("hex");
-    record.verifier = `${salt}:${scryptSync(`${this.options.pepper}:${pin}`, salt, 32).toString("hex")}`;
+  private protect(
+    record: Stored,
+    protection: { pin: string; verifier: string },
+  ) {
+    const { pin, verifier } = protection;
+    record.verifier = verifier;
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.key, iv);
     cipher.setAAD(
@@ -131,12 +139,12 @@ export class ArtifactStore {
     record.pinDelivery = "pending";
     record.visibility = "private";
   }
-  mutate(
+  async mutate(
     input: unknown,
     context: ArtifactContext,
     deletionRevision: number,
     chosenPin?: string,
-  ): ArtifactRecord {
+  ): Promise<ArtifactRecord> {
     const command = artifactCommandSchema.parse(input);
     const signature = digest(
       JSON.stringify([
@@ -147,6 +155,28 @@ export class ArtifactStore {
           : digest(`${this.options.pepper}:${chosenPin}`),
       ]),
     );
+    if (!context.isCurrent()) throw new Error("artifact_context_revoked");
+    let protection: { pin: string; verifier: string } | undefined;
+    if (
+      (command.action === "create" && command.visibility === "private") ||
+      command.action === "change_pin"
+    ) {
+      if (command.action === "change_pin") {
+        const existing = command.id ? this.get(command.id) : undefined;
+        if (!existing || !this.mayManage(existing, context))
+          throw new Error("artifact_denied");
+      }
+      const pin =
+        command.action === "change_pin" && chosenPin !== undefined
+          ? chosenPin
+          : randomInt(0, 100_000_000).toString().padStart(8, "0");
+      if (!/^\d{8}$/.test(pin)) throw new Error("artifact_pin_invalid");
+      const salt = randomBytes(16).toString("hex");
+      const key = await derivePin(`${this.options.pepper}:${pin}`, salt);
+      protection = { pin, verifier: `${salt}:${key.toString("hex")}` };
+    }
+    // Never hold a SQLite transaction across an await. Re-read authorization,
+    // idempotency and the current generation after background key derivation.
     if (!context.isCurrent()) throw new Error("artifact_context_revoked");
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -196,11 +226,7 @@ export class ArtifactStore {
           deletionRevision,
           pinDelivery: "not_required",
         };
-        if (record.visibility === "private")
-          this.protect(
-            record,
-            randomInt(0, 100_000_000).toString().padStart(8, "0"),
-          );
+        if (protection) this.protect(record, protection);
       } else {
         const existing = command.id ? this.read(command.id) : undefined;
         if (!existing || !this.mayManage(existing, context))
@@ -227,10 +253,8 @@ export class ArtifactStore {
           )
             throw new Error("artifact_invalid_rotation");
           record.generation++;
-          this.protect(
-            record,
-            chosenPin ?? randomInt(0, 100_000_000).toString().padStart(8, "0"),
-          );
+          if (!protection) throw new Error("artifact_pin_invalid");
+          this.protect(record, protection);
           this.db
             .prepare("DELETE FROM artifact_sessions WHERE artifact = ?")
             .run(record.id);
@@ -303,7 +327,11 @@ export class ArtifactStore {
     delete record.secretExpires;
     this.save(record);
   }
-  unlock(id: string, pin: string, client: string): string | undefined {
+  async unlock(
+    id: string,
+    pin: string,
+    client: string,
+  ): Promise<string | undefined> {
     const record = this.read(id);
     if (record?.visibility !== "private") return undefined;
     this.db
@@ -330,9 +358,15 @@ export class ArtifactStore {
       !salt ||
       !expected ||
       !timingSafeEqual(
-        scryptSync(`${this.options.pepper}:${pin}`, salt, 32),
+        await derivePin(`${this.options.pepper}:${pin}`, salt),
         Buffer.from(expected, "hex"),
       )
+    )
+      return undefined;
+    const latest = this.read(id);
+    if (
+      latest?.generation !== record.generation ||
+      latest.verifier !== record.verifier
     )
       return undefined;
     const token = randomBytes(32).toString("base64url");

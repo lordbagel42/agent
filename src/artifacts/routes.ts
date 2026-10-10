@@ -91,7 +91,7 @@ export function createArtifactRoutes(
     } catch {
       /* In-process tests have no socket. */
     }
-    const token = service.store.unlock(
+    const token = await service.store.unlock(
       id,
       typeof form.pin === "string" ? form.pin : "",
       peer,

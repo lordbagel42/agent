@@ -93,7 +93,7 @@ export class ArtifactService {
       if (!view || view.status === "revoked")
         throw new Error("artifact_workflow_denied");
     }
-    let record = this.store.mutate(
+    let record = await this.store.mutate(
       command,
       context,
       this.options.deletionRevision(),
