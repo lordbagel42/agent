@@ -363,9 +363,10 @@ export class MindRepo {
 
   /** Preserve commit IDs (dream checkpoints refer to them). Conflicting edits
    * block sync, rather than guessing which memory to discard. Never force push. */
-  async sync(): Promise<SyncState> {
+  async sync(current: () => boolean = () => true): Promise<SyncState> {
     if (!this.remote) return "local-only";
     try {
+      if (!current()) return "error";
       if (
         (
           await this.git(["status", "--porcelain", "--untracked-files=all"])
@@ -376,8 +377,10 @@ export class MindRepo {
       const remote = await this.revision("origin/main");
       let state: SyncState = "synced";
       const local = await this.revision();
+      if (!current()) return "error";
       if (remote && local && remote !== local) {
         const base = (await this.git(["merge-base", local, remote])).trim();
+        if (!current()) return "error";
         if (base === local) {
           await this.git(["merge", "-q", "--ff-only", "origin/main"]);
         } else if (base !== remote) {
@@ -390,8 +393,10 @@ export class MindRepo {
           }
         }
       }
-      if ((await this.revision()) !== (await this.revision("origin/main")))
-        await this.git(["push", "-q", "origin", "HEAD:main"]);
+      const unpushed =
+        (await this.revision()) !== (await this.revision("origin/main"));
+      if (!current()) return "error";
+      if (unpushed) await this.git(["push", "-q", "origin", "HEAD:main"]);
       return state;
     } catch {
       return "error";

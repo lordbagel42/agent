@@ -2,9 +2,12 @@ import type {
   Address,
   MessageEvent,
   ModelProvider,
+  ModelSettlement,
   Owner,
 } from "../core/contracts.js";
 import { isOwner } from "../core/social.js";
+import { beginModelReply } from "../models/invocation.js";
+import type { Lifecycle } from "../runtime/lifecycle.js";
 import { MindUnsettledError } from "./agent.js";
 import type { MindQuery } from "./contracts.js";
 import { dream } from "./dream.js";
@@ -26,6 +29,7 @@ import {
   type SyncState,
   safePath,
 } from "./repo.js";
+import { MindSafety } from "./safety.js";
 import { SELF_SEEDS } from "./seed.js";
 import { localTime } from "./time.js";
 import { type Entry, MindLock, Transcripts } from "./transcripts.js";
@@ -41,6 +45,8 @@ export interface MindSettings {
 }
 
 export interface MindOptions {
+  lifecycle?: Pick<Lifecycle, "tryEnter">;
+  deletionRevision?: () => number;
   /** The DEBUGSHARE amp-task inbox; absent disables self-improvement. */
   selfImprovement?: AmpInbox;
   /** Best-effort DM to Raygen; failures are logged, never retried. */
@@ -50,6 +56,7 @@ export interface MindOptions {
 /** What a prompt receives: June's self plus notes projected for the place. */
 export interface MindRecall {
   notes: string;
+  blocked?: string;
   configuration?: {
     remote: boolean;
     selfImprovement: boolean;
@@ -128,6 +135,7 @@ export class Mind {
   readonly repo: MindRepo;
   private readonly transcripts: Transcripts;
   private readonly lock: MindLock;
+  private readonly safety: MindSafety;
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<void> | undefined;
   private reflecting: string | undefined;
@@ -145,12 +153,20 @@ export class Mind {
     this.repo = new MindRepo(settings.directory, settings.remote);
     this.transcripts = new Transcripts(settings.directory);
     this.lock = new MindLock(settings.directory);
+    this.safety = new MindSafety(
+      this.transcripts,
+      options.deletionRevision ?? (() => 0),
+    );
   }
 
   async start() {
     if (!(await this.lock.acquire())) throw new Error("mind_busy");
     try {
       await this.repo.init();
+      await this.safety.load({
+        hasNotes: (await this.repo.list()).some((path) => path !== "README.md"),
+      });
+      if (!this.safety.readable) return;
       const missing: Change[] = [];
       for (const [path, content] of Object.entries(SELF_SEEDS))
         if ((await this.repo.read(path)) === undefined)
@@ -160,8 +176,17 @@ export class Mind {
     } finally {
       await this.lock.release();
     }
+  }
+
+  /** Call only after host startup/recovery and HTTP readiness. */
+  startScheduler() {
+    if (this.timer || this.controller.signal.aborted) return;
     this.timer = setInterval(() => this.tick(), 60_000);
     this.timer.unref();
+  }
+
+  async isSettled() {
+    return !this.running && (await this.safety.isSettled());
   }
 
   async close() {
@@ -179,7 +204,7 @@ export class Mind {
   /** Capture an admitted human message. Never throws or blocks the turn. */
   observe(event: MessageEvent) {
     try {
-      if (!capturable(event)) return;
+      if (!this.safety.readable || !capturable(event)) return;
       const place = placeOf(event);
       this.transcripts.append(
         {
@@ -211,7 +236,12 @@ export class Mind {
     text: string,
   ) {
     try {
-      if (address.channel !== "slack" || !text.trim() || SECRET.test(text))
+      if (
+        !this.safety.readable ||
+        address.channel !== "slack" ||
+        !text.trim() ||
+        SECRET.test(text)
+      )
         return;
       const kind = kindForAddress(address, event);
       const label =
@@ -240,6 +270,11 @@ export class Mind {
 
   /** June's self and notes for the current turn, projected for its place. */
   async recall(event: MessageEvent, people: string[]): Promise<MindRecall> {
+    const unavailable = () => ({
+      notes: "",
+      blocked: this.blocked() ?? "unavailable",
+    });
+    if (!this.safety.readable) return unavailable();
     const self = {
       identity: await this.repo.read("self/identity.md"),
       values: await this.repo.read("self/values.md"),
@@ -247,6 +282,7 @@ export class Mind {
     };
     const recall: MindRecall = {
       notes: "",
+      ...(this.blocked() ? { blocked: this.blocked() as string } : {}),
       configuration: {
         remote: !!this.settings.remote,
         selfImprovement: !!this.options.selfImprovement,
@@ -262,7 +298,8 @@ export class Mind {
         ? { curiosities: clip(self.curiosities.trim(), 2_000) }
         : {}),
     };
-    if (event.address.channel !== "slack") return recall;
+    if (event.address.channel !== "slack")
+      return this.safety.readable ? recall : unavailable();
     const viewer = this.viewer(event);
     const sections: string[] = [];
     const briefing = await view(
@@ -308,11 +345,22 @@ export class Mind {
         );
     }
     recall.notes = sections.join("\n\n");
-    return recall;
+    return this.safety.readable ? recall : unavailable();
   }
 
   /** Execution-worker read access, projected for the worker's origin. */
   async query(input: MindQuery, event: MessageEvent): Promise<string> {
+    // Recheck after every read as deletion may race any filesystem await.
+    const result = await this.readQuery(input, event);
+    return input.action === "status" || this.safety.readable
+      ? result
+      : `Mind unavailable: ${this.blocked()}. Retained data is quarantined; request operator reconciliation, never clear the watermark or retry forgotten context.`;
+  }
+
+  private async readQuery(
+    input: MindQuery,
+    event: MessageEvent,
+  ): Promise<string> {
     const viewer = this.viewer(event);
     if (input.action === "status") {
       const status = await this.status();
@@ -327,7 +375,10 @@ export class Mind {
             },
       );
     }
+    if (!this.safety.readable) return "Mind retained data is quarantined.";
     if (input.action === "dream") {
+      if (this.blocked())
+        return `Dream blocked: ${this.blocked()}. Check status; a new request cannot clear a safety hold.`;
       // Separate request record prevents an in-flight dream from overwriting
       // a newer request when it records its completion.
       await this.transcripts.writeState("dream-request", {
@@ -381,11 +432,12 @@ export class Mind {
     const request = await this.transcripts.readState<{ id: string }>(
       "dream-request",
     );
+    const commits = await this.repo.commitCount();
+    const lastCommits = await this.repo.log(5);
+    const readable = this.safety.readable;
     return {
       directory: this.settings.directory,
-      blocked:
-        (await this.transcripts.readState<{ reason: string }>("blocked"))
-          ?.reason ?? null,
+      blocked: this.blocked(),
       remote: this.settings.remote
         ? {
             url: this.settings.remote.url,
@@ -400,12 +452,12 @@ export class Mind {
         requested: !!request && request.id !== dreamState.fulfilledRequest,
         window: `${this.settings.dreamHour}:00–${(this.settings.dreamHour + 3) % 24}:00 ${this.settings.timezone}`,
       },
-      improvements,
+      improvements: readable ? improvements : {},
       selfImprovement: !!this.options.selfImprovement,
-      commits: await this.repo.commitCount(),
-      lastCommits: await this.repo.log(5),
-      notes,
-      pendingPlaces,
+      commits,
+      lastCommits: readable ? lastCommits : [],
+      notes: readable ? notes : {},
+      pendingPlaces: readable ? pendingPlaces : [],
       reflecting: this.reflecting ?? null,
       lastRun: this.lastRun
         ? {
@@ -420,50 +472,97 @@ export class Mind {
   tick(): Promise<void> {
     if (this.running || !this.ready() || this.controller.signal.aborted)
       return this.running ?? Promise.resolve();
+    const release = this.options.lifecycle?.tryEnter();
+    if (this.options.lifecycle && !release) return Promise.resolve();
     this.running = this.pass()
       .catch(() => this.log("mind_pass_failed"))
       .finally(() => {
         this.running = undefined;
+        release?.();
       });
     return this.running;
   }
 
   private live() {
-    return this.ready() && !this.controller.signal.aborted;
+    return this.ready() && !this.controller.signal.aborted && !this.blocked();
+  }
+
+  private blocked() {
+    return (
+      this.safety.blocked ??
+      (this.lastSync?.state === "conflict" ? "git_conflict" : null)
+    );
+  }
+
+  /** Persist intent before dispatch; only a provider receipt can clear it.
+   * A process death between dispatch and receipt therefore never causes replay. */
+  private trackedModel(): ModelProvider {
+    const beginReply = (...args: Parameters<ModelProvider["reply"]>) => {
+      const receipt = Promise.withResolvers<ModelSettlement>();
+      const answer = (async () => {
+        if (!this.live() || args[1]?.aborted) {
+          receipt.resolve("not_started");
+          throw new Error("mind_not_current");
+        }
+        await this.safety.begin();
+        if (!this.live() || args[1]?.aborted) {
+          await this.safety.settle("not_started");
+          receipt.resolve("not_started");
+          throw new Error("mind_not_current");
+        }
+        const invocation = beginModelReply(this.model, ...args);
+        const result = await invocation.answer.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+        const settlement = await invocation.settlement;
+        await this.safety.settle(settlement);
+        receipt.resolve(settlement);
+        if ("error" in result) throw result.error;
+        return result.value;
+      })().catch((error) => {
+        // A journal write/receipt failure is not evidence the dispatch stopped.
+        receipt.resolve("unknown");
+        throw error;
+      });
+      return { answer, settlement: receipt.promise };
+    };
+    return { beginReply, reply: (...args) => beginReply(...args).answer };
   }
 
   private async sync(force = false) {
     if (!this.settings.remote) return;
     if (!force && this.lastSync && Date.now() - this.lastSync.at < SYNC_MS)
       return;
-    const state = await this.repo.sync();
+    const state = await this.repo.sync(() => this.safety.readable);
     if (state !== this.lastSync?.state) this.log("mind_sync", { state });
     this.lastSync = { at: Date.now(), state };
   }
 
   /** Commit, then push so GitHub stays current. */
   private async save(changes: Change[], subject: string, body = "") {
+    if (!this.live()) return undefined;
     const sha = await this.repo.commit(changes, subject, body);
-    if (sha) await this.sync(true);
+    if (sha && this.safety.readable) await this.sync(true);
     return sha;
   }
 
   private async notify(notices: string[]) {
-    for (const text of notices)
+    for (const text of notices) {
+      if (!this.live()) return;
       await this.options
         .notify?.(text)
         .catch(() => this.log("mind_notify_failed"));
+    }
   }
 
   private async pass() {
     if (!(await this.lock.acquire())) return;
     try {
+      await this.safety.load();
+      if (!this.safety.readable) return;
       await this.sync();
-      if (
-        this.lastSync?.state === "conflict" ||
-        (await this.transcripts.readState("blocked"))
-      )
-        return;
+      if (!this.live()) return;
       for (const place of await this.transcripts.places()) {
         if (!this.live()) return;
         await this.reflectPlace(place);
@@ -485,10 +584,7 @@ export class Mind {
       }
     } catch (error) {
       if (error instanceof MindUnsettledError) {
-        await this.transcripts.writeState("blocked", {
-          reason: "model_settlement_unknown",
-          at: new Date().toISOString(),
-        });
+        await this.safety.block("model_settlement_unknown");
         this.log("mind_model_settlement_unknown");
       } else throw error;
     } finally {
@@ -530,13 +626,13 @@ export class Mind {
       this.controller.signal,
       AbortSignal.timeout(60 * 60_000),
     ]);
-    const current = () => !signal.aborted && this.ready();
+    const current = () => !signal.aborted && this.live();
     let outcome = "unfinished";
     let selfChanged = false;
     try {
       const result = await dream({
         repo: this.repo,
-        model: this.model,
+        model: this.trackedModel(),
         now,
         timezone: this.settings.timezone,
         ...(state.lastHead ? { since: state.lastHead } : {}),
@@ -663,12 +759,12 @@ export class Mind {
       this.controller.signal,
       AbortSignal.timeout(20 * 60_000),
     ]);
-    const current = () => !signal.aborted && this.ready();
+    const current = () => !signal.aborted && this.live();
     let outcome = "unfinished";
     try {
       const result = await reflect({
         repo: this.repo,
-        model: this.model,
+        model: this.trackedModel(),
         place,
         entries: batch.map(({ entry }) => entry),
         participants: [...participants.values()],

@@ -5,6 +5,8 @@ import type {
   ConversationMessage,
 } from "../core/contracts.js";
 import { isMemoryCorrectionCommand } from "../memory/correction.js";
+import { personId } from "../mind/places.js";
+import type { MindRecall } from "../mind/service.js";
 import {
   editEvent,
   eventRecord,
@@ -537,6 +539,36 @@ export function createSessionCatalog(
         ]),
       ];
     if (!valid(host, assignment, reference, revision)) return suppress();
+    const mind = await deps.mind
+      ?.recall(
+        source,
+        [...history, ...sameSurface].flatMap(({ role, source: entry }) =>
+          role === "user" &&
+          entry?.senderId &&
+          !entry.senderId.startsWith("bot:") &&
+          entry.address.channel === "slack" &&
+          entry.address.accountId === source.address.accountId &&
+          entry.address.conversationId === source.address.conversationId
+            ? [personId(entry.address.accountId, entry.senderId)]
+            : [],
+        ),
+      )
+      .catch((): MindRecall => ({ notes: "" }));
+    if (!valid(host, assignment, reference, revision)) return suppress();
+    // Projected Mind notes/self have no complete evidence-store ancestry.
+    // Propagate the volatile boundary to history, workers and archive outputs.
+    if (
+      mind &&
+      [mind.notes, mind.identity, mind.values, mind.curiosities].some((text) =>
+        text?.trim(),
+      )
+    )
+      reference.contextSourceIds = [
+        ...new Set([
+          ...(reference.contextSourceIds ?? []),
+          "volatile-context:mind",
+        ]),
+      ];
     if (!eventRecord(host.state, assignment.eventId))
       host.state.events[assignment.eventId] = {
         event: source,
@@ -569,6 +601,7 @@ export function createSessionCatalog(
       retentionExcluded:
         decision || (input.type === "wakeup" && !wakeup?.retentionTracked),
       request: buildModelRequest({
+        mind,
         continuity,
         event: source,
         liveInput: input.type === "event",
@@ -697,6 +730,17 @@ export function createSessionCatalog(
     // Preserve native publication and the exact archive/ACK control receipt,
     // without asking another model to narrate a response already delivered.
     if (result?.silent) return suppress();
+    // Only the admitted live human, never platform excerpts or notification
+    // origins. Capture after every asynchronous preparation fence has passed;
+    // Mind also excludes controls/credentials and deduplicates event identities.
+    if (
+      input.type === "event" &&
+      source.address.channel === "slack" &&
+      !source.senderId.startsWith("bot:") &&
+      !isControl(input, deps) &&
+      !context.retentionExcluded
+    )
+      deps.mind?.observe(source);
     if (assignment.kind === "message" && !context.retentionExcluded)
       host.rememberRequest?.(context.request);
     return context;
@@ -872,6 +916,31 @@ export function createSessionCatalog(
           : "completed",
       );
     }
+    // A delivery receipt is not renewed retention authority: revalidate after
+    // wakeup settlement and before handing any confirmed text to Mind.
+    if (
+      !("control" in outcome) &&
+      turn.context &&
+      !turn.context.retentionExcluded &&
+      valid(
+        host,
+        assignment,
+        turn.context.reference,
+        turn.context.deletionRevision,
+      )
+    )
+      for (const delivery of outcome.deliveries)
+        if (
+          !delivery.ephemeral &&
+          delivery.result?.status === "sent" &&
+          delivery.message.content.type === "text"
+        )
+          deps.mind?.observeReply(
+            turn.context.source,
+            delivery.message.address,
+            delivery.message.id,
+            delivery.message.content.text,
+          );
     // No yield between settlement, searchable watermark and historical receipt.
     if (
       input?.type === "event" &&

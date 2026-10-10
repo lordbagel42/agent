@@ -84,7 +84,7 @@ export async function advanceImprovements(
       });
       subjects.push(`dispatch ${slug}`);
       notices.push(
-        `i noticed something about myself worth fixing ("${title}") and started an amp thread on it. request ${id}; i'll send the thread link once it's up.`,
+        `i noticed something about myself worth fixing ("${title}") and queued an amp request for it. request ${id}; i'll send the thread link if it starts.`,
       );
       continue;
     }

@@ -107,8 +107,9 @@ export class Transcripts {
   async cursors(): Promise<Record<string, Cursor>> {
     try {
       return JSON.parse(await readFile(this.cursorFile(), "utf8"));
-    } catch {
-      return {};
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+      throw error;
     }
   }
 
@@ -117,8 +118,9 @@ export class Transcripts {
       return JSON.parse(
         await readFile(join(this.root, "state", `${name}.json`), "utf8"),
       ) as T;
-    } catch {
-      return undefined;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
     }
   }
 
@@ -126,8 +128,20 @@ export class Transcripts {
     const target = join(this.root, "state", `${name}.json`);
     const temporary = `${target}.${randomUUID()}.tmp`;
     await mkdir(join(this.root, "state"), { recursive: true, mode: 0o700 });
-    await writeFile(temporary, JSON.stringify(value), { mode: 0o600 });
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      await file.writeFile(JSON.stringify(value));
+      await file.sync();
+    } finally {
+      await file.close();
+    }
     await rename(temporary, target);
+    const directory = await open(join(this.root, "state"), "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
   }
 
   async saveCursor(place: string, cursor: Cursor) {

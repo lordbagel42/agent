@@ -526,9 +526,12 @@ async function main() {
   }
   let browserCompanion: BrowserCompanion | undefined;
   let environments: EnvironmentService | undefined;
+  let mind: Mind | undefined;
+  let mindReady = false;
   const lifecycle = createLifecycle(async () => {
     if (browserCompanion && !browserCompanion.isSettled()) return false;
     if (environments && !environments.isSettled()) return false;
+    if (mind && !(await mind.isSettled())) return false;
     for (const manager of Object.values(isolation)) {
       if (!(await manager.isSettled())) return false;
     }
@@ -1549,37 +1552,44 @@ async function main() {
       }
     },
   });
-  let mind: Mind | undefined;
   if (config.mind && mindModel) {
     startupStage = "mind repository";
     const ownerSlack = owner.identities.find(
       (identity) => identity.channel === "slack",
     );
     const slack = channels.slack;
-    mind = new Mind(config.mind, owner, mindModel, () => lifecycle.ready, {
-      // Self-improvement rides the existing DEBUGSHARE amp-task transport.
-      ...(config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
-        ? { selfImprovement: createAmpInbox(config.debugShare, "amp-task") }
-        : {}),
-      ...(slack && ownerSlack
-        ? {
-            // Slack accepts the owner's user ID as a DM destination.
-            notify: async (text: string) => {
-              const result = await slack.send({
-                id: crypto.randomUUID(),
-                address: {
-                  channel: "slack",
-                  accountId: ownerSlack.accountId,
-                  conversationId: ownerSlack.senderId,
-                },
-                lastInboundAt: Date.now(),
-                content: { type: "text", text },
-              });
-              if (result.status !== "sent") throw new Error(result.status);
-            },
-          }
-        : {}),
-    });
+    mind = new Mind(
+      config.mind,
+      owner,
+      mindModel,
+      () => mindReady && lifecycle.ready,
+      {
+        lifecycle,
+        deletionRevision: () => memory?.store.deletionRevision() ?? 0,
+        // Self-improvement rides the existing DEBUGSHARE amp-task transport.
+        ...(config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
+          ? { selfImprovement: createAmpInbox(config.debugShare, "amp-task") }
+          : {}),
+        ...(slack && ownerSlack
+          ? {
+              // Slack accepts the owner's user ID as a DM destination.
+              notify: async (text: string) => {
+                const result = await slack.send({
+                  id: crypto.randomUUID(),
+                  address: {
+                    channel: "slack",
+                    accountId: ownerSlack.accountId,
+                    conversationId: ownerSlack.senderId,
+                  },
+                  lastInboundAt: Date.now(),
+                  content: { type: "text", text },
+                });
+                if (result.status !== "sent") throw new Error(result.status);
+              },
+            }
+          : {}),
+      },
+    );
     try {
       await mind.start();
     } catch {
@@ -2368,6 +2378,8 @@ async function main() {
   const server = serve(
     { fetch: app.fetch, hostname: config.host, port: config.port },
     () => {
+      mindReady = true;
+      mind?.startScheduler();
       console.info(
         `June listening on ${config.host}:${config.port}. Coding ${config.coding.enabled ? "enabled (native, not sandboxed)" : "disabled"}.`,
       );
@@ -2383,7 +2395,8 @@ async function main() {
       diagnosticLog?.lifecycle("process_stopping");
       try {
         if (pump) clearInterval(pump);
-        // Abort background reflection first; it redoes interrupted work later.
+        mindReady = false;
+        // Await background settlement; uncertain work retains its durable hold.
         await mind?.close().catch(() => undefined);
         diagnosticLog?.lifecycle("shutdown_http_close_started");
         browserViewShutdown.abort();

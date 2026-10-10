@@ -1348,13 +1348,25 @@ release. The design is in [the mind
 design](superpowers/specs/2026-10-10-june-mind-design.md).
 
 **Recovery and limits.** The scheduler uses Linux `flock`, with no age-based
-lock stealing. Unknown model settlement blocks work via `state/blocked.json`;
-reconcile the provider before clearing it under the lock. Failed reflection
+lock stealing, and holds lifecycle admission through settlement. A fsynced
+`state/safety.json` intent precedes every inference; missing/corrupt state,
+crash-interrupted calls and unknown settlement block replay. Reconcile the
+provider under the lock, never clear the record simply to retry. Failed reflection
 keeps its pending batch and backs off. A crash between Git commit and local
 cursor update may repeat reflection; this is not an exactly-once transaction.
 Git retains deleted facts, raw transcripts have no automatic retention policy,
 and semantic privacy classification remains model judgment. See the design's
 review limits before allowing real conversations into this store.
+
+**Deletion and purchases.** An evidence deletion quarantines the entire mind from
+capture, reuse and new work because free-form notes lack complete per-fact
+provenance. Unrelated notes become unavailable too; a Git-only restore also
+requires reconciliation. History is not physically erased. `mind status`
+remains available. Request operator reconciliation or a sanitized rebuild,
+never advance the deletion watermark to regain forgotten data. Configured Mind
+inference and built-in tools need no billing audit, no-charge attestation,
+token quota or inference-dollar gate. This is not purchase authority: autonomous
+orders, transfers, purchases and new financial commitments remain prohibited.
 
 ## Optional scoped memory and reflection
 

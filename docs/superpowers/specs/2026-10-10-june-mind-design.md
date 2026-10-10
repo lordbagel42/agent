@@ -62,9 +62,11 @@ experience. The mind is one readable, git-versioned home for all of it.
 ```
 
 Everything runs inside the June process on the deep model, one call at a time.
-The mind does not hold lifecycle admission. Model admission and commits check
-readiness; shutdown aborts inference and awaits settlement. This is not proof
-that a remote provider stops immediately when a deployment fence changes.
+The mind holds lifecycle admission across each pass, including provider
+settlement and Git work, and participates in the durable drain check. Its timer
+starts after startup recovery and HTTP readiness. Shutdown aborts inference and
+awaits settlement. This is not proof that a remote provider stops immediately
+when a deployment fence changes.
 
 ## The mind repository
 
@@ -160,9 +162,16 @@ built:
 These rules are enforced by host code at the file and section level. Whether a
 given fact goes into a private section rather than a shared one is the
 reflection agent's judgment; the prompt tells it which kind of place it is
-working in and what to do. Git history keeps everything. Forgetting means
-deleting the text and committing; physically erasing it requires an operator to
-rewrite history. Transcripts stay on disk outside git.
+working in and what to do. Reserved unindented privacy headings are recognized
+even inside malformed code fences, so a writer cannot swallow an appended hidden
+section. A place is workspace plus channel/DM, not an individual thread.
+
+Any change to the evidence store's deletion revision quarantines the whole mind
+from capture, recall, inference, sync and new improvement dispatch. These notes
+lack complete per-fact provenance; unrelated notes become unavailable too.
+Operators must reconcile or build a sanitized replacement without simply
+advancing the stored deletion watermark. Git history and raw transcripts are
+not physically erased, and exported Amp work needs separate reconciliation.
 
 ## Personality that grows
 
@@ -250,39 +259,16 @@ publish is idempotent. The host:
 Model-authored `ampThread` tasks cannot set `purpose`, so they keep their
 limited authority.
 
-Code/deployment authority is not financial authority. The runtime help and
-coding-thread brief prohibit owner-funded payments (including Stripe Link),
-provider enrollment, quota purchases, paid fallback and paid tool/compute
-provisioning. Existing authorized subscription/included inference has no daily
-token or dollar admission cap. Configured-provider access does not establish
-included billing; verify that before activating background inference. Future
-owner-funded payments require Stripe Link and fresh explicit authorization.
-No spending-schema migration or actual financial effect is part of this work.
-
-### S04 integration prerequisite (not integrated)
-
-The shared policy at
-[fc95980](https://github.com/lordbagel42/agent/commit/fc959802aedf48dd0da90e7a5725b197a2dbd6a6)
-defines `owner_spending_prohibited` for owner-funded paths and
-`billing_unverified` for unknown billing. Included/no-charge classifications
-must be host-attested for the exact provider/account/action; neither protocol
-nor credentials establishes that classification. S04's separate Decision/Jev
-adapter guards were reported as unpublished follow-up, not live enforcement.
-
-The existing `DecisionExecutor` converts rejected decisions to
-`evaluator-failed`, and reflection finalization can requeue until its attempt,
-no-new-evidence and cooldown bounds. Adapter-level nonretryability therefore
-does not establish scheduler-wide suppression. This new mind has a different
-path: it creates its own general `ModelProvider` from the deep/primary selection,
-not a `DecisionProvider`, and currently converts model errors to `unfinished`
-with background backoff. The optional Decision/Jev guards alone do not cover it.
-
-Before activating mind inference, obtain the parent-owned billing attestation
-and admission wiring for that exact model path, preserve both denial codes
-through the mind result/status boundary, and verify that policy-denied work
-does not automatically retry unchanged or take a fallback route. No such
-integration, attestation or activation is claimed here; the architecture-review
-publication restriction remains in force.
+Configured models and built-in tools are authorized ordinary tool use, not
+purchases. Raygen clarified this directly at 13:47 UTC on 2026-10-10: the
+restriction meant purchases such as DoorDash, not funding gates on built-in
+tools. Mind has no no-charge attestation requirement, inference-dollar gate or
+token quota. Real provider rate limits, permissions, privacy, bounded concurrency
+and cancellation still apply. Autonomous purchases, orders, transfers, buying
+quota/subscriptions and new financial commitments remain prohibited; future
+owner-funded transactions need Stripe Link and fresh explicit authorization.
+There is no spending-schema migration. The earlier exact-route billing
+prerequisite was withdrawn, not deferred. Live operator handoff still applies.
 
 ## Concurrency and failure
 
@@ -297,10 +283,11 @@ publication restriction remains in force.
 - **Capacity.** Reflection uses at most 10 model turns, dreams at most 24.
   Reflection failure retries with backoff up to 12 hours, without discarding
   the pending batch. Dreams retry at most three times per local night.
-- **Unknown settlement.** An unknown model receipt writes `state/blocked.json`
-  and halts further background work across restarts. An operator must reconcile
-  the provider and remove that marker while June is stopped or the mind lock
-  is held; never clear it merely to retry.
+- **Unknown settlement.** `state/safety.json` is fsynced before each dispatch
+  and settled only on a known provider receipt. A crash or unknown receipt holds
+  work across restarts; malformed/missing recovery state fails closed. An
+  operator must reconcile under the mind lock, never clear it merely to retry.
+  Git-only restores cannot restore that journal and remain quarantined.
 - **Isolation from June.** Runtime mind failures are logged without content;
   repository startup failure disables mind rather than failing June startup.
 
@@ -366,8 +353,8 @@ no deep model is configured. There is no separate environment gate.
 - Owner DMs are not a durable outbox. Exactly-once cursor advancement, dirty
   tree crash recovery and stronger notification receipts remain hardening work.
 - Raygen lifted this work's architecture-review publication hold and requested
-  testing, rebasing and shipping. Existing operator ownership and verified
-  included-inference billing remain prerequisites for live activation.
+  testing, rebasing and shipping. Existing operator ownership remains a
+  prerequisite for live activation; configured inference needs no billing audit.
 
 ## Verification
 
@@ -397,7 +384,7 @@ changes.
   partial final steps, unknown settlement and live lock takeover. Separate runs
   exercised a local bare remote, conflicting edits, real inbox replay, private
   reports, identity limits, and interaction/worker/automated prompt wiring.
-- **Still required after architecture approval:** real-model reflection/dream
+- **Still required before completion:** real-model reflection/dream
   evaluation, private GitHub provisioning and sync, runner installation, and
   a real self-improvement dispatch with receipt/live verification.
 - **Manual end-to-end check** on live June after activation:

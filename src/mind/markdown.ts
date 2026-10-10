@@ -28,7 +28,11 @@ export interface Section {
   text: string;
 }
 
-/** Split at level-two headings outside code fences. */
+/** Split at level-two headings outside code fences.
+ * Unindented `## Private — <place>` lines (including privatePlace's accepted
+ * dash variants) are reserved privacy boundaries, even inside code fences.
+ * Escape the first # as `\##` when showing that syntax in a literal example.
+ * Fence state never crosses a privacy boundary. */
 export function splitSections(body: string): {
   preamble: string;
   sections: Section[];
@@ -36,12 +40,30 @@ export function splitSections(body: string): {
   const lines = body.split("\n");
   const preamble: string[] = [];
   const sections: { heading: string; lines: string[] }[] = [];
-  let fenced = false;
+  let fence: string | undefined;
   for (const line of lines) {
-    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
-    if (!fenced && /^## /.test(line)) {
+    if (/^## /.test(line) && (!fence || privatePlace(line) !== undefined)) {
       sections.push({ heading: line.trim(), lines: [] });
-    } else if (sections.length) {
+      // A preceding writer-controlled fence must not change how retained
+      // private content is parsed when mergeProjectedWrite appends it.
+      fence = undefined;
+      continue;
+    }
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)\r?$/.exec(line);
+    const marker = match?.[1];
+    const suffix = match?.[2] ?? "";
+    if (marker) {
+      if (!fence) {
+        if (marker[0] === "~" || !suffix.includes("`")) fence = marker;
+      } else if (
+        marker[0] === fence[0] &&
+        marker.length >= fence.length &&
+        /^[ \t]*$/.test(suffix)
+      ) {
+        fence = undefined;
+      }
+    }
+    if (sections.length) {
       sections.at(-1)?.lines.push(line);
     } else {
       preamble.push(line);
