@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { capabilityConfigSchema } from "./capabilities/config.js";
 import { ampJobsSchema } from "./coding/remote-amp.js";
 import { webEmbedUrlSchema } from "./core/web-embed.js";
 import { jevQuestionSchema } from "./models/jev.js";
@@ -212,6 +213,7 @@ const schema = z
       })
       .optional(),
     capabilities: z.strictObject({ directory: absolutePath }).optional(),
+    moduleConfig: capabilityConfigSchema.optional(),
     credentials: z
       .strictObject({
         executable: absolutePath,
