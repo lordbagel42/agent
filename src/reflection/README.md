@@ -345,11 +345,6 @@ a new `!allow` message to resume; replay never resumes them automatically.
 Inspection and staging are never permission to send, and approval cannot revive
 an old-epoch candidate.
 
-Verification: `pnpm exec vitest run src/runtime/reflection.test.ts
-src/reflection/domain.test.ts` exercises the real disposable engine plus domain
-rules. The runtime test protects audience/deletion checks, duplicate admission,
-cancellation settlement, candidate-read privacy, overlapping live turn IDs and
-duplicate/unmatched finishes. No paid provider or live channel is required.
 RivetKit 2.3.21 still emits the repository's documented native
 `transaction_closed` shutdown diagnostic; passing checks are not a claim of
 production engine readiness.
@@ -390,8 +385,7 @@ Trusted host integrations can call `candidate(alias, originatingScope)` for the
 full current candidate. Omitting the scope preserves the operator's legacy
 internal-ID lookup. Neither read is approval, a durable reservation, nor a later
 send/staging grant: consumers must recheck authority and eligibility at their
-effect boundary. `src/runtime/reflection-inspection.test.ts` exercises the private
-June command, no-retention boundary, read races and invalidated send retries.
+effect boundary.
 
 ### Separate held-out skill evaluation
 
@@ -545,9 +539,7 @@ generate candidate replies, send messages to another recipient, mutate a
 profile, accept a proposal, or create a promotion receipt. The task receives only
 the metadata report; evidence and rationale are not returned. Source-ID disjointness
 is not proof of statistical independence or that a provider has never seen the text.
-Judgments are advisory, not calibrated scores; abstention means unknown. Verify
-offline with `src/runtime/personality-evaluation-preview.test.ts` and the
-existing evaluator tests, using fake providers and disposable stores/engine.
+Judgments are advisory, not calibrated scores; abstention means unknown.
 
 ## Candidate versus current personality
 

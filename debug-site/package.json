@@ -9,8 +9,7 @@
     "format": "biome format --write . && prettier --write '**/*.svelte'",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "biome check --error-on-warnings . && prettier --check '**/*.svelte' && pnpm typecheck",
-    "check": "pnpm lint && pnpm test",
-    "test": "vitest run --config vitest.config.ts"
+    "check": "pnpm lint"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

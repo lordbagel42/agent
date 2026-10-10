@@ -89,11 +89,6 @@ If the browser's original close promise failed, restart the host under the norma
 deployment recovery procedure before reconciliation. Never delete the Codex auth
 home or restore old conversation data to recover a task.
 
-Local verification: `pnpm exec vitest run src/browser
-src/runtime/browser-capability.test.ts`. The browser tests use real sandboxed
-Chromium and disposable PIN/video fixtures; protocol tests use controlled Codex
-messages. These are not proof of authenticated inference or the owner's real URL.
-
 `BrowserAdapter` implements `ToolAdapter.execute(action, credential)`. Register it
 under the tool name `browser`. June's host requires arguments
 `{ "operation": "operator-configured-name", "recipeDigest": "sha256" }`.
@@ -333,8 +328,7 @@ configuration, and external isolation are complementary requirements.
 
 ## Verification
 
-`pnpm exec vitest run src/tools/browser.test.ts` runs disposable loopback HTTP
-fixtures with a real Chromium process. It covers account/item/origin/argument
+Historical disposable loopback checks with a real Chromium process covered account/item/origin/argument
 widening, credential reflection exclusion, fresh cookie state, cross-origin
 redirect/subresource/tab blocking, frame/WebSocket blocking, duplicate mutation
 suppression, and cancellation (including after admission but before dispatch).
@@ -391,8 +385,5 @@ not prove server-side semantics or make an arbitrary website safe. Configure
 only known endpoints and an exact post-action confirmation. Do not label an
 endpoint with side effects as a read.
 
-`src/tools/browser-proposals.test.ts` uses only a disposable local HTTPS form,
-self-signed fixture certificate and local broker database to exercise discovery,
-exact execution and replay protection. `src/runtime/registry.test.ts` covers the
-June-facing directive boundary. Local fixtures are not evidence of live browser
+Local fixtures are not evidence of live browser
 activation, credential access or a real site's business outcome.

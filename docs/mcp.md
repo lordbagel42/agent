@@ -153,8 +153,8 @@ console flow requests no refresh grant; expired access needs reconnect. See
 
 ## Offline verification
 
-`pnpm exec vitest run src/tools/mcp.test.ts` starts only ephemeral loopback fake
-MCP HTTP servers. A trusted test fetch rewrites the fixed HTTPS fixture endpoint
+Historical offline checks started only ephemeral loopback fake MCP HTTP
+servers. A trusted test fetch rewrites the fixed HTTPS fixture endpoint
 to loopback; no personal server is contacted and TLS interoperability is not
 tested. Checks exercise the official client handshake, paginated discovery,
 JSON/SSE responses, exact arguments, scope/redirect/schema rejection, credential

@@ -1364,20 +1364,18 @@ Local checks:
 
 ```sh
 pnpm format && pnpm lint && pnpm typecheck
-pnpm exec vitest run src/deployment src/core/routing.test.ts src/runtime/delivery.test.ts
+pnpm exec vitest run src/deployment src/core/routing.test.ts src/runtime/delivery.test.ts tests/startup.test.ts
 uv tool run ruff format --check scripts/deploy
 uv tool run ruff check scripts/deploy
 (umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_deploy.py)
 (umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_runner.py)
 (umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_actions.py)
+(umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_issues.py)
 actionlint .github/workflows/june-build.yml
 ```
 
 Use a disposable `TMPDIR` on a filesystem with sufficient free space if `/tmp`
 is a small tmpfs; the existing controller fixtures enforce real disk admission.
-The Actions fixtures cover provenance, policy pins, digest verification,
-credential stripping, hostile archives, deferral and the unchanged local
-activation path. They do not contact GitHub or prove a hosted workflow run.
 
 The core fixtures use real disposable Git commits, SQLite, HTTP subprocesses,
 release directories and persistent messages. They cover duplicate activation,
@@ -1476,12 +1474,6 @@ publication does **not** activate this integration. In a coordinated window:
    fixtures alone are not live-delivery verification. To remove the integration,
    first restore the original ingress upstream in an authorized window, then
    stop the responder and disable its marker publication; preserve its claims.
-
-Focused local safety check (no live Slack calls):
-
-```sh
-(umask 077; PYTHONDONTWRITEBYTECODE=1 python3 scripts/deploy/test_slack_responder.py)
-```
 
 ## Owner-requested Amp threads
 

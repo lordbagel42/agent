@@ -122,12 +122,6 @@ not chat, URLs, or command arguments. The caller receives owner-level access,
 not an isolated test conversation. Polling June's reply is supported; a tracked
 human-question/answer relay and verified Amp callback receiver are not implied.
 
-The disposable proxy check uses real HAProxy and loopback fixture slots:
-
-```sh
-HAPROXY=/usr/sbin/haproxy python3 scripts/deploy/test_mcp_proxy.py
-```
-
 ## Tools and message lifecycle
 
 | Tool | Purpose |

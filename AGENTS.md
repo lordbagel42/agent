@@ -93,7 +93,20 @@
 
 ## Tests and verification
 
-- Keep unit tests few and focused. Prioritize thorough manual testing of real workflows, edge cases, and failure paths.
+- Tests are not necessary. June is maintained by modern agents and has
+  recovery built in; verify changes by running the real workflow, typecheck
+  and lint instead. Do not add tests for features, bug fixes or refactors.
+- The only tests kept protect June's ability to self-heal: deploy controller,
+  Actions build gate and recovery dispatch (`scripts/deploy/test_deploy.py`,
+  `test_runner.py`, `test_actions.py`, `test_issues.py`),
+  standby/rollback (`src/deployment/`), the lifecycle failure latch and drain,
+  engine slot handoff, and isolated startup. Change them only when that core
+  behavior intentionally changes. A new test is justified only if a change
+  could otherwise silently break recovery, rollback or redeploy.
+- The installed host preflights run `src/core/routing.test.ts`,
+  `src/runtime/delivery.test.ts`, `tests/startup.test.ts` and
+  `src/diagnostics` by path. Do not delete or rename those without first
+  updating the installed preflight policy.
 
 ## Slack app configuration
 

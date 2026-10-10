@@ -100,10 +100,9 @@ Live documentation read 2026-09-26:
 - https://docs.typesafe.ai/api.md
 - https://docs.typesafe.ai/confidence.md
 
-Three offline fixtures cover all three answer primitives, local-only provenance,
+Historical offline fixtures covered all three answer primitives, local-only provenance,
 rubric snapshots, explicit abstention/unknown, byte boundaries, malformed/extra
 response data, cleanup settlement, cancellation and no duplicate paid attempts.
-Run them under Node 24 via `pnpm exec vitest run src/models/jev.test.ts`.
 Disposable loopback checks also exercised Node's native fetch with refused
 redirects, cancellation after headers, and a timeout during a partial response.
 No paid requests, account login, credential discovery, or live model evaluation

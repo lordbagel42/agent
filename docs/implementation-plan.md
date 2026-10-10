@@ -143,11 +143,8 @@ source of activation requirements. At the audited revision:
 
 ## Verification and future updates
 
-Source inspection establishes only the first three columns. Existing focused
-checks such as [inspection privacy/runtime coverage](../src/runtime/inspection.test.ts),
-[coding lifecycle checks](../src/runtime/coding.test.ts) and the [test harness](../tests/rivet.ts)
-exercise disposable/fake boundaries; their presence is not a claim they were
-rerun by this docs-only audit or that production was exercised.
+Source inspection establishes only the first three columns; it is not a claim
+that production was exercised.
 
 For every status update, record the exact landed source revision and operation.
 For live evidence, also record observation time, loaded application revision,

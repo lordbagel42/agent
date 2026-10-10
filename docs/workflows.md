@@ -173,9 +173,6 @@ not an OS virtual machine or permission to execute native untrusted code.
 
 ## Verification
 
-`pnpm exec vitest run src/workflows/sandbox.test.ts src/workflows/workflows.test.ts`
-checks the capability boundary and real disposable Rivet engines, including
-June's structured reply → start → model step → private notification path.
 The development hard-kill check also killed a host during a wait and a pending
 effect, restarted against the same disposable engine, and verified the wait
 resumed without repeating completed or ambiguous tool calls. No live model,

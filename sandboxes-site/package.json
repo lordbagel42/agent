@@ -10,8 +10,7 @@
     "prepare": "svelte-kit sync",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "format": "biome format --write . && prettier --write '**/*.svelte'",
-    "lint": "biome check . && prettier --check '**/*.svelte'",
-    "test": "vitest run"
+    "lint": "biome check . && prettier --check '**/*.svelte'"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

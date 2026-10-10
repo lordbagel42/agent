@@ -94,16 +94,11 @@ child-process containment remain protected-host acceptance checks.
 
 ## Verification and pinned sources
 
-The focused checks use synthetic protocol streams and temporary fake executables
-in Git directories: pre-turn persistence, exact resume, approval refusal,
-completion receipts, delayed EOF cleanup, nonzero exit, active cancellation,
-report truncation, and individual/combined output limits. Run with Node 24+:
+Check with Node 24+:
 
 ```sh
-pnpm exec biome check src/coding/codex.ts src/coding/codex.test.ts
 pnpm lint
 pnpm typecheck
-pnpm exec vitest run src/coding/codex.test.ts
 ```
 
 A real pinned-CLI check with a fresh unauthenticated home rejects before thread
