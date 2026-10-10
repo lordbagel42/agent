@@ -75,7 +75,11 @@ import {
   createWakeupActor,
   type WakeupDependencies,
 } from "../wakeups/runtime.js";
-import type { WakeupEvent } from "../wakeups/state.js";
+import {
+  eventSchema,
+  nativeChannelEvent,
+  type WakeupEvent,
+} from "../wakeups/state.js";
 import {
   createWorkflowLibraryActor,
   createWorkflowRunActor,
@@ -2493,9 +2497,22 @@ export function createJuneRegistry(deps: Dependencies) {
                 );
               });
             if (version >= 9 && body.type !== "wakeup") {
-              await loop.step({
+              const millisecondsVersion = await loop.getVersion(
+                "native-event-milliseconds",
+                2,
+              );
+              // The old schema rejected this exact class of input before
+              // native acceptance. No other exhausted effect is recoverable.
+              const timestampRepair =
+                millisecondsVersion < 2 &&
+                body.type === "event" &&
+                event.address.channel === "slack" &&
+                !Number.isInteger(event.occurredAt) &&
+                eventSchema.safeParse(nativeChannelEvent(event)).success;
+              const publication = await loop.tryStep({
                 name: "publish-native-event",
                 timeout: 0,
+                catch: ["exhausted"],
                 run: async (step) => {
                   if (
                     !deps.wakeups ||
@@ -2505,31 +2522,12 @@ export function createJuneRegistry(deps: Dependencies) {
                     reflectionReview?.action === "propose"
                   )
                     return;
+                  // Pending old attempts need a durable disposition, not another
+                  // rejecting RPC (whose terminal hook would latch readiness).
+                  if (timestampRepair) return "milliseconds-repair" as const;
                   let native: WakeupEvent;
                   if (body.type === "event") {
-                    native = {
-                      id: `${event.address.accountId}:${event.id}`,
-                      source: event.address.channel,
-                      type: event.type,
-                      occurredAt: event.occurredAt,
-                      data: {
-                        address: event.address,
-                        messageId: event.messageId,
-                        ...(event.type === "message"
-                          ? {
-                              senderId: event.senderId,
-                              text: event.text.slice(0, 3500),
-                              direct: event.direct,
-                            }
-                          : event.type === "reaction"
-                            ? {
-                                senderId: event.senderId,
-                                emoji: event.emoji,
-                                removed: event.removed,
-                              }
-                            : { status: event.status }),
-                      },
-                    };
+                    native = nativeChannelEvent(event);
                   } else if (body.type === "job_result") {
                     native = {
                       id: `${body.jobId}:${body.attempt}`,
@@ -2570,6 +2568,36 @@ export function createJuneRegistry(deps: Dependencies) {
                       .publish(native, undefined, JSON.stringify(scope.key));
                 },
               });
+              if (!publication.ok && !timestampRepair)
+                throw new Error("native_event_publication_failed");
+              if (
+                !publication.ok ||
+                publication.value === "milliseconds-repair"
+              ) {
+                // Keep exhausted metadata and completed publications intact.
+                // A separate step journals only the known pre-acceptance repair.
+                await loop.step({
+                  name: "publish-native-event-milliseconds-repair",
+                  timeout: 0,
+                  run: async (step) => {
+                    if (
+                      !deps.wakeups?.sources.includes(event.address.channel) ||
+                      !valid(step.state) ||
+                      interruptionReview ||
+                      reflectionReview?.action === "propose"
+                    )
+                      return;
+                    await step
+                      .client<JuneClientRegistry>()
+                      .wakeups.getOrCreate([deps.owner.id])
+                      .publish(
+                        nativeChannelEvent(event),
+                        undefined,
+                        JSON.stringify(scope.key),
+                      );
+                  },
+                });
+              }
             }
             // Choices are journaled even when disabled. A config change cannot add
             // new operations or enable a feature partway through a replayed turn.

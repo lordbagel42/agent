@@ -32,7 +32,7 @@ import {
   dispatchScopeExecution,
   executionDispatchText,
 } from "../runtime/scope-catalog.js";
-import type { WakeupEvent } from "../wakeups/state.js";
+import { nativeChannelEvent, type WakeupEvent } from "../wakeups/state.js";
 import { type ArchiveEvidence, produceSessionArchiveTurn } from "./producer.js";
 import type { ActivityAssignment, ActivityCatalog } from "./runtime.js";
 import {
@@ -663,19 +663,7 @@ export function createSessionCatalog(
     if (input.type !== "wakeup" && input.type !== "forget_request") {
       const native: WakeupEvent =
         input.type === "event"
-          ? {
-              id: `${source.address.accountId}:${source.id}`,
-              source: source.address.channel,
-              type: source.type,
-              occurredAt: source.occurredAt,
-              data: {
-                address: source.address,
-                messageId: source.messageId,
-                senderId: source.senderId,
-                text: source.text.slice(0, 3500),
-                direct: source.direct,
-              },
-            }
+          ? nativeChannelEvent(source)
           : input.type === "job_result"
             ? {
                 id: `${input.jobId}:${input.attempt}`,

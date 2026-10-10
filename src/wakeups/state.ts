@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { CronExpressionParser } from "cron-parser";
 import { z } from "zod";
-import type { MessageEvent } from "../core/contracts.js";
+import type { ChannelEvent, MessageEvent } from "../core/contracts.js";
 import {
   fenceWakeup,
   inspectWakeupIntent,
@@ -63,6 +63,34 @@ export const eventSchema = z
   })
   .refine((event) => Buffer.byteLength(JSON.stringify(event)) <= 16_384);
 export type WakeupEvent = z.infer<typeof eventSchema>;
+
+/** Preserve platform identity/ordering; only wakeup envelopes use whole ms. */
+export function nativeChannelEvent(event: ChannelEvent): WakeupEvent {
+  return {
+    id: `${event.address.accountId}:${event.id}`,
+    source: event.address.channel,
+    type: event.type,
+    occurredAt: Math.trunc(event.occurredAt),
+    data: {
+      address: event.address,
+      messageId: event.messageId,
+      ...(event.type === "message"
+        ? {
+            senderId: event.senderId,
+            text: event.text.slice(0, 3500),
+            direct: event.direct,
+          }
+        : event.type === "reaction"
+          ? {
+              senderId: event.senderId,
+              emoji: event.emoji,
+              removed: event.removed,
+            }
+          : { status: event.status }),
+    },
+  };
+}
+
 export interface WakeupJob {
   id: string;
   /** Only the host can create decision subscriptions. Absent means notification. */
