@@ -1,6 +1,10 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
 import { setupTest } from "../../tests/rivet.js";
-import { inspectLegacyDrain } from "../sessions/migration.js";
+import {
+  beginSessionMigration,
+  inspectLegacyDrain,
+} from "../sessions/migration.js";
 import {
   commandSnapshot,
   compactConversation,
@@ -9,6 +13,7 @@ import {
   editDelivery,
   editEvent,
   editHistory,
+  editLegacyTurn,
   eventRecord,
   readDeliveries,
   readEvents,
@@ -114,6 +119,99 @@ test("compressed model markers keep replay and migration fences after demotion a
     inspectLegacyDrain(reopened, ["private", "owner"]).counts
       .modelSettlementUnproven,
   ).toBe(801);
+});
+
+test("completed legacy receipts compact without losing lane ownership or coverage fences", () => {
+  const ids = Array.from({ length: 1100 }, (_, n) =>
+    createHash("sha256").update(`legacy-${n}`).digest("hex"),
+  );
+  const turns = Object.fromEntries(
+    ids.map((id, n) => [
+      id,
+      n === 1099
+        ? {}
+        : {
+            finished: true as const,
+            ...(n === 7 ? { untrackedEffect: true as const } : {}),
+          },
+    ]),
+  );
+  const state: ConversationState = {
+    history: [],
+    events: {},
+    deliveries: {},
+    jobs: {},
+    lastInbound: {},
+    legacyAdmissions: [...ids],
+    legacyCoverage: { version: 1, scope: '["private","owner"]', turns },
+  };
+  const expected = structuredClone(state);
+  const live = state.legacyCoverage?.turns[ids[1099] as string];
+  const before = inspectLegacyDrain(state, ["private", "owner"]);
+  compactConversation(state);
+  // Leave at least three quarters of Rivet's checkpoint budget for other state.
+  expect(Buffer.byteLength(JSON.stringify(state))).toBeLessThan(128 * 1024);
+  expect(state.legacyCoverage?.turns[ids[1099] as string]).toBe(live);
+  let reopened: ConversationState = JSON.parse(JSON.stringify(state));
+  expect(conversationSnapshot(reopened)).toEqual(expected);
+  expect(inspectLegacyDrain(reopened, ["private", "owner"])).toEqual(before);
+  expect(before.counts).toMatchObject({
+    missingCoverage: 0,
+    untrackedTurnEffects: 1,
+    unfinishedInputs: 1,
+  });
+  // Later admissions retain prefix/suffix order; promoted flags survive storage.
+  const appended = "post-archive-lane";
+  if (!reopened.legacyAdmissions || !reopened.legacyCoverage)
+    throw new Error("Missing fixture ledgers");
+  reopened.legacyAdmissions.push(appended);
+  reopened.legacyCoverage.turns[appended] = { finished: true };
+  const promoted = editLegacyTurn(reopened, ids[3] as string);
+  if (!promoted) throw new Error("Missing archived coverage");
+  promoted.untrackedEffect = true;
+  compactConversation(reopened);
+  reopened = JSON.parse(JSON.stringify(reopened));
+  expect(conversationSnapshot(reopened).legacyAdmissions).toEqual([
+    ...ids,
+    appended,
+  ]);
+  expect(
+    inspectLegacyDrain(reopened, ["private", "owner"]).counts,
+  ).toMatchObject({
+    missingCoverage: 0,
+    untrackedTurnEffects: 2,
+    unfinishedInputs: 1,
+  });
+  const migration = beginSessionMigration(
+    reopened,
+    ["private", "owner"],
+    "a".repeat(64),
+  );
+  expect(migration.legacyInputs).toEqual([...ids, appended].sort());
+  // A later live overlay cannot erase the archived lane identity or its flags.
+  const demoted = editLegacyTurn(reopened, ids[7] as string);
+  if (!demoted) throw new Error("Missing fixture coverage");
+  delete demoted.finished;
+  compactConversation(reopened);
+  resetConversation(reopened, 10);
+  expect(conversationSnapshot(reopened).legacyAdmissions).toEqual([
+    ...ids,
+    appended,
+  ]);
+  expect(
+    inspectLegacyDrain(reopened, ["private", "owner"]).counts,
+  ).toMatchObject({
+    missingCoverage: 0,
+    untrackedTurnEffects: 2,
+    unfinishedInputs: 2,
+  });
+  // An old journal without creation coverage must never acquire it by compaction.
+  delete reopened.legacyCoverage;
+  compactConversation(reopened);
+  expect(conversationSnapshot(reopened).legacyCoverage).toBeUndefined();
+  expect(
+    inspectLegacyDrain(reopened, ["private", "owner"]).counts.missingCoverage,
+  ).toBe(1102);
 });
 
 test("pending snapshots survive a lost publication acknowledgment and restart", async () => {

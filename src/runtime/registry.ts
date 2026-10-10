@@ -94,10 +94,12 @@ import {
   editDelivery,
   editEvent,
   editHistory,
+  editLegacyTurn,
   eventRecord,
   readDeliveries,
   readEvents,
   readHistory,
+  readLegacyAdmissions,
   readModelInvocations,
 } from "./conversation-storage.js";
 import { DebugBodies, initializeDebugBodies } from "./debug-bodies.js";
@@ -327,6 +329,7 @@ export interface ConversationState extends ScopeCatalog {
   legacyCoverage?: LegacyCoverage;
   /** Durable lane ownership before priority/RPC waits, not effect settlement. */
   legacyAdmissions?: string[];
+  legacyArchive?: CompressedJson;
   migration?: SessionMigration;
   sessions?: SessionCatalogState;
   session?: { id: string; startedAt: number };
@@ -1373,7 +1376,7 @@ export function createJuneRegistry(deps: Dependencies) {
             // A repeated webhook cannot manufacture the first receipt time of
             // an already-owned direct-queue legacy turn.
             if (
-              !c.state.legacyAdmissions?.includes(id) &&
+              !readLegacyAdmissions(c.state).includes(id) &&
               !c.state.migration?.legacyInputs.includes(id)
             )
               recordConversationIngress(
@@ -1511,7 +1514,7 @@ export function createJuneRegistry(deps: Dependencies) {
               receipts: {},
             };
             if (
-              !c.state.legacyAdmissions?.includes(id) &&
+              !readLegacyAdmissions(c.state).includes(id) &&
               !c.state.migration?.legacyInputs.includes(id)
             )
               recordConversationIngress(
@@ -2017,7 +2020,7 @@ export function createJuneRegistry(deps: Dependencies) {
                   // Register ownership before yielding for priority or claiming
                   // a wakeup. Freeze must see this even before record-event runs.
                   step.state.legacyAdmissions ??= [];
-                  if (!step.state.legacyAdmissions.includes(id))
+                  if (!readLegacyAdmissions(step.state).includes(id))
                     step.state.legacyAdmissions.push(id);
                   await step.vars.persist();
                   return ownsLegacyInput(step.state, id) ? "legacy" : "held";
@@ -2931,7 +2934,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     };
                   // The app client owns external deployment receipts; its text
                   // response (including caught failures) is no drain proof here.
-                  const coverage = step.state.legacyCoverage?.turns[eventId];
+                  const coverage = editLegacyTurn(step.state, eventId);
                   if (coverage) {
                     coverage.untrackedEffect = true;
                     await step.vars.persist();
@@ -3131,7 +3134,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 reply = await loop.step("social-command", async (step) => {
                   // !allow can send through the independent social outbox. An
                   // acknowledgment string cannot prove the recipient's outcome.
-                  const coverage = step.state.legacyCoverage?.turns[eventId];
+                  const coverage = editLegacyTurn(step.state, eventId);
                   if (coverage && social.command(event)?.[1] === "allow") {
                     coverage.untrackedEffect = true;
                     await step.vars.persist();
@@ -6616,7 +6619,7 @@ export function createJuneRegistry(deps: Dependencies) {
             await loop.step("finish-event", async (step) => {
               const record = editEvent(step.state, eventId);
               if (record) record.done = true;
-              const coverage = step.state.legacyCoverage?.turns[eventId];
+              const coverage = editLegacyTurn(step.state, eventId);
               if (coverageVersion >= 2 && coverage) coverage.finished = true;
               await step.vars.persist();
             });

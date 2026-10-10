@@ -433,6 +433,10 @@ it.for(["interaction", "execution", "decision", "watch"] as const)(
     expect(request.system).toContain(
       "counts as unproven provider settlement for legacy migration",
     );
+    expect(request.system).toContain("reader without legacyArchive support");
+    expect(request.system).toContain(
+      "compression cannot certify settlement, invent receipt timestamps or authorize replay",
+    );
     expect(request.system).toContain("CLEARHISTORY");
     expect(request.system).toContain(
       "excerpts older than the host's reset timestamp",

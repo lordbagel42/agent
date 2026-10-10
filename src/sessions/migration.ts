@@ -6,6 +6,8 @@ import {
   eventRecord,
   readDeliveries,
   readEvents,
+  readLegacyAdmissions,
+  readLegacyCoverage,
   readModelInvocations,
 } from "../runtime/conversation-storage.js";
 import type { Delivery } from "../runtime/delivery.js";
@@ -41,6 +43,7 @@ export interface LegacyDrainState {
   migration?: SessionMigration;
   /** Lane ownership only, including direct queue inputs; not effect coverage. */
   legacyAdmissions?: string[];
+  legacyArchive?: CompressedJson;
   events: Record<string, { done: boolean }>;
   eventsArchive?: CompressedJson;
   deliveriesArchive?: CompressedJson;
@@ -60,8 +63,8 @@ const inputIds = (state: LegacyDrainState) =>
       ...Object.keys(state.pendingInputs ?? {}),
       ...Object.keys(state.pendingNotifications ?? {}),
       ...Object.keys(state.ingress?.receipts ?? {}),
-      ...Object.keys(state.legacyCoverage?.turns ?? {}),
-      ...(state.legacyAdmissions ?? []),
+      ...Object.keys(readLegacyCoverage(state)?.turns ?? {}),
+      ...readLegacyAdmissions(state),
     ]),
   ].sort();
 
@@ -143,6 +146,7 @@ export async function archiveLegacyInputs(
   const sessionId = createHash("sha256")
     .update(JSON.stringify([scopeKey, migration.epoch, "legacy-archive"]))
     .digest("hex");
+  const coverage = readLegacyCoverage(state);
   for (const [index, id] of ordered.entries()) {
     if (migration.archivedInputs.includes(id)) continue;
     const receipt = receipts[id];
@@ -150,7 +154,7 @@ export async function archiveLegacyInputs(
     if (
       !receipt ||
       !record?.done ||
-      !state.legacyCoverage?.turns[id]?.finished ||
+      !coverage?.turns[id]?.finished ||
       Object.hasOwn(state.pendingInputs ?? {}, id) ||
       Object.hasOwn(state.pendingNotifications ?? {}, id)
     )
@@ -225,7 +229,8 @@ export function inspectLegacyDrain(
   scopeKey: readonly string[],
 ) {
   const migration = state.migration;
-  const coverage = state.legacyCoverage;
+  const coverage = readLegacyCoverage(state);
+  const admissions = readLegacyAdmissions(state);
   const scope = JSON.stringify(scopeKey);
   const counts = {
     scopeMismatch: migration && migration.scope !== scope ? 1 : 0,
@@ -248,7 +253,7 @@ export function inspectLegacyDrain(
       if (
         !ids.includes(id) &&
         (state.ingress?.receipts[id]?.lane !== "session" ||
-          state.legacyAdmissions?.includes(id) ||
+          admissions.includes(id) ||
           Object.hasOwn(coverage?.turns ?? {}, id))
       )
         counts.unfrozenLegacyInputs++;

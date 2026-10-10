@@ -817,13 +817,17 @@ marker. Migration must also drain old paid/native calls; legacy in-flight model
 replay can repeat a call. Never use old database snapshots to make a downgrade
 appear healthy.
 
-Diagnostic `snapshotRef`/SQLite bodies and `modelInvocationsArchive` are also
-forward-only storage changes. Older readers ignore these references and replay
-markers. The source compatibility digest changes automatically; do not authorize
-a rollback transition to a reader without both formats. Startup migrates retained
-inline captures and compresses markers losslessly, without clearing journals,
-settling uncertain work or restoring conversation data. Keep recovery fenced
-until the affected workflow, actual process revision and readiness are verified.
+Diagnostic `snapshotRef`/SQLite bodies, `modelInvocationsArchive` and
+`legacyArchive` are also forward-only storage changes. Older readers ignore these
+references and replay/migration receipts. The source compatibility digest changes
+automatically; do not authorize a rollback transition to a reader missing any of
+these formats. Startup migrates retained inline captures and compresses markers
+losslessly, without clearing journals, settling uncertain work or restoring
+conversation data. Legacy lane admission order, creation-only coverage and every
+untracked-effect flag survive compaction; unfinished coverage remains live.
+Compression provides finite headroom under Rivet's 512 KiB atomic checkpoint
+budget, not unbounded retention. Keep recovery fenced until the affected workflow,
+actual process revision and readiness are verified.
 
 ## Application lifecycle and private status
 

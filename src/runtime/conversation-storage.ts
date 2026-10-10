@@ -1,4 +1,5 @@
 import { gunzipSync, gzipSync } from "node:zlib";
+import type { LegacyCoverage } from "../sessions/migration.js";
 import type { ConversationState } from "./registry.js";
 import type {
   DebugSnapshot,
@@ -74,6 +75,48 @@ export function readModelInvocations(state: {
     : state.modelInvocations;
 }
 
+type LegacyRecords = {
+  admissions: string[];
+  turns: LegacyCoverage["turns"];
+};
+
+export function readLegacyAdmissions(
+  state: Pick<ConversationState, "legacyAdmissions" | "legacyArchive">,
+) {
+  return state.legacyArchive
+    ? [
+        ...expand<LegacyRecords>(state.legacyArchive).admissions,
+        ...(state.legacyAdmissions ?? []),
+      ]
+    : (state.legacyAdmissions ?? []);
+}
+
+export function readLegacyCoverage(
+  state: Pick<ConversationState, "legacyCoverage" | "legacyArchive">,
+): LegacyCoverage | undefined {
+  const coverage = state.legacyCoverage;
+  // Creation-only lineage must never be synthesized for an older actor.
+  return coverage && state.legacyArchive
+    ? {
+        ...coverage,
+        turns: {
+          ...expand<LegacyRecords>(state.legacyArchive).turns,
+          ...coverage.turns,
+        },
+      }
+    : coverage;
+}
+
+export function editLegacyTurn(
+  state: Pick<ConversationState, "legacyCoverage" | "legacyArchive">,
+  id: string,
+) {
+  const turn = readLegacyCoverage(state)?.turns[id];
+  if (turn && state.legacyCoverage && !state.legacyCoverage.turns[id])
+    state.legacyCoverage.turns[id] = turn;
+  return state.legacyCoverage?.turns[id];
+}
+
 /** Complete read projections. Archived records are not mutable actor state. */
 export function readEvents<T>(state: {
   events: Record<string, T>;
@@ -136,12 +179,19 @@ export function conversationSnapshot(
     eventsArchive: _events,
     deliveriesArchive: _deliveries,
     modelInvocationsArchive: _models,
+    legacyArchive: _legacy,
     ...rest
   } = state;
   return {
     ...rest,
     events: readEvents(state),
     deliveries: readDeliveries(state),
+    ...(state.legacyAdmissions
+      ? { legacyAdmissions: readLegacyAdmissions(state) }
+      : {}),
+    ...(state.legacyCoverage
+      ? { legacyCoverage: readLegacyCoverage(state) }
+      : {}),
     ...(readModelInvocations(state)
       ? { modelInvocations: readModelInvocations(state) }
       : {}),
@@ -153,6 +203,25 @@ export function compactConversation(state: ConversationState) {
   if (Buffer.byteLength(JSON.stringify(state.history)) > 64 * 1024) {
     state.historyArchive = compress(readHistory(state));
     state.history = [];
+  }
+  // Lane IDs are append-only; finished coverage has no live callback owner.
+  // Keep unfinished turn objects live and preserve every uncertainty flag.
+  const legacy: LegacyRecords = {
+    admissions: readLegacyAdmissions(state),
+    turns: Object.fromEntries(
+      Object.entries(readLegacyCoverage(state)?.turns ?? {}).filter(
+        ([, turn]) => turn.finished,
+      ),
+    ),
+  };
+  if (
+    state.legacyArchive ||
+    Buffer.byteLength(JSON.stringify(legacy)) > 64 * 1024
+  ) {
+    state.legacyArchive = compress(legacy);
+    if (state.legacyAdmissions) state.legacyAdmissions = [];
+    for (const id of Object.keys(legacy.turns))
+      delete state.legacyCoverage?.turns[id];
   }
   // These scalar replay markers have no retained mutable callback object.
   // Live overlays can demote archived settled markers to uncertain on replay.
