@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { type SpendingClass, spendingAdmission } from "../budgets/policy.js";
 
 const text = z.string().trim().min(1).max(4_096);
 const key = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
@@ -83,8 +82,6 @@ export type JevObservationResult =
       code:
         | "invalid_input"
         | "cancelled"
-        | "owner_spending_prohibited"
-        | "billing_unverified"
         | "timeout"
         | "transport"
         | "http"
@@ -99,8 +96,6 @@ export type JevObserver = (
 ) => Promise<JevObservationResult>;
 export interface JevObserverOptions {
   apiKey: string;
-  /** Host-attested billing for this exact route. Omission is unknown, not free. */
-  spendingClass?: SpendingClass;
   /** Full operator-approved HTTPS endpoint, normally https://api.typesafe.ai/v1/systemone. */
   endpoint: string;
   model: string;
@@ -210,7 +205,6 @@ export function createJevObserver(options: JevObserverOptions): JevObserver {
   const timeoutMs = options.timeoutMs ?? 30_000;
   const model = options.model;
   const apiKey = options.apiKey;
-  const spendingClass = options.spendingClass ?? "unknown";
   try {
     url = new URL(options.endpoint);
     if (
@@ -254,13 +248,6 @@ export function createJevObserver(options: JevObserverOptions): JevObserver {
       return {
         status: "error",
         code: "invalid_input",
-        requestState: "not_sent",
-      };
-    const admission = spendingAdmission(spendingClass);
-    if (!admission.allowed)
-      return {
-        status: "error",
-        code: admission.code,
         requestState: "not_sent",
       };
     const body = JSON.stringify({

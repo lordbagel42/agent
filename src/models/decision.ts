@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { type SpendingClass, spendingAdmission } from "../budgets/policy.js";
 import {
   abstain,
   type DecisionFunction,
@@ -11,8 +10,6 @@ import { observeUsage, tokenUsage, type UsageLedger } from "./usage.js";
 
 export interface DecisionProviderOptions {
   usage?: UsageLedger;
-  /** Host-attested billing for this exact route. Omission is unknown, not free. */
-  spendingClass?: SpendingClass;
   protocol: "openai" | "anthropic";
   auth: "api-key";
   /** Explicit provider model ID, not a marketing name or an assumed alias. */
@@ -127,7 +124,6 @@ async function readPayload(response: Response): Promise<unknown> {
  */
 export function createDecisionProvider({
   usage,
-  spendingClass = "unknown",
   protocol,
   auth,
   model,
@@ -177,8 +173,6 @@ export function createDecisionProvider({
     if (signal.aborted) return abstain("cancelled");
     if (!validDecisionContext(input))
       return abstain("stale-or-invalid-evidence");
-    const admission = spendingAdmission(spendingClass);
-    if (!admission.allowed) throw new ModelError(admission.code, false);
     // Project before serialization: unknown fields must not carry secrets into a model prompt.
     const evidence = input.evidence.map(
       ({ id, scope, text, source, observedAt, expiresAt, correction }) => ({
