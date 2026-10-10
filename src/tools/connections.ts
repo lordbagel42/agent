@@ -11,6 +11,7 @@ import type { CompanionReply, ModelProvider } from "../core/contracts.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { wrapModelProvider } from "../models/invocation.js";
 import { parseReply } from "../models/provider.js";
+import { POLICY_KNOWLEDGE } from "../policy/knowledge.js";
 import { CapabilityBroker, type Json, type ToolAction } from "./broker.js";
 import { GITHUB_MCP_URL, type GitHubAuthorization } from "./github-oauth.js";
 import {
@@ -156,16 +157,9 @@ export class McpConnections {
             const adapter = this.#adapter(connection, tool.contract);
             this.#active.add(adapter);
             try {
-              const stillAuthorized = () => {
-                try {
-                  return (
-                    authorized() &&
-                    this.#get(connection.id).revision === connection.revision
-                  );
-                } catch {
-                  return false;
-                }
-              };
+              const stillAuthorized = () =>
+                authorized() &&
+                this.#authorizationCurrent(connection.id, connection.revision);
               if (adapter instanceof McpToolAdapter)
                 return await adapter.executeWithResult(
                   action,
@@ -308,6 +302,20 @@ export class McpConnections {
     if (`${connection.id}:${connection.revision}` !== account)
       throw new Error("connection_changed");
     return connection;
+  }
+  #authorizationCurrent(id: string, revision: string): boolean {
+    try {
+      // Reload the expiry: a successful host refresh changes credential validity
+      // without changing the permission revision. A stale snapshot denies it.
+      const current = this.#get(id);
+      return (
+        current.revision === revision &&
+        current.status === "connected" &&
+        (current.expiresAt === undefined || current.expiresAt > Date.now())
+      );
+    } catch {
+      return false;
+    }
   }
   list(): ConnectionView[] {
     return this.#db
@@ -853,7 +861,7 @@ export class McpConnections {
         )
           return;
         if (
-          this.generation(connection.id) !== connection.revision ||
+          !this.#authorizationCurrent(connection.id, connection.revision) ||
           this.#inspectProposal(id).cancelledAt != null
         )
           return;
@@ -887,6 +895,8 @@ export class McpConnections {
           timer,
         });
       },
+      // Credential lookup owns host refresh; the adapter checks the refreshed
+      // connection before dispatch. Rejecting expiry here would block refresh.
       canExecute,
     );
     return receipt.status;
@@ -941,12 +951,20 @@ export class McpConnections {
         contractDigest: mcpToolContractDigest(tool.contract),
         permission: tool.permission,
         connectionStatus: connection.status,
+        expiresAt: connection.expiresAt ?? null,
         authorization: expired
           ? this.#canRefreshGitHub(connection)
             ? "expired_host_refresh_available"
             : "expired"
           : "no_known_expiry_reached",
         serverReadOnlyHint: tool.contract.annotations?.readOnlyHint ?? null,
+        processing: {
+          credentialAccess: "host_and_configured_service",
+          retention: "unknown",
+          training: "unknown",
+          region: "unknown",
+          entitlement: "not_verified",
+        },
       }),
       tool.permission === "disabled"
         ? "Disabled: June cannot call or propose this tool. Only the owner can change its permission in the dashboard."
@@ -976,8 +994,8 @@ export class McpConnections {
         const current = () =>
           !signal?.aborted &&
           (isCurrent?.() ?? true) &&
-          [...evidenceBindings].every(
-            ([id, revision]) => this.generation(id) === revision,
+          [...evidenceBindings].every(([id, revision]) =>
+            this.#authorizationCurrent(id, revision),
           );
         let typingPreference: boolean | undefined;
         const replyWithTyping: ModelProvider["reply"] = async (...args) => {
@@ -1214,6 +1232,7 @@ export class McpConnections {
             mcpProposalAvailable: !readScope,
             system:
               request.system +
+              `\n${POLICY_KNOWLEDGE}\n` +
               (readScope
                 ? "\nRestricted research MCP reads: only enabled read tools on the host-selected connections are available. Built-in integrations, effect tools (stored policy: approval), permission inspection and proposal inspection are outside this task's explicit ceiling. This scope cannot enroll connections, grant permissions or create proposals. An execution invocation may make up to three individually authorized reads, then must report. Unknown outcomes stop the sequence; never retry automatically.\n"
                 : '\nConnection "slack-bot" is the host-owned Slack Web API catalog acting as June, not the owner. Use slack.capabilities to verify bot identity and inspect current scope grants. Ask for exact tool schemas through mcpCatalog before calling pins, canvas edits, lists, channel management, files or other actions. Slack resource membership, bot restrictions and workspace policies still apply. Do not bypass thread-stop or group-ping rules. Connection "slack" is the separate official Slack MCP acting as the consenting owner; never silently fall back to it for a denied bot action. Enroll it with Connect Slack in Connections; newly discovered contracts are usable without enabling each tool manually.\n' +
@@ -1346,7 +1365,7 @@ export class McpConnections {
               this.#puckResults.delete(id);
               const authorized = () =>
                 saved.expiresAt > Date.now() &&
-                this.generation(saved.connection) === saved.revision &&
+                this.#authorizationCurrent(saved.connection, saved.revision) &&
                 this.#inspectProposal(id).cancelledAt == null;
               evidenceBindings.set(saved.connection, saved.revision);
               try {
@@ -1458,8 +1477,10 @@ export class McpConnections {
                   text: `MCP proposal ${proposal.id}: recorded ${status}. ${mcpFailure("unknown").text}`,
                 };
               const authorized = () =>
-                this.generation(connection.id) === connection.revision &&
-                this.#inspectProposal(proposal.id).cancelledAt == null;
+                this.#authorizationCurrent(
+                  connection.id,
+                  connection.revision,
+                ) && this.#inspectProposal(proposal.id).cancelledAt == null;
               if (!authorized()) return mcpFailure("denied");
               evidenceBindings.set(connection.id, connection.revision);
               request = {
@@ -1488,19 +1509,9 @@ export class McpConnections {
               };
             dispatchedReads.add(fingerprint);
             const adapter = this.#adapter(connection, contract);
-            const authorized = () => {
-              try {
-                return (
-                  current() &&
-                  this.#get(connection.id).revision === connection.revision &&
-                  (!readScope ||
-                    connection.expiresAt === undefined ||
-                    connection.expiresAt > Date.now())
-                );
-              } catch {
-                return false;
-              }
-            };
+            const authorized = () =>
+              current() &&
+              this.#authorizationCurrent(connection.id, connection.revision);
             this.#active.add(adapter);
             try {
               await observeEffect?.("mcp", "started");

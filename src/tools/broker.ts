@@ -142,6 +142,14 @@ function keys(value: Record<string, unknown>, expected: string[]) {
 function digest(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
+/** Only canonical JSON reaches here; freeze the private snapshot, not caller data. */
+function freezeJson(value: Json): Json {
+  if (value && typeof value === "object") {
+    for (const child of Object.values(value)) freezeJson(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 interface GrantRow {
   id: string;
   audience: string;
@@ -238,13 +246,15 @@ export class CapabilityBroker {
     if (url.protocol !== "https:" || url.origin !== origin) deny();
     const tool = text(value.tool);
     if (!Object.hasOwn(this.#options.tools, tool)) deny();
-    return {
+    // Credential resolution and adapters must use the same bytes that were
+    // fingerprinted, including nested arguments across asynchronous boundaries.
+    return Object.freeze({
       tool,
       account: text(value.account),
       item: text(value.item),
       origin,
-      arguments: value.arguments as Json,
-    };
+      arguments: freezeJson(value.arguments as Json),
+    });
   }
   grant(principal: string, input: unknown): string {
     this.#owner(principal);
