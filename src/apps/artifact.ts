@@ -4,15 +4,10 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
-// One DNS label: the host serves <appId>.<domain> and <appId>--signed-in.<domain>.
-export const appIdSchema = z
-  .string()
-  .max(48)
-  .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
+export const appIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,47}$/);
 export const appAccessSchema = z.enum(["public", "signed-in"]);
 export const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const MAX_ARTIFACT_BYTES = 262_144;
-// Must match apps-host/src/index.ts, which is the authority on serving types.
 const filePath = z
   .string()
   .max(200)
@@ -26,8 +21,7 @@ const filePath = z
             !["node_modules", "credentials", "secrets"].includes(
               part.toLowerCase(),
             ),
-        ) &&
-      /\.(?:html?|css|m?js|json|webmanifest|svg|txt|md|csv|xml)$/i.test(path),
+        ) && /\.(?:json|[cm]?[jt]sx?|html|css|svg|txt|md|lock)$/.test(path),
   );
 
 export const artifactSchema = z
@@ -38,24 +32,36 @@ export const artifactSchema = z
   .superRefine((value, ctx) => {
     const entries = Object.entries(value.files);
     if (
-      !Object.hasOwn(value.files, "index.html") ||
+      !Object.hasOwn(value.files, "package.json") ||
       entries.length > 128 ||
       entries.some(([, text]) => Buffer.byteLength(text) > 65_536) ||
-      entries.reduce(
-        (total, [path, text]) =>
-          total + Buffer.byteLength(path) + Buffer.byteLength(text),
-        0,
-      ) > MAX_ARTIFACT_BYTES
+      Buffer.byteLength(JSON.stringify(value)) > MAX_ARTIFACT_BYTES
     )
       ctx.addIssue({
         code: "custom",
-        message:
-          "App source needs index.html and at most 128 files, 64 KiB each, 256 KiB total",
+        message: "App source exceeds limits or lacks package.json",
       });
+    try {
+      const manifest = JSON.parse(value.files["package.json"] ?? "");
+      // Match the SDK's actor detection before retaining or uploading source.
+      // Self-hosted actor startup would expose an engine-wide runner credential.
+      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest))
+        throw new Error("invalid_package");
+      if (
+        ["dependencies", "devDependencies"].some((section) =>
+          Object.hasOwn(manifest[section] ?? {}, "rivetkit"),
+        )
+      )
+        ctx.addIssue({
+          code: "custom",
+          message: "Actor-backed apps are unavailable; export a Fetch-only app",
+        });
+    } catch {
+      ctx.addIssue({ code: "custom", message: "Invalid app package.json" });
+    }
   });
 export type AppArtifact = z.infer<typeof artifactSchema>;
 
-/** Same canonical digest as the host: code-unit sorted paths, UTF-8 JSON. */
 export function artifactDigest(artifact: AppArtifact): string {
   return createHash("sha256")
     .update(
@@ -63,7 +69,7 @@ export function artifactDigest(artifact: AppArtifact): string {
         appId: artifact.appId,
         files: Object.fromEntries(
           Object.entries(artifact.files).sort(([a], [b]) =>
-            a < b ? -1 : a > b ? 1 : 0,
+            a.localeCompare(b, "en"),
           ),
         ),
       }),
@@ -79,12 +85,11 @@ export async function readAppArtifact(cwd: string, appId: string) {
   );
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.size > MAX_ARTIFACT_BYTES * 2)
+    if (!stat.isFile() || stat.size > MAX_ARTIFACT_BYTES)
       throw new Error("invalid_app_artifact");
-    const bytes = Buffer.alloc(MAX_ARTIFACT_BYTES * 2 + 1);
+    const bytes = Buffer.alloc(MAX_ARTIFACT_BYTES + 1);
     const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
-    if (bytesRead > MAX_ARTIFACT_BYTES * 2)
-      throw new Error("invalid_app_artifact");
+    if (bytesRead > MAX_ARTIFACT_BYTES) throw new Error("invalid_app_artifact");
     const artifact = artifactSchema.parse(
       JSON.parse(bytes.subarray(0, bytesRead).toString("utf8")),
     );
@@ -96,5 +101,5 @@ export async function readAppArtifact(cwd: string, appId: string) {
 }
 
 export function appCodingGoal(appId: string, goal: string) {
-  return `${goal}\n\nBuild a June Dynamic App with ID ${appId}: a static browser app (HTML, CSS, JavaScript) served from the root of its own origin. Export it as june-app.json: {"appId":"${appId}","files":{"index.html":"...","app.js":"..."}}. Files are UTF-8 strings with relative paths; allowed extensions: html, css, js, mjs, json, webmanifest, svg, txt, md, csv, xml. index.html is required. No dotfiles, credentials, symlinks, node_modules, binary files or build steps. Limits: 128 files, 64 KiB each, 256 KiB total. No server code runs. Shared state uses the host's same-origin JSON API: GET /_june/storage/<key>, PUT /_june/storage/<key> with a JSON body, POST /_june/storage/<key> with {"increment":n}, DELETE /_june/storage/<key>, GET /_june/storage?prefix=p&limit=n; signed-in apps can GET /_june/me for the viewer's email. Service workers, framing and app cookies are unsupported. Never include private conversation data or assume viewers are the owner. Run the workspace's verifier against these exact exported files. Do not deploy from the coding process; June prepares and deploys the verified export with the apps tool.`;
+  return `${goal}\n\nBuild a Rivet Dynamic App with ID ${appId}. Export the complete app as june-app.json: {"appId":"${appId}","files":{"package.json":"...","index.js":"..."}}. Files are UTF-8 strings, relative paths only, no dotfiles, credentials, symlinks, node_modules or host state. Limits: 128 files, 64 KiB each, 256 KiB total JSON. Include package.json with type:module and main pointing to an entrypoint that default-exports a Fetch handler (or a Hono app). Never call listen(), serve(), or registry.start(). Only Fetch/HTTP apps are supported; do not declare rivetkit or use actors. The host controls public versus sign-in-required viewing through a prepared deployment receipt, not this artifact. Anyone may view a public app; any signed-in person may view a sign-in-required app. Never include private conversation data or assume viewers are the owner. Serve beneath /apps/${appId}/ on the app's own origin. App cookies, identity/auth headers, cross-origin authenticated requests, embedding and service workers are unsupported. Run the workspace's verifier against these exact exported files. Do not deploy from the coding process; June can prepare and deploy the verified export using the apps tool.`;
 }

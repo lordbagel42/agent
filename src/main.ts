@@ -13,7 +13,7 @@ import { z } from "zod";
 import { createAgentMcp } from "./agent/mcp.js";
 import { operatorRequest } from "./agent/operator.js";
 import { AgentService } from "./agent/service.js";
-import { createAppsClient, loadAppsKey } from "./apps/client.js";
+import { createAppsClient } from "./apps/client.js";
 import { buildArtifactClient } from "./artifacts/build.js";
 import { ArtifactRenderer } from "./artifacts/render.js";
 import { createArtifactRoutes } from "./artifacts/routes.js";
@@ -451,17 +451,14 @@ async function main() {
       isolation,
       runtime: worker,
       runtimeKind: selection.kind,
-      appsWorkspace: config.dynamicApps.workspace,
+      appsWorkspace: config.dynamicApps?.workspace,
       // Config contains references to secrets, not their values. Changing the
       // runtime, session roots or execution policy cannot rebind existing jobs.
       runtimeId: createHash("sha256")
         .update(
           JSON.stringify(
-            config.dynamicApps.workspace
-              ? {
-                  coding: config.coding,
-                  dynamicApps: { workspace: config.dynamicApps.workspace },
-                }
+            config.dynamicApps
+              ? { coding: config.coding, dynamicApps: config.dynamicApps }
               : config.coding,
           ),
         )
@@ -529,21 +526,11 @@ async function main() {
   startupStage = "operator credential (at least 32 characters)";
   const operatorToken = secret(config.operatorTokenEnv);
   if (operatorToken.length < 32) throw new Error("Short operator token");
-  // June's own app-host identity; a key problem disables Apps, not June.
-  const appsKey = config.dynamicApps.enabled
-    ? await loadAppsKey(
-        join(process.env.RIVETKIT_STORAGE_PATH, "apps-ed25519.pem"),
-      ).catch((error: unknown) => {
-        console.error(
-          JSON.stringify({
-            event: "dynamic_apps_key_unavailable",
-            detail: "Dynamic Apps disabled for this process",
-            error: error instanceof Error ? error.message.slice(0, 300) : null,
-          }),
-        );
-        return undefined;
-      })
+  const appToken = config.dynamicApps
+    ? secret(config.dynamicApps.tokenEnv)
     : undefined;
+  if (appToken && (appToken.length < 32 || appToken === operatorToken))
+    throw new Error("Separate app-host credential required");
   startupStage = "isolated browser execution prerequisites";
   if (
     config.browserCompanion?.enabled &&
@@ -1655,35 +1642,30 @@ async function main() {
         }
       : undefined,
     dashboardLogin: loginLinks,
-    apps: appsKey
-      ? createAppsClient({
-          endpoint: config.dynamicApps.endpoint,
-          key: appsKey,
-          owner: config.owner.id,
-          ...(coding && config.dynamicApps.workspace
-            ? {
-                workspace: config.dynamicApps.workspace,
-                readJob: async (id: string, conversationKey: string[]) => {
-                  const job = await client.job
-                    .get([config.owner.id, id])
-                    .snapshot();
-                  const scope = job.proposal?.conversationKey ?? [
-                    "private",
-                    config.owner.id,
-                  ];
-                  if (
-                    JSON.stringify(scope) !== JSON.stringify(conversationKey) ||
-                    !(await client.conversation
-                      .getOrCreate(conversationKey)
-                      .canResumeJob(id))
-                  )
-                    return undefined;
-                  return job.runtimeId === coding?.runtimeId ? job : undefined;
-                },
-              }
-            : {}),
-        })
-      : undefined,
+    apps:
+      config.dynamicApps && appToken
+        ? createAppsClient({
+            ...config.dynamicApps,
+            token: appToken,
+            readJob: async (id, conversationKey) => {
+              const job = await client.job
+                .get([config.owner.id, id])
+                .snapshot();
+              const scope = job.proposal?.conversationKey ?? [
+                "private",
+                config.owner.id,
+              ];
+              if (
+                JSON.stringify(scope) !== JSON.stringify(conversationKey) ||
+                !(await client.conversation
+                  .getOrCreate(conversationKey)
+                  .canResumeJob(id))
+              )
+                return undefined;
+              return job.runtimeId === coding?.runtimeId ? job : undefined;
+            },
+          })
+        : undefined,
     release: readDeployment
       ? createReleaseTool({
           read: () => readDeployment(config.owner.id),
@@ -2076,18 +2058,7 @@ async function main() {
           capabilities: !!capabilities,
           deployment: !!readDeployment,
           telemetry: !!telemetry,
-          apps: !!dependencies.apps,
         },
-        // Public only: the app host pins this key to trust June's requests.
-        ...(dependencies.apps
-          ? {
-              apps: {
-                endpoint: dependencies.apps.endpoint,
-                keyId: dependencies.apps.keyId,
-                publicKey: dependencies.apps.publicKey,
-              },
-            }
-          : {}),
       }),
       operator: operatorRequest((request) => app.fetch(request), operatorToken),
     });

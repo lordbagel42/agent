@@ -1105,73 +1105,45 @@ function legacyReplyJsonSchema(
               properties: {
                 action: {
                   type: "string",
-                  enum: [
-                    "prepare",
-                    "deploy",
-                    "inspect",
-                    "list",
-                    "unpublish",
-                    "build",
-                  ],
+                  enum: ["build", "prepare", "inspect", "deploy"],
                 },
                 appId: {
-                  type: ["string", "null"],
+                  type: "string",
                   description:
-                    "Lowercase app ID and subdomain: letters/digits, single hyphens between them, max 48. Null only for list.",
-                },
-                files: {
-                  type: ["array", "null"],
-                  description:
-                    "For prepare: the complete static app source you wrote (at most 128 files). Must include index.html; extensions html/css/js/mjs/json/webmanifest/svg/txt/md/csv/xml; ≤64 KiB each, ≤256 KiB total. Null otherwise or when preparing a coding jobId.",
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    properties: {
-                      path: { type: "string" },
-                      content: { type: "string" },
-                    },
-                    required: ["path", "content"],
-                  },
+                    "Lowercase app ID, letters/digits/hyphens, starting with a letter, max 48 characters.",
                 },
                 jobId: {
                   type: ["string", "null"],
                   description:
-                    "For prepare from a verified coding build: its exact 64-hex job ID instead of files. Null otherwise.",
+                    "Exact 64-character coding job ID for prepare; null otherwise.",
                 },
                 receiptId: {
                   type: ["string", "null"],
                   description:
-                    "For deploy: the exact 64-hex prepared receipt ID. Binds source digest and audience. Null otherwise.",
+                    "Exact 64-character prepared receipt ID for deploy; null otherwise. Binds source digest and audience.",
                 },
                 goal: {
                   type: ["string", "null"],
                   description:
-                    "For build only (coding-job build, when available): task of 1–900 characters. Null otherwise.",
+                    "Build task (1–900 characters) for build; null otherwise.",
                 },
                 access: {
                   type: ["string", "null"],
                   enum: ["public", "signed-in", null],
                   description:
-                    "For prepare (required): public = anyone with the link; signed-in = anyone who signs in with an email code or GitHub, not an allowlist. Null for other actions; deploy uses the prepared audience.",
-                },
-                title: {
-                  type: ["string", "null"],
-                  description:
-                    "Optional short title for prepare (≤120 characters). Null otherwise.",
+                    "For prepare: public allows anyone without login; signed-in allows anyone who signs in. Null leaves internal-only viewing. Null for other actions; deploy uses the prepared audience.",
                 },
               },
               required: [
                 "action",
                 "appId",
-                "files",
                 "jobId",
                 "receiptId",
                 "goal",
                 "access",
-                "title",
               ],
               description:
-                "Write, publish and manage June's Dynamic Apps: prepare source+audience into a receipt, deploy that exact receipt, inspect/list apps, unpublish. June decides whether publishing is appropriate; no compulsory human confirmation. Empty text, no other directives.",
+                "Build an app, prepare verified source and audience, inspect status, or deploy an exact prepared receipt. June decides whether deployment is appropriate; no compulsory human confirmation. Empty text, no other directives. Never retry an unknown deployment.",
             },
           }
         : {}),

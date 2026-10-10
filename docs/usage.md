@@ -116,12 +116,12 @@ Nothing in this guide activates integrations or changes Slack installation setti
   dedicated login directory and the normal browser OAuth callback flow.
 - Separate Amp jobs, immediate admission for new tasks, saved thread IDs, and recovery of
   uncertain runs. June reports worker results as reported, not verified.
-- [Dynamic Apps](dynamic-apps.md): June writes and publishes interactive web apps
-  (prepare/deploy/inspect/list/unpublish) on a Cloudflare-hosted app host.
-  Preparation binds the exact source and audience; deployment consumes that
-  receipt without a human command.
-  Workers can prepare and deploy in one task; deploy uses the prepared receipt's
-  exact `id`, never a substituted source or audience.
+- Opt-in [Rivet Dynamic Apps](dynamic-apps.md) build/prepare/inspect/deploy tools
+  for Fetch/HTTP apps on an isolated host. Preparation binds verified source and
+  audience; deployment consumes its exact receipt without a human command.
+  Use `apps:{action:"deploy",appId,receiptId,jobId:null,goal:null,access:null}`
+  with the prepared receipt's exact `id`, not a substituted job or audience.
+  Local SDK checks are not production activation; actor apps are not included.
 - [Shared artifacts](shared-artifacts.md) include workflow status views bound to
   the originating requester and source, not only owner DMs. They never expose
   raw workflow inputs, source or results. Private artifact PINs go only to the

@@ -169,28 +169,21 @@ const schema = z
         experimentalSlackEmbed: z.boolean().default(false),
       })
       .optional(),
-    // Enabled by default: June signs control requests with her own Ed25519
-    // key (stored with her state); the host pins only the public key.
     dynamicApps: z
       .strictObject({
-        enabled: z.boolean().default(true),
-        endpoint: baseUrl
-          .refine(
-            (value) =>
-              new URL(value).origin === value &&
-              (value.startsWith("https://") ||
-                ["127.0.0.1", "localhost", "[::1]"].includes(
-                  new URL(value).hostname,
-                )),
-            "Use an HTTPS origin or loopback HTTP for the app host",
-          )
-          .default("https://mrrpmraow.com"),
-        /** Optional coding workspace for coding-job builds. */
-        workspace: name.optional(),
-        /** Ignored legacy bearer-token setting from the Rivet host. */
-        tokenEnv: envName.optional(),
+        endpoint: baseUrl.refine(
+          (value) =>
+            new URL(value).origin === value &&
+            (value.startsWith("https://") ||
+              ["127.0.0.1", "localhost", "[::1]"].includes(
+                new URL(value).hostname,
+              )),
+          "Use an HTTPS origin or loopback HTTP for the dedicated app host",
+        ),
+        tokenEnv: envName,
+        workspace: name,
       })
-      .default({ enabled: true, endpoint: "https://mrrpmraow.com" }),
+      .optional(),
     eventWebhooks: z
       .record(
         z.string().regex(/^[a-z][a-z0-9-]{0,47}$/),
@@ -709,10 +702,11 @@ const schema = z
   )
   .refine(
     (config) =>
-      !config.dynamicApps.workspace ||
+      !config.dynamicApps ||
       (config.coding.enabled &&
-        !!config.coding.isolation[config.dynamicApps.workspace]?.verifier),
-    "Dynamic Apps coding builds require enabled coding and a verified workspace",
+        !!config.coding.isolation[config.dynamicApps.workspace]?.verifier &&
+        config.dynamicApps.tokenEnv !== config.operatorTokenEnv),
+    "Dynamic Apps require enabled coding, a verified workspace and a separate app-host credential",
   );
 
 export type Config = z.infer<typeof schema>;
