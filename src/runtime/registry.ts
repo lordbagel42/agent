@@ -613,13 +613,7 @@ export function createJuneRegistry(deps: Dependencies) {
     address: Address,
     enabled: boolean,
   ) => {
-    try {
-      await client.typing.getOrCreate(typingKey(address)).set(enabled);
-    } catch (error) {
-      // RPC rejection is not proof the status owner's transport has settled.
-      deps.lifecycle?.fail();
-      throw error;
-    }
+    await client.typing.getOrCreate(typingKey(address)).set(enabled);
   };
   const typingChannel = (
     client: Client<JuneClientRegistry>,
@@ -640,29 +634,25 @@ export function createJuneRegistry(deps: Dependencies) {
         const resolved = client.typing.getForId(await target.resolve());
         if (signal?.aborted) return;
         // Only transport metadata crosses into the shared surface actor.
-        let accepted: boolean;
-        try {
-          accepted = await resolved.pulse(
-            {
-              type: "message",
-              id: source.id,
-              messageId: source.messageId,
-              occurredAt: source.occurredAt,
-              address: source.address,
-              senderId: source.senderId,
-              direct: source.direct,
-              text: "",
-              ...(source.botMentioned ? { botMentioned: true } : {}),
-              ...(source.metadata?.channelType
-                ? { metadata: { channelType: source.metadata.channelType } }
-                : {}),
-            },
-            active,
-          );
-        } catch (error) {
-          deps.lifecycle?.fail();
-          throw error;
-        }
+        // The owner accounts for every admitted transport through settlement;
+        // an RPC rejection is neither proof of non-dispatch nor a global fault.
+        const accepted = await resolved.pulse(
+          {
+            type: "message",
+            id: source.id,
+            messageId: source.messageId,
+            occurredAt: source.occurredAt,
+            address: source.address,
+            senderId: source.senderId,
+            direct: source.direct,
+            text: "",
+            ...(source.botMentioned ? { botMentioned: true } : {}),
+            ...(source.metadata?.channelType
+              ? { metadata: { channelType: source.metadata.channelType } }
+              : {}),
+          },
+          active,
+        );
         if (!accepted) throw new Error("typing_unavailable");
       },
     };
@@ -7071,7 +7061,7 @@ export function createJuneRegistry(deps: Dependencies) {
   return setup({
     use: {
       conversation,
-      typing: createTypingActor(deps.channels),
+      typing: createTypingActor(deps.channels, deps.lifecycle),
       activity: createActivityActor({
         effectRuntime: deps.effectRuntime,
         sentinel: deps.sentinel,

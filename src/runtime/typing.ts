@@ -5,6 +5,7 @@ import type {
   ChannelAdapter,
   MessageEvent,
 } from "../core/contracts.js";
+import { type Lifecycle, serializeAdmittedWork } from "./lifecycle.js";
 
 export function typingKey(address: Address): string[] {
   return [
@@ -21,20 +22,34 @@ export function typingKey(address: Address): string[] {
  * prevent a late pulse undoing a disable. */
 export function createTypingActor(
   channels: Partial<Record<Channel, ChannelAdapter>>,
+  lifecycle?: Pick<Lifecycle, "enter">,
 ) {
   return actor({
     state: { enabled: true, active: {} as Record<string, MessageEvent> },
-    createVars: (): {
+    createVars: (
+      owner,
+    ): {
+      signal: AbortSignal;
       serial<T>(work: () => Promise<T>): Promise<T>;
     } => {
       let pending = Promise.resolve();
+      const signal = owner.abortSignal;
       return {
+        signal,
         serial<T>(work: () => Promise<T>): Promise<T> {
-          const result = pending.then(work);
+          // The actor owns the raw work, independently of RPC timeouts/retries.
+          // Admit before queuing; a late request cannot cross a drain fence.
+          const result = serializeAdmittedWork(
+            lifecycle,
+            signal,
+            pending,
+            work,
+          );
           pending = result.then(
             () => {},
             () => {},
           );
+          void owner.keepAwake(pending);
           return result;
         },
       };
@@ -62,11 +77,11 @@ export function createTypingActor(
         c.vars.serial(async () => {
           const key = JSON.stringify([event.address, event.messageId]);
           if (active) {
-            c.abortSignal.throwIfAborted();
+            c.vars.signal.throwIfAborted();
             if (!c.state.enabled) return true;
             c.state.active[key] = event;
             await c.saveState({ immediate: true });
-            c.abortSignal.throwIfAborted();
+            c.vars.signal.throwIfAborted();
           } else {
             // Disabling already cleared this transport target.
             if (!c.state.active[key]) return true;
@@ -76,7 +91,7 @@ export function createTypingActor(
             await channels[event.address.channel]?.setTyping?.(
               event,
               active,
-              active ? c.abortSignal : undefined,
+              active ? c.vars.signal : undefined,
             );
           } catch {
             // A settled transport failure is best-effort, not an ambiguous RPC.

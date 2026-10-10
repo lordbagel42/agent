@@ -942,12 +942,17 @@ lease still fails closed. No durable journal names or ordering change.
 Optional typing feedback resolves its shared actor separately before submitting
 the status action by ID. A failed lookup cannot have submitted that action and
 remains best-effort; the typing actor has no transport effects during startup.
-The resolved ID is reused for the turn's cleanup. Action rejection still latches
-failure, even if its final error looks pre-dispatch: RivetKit can retry after an
-ambiguous attempt. No error-code allowlist bypasses that fence. The lifecycle
-lease still covers lookup, action and cleanup, and preference writes retain their
-existing fail-closed behavior. This does not guarantee visible indicators or
-authorize clearing another process's latch.
+The resolved ID is reused for the turn's cleanup. The typing actor now owns
+lifecycle admission before its serializer, through preference persistence,
+transport and cleanup, and stays awake until that raw work settles. Its signal
+belongs to the actor incarnation, not the RPC deadline. Caller rejection no
+longer latches all of June: late requests remain fenced before effects, while
+already admitted work continues to block drain independently of its caller.
+An actor abort with an outstanding lease still fails closed. No error code proves
+non-dispatch, and no uncertain effect is retried by this change. Preference
+failures still propagate; durable disable still suppresses subsequent starts.
+This does not guarantee visible indicators, deduplicate SDK retries, or authorize
+clearing another process's latch.
 
 Reflection now holds lifecycle admission through each raw provider call and
 its final durable flush, and pauses new steps while fenced. Its additional
