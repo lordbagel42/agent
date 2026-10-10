@@ -352,16 +352,35 @@ export function createTinyFishWebSearchProvider(
   );
 }
 
+/** What June needs to know when TinyFish is not the active provider. */
+export function tinyFishSetupNote(reason: string): string {
+  return `TinyFish Search is supported and preferred (free daily allowance) but not active: ${reason}. To enable it, Raygen creates a key at https://agent.tinyfish.ai/api-keys, provisions it privately as TINYFISH_API_KEY in June's service environment, and sets webSearch.provider to "tinyfish" through a coordinated configuration change. June may request this from Raygen in a private conversation; never ask for or accept the secret value in chat.`;
+}
+
 export function createWebSearchProvider(
   config: {
     provider: "tavily" | "tinyfish";
+    apiKeyEnv: string;
     apiKey?: string;
     timeoutMs?: number;
   },
   dependencies: { fetch?: typeof fetch } = {},
 ): WebSearchProvider {
   const options = { apiKey: config.apiKey, timeoutMs: config.timeoutMs };
-  return config.provider === "tinyfish"
-    ? createTinyFishWebSearchProvider(options, dependencies)
-    : createTavilyWebSearchProvider(options, dependencies);
+  const provider =
+    config.provider === "tinyfish"
+      ? createTinyFishWebSearchProvider(options, dependencies)
+      : createTavilyWebSearchProvider(options, dependencies);
+  // The description reaches every prompt path, so it carries activation state.
+  const note =
+    config.provider === "tavily"
+      ? tinyFishSetupNote("webSearch.provider is tavily")
+      : provider.available
+        ? undefined
+        : tinyFishSetupNote(
+            `webSearch.provider is tinyfish but ${config.apiKeyEnv} is not set`,
+          );
+  return note
+    ? { ...provider, description: `${provider.description} ${note}` }
+    : provider;
 }

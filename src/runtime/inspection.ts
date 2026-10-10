@@ -30,6 +30,7 @@ import {
 } from "../reflection/domain.js";
 import type { inspectLegacyDrain } from "../sessions/migration.js";
 import type { McpConnections } from "../tools/connections.js";
+import { tinyFishSetupNote } from "../tools/web-search.js";
 import {
   type CompressedJson,
   readDeliveries,
@@ -194,7 +195,7 @@ export function capabilitySnapshot(
         !!runtime.webSearch,
         turn && !runtime.execution && runtime.webSearch?.available === true,
         !!config.webSearch && runtime.webSearch?.available === true,
-        "webSearch accepts an explicit public query when configured with a credential. Execution-enabled turns delegate search through workers, not a direct conversational webSearch action. Credential validity and quota are not probed.",
+        `${config.webSearch ? `Provider: ${config.webSearch.provider} (credential ${runtime.webSearch?.available ? "present" : `missing: ${config.webSearch.apiKeyEnv}`}).` : "Not connected: webSearch is not configured."} ${config.webSearch?.provider === "tinyfish" && runtime.webSearch?.available ? "TinyFish Search is active." : tinyFishSetupNote(config.webSearch?.provider === "tavily" ? "webSearch.provider is tavily" : config.webSearch ? `${config.webSearch.apiKeyEnv} is not set` : "webSearch is not configured")} webSearch accepts an explicit public query when configured with a credential. Execution-enabled turns delegate search through workers, not a direct conversational webSearch action. Credential validity and quota are not probed.`,
       ),
       row(
         "execution-agents",

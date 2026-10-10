@@ -819,6 +819,7 @@ async function main() {
     config.webSearch &&
     createWebSearchProvider({
       provider: config.webSearch.provider,
+      apiKeyEnv: config.webSearch.apiKeyEnv,
       apiKey: process.env[config.webSearch.apiKeyEnv],
       timeoutMs: config.webSearch.timeoutMs,
     });
