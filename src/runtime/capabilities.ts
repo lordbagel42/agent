@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { agentWebhookAction } from "../agent/actions.js";
 import type { WorktreeDiffSummary } from "../coding/worktree.js";
 import type {
@@ -1813,9 +1814,17 @@ async function dispatchCapability(
             scope.key,
             canStartAction,
           );
-      } catch {
+      } catch (error) {
+        // Schema issues name only fields/rules, never request content.
+        const issues =
+          error instanceof z.ZodError
+            ? ` Invalid apps request: ${error.issues
+                .map((issue) => issue.message)
+                .slice(0, 5)
+                .join("; ")}.`
+            : "";
         result = {
-          text: "The app request could not be confirmed. No deployment approval was granted. Inspect the app receipt before trying further actions.",
+          text: `The app request could not be completed.${issues} Nothing was published by this call; inspect the app before trying again.`,
         };
       }
     }

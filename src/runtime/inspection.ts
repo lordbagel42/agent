@@ -117,10 +117,12 @@ export function capabilitySnapshot(
         "dynamic-apps",
         !!runtime.apps,
         turn && !!runtime.apps,
-        !!config.dynamicApps &&
-          config.coding.enabled &&
-          env.JUNE_ALLOW_NATIVE_CODING === "1",
-        `${config.dynamicApps ? "dynamicApps is configured." : "Not connected: dynamicApps is not configured."} apps build/prepare/inspect uses a separate app host; interaction agents delegate to execution workers. June judges task legitimacy and publication audience; ordinary effects need no compulsory approval. Verified source/audience bindings and host activation remain required. Public or any-signed-in viewing grants no authoring rights. App-host connectivity, viewer routing and login are not probed.`,
+        config.dynamicApps.enabled && !!runtime.apps,
+        runtime.apps
+          ? `apps prepare/deploy/inspect/list/unpublish talk to ${runtime.apps.endpoint} with requests signed by June's Ed25519 key ${runtime.apps.keyId} (public key ${runtime.apps.publicKey}); the host must list that public key in JUNE_KEYS. apps list doubles as a connectivity and trust check. Coding-job builds: ${runtime.apps.buildAvailable ? "available" : "unavailable (needs native coding and dynamicApps.workspace)"}. Public or signed-in viewing grants no authoring rights.`
+          : config.dynamicApps.enabled
+            ? "Not connected: June's apps signing key could not be loaded from her state directory; check the startup log."
+            : "Disabled by dynamicApps.enabled=false in June's config.",
       ),
       row(
         "shared-artifacts",
