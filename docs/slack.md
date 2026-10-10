@@ -16,6 +16,30 @@ login/consent and authenticated administration remain enforced. The public-web
 research specialist retains its explicit read-only ceiling. June's ordinary
 channel replies and reactions remain separate.
 
+## Agent messaging experience
+
+The manifest enables `features.agent_view`, Slack's Agent messaging experience,
+with the writable Messages tab and `assistant:write` bot scope. June remains a
+Slack app/bot identity, not a human account; agent classification does not bypass
+workspace policy or force a conversation into a user's personal sidebar.
+
+Apply these additions to a fresh live manifest, preserving OAuth redirects, MCP
+settings, event subscriptions and production URLs. Complete any Slack installation
+update/approval to grant `assistant:write`, then hard-refresh Slack. Workspace/org
+admins may also need to allow agent display. Switching from the older
+`assistant_view` to `agent_view` is irreversible; do not enable the legacy view.
+
+Ordinary and threaded DMs continue through `message.im`; no new ingress handler
+is needed. Existing `assistant.threads.setStatus` calls are supported by Slack's
+compatibility bridge. Unthreaded messages retain reaction-based thinking status
+and do not create a thread merely to show status. June does not subscribe to
+`app_home_opened` (Slack recommends it for welcome messages), because opening a DM
+should not trigger an unsolicited message. There is no native agent stop-button
+subscription; existing text stop controls remain unchanged.
+
+See Slack's [manifest reference](https://docs.slack.dev/reference/app-manifest/#features)
+and [Agent messaging migration guide](https://docs.slack.dev/ai/migrating-to-agent-messaging/).
+
 ## Thread subscriptions
 
 Owner channel messages containing the whole word “June” (case-insensitive) or a
