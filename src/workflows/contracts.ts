@@ -96,7 +96,13 @@ export interface WorkflowDependencies {
   /** Optional process-local metadata sink. Recheck readable with the authenticated
    * source on every read; false means unavailable, never a reason to wake a run.
    * The synchronous guard can read existing source/deletion authority stores.
-   * Preserve capturedAt, bound retention and do not persist snapshots/readers. */
+   * Recheck the original predicate across read/delivery awaits and immediately
+   * before FIRST synchronous worker history insertion, with no intervening await.
+   * Preserve original capturedAt/TTL and bound retention. Never persist raw
+   * snapshots, readers or presentation caches. Minimized admitted TaskView text
+   * may remain ordinary historical evidence, not continuing freshness or
+   * settlement. Source-only invalidation does not erase that text; actual
+   * forgetting/deletion/revocation retains existing history clearing/cancellation. */
   observePresentation?(
     snapshot: WorkflowPresentationSnapshot,
     readable: (source: MessageEvent) => boolean,

@@ -194,6 +194,19 @@ new commands use a strict schema-derived, role-filtered additive action union.
 If that cannot preserve persisted replies or a published MCP contract, stop for
 an explicitly reviewed compatibility change rather than silently migrating it.
 
+**K1/K7 first-publication guard:** the optional readonly invocation `outputGuards`
+exposes only `CapabilityOutputGuards.register(result, current)`. S05 registers the
+final fresh TaskView object; C02 claims that exact object once and owns checks
+through the first synchronous worker history insertion, then clears the local
+collector before persistence. Empty/prior registrations cannot certify a non-null
+view. The admitted minimized text remains ordinary historical evidence with its
+original observation times, not continuing freshness or provider-dispatch
+authorization. Source-only invalidation preserves it; actual forgetting/deletion/
+revocation keeps existing cancellation/history clearing. No serialized guards,
+raw presentation retention, new persistence policy or TaskView/Promise ABI change.
+The collector, projection and runtime knowledge remain C02/S05 work; root task
+mounting waits for their reviewed boundary checks, not this declaration alone.
+
 Wave 0 lands in two small steps: C01 establishes types/empty slots without changing
 behavior, then C02 wires the bounded host/prompt hooks and migrates **one existing
 metadata-only inspection** as a real vertical slice. Unimplemented K2–K7 services

@@ -382,11 +382,37 @@ export const taskViewSchema = z.strictObject({
 });
 export type TaskView = z.infer<typeof taskViewSchema>;
 export interface TaskViewPort {
-  /** Projection of existing owners and receipts, never a second job store. */
+  /** Projection of existing owners and receipts, never a second job store.
+   * Register the final schema-parsed fresh object immediately before a non-null
+   * return. Pin exact cache entry, original source reader/incarnation/publication,
+   * current authorization/deletion and original TTL, without reinspection or wakes.
+   * Missing outputGuards or failed registration cannot yield a non-null result.
+   * Null needs no registration. Preserve the original context and signal. */
   inspect(
     context: CapabilityInvocationContext,
     id: string,
   ): Promise<TaskView | null>;
+}
+
+/** Producer-only facet of one worker-owned invocation-local collector. Supply a
+ * separate object containing only register, never a narrowed controller object.
+ * The host claims each exact non-null result once before its post-reader await;
+ * empty/prior registrations, duplicate registration and reused objects deny it.
+ * Keep claimed guards through delivery/dispatch awaits and the final synchronous
+ * check immediately before first worker history insertion, without an intervening
+ * await. Failure latches only this invocation and substitutes bounded unavailable
+ * output. Worker finally clears the collector after publication/abandonment and
+ * before persistence; never serialize guards or graft them onto worker validity.
+ * Admitted minimized text is ordinary historical evidence with original times,
+ * not continuing freshness or later model/provider-dispatch authorization.
+ * Source-only invalidation does not erase it; existing forgetting/deletion/
+ * revocation still cancels the worker and clears history. Raw snapshots, source
+ * readers and caches are not retained as history. */
+export interface CapabilityOutputGuards {
+  /** Bind the final returned object once. current is synchronous and side-effect
+   * free; only literal true passes. Throws, Promises and other values fail closed.
+   * Registration grants no authority or lifetime beyond first publication. */
+  register(result: object, current: () => boolean): void;
 }
 
 /** K1 is assembled by the runtime from authenticated context, never reply JSON. */
@@ -404,6 +430,9 @@ export type CapabilityInvocationContext = Pick<
   turn: CapabilityTurn;
   execution?: ExecutionContext;
   intent?: IntentReference;
+  /** Host-only producer facet; absence never certifies a non-null TaskView.
+   * Null results and unrelated inspection capabilities need no registration. */
+  readonly outputGuards?: CapabilityOutputGuards;
   canStartAction(): boolean;
   canDeliver(): Promise<boolean>;
 };
