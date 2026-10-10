@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import { appIdSchema, readAppArtifact } from "../apps/artifact.js";
+import type { CapabilityIntentBinding } from "../capabilities/contracts.js";
 import type { RemoteAmpJobs } from "../coding/remote-amp.js";
 import {
   type createWorktreeManager,
@@ -102,6 +103,12 @@ export interface JobProposal extends CodingRequest {
    * Never sample at delivery/dispatch or backfill an existing saved proposal.
    */
   deletionRevision?: number;
+  /** Original host-bound intent/provenance, retained with the exact proposal.
+   * Never infer from a job ID, deletion revision, resume or legacy backfill.
+   * Does not grant authority or replace saved source/deletion scope; root
+   * admission and cross-owner stopping require their own integration.
+   */
+  intentBinding?: CapabilityIntentBinding;
   /** Host-only authority carried across queue delivery; never a model field. */
   skillContext?: {
     candidateId: string;
