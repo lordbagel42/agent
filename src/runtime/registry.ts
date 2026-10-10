@@ -80,6 +80,7 @@ import {
 } from "../workflows/actors.js";
 import type { WorkflowDependencies } from "../workflows/contracts.js";
 import { invalidRecallCategory, runCapability } from "./capabilities.js";
+import { capabilityKnowledgeForTurn } from "./capability-prompts.js";
 import {
   type CodingDependencies,
   createCodingActor,
@@ -3655,6 +3656,18 @@ export function createJuneRegistry(deps: Dependencies) {
                                     .length,
                                   counts: null,
                                 };
+                              if (version < 3) {
+                                const knowledge = capabilityKnowledgeForTurn(
+                                  body.type === "event"
+                                    ? "interaction"
+                                    : body.type === "wakeup" &&
+                                        body.wakeup.mode === "decision"
+                                      ? "eventDecision"
+                                      : "notificationOnly",
+                                );
+                                if (knowledge)
+                                  modelRequest.system += `\n\n${knowledge}`;
+                              }
                               if (version >= 3) {
                                 const readRoster = async () => {
                                   // Summary can persist cancellation of stale queued work.

@@ -19,6 +19,7 @@ import { ModelError, parseReply } from "../models/provider.js";
 import { RepositoryError } from "../repository/contracts.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import type { WebSearchResult } from "../tools/web-search.js";
+import { capabilityKnowledgeForTurn } from "./capability-prompts.js";
 import { type Delivery, deliver } from "./delivery.js";
 import { runExecutionCapability } from "./execution-capabilities.js";
 import {
@@ -509,6 +510,9 @@ export function createExecutionActor(
                               DEBUG_RESOLUTION_KNOWLEDGE,
                               TASK_OWNERSHIP_HELP,
                               ENVIRONMENT_KNOWLEDGE,
+                              // Legacy contextless work gains knowledge only;
+                              // its captured web/coding ceiling is unchanged.
+                              capabilityKnowledgeForTurn("execution"),
                             ].join("\n\n"),
                             messages: step.state.history
                               .slice(-40)

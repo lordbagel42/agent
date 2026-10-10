@@ -27,6 +27,7 @@ import { JAVASCRIPT_HELP } from "../tools/javascript.js";
 import type { WakeupContext } from "../wakeups/state.js";
 import { WORKFLOW_HELP } from "../workflows/contracts.js";
 import { AMP_THREAD_HELP } from "./amp-threads.js";
+import { capabilityKnowledgeForTurn } from "./capability-prompts.js";
 import { DEBUG_RESOLUTION_HELP } from "./debug-dispatch.js";
 import { type GlobalPersonality, publicPersonality } from "./personality.js";
 
@@ -1301,6 +1302,20 @@ The private dashboard automates mechanical sign-in steps, not consent. A June si
   request.system += `\n\n${TASK_ACTION_HELP}`;
   request.system += `\n\n${TASK_OWNERSHIP_HELP}`;
   request.system += `\n\n${DEBUG_OPERATIONS_HELP}`;
+  // Activity completions reuse an interaction role and original source event,
+  // but are not live inputs. Never infer a fresh request from that role alone.
+  const capabilityKnowledge = capabilityKnowledgeForTurn(
+    wakeup
+      ? wakeup.mode === "decision"
+        ? "eventDecision"
+        : "notificationOnly"
+      : agentRole === "execution"
+        ? "execution"
+        : liveInput
+          ? "interaction"
+          : "notificationOnly",
+  );
+  if (capabilityKnowledge) request.system += `\n\n${capabilityKnowledge}`;
   request.system +=
     "\nSlack conversational replies in one-to-one DMs default to the main conversation. Continue an incoming DM thread, and start a new DM thread only when explicitly requested. Channels and group DMs still default to threads: continue the existing thread or start one on the incoming message. Top-level channel/group-DM replies should be uncommon, reserved for an explicit request or a clear need to address the main conversation. This is a placement preference, not an obligation to reply or permission to broaden an audience. Workers cannot change reply placement; automated and completion turns keep their host-selected or saved destination. Do not duplicate a reply to move it, relocate a pending delivery, or infer live activation from source publication.";
   request.system +=
