@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { SpendingAdmission } from "../budgets/policy.js";
 import type {
   CompanionReply,
   ModelProvider,
@@ -6,7 +7,7 @@ import type {
 } from "../core/contracts.js";
 import { ENVIRONMENT_KNOWLEDGE } from "../environments/contracts.js";
 import { beginModelReply } from "../models/invocation.js";
-import { parseReply } from "../models/provider.js";
+import { ModelError, parseReply } from "../models/provider.js";
 import type { WebSearchProvider } from "../tools/web-search.js";
 
 const findingSchema = z.strictObject({
@@ -35,7 +36,13 @@ export type ResearchFinding = z.infer<typeof findingSchema> & {
 };
 
 export class ResearchBatchError extends Error {
-  constructor(readonly reason: "not_started" | "unknown" | "invalid_result") {
+  constructor(
+    readonly reason:
+      | "not_started"
+      | "unknown"
+      | "invalid_result"
+      | Extract<SpendingAdmission, { allowed: false }>["code"],
+  ) {
     super(`research_${reason}`);
   }
 }
@@ -54,11 +61,11 @@ export async function runResearchBatch(input: {
   signal: AbortSignal;
   current(): boolean;
 }) {
+  const current = () => !input.signal.aborted && input.current();
   const evidence: string[] = [];
   let evidenceBytes = 0;
   const observe = (text: string) => {
-    if (!input.current() || evidenceBytes + Buffer.byteLength(text) > 128_000)
-      return;
+    if (!current() || evidenceBytes + Buffer.byteLength(text) > 128_000) return;
     evidenceBytes += Buffer.byteLength(text);
     evidence.push(text);
   };
@@ -86,35 +93,56 @@ Recent retained finding keys (not new evidence): ${JSON.stringify(input.findings
     ],
   };
   const ask = async (request: ModelRequest) => {
-    if (!input.current()) throw new ResearchBatchError("not_started");
-    let unsettledTool = false;
+    if (!current()) throw new ResearchBatchError("not_started");
+    let pendingTools = 0;
+    let unknownTool = false;
+    const canStart = () => current() && !unknownTool;
     const invocation = beginModelReply(
       input.model,
       request,
       input.signal,
-      input.current,
-      input.current,
+      current,
+      canStart,
       async (_kind, outcome) => {
-        unsettledTool = outcome === "started" || outcome === "unknown";
+        if (outcome === "started") {
+          if (!canStart()) throw new ResearchBatchError("not_started");
+          pendingTools++;
+        } else {
+          pendingTools = Math.max(0, pendingTools - 1);
+          unknownTool ||= outcome === "unknown";
+        }
       },
     );
     let reply: CompanionReply | undefined;
     let failed = false;
+    let failure: unknown;
     try {
       reply = await invocation.answer;
-    } catch {
+    } catch (error) {
       failed = true;
+      failure = error;
     }
     // Holding the caller's lifecycle and priority leases until settlement is
     // essential: an answer/timeout alone is not a retired provider process.
     const settlement = await invocation.settlement;
-    if (settlement === "unknown" || unsettledTool)
+    if (settlement === "unknown" || unknownTool || pendingTools > 0)
       throw new ResearchBatchError("unknown");
-    if (!input.current()) throw new ResearchBatchError("not_started");
-    if (failed)
+    if (!current()) throw new ResearchBatchError("not_started");
+    if (failed) {
+      // Only a known pre-dispatch host denial may pause without an unknown
+      // hold. Never reinterpret ambiguous IO from an error code alone.
+      if (
+        settlement === "not_started" &&
+        failure instanceof ModelError &&
+        !failure.retryable &&
+        (failure.code === "billing_unverified" ||
+          failure.code === "owner_spending_prohibited")
+      )
+        throw new ResearchBatchError(failure.code);
       throw new ResearchBatchError(
         settlement === "not_started" ? "not_started" : "invalid_result",
       );
+    }
     try {
       return parseReply(JSON.stringify(reply), [], request);
     } catch {
@@ -123,7 +151,7 @@ Recent retained finding keys (not new evidence): ${JSON.stringify(input.findings
   };
   let reply = await ask(request);
   if (reply.webSearch) {
-    if (!input.webSearch?.available || !input.current())
+    if (!input.webSearch?.available || !current())
       throw new ResearchBatchError("not_started");
     const result = await input.webSearch.search(reply.webSearch, input.signal);
     if (result.status !== "ready")
@@ -139,6 +167,7 @@ Recent retained finding keys (not new evidence): ${JSON.stringify(input.findings
       system: `${request.system}\nNo further tools this batch. Public search evidence (snippets, not full pages): ${text}`,
     });
   }
+  if (!current()) throw new ResearchBatchError("not_started");
   let batch: z.infer<typeof batchSchema>;
   try {
     batch = batchSchema.parse(JSON.parse(reply.text));

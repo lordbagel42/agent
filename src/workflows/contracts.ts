@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { EffectOutcome } from "../capabilities/contracts.js";
 import type { MessageEvent } from "../core/contracts.js";
 import type { Json } from "../tools/broker.js";
 
@@ -34,6 +35,16 @@ export const workflowCommandSchema = z
   );
 export type WorkflowCommand = z.infer<typeof workflowCommandSchema>;
 
+/** Effect accounting is independent of whether its result may still publish. */
+export class WorkflowToolError extends Error {
+  constructor(
+    readonly outcome: Exclude<EffectOutcome, "succeeded">,
+    readonly unsettled = false,
+  ) {
+    super(`workflow_tool_${outcome}`);
+  }
+}
+
 export interface WorkflowTool {
   description: string;
   schema: z.ZodType;
@@ -43,6 +54,8 @@ export interface WorkflowTool {
       source: MessageEvent;
       operationId: string;
       signal: AbortSignal;
+      /** Same-owner synchronous fence. Check after preparation awaits, directly
+       * before dispatch; never serialize it or replace it with a current RPC. */
       current(): boolean;
       /** Host-selected workflow inputs/results, materialized only for effects. */
       evidence(): string;

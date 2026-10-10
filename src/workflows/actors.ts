@@ -6,7 +6,11 @@ import type { MessageEvent } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import type { Dependencies } from "../runtime/registry.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
-import { WORKFLOW_HELP, workflowCommandSchema } from "./contracts.js";
+import {
+  WORKFLOW_HELP,
+  WorkflowToolError,
+  workflowCommandSchema,
+} from "./contracts.js";
 import {
   type Json,
   jsonValue,
@@ -45,7 +49,7 @@ type Status =
   | "revoked";
 interface Receipt {
   signature: string;
-  status: "started" | "completed" | "unknown";
+  status: "started" | "completed" | "not_started" | "failed" | "unknown";
   value?: Json;
 }
 interface RunState {
@@ -220,7 +224,12 @@ export function createWorkflowRunActor(deps: Dependencies) {
             c.state.spec.input = null;
             c.state.spec.origin.text = "";
           }
-          c.state.operations = {};
+          // Forget payloads, not no-replay evidence. Only the original raw
+          // callback may later settle a started/unknown operation.
+          for (const receipt of Object.values(c.state.operations)) {
+            if (receipt.status === "started") receipt.status = "unknown";
+            delete receipt.value;
+          }
           c.state.consumed = {};
           delete c.state.result;
         } else if (!terminal(c.state.status)) c.state.status = "cancelled";
@@ -301,18 +310,21 @@ export function createWorkflowRunActor(deps: Dependencies) {
               run: async (): Promise<Receipt> => {
                 requireCurrent();
                 const previous = state.operations[key];
-                if (previous)
-                  return previous.status === "started"
-                    ? { ...previous, status: "unknown" }
-                    : previous;
+                if (previous) {
+                  if (previous.status === "started") {
+                    previous.status = "unknown";
+                    await binding.persist();
+                  }
+                  return previous;
+                }
                 const release = await deps.lifecycle?.enter(ctx.abortSignal);
                 try {
                   requireCurrent();
                   state.operations[key] = { signature, status: "started" };
                   await binding.persist();
-                  requireCurrent();
                   let next: Receipt;
                   try {
+                    if (!usable()) throw new WorkflowToolError("not_started");
                     const value = await withSpan(
                       "june.workflow.tool",
                       {
@@ -324,6 +336,8 @@ export function createWorkflowRunActor(deps: Dependencies) {
                           : "other",
                       },
                       async (span) => {
+                        if (!usable())
+                          throw new WorkflowToolError("not_started");
                         const value = jsonValue(
                           await tool.execute(args, {
                             source: spec.origin,
@@ -339,21 +353,29 @@ export function createWorkflowRunActor(deps: Dependencies) {
                               }),
                           }),
                         );
-                        span.setAttribute(
-                          "june.outcome",
-                          usable() ? "completed" : "unknown",
-                        );
+                        span.setAttribute("june.outcome", "completed");
                         return value;
                       },
                     );
-                    next = usable()
-                      ? { signature, status: "completed", value }
-                      : { signature, status: "unknown" };
-                  } catch {
-                    next = { signature, status: "unknown" };
+                    // Stale publication is forbidden, but it cannot rewrite a
+                    // confirmed effect as unknown or undo a message already sent.
+                    next = {
+                      signature,
+                      status: "completed",
+                      ...(usable() ? { value } : {}),
+                    };
+                  } catch (error) {
+                    next = {
+                      signature,
+                      status:
+                        error instanceof WorkflowToolError
+                          ? error.outcome
+                          : "unknown",
+                    };
+                    if (error instanceof WorkflowToolError && error.unsettled)
+                      deps.lifecycle?.fail();
                   }
-                  if (state.status !== "revoked" && current(deps, spec))
-                    state.operations[key] = next;
+                  state.operations[key] = next;
                   await binding.persist();
                   return next;
                 } finally {
@@ -366,8 +388,11 @@ export function createWorkflowRunActor(deps: Dependencies) {
           if (receipt.signature !== signature)
             throw new Error("workflow_history_changed");
           if (receipt.status !== "completed") {
-            state.status = "needs_review";
-            throw new Error("workflow_tool_result_unknown");
+            state.status =
+              receipt.status === "unknown" || receipt.status === "started"
+                ? "needs_review"
+                : "failed";
+            throw new Error(`workflow_tool_${receipt.status}`);
           }
           return receipt.value ?? null;
         };
@@ -456,18 +481,26 @@ export function createWorkflowRunActor(deps: Dependencies) {
                       const previous = state.consumed[body.id];
                       // Repair a crash after the actor save but before this
                       // step's journal commit without dropping the signal.
-                      state.consumed[body.id] ??= {
-                        wait: operation.name,
-                        value: body.value,
-                      };
-                      await binding.persist();
+                      // A selected signal may resume after revoke cleared the
+                      // payload; never restore it from the old queue snapshot.
+                      if (usable()) {
+                        state.consumed[body.id] ??= {
+                          wait: operation.name,
+                          value: body.value,
+                        };
+                        await binding.persist();
+                      }
                       // RivetKit 2.3.21's workflow completion fallback is an
                       // incarnation-local callback map. Delete durably too.
                       await binding.complete(message.id, message.name);
                       return {
                         duplicate:
-                          !!previous && previous.wait !== operation.name,
-                        value: previous?.value ?? body.value,
+                          usable() &&
+                          !!previous &&
+                          previous.wait !== operation.name,
+                        value: usable()
+                          ? (previous?.value ?? body.value)
+                          : null,
                       };
                     });
                     // Also clear native workflow pending-completion bookkeeping;

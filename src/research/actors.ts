@@ -48,6 +48,8 @@ type Status =
 interface State {
   spec: Spec | null;
   status: Status;
+  /** Missing on legacy actors; generation zero is their existing local intent. */
+  intentVersion?: number;
   phase: "idle" | "started";
   reason: string;
   nextAt: number;
@@ -82,6 +84,8 @@ const current = (deps: Dependencies, spec: Spec) =>
       : !!deps.memory && !deps.memory.store.isDeleted(id),
   );
 const revoke = (state: State) => {
+  if (state.status !== "revoked")
+    state.intentVersion = (state.intentVersion ?? 0) + 1;
   state.status = "revoked";
   state.spec = null;
   state.checkpoint = "";
@@ -167,8 +171,8 @@ export function createResearchSessionActor(
         if (c.key[0] !== deps.owner.id) throw new Error("research_denied");
         if (!c.state.spec || !current(deps, c.state.spec)) {
           revoke(c.state);
-          c.vars.controller?.abort();
           await c.vars.persist();
+          c.vars.controller?.abort();
           return { status: "revoked" };
         }
         if (metadata) return summary(c.state);
@@ -216,10 +220,13 @@ export function createResearchSessionActor(
           } else {
             if (action === "stop") c.state.status = "stopped";
             else if (c.state.status === "active") c.state.status = "paused";
-            c.vars.controller?.abort();
           }
+          // Fence this incarnation synchronously, before the persistence await.
+          // A quick pause/resume must not revive an older waiting batch.
+          c.state.intentVersion = (c.state.intentVersion ?? 0) + 1;
           if (c.state.commands.length < 512) c.state.commands.push(commandId);
           await c.vars.persist();
+          if (action !== "resume") c.vars.controller?.abort();
           await c.queue.send("wake", null);
           return summary(c.state);
         } finally {
@@ -229,8 +236,8 @@ export function createResearchSessionActor(
       async invalidate(c, cutoff: number) {
         if (c.state.spec && c.state.spec.deletionRevision >= cutoff) return;
         revoke(c.state);
-        c.vars.controller?.abort();
         await c.vars.persist();
+        c.vars.controller?.abort();
         await c.queue.send("wake", null);
       },
     },
@@ -295,10 +302,12 @@ export function createResearchSessionActor(
                 AbortSignal.timeout(180_000),
                 ...(sourceWatch ? [sourceWatch.signal] : []),
               ]);
+              const intentVersion = state.intentVersion ?? 0;
               const usable = () =>
                 !signal.aborted &&
                 !!deps.research &&
                 state.status === "active" &&
+                (state.intentVersion ?? 0) === intentVersion &&
                 state.spec !== null &&
                 current(deps, spec);
               let releasePriority: (() => void) | undefined;
@@ -380,6 +389,16 @@ export function createResearchSessionActor(
                 if (uncertain) deps.lifecycle?.fail();
                 if (state.spec && current(deps, spec)) {
                   if (
+                    error instanceof ResearchBatchError &&
+                    (error.reason === "billing_unverified" ||
+                      error.reason === "owner_spending_prohibited")
+                  ) {
+                    if (usable()) {
+                      state.status = "paused";
+                      state.reason = error.reason;
+                    }
+                    state.phase = "idle";
+                  } else if (
                     error instanceof ResearchBatchError &&
                     error.reason === "not_started"
                   ) {
