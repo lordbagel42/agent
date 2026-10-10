@@ -735,13 +735,7 @@ async function main() {
           !signal?.aborted &&
           !(
             error instanceof ModelError &&
-            [
-              "cancelled",
-              "provider_busy",
-              // Policy decisions need owner evidence, not automatic code repair.
-              "billing_unverified",
-              "owner_spending_prohibited",
-            ].includes(error.code)
+            ["cancelled", "provider_busy"].includes(error.code)
           )
         )
           void automaticRepairs.report("model");

@@ -28,27 +28,28 @@ merely because this plan names them.
 
 ## Owner policy override — 10 October 2026
 
-Raygen authorized unlimited tokens for existing authorized subscription/included
-inference, including useful background work. Do not introduce token quotas,
-inference dollar admission caps or missing-price/D3 blocks on those included calls. Keep
-honest usage analytics (unknown is not zero), actual provider rate limits/backoff,
-bounded concurrency, cancellation/recovery fences and foreground responsiveness;
-do not create purposeless busy loops.
+Raygen clarified at 13:47:13 UTC that the restriction concerns autonomous
+purchases, such as ordering DoorDash, not limits on June's built-in tools.
+Configured inference and built-in tools, including TinyFish, Tavily and E2B,
+may operate under their existing grants without a funding classification,
+account-by-account audit or no-charge attestation. Remove the newly introduced
+billing denials rather than replacing them with another billing limit. Useful
+background inference remains uncapped; keep honest usage analytics (unknown is
+not zero), actual provider quotas/rate limits/backoff, bounded concurrency,
+cancellation/recovery fences and foreground responsiveness. Do not create
+purposeless busy loops.
 
-Raygen's later instruction prohibits spending his money now, including through
-Stripe Link. Future owner-funded transactions require Stripe Link **and fresh
-explicit authorization**; Link login/availability is not approval. No alternate
-cards, direct charges, top-ups, paid tool/compute provisioning, paid fallback,
-purchases or financial commitments. Do not buy quota or assume separately metered
-API calls are free: surface billing ambiguity before incurring it. Funding must
-be classified by the host, not a model-selected “inference” label. June-earned
-funds are only a possible future policy, not authorization to earn/transact/spend
-or relabel owner credits. No production `budgets.sqlite` schema is approved.
-These are requirements, not a claim that all host spending paths enforce them;
-each affected adapter needs its own denied-effect evidence without real charges.
+June must not autonomously place purchases or orders, transfer money, buy quota
+or enter new financial commitments. Existing configured tool/model use is not
+such a purchase, even when the provider meters usage. This correction supplies
+no transaction authorization, new account enrollment or expanded permissions.
+Future owner-funded transactions still require fresh explicit authorization and
+the existing approved payment route; a saved payment method is not consent.
+No production `budgets.sqlite` schema is approved.
 
 This override governs every K4/F013/P0/D3 reference and downstream dependency in
-this plan. The historical research report is unchanged: its model-spend-cap
+this plan and supersedes the earlier overbroad funding/attestation requirements.
+The historical research report is unchanged: its model-spend-cap
 recommendations are research findings, not current implementation requirements.
 
 ### June's self-development authorization — 13:04:23 UTC
@@ -63,10 +64,10 @@ values cannot change host permissions or authorize effects. The existing Mind
 owner retains the single Mind/skill-store implementation; S06/S08/S13 remain
 queued rather than creating competing writers or stores.
 
-Primary/deep, Mind's separate general provider, and the new default Codex sentinel
-route (gpt-6-astra/max using primary auth/home) still require exact-route billing
-attestation. Self-development/shipping authorization and subscription fixtures
-are not that evidence. No new numerical quota or production budget database follows.
+Primary/deep, Mind's separate general provider, and the default Codex sentinel
+route may use their configured model/account routes under existing permissions.
+The former exact-route billing-attestation prerequisite is withdrawn, not deferred.
+No new numerical quota, billing admission limit or production budget database follows.
 This records the owner's decision, not publication, activation or feature proof.
 
 ## Global constraints and definition of done
@@ -74,16 +75,17 @@ This records the owner's decision, not publication, activation or feature proof.
 - Preserve the report's priorities, dependencies, qualifications, granular
   coverage register and entire **Do not copy** exclusion list. F001, F002, F003,
   F007, F008, F010 and F013 are the seven P0 gates, not seven optional projects.
-  F013 means truthful usage, safe resource handling for authorized included
-  inference, and denial of owner-funded spending. Monetary reservations confer no
-  authority; missing budgets must not block authorized included model work.
+  F013 means truthful usage and safe resource handling for configured inference
+  and built-in tools, not billing-based admission. Autonomous purchases, orders,
+  transfers and new financial commitments remain prohibited. Monetary reservations
+  confer no authority; missing budgets must not block configured tools/model work.
 - New capabilities are enabled by default when their prerequisites and existing
   grants permit them. An explicit user disable stays disabled. Missing keys,
   accounts, eligible plans, processors, hardware or consent produce a discoverable
   blocked state with the exact missing prerequisite and a permitted resolution
   route. June may request enrollment/help; she may not impersonate OAuth consent,
   widen permissions, fish for OTPs, self-deploy or defeat a manual disable.
-- Enabled software is not standing permission to capture ambient audio, spend,
+- Enabled software is not standing permission to capture ambient audio, purchase,
   send messages, publish private data or install an imported template. Such
   actions remain gated. F058's unapproved imported instances stay inactive even
   though the template capability itself is enabled.
@@ -176,7 +178,7 @@ returned text can set trusted scope, credentials or role.
 | K1 / C02 | `CapabilityContext` integration: existing host-authenticated source/audience/worker ceiling, stable operation ID, abort signal, intent reference, deletion revision and `canStartAction`/`canDeliver` checks. | All streams. C02 wires current-ceiling intersection into every new dispatch; no model-selected principal, role or operation ID. Preserve terminal/report-only outcomes and old action paths. |
 | K2 / C01 → S02 | Source-bound `IntentPort.inspect/current/begin/settle/stop`, intent `{id, version}` and terminal effect outcome vocabulary; `AttentionPort.decide` returns deliver/suppress/defer plus reason/deadline; deterministic `TimePort.preview`. | Existing owners durably claim first admission before dispatch; lost acknowledgments and unknown receipts never grant replay. Async `begin/current` do not replace the owner's synchronous fence immediately after preparation and before dispatch. C02 owns root worker hooks; S02/S14/S19 own their durable consumers, not a new journal. Settle original outcomes even after intent changes; terminal receipts remain immutable and unknowns held. Stop distinguishes fenced from fully settled, never undone. |
 | K3 / C01 → S03 | `PolicyPort.admit/recheck/revoke/inspect` binds source, account, audience, operation, destination, artifact digest and expiry. Credential use is a one-use host callback, never a JSON result. | All effectful streams. Adapt existing broker/connection receipts; do not replace legacy grants or reinterpret old unknowns. S03 owns enrollment/revocation and processor/entitlement metadata. |
-| K4 / C01 → S04 | Inert monetary `BudgetPort.reserve/settle/inspect`: stable operation ID, immutable host scope/task/price policy, integer currency micro-units, maximum cost, category and period. First reservation differs from an existing held/settled operation; outcomes distinguish known charge, confirmed no-charge and unknown. | Owner-funded spending is prohibited now, even through Link; a reservation is never payment authorization. Included authorized inference stays uncapped; metered/ambiguous billing must not bypass the prohibition by a model-selected label. Future owner-funded spending needs Link and fresh explicit authorization. Unknown keeps its hold, never a new attempt. No production budget-store schema is approved. |
+| K4 / C01 → S04 | Inert future-transaction `BudgetPort.reserve/settle/inspect`: stable operation ID, immutable host scope/task/price policy, integer currency micro-units, maximum cost, category and period. First reservation differs from an existing held/settled operation; outcomes distinguish known charge, confirmed no-charge and unknown. | Never an admission gate for configured inference or built-in tools; those require no billing classification or no-charge attestation. Autonomous purchases/orders/transfers/new financial commitments remain prohibited, and a reservation is never transaction authorization. Unknown transaction outcomes keep their hold, never a new attempt. No production budget-store schema is approved. |
 | K5 / C01 → S06 | `EvidencePort` scoped source/reference operations plus `DeletionParticipant.preview/apply/status`; derivative owners register source IDs and deletion revision. | S06 integrates with the existing ledger and tombstones. S07/S20/S22/S27 implement their own deletion participant; no cross-scope query then post-filter. Registration does not start a new retention policy. |
 | K6 / C01 → S20 | `FilePort.ingress/read/deliver/forget`: opaque file reference with hash, size, media type, source/audience, expiry and derivative provenance; bounded stream access in host code. | Documents, audio, media, mail, apps and clients. No raw local path, bearer URL or arbitrary URL fetch in model payloads. S20 owns quotas, transfer settlement and private delivery. |
 | K7 / C01 → S01/S05 | `CapabilityStatus` separates implemented, host-integrated, June-callable, enrolled, enabled, ready and live-verified; each is yes/no/unknown with revision/time/scope. `TaskView` projects owners/receipts, not a second job store. | S01 supplies readiness; S05 supplies lifecycle/audit/value projection. Prerequisite records name blocker, resolver (June/owner/operator), safe next action and evidence freshness. Never include secret values. |
@@ -357,8 +359,8 @@ through C01; K1/K8 runtime wiring through C02; K2–K7 through their named provi
 - **Owned paths:** `src/policy/` (new), `src/credentials/`,
   `src/tools/{broker,connections,routes}.ts`, `src/core/{routing,private-input}.ts`,
   `src/console/{connections,connection-oauth}.ts`, `src/tools/*-oauth.ts`, `src/links/`.
-  Narrow 10 October policy lease: `src/tools/web-search.ts` for S04 host funding
-  enforcement of the existing Tavily adapter; no provider replacement/enrollment.
+  Narrow 10 October policy lease: `src/tools/web-search.ts` to remove the newly
+  introduced Tavily/TinyFish funding denial; no provider replacement/enrollment.
 - **Brief:** extend existing grants, exact artifacts, credential custody and
   disconnect/revocation; inventory processors/entitlements and enforce untrusted
   content barriers. Later add exact one-use credential-provider/2FA handoff.
@@ -383,27 +385,29 @@ through C01; K1/K8 runtime wiring through C02; K2–K7 through their named provi
   new provider adapter modules. C01 owns their root configuration and schema wiring.
 - **Brief:** truthful model-usage accounting and bounded resource/backpressure
   first, then measured task-class routing/cache efficiency and compatible providers.
-  Authorized included/subscription model use, including useful background work,
-  is uncapped. Owner-funded spending is prohibited now, including Link; metered
-  or ambiguous billing must be classified before a request incurs charges.
+  Configured model use, including useful background work, is uncapped. Configured
+  inference and built-in tools do not require billing classification or no-charge
+  attestation. Autonomous purchases/orders/transfers/new financial commitments
+  remain prohibited; ordinary configured tool use is not such a transaction.
   Future monetary reservations need separate policy and storage approval.
-  No invoice accuracy claims, silent paid fallback, pooled-account terms evasion,
-  context deletion disguised as compaction or fresh retry of an unknown paid call.
+  No invoice accuracy claims, unapproved provider enrollment, pooled-account terms
+  evasion, context deletion disguised as compaction or blind retry of unknown IO.
 - **Contracts/deps:** provides K4 and normalized provider readiness/usage; consumes
   F001/F002, then K3 privacy/entitlement and S05 task views. S19 owns idle VM
   implementation; C02 owns prompt/roster optimizations under K1/K8.
-- **Acceptance:** authorized included inference proceeds without token quotas,
-  dollar caps or missing-price blocks; unknown usage/cost stays unknown rather than
+- **Acceptance:** configured inference and built-in tools proceed without token
+  quotas, dollar caps, billing classifications or no-charge attestations;
+  unknown usage/cost stays unknown rather than
   zero. Actual provider backoff, bounded concurrency, cancellation and foreground
   responsiveness still apply. Measure prompt/latency/cost before/after through real
-  provider paths without spending. Denied owner-funded/ambiguous requests must
-  reach no external effect. For future authorized spending, competing reservations
+  provider paths with injected non-spending transports for billing-correction proof.
+  Preserve existing permission and privacy denials. For future authorized transactions, competing reservations
   cannot over-admit; only first admission can dispatch, confirmed no-charge releases
   and unknown holds. Global prompt checks and Oracle cover fallback/state changes.
-- **Decisions:** D3 prohibits owner-funded spending now; future authorization must
-  use Link. It does not cap included inference or useful background work. D4/D6
-  still gate new processors/accounts/subscription adapters. No paid fallback or
-  durable budget-store migration is implied by the unlimited-model policy.
+- **Decisions:** D3 prohibits autonomous purchases/orders/transfers/new financial
+  commitments, not configured tools or inference. D4/D6 still gate new processors,
+  accounts and subscription adapters. No new transaction authority or durable
+  budget-store migration is implied by the unlimited-model policy.
 
 ### S05 — task views, audit and work coordination
 
@@ -887,9 +891,9 @@ floor before **expanding** authority or retention. An entry spanning waves is a
 deliberate read/preview first, consequential action later, not an omitted feature.
 
 Every F013 dependency below inherits the owner override: it requires honest
-usage/resource behavior for included inference, not a model cap, price estimate
-or new budget database. Owner-funded spending stays prohibited; separately
-metered/ambiguous requests must not be mislabeled included inference.
+usage/resource behavior for configured inference and built-in tools, not a model
+cap, price estimate, billing attestation or new budget database. Autonomous
+purchases/orders/transfers/new financial commitments remain prohibited.
 
 | Feature | Primary | Wave | Feature prerequisites |
 | --- | --- | --- | --- |
@@ -1028,7 +1032,7 @@ answers or credentials into Git. A decision can name a private policy reference.
 | --- | --- | --- |
 | D1 | Three real chores, primary channel, single-owner versus team success | Voice capture → list, inbox/calendar brief, reviewed follow-up; Slack-first single owner. Gates pilot definition in S10/S12/S13/S14/S16/S26, all new transport choice in S15, and S24 tenancy. Does not block P0 hardening. |
 | D2 | Standing authority and exact-approval/forbidden actions | Preserve existing grants; new accounts start read-only/drafts, then narrow recipients/resources/effects. Gates new S03 grants, S10 send/triage, S11 sharing, S12 writes, S17 browser effects, S23 panel actions, S24 service identities and S25 transactions. |
-| D3 | Current no-spend policy; future Link-only authorization; latency quality floor | Settled: owner-funded spending prohibited now, including Link. Future spending requires Link and fresh explicit authorization; no other payment route, top-up, paid provisioning or fallback. Authorized included/subscription inference remains token-uncapped; surface separately metered/ambiguous billing before incurring charges. June-earned funds are not an authorized exception. No budget database approved. Keep actual rate limits, bounded concurrency, honest analytics and foreground responsiveness. |
+| D3 | Transaction authority versus configured tool use; latency quality floor | Corrected at 13:47:13 UTC: prohibit autonomous purchases/orders/transfers/new financial commitments, such as DoorDash. Configured inference and built-in tools (including TinyFish/Tavily/E2B) are permitted under existing grants, without billing classification, account audits or no-charge attestation. No new account, transaction authority or budget database is approved. Keep actual provider quotas/rate limits, bounded concurrency, honest analytics, privacy, cancellation and foreground responsiveness. |
 | D4 | Source retention, processors/regions/training policy, deletion and backup limits | Selected sources, minimal retention, no ambient capture, approved processors, tombstones. Gates new retained data/embeddings/voice/financial/health inputs in S06/S07/S10/S16/S20/S22/S27/S28 and provider choices in S03/S04. |
 | D5 | Trusted execution location, personal-device reach, API versus browser fallback | Verify existing isolated host and recovery first; no personal desktop by default. Gates changed S01/S19 infrastructure, S17 browser pilot, S18 device implementation, S21 parser backend, S27 off-host restore target and concierge execution route. |
 | D6 | Exact provider accounts, OAuth scopes, entitlements and first non-Slack transport | Select Gmail/Calendar scopes explicitly; preserve Slack manifest restrictions; credential values use existing private enrollment. Gates provider-specific enrollment/implementation in S03/S04/S09/S10/S12/S15/S16/S22/S25, and selected knowledge/financial sources in S07/S25. |
@@ -1113,8 +1117,9 @@ unverified marketing claim or silently assume all named catalog services work.
 
 - **Safety exit (wave 1):** dated F001 ledger; stopped/revoked work cannot start
   another effect; ambiguous effects stay held; quiet policy suppresses duplicate
-  noise; owner-funded spending is denied at actual effect boundaries while
-  authorized included inference remains uncapped; hostile source/recipient substitution
+  noise; configured tools/inference work without billing-attestation gates while
+  autonomous purchases/orders/transfers/new financial commitments remain prohibited;
+  hostile source/recipient substitution
   fails; all actual prompt paths carry correct knowledge and no extra authority.
 - **Day-assistant exit (wave 2):** after D1–D7 and export/restore, run the report's
   proposed two-week owner pilot: real voice note → one task → sourced brief/prep.

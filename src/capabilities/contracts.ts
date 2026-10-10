@@ -252,11 +252,11 @@ export const budgetAdmissionSchema = z.discriminatedUnion("status", [
   }),
 ]);
 export type BudgetAdmission = z.infer<typeof budgetAdmissionSchema>;
-/** Monetary effects only, never token quotas for authorized included inference.
- * Owner-funded spending is currently prohibited, even through Stripe Link;
- * reservations cannot authorize it. Future payment needs Link plus fresh explicit
- * authorization. The host classifies funding; metered/ambiguous billing cannot be
- * relabeled included inference. No production reservation store is approved. */
+/** Future financial transactions only, never admission for configured inference
+ * or built-in tools. Those need no funding classification/no-charge attestation.
+ * Autonomous purchases, orders, transfers and new financial commitments remain
+ * prohibited; a reservation is not transaction authorization. This contract is
+ * inert and no production reservation store is approved. */
 export interface BudgetPort {
   /** Only a first reserved result can support one independently authorized
    * dispatch. Repeated/held/settled operations return existing, never a new attempt.
