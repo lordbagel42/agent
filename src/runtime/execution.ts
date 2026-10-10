@@ -51,10 +51,6 @@ const SEARCH_FAILURES: Record<
   string
 > = {
   not_configured: "web search is not configured on this host",
-  owner_spending_prohibited:
-    "owner-funded spending is prohibited, including Stripe Link; no paid fallback or quota purchase is permitted",
-  billing_unverified:
-    "the host has not verified that this search account cannot incur a charge; no request was sent and credentials or claimed free credits do not resolve billing authority",
   authorization_required: "the search provider rejected June's credential",
   rate_limited: "the search provider rate-limited the request",
   quota_exceeded: "the search provider's plan or credit quota is exhausted",
