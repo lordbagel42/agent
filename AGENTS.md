@@ -2,6 +2,11 @@
 
 ## Session startup
 
+- Unless running in an Amp orb, first create a new Git worktree for the task
+  from the latest remote code, rather than working in an existing checkout.
+  Fetch the remote, then add the worktree from the upstream branch (for example,
+  `git worktree add -b <branch> <path> origin/main`). Do all work inside that
+  worktree and leave other checkouts and worktrees untouched.
 - Always pull the latest code from the current branch's configured remote
   upstream at the start of every session, before beginning work. Use
   `git pull --ff-only` to avoid implicit merge commits or rebases.
