@@ -409,11 +409,18 @@ const schema = z
       })
       .optional(),
     webSearch: z
-      .strictObject({
-        provider: z.literal("tavily"),
-        apiKeyEnv: envName.default("TAVILY_API_KEY"),
-        timeoutMs: z.number().int().min(1000).max(15000).default(10000),
-      })
+      .discriminatedUnion("provider", [
+        z.strictObject({
+          provider: z.literal("tavily"),
+          apiKeyEnv: envName.default("TAVILY_API_KEY"),
+          timeoutMs: z.number().int().min(1000).max(15000).default(10000),
+        }),
+        z.strictObject({
+          provider: z.literal("tinyfish"),
+          apiKeyEnv: envName.default("TINYFISH_API_KEY"),
+          timeoutMs: z.number().int().min(1000).max(15000).default(10000),
+        }),
+      ])
       .optional(),
     e2b: z
       .strictObject({ apiKeyEnv: envName.default("E2B_API_KEY") })

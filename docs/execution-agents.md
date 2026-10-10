@@ -369,7 +369,8 @@ all prompt paths; private goals and findings do not cross scopes automatically.
 ```
 
 Only exact selected connection IDs and already enabled `read` contracts
-are available to each batch. Tavily or another public search/extraction MCP can
+are available to each batch. Tavily, TinyFish (`https://agent.tinyfish.ai/mcp`)
+or another public search/extraction MCP can
 use this existing connection mechanism; this feature does not enroll providers,
 grant permissions, or claim a particular live connection exists. Built-in Slack,
 GitHub and Amp connections and their known endpoint aliases are excluded. Owner

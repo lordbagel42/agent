@@ -604,13 +604,20 @@ proposal inspection, and the workflow text-model tool. MCP provider calls took
 establish readiness, not a live model cutover or exact production-context replay.
 
 Enable replaceable public search with
-`"webSearch": {"provider":"tavily","apiKeyEnv":"TAVILY_API_KEY"}` and load the
+`"webSearch": {"provider":"tinyfish","apiKeyEnv":"TINYFISH_API_KEY"}` (preferred)
+or `"webSearch": {"provider":"tavily","apiKeyEnv":"TAVILY_API_KEY"}`, and load the
 credential through the service's private environment. Missing credentials mean
 unavailable, not failed startup. One explicit public query permits one synthesis
 pass with further searches/escalation disabled. Queries must not contain private
 Slack/history/memory; result snippets are untrusted evidence, not instructions.
-Tavily is temporary: Raygen wants a free or self-hosted replacement. No live
-Tavily request is implied by configuration or offline verification.
+
+[TinyFish Search](https://docs.tinyfish.ai/search-api/reference) is free up to a
+daily allowance (reset 00:00 UTC) and limited to 30 requests/minute per key.
+Create a key at <https://agent.tinyfish.ai/api-keys>. June sends only the query
+(never TinyFish's optional `purpose` field) and maps 402 to `quota_exceeded`,
+401 to `authorization_required` and 429 to `rate_limited`. Tavily is temporary
+and paid: Raygen wants a free or self-hosted replacement. No live provider
+request is implied by configuration or offline verification.
 
 ### Explicit Jev observations
 

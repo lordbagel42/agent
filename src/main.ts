@@ -135,7 +135,7 @@ import { createEmojiSearch } from "./tools/emoji-search.js";
 import { createGitHubOAuth } from "./tools/github-oauth.js";
 import { createPuckConsoleOAuth } from "./tools/puck-oauth.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
-import { createTavilyWebSearchProvider } from "./tools/web-search.js";
+import { createWebSearchProvider } from "./tools/web-search.js";
 import { createWorkflowTools } from "./workflows/tools.js";
 
 let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
@@ -817,7 +817,8 @@ async function main() {
   startupStage = "web search configuration";
   const webSearch =
     config.webSearch &&
-    createTavilyWebSearchProvider({
+    createWebSearchProvider({
+      provider: config.webSearch.provider,
       apiKey: process.env[config.webSearch.apiKeyEnv],
       timeoutMs: config.webSearch.timeoutMs,
     });
