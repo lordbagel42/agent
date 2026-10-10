@@ -202,12 +202,15 @@ export function createExecutionActor(
                 )
                 .digest("hex"))),
     ) &&
-    state.evidenceIds.every(
-      (id) =>
-        !!deps.memory &&
-        (id.startsWith("volatile-context:continuity:")
-          ? deps.continuity?.valid(id) === true
-          : !deps.memory.store.isDeleted(id)),
+    state.evidenceIds.every((id) =>
+      // Mind is independent of legacy evidence memory. This host-owned
+      // archive exclusion is not a retained source requiring that store.
+      id === "volatile-context:mind"
+        ? !!deps.mind
+        : !!deps.memory &&
+          (id.startsWith("volatile-context:continuity:")
+            ? deps.continuity?.valid(id) === true
+            : !deps.memory.store.isDeleted(id)),
     );
   const definition = actor({
     state: {
