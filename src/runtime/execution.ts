@@ -110,13 +110,27 @@ function executionFailure(error: unknown): {
     error instanceof Error && Object.hasOwn(HOST_FAILURES, error.message)
       ? HOST_FAILURES[error.message]
       : undefined;
-  return known
-    ? { code: known[0], detail: known[1] }
-    : {
-        code: "unclassified",
-        detail:
-          "an unclassified error occurred; the host could not identify its cause",
-      };
+  if (known) return { code: known[0], detail: known[1] };
+  // Only the host's own error class and first source frame, never the message:
+  // enough for an operator or repair agent to locate an unclassified failure.
+  const name =
+    error instanceof Error && /^[A-Za-z]{1,40}$/.test(error.name)
+      ? error.name
+      : "non-Error";
+  const frame =
+    error instanceof Error
+      ? (error.stack ?? "")
+          .split("\n")
+          .filter((line) => !line.includes("node_modules"))
+          .map((line) =>
+            /\/(src\/[\w./-]{1,160}\.(?:ts|js|mjs)):(\d{1,6})/.exec(line),
+          )
+          .find(Boolean)
+      : undefined;
+  return {
+    code: "unclassified",
+    detail: `an unclassified error occurred; the host could not identify its cause (host origin: ${name}${frame ? ` at ${frame[1]}:${frame[2]}` : ", no source frame"})`,
+  };
 }
 /** Rivet's native key transport splits commas; never use raw JSON as a segment. */
 export function executionKey(scope: readonly string[], id: string): string[] {
