@@ -390,16 +390,6 @@ export function createResearchSessionActor(
                 if (state.spec && current(deps, spec)) {
                   if (
                     error instanceof ResearchBatchError &&
-                    (error.reason === "billing_unverified" ||
-                      error.reason === "owner_spending_prohibited")
-                  ) {
-                    if (usable()) {
-                      state.status = "paused";
-                      state.reason = error.reason;
-                    }
-                    state.phase = "idle";
-                  } else if (
-                    error instanceof ResearchBatchError &&
                     error.reason === "not_started"
                   ) {
                     state.nextAt =
