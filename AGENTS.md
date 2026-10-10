@@ -114,6 +114,25 @@
   `src/diagnostics` by path. Do not delete or rename those without first
   updating the installed preflight policy.
 
+## Effect
+
+- June is migrating to Effect 4
+  (`docs/superpowers/specs/2026-10-10-effect-migration-design.md`). New code and
+  code you substantially change use Effect; leave untouched modules alone.
+- Most model knowledge is Effect 3. Read the version-matched guidance in
+  `node_modules/effect/AGENTS.md` and `node_modules/effect/ai-docs/src/` before
+  writing Effect code, and check signatures in `node_modules/effect/dist/*.d.ts`.
+  Do not use v3 APIs such as `Context.Tag`, `Effect.catchAll` or `@effect/platform`.
+- Services are `Context.Service` classes with a `layer`; reusable functions use
+  `Effect.fn("june.<area>.<operation>")`; errors are `Schema.TaggedError`;
+  validation is `Schema`.
+- Run Effect code from Rivet steps and legacy async code on the process runtime
+  (`src/effect/runtime.ts`), passing the step's `abortSignal`. Durable retries
+  stay Rivet steps; Effect `Schedule` retries only transient in-step failures
+  within the step's deadline.
+- New span names must be added to `src/telemetry/privacy.ts`; unlisted names are
+  recorded as `june.operation`.
+
 ## Slack app configuration
 
 - Never request the Slack OAuth scope `links:write`.

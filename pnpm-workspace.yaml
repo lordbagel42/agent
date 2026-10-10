@@ -1,6 +1,11 @@
 packages:
   - debug-site
   - sandboxes-site
+overrides:
+  # Effect packages release in lockstep; keep the transitive one on the same version.
+  "@effect/platform-node-shared": 4.0.2
+  # @ampcode/sdk asks for "latest", so any lockfile change would silently move it.
+  "@ampcode/cli": 0.0.1790683256-gc25f8e
 onlyBuiltDependencies:
   - esbuild
 patchedDependencies:

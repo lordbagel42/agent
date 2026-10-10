@@ -4,6 +4,10 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@effect/platform-node-shared': 4.0.2
+  '@ampcode/cli': 0.0.1790683256-gc25f8e
+
 patchedDependencies:
   '@ampcode/sdk@0.1.0-20260918210405-g81edbf0':
     hash: 64878c449c2f28bfdc27e759c52a052497b756299c2473db98b5b87a863ef9b3
@@ -31,6 +35,12 @@ importers:
       '@e2b/code-interpreter':
         specifier: 2.8.0
         version: 2.8.0
+      '@effect/opentelemetry':
+        specifier: 4.0.2
+        version: 4.0.2(@opentelemetry/api-logs@0.222.0)(@opentelemetry/api@1.9.1)(@opentelemetry/resources@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-logs@0.222.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-metrics@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/semantic-conventions@1.43.0)(effect@4.0.2)
+      '@effect/platform-node':
+        specifier: 4.0.2
+        version: 4.0.2(effect@4.0.2)(redis@6.3.0(@opentelemetry/api@1.9.1))
       '@excalidraw/excalidraw':
         specifier: 0.18.1
         version: 0.18.1(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -72,7 +82,7 @@ importers:
         version: 2.11.0(@opentelemetry/api@1.9.1)
       '@rivet-dev/dynamic-apps':
         specifier: 0.3.1
-        version: 0.3.1(patch_hash=2b5f27fea993a60c4bcd964bf65ce3ccafd75fa95867f83ceac3e6b8e5922c3c)(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.21.3)
+        version: 0.3.1(patch_hash=2b5f27fea993a60c4bcd964bf65ce3ccafd75fa95867f83ceac3e6b8e5922c3c)(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.22.0)
       '@rivetkit/engine-cli':
         specifier: 2.3.21
         version: 2.3.21
@@ -85,6 +95,9 @@ importers:
       cron-parser:
         specifier: 5.10.1
         version: 5.10.1
+      effect:
+        specifier: 4.0.2
+        version: 4.0.2
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
@@ -111,7 +124,7 @@ importers:
         version: 18.3.1(react@18.3.1)
       rivetkit:
         specifier: 2.3.21
-        version: 2.3.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(better-sqlite3@12.11.1)(ws@8.21.3)
+        version: 2.3.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(better-sqlite3@12.11.1)(ws@8.22.0)
       tar-stream:
         specifier: 3.2.1
         version: 3.2.1
@@ -122,6 +135,9 @@ importers:
       '@biomejs/biome':
         specifier: 2.5.14
         version: 2.5.14
+      '@effect/vitest':
+        specifier: 4.0.2
+        version: 4.0.2(effect@4.0.2)(vitest@5.0.2(@opentelemetry/api@1.9.1)(@types/node@24.19.0)(vite@8.3.2(@types/node@24.19.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.0
@@ -726,6 +742,57 @@ packages:
   '@e2b/code-interpreter@2.8.0':
     resolution: {integrity: sha512-tWFi8IJYV3V6jOVfQ8V5PkzockrYP+ndWB/jKiJvRATTmNAy8+S/7S+iSh2Lb2Hrul869G2adRiN2xW8peJTig==}
     engines: {node: '>=20.18.1 <21 || >=22'}
+
+  '@effect/opentelemetry@4.0.2':
+    resolution: {integrity: sha512-csJqUeoI89WkRz09PeX+BzCYCliLhVJNE+1D2GBgEvGU7J0kdTIxm8pnJLHvn2u0l0ItZOjYvc2gsWL6UI9LMg==}
+    engines: {node: '>=18.0.0'}
+    peerDependencies:
+      '@opentelemetry/api': '>=1.9.0 <2.0.0'
+      '@opentelemetry/api-logs': '>=0.203.0 <0.300.0'
+      '@opentelemetry/resources': '>=2.0.0 <3.0.0'
+      '@opentelemetry/sdk-logs': '>=0.203.0 <0.300.0'
+      '@opentelemetry/sdk-metrics': '>=2.0.0 <3.0.0'
+      '@opentelemetry/sdk-trace-base': '>=2.0.0 <3.0.0'
+      '@opentelemetry/sdk-trace-node': '>=2.0.0 <3.0.0'
+      '@opentelemetry/sdk-trace-web': '>=2.0.0 <3.0.0'
+      '@opentelemetry/semantic-conventions': '>=1.33.0 <2.0.0'
+      effect: ^4.0.2
+    peerDependenciesMeta:
+      '@opentelemetry/api':
+        optional: true
+      '@opentelemetry/api-logs':
+        optional: true
+      '@opentelemetry/resources':
+        optional: true
+      '@opentelemetry/sdk-logs':
+        optional: true
+      '@opentelemetry/sdk-metrics':
+        optional: true
+      '@opentelemetry/sdk-trace-base':
+        optional: true
+      '@opentelemetry/sdk-trace-node':
+        optional: true
+      '@opentelemetry/sdk-trace-web':
+        optional: true
+
+  '@effect/platform-node-shared@4.0.2':
+    resolution: {integrity: sha512-xn8aDw9p/QUPt1Yi0C3HUMcycT+MjHfAe19FDUDrUuzcwq0xxskkamVSqbdykF/Dsuus4aZTsCBZA/vkhHIfbQ==}
+    engines: {node: '>=18.0.0'}
+    peerDependencies:
+      effect: ^4.0.2
+
+  '@effect/platform-node@4.0.2':
+    resolution: {integrity: sha512-RWesXBQStnFHdD465gR5thFKgXO7FSyCKRZ56nWXB7PedNVzr8vV0nb/3MULLdri493sMz/b/pmGBTb6K8cBjQ==}
+    engines: {node: '>=18.0.0'}
+    peerDependencies:
+      effect: ^4.0.2
+      redis: '>=5.0.0 <7.0.0'
+
+  '@effect/vitest@4.0.2':
+    resolution: {integrity: sha512-Zb72nu7iUy3rNdBp9J1Xu5oUQGwJ8cOYsUwmYgujj88aqyvASRDjOS01SjlcPViqf77csduetKdCJTVndMNfzw==}
+    peerDependencies:
+      effect: ^4.0.2
+      vitest: '>=5.0.0 <6.0.0'
 
   '@esbuild/aix-ppc64@0.27.7':
     resolution: {integrity: sha512-EKX3Qwmhz1eMdEJokhALr0YiD0lhQNwDqkPYyPhiSwKrh7/4KRjQc04sZ8db+5DVVnZ1LmbNDI1uAMPEUBnQPg==}
@@ -1892,6 +1959,42 @@ packages:
   '@radix-ui/rect@1.1.0':
     resolution: {integrity: sha512-A9+lCBZoaMJlVKcRBz2YByCG+Cp2t6nAnMnNba+XiWxnj6r4JUFqfsgwocMBZU9LPtdxC6wB56ySYpc7LQIoJg==}
 
+  '@redis/bloom@6.3.0':
+    resolution: {integrity: sha512-NQ5poYpZr0jv6zazN1cy6JY5kIipKFZ3R9GTL4kOUTX3a9YAfY29U8bsE4lWhVQEM+G4V0BXVC57mubIdDijeA==}
+    engines: {node: '>= 20.0.0'}
+    peerDependencies:
+      '@redis/client': ^6.3.0
+
+  '@redis/client@6.3.0':
+    resolution: {integrity: sha512-fHrjwGCBvAANGi+TuRuwKi83sIOzgHr8eh+Uf48w3fSX7Hhrz174NrWqfJhAC2vnN0d/tfaZpdr6+o6JC3QHwg==}
+    engines: {node: '>= 20.0.0'}
+    peerDependencies:
+      '@node-rs/xxhash': ^1.1.0
+      '@opentelemetry/api': '>=1 <2'
+    peerDependenciesMeta:
+      '@node-rs/xxhash':
+        optional: true
+      '@opentelemetry/api':
+        optional: true
+
+  '@redis/json@6.3.0':
+    resolution: {integrity: sha512-yt6vRfPBXtW/3qm53cF81TSQpLMjWdW4/2E9WQ2GgbvsKkuCKCFQIcMiKlil1ZMnezK+IQuS795xKU5psbaegw==}
+    engines: {node: '>= 20.0.0'}
+    peerDependencies:
+      '@redis/client': ^6.3.0
+
+  '@redis/search@6.3.0':
+    resolution: {integrity: sha512-RPXAZmKjZZG7Tm7m1w9keFdXzbL91PiSHQBfQRe9xwW40jNsTRbG0FwhIz4QlHPU4gKDAsCy8IQHj4yZl4H9rw==}
+    engines: {node: '>= 20.0.0'}
+    peerDependencies:
+      '@redis/client': ^6.3.0
+
+  '@redis/time-series@6.3.0':
+    resolution: {integrity: sha512-+fJOB8mN1z5WRakCJNh5lVdz1KqvHGSOistsKeitD24QsCtPwyRQXWC0iq6T/i/ubLE/YcguZqPm8F598MKk4A==}
+    engines: {node: '>= 20.0.0'}
+    peerDependencies:
+      '@redis/client': ^6.3.0
+
   '@rivet-dev/agent-os-core@0.1.1':
     resolution: {integrity: sha512-Uw5jr+gUXDY7TDUFqlypjGe1BD2KL9kTHPNo/f1iNS1R+l9IWuvT+FF/MXsLOEkc3fB06OPVu2ZvUuNwp9MpLQ==}
 
@@ -2955,6 +3058,9 @@ packages:
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
 
+  '@types/ws@8.18.2':
+    resolution: {integrity: sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==}
+
   '@types/yauzl@2.10.3':
     resolution: {integrity: sha512-oJoftv0LSuaDZE3Le4DbKX+KS9G36NzOeSap90UIK0yMA/NhKJhqlSGtNDORNRaIbQfzjXDrQa0ytJ6mNRGz/Q==}
 
@@ -3848,6 +3954,9 @@ packages:
 
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
+
+  effect@4.0.2:
+    resolution: {integrity: sha512-YeYnLqSFrL4+tCOXRrfNP03w8FILoF/wDl+ukraJAGzXrjcS383W7LAAvGBbLatEyktmLxRq+9xJinx7QzXW5A==}
 
   elliptic@6.6.1:
     resolution: {integrity: sha512-RaddvvMatK2LJHqFJ+YA4WysVN5Ita9E35botqIYspQ4TkRAlCicdzKOjlyv/1Za5RyTNn7di//eEV0uTAfe3g==}
@@ -5203,6 +5312,10 @@ packages:
     resolution: {integrity: sha512-57frrGM/OCTLqLOAh0mhVA9VBMHd+9U7Zb2THMGdBUoZVOtGbJzjxsYGDJ3A9AYYCP4hn6y1TVbaOfzWtm5GFg==}
     engines: {node: '>= 12.13.0'}
 
+  redis@6.3.0:
+    resolution: {integrity: sha512-XFQbPie1lGpKeUZ8ySYY43yLnQy/iIQtHNvIr/1XdaABpb96rUSdm3Mfl+98FEVbv9ZJIzINMno5s0Nh8E5LEw==}
+    engines: {node: '>= 20.0.0'}
+
   reflect-metadata@0.2.2:
     resolution: {integrity: sha512-urBwgfrvVP/eAyXx4hluJivBKzuEbSQs9rKWCrCkbSxNv8mxPcUZKeuoF3Uy4mJl3Lwprp6yy5/39VWigZ4K6Q==}
 
@@ -5664,6 +5777,10 @@ packages:
     resolution: {integrity: sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==}
     engines: {node: '>=22.19.0'}
 
+  undici@8.11.2:
+    resolution: {integrity: sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ==}
+    engines: {node: '>=22.19.0'}
+
   unpipe@1.0.0:
     resolution: {integrity: sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ==}
     engines: {node: '>= 0.8'}
@@ -5935,6 +6052,18 @@ packages:
       utf-8-validate:
         optional: true
 
+  ws@8.22.0:
+    resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   xtend@4.0.2:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
     engines: {node: '>=0.4'}
@@ -6057,11 +6186,11 @@ snapshots:
 
   '@agentos-software/opencode@0.2.7': {}
 
-  '@agentos-software/pi@0.2.7(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)':
+  '@agentos-software/pi@0.2.7(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)':
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.6.5)
-      '@mariozechner/pi-ai': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)
-      '@mariozechner/pi-coding-agent': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)
+      '@mariozechner/pi-ai': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)
+      '@mariozechner/pi-coding-agent': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
       - bufferutil
@@ -6516,6 +6645,42 @@ snapshots:
     dependencies:
       e2b: 2.51.0
 
+  '@effect/opentelemetry@4.0.2(@opentelemetry/api-logs@0.222.0)(@opentelemetry/api@1.9.1)(@opentelemetry/resources@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-logs@0.222.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-metrics@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.11.0(@opentelemetry/api@1.9.1))(@opentelemetry/semantic-conventions@1.43.0)(effect@4.0.2)':
+    dependencies:
+      '@opentelemetry/semantic-conventions': 1.43.0
+      effect: 4.0.2
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.1
+      '@opentelemetry/api-logs': 0.222.0
+      '@opentelemetry/resources': 2.11.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-logs': 0.222.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-metrics': 2.11.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-trace-base': 2.11.0(@opentelemetry/api@1.9.1)
+
+  '@effect/platform-node-shared@4.0.2(effect@4.0.2)':
+    dependencies:
+      '@types/ws': 8.18.2
+      effect: 4.0.2
+      ws: 8.22.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@effect/platform-node@4.0.2(effect@4.0.2)(redis@6.3.0(@opentelemetry/api@1.9.1))':
+    dependencies:
+      '@effect/platform-node-shared': 4.0.2(effect@4.0.2)
+      effect: 4.0.2
+      redis: 6.3.0(@opentelemetry/api@1.9.1)
+      undici: 8.11.2
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@effect/vitest@4.0.2(effect@4.0.2)(vitest@5.0.2(@opentelemetry/api@1.9.1)(@types/node@24.19.0)(vite@8.3.2(@types/node@24.19.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))':
+    dependencies:
+      effect: 4.0.2
+      vitest: 5.0.2(@opentelemetry/api@1.9.1)(@types/node@24.19.0)(vite@8.3.2(@types/node@24.19.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))
+
   '@esbuild/aix-ppc64@0.27.7':
     optional: true
 
@@ -6952,9 +7117,9 @@ snapshots:
       std-env: 3.10.0
       yoctocolors: 2.2.0
 
-  '@mariozechner/pi-agent-core@0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)':
+  '@mariozechner/pi-agent-core@0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)':
     dependencies:
-      '@mariozechner/pi-ai': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)
+      '@mariozechner/pi-ai': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
       - bufferutil
@@ -6963,7 +7128,7 @@ snapshots:
       - ws
       - zod
 
-  '@mariozechner/pi-ai@0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)':
+  '@mariozechner/pi-ai@0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)':
     dependencies:
       '@anthropic-ai/sdk': 0.73.0(zod@4.6.5)
       '@aws-sdk/client-bedrock-runtime': 3.1141.0
@@ -6973,7 +7138,7 @@ snapshots:
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       chalk: 5.6.2
-      openai: 6.26.0(ws@8.21.3)(zod@4.6.5)
+      openai: 6.26.0(ws@8.22.0)(zod@4.6.5)
       partial-json: 0.1.7
       proxy-agent: 6.5.0
       undici: 7.30.0
@@ -6986,11 +7151,11 @@ snapshots:
       - ws
       - zod
 
-  '@mariozechner/pi-coding-agent@0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)':
+  '@mariozechner/pi-coding-agent@0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)':
     dependencies:
       '@mariozechner/jiti': 2.6.5
-      '@mariozechner/pi-agent-core': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)
-      '@mariozechner/pi-ai': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)
+      '@mariozechner/pi-agent-core': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)
+      '@mariozechner/pi-ai': 0.60.0(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)
       '@mariozechner/pi-tui': 0.60.0
       '@silvia-odwyer/photon-node': 0.3.4
       chalk: 5.6.2
@@ -7613,7 +7778,27 @@ snapshots:
 
   '@radix-ui/rect@1.1.0': {}
 
-  '@rivet-dev/agent-os-core@0.1.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)':
+  '@redis/bloom@6.3.0(@redis/client@6.3.0(@opentelemetry/api@1.9.1))':
+    dependencies:
+      '@redis/client': 6.3.0(@opentelemetry/api@1.9.1)
+
+  '@redis/client@6.3.0(@opentelemetry/api@1.9.1)':
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.1
+
+  '@redis/json@6.3.0(@redis/client@6.3.0(@opentelemetry/api@1.9.1))':
+    dependencies:
+      '@redis/client': 6.3.0(@opentelemetry/api@1.9.1)
+
+  '@redis/search@6.3.0(@redis/client@6.3.0(@opentelemetry/api@1.9.1))':
+    dependencies:
+      '@redis/client': 6.3.0(@opentelemetry/api@1.9.1)
+
+  '@redis/time-series@6.3.0(@redis/client@6.3.0(@opentelemetry/api@1.9.1))':
+    dependencies:
+      '@redis/client': 6.3.0(@opentelemetry/api@1.9.1)
+
+  '@rivet-dev/agent-os-core@0.1.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)':
     dependencies:
       '@rivet-dev/agent-os-posix': 0.1.0
       '@rivet-dev/agent-os-python': 0.1.0
@@ -7622,7 +7807,7 @@ snapshots:
       '@secure-exec/v8': 0.2.1
       croner: 10.0.1
       long-timeout: 0.1.1
-      secure-exec: 0.2.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)
+      secure-exec: 0.2.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - '@modelcontextprotocol/sdk'
@@ -7641,7 +7826,7 @@ snapshots:
     dependencies:
       '@secure-exec/core': 0.2.1
 
-  '@rivet-dev/agentos-core@0.2.18(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)':
+  '@rivet-dev/agentos-core@0.2.18(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)':
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.6.5)
       '@agentos-software/claude-code': 0.2.7
@@ -7649,7 +7834,7 @@ snapshots:
       '@agentos-software/common': 0.2.18
       '@agentos-software/manifest': 0.2.18
       '@agentos-software/opencode': 0.2.7
-      '@agentos-software/pi': 0.2.7(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)
+      '@agentos-software/pi': 0.2.7(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)
       '@aws-sdk/client-s3': 3.1141.0
       '@rivet-dev/agentos-runtime-core': 0.2.18
       '@rivet-dev/agentos-sidecar': 0.2.18
@@ -7671,7 +7856,7 @@ snapshots:
       - utf-8-validate
       - ws
 
-  '@rivet-dev/agentos-core@0.2.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)':
+  '@rivet-dev/agentos-core@0.2.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)':
     dependencies:
       '@agentclientprotocol/sdk': 0.16.1(zod@4.6.5)
       '@agentos-software/claude-code': 0.2.7
@@ -7679,7 +7864,7 @@ snapshots:
       '@agentos-software/common': 0.2.21
       '@agentos-software/manifest': 0.2.21
       '@agentos-software/opencode': 0.2.7
-      '@agentos-software/pi': 0.2.7(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)(zod@4.6.5)
+      '@agentos-software/pi': 0.2.7(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)(zod@4.6.5)
       '@aws-sdk/client-s3': 3.1141.0
       '@rivet-dev/agentos-runtime-core': 0.2.21
       '@rivet-dev/agentos-sidecar': 0.2.21
@@ -7794,13 +7979,13 @@ snapshots:
     dependencies:
       '@rivetkit/bare-ts': 0.6.2
 
-  '@rivet-dev/dynamic-apps-builder@0.3.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.21.3)':
+  '@rivet-dev/dynamic-apps-builder@0.3.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.22.0)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.5)
       '@rivetkit/rivetkit-wasm': 2.3.11
       esbuild-wasm: 0.27.4
       hono: 4.13.5
-      rivetkit: 2.3.11(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.21.3)
+      rivetkit: 2.3.11(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.22.0)
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
       - '@cfworker/json-schema'
@@ -7842,13 +8027,13 @@ snapshots:
       - utf-8-validate
       - ws
 
-  '@rivet-dev/dynamic-apps-core@0.3.1(patch_hash=2699059bdf4cf9153c9272de5900cde905420643ae94e03fb57640403d73db59)(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.21.3)':
+  '@rivet-dev/dynamic-apps-core@0.3.1(patch_hash=2699059bdf4cf9153c9272de5900cde905420643ae94e03fb57640403d73db59)(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.22.0)':
     dependencies:
       '@agentos-software/sh': 0.2.18
       '@agentos-software/tar': 0.3.5
-      '@rivet-dev/agentos-core': 0.2.18(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)
+      '@rivet-dev/agentos-core': 0.2.18(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)
       '@rivet-dev/agentos-toolchain': 0.2.18
-      '@rivet-dev/dynamic-apps-builder': 0.3.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.21.3)
+      '@rivet-dev/dynamic-apps-builder': 0.3.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.22.0)
       hono: 4.13.9
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
@@ -7891,12 +8076,12 @@ snapshots:
       - utf-8-validate
       - ws
 
-  '@rivet-dev/dynamic-apps@0.3.1(patch_hash=2b5f27fea993a60c4bcd964bf65ce3ccafd75fa95867f83ceac3e6b8e5922c3c)(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.21.3)':
+  '@rivet-dev/dynamic-apps@0.3.1(patch_hash=2b5f27fea993a60c4bcd964bf65ce3ccafd75fa95867f83ceac3e6b8e5922c3c)(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.22.0)':
     dependencies:
-      '@rivet-dev/agentos-core': 0.2.18(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)
-      '@rivet-dev/dynamic-apps-core': 0.3.1(patch_hash=2699059bdf4cf9153c9272de5900cde905420643ae94e03fb57640403d73db59)(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.21.3)
+      '@rivet-dev/agentos-core': 0.2.18(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)
+      '@rivet-dev/dynamic-apps-core': 0.3.1(patch_hash=2699059bdf4cf9153c9272de5900cde905420643ae94e03fb57640403d73db59)(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.22.0)
       hono: 4.13.9
-      rivetkit: 2.3.11(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.21.3)
+      rivetkit: 2.3.11(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.22.0)
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
       - '@cfworker/json-schema'
@@ -8727,6 +8912,10 @@ snapshots:
   '@types/trusted-types@2.0.7':
     optional: true
 
+  '@types/ws@8.18.2':
+    dependencies:
+      '@types/node': 24.19.0
+
   '@types/yauzl@2.10.3':
     dependencies:
       '@types/node': 24.19.0
@@ -9532,6 +9721,8 @@ snapshots:
       safe-buffer: 5.2.1
 
   ee-first@1.1.1: {}
+
+  effect@4.0.2: {}
 
   elliptic@6.6.1:
     dependencies:
@@ -10570,9 +10761,9 @@ snapshots:
 
   open-color@1.9.1: {}
 
-  openai@6.26.0(ws@8.21.3)(zod@4.6.5):
+  openai@6.26.0(ws@8.22.0)(zod@4.6.5):
     optionalDependencies:
-      ws: 8.21.3
+      ws: 8.22.0
       zod: 4.6.5
 
   openapi-fetch@0.14.1:
@@ -10963,6 +11154,17 @@ snapshots:
 
   real-require@0.2.0: {}
 
+  redis@6.3.0(@opentelemetry/api@1.9.1):
+    dependencies:
+      '@redis/bloom': 6.3.0(@redis/client@6.3.0(@opentelemetry/api@1.9.1))
+      '@redis/client': 6.3.0(@opentelemetry/api@1.9.1)
+      '@redis/json': 6.3.0(@redis/client@6.3.0(@opentelemetry/api@1.9.1))
+      '@redis/search': 6.3.0(@redis/client@6.3.0(@opentelemetry/api@1.9.1))
+      '@redis/time-series': 6.3.0(@redis/client@6.3.0(@opentelemetry/api@1.9.1))
+    transitivePeerDependencies:
+      - '@node-rs/xxhash'
+      - '@opentelemetry/api'
+
   reflect-metadata@0.2.2: {}
 
   require-directory@2.1.1: {}
@@ -10985,10 +11187,10 @@ snapshots:
       hash-base: 3.1.2
       inherits: 2.0.4
 
-  rivetkit@2.3.11(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.21.3):
+  rivetkit@2.3.11(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(@opentelemetry/api@1.9.1)(better-sqlite3@12.11.1)(ws@8.22.0):
     dependencies:
       '@hono/zod-openapi': 1.6.3(hono@4.13.9)(zod@4.6.5)
-      '@rivet-dev/agent-os-core': 0.1.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)
+      '@rivet-dev/agent-os-core': 0.1.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)
       '@rivetkit/bare-ts': 0.6.2
       '@rivetkit/engine-cli': 2.3.11
       '@rivetkit/engine-envoy-protocol': 2.3.11
@@ -11008,7 +11210,7 @@ snapshots:
       vbare: 0.0.4
       zod: 4.6.5
     optionalDependencies:
-      ws: 8.21.3
+      ws: 8.22.0
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
       - '@cfworker/json-schema'
@@ -11047,11 +11249,11 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  rivetkit@2.3.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(better-sqlite3@12.11.1)(ws@8.21.3):
+  rivetkit@2.3.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(better-sqlite3@12.11.1)(ws@8.22.0):
     dependencies:
       '@hono/zod-openapi': 1.6.3(hono@4.13.9)(zod@4.6.5)
       '@opentelemetry/api': 1.9.1
-      '@rivet-dev/agent-os-core': 0.1.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)
+      '@rivet-dev/agent-os-core': 0.1.1(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)
       '@rivet-dev/services': 0.1.11
       '@rivetkit/bare-ts': 0.6.2
       '@rivetkit/engine-api-full': 2.3.21
@@ -11073,7 +11275,7 @@ snapshots:
       vbare: 0.0.4
       zod: 4.6.5
     optionalDependencies:
-      ws: 8.21.3
+      ws: 8.22.0
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
       - '@cfworker/json-schema'
@@ -11238,9 +11440,9 @@ snapshots:
     dependencies:
       loose-envify: 1.4.0
 
-  secure-exec@0.2.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3):
+  secure-exec@0.2.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0):
     dependencies:
-      '@rivet-dev/agentos-core': 0.2.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.21.3)
+      '@rivet-dev/agentos-core': 0.2.21(@modelcontextprotocol/sdk@1.30.1(zod@4.6.5))(ws@8.22.0)
     transitivePeerDependencies:
       - '@cfworker/json-schema'
       - '@modelcontextprotocol/sdk'
@@ -11663,6 +11865,8 @@ snapshots:
   undici@8.10.2:
     optional: true
 
+  undici@8.11.2: {}
+
   unpipe@1.0.0: {}
 
   url-join@5.0.0: {}
@@ -11853,6 +12057,8 @@ snapshots:
   wrappy@1.0.2: {}
 
   ws@8.21.3: {}
+
+  ws@8.22.0: {}
 
   xtend@4.0.2: {}
 
