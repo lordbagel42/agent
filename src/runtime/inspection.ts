@@ -510,7 +510,7 @@ export function createInspectionReader(deps: {
 }): (
   target: Exclude<
     NonNullable<CompanionReply["inspection"]>,
-    "inference" | "personality" | "forgetting"
+    "inference" | "personality" | "forgetting" | "sentinel"
   >,
   event?: MessageEvent,
   capacity?: CapacityContext,

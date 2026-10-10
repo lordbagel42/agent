@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import type { EffectGuard } from "../sentinel/contracts.js";
 import {
   type CapabilityBroker,
   MAX_GRANT_TTL_MS,
@@ -45,6 +46,7 @@ export type BrowserProposal = (
   operationId: string,
   isCurrent: () => boolean,
   signal?: AbortSignal,
+  guard?: EffectGuard,
 ) => Promise<string>;
 
 function digest(value: string): string {
@@ -134,11 +136,11 @@ export function createBrowserProposal(options: {
       if (text.length > 3500) throw new Error("browser_proposal_too_large");
       return text;
     };
-    return { name: recipe.name, action, report };
+    return { name: recipe.name, recipe, action, report };
   });
   const catalog = `Configured browser mutation and credential-operation names (escaped JSON): ${reviewJson(proposals.map(({ name }) => name))}. Select one exact name to execute its bounded configured recipe through a durable one-use grant; decide safety for the current task without mandatory per-action human approval. This discovery ran nothing, resolved no credentials and granted no permission. Configuration is not live availability. Fresh credentials and account enrollment remain separate authenticated controls.`;
   if (catalog.length > 3500) throw new Error("browser_proposal_too_large");
-  return async (operation, operationId, isCurrent, signal) => {
+  return async (operation, operationId, isCurrent, signal, guard) => {
     if (operation === null) return catalog;
     const proposal = proposals.find(({ name }) => name === operation);
     if (!proposal) throw new Error("browser_proposal_unavailable");
@@ -152,6 +154,10 @@ export function createBrowserProposal(options: {
       throw new Error("browser_proposal_context_required");
     const current = () => !signal?.aborted && isCurrent();
     const action = proposal.action();
+    const check = guard?.("browser-recipe", {
+      action,
+      recipe: proposal.recipe,
+    });
     const key = digest(JSON.stringify([owner, operationId]));
     const fingerprint = digest(JSON.stringify(action));
     let grantId: string | null = null;
@@ -178,6 +184,8 @@ export function createBrowserProposal(options: {
       };
       const saved = existing();
       if (saved) return replay(saved);
+      const withheld = await check?.commit();
+      if (withheld) return withheld;
       if (!current())
         return "Browser operation is no longer current. Nothing ran and no permission was granted.";
       // Commit the ID reservation before creating a grant in the broker's store.

@@ -39,7 +39,14 @@ export interface WorkflowTool {
   schema: z.ZodType;
   execute(
     args: Json,
-    context: { source: MessageEvent; operationId: string; signal: AbortSignal },
+    context: {
+      source: MessageEvent;
+      operationId: string;
+      signal: AbortSignal;
+      current(): boolean;
+      /** Host-selected workflow inputs/results, materialized only for effects. */
+      evidence(): string;
+    },
   ): Promise<Json>;
 }
 export interface WorkflowDependencies {

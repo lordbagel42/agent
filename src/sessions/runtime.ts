@@ -26,6 +26,7 @@ import type {
   MemoryReference,
 } from "../runtime/registry.js";
 import { startTyping } from "../runtime/typing.js";
+import { withSentinelContext } from "../sentinel/context.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import type { WebSearchProvider } from "../tools/web-search.js";
 import {
@@ -162,6 +163,7 @@ export interface ActivityReadProjection {
 }
 
 export interface ActivityDependencies {
+  sentinel?: import("../sentinel/service.js").InjectionSentinel;
   owner: Owner;
   model: ModelProvider;
   /** Live host authentication; agent traffic fails closed when absent. */
@@ -696,7 +698,13 @@ export function createActivityActor(deps: ActivityDependencies) {
                         : step.abortSignal;
                       const invocation = beginModelReply(
                         deps.model,
-                        request,
+                        withSentinelContext(
+                          deps.sentinel,
+                          context.source,
+                          request,
+                          sourceSignal,
+                          valid,
+                        ),
                         sourceSignal,
                         valid,
                         valid,

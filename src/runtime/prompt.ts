@@ -20,6 +20,7 @@ import { MEMORY_CORRECTION_HELP } from "../memory/correction.js";
 import type { JevQuestion } from "../models/jev.js";
 import { REPOSITORY_HELP } from "../repository/contracts.js";
 import { RESEARCH_HELP } from "../research/contracts.js";
+import { SENTINEL_NOTE } from "../sentinel/contracts.js";
 import { SETTINGS_HELP, SETTINGS_KNOWLEDGE } from "../settings/contracts.js";
 import { E2B_HELP } from "../tools/e2b.js";
 import { EMOJI_SEARCH_HELP } from "../tools/emoji-search.js";
@@ -1329,6 +1330,7 @@ The private dashboard automates mechanical sign-in steps, not consent. A June si
   // Survive role-specific replacement and apply to automated/completion turns,
   // after the internal operating knowledge that must not become conversation.
   request.system += `\n\n${RUNTIME_JUDGMENT_HELP}`;
+  request.system += `\n${SENTINEL_NOTE}`;
   request.system += `\n\n${TASK_ACTION_HELP}`;
   request.system += `\n\n${TASK_OWNERSHIP_HELP}`;
   request.system += `\n\n${DEBUG_OPERATIONS_HELP}`;

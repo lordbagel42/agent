@@ -8,6 +8,7 @@ import type {
 import { redactBrowserPin } from "../core/private-input.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
+import { PRIVATE_SENTINEL_PREFIX } from "../core/sentinel.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 
 const CONTEXT_TIMEOUT_MS = 1_000;
@@ -333,6 +334,7 @@ export function createSlackContext({
               message.text.startsWith(PRIVATE_REFLECTION_REVIEW_PREFIX))) ||
           (typeof message.text === "string" &&
             (message.text.startsWith("##") ||
+              message.text.includes(PRIVATE_SENTINEL_PREFIX) ||
               message.text.includes(RIVET_REPLY_PREFIX))) ||
           message.subtype === "message_deleted" ||
           message.subtype === "message_changed" ||

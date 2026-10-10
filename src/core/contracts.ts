@@ -64,6 +64,8 @@ export interface MessageEvent extends EventBase {
   /** Verified live plain command, never forwarded/quoted/history text.
    * The host separately requires an owner-private turn. */
   mcpCommandEligible?: boolean;
+  /** Fresh plain owner-private release; never inferred from model/history text. */
+  sentinelCommandEligible?: boolean;
   /** Verified fresh plain Slack backup command; absent on old/context events. */
   memoryBackupEligible?: boolean;
   /** Verified fresh plain Slack session control, never imported context.
@@ -340,6 +342,7 @@ export interface CompanionReply {
   /** Bounded metadata inspection; never recall or mutation. */
   inspection?:
     | "tombstones"
+    | "sentinel"
     | "capability-matrix"
     | "memory"
     | "imports"
@@ -463,6 +466,8 @@ export interface ModelRequest {
    * Omitted IDs/turn deny modular actions, including legacy worker requests. */
   capabilityIds?: readonly string[];
   capabilityTurn?: import("../capabilities/contracts.js").CapabilityTurn;
+  /** Host-only effect checks. Never serialize this callback to a provider. */
+  effectGuard?: import("../sentinel/contracts.js").EffectGuard;
   settingsAvailable?: boolean;
   debugShareResolveAvailable?: boolean;
   agentConversation?: boolean;
@@ -503,6 +508,8 @@ export interface ModelRequest {
   mcpReadScope?: { connections: string[] };
   /** Host-only transient MCP observation; never serialize into prompts/journals. */
   onMcpObservation?: (text: string) => void;
+  /** Host-only sentinel evidence, including untrusted catalog pages. */
+  onSentinelObservation?: (text: string) => void;
   latencyAvailable?: boolean;
   telemetryAvailable?: boolean;
   analyticsAvailable?: boolean;

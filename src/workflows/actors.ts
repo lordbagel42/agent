@@ -329,6 +329,14 @@ export function createWorkflowRunActor(deps: Dependencies) {
                             source: spec.origin,
                             operationId: `${spec.id}:${id}`,
                             signal,
+                            current: usable,
+                            evidence: () =>
+                              JSON.stringify({
+                                source: spec.source,
+                                input: spec.input,
+                                operations: state.operations,
+                                signals: state.consumed,
+                              }),
                           }),
                         );
                         span.setAttribute(

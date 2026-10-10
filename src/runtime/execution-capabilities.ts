@@ -77,6 +77,15 @@ export async function runExecutionCapability(
       input,
     ).settings;
     if (!command) throw new Error("Invalid settings command");
+    if (command.action !== "inspect") {
+      const guard =
+        input.effectGuard ??
+        deps.sentinel?.context(event, input, signal, current);
+      const withheld = await guard?.("settings", command).commit();
+      if (withheld) return { text: withheld, terminal: true };
+      if (!current() || context.canStartAction?.() === false)
+        throw new Error("Execution invalidated");
+    }
     // Synchronous transaction: the worker's lifecycle lease covers validation,
     // compare-and-swap and persistence; drain cannot interleave a partial write.
     const result = deps.settings.run(command);
@@ -247,6 +256,15 @@ export async function runExecutionCapability(
     if (!input.socialAvailable || !deps.social)
       throw new Error("Social action unavailable");
     const action = reply.social;
+    if (action.kind === "outreach") {
+      const guard =
+        input.effectGuard ??
+        deps.sentinel?.context(event, input, signal, current);
+      const withheld = await guard?.("social-post", action).commit();
+      if (withheld) return { text: withheld, terminal: true };
+      if (!current() || context.canStartAction?.() === false)
+        throw new Error("Execution invalidated");
+    }
     if (action.kind === "interruption_proposal") {
       if (!deps.reflection) throw new Error("Reflection staging unavailable");
       return receipt(

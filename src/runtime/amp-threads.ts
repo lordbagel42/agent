@@ -7,6 +7,7 @@ import type { MessageEvent, Owner } from "../core/contracts.js";
 import { isOwnerRivetDm } from "../core/rivet.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
+import type { EffectGuard } from "../sentinel/contracts.js";
 import { createAmpInbox } from "./debug-dispatch.js";
 
 export const ampThreadSchema = z.discriminatedUnion("action", [
@@ -61,6 +62,7 @@ export function createAmpThreads(settings: {
       operationId: string,
       signal: AbortSignal,
       current: () => boolean,
+      guard?: EffectGuard,
     ) {
       const scope = routeEvent(event, settings.owner);
       if (
@@ -71,6 +73,10 @@ export function createAmpThreads(settings: {
       )
         throw new Error("Amp threads require a current admitted Slack scope");
       const command = ampThreadSchema.parse(input);
+      const check =
+        command.action === "create"
+          ? guard?.("amp-thread", { ...command, ownerRequest: event.text })
+          : undefined;
       // Stable across re-observation of this operation, but distinct for new work.
       let id =
         command.action === "inspect"
@@ -125,6 +131,9 @@ export function createAmpThreads(settings: {
             scopeKey: scope.key,
             address: event.address,
           };
+          const withheld = await check?.commit();
+          if (withheld)
+            return { id, status: "withheld" as const, receipt: withheld };
           await inbox.publish(
             scopedRequest,
             () => !signal.aborted && current(),

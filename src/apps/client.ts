@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CompanionReply } from "../core/contracts.js";
 import type { CodingState } from "../runtime/coding.js";
+import type { EffectGuard } from "../sentinel/contracts.js";
 import {
   appAccessSchema,
   appCodingGoal,
@@ -144,6 +145,7 @@ export function createAppsClient(options: {
     conversationKey: string[],
     isCurrent = () => true,
     appId?: string,
+    guard?: EffectGuard,
   ) {
     digestSchema.parse(id);
     if (!isCurrent()) throw new Error("app_context_revoked");
@@ -151,6 +153,12 @@ export function createAppsClient(options: {
     if (!receipt || receipt.id !== id) throw new Error("missing_app_receipt");
     if (appId !== undefined && receipt.appId !== appId)
       throw new Error("app_receipt_mismatch");
+    const check = guard?.("app-deploy", {
+      id,
+      appId: receipt.appId,
+      digest: receipt.digest,
+      access: receipt.access,
+    });
     const artifact = await artifactFor(
       receipt.jobId,
       receipt.appId,
@@ -160,6 +168,9 @@ export function createAppsClient(options: {
       throw new Error("app_approval_revoked");
     if (receipt.status !== "prepared" || receipt.expiresAt <= Date.now())
       return report(receipt);
+    const withheld = await check?.commit();
+    if (withheld) return withheld;
+    if (!isCurrent()) throw new Error("app_approval_revoked");
     const deployed = await call(`/control/deploy/${id}`, {});
     if (!isCurrent()) throw new Error("app_context_revoked");
     return report(deployed);
@@ -171,6 +182,7 @@ export function createAppsClient(options: {
       requestId: string,
       conversationKey: string[],
       isCurrent = () => true,
+      guard?: EffectGuard,
     ): Promise<CompanionReply> {
       const request = appsRequestSchema.parse(input);
       digestSchema.parse(requestId);
@@ -201,6 +213,7 @@ export function createAppsClient(options: {
             conversationKey,
             isCurrent,
             request.appId,
+            guard,
           ),
         };
       const artifact = await artifactFor(
@@ -208,6 +221,13 @@ export function createAppsClient(options: {
         request.appId,
         conversationKey,
       );
+      if (!isCurrent()) throw new Error("app_context_revoked");
+      const withheld = await guard?.("app-prepare", {
+        request,
+        digest: artifact.digest,
+        files: artifact.files,
+      }).commit();
+      if (withheld) return { text: withheld };
       if (!isCurrent()) throw new Error("app_context_revoked");
       const prepared = await call("/control/prepare", {
         jobId: request.jobId,

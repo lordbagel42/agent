@@ -23,7 +23,7 @@ export interface DecisionProviderOptions {
   fetch?: typeof globalThis.fetch;
 }
 
-const schema = {
+export const decisionOutputSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -36,9 +36,9 @@ const schema = {
 };
 
 const simulationSchema = {
-  ...schema,
+  ...decisionOutputSchema,
   properties: {
-    ...schema.properties,
+    ...decisionOutputSchema.properties,
     alternativeResponses: { type: "array", items: { type: "string" } },
     skillChange: {
       type: ["object", "null"],
@@ -51,7 +51,11 @@ const simulationSchema = {
       required: ["proposedBehavior", "rationale", "evidenceIds"],
     },
   },
-  required: [...schema.required, "alternativeResponses", "skillChange"],
+  required: [
+    ...decisionOutputSchema.required,
+    "alternativeResponses",
+    "skillChange",
+  ],
 };
 
 const instructions = [
@@ -210,7 +214,7 @@ export function createDecisionProvider({
         const combined = AbortSignal.any([signal, controller.signal]);
         const outputSchema = input.simulateResponses
           ? simulationSchema
-          : schema;
+          : decisionOutputSchema;
         const system = [
           instructions,
           roles[role],

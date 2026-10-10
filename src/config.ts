@@ -55,7 +55,9 @@ const companionModel = z.discriminatedUnion("protocol", [
     home: nonempty.refine(isAbsolute, "Codex home must be absolute"),
     executable: nonempty.optional(),
     timeoutMs: z.number().int().min(1000).max(300000).optional(),
-    reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
+    reasoningEffort: z
+      .enum(["low", "medium", "high", "xhigh", "max"])
+      .optional(),
     serviceTier: z.enum(["fast", "default"]).optional(),
   }),
 ]);
@@ -106,6 +108,12 @@ const schema = z
       })
       .optional(),
     ampJobs: ampJobsSchema.optional(),
+    sentinel: z
+      .strictObject({
+        maxWaitMs: z.number().int().min(0).max(60_000).default(15_000),
+        model: companionModel.optional(),
+      })
+      .default({ maxWaitMs: 15_000 }),
     continuity: z
       .strictObject({
         idleMs: z

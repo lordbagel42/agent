@@ -145,6 +145,7 @@ export function isControl(
     (event.reflectionReviewEligible &&
       parseReflectionReviewCommand(event.text)) ||
     /^!mcp-(cancel|reconcile)(?:\s|$)/.test(event.text.trim()) ||
+    /^!sentinel-release(?:\s|$)/.test(event.text.trim()) ||
     (event.text === "!memory-backup" && event.memoryBackupEligible) ||
     deps.social?.command(event) ||
     deps.social?.interruptionCommand(event)

@@ -47,6 +47,7 @@ export const invalidRecallCategory =
 export type CapabilityDependencies = Pick<
   Dependencies,
   | "owner"
+  | "sentinel"
   | "agents"
   | "jev"
   | "jury"
@@ -280,6 +281,9 @@ async function dispatchCapability(
   const reflection = ports.reflection;
   const canStartAction = () =>
     !signal.aborted && valid() && (context.canStartAction?.() ?? true);
+  const guard =
+    modelRequest.effectGuard ??
+    deps.sentinel?.context(event, modelRequest, signal, canStartAction);
   // No new host operation may begin after supersession; paid observations may
   // still settle and be withheld by the caller independently of this fence.
   if (!canStartAction())
@@ -317,6 +321,7 @@ async function dispatchCapability(
         context.operationId ?? eventId,
         signal,
         canStartAction,
+        guard,
       );
       const encoded = JSON.stringify(result).replace(
         /[<>&`*_~@/]/g,
@@ -429,6 +434,14 @@ async function dispatchCapability(
     )
       return { text: "Agent webhooks are unavailable in this turn." };
     parseReply(JSON.stringify(generated), workspaces, modelRequest);
+    if (["send", "revoke"].includes(generated.agentWebhook.action)) {
+      const withheld = await guard?.(
+        "agent-webhook",
+        generated.agentWebhook,
+      ).commit();
+      if (withheld) return { text: withheld };
+      if (!canStartAction()) return { text: "" };
+    }
     try {
       return {
         text: JSON.stringify(
@@ -1613,6 +1626,7 @@ async function dispatchCapability(
             ]),
             () => !signal.aborted && canStartAction(),
             signal,
+            guard,
           );
       } catch {
         text =
@@ -1701,6 +1715,12 @@ async function dispatchCapability(
               !canStartAction()
             )
               throw new Error("Forget preview unavailable or changed");
+            const withheld = await guard?.(
+              "memory-forget",
+              checked.forgetPreview,
+            ).commit();
+            if (withheld) return { text: withheld };
+            if (!canStartAction()) return { text: "" };
             text =
               "Forgetting admission could not be confirmed. The host may already be processing it; inspect forgetting status before taking further action. Do not repeat an uncertain request.";
             const token = await ports.confirmForget(
@@ -1812,6 +1832,7 @@ async function dispatchCapability(
             context.operationId ?? eventId,
             scope.key,
             canStartAction,
+            guard,
           );
       } catch {
         result = {
@@ -1905,7 +1926,11 @@ async function dispatchCapability(
           modelRequest.workspaces,
           modelRequest,
         );
-        if (checked.inspection === "inference")
+        if (checked.inspection === "sentinel")
+          text =
+            deps.sentinel?.inspect(event) ??
+            "Sentinel unavailable: host integration is not configured. No check ran.";
+        else if (checked.inspection === "inference")
           text = await ports.inspectInference();
         else if (checked.inspection === "forgetting")
           text =
@@ -2046,6 +2071,11 @@ async function dispatchCapability(
           ? deps.modelStatus()
           : "Model runtime inspection is unavailable in this invocation.",
     };
+  }
+  if (generated.social?.kind === "outreach" && canStartAction()) {
+    const withheld = await guard?.("social-post", generated.social).commit();
+    if (withheld) return { text: withheld };
+    if (!canStartAction()) return { text: "" };
   }
   return generated;
 }

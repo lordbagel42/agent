@@ -9,6 +9,7 @@ import {
 } from "../core/private-input.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
+import { PRIVATE_SENTINEL_PREFIX } from "../core/sentinel.js";
 import { withSpan } from "../telemetry/index.js";
 import type { ToolAction, ToolAdapter } from "./broker.js";
 
@@ -62,6 +63,7 @@ function containsPrivateInspection(value: unknown, depth = 0): boolean {
   if (typeof value === "string") {
     if (
       value.includes(RIVET_REPLY_PREFIX) ||
+      value.includes(PRIVATE_SENTINEL_PREFIX) ||
       containsArtifactSecret(value) ||
       value.includes(PRIVATE_REFLECTION_REVIEW_PREFIX)
     )
@@ -80,6 +82,7 @@ function containsPrivateInspection(value: unknown, depth = 0): boolean {
     Object.entries(value).some(
       ([key, child]) =>
         key.includes(RIVET_REPLY_PREFIX) ||
+        key.includes(PRIVATE_SENTINEL_PREFIX) ||
         containsArtifactSecret(key) ||
         key.includes(PRIVATE_REFLECTION_REVIEW_PREFIX) ||
         containsPrivateInspection(child, depth + 1),

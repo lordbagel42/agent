@@ -2,6 +2,7 @@ import { z } from "zod";
 import { redactBrowserPin } from "../core/private-input.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
+import { PRIVATE_SENTINEL_PREFIX } from "../core/sentinel.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 import type { PageFetcher, Source } from "../memory/store.js";
 import {
@@ -129,6 +130,7 @@ export function createSlackHistoryFetcher(
           message.text?.startsWith("##") ||
           message.text?.startsWith(PRIVATE_SLACK_HISTORY_PREFIX) ||
           message.text?.startsWith(PRIVATE_REFLECTION_REVIEW_PREFIX) ||
+          message.text?.includes(PRIVATE_SENTINEL_PREFIX) ||
           message.text?.includes(RIVET_REPLY_PREFIX)
         )
           continue;

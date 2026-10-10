@@ -1,6 +1,7 @@
 import type { ChannelAdapter, SendResult } from "../core/contracts.js";
 import { redactBrowserPin } from "../core/private-input.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
+import { PRIVATE_SENTINEL_PREFIX } from "../core/sentinel.js";
 import {
   PRIVATE_SLACK_HISTORY_PREFIX,
   slackHistorySchema,
@@ -305,6 +306,7 @@ export function createSlackHistory({
         if (
           typeof message.text === "string" &&
           (message.text.includes(RIVET_REPLY_PREFIX) ||
+            message.text.includes(PRIVATE_SENTINEL_PREFIX) ||
             (message.user === botUserId &&
               message.text.startsWith(PRIVATE_SLACK_HISTORY_PREFIX)))
         )

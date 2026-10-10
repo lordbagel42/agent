@@ -101,7 +101,13 @@ interface ActiveTurn {
 }
 
 /** One process, three single-use sessions. Never resume, steer, replay, or share a used thread. */
-export function createHotCodexProvider(options: CodexProviderOptions) {
+export function createHotCodexProvider(
+  options: CodexProviderOptions,
+  format?: {
+    schema: object;
+    parse(text: string): CompanionReply;
+  },
+) {
   const { home, model, executable = "codex", timeoutMs = 75_000 } = options;
   validateOptions({ ...options, executable, timeoutMs });
   const safeConfig = { ...baseConfig };
@@ -511,7 +517,9 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
                       url: `data:${mimeType};base64,${data}`,
                     })),
                   ],
-                  outputSchema: replyJsonSchema(request.workspaces, request),
+                  outputSchema:
+                    format?.schema ??
+                    replyJsonSchema(request.workspaces, request),
                 }),
               );
               const id = object(result.turn).id;
@@ -529,7 +537,9 @@ export function createHotCodexProvider(options: CodexProviderOptions) {
               if (stopping || errorCode)
                 throw failure(errorCode ?? "provider_closed");
               if (!a.answer) throw failure("malformed_response");
-              reply = parseReply(a.answer, request.workspaces, request);
+              reply = format
+                ? format.parse(a.answer)
+                : parseReply(a.answer, request.workspaces, request);
               timing("validated");
               // A completed, validated answer no longer depends on session disposal.
               // Keep the operation/slot tracked until cleanup and usage recording finish.

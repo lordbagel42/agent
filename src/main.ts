@@ -78,6 +78,7 @@ import { CuratedPersonalityStore } from "./memory/curated.js";
 import { EvidenceStore, extractMemory } from "./memory/store.js";
 import { createHotCodexProvider } from "./models/codex-hot.js";
 import { createDecisionProvider } from "./models/decision.js";
+import { createCodexDecisionProvider } from "./models/decision-codex.js";
 import { createMemoryExtractor } from "./models/extraction.js";
 import { wrapModelProvider } from "./models/invocation.js";
 import { createJevObserver } from "./models/jev.js";
@@ -117,6 +118,7 @@ import {
 } from "./runtime/registry.js";
 import { createRivetReader } from "./runtime/rivet-inspection.js";
 import { SocialPermissions } from "./runtime/social.js";
+import { InjectionSentinel } from "./sentinel/service.js";
 import { sessionActorKey } from "./sessions/state.js";
 import { SettingsStore } from "./settings/store.js";
 import {
@@ -1429,7 +1431,82 @@ async function main() {
         },
       })
     : undefined;
+  // Separate provider/pool: a slow sentinel never occupies a conversational slot.
+  const sentinelSelection =
+    config.sentinel.model ??
+    (config.model.protocol === "codex"
+      ? {
+          ...config.model,
+          model: "gpt-6-astra",
+          reasoningEffort: "max" as const,
+          timeoutMs: 60_000,
+        }
+      : (config.reflection?.model ?? config.model));
+  let sentinelCodex: ReturnType<typeof createCodexDecisionProvider> | undefined;
+  let sentinelDecision: DecisionFunction | undefined;
+  let sentinelModelError: string | undefined;
+  try {
+    if (!config.setupMode) {
+      if (sentinelSelection.protocol === "codex") {
+        sentinelCodex = createCodexDecisionProvider({
+          ...sentinelSelection,
+          usage,
+        });
+        sentinelDecision = sentinelCodex.decide;
+        void sentinelCodex.ready().catch(() => {
+          sentinelModelError = "provider_unavailable";
+        });
+      } else if (process.env[sentinelSelection.apiKeyEnv]?.trim()) {
+        sentinelDecision = createDecisionProvider({
+          ...sentinelSelection,
+          usage,
+          auth: "api-key",
+          apiKey: secret(sentinelSelection.apiKeyEnv),
+        });
+      }
+    }
+  } catch {
+    sentinelModelError = "invalid_model_configuration";
+  }
+  const sentinel = new InjectionSentinel({
+    path: join(
+      process.env.RIVETKIT_STORAGE_PATH,
+      "sentinel",
+      "receipts.sqlite",
+    ),
+    owner,
+    decide: sentinelDecision,
+    maxWaitMs: config.sentinel.maxWaitMs,
+    providerStatus: () => ({
+      ...sentinelCodex?.inspect(),
+      protocol: sentinelSelection.protocol,
+      model: sentinelSelection.model,
+      error: sentinelModelError,
+    }),
+    send: async (message) => {
+      const leave = lifecycle.tryEnter();
+      if (!leave)
+        return {
+          status: "rejected",
+          code: "draining",
+          retryable: true,
+          retryAfterMs: 10_000,
+        };
+      try {
+        return (
+          (await channels[message.address.channel]?.send(message)) ?? {
+            status: "rejected",
+            code: "channel_unavailable",
+            retryable: false,
+          }
+        );
+      } finally {
+        leave();
+      }
+    },
+  });
   const dependencies: Dependencies = {
+    sentinel,
     settings,
     capabilityConfig: config.moduleConfig,
     artifacts,
@@ -1484,6 +1561,7 @@ async function main() {
           tools: createWorkflowTools({
             owner,
             agents,
+            sentinel,
             channels,
             model,
             webSearch,
@@ -2224,6 +2302,8 @@ async function main() {
         diagnosticLog?.lifecycle("shutdown_providers_close_returned");
       }
       diagnosticLog?.lifecycle("shutdown_resources_close_started");
+      await sentinelCodex?.close();
+      await sentinel.close();
       await agents?.close();
       artifacts?.store.close();
       await browserCompanion?.close();

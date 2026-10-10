@@ -10,7 +10,7 @@ export interface CodexProviderOptions {
   home: string;
   executable?: string;
   timeoutMs?: number;
-  reasoningEffort?: "low" | "medium" | "high";
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   serviceTier?: "fast" | "default";
 }
 
@@ -33,7 +33,7 @@ export function validateOptions({
     timeoutMs <= 0 ||
     timeoutMs > 2_147_483_647 ||
     (reasoningEffort !== undefined &&
-      !["low", "medium", "high"].includes(reasoningEffort)) ||
+      !["low", "medium", "high", "xhigh", "max"].includes(reasoningEffort)) ||
     (serviceTier !== undefined && !["fast", "default"].includes(serviceTier))
   ) {
     throw new ModelError("invalid_configuration", false);

@@ -985,6 +985,7 @@ export class McpConnections {
       model,
       (model) => async (request, signal, isCurrent, canStartAction, effect) => {
         const observeEffect = effect;
+        const effectGuard = request.effectGuard;
         // Snapshot host authority; a provider cannot expand it between reads.
         const readScope = request.mcpReadScope
           ? new Set(request.mcpReadScope.connections)
@@ -1012,6 +1013,8 @@ export class McpConnections {
           const {
             mcpReadScope: _scope,
             onMcpObservation: _observation,
+            onSentinelObservation: _sentinelObservation,
+            effectGuard: _guard,
             ...providerInput
           } = args[0];
           args[0] = providerInput;
@@ -1225,6 +1228,14 @@ export class McpConnections {
               nextOffset: end < matches.length ? end : null,
             };
           };
+          // Remote catalog prose/schema is untrusted evidence too: the judge
+          // must see the same pages that can influence tool selection.
+          request.onSentinelObservation?.(
+            JSON.stringify({
+              kind: "catalog",
+              page: page({ connection: null, tool: null, offset: 0 }),
+            }),
+          );
           const discoveryRequest = {
             ...request,
             mcpAvailable: catalog.length > 0,
@@ -1298,12 +1309,12 @@ export class McpConnections {
               return {
                 text: "I reached the MCP catalog lookup limit for this turn. No tool was run.",
               };
-            lookups.push(
-              JSON.stringify({
-                query: reply.mcpCatalog,
-                result: page(reply.mcpCatalog),
-              }),
-            );
+            const lookup = JSON.stringify({
+              query: reply.mcpCatalog,
+              result: page(reply.mcpCatalog),
+            });
+            lookups.push(lookup);
+            request.onSentinelObservation?.(lookup);
             reply = await replyWithTyping(
               {
                 ...discoveryRequest,
@@ -1435,8 +1446,14 @@ export class McpConnections {
             }
             if (allowed.permission === "approval") {
               if (!current()) return { text: "" };
+              const check = effectGuard?.("mcp-effect", action);
               await observeEffect?.("mcp", "started");
               effectStarted = true;
+              const withheld = await check?.commit();
+              if (withheld) {
+                await observeEffect?.("mcp", "not_started");
+                return { text: withheld };
+              }
               if (
                 !current() ||
                 canStartAction?.() === false ||
@@ -1535,6 +1552,14 @@ export class McpConnections {
               // Transient host evidence only, after live authority and privacy
               // checks. Never persist it with the effect receipt or a proposal.
               if (readScope) request.onMcpObservation?.(JSON.stringify(result));
+              request.onSentinelObservation?.(
+                JSON.stringify({
+                  connection: connection.id,
+                  revision: connection.revision,
+                  tool: call.tool,
+                  result,
+                }),
+              );
               evidenceBindings.set(connection.id, connection.revision);
               if (
                 request.agentRole === "execution" &&

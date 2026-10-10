@@ -28,6 +28,7 @@ export interface DecisionInput {
     | "novelty"
     | "uncertainty"
     | "interruption-cost"
+    | "prompt-injection"
     | "skill-improvement";
   prompt: string;
   now: number;
@@ -166,6 +167,7 @@ export function validDecisionContext(input: DecisionInput): boolean {
       "novelty",
       "uncertainty",
       "interruption-cost",
+      "prompt-injection",
       "skill-improvement",
     ].includes(input.question) &&
     input.evidence.length > 0 &&

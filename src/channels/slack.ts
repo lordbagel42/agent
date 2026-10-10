@@ -10,6 +10,7 @@ import type {
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { DEBUG_COMMAND } from "../core/routing.js";
+import { PRIVATE_SENTINEL_PREFIX } from "../core/sentinel.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 import { allowedWebEmbed } from "../core/web-embed.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
@@ -254,7 +255,9 @@ async function normalizeEvent(
   // Ignore opt-outs and intact inspection copies before memory or actor ingress.
   if (
     typeof event.text === "string" &&
-    (event.text.startsWith("##") || event.text.includes(RIVET_REPLY_PREFIX))
+    (event.text.startsWith("##") ||
+      event.text.includes(RIVET_REPLY_PREFIX) ||
+      event.text.includes(PRIVATE_SENTINEL_PREFIX))
   )
     return [];
   if (event.type === "message" || event.type === "app_mention") {
@@ -421,6 +424,9 @@ async function normalizeEvent(
         : {}),
       ...(/^!mcp-(cancel|reconcile)(?:\s|$)/.test(sessionText.trim())
         ? { mcpCommandEligible: plainCommand }
+        : {}),
+      ...(/^!sentinel-release(?:\s|$)/.test(sessionText.trim())
+        ? { sentinelCommandEligible: plainCommand }
         : {}),
       ...(sessionText === "!memory-backup"
         ? { memoryBackupEligible: plainCommand }
