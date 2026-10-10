@@ -21,6 +21,8 @@ import {
   type ImportCoverage,
   tombstoneExportLimits,
 } from "../memory/store.js";
+import { createCapabilityReadiness } from "../operations/capability-readiness.js";
+import { CAPABILITY_SPENDING_POLICY } from "../operations/knowledge.js";
 import {
   type Policy,
   reflectionDriveHalfLifeMs,
@@ -62,12 +64,22 @@ export function capabilitySnapshot(
     | "apps"
     | "channels"
     | "artifacts"
+    | "environments"
+    | "browserCompanion"
+    | "runningRevision"
   >,
   importsMounted: boolean,
   env: NodeJS.ProcessEnv = process.env,
 ) {
   const turn = !config.setupMode;
   const memoryEnabled = !!config.memory && env.JUNE_ALLOW_MEMORY === "1";
+  const observedAt = Date.now();
+  const readiness = createCapabilityReadiness(
+    config,
+    env,
+    runtime.runningRevision,
+    observedAt,
+  );
   const state = (value: boolean | null) =>
     value === null ? "unknown" : value ? "yes" : "no";
   const row = (
@@ -84,8 +96,20 @@ export function capabilitySnapshot(
     enabled: state(enabled),
     liveVerified: "unknown",
     detail,
+    readiness: readiness(
+      capability,
+      integrated,
+      // Legacy direct-callability stays compatible; the worker route also counts here.
+      capability === "public-web-search"
+        ? turn && runtime.webSearch?.available === true
+        : callable,
+      enabled,
+    ),
   });
   return {
+    readinessVersion: 1,
+    observedAt,
+    spendingPolicy: CAPABILITY_SPENDING_POLICY,
     scope:
       "Selected capabilities of this process; not an exhaustive tool inventory or owner/private-chat eligibility rule. Current role, schema and lifecycle limits still apply. Setup mode disables model invocation.",
     definitions: {
@@ -97,6 +121,8 @@ export function capabilitySnapshot(
         "Configuration and required host activation gates permit the feature; not action approval, provider authorization or health.",
       liveVerified:
         "Independent live capability attestation. No such attestation is wired into this view; absence is unknown, not failure or success.",
+      readiness:
+        "K7 v1 independent observations. Enrolled records account enrollment, not current authorization (local-only interfaces need no separate account). Ready is no for observed missing prerequisites, yes only for the local metadata route, otherwise unknown until probed. All local observations expire after one minute; re-inspect rather than reuse them as authority. Unknown/stale/future evidence never proves success or failure. Loaded revision may be unknown; it is never inferred from Git. Prerequisites name safe inspection, owner setup or operator review, not permission to enable, enroll, spend, retry or repair. Credential presence is local metadata; names/values are never returned. No remote health checks or live attestations are read.",
     },
     capabilities: [
       row(
@@ -192,6 +218,23 @@ export function capabilitySnapshot(
         turn && !!runtime.inspection,
         true,
         "inspection: capability-matrix reads this fixed metadata view, including disabled subsystems. No secrets, evidence bodies, configuration values or mutations.",
+      ),
+      row(
+        "boxlite-environments",
+        !!runtime.environments,
+        turn && !!runtime.execution && runtime.environments?.available === true,
+        config.environments?.enabled === true &&
+          config.executionEnabled &&
+          env.JUNE_ALLOW_AGENT_ENVIRONMENTS === "1",
+        "Per-worker VM source support is not verified isolation or teardown. Readiness checks only local platform and KVM device metadata/access; no device open, SDK load, VM launch, command or cleanup. inspection: sandboxes reads existing inventory when exposed.",
+      ),
+      row(
+        "browser-companion",
+        !!runtime.browserCompanion,
+        turn && !!runtime.execution && !!runtime.browserCompanion,
+        config.browserCompanion?.enabled === true &&
+          env.JUNE_ALLOW_BROWSER_COMPANION === "1",
+        "Task-bound browser source support is not desktop access, authentication or safe PIN ingress. Durable blue/green intake is incompatible with the current PIN route. No browser, credential access or takeover was started.",
       ),
     ],
   };
@@ -472,8 +515,10 @@ export function createInspectionReader(deps: {
   >,
   event?: MessageEvent,
   capacity?: CapacityContext,
+  /** Host-selected rendering only; never a model-selected scope or authority. */
+  presentation?: "direct" | "metadata",
 ) => Promise<string> {
-  return async (query, event, capacity) => {
+  return async (query, event, capacity, presentation = "direct") => {
     if (typeof query === "object" && query.target === "import-approval") {
       const selected = Object.entries(deps.selections).find(
         ([id, coverage]) =>
@@ -519,7 +564,11 @@ export function createInspectionReader(deps: {
       case "capability-matrix": {
         // Direct inspection replies must fit WhatsApp's single-message limit.
         // Keep every status; only omit unrelated capabilities' long help text.
-        if (event?.address.channel === "whatsapp" && deps.capabilityMatrix) {
+        if (
+          presentation === "direct" &&
+          event?.address.channel === "whatsapp" &&
+          deps.capabilityMatrix
+        ) {
           const snapshot = deps.capabilityMatrix();
           return `${heading}\n${snapshot.scope}\nimplemented = source support; integrated = mounted here; callable = model action route (turn guards apply); enabled = configuration/gates, not approval or provider health; liveVerified = independent attestation.\n${snapshot.capabilities
             .map(
