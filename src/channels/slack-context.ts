@@ -165,7 +165,15 @@ export function createSlackContext({
             : info.is_channel === true
               ? "channel"
               : undefined;
-    return { type, name: label(info.name) };
+    const properties = isObject(info.properties) ? info.properties : {};
+    const record = isObject(properties.record_channel)
+      ? properties.record_channel
+      : {};
+    return {
+      type,
+      name: label(info.name),
+      codeChannel: record.record_type === "agent_channel",
+    };
   }
 
   async function userName(

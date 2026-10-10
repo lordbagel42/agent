@@ -26,6 +26,7 @@ import {
   createSlackSearch,
   type SlackPrivateSearchOptions,
 } from "./slack-search.js";
+import type { SlackSessions } from "./slack-sessions.js";
 import type { SlackThreads } from "./slack-threads.js";
 import { createSlackVideoReader } from "./slack-video.js";
 
@@ -303,6 +304,14 @@ async function normalizeEvent(
       return [];
     if (event.type === "app_mention" && channelType === "im") return [];
 
+    const channelInfo =
+      channelType === "channel" || channelType === "group"
+        ? await context.conversation(
+            event.channel,
+            AbortSignal.timeout(CHANNEL_LOOKUP_TIMEOUT_MS),
+          )
+        : undefined;
+    const codeChannel = channelInfo?.codeChannel === true;
     const named = owner && /\bjune\b/i.test(event.text);
     const participatingThread =
       channelType !== "im" &&
@@ -343,6 +352,7 @@ async function normalizeEvent(
       !named &&
       !participatingThread &&
       !participatingChannel &&
+      !codeChannel &&
       !debugEligible
     ) {
       if (!owner || !participateInOwnerChannels) return [];
@@ -427,7 +437,9 @@ async function normalizeEvent(
         id: slackMessageId(teamId, event.channel, event.ts),
         type: "message",
         address: slackAddress(teamId, event.channel, threadId),
-        occurredAt,
+        occurredAt: /^\d+\.\d+$/.test(event.ts)
+          ? Number(event.ts) * 1000
+          : occurredAt,
         messageId: event.ts,
         senderId,
         direct: channelType === "im",
@@ -449,6 +461,7 @@ async function normalizeEvent(
           : {}),
         metadata: {
           ...slackMetadata(event, channelType),
+          ...(codeChannel ? { codeChannel: true } : {}),
           ...(channelName ? { channelName } : {}),
         },
       },
@@ -515,6 +528,7 @@ export function createSlackAdapter({
   ingressDiagnostics,
   latency,
   threads,
+  sessions,
   fetch: fetchImpl = globalThis.fetch,
   now = () => Date.now(),
 }: {
@@ -535,6 +549,7 @@ export function createSlackAdapter({
   privateSearch?: SlackPrivateSearchOptions;
   ingressDiagnostics?: SlackIngressDiagnostics;
   latency?: LatencyDiagnostics;
+  sessions?: SlackSessions;
   threads?: Pick<
     SlackThreads,
     "has" | "record" | "hasRecentChannelReply" | "recordChannelReply"
@@ -565,6 +580,13 @@ export function createSlackAdapter({
     channel: "slack",
     capabilities: { text: true, reactions: true, threads: true },
     webEmbedOrigins,
+    sourceActive: (source) => sessions?.active(source) !== false,
+    ...(sessions
+      ? {
+          watchSource: (source: { address: Address; occurredAt: number }) =>
+            sessions.watch(source),
+        }
+      : {}),
     ...(search === undefined
       ? {}
       : { search: search.search, hasSearchToken: search.hasActionToken }),
@@ -581,8 +603,10 @@ export function createSlackAdapter({
       fetch: fetchImpl,
     }),
     async setTyping(event, active, signal) {
+      if (sessions?.active(event) === false) return;
       const { address } = event;
       const groupDm = event.metadata?.channelType === "mpim";
+      const codeChannel = event.metadata?.codeChannel === true;
       // Slack's status UI is thread-scoped and can auto-open that thread.
       // Direct pings always use a reaction, including in channels and threads.
       // Group DMs and unthreaded DMs also use reactions, never a new thread.
@@ -593,17 +617,20 @@ export function createSlackAdapter({
         (!owners.has(event.senderId) &&
           !event.botMentioned &&
           !event.direct &&
+          !codeChannel &&
           !groupDm) ||
         event.senderId === botUserId ||
         (!address.threadId &&
           !event.direct &&
           !event.botMentioned &&
+          !codeChannel &&
           !groupDm) ||
         signal?.aborted
       )
         return;
       const reaction =
-        event.botMentioned === true || groupDm || !address.threadId;
+        !codeChannel &&
+        (event.botMentioned === true || groupDm || !address.threadId);
       const reactionKey = JSON.stringify([
         address.conversationId,
         event.messageId,
@@ -622,7 +649,9 @@ export function createSlackAdapter({
         response = await fetchImpl(
           reaction
             ? `https://slack.com/api/reactions.${active ? "add" : "remove"}`
-            : "https://slack.com/api/assistant.threads.setStatus",
+            : codeChannel
+              ? "https://slack.com/api/agents.sessions.setStatus"
+              : "https://slack.com/api/assistant.threads.setStatus",
           {
             method: "POST",
             redirect: "error",
@@ -640,8 +669,14 @@ export function createSlackAdapter({
                   }
                 : {
                     channel_id: address.conversationId,
-                    thread_ts: address.threadId,
-                    status: active ? "is thinking…" : "",
+                    ...(codeChannel ? {} : { thread_ts: address.threadId }),
+                    status: codeChannel
+                      ? active
+                        ? "processing"
+                        : "active"
+                      : active
+                        ? "is thinking…"
+                        : "",
                   },
             ),
             signal: controller.signal,
@@ -723,6 +758,14 @@ export function createSlackAdapter({
           signingSecret,
           intake?.receivedAt ?? now(),
         );
+        if (answer && !answer.direct) {
+          const info = await context.conversation(
+            answer.address.conversationId,
+            AbortSignal.timeout(CHANNEL_LOOKUP_TIMEOUT_MS),
+          );
+          if (info?.codeChannel)
+            answer.metadata = { ...answer.metadata, codeChannel: true };
+        }
         return {
           response: new Response(null, { status: 200 }),
           events: answer ? [answer] : [],
@@ -756,6 +799,32 @@ export function createSlackAdapter({
       if (payload.team_id !== teamId) {
         ingressDiagnostics?.record(request, "workspace_rejected");
         return { response: new Response(null, { status: 403 }), events: [] };
+      }
+
+      if (
+        isJsonObject(payload.event) &&
+        payload.event.type === "agent_session_stopped"
+      ) {
+        const event = payload.event;
+        if (
+          !sessions ||
+          !nonEmptyString(event.channel) ||
+          typeof event.event_ts !== "string" ||
+          !/^\d+\.\d+$/.test(event.event_ts) ||
+          (event.thread_ts !== undefined &&
+            (typeof event.thread_ts !== "string" ||
+              !/^\d+\.\d+$/.test(event.thread_ts)))
+        )
+          return { response: new Response(null, { status: 503 }), events: [] };
+        sessions.stop(
+          slackAddress(
+            teamId,
+            event.channel,
+            event.thread_ts as string | undefined,
+          ),
+          Number(event.event_ts) * 1000,
+        );
+        return { response: new Response(null, { status: 200 }), events: [] };
       }
 
       const events = await normalizeEvent(
@@ -804,6 +873,13 @@ export function createSlackAdapter({
       if (message.address.accountId !== teamId) {
         return rejected("wrong_account");
       }
+      if (
+        sessions?.active({
+          address: message.address,
+          occurredAt: message.lastInboundAt,
+        }) === false
+      )
+        return rejected("session_stopped");
 
       let endpoint: string;
       let body: JsonObject;

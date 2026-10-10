@@ -167,7 +167,10 @@ export interface ActivityDependencies {
   /** Live host authentication; agent traffic fails closed when absent. */
   agentActive?(clientId: string): boolean;
   webSearch?: WebSearchProvider;
-  channel: Pick<ChannelAdapter, "send" | "setTyping">;
+  channel: Pick<
+    ChannelAdapter,
+    "send" | "setTyping" | "sourceActive" | "watchSource"
+  >;
   lifecycle?: Pick<Lifecycle, "enter" | "fail"> &
     Partial<Pick<Lifecycle, "participate">>;
   catalog(
@@ -204,6 +207,7 @@ export function createActivityActor(deps: ActivityDependencies) {
       deps.agentActive?.(source.address.threadId ?? "") === true);
   const current = (assignment: ActivityAssignment, context: TurnContext) =>
     agentActive(context.source) &&
+    deps.channel.sourceActive?.(context.source) !== false &&
     context.deletionRevision === deps.memory.store.deletionRevision() &&
     deps.memory.current(JSON.stringify(assignment.scopeKey), context.reference);
   const keyMatches = (key: string[], assignment: ActivityAssignment) =>
@@ -681,10 +685,19 @@ export function createActivityActor(deps: ActivityDependencies) {
                         await step.vars.persist();
                         return;
                       }
+                      const sourceWatch = deps.channel.watchSource?.(
+                        context.source,
+                      );
+                      const sourceSignal = sourceWatch
+                        ? AbortSignal.any([
+                            step.abortSignal,
+                            sourceWatch.signal,
+                          ])
+                        : step.abortSignal;
                       const invocation = beginModelReply(
                         deps.model,
                         request,
-                        step.abortSignal,
+                        sourceSignal,
                         valid,
                         valid,
                         observeEffect,
@@ -741,7 +754,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                             const followup = beginModelReply(
                               deps.model,
                               synthesis,
-                              step.abortSignal,
+                              sourceSignal,
                               valid,
                               valid,
                               observeEffect,
@@ -774,6 +787,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                           await step.vars.persist();
                         }
                       } finally {
+                        sourceWatch?.dispose();
                         const outcomes = await Promise.all(settlements);
                         turn.inference = outcomes.includes("unknown")
                           ? "unknown"

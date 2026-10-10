@@ -34,11 +34,49 @@ is needed. Existing `assistant.threads.setStatus` calls are supported by Slack's
 compatibility bridge. Unthreaded messages retain reaction-based thinking status
 and do not create a thread merely to show status. June does not subscribe to
 `app_home_opened` (Slack recommends it for welcome messages), because opening a DM
-should not trigger an unsolicited message. There is no native agent stop-button
-subscription; existing text stop controls remain unchanged.
+should not trigger an unsolicited message. Native `agent_session_stopped` events
+are handled silently; existing text stop controls remain unchanged.
 
 See Slack's [manifest reference](https://docs.slack.dev/reference/app-manifest/#features)
 and [Agent messaging migration guide](https://docs.slack.dev/ai/migrating-to-agent-messaging/).
+
+## Slack Code channels
+
+Enable `features.code_channels.enabled`, grant the bot `code_channels:manage`,
+and subscribe to `agent_session_stopped`. Preserve the fresh live manifest and
+finish installation approval; a requested scope is not an installed grant.
+`message.channels` / `message.groups` already deliver code-channel messages.
+Slack can separately gate the app, workspace or originating user.
+
+June discovers native `agents.conversations.*` and `agents.sessions.*` tools
+through the existing `slack-bot` catalog and its normal permission/receipt path.
+Creation requires a stable `session_id` and an authenticated origin channel and
+message timestamp. Omit `is_private` to inherit origin privacy. The catalog
+supports creation, archive, context properties, diff/HTML/Block Kit/canvas views,
+view listing/removal, title and status. It does not transfer existing execution
+workers to a new conversation. June must inspect creation receipts and continue
+in the actual returned channel, without duplicating work or importing private
+context across audiences.
+
+Ingress recognizes `conversations.info`'s
+`properties.record_channel.record_type === "agent_channel"`, not channel names
+or an event-supplied flag. Human participants can follow up without a mention;
+their existing separate identities and queues remain. Replies stay at channel
+top level unless the incoming message is itself threaded. The host uses native
+session status during conversational processing; June can publish task context,
+review artifacts and a final summary before intentionally archiving.
+
+Signed stop events persist content-free channel/thread timestamp fences in
+`slack-sessions.sqlite`. They abort local model/execution/coding observers and
+prevent stale-source actions and replies, including after restart. A thread stop
+does not stop sibling threads; a channel stop covers every participant and thread.
+New messages can start new work but do not revive old tasks. There is no stop
+acknowledgment or status-clear call. Cancellation does not prove an external
+effect settled or stop independently exported Amp jobs; those retain their
+existing reconciliation requirements. It does not delete conversation history.
+
+See [Slack Code](https://docs.slack.dev/ai/slack-code/) and its
+[lifecycle](https://docs.slack.dev/ai/slack-code/lifecycle/).
 
 ## Thread subscriptions
 

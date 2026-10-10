@@ -166,7 +166,7 @@ export class McpConnections {
                   credential,
                   stillAuthorized,
                 );
-              await adapter.execute(action, credential, stillAuthorized);
+              return await adapter.execute(action, credential, stillAuthorized);
             } finally {
               await adapter.close();
               this.#active.delete(adapter);

@@ -12,6 +12,8 @@ import {
   type WorktreeManifest,
 } from "../coding/worktree.js";
 import type {
+  Channel,
+  ChannelAdapter,
   CodingRequest,
   CodingRuntime,
   MessageEvent,
@@ -378,11 +380,18 @@ export function createCodingActor(
     context: NonNullable<JobProposal["skillContext"]>,
   ) => boolean,
   getDeletionRevision: () => number = () => 0,
+  channels: Partial<Record<Channel, ChannelAdapter>> = {},
 ) {
   // Synchronous checks against frozen authority, never a consumer-side refresh.
   // Legacy explicit approvals keep their old contract; they gain no automatic
   // authority. New immediate tasks without a host revision must fail closed.
   const provenanceCurrent = (ownerId: string, proposal: JobProposal) => {
+    if (
+      channels[proposal.source.address.channel]?.sourceActive?.(
+        proposal.source,
+      ) === false
+    )
+      return false;
     const revision = proposal.deletionRevision;
     if (proposal.runImmediately === true || revision !== undefined) {
       if (
@@ -704,6 +713,9 @@ export function createCodingActor(
                     "june.attempt": approved,
                   },
                   async (span) => {
+                    const sourceWatch = channels[
+                      proposal.source.address.channel
+                    ]?.watchSource?.(proposal.source);
                     try {
                       if (step.state.remoteAmp) {
                         // Same durable approval and no-relaunch claim as local jobs,
@@ -724,6 +736,7 @@ export function createCodingActor(
                         const signal = AbortSignal.any([
                           controller.signal,
                           step.abortSignal,
+                          ...(sourceWatch ? [sourceWatch.signal] : []),
                           AbortSignal.timeout(
                             remote?.timeoutMs ?? coding.timeoutMs,
                           ),
@@ -824,6 +837,7 @@ export function createCodingActor(
                       const signal = AbortSignal.any([
                         controller.signal,
                         step.abortSignal,
+                        ...(sourceWatch ? [sourceWatch.signal] : []),
                         AbortSignal.timeout(coding.timeoutMs),
                       ]);
                       const assertCurrent = () => assertAttemptCurrent(signal);
@@ -1087,6 +1101,7 @@ export function createCodingActor(
                         terminalReason,
                       );
                     } finally {
+                      sourceWatch?.dispose();
                       // Supervisor completion does not assert native or remote stoppage.
                       span.setAttribute("june.outcome", step.state.status);
                     }

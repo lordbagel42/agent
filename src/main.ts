@@ -23,6 +23,7 @@ import { ArtifactStore } from "./artifacts/store.js";
 import { BrowserCompanion } from "./browser/companion.js";
 import { createSlackAdapter } from "./channels/slack.js";
 import { createSlackIngressDiagnostics } from "./channels/slack-ingress.js";
+import { SlackSessions } from "./channels/slack-sessions.js";
 import { SlackThreads } from "./channels/slack-threads.js";
 import { createWhatsAppAdapter } from "./channels/whatsapp.js";
 import { createAmpRuntime } from "./coding/amp.js";
@@ -1178,6 +1179,11 @@ async function main() {
         join(process.env.RIVETKIT_STORAGE_PATH, "slack-threads.sqlite"),
       )
     : undefined;
+  const slackSessions = config.slack
+    ? new SlackSessions(
+        join(process.env.RIVETKIT_STORAGE_PATH, "slack-sessions.sqlite"),
+      )
+    : undefined;
   if (config.slack) {
     startupStage = "Slack credentials";
     channels.slack = createSlackAdapter({
@@ -1196,6 +1202,7 @@ async function main() {
       ingressDiagnostics: slackIngressDiagnostics,
       latency,
       threads: slackThreads,
+      sessions: slackSessions,
     });
   }
   if (config.whatsapp) {
@@ -2198,6 +2205,7 @@ async function main() {
       memory?.store.close();
       social?.close();
       slackThreads?.close();
+      slackSessions?.close();
       settings.close();
       diagnosticLog?.lifecycle("shutdown_resources_close_returned");
       // Rivet's own signal handler terminates after draining. With custom signal

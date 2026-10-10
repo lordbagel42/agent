@@ -75,6 +75,7 @@ const revision = (deps: Dependencies) =>
   deps.memory?.store.deletionRevision() ?? 0;
 const authorized = (deps: Dependencies, origin: MessageEvent) =>
   !!routeEvent(origin, deps.owner) &&
+  deps.channels[origin.address.channel]?.sourceActive?.(origin) !== false &&
   (origin.address.channel !== "agent" ||
     deps.agents?.clientActive(origin.senderId) === true);
 const sourceScope = (origin: MessageEvent, scopeKey: string[]) =>
@@ -252,10 +253,14 @@ export function createWorkflowRunActor(deps: Dependencies) {
         }
         const controller = new AbortController();
         binding.controller = controller;
+        const sourceWatch = deps.channels[
+          spec.origin.address.channel
+        ]?.watchSource?.(spec.origin);
         const signal = AbortSignal.any([
           controller.signal,
           ctx.abortSignal,
           AbortSignal.timeout(120_000),
+          ...(sourceWatch ? [sourceWatch.signal] : []),
         ]);
         let nativeFailure = false;
         const native = async <T>(promise: Promise<T>): Promise<T> => {
@@ -488,6 +493,7 @@ export function createWorkflowRunActor(deps: Dependencies) {
               : "workflow_failed";
           await binding.persist();
         } finally {
+          sourceWatch?.dispose();
           delete binding.controller;
         }
       },

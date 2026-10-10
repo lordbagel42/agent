@@ -5,6 +5,9 @@
     "long_description": "June responds to DMs and mentions with conversational replies and native reactions. Optional on-demand search uses Slack's Real-time Search API and returns source links without retaining retrieved content. Keyword search is supported; semantic search depends on Slack AI Search availability and requires a Business+ or Enterprise+ plan. User scopes are requested for planned private-channel and direct-message search, requiring separate user authorization. Historical imports require separate configuration and consent."
   },
   "features": {
+    "code_channels": {
+      "enabled": true
+    },
     "agent_view": {
       "agent_description": "June is a self-hosted personal companion. Chat with her in DMs or mention her in channels."
     },
@@ -33,6 +36,7 @@
         "app_mentions:read",
         "chat:write",
         "assistant:write",
+        "code_channels:manage",
         "reactions:read",
         "reactions:write",
         "search:read.public",
@@ -114,6 +118,7 @@
         "message.channels",
         "message.groups",
         "app_mention",
+        "agent_session_stopped",
         "reaction_added",
         "reaction_removed"
       ]

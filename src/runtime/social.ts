@@ -46,7 +46,10 @@ interface Proposal {
   /** Caller admission and receiver dispatch are separate durable boundaries. */
   interruptionCommands?: Record<
     string,
-    SendResult | { status: "started" } | { status: "dispatching" }
+    | SendResult
+    | (({ status: "started" } | { status: "dispatching" }) & {
+        source?: Pick<MessageEvent, "address" | "occurredAt">;
+      })
   >;
 }
 
@@ -361,8 +364,14 @@ export class SocialPermissions {
     if (command.status !== "started") return command;
     // The actor client may retry a dropped response without re-entering decide.
     // Claim this exact owner command before any await or outbox admission.
+    const source = command.source;
+    const isCurrent = () =>
+      !!source && this.options.slack.sourceActive?.(source) !== false;
     proposal.interruptionCommands ??= {};
-    proposal.interruptionCommands[commandId] = { status: "dispatching" };
+    proposal.interruptionCommands[commandId] = {
+      status: "dispatching",
+      source,
+    };
     this.save(proposal);
     const result = await this.send(
       // The proposal ID binds account + candidate, not the approval message.
@@ -384,6 +393,7 @@ export class SocialPermissions {
           };
         return check();
       },
+      isCurrent,
     );
     const current = this.get(proposalId);
     if (current) {
@@ -409,7 +419,9 @@ export class SocialPermissions {
     observeDelivery?: (
       result: SendResult | { status: "started" | "dispatching" },
     ) => void,
+    isCurrent: () => boolean = () => true,
   ): Promise<string> {
+    if (!isCurrent()) return "Source stopped; no decision was applied.";
     const command = this.command(event);
     if (!command) return "Only Raygen can decide permissions.";
     const proposal = this.get(command[2] ?? "");
@@ -464,7 +476,10 @@ export class SocialPermissions {
       let result = proposal.interruptionCommands?.[commandId];
       if (!result) {
         proposal.interruptionCommands ??= {};
-        proposal.interruptionCommands[commandId] = { status: "started" };
+        proposal.interruptionCommands[commandId] = {
+          status: "started",
+          source: { address: event.address, occurredAt: event.occurredAt },
+        };
         this.save(proposal);
         result = await interrupt(proposal.id, proposal.reflection, commandId);
         // A concurrent rejection/deletion must not be undone by saving the
@@ -487,7 +502,7 @@ export class SocialPermissions {
       return `Approved interruption: delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived; uncertain delivery is never retried."}`;
     }
     if (proposal.action.kind === "outreach") {
-      const result = await this.sendOutreach(proposal);
+      const result = await this.sendOutreach(proposal, isCurrent, isCurrent);
       observeDelivery?.(result);
       return `Approved outreach: delivery ${result.status}. ${result.status === "sent" ? "Slack accepted the message." : "Do not assume it arrived; I will not automatically resend an uncertain delivery."}`;
     }

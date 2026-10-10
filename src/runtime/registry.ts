@@ -2166,6 +2166,11 @@ export function createJuneRegistry(deps: Dependencies) {
             };
             const valid = (state: ConversationState) => {
               if (
+                deps.channels[event.address.channel]?.sourceActive?.(event) ===
+                false
+              )
+                return false;
+              if (
                 event.address.channel === "agent" &&
                 !deps.agents?.clientActive(event.address.threadId ?? "")
               )
@@ -2723,6 +2728,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 body.type === "execution_result"
                   ? (body.replyAddress ?? event.address)
                   : event.address.channel === "slack" &&
+                      !event.metadata?.codeChannel &&
                       ((threadedRepliesVersion >= 2 &&
                         body.type === "event" &&
                         (threadedRepliesVersion < 3 || !event.direct)) ||
@@ -3180,6 +3186,7 @@ export function createJuneRegistry(deps: Dependencies) {
                         (result.status === "rejected" && !result.retryable)
                       );
                     },
+                    () => valid(step.state),
                   );
                   if (activity && !uncertain) {
                     delete activity.untrackedEffect;
@@ -3444,7 +3451,16 @@ export function createJuneRegistry(deps: Dependencies) {
                               phase,
                               attempt,
                             ]);
-                            const signal = step.abortSignal;
+                            const sourceWatch =
+                              deps.channels[
+                                event.address.channel
+                              ]?.watchSource?.(event);
+                            const signal = sourceWatch
+                              ? AbortSignal.any([
+                                  step.abortSignal,
+                                  sourceWatch.signal,
+                                ])
+                              : step.abortSignal;
                             const reflection =
                               plan.reflection && deps.reflection
                                 ? step
@@ -5047,6 +5063,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                   error.retryable,
                               };
                             } finally {
+                              sourceWatch?.dispose();
                               if (stopTyping) deferTypingCleanup(stopTyping());
                               if (version >= 2 && settled) {
                                 // Release before marking settled. A crash in between keeps
@@ -5083,6 +5100,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     body.type === "event" &&
                     phase === "reply" &&
                     event.address.channel === "slack" &&
+                    !event.metadata?.codeChannel &&
                     reply.replyInThread !== undefined
                   ) {
                     const { threadId: _threadId, ...surface } = event.address;
@@ -5099,6 +5117,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     version < 4 &&
                     phase === "reply" &&
                     event.address.channel === "slack" &&
+                    !event.metadata?.codeChannel &&
                     !event.address.threadId &&
                     reply.replyInThread
                   )
@@ -6724,6 +6743,11 @@ export function createJuneRegistry(deps: Dependencies) {
         webSearch: deps.webSearch,
         lifecycle: deps.lifecycle,
         channel: {
+          sourceActive: (source) =>
+            deps.channels[source.address.channel]?.sourceActive?.(source) !==
+            false,
+          watchSource: (source) =>
+            deps.channels[source.address.channel]?.watchSource?.(source),
           setTyping: async (event, active, signal) =>
             deps.channels[event.address.channel]?.setTyping?.(
               event,
@@ -6788,6 +6812,7 @@ export function createJuneRegistry(deps: Dependencies) {
             context.reference,
           ),
         () => deps.memory?.store.deletionRevision() ?? 0,
+        deps.channels,
       ),
       execution: createExecutionActor(deps, priority),
       workflowRun: createWorkflowRunActor(deps),

@@ -172,6 +172,15 @@ export function createSessionCatalog(
     const receipt = session?.directory.receipts[assignment.eventId];
     if (receipt?.status === "settled") return "acknowledged";
     if (host.state.clearedInputs?.[assignment.eventId]) return "cleared";
+    const input = savedInput(host.state, assignment.eventId);
+    const source =
+      turn.context?.source ??
+      (input?.type === "event" ? input.event : input?.source);
+    if (
+      source &&
+      deps.channels[source.address.channel]?.sourceActive?.(source) === false
+    )
+      return "cleared";
     return session?.directory.inFlight === assignment.eventId
       ? "active"
       : "unavailable";
@@ -546,6 +555,7 @@ export function createSessionCatalog(
           ? (input.replyAddress ?? source.address)
           : input.type === "event" &&
               source.address.channel === "slack" &&
+              !source.metadata?.codeChannel &&
               !source.direct
             ? {
                 ...source.address,
@@ -727,6 +737,7 @@ export function createSessionCatalog(
     if (
       input?.type === "event" &&
       context.source.address.channel === "slack" &&
+      !context.source.metadata?.codeChannel &&
       reply.replyInThread !== undefined
     ) {
       const { threadId: _threadId, ...surface } = context.source.address;

@@ -65,6 +65,8 @@ const sourceScope = (source: MessageEvent, scopeKey: string[]) =>
     source.address.threadId ?? "",
   ]);
 const current = (deps: Dependencies, spec: Spec) =>
+  deps.channels[spec.origin.address.channel]?.sourceActive?.(spec.origin) !==
+    false &&
   hash(routeEvent(spec.origin, deps.owner)?.key ?? null) ===
     hash(spec.scopeKey ?? ["private", deps.owner.id]) &&
   (spec.origin.address.channel !== "agent" ||
@@ -280,10 +282,14 @@ export function createResearchSessionActor(
               }
               const controller = new AbortController();
               step.vars.controller = controller;
+              const sourceWatch = deps.channels[
+                spec.origin.address.channel
+              ]?.watchSource?.(spec.origin);
               const signal = AbortSignal.any([
                 controller.signal,
                 step.abortSignal,
                 AbortSignal.timeout(180_000),
+                ...(sourceWatch ? [sourceWatch.signal] : []),
               ]);
               const usable = () =>
                 !signal.aborted &&
@@ -388,6 +394,7 @@ export function createResearchSessionActor(
                   }
                 }
               } finally {
+                sourceWatch?.dispose();
                 if (!uncertain) state.phase = "idle";
                 if (state.spec && !current(deps, spec)) revoke(state);
                 await step.vars.persist();

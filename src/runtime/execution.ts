@@ -433,10 +433,14 @@ export function createExecutionActor(
                       step.vars.controller = controller;
                       const deadline = performance.now() + 300_000;
                       const deadlineSignal = AbortSignal.timeout(300_000);
+                      const sourceWatch = deps.channels[
+                        request.source.address.channel
+                      ]?.watchSource?.(request.source);
                       const signal = AbortSignal.any([
                         controller.signal,
                         step.abortSignal,
                         deadlineSignal,
+                        ...(sourceWatch ? [sourceWatch.signal] : []),
                       ]);
                       const usable = () => {
                         const source = deps.memory?.source(
@@ -447,6 +451,9 @@ export function createExecutionActor(
                           current(step.state) &&
                           request.status === "running" &&
                           !signal.aborted &&
+                          deps.channels[
+                            request.source.address.channel
+                          ]?.sourceActive?.(request.source) !== false &&
                           (!source || !deps.memory?.store.isDeleted(source.id))
                         );
                       };
@@ -1005,6 +1012,7 @@ export function createExecutionActor(
                               : `Execution did not produce a confirmed result: ${failure.detail} (code ${failure.code}).${request.operation?.status === "started" ? " A started operation's outcome is unconfirmed." : ""} No automatic retry was made; ask for another attempt if needed.`;
                         }
                       } finally {
+                        sourceWatch?.dispose();
                         try {
                           try {
                             await deps.environments?.release(

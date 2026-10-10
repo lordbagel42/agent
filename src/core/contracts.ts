@@ -21,6 +21,8 @@ export interface MessageMetadata {
   senderName?: string;
   channelName?: string;
   channelType?: "im" | "mpim" | "channel" | "group";
+  /** Verified conversations.info record_type, never event-supplied metadata. */
+  codeChannel?: boolean;
   /** Actual Slack thread timestamp; absent for an unthreaded message. */
   threadTs?: string;
   files?: {
@@ -145,6 +147,14 @@ export interface ChannelAdapter {
   readonly channel: Channel;
   readonly capabilities: { text: true; reactions: boolean; threads: boolean };
   readonly webEmbedOrigins?: readonly string[];
+  /** Host cancellation fence; does not erase history or prove remote settlement. */
+  sourceActive?(source: { address: Address; occurredAt: number }): boolean;
+  watchSource?(source: { address: Address; occurredAt: number }):
+    | {
+        signal: AbortSignal;
+        dispose(): void;
+      }
+    | undefined;
   /** Fresh authenticated audience evidence; unknown must withhold imports. */
   audience?(
     event: MessageEvent,

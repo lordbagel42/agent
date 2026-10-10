@@ -53,9 +53,42 @@ const methods: [
   ["chat.scheduledMessages.list", true, "chat:write", ""],
   ["chat.getPermalink", true, "", "channel message_ts"],
   ["chat.meMessage", false, "chat:write", "channel text"],
-  ["chat.startStream", false, "chat:write", "channel thread_ts"],
+  ["chat.startStream", false, "chat:write", "channel"],
   ["chat.appendStream", false, "chat:write", "channel ts"],
   ["chat.stopStream", false, "chat:write", "channel ts"],
+  [
+    "agents.conversations.create",
+    false,
+    "code_channels:manage",
+    "session_id origin_channel_id origin_message_ts",
+  ],
+  ["agents.conversations.archive", false, "code_channels:manage", "channel_id"],
+  [
+    "agents.conversations.setProperties",
+    false,
+    "code_channels:manage",
+    "channel_id code_channel",
+  ],
+  [
+    "agents.conversations.setView",
+    false,
+    "code_channels:manage",
+    "channel_id type",
+  ],
+  [
+    "agents.conversations.listViews",
+    true,
+    "code_channels:manage",
+    "channel_id",
+  ],
+  [
+    "agents.conversations.removeView",
+    false,
+    "code_channels:manage",
+    "channel_id view_key",
+  ],
+  ["agents.sessions.setStatus", false, "chat:write", "channel_id status"],
+  ["agents.sessions.rename", false, "chat:write", "channel_id title"],
   ["reactions.get", true, "reactions:read", ""],
   ["reactions.list", true, "reactions:read", ""],
   ["reactions.add", false, "reactions:write", "channel timestamp name"],
@@ -257,7 +290,12 @@ export class SlackBotAdapter {
     _credential: unknown,
     authorized: () => boolean,
   ) {
-    await this.#call(action, authorized, false);
+    const result = await this.#call(action, authorized, false);
+    // New channel IDs and view receipts must reach June without replaying a
+    // mutation. The existing broker releases this bounded result only while
+    // its original grant remains current; it does not persist response bodies.
+    if (action.item.startsWith("agents."))
+      return safeToolReadResult(result, this.bot.token);
   }
   async read(
     action: ToolAction,
