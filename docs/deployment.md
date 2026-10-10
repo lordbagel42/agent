@@ -843,13 +843,16 @@ replay can repeat a call. Never use old database snapshots to make a downgrade
 appear healthy.
 
 Diagnostic `snapshotRef`/SQLite bodies, `modelInvocationsArchive` and
-`legacyArchive` are also forward-only storage changes. Older readers ignore these
+`legacyArchive`, plus immutable `ingress.receiptsArchive`, are also forward-only
+storage changes. Older readers ignore these
 references and replay/migration receipts. The source compatibility digest changes
 automatically; do not authorize a rollback transition to a reader missing any of
 these formats. Startup migrates retained inline captures and compresses markers
 losslessly, without clearing journals, settling uncertain work or restoring
 conversation data. Legacy lane admission order, creation-only coverage and every
 untracked-effect flag survive compaction; unfinished coverage remains live.
+Ingress compaction preserves every receipt's identity, lane, order and original
+timestamp, including unfinished admissions; it does not certify their settlement.
 Compression provides finite headroom under Rivet's 512 KiB atomic checkpoint
 budget, not unbounded retention. Keep recovery fenced until the affected workflow,
 actual process revision and readiness are verified.

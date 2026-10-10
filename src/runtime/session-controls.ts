@@ -20,6 +20,7 @@ import {
   readDeliveries,
   readEvents,
   readHistory,
+  readIngressReceipts,
   readModelInvocations,
 } from "./conversation-storage.js";
 import {
@@ -293,7 +294,7 @@ export function resetConversation(state: ConversationState, at: number) {
     ...Object.keys(readEvents(state)),
     ...Object.keys(state.pendingInputs ?? {}),
     ...Object.keys(state.pendingNotifications ?? {}),
-    ...Object.keys(state.ingress?.receipts ?? {}),
+    ...Object.keys(readIngressReceipts(state.ingress)),
   ]))
     state.clearedInputs[id] = true;
   state.session = { id: randomUUID(), startedAt: at };

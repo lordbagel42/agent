@@ -6,6 +6,7 @@ import {
   eventRecord,
   readDeliveries,
   readEvents,
+  readIngressReceipts,
   readLegacyAdmissions,
   readLegacyCoverage,
   readModelInvocations,
@@ -49,7 +50,10 @@ export interface LegacyDrainState {
   deliveriesArchive?: CompressedJson;
   pendingInputs?: Record<string, unknown>;
   pendingNotifications?: Record<string, unknown>;
-  ingress?: { receipts: Record<string, { lane?: "legacy" | "session" }> };
+  ingress?: {
+    receipts: Record<string, { lane?: "legacy" | "session" }>;
+    receiptsArchive?: CompressedJson;
+  };
   modelInvocations?: Record<string, "started" | "settled" | "uncertain">;
   modelInvocationsArchive?: CompressedJson;
   webInvocations?: Record<string, "started" | "settled" | "uncertain">;
@@ -62,7 +66,7 @@ const inputIds = (state: LegacyDrainState) =>
       ...Object.keys(readEvents(state)),
       ...Object.keys(state.pendingInputs ?? {}),
       ...Object.keys(state.pendingNotifications ?? {}),
-      ...Object.keys(state.ingress?.receipts ?? {}),
+      ...Object.keys(readIngressReceipts(state.ingress)),
       ...Object.keys(readLegacyCoverage(state)?.turns ?? {}),
       ...readLegacyAdmissions(state),
     ]),
@@ -124,7 +128,7 @@ export async function archiveLegacyInputs(
     migration.scope !== JSON.stringify(scopeKey)
   )
     return;
-  const receipts = state.ingress?.receipts;
+  const receipts = readIngressReceipts(state.ingress);
   if (
     migration.legacyInputs.some((id) => {
       const receipt = receipts?.[id];
@@ -248,11 +252,12 @@ export function inspectLegacyDrain(
   // With a frozen boundary, new session admissions are deliberately excluded.
   // Without one this is prospective inspection, never permission to migrate.
   const ids = migration?.legacyInputs ?? inputIds(state);
+  const receipts = readIngressReceipts(state.ingress);
   if (migration)
     for (const id of inputIds(state))
       if (
         !ids.includes(id) &&
-        (state.ingress?.receipts[id]?.lane !== "session" ||
+        (receipts[id]?.lane !== "session" ||
           admissions.includes(id) ||
           Object.hasOwn(coverage?.turns ?? {}, id))
       )

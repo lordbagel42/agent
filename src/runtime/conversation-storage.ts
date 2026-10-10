@@ -139,6 +139,19 @@ export function readDeliveries<T>(state: {
     : state.deliveries;
 }
 
+/** Immutable ingress evidence, including original lane, order and receipt time. */
+export function readIngressReceipts<T>(ingress?: {
+  receipts: Record<string, T>;
+  receiptsArchive?: CompressedJson;
+}): Record<string, T> {
+  return ingress?.receiptsArchive
+    ? {
+        ...expand<Record<string, T>>(ingress.receiptsArchive),
+        ...ingress.receipts,
+      }
+    : (ingress?.receipts ?? {});
+}
+
 export function eventRecord<T>(
   state: { events: Record<string, T>; eventsArchive?: CompressedJson },
   id: string,
@@ -186,6 +199,15 @@ export function conversationSnapshot(
     ...rest,
     events: readEvents(state),
     deliveries: readDeliveries(state),
+    ...(state.ingress
+      ? {
+          ingress: {
+            sequence: state.ingress.sequence,
+            receivedThrough: state.ingress.receivedThrough,
+            receipts: readIngressReceipts(state.ingress),
+          },
+        }
+      : {}),
     ...(state.legacyAdmissions
       ? { legacyAdmissions: readLegacyAdmissions(state) }
       : {}),
@@ -203,6 +225,18 @@ export function compactConversation(state: ConversationState) {
   if (Buffer.byteLength(JSON.stringify(state.history)) > 64 * 1024) {
     state.historyArchive = compress(readHistory(state));
     state.history = [];
+  }
+  // Receipts are append-only, not mutable turn objects. Keep all identities,
+  // including unfinished admissions; compression never certifies settlement.
+  if (
+    state.ingress &&
+    (state.ingress.receiptsArchive ||
+      Buffer.byteLength(JSON.stringify(state.ingress.receipts)) > 64 * 1024)
+  ) {
+    state.ingress.receiptsArchive = compress(
+      readIngressReceipts(state.ingress),
+    );
+    state.ingress.receipts = {};
   }
   // Lane IDs are append-only; finished coverage has no live callback owner.
   // Keep unfinished turn objects live and preserve every uncertainty flag.

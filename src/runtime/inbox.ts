@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { ChannelEvent, MessageEvent } from "../core/contracts.js";
 import type { WakeupContext } from "../wakeups/state.js";
+import {
+  type CompressedJson,
+  readIngressReceipts,
+} from "./conversation-storage.js";
 
 /** Host ingress. Identity is independent of the activity actor or reply surface. */
 export type ConversationInput =
@@ -49,6 +53,7 @@ export function conversationInputId(input: ConversationInput): string {
 export interface ConversationIngress {
   receivedThrough: number;
   sequence: number;
+  receiptsArchive?: CompressedJson;
   receipts: Record<
     string,
     {
@@ -69,7 +74,7 @@ export function recordConversationIngress(
   lane: "legacy" | "session" = "legacy",
 ): void {
   const id = conversationInputId(input);
-  if (state.receipts[id]) return;
+  if (readIngressReceipts(state)[id]) return;
   if (!Number.isSafeInteger(firstReceivedAt) || firstReceivedAt < 0)
     throw new Error("Invalid host receipt time");
   state.receivedThrough = Math.max(firstReceivedAt, state.receivedThrough);

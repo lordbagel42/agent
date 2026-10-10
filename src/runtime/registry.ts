@@ -100,6 +100,7 @@ import {
   readDeliveries,
   readEvents,
   readHistory,
+  readIngressReceipts,
   readLegacyAdmissions,
   readModelInvocations,
 } from "./conversation-storage.js";
@@ -441,7 +442,7 @@ type SessionBarrier = {
 };
 
 const ownsLegacyInput = (state: ConversationState, id: string) =>
-  state.ingress?.receipts[id]?.lane !== "session" &&
+  readIngressReceipts(state.ingress)[id]?.lane !== "session" &&
   (!state.migration || state.migration.legacyInputs.includes(id));
 
 export function createJuneRegistry(deps: Dependencies) {
@@ -558,10 +559,9 @@ export function createJuneRegistry(deps: Dependencies) {
     if (migration?.phase !== "draining") return;
     // Repair saved legacy admissions whose queue publication never completed.
     // The barrier is not a substitute for accounting for these frozen bodies.
+    const receipts = readIngressReceipts(state.ingress);
     const ids = [...migration.legacyInputs].sort(
-      (a, b) =>
-        (state.ingress?.receipts[a]?.sequence ?? 0) -
-        (state.ingress?.receipts[b]?.sequence ?? 0),
+      (a, b) => (receipts[a]?.sequence ?? 0) - (receipts[b]?.sequence ?? 0),
     );
     for (const id of ids) {
       const event = state.pendingInputs?.[id];
@@ -934,10 +934,11 @@ export function createJuneRegistry(deps: Dependencies) {
         ...Object.values(c.state.pendingNotifications ?? {}),
       ];
       // Missing legacy receipt times stay missing. Replay never calls admission.
+      const receipts = readIngressReceipts(c.state.ingress);
       pending.sort(
         (a, b) =>
-          (c.state.ingress?.receipts[conversationInputId(a)]?.sequence ?? 0) -
-          (c.state.ingress?.receipts[conversationInputId(b)]?.sequence ?? 0),
+          (receipts[conversationInputId(a)]?.sequence ?? 0) -
+          (receipts[conversationInputId(b)]?.sequence ?? 0),
       );
       for (const input of pending) await c.queue.send("inbox", input);
       if (c.state.migration?.phase === "draining")
@@ -2030,7 +2031,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 "session-input-lane",
                 async (step) => {
                   const id = conversationInputId(body);
-                  const receipt = step.state.ingress?.receipts[id];
+                  const receipt = readIngressReceipts(step.state.ingress)[id];
                   if (receipt?.lane === "session") return "session";
                   // Register ownership before yielding for priority or claiming
                   // a wakeup. Freeze must see this even before record-event runs.

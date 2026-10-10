@@ -9,6 +9,7 @@ import {
   editEvent,
   eventRecord,
   readDeliveries,
+  readIngressReceipts,
 } from "../runtime/conversation-storage.js";
 import type { ExecutionRequest } from "../runtime/execution.js";
 import { executionCapabilities } from "../runtime/execution-context.js";
@@ -245,7 +246,7 @@ export function createSessionCatalog(
     // Import all arrivals before selecting: processing delay cannot change a
     // human's activity period or let a notification hide a waiting human.
     for (const [id, receipt] of Object.entries(
-      host.state.ingress?.receipts ?? {},
+      readIngressReceipts(host.state.ingress),
     ).sort(([, a], [, b]) => a.sequence - b.sequence)) {
       if (
         host.state.clearedInputs?.[id] ||
