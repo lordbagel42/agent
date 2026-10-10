@@ -11,6 +11,7 @@ RUN corepack pnpm install --frozen-lockfile --ignore-scripts --prod=false --pack
     && chmod 755 /opt/june-apps/rivet-engine \
     && mkdir /data && chown 10001:10001 /data \
     && rm -rf /root/.local/share/pnpm/store /root/.cache
-ENV NODE_ENV=production HOME=/data
+ARG REVISION=unknown
+ENV NODE_ENV=production HOME=/data JUNE_APPS_REVISION=$REVISION
 USER 10001:10001
 CMD ["node", "src/apps/supervisor.mjs"]

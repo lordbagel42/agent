@@ -1134,45 +1134,73 @@ function legacyReplyJsonSchema(
               properties: {
                 action: {
                   type: "string",
-                  enum: ["build", "prepare", "inspect", "deploy"],
+                  enum: [
+                    "prepare",
+                    "deploy",
+                    "inspect",
+                    "list",
+                    "unpublish",
+                    "build",
+                  ],
                 },
                 appId: {
-                  type: "string",
+                  type: ["string", "null"],
                   description:
-                    "Lowercase app ID, letters/digits/hyphens, starting with a letter, max 48 characters.",
+                    "Lowercase app ID and subdomain: letters/digits, single hyphens between them, max 48. Null only for list.",
+                },
+                files: {
+                  type: ["array", "null"],
+                  description:
+                    "For prepare: the complete Rivet Dynamic App source you wrote (at most 128 files, 64 KiB each, 256 KiB total): package.json with type module and main pointing at an entrypoint that default-exports a Fetch handler or Hono app, plus its files (js/ts/json/html/css/svg/txt/md). Null otherwise, or when preparing a coding jobId.",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      path: { type: "string" },
+                      content: { type: "string" },
+                    },
+                    required: ["path", "content"],
+                  },
                 },
                 jobId: {
                   type: ["string", "null"],
                   description:
-                    "Exact 64-character coding job ID for prepare; null otherwise.",
+                    "For prepare from a verified coding build: its exact 64-hex job ID instead of files. Null otherwise.",
                 },
                 receiptId: {
                   type: ["string", "null"],
                   description:
-                    "Exact 64-character prepared receipt ID for deploy; null otherwise. Binds source digest and audience.",
+                    "For deploy: the exact 64-hex prepared receipt ID. Binds source digest and audience. Null otherwise.",
                 },
                 goal: {
                   type: ["string", "null"],
                   description:
-                    "Build task (1–900 characters) for build; null otherwise.",
+                    "For build only (coding-job build, when available): task of 1–900 characters. Null otherwise.",
                 },
                 access: {
                   type: ["string", "null"],
                   enum: ["public", "signed-in", null],
                   description:
-                    "For prepare: public allows anyone without login; signed-in allows anyone who signs in. Null leaves internal-only viewing. Null for other actions; deploy uses the prepared audience.",
+                    "For prepare (required): public = anyone with the link; signed-in = anyone who signs in with an email code or GitHub, not an allowlist. Null for other actions; deploy uses the prepared audience.",
+                },
+                title: {
+                  type: ["string", "null"],
+                  description:
+                    "Optional short title for prepare (≤120 characters). Null otherwise.",
                 },
               },
               required: [
                 "action",
                 "appId",
+                "files",
                 "jobId",
                 "receiptId",
                 "goal",
                 "access",
+                "title",
               ],
               description:
-                "Build an app, prepare verified source and audience, inspect status, or deploy an exact prepared receipt. June decides whether deployment is appropriate; no compulsory human confirmation. Empty text, no other directives. Never retry an unknown deployment.",
+                "Rivet Dynamic Apps: prepare exact source + audience into a receipt, deploy that receipt (runs in Rivet on the app host), inspect, list or unpublish. June decides whether publishing is appropriate; no compulsory human confirmation. Empty text, no other directives.",
             },
           }
         : {}),

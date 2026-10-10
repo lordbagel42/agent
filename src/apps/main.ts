@@ -28,7 +28,10 @@ async function main() {
             (value.startsWith("https://") ||
               /^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(value)),
         ),
-      controlTokenEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
+      /** base64url Ed25519 public keys June signs control requests with. */
+      juneKeys: z.array(z.string().regex(/^[A-Za-z0-9_-]{43}$/)).max(8),
+      /** Ignored: control requests are signed by June, never bearer-authorized. */
+      controlTokenEnv: z.string().optional(),
       viewerTokenEnv: z.string().regex(/^[A-Z_][A-Z0-9_]*$/),
       viewer: viewerConfigSchema.optional(),
     })
@@ -101,8 +104,9 @@ async function main() {
   routes.route("/apps", appsRouter);
   const host = createAppsHost({
     database: join(config.directory, "deployments.sqlite"),
-    controlToken: secret(config.controlTokenEnv),
+    juneKeys: config.juneKeys,
     viewerToken: secret(config.viewerTokenEnv),
+    revision: process.env.JUNE_APPS_REVISION,
     origin: config.origin,
     viewer: config.viewer,
     binding: createHash("sha256")
@@ -151,8 +155,8 @@ async function main() {
     hostname: "127.0.0.1",
     port: config.port,
   });
-  // Only this explicitly enabled listener is eligible for viewer ingress.
-  // It contains no control/health routes and needs no injected bearer token.
+  // Only this explicitly enabled listener is eligible for gateway ingress:
+  // apps on subdomains, June's signed control API and /health on the apex.
   const viewerServer =
     host.viewer && config.viewer
       ? serve({

@@ -343,7 +343,8 @@ export async function runExecutionCapability(
           reply.importCancel.action === "review"
         )) ||
       reply.ampThread ||
-      (reply.apps && !["list", "inspect"].includes(reply.apps.action)) ||
+      (reply.apps &&
+        !["list", "inspect", "prepare"].includes(reply.apps.action)) ||
       (reply.workflow &&
         !["help", "list", "inspect"].includes(reply.workflow.action)) ||
       (reply.research &&

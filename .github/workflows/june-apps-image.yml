@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build native ARM64 image
-        run: docker build -f src/apps/host.Dockerfile -t "$IMAGE" .
+        run: docker build -f src/apps/host.Dockerfile --build-arg REVISION=${{ github.sha }} -t "$IMAGE" .
       - name: Verify bounded nonroot deployment, restart and credential boundaries
         run: |
           docker run --rm --network none --memory 1408m --memory-swap 1408m --cpus 2 \

@@ -1,19 +1,32 @@
 # Rivet Dynamic Apps
 
-Opt-in Fetch/HTTP-app integration with `@rivet-dev/dynamic-apps@0.3.1`. June can request builds,
-prepare verified source, deploy an exact prepared receipt, and inspect outcomes
-from admitted task turns where the integration is exposed. June judges intent,
-authority, sensitivity and publication audience; no owner-private DM or compulsory
-human approval is required for an ordinary task.
-The app host is a **separate process with a dedicated Rivet engine**, not another
-route in June's service. No live installation or activation is included.
+June writes small server-side web apps and runs them with
+`@rivet-dev/dynamic-apps@0.3.1`. Each app is a Fetch handler (or Hono app) that
+the SDK builds in an isolated AgentOS VM and serves through a **dedicated app
+host with its own Rivet engine** (`src/apps/{main,host,viewer}.ts`), deployed as
+the `june-apps` pod on the mrow cluster (`lordbagel42/mrow-gitops`,
+`apps/june-apps`). It is not a route in June's service.
 
-**Fetch/HTTP deployment was checked on a disposable development engine**, including
-authenticated POST requests, updating a running app to a different release,
-duplicate deployment requests, and credential stripping. June's receipt workflow is also
-tested with real Rivet conversations and a fake SDK deployer. Neither check
-activates production; verify the same path on the intended isolated host before
-enabling it for June.
+```
+June (LXC 215)                           mrow cluster, namespace june-apps
+┌───────────────────────┐ signed HTTPS ┌──────────────────────────────────┐
+│ execution worker      │  Cloudflare  │ host (3091 public listener)      │
+│  apps:{prepare,...}   │──tunnel ────▶│  apex /control/* (Ed25519 only)  │
+│ src/apps/client.ts    │  → Gateway   │  <app>.mrrpmraow.com    public   │
+│ key: $RIVETKIT_STORAGE│              │  <app>--signed-in.…     Access   │
+│  _PATH/apps-ed25519.pem              │ SQLite receipts + Rivet engine   │
+└───────────────────────┘              │ (native sidecar, own namespace)  │
+                                       └──────────────────────────────────┘
+```
+
+Apps are enabled for June by default; she needs no configuration or secret.
+She generates an Ed25519 key in her state directory on first start and signs
+`june-apps-v1\nMETHOD\npath?query\ntimestamp\nsha256(body)`. The host accepts
+only public keys listed in `juneKeys` of its `host.json`, a ±2 minute window and
+each signature once. The public key is shown in the capability matrix
+(`dynamic-apps` row) and the agent MCP `get_status` result; pinning it in
+mrow-gitops is the only activation step. Until then `apps list` reports that the
+host does not trust June's key.
 
 The pinned SDK needs `src/apps/dynamic-apps-core.patch`. Its builder originally
 exports through a world-writable host mount and tries to assign guest UID 1000
@@ -38,170 +51,114 @@ actor apps through the dashboard or another client.
 
 ## June's workflow
 
-1. Ask June to build an app with a stable lowercase ID, such as `counter`.
-   Her `apps` directive accepts `build`, `prepare`, `deploy`, and `inspect` on
-   eligible task turns; report-only turns cannot launch work. Planning uses her existing
-   execution workers. A build uses the existing coding supervisor and configured
-   coding runtime, never a second autonomous coding system.
-2. A fresh coding task starts on host admission without `!approve`. The exact
-   task/runtime and originating deletion revision are frozen; legacy pending
-   jobs are not automatically started. The worker
-   writes `june-app.json` in its isolated worktree. The supervisor reads this
-   bounded export before verification and rejects changes during verification.
-   Only a passed, non-replayed verifier result retains the exact exported bytes.
-3. Ask June to prepare the app using the full job ID from its completion report.
-   This copies the retained artifact to the dedicated host; it does **not** run
-   the SDK or grant deployment. Later worktree edits cannot alter the artifact.
-   The job/source must still match its verification receipt at preparation
-   and deployment time; changed or revoked jobs cannot deploy.
-   Choose `access: "public"` for anyone without login or `"signed-in"` for anyone
-   who signs in (no owner/workspace allowlist). Null/omitted access leaves the
-   app internal-only. Publication requires the optional viewer configuration.
-4. June inspects the prepared receipt and chooses
-   `apps: {action:"deploy",appId:"counter",receiptId:"<exact receipt id>",jobId:null,goal:null,access:null}`.
-   The host revalidates the matching app ID, verified source digest and prepared
-   audience; deploy cannot substitute any of them. The ten-minute receipt permits
-   dependency installation, generated-code execution and Rivet resource creation
-   only on the configured app host. Preparation alone runs no SDK deployment.
-   Expiry or an audience change requires a new preparation and receipt; replay
-   cannot renew one. Publication cannot recall content already downloaded.
-5. Ask June to inspect `counter`. She reports `prepared`, `deploying`, `deployed`
-   or `unknown`, the artifact digest, recorded release and private URL. These are
-   historical receipts, **not health checks**. Active/uncertain receipts take
-   precedence over newer preparations. Inspect again explicitly for completion;
-   there is no automatic notification or background polling.
+The `apps` directive is available to execution workers in admitted
+conversations; interaction agents delegate to them. June judges the task and
+audience; there is no compulsory human approval.
 
-The legacy `!deploy-app <receipt-id>` fresh plain-text owner Slack DM remains an
-optional manual interface with the same exact-receipt checks, not a prerequisite
-for June's `deploy` action. Quotes, code blocks, forwarded messages and attachment
-fallbacks do not execute that command. Coding approval/recovery commands likewise
-remain manual legacy paths, not an automatic sweep of old pending work.
+1. **prepare** `{action:"prepare", appId, files:[{path,content}], access, title}`
+   stores the exact source and audience and returns a receipt valid for 24 h.
+   Nothing runs. Source rules: `package.json` with `"type":"module"` and `main`
+   pointing at an entrypoint that default-exports a Fetch handler or Hono app;
+   at most 128 files, 64 KiB each, 256 KiB total; no dotfiles, `node_modules`,
+   or `rivetkit`. `jobId` may replace `files` for a verified coding-job build
+   when native coding and `dynamicApps.workspace` are configured.
+2. **deploy** `{action:"deploy", appId, receiptId}` builds and deploys exactly
+   that receipt's source and audience, then waits up to about 90 s for the
+   outcome. Repeating it returns the same receipt. A build rejected by the SDK
+   (install, build, invalid handler, entrypoint, size) is `failed`: nothing
+   reached the engine and the previous release keeps serving. Any other failure
+   is `unknown` and blocks that app until an operator reconciles it.
+3. **inspect** `{appId}`, **list**, **unpublish** `{appId}`. Unpublishing closes
+   viewing immediately; the engine keeps the release and receipts remain.
 
-An owner-selected workspace verifier must actually validate the exported app,
-not merely trust the worker's claim or test unrelated workspace files. The
-256 KiB export supports at most 128 text files of 64 KiB each, including
-`package.json` and a default Fetch handler/Hono app. It forbids dotfiles,
-traversal, `node_modules`, and symlink exports. It is not a secret-content scanner:
-never give the coding workspace production secrets.
+An app ID belongs to the conversation that first deployed it. A receipt can only
+be deployed from the conversation that prepared it. The owner's private DM may do
+either for any app, and `!deploy-app <receipt>` remains an owner command.
+
+Apps are served at `https://<appId>.mrrpmraow.com/apps/<appId>/` (public, no
+login) or `https://<appId>--signed-in.mrrpmraow.com/apps/<appId>/` (anyone who
+signs in through the Cloudflare Access application "June apps (signed-in)", with
+email one-time PIN or GitHub; not an owner or workspace allowlist). `/` redirects
+to the app path. The hostname fixes the audience: a signed-in app is never served
+on its public hostname and vice versa. App IDs are single DNS labels without
+`--`, so every app has its own origin under universal TLS.
 
 ## Configuration and isolation
 
-June's optional config block is:
+June's optional config block, with defaults:
 
 ```json
 {
   "dynamicApps": {
-    "endpoint": "http://127.0.0.1:3090",
-    "tokenEnv": "JUNE_APPS_CONTROL_TOKEN",
+    "enabled": true,
+    "endpoint": "https://mrrpmraow.com",
     "workspace": "apps"
   }
 }
 ```
 
-The workspace must already exist in `coding.workspaces` and `coding.isolation`
-with a configured verifier and enabled coding runtime. Use a private HTTPS
-endpoint for a remote host (no URL credentials, paths or query strings). June
-receives only the control credential, distinct from her operator credential.
-Changing the app/coding configuration invalidates existing coding bindings.
+`workspace` is optional and enables coding-job builds (it requires enabled native
+coding and a verifier). A legacy `tokenEnv` is accepted and ignored.
 
-The dedicated host's private config, selected by `JUNE_APPS_CONFIG`, is:
+The host's config, selected by `JUNE_APPS_CONFIG` (mrow-gitops
+`apps/june-apps/host.json`):
 
 ```json
 {
   "port": 3090,
-  "directory": "/var/lib/june-apps",
-  "origin": "https://apps.example.invalid",
-  "controlTokenEnv": "JUNE_APPS_CONTROL_TOKEN",
-  "viewerTokenEnv": "JUNE_APPS_VIEWER_TOKEN"
-}
-```
-
-Start with `pnpm apps:start` in its separately authorized service environment.
-It requires `JUNE_ALLOW_DYNAMIC_APPS=1`, both distinct random credentials (at
-least 32 characters), and explicit `RIVET_ENDPOINT`, `RIVET_TOKEN`,
-`RIVET_NAMESPACE`, `RIVET_POOL` for its **own** provisioned engine. Cloud fallback
-and `RIVET_ENGINE` are rejected, as are callback/public-endpoint overrides. The
-directory must exist, belong to the host's Unix user, have mode 0700, and contain
-no symlink components. Run only one host against this directory/namespace.
-The integration does not expose an actor callback receiver.
-
-Use a dedicated Unix identity/container, HOME, cgroup/resource limits and network
-policy. Do not inherit June's `.env`, Rivet credentials, Slack tokens, Codex/Amp
-login, filesystem mounts or operator credentials. The stock SDK permits build
-network access and dependency scripts; its VM is not proof of safe access to
-your LAN. Restrict egress and isolate the engine from June before activation.
-Use a self-contained npm installation in PATH; Arch's split distro npm failed
-inside the SDK's projected filesystem with missing `nopt` during the probe.
-
-The control and internal credential-only viewer listener remains loopback-only.
-Never expose that listener through public ingress or inject its bearer into a
-public proxy: it bypasses the publication policy for private operator checks.
-Keep `/control/*`, `/health/*`, `/api/rivet/*`, and engine ports private.
-Neither credential belongs in browser code, URLs or logs.
-
-### Optional public and sign-in-required viewers
-
-Add `viewer` to the dedicated host configuration only after provisioning the
-corresponding ingress, certificates and Access application:
-
-```json
-{
+  "directory": "/data/host",
+  "origin": "https://mrrpmraow.com",
+  "juneKeys": ["<June's base64url Ed25519 public key>"],
+  "viewerTokenEnv": "JUNE_APPS_VIEWER_TOKEN",
   "viewer": {
     "port": 3091,
-    "publicDomain": "public-apps.example.invalid",
-    "signedInDomain": "signed-apps.example.invalid",
-    "issuer": "https://YOUR-TEAM.cloudflareaccess.com",
-    "audience": "REPLACE_WITH_THE_ACCESS_APPLICATION_64_HEX_AUD"
+    "domain": "mrrpmraow.com",
+    "issuer": "https://bagel.cloudflareaccess.com",
+    "audience": "<AUD of the signed-in Access application>"
   }
 }
 ```
 
-Replace the placeholders with verified application metadata; these are not
-secrets. `viewer` starts a **separate `0.0.0.0` listener**, which exposes only
-`/apps/<appId>/*`. Each app has its own HTTPS origin, such as
-`https://counter.public-apps.example.invalid/apps/counter/`. Public and signed-in
-domain suffixes must be distinct and neither may contain the other. The host
-rejects mismatched app IDs/hosts, regardless of forwarded headers. Preserve the
-external Host at ingress; terminate HTTPS there. Allow only that gateway to reach
-the viewer port. Do not publish health/control routes or other pod ports.
+Start with `pnpm apps:start` (the container runs `supervisor.mjs`). It requires
+`JUNE_ALLOW_DYNAMIC_APPS=1`, a viewer credential of at least 32 characters for the
+loopback-only operator viewer, and explicit `RIVET_ENDPOINT`, `RIVET_TOKEN`,
+`RIVET_NAMESPACE`, `RIVET_POOL` for its **own** engine. Cloud fallback,
+`RIVET_ENGINE` and callback/public-endpoint overrides are rejected. The directory
+must exist, belong to the host's Unix user, have mode 0700 and contain no
+symlinks. Run only one host against this directory/namespace.
 
-The signed-in domain needs a Cloudflare Access **Allow Everyone** policy with a
-login method available to anyone, such as email one-time PIN—not an owner policy,
-workspace membership requirement, Service Auth or Bypass. The host validates the
-Access assertion's signature, issuer, audience, expiry and human identity against
-cached, rotating public keys. It never trusts an email header alone and does not
-receive or log the user's password. The public domain needs no Access login.
-Verify wildcard TLS coverage: ordinary apex wildcard certificates do not cover
-these deeper app subdomains. Use the existing DNS writer, not competing manual
-and GitOps records. No hostnames, certificates, Access policies or DNS records are
-provisioned by this code.
+Use a dedicated identity/container, resource limits and network policy; do not
+give the host June's credentials or mounts. The SDK permits build network access
+and dependency scripts, so egress is limited to public 80/443 and DNS.
 
-Missing/legacy policy never becomes public automatically. The durable publication
-pointer selects the **last consumed deployment**, not the most recently prepared
-receipt. Starting deployment closes viewing before the engine can switch source;
-already admitted viewer requests must finish before the engine changes code.
-A stalled request therefore delays deployment rather than gaining access to the
-next release. Only a successful recorded result reopens viewing. An unknown
-outcome stays closed, including after restart. The viewer rechecks that pointer
-after authentication and serving to avoid returning a response under a
-superseded audience. Changing viewer configuration invalidates its old
-receipts/publications; reprepare and deploy, never rewrite stored binding markers.
+**Listeners.** Loopback 3090 serves `/health/live`, `/health/ready`, the signed
+`/control/*` API and the bearer-only operator viewer `/apps/*`; never route it.
+Public 3091 (the only port the Gateway may reach) serves apps on subdomains and,
+on the apex only, the signed `/control/*` API plus `/health` (`{ready, revision}`).
+The Gateway preserves the Host header; HTTPS terminates at Cloudflare. DNS comes
+from external-dns via the annotated `june-apps-public` Service, not manual records.
 
-Viewer credentials, Access assertions, identity headers and cookies are stripped
-before generated code; response cookies and CORS grants are stripped as well.
-Responses prohibit caching, embedding and service workers; cross-origin browser
-requests to signed-in apps are denied. App cookies, WebSockets and service workers
-are unsupported. Generated code must still be reviewed for deliberate disclosure
-or unsafe application actions; login alone does not make its data owner-private.
-This grants viewing only, not authoring or deployment permission. The June-facing
-integration still requires its own separately coordinated runtime activation.
+The host validates Access assertions itself (signature, issuer, audience, expiry,
+human identity) before a signed-in app sees a request. Viewer credentials, Access
+assertions, identity headers and cookies are stripped before generated code;
+response cookies and CORS grants are stripped too. Responses prohibit caching,
+embedding and service workers; cross-origin browser requests to signed-in apps
+are denied. App cookies and WebSockets are unsupported.
+
+The durable publication pointer selects the **last consumed deployment**.
+Starting a deployment closes viewing before the engine switches source; admitted
+viewer requests finish first. Only a successful result reopens viewing on the new
+release; a `failed` build reopens the previous one; `unknown` stays closed,
+including after restart. Changing the viewer configuration invalidates old
+receipts and publications: prepare and deploy again.
 
 ## Failure and recovery
 
 The host persists deployment intent before calling the SDK. Repeated commands
-return the same receipt. Failure or host interruption becomes `unknown` and
-blocks further deployments of that app, including after restart. A few vetted
-SDK failure codes are exposed; raw errors, stdout, stderr and tokens are not.
+return the same receipt. Vetted build-phase SDK codes become `failed` and keep
+the previous release; any other failure or host interruption becomes `unknown`
+and blocks further deployments of that app, including after restart. Raw errors,
+stdout, stderr and tokens are never returned or logged.
 
 There is no automatic retry, rollback, deletion or reconciliation API in this
 increment. An operator must inspect the dedicated host and Rivet dashboard to
@@ -216,8 +173,10 @@ Host artifact retention and deployed-resource deletion require separate handling
 
 `src/apps/host.Dockerfile` packages the pinned Node, SDK and engine versions.
 The native ARM64 image workflow verifies a disposable real deployment, credential
-stripping and restart recovery before publishing. Image publication does not
-activate June; the cluster's Flux configuration pins a reviewed image digest.
+stripping, signed control, single-use signatures, scoped deploys, clean build
+failures, unpublishing and restart recovery before publishing. Image publication
+does not change the cluster; mrow-gitops pins a reviewed image digest and Flux
+rolls the single pod.
 
 The host allows one build at a time. A different build receives 409 without
 consuming its prepared receipt. `/health/live` reports process liveness;

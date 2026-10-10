@@ -8,20 +8,15 @@ const domain = z
   .string()
   .max(200)
   .regex(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/);
-export const viewerConfigSchema = z
-  .strictObject({
-    port: z.number().int().min(1024).max(65535),
-    publicDomain: domain,
-    signedInDomain: domain,
-    issuer: z.string().regex(/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/),
-    audience: digestSchema,
-  })
-  .refine(
-    ({ publicDomain, signedInDomain }) =>
-      publicDomain !== signedInDomain &&
-      !publicDomain.endsWith(`.${signedInDomain}`) &&
-      !signedInDomain.endsWith(`.${publicDomain}`),
-  );
+export const SIGNED_IN_SUFFIX = "--signed-in";
+export const viewerConfigSchema = z.strictObject({
+  port: z.number().int().min(1024).max(65535),
+  /** Zone apex: control at <domain>, apps at <app>.<domain> and
+   * <app>--signed-in.<domain>, one label deep so universal TLS covers them. */
+  domain,
+  issuer: z.string().regex(/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/),
+  audience: digestSchema,
+});
 export type ViewerConfig = z.infer<typeof viewerConfigSchema>;
 
 export function appViewerUrl(
@@ -29,12 +24,15 @@ export function appViewerUrl(
   appId: string,
   access: "public" | "signed-in",
 ) {
-  return `https://${appId}.${access === "public" ? config.publicDomain : config.signedInDomain}/apps/${appId}/`;
+  return `https://${appId}${access === "signed-in" ? SIGNED_IN_SUFFIX : ""}.${config.domain}/apps/${appId}/`;
 }
 
-/** Separate listener: never mount control, health, or engine routes here. */
+/** Public listener: apps on subdomains; only the signed control API and a
+ * readiness summary on the apex. Never mount engine or bearer routes here. */
 export function createAppsViewer(options: {
   config: ViewerConfig;
+  /** Served only for the apex host: June's signed control API and /health. */
+  apex: Hono;
   publication(appId: string): AppReceipt | null;
   serve(request: Request, appId: string): Promise<Response>;
   log(event: Record<string, string | number>): void;
@@ -63,24 +61,39 @@ export function createAppsViewer(options: {
       { append: true },
     );
     options.log({
-      event: "viewer_request",
+      event:
+        new URL(c.req.url).hostname === config.domain
+          ? "apex_request"
+          : "viewer_request",
       status: c.res.status,
       durationMs: Math.round(performance.now() - started),
     });
   });
-  app.all("/apps/:appId/*", async (c) => {
-    const id = appIdSchema.safeParse(c.req.param("appId"));
-    if (!id.success) return c.notFound();
-    const receipt = options.publication(id.data);
-    if (!receipt?.access || receipt.status !== "deployed") return c.notFound();
-    const expected = new URL(appViewerUrl(config, id.data, receipt.access));
+  app.all("*", async (c) => {
     const url = new URL(c.req.url);
-    // Forwarded host/proto/identity headers are not a source of authority.
+    if (url.hostname === config.domain) return options.apex.fetch(c.req.raw);
+    const label = url.hostname.endsWith(`.${config.domain}`)
+      ? url.hostname.slice(0, -config.domain.length - 1)
+      : "";
+    // The Host header selects app and audience; forwarded headers never do.
+    const access = label.endsWith(SIGNED_IN_SUFFIX) ? "signed-in" : "public";
+    const id = appIdSchema.safeParse(
+      access === "signed-in" ? label.slice(0, -SIGNED_IN_SUFFIX.length) : label,
+    );
+    if (!id.success) return c.notFound();
+    const prefix = `/apps/${id.data}/`;
+    if (url.pathname === "/" || url.pathname === prefix.slice(0, -1))
+      return c.redirect(prefix, 302);
+    if (!url.pathname.startsWith(prefix)) return c.notFound();
+    const receipt = options.publication(id.data);
+    // A signed-in app is never served on its public hostname or vice versa.
     if (
-      url.host !== expected.host ||
-      !url.pathname.startsWith(expected.pathname)
+      !receipt?.access ||
+      receipt.access !== access ||
+      receipt.status !== "deployed"
     )
       return c.notFound();
+    const expected = new URL(appViewerUrl(config, id.data, receipt.access));
     if (receipt.access === "signed-in") {
       const token = c.req.header("cf-access-jwt-assertion");
       if (!token || token.length > 16_384)
