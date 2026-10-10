@@ -1,3 +1,4 @@
+import { Effect, Schema } from "effect";
 import { capabilityDefinitions } from "../capabilities/catalog.js";
 import { isCapabilityEnabled } from "../capabilities/config.js";
 import type {
@@ -8,24 +9,34 @@ import type { Dependencies } from "./registry.js";
 
 type MetadataDependencies = Pick<
   Dependencies,
-  "capabilityInspection" | "capabilityConfig"
+  | "capabilityInspection"
+  | "capabilityTasks"
+  | "capabilityConfig"
+  | "effectRuntime"
 >;
 
-/** Only the existing authenticated metadata reader is mounted in wave 0.
+class TaskInspectionUnavailable extends Schema.TaggedError<TaskInspectionUnavailable>()(
+  "TaskInspectionUnavailable",
+  { message: Schema.Literal("Capability invocation unavailable") },
+) {}
+
+const taskUnavailable = () =>
+  new TaskInspectionUnavailable({
+    message: "Capability invocation unavailable",
+  });
+
+/** Mount only named authenticated metadata readers.
  * Missing intent/policy/budget/evidence services remain absent, not allow stubs.
  * Never fall back to direct inspection: its transport projection can omit data.
  * Without an invocation this is availability metadata only, never dispatch.
  */
 export function mountCapabilityPorts(
   deps: MetadataDependencies,
-  invocation?: Pick<
-    CapabilityInvocationContext,
-    "event" | "signal" | "canStartAction" | "canDeliver"
-  >,
+  invocation?: CapabilityInvocationContext,
 ): CapabilityHostPorts {
   const inspection = deps.capabilityInspection;
   const read = inspection?.capabilityMatrix;
-  return inspection
+  const ports: CapabilityHostPorts = inspection
     ? {
         inspection: {
           async capabilityMatrix(event, signal) {
@@ -51,6 +62,49 @@ export function mountCapabilityPorts(
         },
       }
     : {};
+  const tasks = deps.capabilityTasks;
+  const inspect = tasks?.inspect;
+  const runtime = deps.effectRuntime;
+  if (tasks && runtime) {
+    const inspectTask = Effect.fn("june.capability.tasks.inspect")(
+      (context: CapabilityInvocationContext, id: string) =>
+        Effect.uninterruptible(
+          Effect.tryPromise({
+            try: async () => {
+              const current = () =>
+                !!invocation &&
+                context === invocation &&
+                !invocation.signal.aborted &&
+                deps.effectRuntime === runtime &&
+                deps.capabilityTasks === tasks &&
+                tasks.inspect === inspect &&
+                invocation.valid() &&
+                invocation.canStartAction();
+              if (!invocation || !inspect || !current())
+                throw taskUnavailable();
+              if (!(await invocation.canDeliver()) || !current())
+                throw taskUnavailable();
+              // Keep this synchronous fence and the original reader call in
+              // one callback. Effect interruption must await raw settlement,
+              // while the original signal still reaches a cooperative reader.
+              const result = await inspect.call(tasks, invocation, id);
+              if (!current() || !(await invocation.canDeliver()) || !current())
+                throw taskUnavailable();
+              return result;
+            },
+            catch: taskUnavailable,
+          }),
+        ),
+    );
+    ports.tasks = {
+      inspect(context, id) {
+        return runtime.runPromise(inspectTask(context, id), {
+          signal: invocation?.signal,
+        });
+      },
+    };
+  }
+  return ports;
 }
 
 /** Metadata-only execution support, not enrollment or live readiness evidence.

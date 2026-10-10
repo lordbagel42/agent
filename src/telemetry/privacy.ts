@@ -53,6 +53,7 @@ const names = new Set([
   "june.workflow.tool",
   "june.activity.interaction",
   "june.capability",
+  "june.capability.tasks.inspect",
   "june.webhook.dispatch",
   "june.mcp.settled",
 ]);

@@ -195,8 +195,12 @@ export interface Dependencies {
   sentinel?: import("../sentinel/service.js").InjectionSentinel;
   settings?: import("../settings/store.js").SettingsStore;
   capabilityConfig?: import("../capabilities/config.js").CapabilityConfig;
+  /** The process runtime created by composition, never by an individual tool. */
+  effectRuntime?: import("../effect/runtime.js").JuneRuntime;
   /** Full worker metadata, distinct from transport-sized direct inspection. */
   capabilityInspection?: import("../capabilities/contracts.js").CapabilityHostPorts["inspection"];
+  /** Owner-fed task projection only; never an actor-waking RPC fallback. */
+  capabilityTasks?: import("../capabilities/contracts.js").TaskViewPort;
   agents?: import("../agent/service.js").AgentService;
   owner: Owner;
   continuity?: import("./continuity.js").ConversationContinuity;
@@ -664,6 +668,7 @@ export function createJuneRegistry(deps: Dependencies) {
     c: {
       state: ConversationState;
       key: string[];
+      abortSignal: AbortSignal;
       vars: {
         persist(): Promise<void>;
         schedule(at: number): Promise<unknown>;
@@ -680,6 +685,7 @@ export function createJuneRegistry(deps: Dependencies) {
   ): SessionHost => ({
     state: c.state,
     key: c.key,
+    ...{ abortSignal: c.abortSignal },
     persist: c.vars.persist,
     rememberRequest: (request) => {
       c.vars.debugRequest = {
@@ -7038,6 +7044,7 @@ export function createJuneRegistry(deps: Dependencies) {
       conversation,
       typing: createTypingActor(deps.channels),
       activity: createActivityActor({
+        ...{ effectRuntime: deps.effectRuntime },
         sentinel: deps.sentinel,
         agentActive: (id) => deps.agents?.clientActive(id) === true,
         owner: deps.owner,

@@ -68,6 +68,8 @@ export type CapabilityDependencies = Pick<
   | "inspection"
   | "capabilityConfig"
   | "capabilityInspection"
+  | "capabilityTasks"
+  | "effectRuntime"
   | "dashboardLogin"
   | "release"
   | "analytics"
