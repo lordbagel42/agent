@@ -125,8 +125,13 @@ account `Raygen`:
 | Access | self-hosted app `*--signed-in.mrrpmraow.com`, Allow Everyone, OTP + GitHub |
 | Vars | `APPS_DOMAIN`, `ACCESS_ISSUER`, `REVISION`; secrets `ACCESS_AUD`, `JUNE_KEYS` |
 
-Deploy changes from `apps-host/` with a Cloudflare API token that can edit
-Workers on the account:
+**Workers Builds deploys the host automatically**: the trigger "Deploy
+apps-host from main" on Worker `june-apps` watches `apps-host/*` on `main`, sets
+`SKIP_DEPENDENCY_INSTALL=1` (so Cloudflare does not install June's root pnpm
+workspace), runs `npm ci && npm run typecheck` in `/apps-host`, then
+`npx wrangler deploy`. Its status appears as the `Workers Builds: june-apps`
+GitHub check. To deploy manually instead, use a Cloudflare API token that can
+edit Workers on the account:
 
 ```sh
 cd apps-host
