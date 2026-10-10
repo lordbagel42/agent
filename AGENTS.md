@@ -127,6 +127,14 @@
 - For example, analytics tooling must let June query and inspect her own
   analytics. Apply the same requirement to every other capability.
 - Verify the June-facing workflow before considering a feature complete.
+- New features ship enabled by default. Raygen adds features to have them used,
+  so do not leave them behind off-by-default flags or "not enabled yet" states.
+  Enable and configure them in the live deployment as part of shipping.
+- If a feature genuinely cannot run yet (for example, it needs an API key,
+  credential, or external account), June must know it is disabled, why, and
+  exactly what is missing. Give her a way to inspect that state and resolve it
+  herself within her existing permissions, such as requesting the credential
+  from Raygen or completing the setup, rather than relying on a human to notice.
 - Always keep June up to date on how her code functions. Changes to behavior she
   relies on must update the actual runtime instructions/context she receives in
   the same change, not only developer documentation or this file.
