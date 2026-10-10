@@ -746,3 +746,25 @@ not yet available (`Cannot assign requested address`). Starting that socket afte
 the address appeared restored public readiness without restarting the website.
 Its persistent boot-order configuration was not changed by the updater rollout;
 loopback health alone does not prove public ingress is available after a reboot.
+
+For that boot race, install the reviewed
+`scripts/deploy/june-debug-proxy.socket.d/10-freebind.conf` as a root-owned 0644
+drop-in at `/etc/systemd/system/june-debug-proxy.socket.d/10-freebind.conf`.
+`FreeBind=true` lets systemd bind before the LAN address is assigned without
+changing `ListenStream`, using a wildcard listener, or weakening archive
+authentication. The socket still needs the address and ingress route to become
+reachable. Do not order this early-boot socket after `network-online.target`:
+its default ordering before `sockets.target` can create a boot ordering cycle.
+
+Use the independent installation lock and settled-timer procedure above; a
+DEBUGSHARE investigator must additionally follow its June operator-ownership
+handoff and hold requirements before any live mutation. Preserve the existing
+socket/service units and unrelated drop-ins. Reload systemd and start the failed
+socket; if it is already listening, defer a coordinated socket/proxy restart
+rather than assuming daemon-reload changed its open file descriptor. No website
+or June restart is needed to recover a failed listener. Verify systemd's loaded
+`FreeBind=yes`, the exact LAN listener, public `/health` and sign-in shell, and
+anonymous private-API rejection, not just loopback health. Prove delayed-address
+binding in a disposable network namespace rather than rebooting a shared host.
+This ingress repair does not reconcile an independent updater's storage-policy
+block or claim a new website bundle revision.
