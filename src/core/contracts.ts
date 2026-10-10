@@ -240,6 +240,8 @@ export interface ExecutionCommand {
 }
 
 export interface CompanionReply {
+  /** One strict source-registered command; payload never carries host authority. */
+  capability?: import("../capabilities/catalog.js").CapabilityCommand;
   settings?: import("../settings/contracts.js").SettingsCommand;
   debugShareResolve?: { id: string; confirmedResolved: true };
   artifact?: import("../artifacts/contracts.js").ArtifactCommand;
@@ -442,6 +444,10 @@ export interface ModelImageInput {
 }
 
 export interface ModelRequest {
+  /** Captured host ceiling, intersected with current availability by the runtime.
+   * Omitted IDs/turn deny modular actions, including legacy worker requests. */
+  capabilityIds?: readonly string[];
+  capabilityTurn?: import("../capabilities/contracts.js").CapabilityTurn;
   settingsAvailable?: boolean;
   debugShareResolveAvailable?: boolean;
   agentConversation?: boolean;

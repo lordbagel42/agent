@@ -1404,6 +1404,7 @@ async function main() {
     : undefined;
   const dependencies: Dependencies = {
     settings,
+    capabilityConfig: config.moduleConfig,
     artifacts,
     owner,
     agents,

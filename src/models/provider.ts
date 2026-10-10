@@ -6,6 +6,7 @@ import {
   artifactCommandSchema,
 } from "../artifacts/contracts.js";
 import { BROWSER_HELP, browserCommandSchema } from "../browser/contracts.js";
+import { capabilityCommandSchema } from "../capabilities/catalog.js";
 import type {
   CompanionReply,
   ModelInvocation,
@@ -465,6 +466,8 @@ function isJsonObject(value: unknown): value is JsonObject {
 
 export type ReplyCapabilities = Pick<
   ModelRequest,
+  | "capabilityIds"
+  | "capabilityTurn"
   | "settingsAvailable"
   | "debugShareResolveAvailable"
   | "agentRole"
@@ -534,12 +537,47 @@ function replyCapabilities(
     : capabilities;
 }
 
+/** Role and turn must agree; a grant list never upgrades legacy or notification
+ * turns. The dispatcher separately requires current host context and ports. */
+function modularReplySchema(grants: ReplyCapabilities) {
+  if (
+    !(
+      (grants.agentRole === "execution" &&
+        grants.capabilityTurn === "execution") ||
+      (grants.agentRole === undefined &&
+        grants.capabilityTurn === "event-decision")
+    )
+  )
+    return undefined;
+  const schema = capabilityCommandSchema(
+    grants.capabilityIds ?? [],
+    grants.capabilityTurn,
+  );
+  return schema instanceof z.ZodNever ? undefined : schema;
+}
+
 export function replyJsonSchema(
   workspaces: string[],
   capabilities: ReplyCapabilities | boolean = false,
 ) {
   const schema = legacyReplyJsonSchema(workspaces, capabilities);
   const grants = replyCapabilities(capabilities);
+  const capabilitySchema = modularReplySchema(grants);
+  const capabilityProperties = capabilitySchema
+    ? {
+        capability: {
+          anyOf: [
+            z.toJSONSchema(capabilitySchema, {
+              io: "input",
+              target: "draft-7",
+            }),
+            { type: "null" },
+          ],
+          description:
+            "One registered command from the host ceiling. Leave text empty and all other actions unset; command fields never grant authority.",
+        },
+      }
+    : {};
   if (grants.agentConversation) {
     schema.properties.text.description =
       "One plain-text response, at most 32000 characters; no reactions or split messages.";
@@ -561,7 +599,11 @@ export function replyJsonSchema(
   }
   return {
     ...schema,
-    required: schema.required.filter((key) => rolePermitsField(agentRole, key)),
+    properties: { ...schema.properties, ...capabilityProperties },
+    required: [
+      ...schema.required.filter((key) => rolePermitsField(agentRole, key)),
+      ...(capabilitySchema ? ["capability"] : []),
+    ],
   };
 }
 
@@ -2568,12 +2610,17 @@ export function parseReply(
   // Check the raw keys before normalization: even false/null cannot smuggle a
   // forbidden field past a role's schema, regardless of flags or workspaces.
   const { agentRole } = replyCapabilities(capabilities);
-  if (Object.keys(value).some((key) => !rolePermitsField(agentRole, key))) {
+  const capabilitySchema = modularReplySchema(replyCapabilities(capabilities));
+  if (
+    Object.keys(value).some((key) => !rolePermitsField(agentRole, key)) ||
+    ("capability" in value && !capabilitySchema)
+  ) {
     throw new ModelError("invalid_response", false);
   }
 
   const normalized = { ...value };
   for (const key of [
+    "capability",
     "settings",
     "debugShareResolve",
     "messages",
@@ -2667,7 +2714,9 @@ export function parseReply(
       if (normalized.inspection[key] === null)
         delete normalized.inspection[key];
   }
-  const parsed = companionReplySchema.safeParse(normalized);
+  const parsed = companionReplySchema
+    .extend({ capability: (capabilitySchema ?? z.never()).optional() })
+    .safeParse(normalized);
   if (!parsed.success) {
     if (
       recallAvailable &&
@@ -2782,6 +2831,7 @@ export function parseReply(
     throw new ModelError("invalid_response", false);
   }
   const directiveCount =
+    Number(reply.capability !== undefined) +
     Number(reply.settings !== undefined) +
     Number(reply.debugShareResolve !== undefined) +
     Number(reply.codingJob !== undefined) +
@@ -2854,7 +2904,8 @@ export function parseReply(
     directiveCount > 1 ||
     (directiveCount > 0 &&
       (reply.coding !== undefined || reply.reaction !== undefined)) ||
-    ((reply.settings !== undefined ||
+    ((reply.capability !== undefined ||
+      reply.settings !== undefined ||
       reply.debugShareResolve !== undefined ||
       reply.agentWebhook !== undefined ||
       reply.codingJob !== undefined ||

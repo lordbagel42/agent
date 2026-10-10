@@ -94,12 +94,38 @@ export const intentSnapshotSchema = z.strictObject({
   ),
 });
 export type IntentSnapshot = z.infer<typeof intentSnapshotSchema>;
+export type IntentAdmission =
+  | { status: "admitted" }
+  | {
+      status: "blocked";
+      reason: "stale_intent" | "already_started" | "settled" | "unavailable";
+    };
 /** Constructed for one authenticated source/scope and ceiling. A reference ID
  * alone never authorizes inspection or stopping another scope's work. */
 export interface IntentPort {
   inspect(reference: IntentReference): Promise<IntentSnapshot | null>;
   current(reference: IntentReference): Promise<boolean>;
-  /** Fenced is not proof that an already-started effect has settled. */
+  /** Host operation ID only. The existing owner synchronously claims first use
+   * and persists it before admission. A lost admission ACK or unknown receipt
+   * never grants replay. Missing intent/source fences deny. After each preparation
+   * await the owner must also assert its local synchronous fence immediately at
+   * dispatch; this async method and current() are not that fence. */
+  begin(
+    reference: IntentReference,
+    operationId: string,
+  ): Promise<IntentAdmission>;
+  /** Record the original operation's raw outcome even after intent becomes stale.
+   * Terminal succeeded/failed/not_started receipts are immutable. Unknown remains
+   * held until original-owner reconciliation, never a retry or release signal.
+   * Publication independently requires current intent and canDeliver. */
+  settle(
+    reference: IntentReference,
+    operationId: string,
+    outcome: EffectOutcome,
+  ): Promise<void>;
+  /** Closes the owner's generation synchronously, then persists and signals abort.
+   * Fenced stays false while an admitted descendant could dispatch; settled stays
+   * false for unknown/unretired operations. Neither means effects were undone. */
   stop(
     reference: IntentReference,
   ): Promise<{ fenced: boolean; settled: boolean }>;
