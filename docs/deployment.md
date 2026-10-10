@@ -240,8 +240,13 @@ These private cutover checkpoints complement build-unit phase markers; they do
 not create new public feed fields or claim an end-to-end timing measurement.
 
 The existing independent `slack_responder.py` has an opt-in `durableQueue` mode.
-Unlike legacy notices, this mode verifies and stores events before ACK, sends no
-"currently deploying" messages, and replays accepted traffic after handoff. It
+Unlike legacy notices, this mode verifies and stores events before ACK and
+replays accepted traffic after handoff, even when it also sends a notice. While
+forwarding is paused and the controller marker has an unblocked deployment intent,
+human direct mentions and one-to-one DMs receive the same "currently deploying"
+reply as legacy mode. Notice claims never consume queued input. Healthy forwarding,
+preparation, blocked recovery, missing/invalid markers and upstream failure alone
+do not trigger replies. Notice failures cannot reject already-persisted input. It
 starts paused without a destination. Its private SQLite database contains message
 bodies until application acceptance; protect it as private conversation data.
 Queue defaults are 10,000 events and 64 MiB of raw bodies/content types, not a
@@ -345,7 +350,9 @@ Under the existing coordinated operator/recovery ownership and deployment locks:
    `/webhooks/slack`, never the intake control routes. Queue replay always goes
    to loopback slots, regardless of the responder listener's address.
 
-   Queue mode ignores the legacy intent-marker notice policy and `upstreamPort`.
+   Queue mode ignores `upstreamPort`. Incoming-ping notices require
+   `slackResponderFeed: true` in controller configuration and the existing
+   readable intent marker, as well as paused forwarding; replay does not.
    The controller's configured legacy `origin` is retained for compatibility but
    slot health/drain use fixed 3081/3082. Neither slot port may be the intake port.
 6. Verify with disposable **real systemd units** that Node is MainPID, FD9 survives

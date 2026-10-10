@@ -1,8 +1,8 @@
 """Independent private Slack ingress. Install outside June's releases.
 
 Legacy mode stores notice hashes only. Opt-in durable intake stores private raw
-envelopes until app acceptance. Only authenticated controller cutovers can request
-swap notices; ordinary traffic in durable mode never triggers notices.
+envelopes until app acceptance. Direct pings during an unblocked, paused cutover
+also receive a deployment notice. Controller-requested swap notices are separate.
 """
 
 import hashlib
@@ -557,7 +557,23 @@ class Responder:
                 identity = hashlib.sha256(raw).hexdigest()
             else:
                 return 400, b"", "text/plain"
-            return self.enqueue(identity, raw, content_type)
+            accepted = self.enqueue(identity, raw, content_type)
+            if accepted[0] != 200:
+                return accepted
+            with self.lock:
+                paused = self.route_locked()["paused"]
+            if not paused:
+                return accepted
+            try:
+                return self.deployment_response(raw, headers, payload, keys)
+            except Exception:  # noqa: BLE001 - notice failure must not undo durable acceptance
+                print("slack_deploy_notice_unavailable", flush=True)
+                return accepted
+        return self.deployment_response(raw, headers, payload, keys)
+
+    def deployment_response(self, raw, headers, payload, keys):
+        # Notice claims are independent of intake identities: a notice must
+        # never consume or suppress the queued conversation's eventual replay.
         keys = [hashlib.sha256(json.dumps(key).encode()).hexdigest() for key in keys]
         if keys and self.handled(keys):
             return 200, b"", "text/plain"
@@ -577,15 +593,20 @@ class Responder:
         if revision is not None and not matches(SHA, revision):
             raise ValueError("invalid_responder_revision")
         if revision is None:
-            return self.forward(raw, headers)
+            return (
+                (200, b"", "text/plain")
+                if self.queue is not None
+                else self.forward(raw, headers)
+            )
         # An unresolved activation is not proof a deployment is progressing.
-        # Keep admission fenced without fabricating a deploying notice.
+        # Keep legacy admission fenced; durable intake already retained input.
         if marker["blocked"]:
-            return 503, b"", "text/plain"
+            return (200 if self.queue is not None else 503), b"", "text/plain"
         if keys and self.handled(keys, claim=True):
             return 200, b"", "text/plain"
         if payload.get("type") != "event_callback":
             return 200, b"", "text/plain"
+        event = payload["event"]
         text = event.get("text", "")
         direct = event.get("type") == "message" and event.get("channel_type") == "im"
         mentioned = isinstance(text, str) and f"<@{self.config['botUserId']}>" in text
