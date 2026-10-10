@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "june-apps",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "routes": [{ "pattern": "*mrrpmraow.com/*", "zone_name": "mrrpmraow.com" }],
+  "vars": {
+    "APPS_DOMAIN": "mrrpmraow.com",
+    "ACCESS_ISSUER": "https://bagel.cloudflareaccess.com"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "REGISTRY", "class_name": "Registry" },
+      { "name": "APP_DATA", "class_name": "AppData" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Registry", "AppData"] }
+  ],
+  "observability": { "enabled": true }
+}
