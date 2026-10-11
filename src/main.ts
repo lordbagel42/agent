@@ -1274,6 +1274,7 @@ async function main() {
       appSecret: secret(config.whatsapp.appSecretEnv),
       verifyToken: secret(config.whatsapp.verifyTokenEnv),
       accessToken: secret(config.whatsapp.accessTokenEnv),
+      effectRuntime: juneRuntime,
     });
   }
   if (config.agentMcp) {

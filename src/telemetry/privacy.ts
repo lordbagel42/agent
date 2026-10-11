@@ -99,6 +99,8 @@ const names = new Set([
   "june.capability.tasks.inspect",
   "june.webhook.dispatch",
   "june.mcp.settled",
+  "june.whatsapp.receive",
+  "june.whatsapp.send",
 ]);
 const enums: Record<string, readonly string[]> = {
   "june.channel": [

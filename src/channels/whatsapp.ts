@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { Effect, Option, Schema } from "effect";
 import type {
   ChannelAdapter,
   ChannelEvent,
@@ -6,6 +7,7 @@ import type {
   ReceiptEvent,
   SendResult,
 } from "../core/contracts.js";
+import type { JuneRuntime } from "../effect/runtime.js";
 
 const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const GRAPH_REQUEST_TIMEOUT_MS = 10_000;
@@ -15,68 +17,94 @@ const reactionSegmenter = new Intl.Segmenter(undefined, {
 });
 
 type JsonObject = Record<string, unknown>;
+const isNonEmptyString = Schema.is(Schema.NonEmptyString);
 
-function isObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
-function parseWhatsAppTimestamp(value: unknown): number | undefined {
-  if (typeof value !== "string" || !/^\d+$/.test(value)) {
-    return undefined;
-  }
-
+/** Unix seconds as a digit string; the receipt ID keeps the original text. */
+const WhatsAppTimestamp = Schema.String.check(
+  Schema.makeFilter((value) => parseWhatsAppTimestamp(value) !== undefined),
+);
+function parseWhatsAppTimestamp(value: string): number | undefined {
+  if (!/^\d+$/.test(value)) return undefined;
   const milliseconds = Number(value) * 1_000;
   return Number.isSafeInteger(milliseconds) ? milliseconds : undefined;
 }
 
-function isReceiptStatus(value: unknown): value is ReceiptEvent["status"] {
-  return (
-    value === "sent" ||
-    value === "delivered" ||
-    value === "read" ||
-    value === "failed"
-  );
-}
+// Meta adds fields over time; like the payload itself, ignore unknown keys.
+// Each item decodes on its own, so one malformed item never drops the rest.
+const UnknownArray = Schema.Array(Schema.Unknown);
+const UnknownObject = Schema.Record(Schema.String, Schema.Unknown);
+const inbound = {
+  from: Schema.NonEmptyString,
+  id: Schema.NonEmptyString,
+  timestamp: WhatsAppTimestamp,
+};
+const InboundMessage = Schema.Union([
+  Schema.Struct({
+    ...inbound,
+    type: Schema.Literal("text"),
+    text: Schema.Struct({ body: Schema.String }),
+    context: Schema.optionalKey(Schema.Unknown),
+  }),
+  Schema.Struct({
+    ...inbound,
+    type: Schema.Literal("reaction"),
+    reaction: Schema.Struct({
+      message_id: Schema.NonEmptyString,
+      emoji: Schema.String,
+    }),
+  }),
+]);
+const StatusUpdate = Schema.Struct({
+  id: Schema.NonEmptyString,
+  recipient_id: Schema.NonEmptyString,
+  status: Schema.Literals(["sent", "delivered", "read", "failed"]),
+  timestamp: WhatsAppTimestamp,
+});
+const Webhook = Schema.Struct({
+  object: Schema.Literal("whatsapp_business_account"),
+  entry: UnknownArray,
+});
+const Entry = Schema.Struct({ changes: UnknownArray });
+const Change = Schema.Struct({
+  field: Schema.Literal("messages"),
+  value: Schema.Struct({
+    metadata: Schema.Struct({ phone_number_id: Schema.Unknown }),
+    messages: Schema.optionalKey(Schema.Unknown),
+    statuses: Schema.optionalKey(Schema.Unknown),
+  }),
+});
+const decodeWebhook = Schema.decodeUnknownOption(Webhook);
+const decodeEntry = Schema.decodeUnknownOption(Entry);
+const decodeChange = Schema.decodeUnknownOption(Change);
+const decodeArray = Schema.decodeUnknownOption(UnknownArray);
+const decodeObject = Schema.decodeUnknownOption(UnknownObject);
+const decodeMessage = Schema.decodeUnknownOption(InboundMessage);
+const decodeStatus = Schema.decodeUnknownOption(StatusUpdate);
+const items = (value: unknown) =>
+  Option.getOrElse(decodeArray(value), () => []);
 
 function normalizeMessage(
   value: unknown,
   phoneNumberId: string,
 ): ChannelEvent | undefined {
-  if (!isObject(value)) {
-    return undefined;
-  }
-
-  const { from, id, timestamp, type } = value;
-  const occurredAt = parseWhatsAppTimestamp(timestamp);
-  if (
-    !isNonEmptyString(from) ||
-    !isNonEmptyString(id) ||
-    occurredAt === undefined
-  ) {
-    return undefined;
-  }
-
+  const decoded = decodeMessage(value);
+  if (Option.isNone(decoded)) return undefined;
+  const message = decoded.value;
+  const occurredAt = parseWhatsAppTimestamp(message.timestamp) as number;
   const address = {
     channel: "whatsapp" as const,
     accountId: phoneNumberId,
-    conversationId: from,
+    conversationId: message.from,
   };
 
-  if (type === "text" && isObject(value.text)) {
-    const { body } = value.text;
-    if (typeof body !== "string") {
-      return undefined;
-    }
-
+  if (message.type === "text") {
+    const body = message.text.body;
+    const context = Option.getOrUndefined(decodeObject(message.context));
     return {
-      id,
+      id: message.id,
       type: "message",
-      messageId: id,
-      senderId: from,
+      messageId: message.id,
+      senderId: message.from,
       direct: true,
       text: body,
       occurredAt,
@@ -84,61 +112,40 @@ function normalizeMessage(
       ...(/^!mcp-(cancel|reconcile)(?:\s|$)/.test(body.trim())
         ? {
             mcpCommandEligible:
-              !isObject(value.context) ||
-              (value.context.forwarded !== true &&
-                value.context.frequently_forwarded !== true),
+              context === undefined ||
+              (context.forwarded !== true &&
+                context.frequently_forwarded !== true),
           }
         : {}),
     };
   }
 
-  if (type === "reaction" && isObject(value.reaction)) {
-    const messageId = value.reaction.message_id;
-    const emoji = value.reaction.emoji;
-    if (!isNonEmptyString(messageId) || typeof emoji !== "string") {
-      return undefined;
-    }
-
-    return {
-      id,
-      type: "reaction",
-      messageId,
-      senderId: from,
-      emoji,
-      removed: emoji.length === 0,
-      occurredAt,
-      address,
-    };
-  }
-
-  return undefined;
+  const { message_id: messageId, emoji } = message.reaction;
+  return {
+    id: message.id,
+    type: "reaction",
+    messageId,
+    senderId: message.from,
+    emoji,
+    removed: emoji.length === 0,
+    occurredAt,
+    address,
+  };
 }
 
 function normalizeReceipt(
   value: unknown,
   phoneNumberId: string,
 ): ReceiptEvent | undefined {
-  if (!isObject(value)) {
-    return undefined;
-  }
-
-  const { id, recipient_id: recipientId, status, timestamp } = value;
-  const occurredAt = parseWhatsAppTimestamp(timestamp);
-  if (
-    !isNonEmptyString(id) ||
-    !isNonEmptyString(recipientId) ||
-    !isReceiptStatus(status) ||
-    occurredAt === undefined
-  ) {
-    return undefined;
-  }
-
+  const decoded = decodeStatus(value);
+  if (Option.isNone(decoded)) return undefined;
+  const { id, recipient_id: recipientId, status, timestamp } = decoded.value;
   return {
     id: `receipt:${id}:${status}:${timestamp}`,
     type: "receipt",
     messageId: id,
     status,
-    occurredAt,
+    occurredAt: parseWhatsAppTimestamp(timestamp) as number,
     address: {
       channel: "whatsapp",
       accountId: phoneNumberId,
@@ -151,47 +158,30 @@ function normalizeWebhook(
   payload: unknown,
   phoneNumberId: string,
 ): ChannelEvent[] {
-  if (
-    !isObject(payload) ||
-    payload.object !== "whatsapp_business_account" ||
-    !Array.isArray(payload.entry)
-  ) {
-    return [];
-  }
+  const webhook = decodeWebhook(payload);
+  if (Option.isNone(webhook)) return [];
 
   const events: ChannelEvent[] = [];
-  for (const entry of payload.entry) {
-    if (!isObject(entry) || !Array.isArray(entry.changes)) {
-      continue;
-    }
+  for (const rawEntry of webhook.value.entry) {
+    const entry = decodeEntry(rawEntry);
+    if (Option.isNone(entry)) continue;
 
-    for (const change of entry.changes) {
+    for (const rawChange of entry.value.changes) {
+      const change = decodeChange(rawChange);
       if (
-        !isObject(change) ||
-        change.field !== "messages" ||
-        !isObject(change.value) ||
-        !isObject(change.value.metadata) ||
-        change.value.metadata.phone_number_id !== phoneNumberId
+        Option.isNone(change) ||
+        change.value.value.metadata.phone_number_id !== phoneNumberId
       ) {
         continue;
       }
 
-      if (Array.isArray(change.value.messages)) {
-        for (const message of change.value.messages) {
-          const event = normalizeMessage(message, phoneNumberId);
-          if (event !== undefined) {
-            events.push(event);
-          }
-        }
+      for (const message of items(change.value.value.messages)) {
+        const event = normalizeMessage(message, phoneNumberId);
+        if (event !== undefined) events.push(event);
       }
-
-      if (Array.isArray(change.value.statuses)) {
-        for (const status of change.value.statuses) {
-          const event = normalizeReceipt(status, phoneNumberId);
-          if (event !== undefined) {
-            events.push(event);
-          }
-        }
+      for (const status of items(change.value.value.statuses)) {
+        const event = normalizeReceipt(status, phoneNumberId);
+        if (event !== undefined) events.push(event);
       }
     }
   }
@@ -243,41 +233,46 @@ function receiveChallenge(
   return { response: plainResponse(challenge, 200), events: [] };
 }
 
-async function receiveWebhook(
+type Received = { response: Response; events: ChannelEvent[] };
+const badRequest = (): Received => ({
+  response: plainResponse("Bad Request", 400),
+  events: [],
+});
+
+const receiveWebhook = Effect.fnUntraced(function* (
   request: Request,
   appSecret: string,
   phoneNumberId: string,
-): Promise<{ response: Response; events: ChannelEvent[] }> {
-  let rawBody: Uint8Array;
-  try {
-    rawBody = new Uint8Array(await request.arrayBuffer());
-  } catch {
-    return { response: plainResponse("Bad Request", 400), events: [] };
-  }
+) {
+  const rawBody = yield* Effect.tryPromise(() => request.arrayBuffer()).pipe(
+    Effect.map((buffer) => new Uint8Array(buffer)),
+    Effect.option,
+  );
+  if (Option.isNone(rawBody)) return badRequest();
 
   if (
     !hasValidSignature(
-      rawBody,
+      rawBody.value,
       request.headers.get("x-hub-signature-256"),
       appSecret,
     )
   ) {
-    return { response: plainResponse("Unauthorized", 401), events: [] };
+    return {
+      response: plainResponse("Unauthorized", 401),
+      events: [],
+    } satisfies Received;
   }
 
-  let payload: unknown;
-  try {
-    const body = new TextDecoder("utf-8", { fatal: true }).decode(rawBody);
-    payload = JSON.parse(body) as unknown;
-  } catch {
-    return { response: plainResponse("Bad Request", 400), events: [] };
-  }
+  const payload = Option.liftThrowable((bytes: Uint8Array) =>
+    JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+  )(rawBody.value);
+  if (Option.isNone(payload)) return badRequest();
 
   return {
     response: plainResponse("EVENT_RECEIVED", 200),
-    events: normalizeWebhook(payload, phoneNumberId),
-  };
-}
+    events: normalizeWebhook(payload.value as unknown, phoneNumberId),
+  } satisfies Received;
+});
 
 function rejected(code: string): SendResult {
   return { status: "rejected", code, retryable: false };
@@ -379,23 +374,32 @@ function parseRetryAfter(
   return Math.max(0, retryAt - now);
 }
 
-async function classifyGraphResponse(
+const GraphSent = Schema.Struct({ messages: UnknownArray });
+const decodeGraphSent = Schema.decodeUnknownOption(GraphSent);
+const decodeGraphMessage = Schema.decodeUnknownOption(
+  Schema.Struct({ id: Schema.NonEmptyString }),
+);
+const malformed: SendResult = { status: "unknown", code: "malformed_response" };
+
+const classifyGraphResponse = Effect.fnUntraced(function* (
   response: Response,
   now: number,
-): Promise<SendResult> {
+) {
   if (response.status === 429) {
     const retryAfterMs = parseRetryAfter(
       response.headers.get("retry-after"),
       now,
     );
-    return retryAfterMs === undefined
-      ? { status: "rejected", code: "http_429", retryable: true }
-      : {
-          status: "rejected",
-          code: "http_429",
-          retryable: true,
-          retryAfterMs,
-        };
+    return (
+      retryAfterMs === undefined
+        ? { status: "rejected", code: "http_429", retryable: true }
+        : {
+            status: "rejected",
+            code: "http_429",
+            retryable: true,
+            retryAfterMs,
+          }
+    ) satisfies SendResult;
   }
 
   if (response.status >= 400 && response.status < 500) {
@@ -403,68 +407,83 @@ async function classifyGraphResponse(
   }
 
   if (!response.ok) {
-    return { status: "unknown", code: `http_${response.status}` };
+    return {
+      status: "unknown",
+      code: `http_${response.status}`,
+    } satisfies SendResult;
   }
 
-  let payload: unknown;
-  try {
-    payload = (await response.json()) as unknown;
-  } catch {
-    return { status: "unknown", code: "malformed_response" };
-  }
+  const payload = yield* Effect.tryPromise(
+    () => response.json() as Promise<unknown>,
+  ).pipe(Effect.option);
+  const sent = Option.flatMap(payload, decodeGraphSent);
+  if (Option.isNone(sent)) return malformed;
 
-  if (!isObject(payload) || !Array.isArray(payload.messages)) {
-    return { status: "unknown", code: "malformed_response" };
-  }
+  const firstMessage = decodeGraphMessage(sent.value.messages[0]);
+  if (Option.isNone(firstMessage)) return malformed;
 
-  const firstMessage = payload.messages[0];
-  if (!isObject(firstMessage) || !isNonEmptyString(firstMessage.id)) {
-    return { status: "unknown", code: "malformed_response" };
-  }
+  return {
+    status: "sent",
+    messageId: firstMessage.value.id,
+  } satisfies SendResult;
+});
 
-  return { status: "sent", messageId: firstMessage.id };
-}
-
-async function sendToGraph(options: {
+const sendToGraph = Effect.fnUntraced(function* (options: {
   accessToken: string;
   apiVersion: string;
   fetch: typeof globalThis.fetch;
   now: number;
   payload: JsonObject;
   phoneNumberId: string;
-}): Promise<SendResult> {
+}) {
   const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    GRAPH_REQUEST_TIMEOUT_MS,
-  );
-  timeout.unref?.();
   const endpoint = `https://graph.facebook.com/${encodeURIComponent(options.apiVersion)}/${encodeURIComponent(options.phoneNumberId)}/messages`;
 
-  try {
-    // Keep lifecycle admission until the raw request AND response body settle.
-    // Racing a timeout would let deployment drain while a send is still live.
-    const response = await options.fetch(endpoint, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${options.accessToken}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(options.payload),
-      signal: controller.signal,
-    });
-    // Error classification needs only headers. Close even a stalled error body
-    // before releasing admission; a failed cleanup leaves the outcome unknown.
-    if (!response.ok) await response.body?.cancel();
-    return await classifyGraphResponse(response, options.now);
-  } catch {
-    return controller.signal.aborted
-      ? { status: "unknown", code: "timeout" }
-      : { status: "unknown", code: "network_error" };
-  } finally {
-    clearTimeout(timeout);
-  }
-}
+  // Keep lifecycle admission until the raw request AND response body settle.
+  // The timeout aborts the request instead of racing it, so deployment drain
+  // never sees a send that is still live.
+  return yield* Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const timeout = setTimeout(
+        () => controller.abort(),
+        GRAPH_REQUEST_TIMEOUT_MS,
+      );
+      timeout.unref?.();
+      return timeout;
+    }),
+    () =>
+      Effect.gen(function* () {
+        const response = yield* Effect.tryPromise(() =>
+          options.fetch(endpoint, {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${options.accessToken}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(options.payload),
+            signal: controller.signal,
+          }),
+        );
+        // Error classification needs only headers. Close even a stalled error
+        // body before releasing admission; a failed cleanup leaves the outcome
+        // unknown.
+        if (!response.ok)
+          yield* Effect.tryPromise(async () => {
+            await response.body?.cancel();
+          });
+        return yield* classifyGraphResponse(response, options.now);
+      }).pipe(
+        Effect.catch(() =>
+          Effect.succeed<SendResult>(
+            controller.signal.aborted
+              ? { status: "unknown", code: "timeout" }
+              : { status: "unknown", code: "network_error" },
+          ),
+        ),
+      ),
+    (timeout) => Effect.sync(() => clearTimeout(timeout)),
+  );
+});
 
 export function createWhatsAppAdapter(options: {
   appSecret: string;
@@ -474,73 +493,77 @@ export function createWhatsAppAdapter(options: {
   apiVersion: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
+  effectRuntime: JuneRuntime;
 }): ChannelAdapter {
   const fetch = options.fetch ?? globalThis.fetch;
   const now = options.now ?? Date.now;
 
+  const receive = Effect.fn("june.whatsapp.receive")(function* (
+    request: Request,
+  ) {
+    if (request.method === "GET") {
+      return receiveChallenge(request, options.verifyToken);
+    }
+
+    if (request.method === "POST") {
+      return yield* receiveWebhook(
+        request,
+        options.appSecret,
+        options.phoneNumberId,
+      );
+    }
+
+    return {
+      response: new Response("Method Not Allowed", {
+        status: 405,
+        headers: { allow: "GET, POST" },
+      }),
+      events: [],
+    } satisfies Received;
+  });
+
+  const send = Effect.fn("june.whatsapp.send")(function* (
+    message: OutboundMessage,
+  ) {
+    if (!validOutboundAddress(message, options.phoneNumberId)) {
+      return rejected("invalid_address");
+    }
+
+    const currentTime = Option.liftThrowable(now)();
+    if (
+      Option.isNone(currentTime) ||
+      !Number.isSafeInteger(currentTime.value) ||
+      currentTime.value < 0 ||
+      !Number.isSafeInteger(message.lastInboundAt) ||
+      message.lastInboundAt < 0 ||
+      message.lastInboundAt > currentTime.value
+    ) {
+      return rejected("invalid_last_inbound_at");
+    }
+
+    if (currentTime.value - message.lastInboundAt >= SERVICE_WINDOW_MS) {
+      return rejected("service_window_closed");
+    }
+
+    const payload = buildGraphPayload(message);
+    if (payload === undefined) {
+      return rejected("unsupported_payload");
+    }
+
+    return yield* sendToGraph({
+      accessToken: options.accessToken,
+      apiVersion: options.apiVersion,
+      fetch,
+      now: currentTime.value,
+      payload,
+      phoneNumberId: options.phoneNumberId,
+    });
+  });
+
   return {
     channel: "whatsapp",
     capabilities: { text: true, reactions: true, threads: false },
-    async receive(request) {
-      if (request.method === "GET") {
-        return receiveChallenge(request, options.verifyToken);
-      }
-
-      if (request.method === "POST") {
-        return receiveWebhook(
-          request,
-          options.appSecret,
-          options.phoneNumberId,
-        );
-      }
-
-      return {
-        response: new Response("Method Not Allowed", {
-          status: 405,
-          headers: { allow: "GET, POST" },
-        }),
-        events: [],
-      };
-    },
-    async send(message) {
-      if (!validOutboundAddress(message, options.phoneNumberId)) {
-        return rejected("invalid_address");
-      }
-
-      let currentTime: number;
-      try {
-        currentTime = now();
-      } catch {
-        return rejected("invalid_last_inbound_at");
-      }
-
-      if (
-        !Number.isSafeInteger(currentTime) ||
-        currentTime < 0 ||
-        !Number.isSafeInteger(message.lastInboundAt) ||
-        message.lastInboundAt < 0 ||
-        message.lastInboundAt > currentTime
-      ) {
-        return rejected("invalid_last_inbound_at");
-      }
-
-      if (currentTime - message.lastInboundAt >= SERVICE_WINDOW_MS) {
-        return rejected("service_window_closed");
-      }
-
-      const payload = buildGraphPayload(message);
-      if (payload === undefined) {
-        return rejected("unsupported_payload");
-      }
-
-      return sendToGraph({
-        accessToken: options.accessToken,
-        apiVersion: options.apiVersion,
-        fetch,
-        now: currentTime,
-        payload,
-        phoneNumberId: options.phoneNumberId,
-      });
-    },
+    receive: (request) => options.effectRuntime.runPromise(receive(request)),
+    send: (message) => options.effectRuntime.runPromise(send(message)),
   };
 }
