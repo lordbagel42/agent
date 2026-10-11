@@ -227,7 +227,7 @@ const companionReplyFields = {
   interrupt: optional(Schema.Boolean),
   typingEnabled: optional(Schema.Boolean),
   workflow: optional(zodLeaf(workflowCommandSchema)),
-  javascript: optional(zodLeaf(javascriptSchema)),
+  javascript: optional(javascriptSchema),
   emojiSearch: optional(zodLeaf(emojiSearchSchema)),
   readImage: optional(zodLeaf(readImageSchema)),
   readVideo: optional(zodLeaf(readImageSchema)),

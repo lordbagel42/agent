@@ -1,14 +1,17 @@
 import { getQuickJS, type QuickJSHandle } from "quickjs-emscripten";
-import type { z } from "zod";
-import { type JavaScriptResult, javascriptSchema } from "./javascript.js";
+import {
+  type JavaScriptRequest,
+  type JavaScriptResult,
+  validJavaScriptRequest,
+} from "./javascript.js";
 
 /** No host capabilities are installed except a bounded, string-only log sink. */
 export async function runJavaScript(
-  request: z.infer<typeof javascriptSchema>,
+  request: JavaScriptRequest,
   signal: AbortSignal,
 ): Promise<JavaScriptResult> {
   const logs: string[] = [];
-  if (!javascriptSchema.safeParse(request).success)
+  if (!validJavaScriptRequest(request))
     return { status: "error", logs, error: "Source or input limit exceeded." };
   try {
     JSON.parse(request.inputJson);
