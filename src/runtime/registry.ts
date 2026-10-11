@@ -5310,7 +5310,18 @@ export function createJuneRegistry(deps: Dependencies) {
                                   error instanceof ModelError &&
                                   error.code === "invalid_recall_category"
                                     ? { text: invalidRecallCategory }
-                                    : null,
+                                    : // A timeout is a slow answer, not an unreachable model.
+                                      version >= 3 &&
+                                        body.type === "event" &&
+                                        phase === "reply" &&
+                                        !signal.aborted &&
+                                        valid(step.state) &&
+                                        error instanceof ModelError &&
+                                        error.code === "timeout"
+                                      ? {
+                                          text: "My model took too long to answer, so I stopped waiting. Your message is saved; please try again.",
+                                        }
+                                      : null,
                                 retryable:
                                   !signal.aborted &&
                                   error instanceof ModelError &&

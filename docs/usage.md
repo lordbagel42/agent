@@ -540,7 +540,10 @@ API providers accept `maxOutputTokens` and `timeoutMs`; OpenAI also accepts
 `default`), but has no hard output-token cap. Defaults are unchanged.
 
 For the existing dedicated Codex login, configure Astra
-`low`/`fast`/15000ms for `model` and Astra `high`/`fast`/75000ms for `deepModel`.
+`low`/`fast`/45000ms for `model` and Astra `high`/`fast`/75000ms for `deepModel`.
+The earlier 15000ms fast limit cut off the provider's latency tail: about 1% of
+live fast calls hit it while completed calls reached 14.8 s. A timed-out reply
+sends "My model took too long to answer…" and is not retried.
 Web-search synthesis uses the primary model, so these settings request fast tier
 for every active conversational pass. Memory, reflection and coding have separate
 model configurations and remain disabled in this deployment.
