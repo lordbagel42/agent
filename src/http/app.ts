@@ -55,6 +55,8 @@ import {
   type WakeupWebhooks,
 } from "../wakeups/webhooks.js";
 import { createWebRoutes, type WebDependencies } from "../web/routes.js";
+import { mountEffectRoutes } from "./effect.js";
+import { jobPaths, jobRoutes } from "./jobs.js";
 
 export interface HttpDependencies {
   /** Serves the routes already migrated to Effect. */
@@ -595,54 +597,15 @@ export function createHttpApp(deps: HttpDependencies) {
         : c.json({ error: "debugshare_not_found" }, 404);
     });
   }
-  app.get("/operator/jobs/:id", async (c) => {
-    const id = c.req.param("id");
-    if (!/^[a-f0-9]{64}$/.test(id))
-      return c.json({ error: "invalid_job_id" }, 400);
-    const job = await deps.inspectJob(id);
-    return job === undefined
-      ? c.json({ error: "not_found" }, 404)
-      : Response.json(job);
-  });
-  if (deps.inspectJobDiff) {
-    const inspect = deps.inspectJobDiff;
-    app.get("/operator/jobs/:id/diff", async (c) => {
-      const id = c.req.param("id");
-      if (!/^[a-f0-9]{64}$/.test(id) || c.req.url.includes("?"))
-        return c.json({ error: "job_id_only" }, 400);
-      const summary = await inspect(id);
-      return summary
-        ? c.json(summary)
-        : c.json({ error: "diff_unavailable" }, 409);
-    });
-  }
-  app.post("/operator/jobs/:id/resume", async (c) => {
-    const id = c.req.param("id");
-    const input = await c.req.json().catch(() => null);
-    if (
-      !/^[a-f0-9]{64}$/.test(id) ||
-      !z.strictObject({ confirmedStopped: z.literal(true) }).safeParse(input)
-        .success
-    ) {
-      return c.json({ error: "confirm_previous_worker_stopped" }, 400);
-    }
-    const commandId = z.uuid().safeParse(c.req.header("idempotency-key"));
-    if (!commandId.success)
-      return c.json({ error: "uuid_idempotency_key_required" }, 400);
-    return (await deps.resumeJob(id, commandId.data))
-      ? c.json({ queued: true }, 202)
-      : c.json({ error: "job_not_resumable" }, 409);
-  });
-  if (deps.cancelJob) {
-    const cancel = deps.cancelJob;
-    app.post("/operator/jobs/:id/cancel", async (c) => {
-      const id = c.req.param("id");
-      if (!/^[a-f0-9]{64}$/.test(id))
-        return c.json({ error: "invalid_job_id" }, 400);
-      return (await cancel(id))
-        ? c.json({ cancellationRequested: true }, 202)
-        : c.json({ error: "not_found" }, 404);
-    });
-  }
+  const jobs = {
+    inspectJob: deps.inspectJob,
+    inspectJobDiff: deps.inspectJobDiff,
+    resumeJob: deps.resumeJob,
+    cancelJob: deps.cancelJob,
+    report: () => void deps.automaticRepairs?.report("http"),
+  };
+  const jobHandler = mountEffectRoutes(deps.runtime, jobRoutes(jobs));
+  app.on("GET", jobPaths(jobs).get, jobHandler);
+  app.on("POST", jobPaths(jobs).post, jobHandler);
   return app;
 }
