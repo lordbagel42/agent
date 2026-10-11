@@ -1,19 +1,27 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { z } from "zod";
+import { Option, Schema } from "effect";
 import type { MessageEvent, OutboundMessage } from "../core/contracts.js";
 import { questionSchema } from "../core/question.js";
+import { Int, isPattern } from "../effect/schema.js";
 
-const buttonSchema = z.strictObject({
-  id: z.string().min(1).max(200),
-  team: z.string().min(1).max(80),
-  channel: z.string().regex(/^[CDG][A-Z0-9_]+$/),
-  channelType: z.enum(["im", "mpim", "channel", "group"]).optional(),
-  user: z.string().min(1).max(80),
-  thread: z.string().max(100).optional(),
-  expires: z.number().int(),
-  prompt: z.string().min(1).max(300),
-  option: z.string().min(1).max(75),
-  index: z.number().int().min(0).max(4),
+const bounded = (min: number, max: number) =>
+  Schema.String.check(Schema.isMinLength(min), Schema.isMaxLength(max));
+const buttonSchema = Schema.Struct({
+  id: bounded(1, 200),
+  team: bounded(1, 80),
+  channel: Schema.String.check(isPattern(/^[CDG][A-Z0-9_]+$/)),
+  channelType: Schema.optionalKey(
+    Schema.Literals(["im", "mpim", "channel", "group"]),
+  ),
+  user: bounded(1, 80),
+  thread: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(100))),
+  expires: Int(),
+  prompt: bounded(1, 300),
+  option: bounded(1, 75),
+  index: Int({ minimum: 0, maximum: 4 }),
+});
+const decodeButton = Schema.decodeUnknownOption(buttonSchema, {
+  onExcessProperty: "error",
 });
 
 function signature(value: string, secret: string) {
@@ -75,22 +83,26 @@ export function slackQuestionBlocks(
   ];
 }
 
-const callbackSchema = z.object({
-  type: z.literal("block_actions"),
-  team: z.object({ id: z.string() }),
-  user: z.object({ id: z.string() }),
-  channel: z.object({ id: z.string() }),
-  message: z.object({ user: z.string(), ts: z.string().regex(/^\d+\.\d+$/) }),
-  actions: z
-    .array(
-      z.object({
-        type: z.literal("button"),
-        action_id: z.string(),
-        value: z.string().max(2000),
-      }),
-    )
-    .length(1),
+const id = Schema.Struct({ id: Schema.String });
+/** Slack's payload carries many more fields; like Zod objects, ignore them. */
+const callbackSchema = Schema.Struct({
+  type: Schema.Literal("block_actions"),
+  team: id,
+  user: id,
+  channel: id,
+  message: Schema.Struct({
+    user: Schema.String,
+    ts: Schema.String.check(isPattern(/^\d+\.\d+$/)),
+  }),
+  actions: Schema.Array(
+    Schema.Struct({
+      type: Schema.Literal("button"),
+      action_id: Schema.String,
+      value: Schema.String.check(Schema.isMaxLength(2000)),
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(1)),
 });
+const decodeCallback = Schema.decodeUnknownOption(callbackSchema);
 
 /** Call only after verifying Slack's signature over the original raw request. */
 export function slackQuestionAnswer(
@@ -100,9 +112,9 @@ export function slackQuestionAnswer(
   secret: string,
   now: number,
 ): MessageEvent | undefined {
-  const parsed = callbackSchema.safeParse(payload);
-  if (!parsed.success) return undefined;
-  const value = parsed.data;
+  const parsed = decodeCallback(payload);
+  if (Option.isNone(parsed)) return undefined;
+  const value = parsed.value;
   const action = value.actions[0];
   if (!action || value.team.id !== team || value.message.user !== bot)
     return undefined;
@@ -118,9 +130,9 @@ export function slackQuestionAnswer(
   } catch {
     return undefined;
   }
-  const button = buttonSchema.safeParse(decoded);
-  if (!button.success) return undefined;
-  const choice = button.data;
+  const button = decodeButton(decoded);
+  if (Option.isNone(button)) return undefined;
+  const choice = button.value;
   // Existing signed DM buttons predate the explicit surface field.
   const channelType =
     choice.channelType ?? (choice.channel.startsWith("D") ? "im" : undefined);
