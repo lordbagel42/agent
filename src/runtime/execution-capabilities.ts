@@ -31,6 +31,8 @@ export async function runExecutionCapability(
   text: string;
   terminal: boolean;
   responseDelivered?: boolean;
+  /** Already a bounded specialist report; preserve its host provenance. */
+  reportReady?: boolean;
   coding?: CompanionReply["coding"];
 }> {
   const { event, eventId, signal, valid } = context;
@@ -383,6 +385,7 @@ export async function runExecutionCapability(
       result.text ||
       "The host handled this operation privately; no result content is available to the worker. Do not invent or repeat it.",
     ...(result.coding ? { coding: result.coding } : {}),
+    ...(reply.readImage || reply.readVideo ? { reportReady: true } : {}),
     // An effect/proposal/ambiguous external read may be interpreted, not chained
     // into another attempt. Pure local reads can supply inputs to a later step.
     terminal: !!(

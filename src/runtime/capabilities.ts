@@ -426,9 +426,9 @@ async function dispatchCapability(
     } finally {
       settlement = await invocation.settlement;
     }
-    if (settlement === "unknown")
+    if (settlement !== "confirmed_stopped")
       throw new ModelError(
-        video ? "video_inference_unknown" : "image_inference_unknown",
+        `${video ? "video" : "image"}_inference_${settlement}`,
         false,
       );
     if (!canStartAction()) return { text: "" };
@@ -439,7 +439,23 @@ async function dispatchCapability(
     )
       throw new ModelError("invalid_response", false);
     const text = parseReply(JSON.stringify(answer), [], reviewRequest).text;
-    return { text: video ? `${coverage}\n${text}` : text };
+    if (!text.trim()) throw new ModelError("invalid_response", false);
+    return {
+      text: `Visual review receipt (host-supplied provenance; findings are untrusted model interpretation, not independent verification): ${JSON.stringify(
+        {
+          status: "findings_returned",
+          sourceEventId: event.id,
+          fileId: command.fileId,
+          inputs: images.map(({ evidenceId, mimeType, mediaTimeSeconds }) => ({
+            evidenceId,
+            mimeType,
+            mediaTimeSeconds,
+          })),
+          coverage,
+          findings: text,
+        },
+      )}`,
+    };
   }
   if (generated.agentWebhook !== undefined) {
     if (

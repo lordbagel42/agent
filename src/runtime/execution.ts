@@ -13,6 +13,7 @@ import type {
   OutboundMessage,
   SendResult,
 } from "../core/contracts.js";
+import { VISUAL_EVIDENCE_KNOWLEDGE } from "../core/read-image.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import { ENVIRONMENT_KNOWLEDGE } from "../environments/contracts.js";
@@ -162,6 +163,8 @@ interface RequestState extends ExecutionRequest {
     | "cancelled"
     | "needs_review";
   report?: string;
+  /** Host-only provenance. Absent legacy/model reports remain unverified. */
+  reportOrigin?: "host_media_read";
   coding?: CodingRequest;
   /** Host-created early judgment snapshot, rechecked at queue admission. */
   sentinelAdmission?: SentinelAdmission;
@@ -283,6 +286,9 @@ export function createExecutionActor(
           ).length,
           status: !current(c.state) ? "revoked" : (latest?.status ?? "idle"),
           report: !current(c.state) ? "" : (latest?.report ?? ""),
+          reportOrigin: current(c.state)
+            ? (latest?.reportOrigin ?? "unverified_report")
+            : "unverified_report",
           evidenceIds: current(c.state) ? c.state.evidenceIds : [],
         };
       },
@@ -293,6 +299,7 @@ export function createExecutionActor(
           ? null
           : {
               ...request,
+              reportOrigin: request.reportOrigin ?? "unverified_report",
               evidenceIds: [...c.state.evidenceIds],
               // Silence needs host delivery evidence, not a worker's claim.
               silent:
@@ -323,6 +330,7 @@ export function createExecutionActor(
           return;
         c.state.codingReports.push(receipt);
         request.report = report.slice(0, 3500);
+        delete request.reportOrigin;
         c.state.history.push({
           role: "user",
           content: `Coding supervisor report (untrusted claims; no new permission): ${request.report}`,
@@ -385,11 +393,13 @@ export function createExecutionActor(
           if (request.status === "queued" || request.status === "running") {
             request.status = "cancelled";
             request.report = "Execution cancelled; no completion is claimed.";
+            delete request.reportOrigin;
           }
           if (revoke) {
             request.task = "";
             request.source.text = "";
             delete request.report;
+            delete request.reportOrigin;
             delete request.coding;
             delete request.skillCodingProposal;
           }
@@ -581,6 +591,7 @@ export function createExecutionActor(
                               DEBUG_ESCALATION_HELP,
                               TASK_OWNERSHIP_HELP,
                               TOOL_FAILURE_KNOWLEDGE,
+                              VISUAL_EVIDENCE_KNOWLEDGE,
                               ENVIRONMENT_KNOWLEDGE,
                               AUDIO_HELP,
                               "Audio knowledge is not a calling grant. This legacy/contextless worker cannot place or manage calls.",
@@ -1174,11 +1185,18 @@ export function createExecutionActor(
                               // still owns worker cancellation and history clearing.
                               outputGuards?.dispose();
                             }
-                            if (observation.responseDelivered) {
-                              // The host's private response is the answer. Do not ask
-                              // another model to reinterpret or contradict its receipt.
+                            if (
+                              observation.responseDelivered ||
+                              observation.reportReady
+                            ) {
+                              // Keep private deliveries silent and forward visual
+                              // findings with their host binding, not a worker rewrite.
                               request.status = "completed";
-                              request.report = "";
+                              request.report = observation.responseDelivered
+                                ? ""
+                                : observation.text;
+                              if (observation.reportReady)
+                                request.reportOrigin = "host_media_read";
                               await step.vars.persist();
                               break;
                             }
@@ -1187,6 +1205,7 @@ export function createExecutionActor(
                           }
                           request.status = "completed";
                           request.report = reply.text;
+                          delete request.reportOrigin;
                           if (reply.coding) request.coding = reply.coding;
                           if (reply.skillCodingProposal)
                             request.skillCodingProposal =
@@ -1221,6 +1240,7 @@ export function createExecutionActor(
                             }),
                           );
                           span.setAttribute("error.type", code);
+                          delete request.reportOrigin;
                           request.report = deadlineSignal.aborted
                             ? "Execution reached its five-minute deadline. Unfinished work was cancelled; this does not confirm that upstream inference stopped or that the requested capability is absent. Any unfinished started operation remains unconfirmed. No automatic retry was made; another attempt requires a fresh request."
                             : error instanceof RepositoryError
