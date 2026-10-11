@@ -7,6 +7,7 @@ import type {
   ModelRequest,
   ModelSettlement,
 } from "../core/contracts.js";
+import { encodeModelAudio } from "./audio-input.js";
 import {
   type CodexProviderOptions,
   codexEnvironment,
@@ -346,6 +347,8 @@ export function createHotCodexProvider(
         throw failure("volatile_storage_unavailable");
       root = await mkdtemp(join("/dev/shm", "june-hot-codex-"));
       safeConfig.sqlite_home = root;
+      safeConfig.log_dir = root;
+      safeConfig["history.persistence"] = "none";
       if (stopping) return;
       const args = ["app-server", "--listen", "stdio://"];
       for (const [key, value] of Object.entries(safeConfig))
@@ -412,6 +415,28 @@ export function createHotCodexProvider(
   })();
 
   const provider = {
+    async supportsAudio() {
+      await startup;
+      if (stopping || errorCode) return false;
+      try {
+        const catalog = object(
+          await rpc("model/list", { limit: 100, includeHidden: true }),
+        );
+        return (
+          Array.isArray(catalog.data) &&
+          catalog.data.some((entry) => {
+            const item = object(entry);
+            return (
+              item.model === model &&
+              Array.isArray(item.inputModalities) &&
+              item.inputModalities.includes("audio")
+            );
+          })
+        );
+      } catch {
+        return false;
+      }
+    },
     async ready() {
       await startup;
       if (errorCode || stopping)
@@ -450,11 +475,20 @@ export function createHotCodexProvider(
       const operation = (async () => {
         signal?.throwIfAborted();
         const images = encodeModelImages(request.images);
+        const audio =
+          request.audio === undefined
+            ? undefined
+            : encodeModelAudio(request.audio);
         const prompt = codexPrompt(request);
         await startup;
         signal?.throwIfAborted();
         if (stopping || errorCode)
           throw failure(errorCode ?? "provider_unavailable");
+        // Codex silently substitutes text when model metadata excludes audio.
+        // Refuse before turn/start instead; never forge modality metadata.
+        if (audio && !(await provider.supportsAudio()))
+          throw failure("audio_input_unsupported");
+        signal?.throwIfAborted();
         // Telemetry must never change inference or retirement behavior.
         const timing: NonNullable<ModelRequest["onProviderTiming"]> = (
           stage,
@@ -482,7 +516,9 @@ export function createHotCodexProvider(
               // text-only turns and the 64 KiB answer cap remain unchanged.
               responseByteLimit:
                 MAX_BYTES +
-                3 * images.reduce((sum, image) => sum + image.data.length, 0),
+                3 *
+                  (images.reduce((sum, image) => sum + image.data.length, 0) +
+                    (audio?.data.length ?? 0)),
               terminal: false,
               timing,
               ended: Promise.withResolvers<void>(),
@@ -516,6 +552,14 @@ export function createHotCodexProvider(
                       type: "image",
                       url: `data:${mimeType};base64,${data}`,
                     })),
+                    ...(audio
+                      ? [
+                          {
+                            type: "audio",
+                            url: `data:audio/wav;base64,${audio.data}`,
+                          },
+                        ]
+                      : []),
                   ],
                   outputSchema:
                     format?.schema ??

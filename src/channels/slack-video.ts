@@ -2,7 +2,17 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Effect, Schema } from "effect";
 import type { ChannelAdapter, ModelImageInput } from "../core/contracts.js";
+import {
+  audioDurationSeconds,
+  modelAudioSchema,
+  VIDEO_AUDIO_CHANNELS,
+  VIDEO_AUDIO_RATE,
+  VIDEO_AUDIO_SECONDS,
+  type VideoAudio,
+} from "../core/media.js";
+import { decodeStrict } from "../effect/schema.js";
 import { createSlackFileReader } from "./slack-images.js";
 
 /** Only our own child is terminated. Always await close, including cancellation,
@@ -72,9 +82,107 @@ async function decode(
   });
 }
 
+class VideoAudioUnavailable extends Schema.TaggedError<VideoAudioUnavailable>()(
+  "VideoAudioUnavailable",
+  {},
+) {}
+const audioAttempt = <A>(run: () => Promise<A>) =>
+  Effect.tryPromise({ try: run, catch: () => new VideoAudioUnavailable() });
+const audioStreams = Schema.Struct({
+  streams: Schema.Array(
+    Schema.Struct({ index: Schema.Int, channels: Schema.Literals([1, 2]) }),
+  ),
+});
+
+const readAudio = Effect.fn("june.slack.video.audio")(function* (
+  input: string[],
+  home: string,
+  fileId: string,
+  signal: AbortSignal,
+): Effect.fn.Return<VideoAudio, VideoAudioUnavailable> {
+  const probe = yield* audioAttempt(() =>
+    decode(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        ...input,
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=index,channels",
+        "-of",
+        "json",
+      ],
+      home,
+      signal,
+    ),
+  );
+  const info = yield* Effect.try({
+    // ffprobe also emits empty programs/stream_groups on some versions.
+    // Decode just the selected stream fields; never surface other metadata.
+    try: () => Schema.decodeUnknownSync(audioStreams)(JSON.parse(probe.stdout)),
+    catch: () => new VideoAudioUnavailable(),
+  });
+  if (info.streams.length === 0) return { status: "absent" };
+  yield* audioAttempt(() =>
+    decode(
+      "ffmpeg",
+      [
+        "-nostdin",
+        "-xerror",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        ...input,
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-filter_threads",
+        "1",
+        "-af",
+        `asetpts=PTS-STARTPTS,atrim=duration=${VIDEO_AUDIO_SECONDS}`,
+        "-t",
+        String(VIDEO_AUDIO_SECONDS),
+        // Preserve stereo: a mono downmix can cancel opposite-phase sound.
+        // Reject multichannel sources above instead of silently dropping them.
+        "-ac",
+        String(VIDEO_AUDIO_CHANNELS),
+        "-ar",
+        String(VIDEO_AUDIO_RATE),
+        "-threads",
+        "1",
+        "-map_metadata",
+        "-1",
+        "-f",
+        "s16le",
+        "audio.pcm",
+      ],
+      home,
+      signal,
+    ),
+  );
+  const data = yield* audioAttempt(() => readFile(join(home, "audio.pcm")));
+  const audio = yield* Effect.try({
+    try: () =>
+      decodeStrict(modelAudioSchema)({
+        evidenceId: `slack:${fileId}:audio:0`,
+        data,
+      }),
+    catch: () => new VideoAudioUnavailable(),
+  });
+  // Only exact decoded digital silence is classified here. Quiet sounds are
+  // still evidence; absence of intelligible speech is a model judgment.
+  return data.every((byte) => byte === 0)
+    ? { status: "silent", durationSeconds: audioDurationSeconds(audio) }
+    : { status: "ready", input: audio };
+});
+
 /** MP4/MOV only: force the demuxer and disable external tracks. Media cannot
  * select network protocols, playlists, local references, or decoder arguments.
- * No audio is decoded. Files live only in a mode-0700 temporary directory. */
+ * Files live only in a mode-0700 temporary directory. Audio has its own bound. */
 export function createSlackVideoReader(
   options: Parameters<typeof createSlackFileReader>[0],
 ): NonNullable<ChannelAdapter["readVideo"]> {
@@ -232,8 +340,18 @@ export function createSlackVideoReader(
           mediaTimeSeconds: time,
         });
       }
+      // Audio decode failure must not erase valid visual evidence. Pass the
+      // caller's signal into native operations and await child close before
+      // Effect finishes, including cancellation and temporary-file cleanup.
+      const audio = await options.effectRuntime.runPromise(
+        readAudio(input, home, fileId, signal).pipe(
+          Effect.catchTag("VideoAudioUnavailable", () =>
+            Effect.succeed({ status: "unavailable" } as const),
+          ),
+        ),
+      );
       signal.throwIfAborted();
-      return { status: "ready", images };
+      return { status: "ready", images, audio };
     } catch {
       // Decoder/Slack diagnostics may contain private metadata. Never return it.
       return { status: "unavailable" };

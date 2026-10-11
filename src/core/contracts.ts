@@ -205,14 +205,18 @@ export interface ChannelAdapter {
     | { status: "ready"; image: ModelImageInput }
     | { status: "unavailable"; code?: "files_read_required" }
   >;
-  /** Ephemeral sampled video frames; same initiating-attachment boundary as images.
-   * Decode in private temporary storage, remove it before returning, no audio. */
+  /** Ephemeral video/audio evidence; same initiating-attachment boundary as images.
+   * Decode in private temporary storage and remove it before returning. */
   readVideo?(
     event: MessageEvent,
     fileId: string,
     signal: AbortSignal,
   ): Promise<
-    | { status: "ready"; images: ModelImageInput[] }
+    | {
+        status: "ready";
+        images: ModelImageInput[];
+        audio: import("./media.js").VideoAudio;
+      }
     | { status: "unavailable"; code?: "files_read_required" }
   >;
   /** Ephemeral host activity, never a model action or a durable delivery.
@@ -487,6 +491,9 @@ export interface ModelRequest {
    * The caller authorizes evidence access; providers reject invalid inputs.
    * Never serialize bytes into text prompts, history, or journals. */
   images?: ModelImageInput[];
+  /** Host-only bounded decoded audio. Unsupported providers must reject it,
+   * never silently replace it with text or pretend it was heard. */
+  audio?: import("./media.js").ModelAudioInput;
   /** Host-only accounting label, never part of a provider prompt. */
   usageStage?: "fast" | "deep" | "synthesis" | "execution" | "reflection";
   /** Host diagnostics callback only; never serialize into prompts or journals.
@@ -579,6 +586,9 @@ export interface ModelInvocation {
 }
 
 export interface ModelProvider {
+  /** Current selected-model support, not proof of listening or model quality.
+   * Omitted means unsupported. No inference or provider switching. */
+  supportsAudio?(): Promise<boolean>;
   /** Optional host-only lifecycle contract. Return the handle before dispatch;
    * answer timing matches reply, while settlement can arrive later. Wrappers
    * must cover every child, including caught failures and no-call paths. */

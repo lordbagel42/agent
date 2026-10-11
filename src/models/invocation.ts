@@ -65,6 +65,7 @@ export function wrapModelProvider(
     return { answer, settlement: answer.then(finish, finish) };
   };
   return {
+    supportsAudio: () => model.supportsAudio?.() ?? Promise.resolve(false),
     beginReply,
     reply: (...args: Parameters<ModelProvider["reply"]>) =>
       beginReply(...args).answer,
