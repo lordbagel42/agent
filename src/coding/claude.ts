@@ -8,7 +8,9 @@ import type {
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
-import type { CodingRuntime } from "../core/contracts.js";
+import { Effect, Schema } from "effect";
+import type { CodingResult, CodingRuntime } from "../core/contracts.js";
+import type { JuneRuntime } from "../effect/runtime.js";
 
 /** An explicit capability grant, not a filesystem or network sandbox. */
 export type ClaudeTool = "Read" | "Glob" | "Grep" | "Edit" | "Write" | "Bash";
@@ -26,26 +28,31 @@ export interface ClaudeRuntimeOptions {
   model?: string;
   maxTurns?: number;
   query?: ClaudeQuery;
+  effectRuntime: JuneRuntime;
 }
 
-export type ClaudeRuntimeErrorCode =
-  | "unsupported_auth"
-  | "invalid_configuration"
-  | "state_unavailable"
-  | "cancelled"
-  | "thread_save_failed"
-  | "thread_mismatch"
-  | "execution_failed"
-  | "stream_failed"
-  | "result_not_reported";
+const ERROR_CODES = [
+  "unsupported_auth",
+  "invalid_configuration",
+  "state_unavailable",
+  "cancelled",
+  "thread_save_failed",
+  "thread_mismatch",
+  "execution_failed",
+  "stream_failed",
+  "result_not_reported",
+] as const;
+export type ClaudeRuntimeErrorCode = (typeof ERROR_CODES)[number];
 
 /** Deliberately excludes provider errors, prompts, paths and credentials. */
-export class ClaudeRuntimeError extends Error {
-  constructor(readonly code: ClaudeRuntimeErrorCode) {
-    super(`Claude Code runtime: ${code}.`);
-    this.name = "ClaudeRuntimeError";
-  }
+export class ClaudeRuntimeError extends Schema.TaggedError<ClaudeRuntimeError>()(
+  "ClaudeRuntimeError",
+  { code: Schema.Literals(ERROR_CODES) },
+) {
+  override readonly message = `Claude Code runtime: ${this.code}.`;
 }
+const failure = (code: ClaudeRuntimeErrorCode) =>
+  new ClaudeRuntimeError({ code });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TOOLS: ClaudeTool[] = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"];
@@ -66,51 +73,53 @@ function contains(parent: string, child: string): boolean {
   return path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path);
 }
 
-async function prepareState(directory: string, cwd: string): Promise<string> {
-  try {
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const [home, workspace, desktop, info] = await Promise.all([
-      realpath(directory),
-      realpath(cwd),
-      realpath(homedir()),
-      stat(directory),
-    ]);
-    // Native execution is trusted, but accidental transcript/credential mixing
-    // with the desktop profile or the editable repository must fail closed.
-    if (
-      !info.isDirectory() ||
-      (info.mode & 0o077) !== 0 ||
-      contains(home, desktop) ||
-      contains(workspace, home) ||
-      contains(home, workspace) ||
-      contains(join(desktop, ".claude"), home)
-    ) {
-      throw new ClaudeRuntimeError("state_unavailable");
-    }
-    const configDirectory = join(home, ".claude");
-    await mkdir(configDirectory, { recursive: true, mode: 0o700 });
-    const configInfo = await lstat(configDirectory);
-    if (!configInfo.isDirectory() || (configInfo.mode & 0o077) !== 0) {
-      throw new ClaudeRuntimeError("state_unavailable");
-    }
-    for (const path of [
-      join(configDirectory, ".credentials.json"),
-      join(configDirectory, "settings.json"),
-    ]) {
-      try {
-        await access(path);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw error;
+const prepareState = (directory: string, cwd: string) =>
+  Effect.tryPromise({
+    try: async () => {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const [home, workspace, desktop, info] = await Promise.all([
+        realpath(directory),
+        realpath(cwd),
+        realpath(homedir()),
+        stat(directory),
+      ]);
+      // Native execution is trusted, but accidental transcript/credential mixing
+      // with the desktop profile or the editable repository must fail closed.
+      if (
+        !info.isDirectory() ||
+        (info.mode & 0o077) !== 0 ||
+        contains(home, desktop) ||
+        contains(workspace, home) ||
+        contains(home, workspace) ||
+        contains(join(desktop, ".claude"), home)
+      ) {
+        throw failure("state_unavailable");
       }
-      throw new ClaudeRuntimeError("unsupported_auth");
-    }
-    return home;
-  } catch (error) {
-    if (error instanceof ClaudeRuntimeError) throw error;
-    throw new ClaudeRuntimeError("state_unavailable");
-  }
-}
+      const configDirectory = join(home, ".claude");
+      await mkdir(configDirectory, { recursive: true, mode: 0o700 });
+      const configInfo = await lstat(configDirectory);
+      if (!configInfo.isDirectory() || (configInfo.mode & 0o077) !== 0) {
+        throw failure("state_unavailable");
+      }
+      for (const path of [
+        join(configDirectory, ".credentials.json"),
+        join(configDirectory, "settings.json"),
+      ]) {
+        try {
+          await access(path);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+          throw error;
+        }
+        throw failure("unsupported_auth");
+      }
+      return home;
+    },
+    catch: (error) =>
+      error instanceof ClaudeRuntimeError
+        ? error
+        : failure("state_unavailable"),
+  });
 
 /**
  * API-key integration, not a Claude subscription login bridge. Run only on a
@@ -131,7 +140,7 @@ export function createClaudeRuntime(
     config.auth.apiKey.startsWith("sk-ant-oat") ||
     Object.keys(config.auth).some((key) => !["type", "apiKey"].includes(key))
   ) {
-    throw new ClaudeRuntimeError("unsupported_auth");
+    throw failure("unsupported_auth");
   }
   const tools = [...(config.allowedTools ?? [])];
   const maxTurns = config.maxTurns ?? 40;
@@ -146,50 +155,46 @@ export function createClaudeRuntime(
           "model",
           "maxTurns",
           "query",
+          "effectRuntime",
         ].includes(key),
     ) ||
     tools.some((tool) => !TOOLS.includes(tool)) ||
     !Number.isSafeInteger(maxTurns) ||
     maxTurns < 1
   ) {
-    throw new ClaudeRuntimeError("invalid_configuration");
+    throw failure("invalid_configuration");
   }
   const { apiKey } = config.auth;
   const { stateDirectory, model, query = sdkQuery } = config;
 
-  return {
-    async run(input) {
-      const cancelled = () => {
-        if (input.signal.aborted) throw new ClaudeRuntimeError("cancelled");
-      };
-      cancelled();
-      if (input.threadId !== undefined && !UUID.test(input.threadId)) {
-        throw new ClaudeRuntimeError("thread_mismatch");
-      }
-      const home = await prepareState(stateDirectory, input.cwd);
-      cancelled();
-      const threadId = input.threadId ?? randomUUID();
-      // SDK supports choosing a UUID up front: persist before any launch or
-      // external side effect, not merely before reading the second stream item.
-      if (input.threadId === undefined) {
-        try {
-          await input.onThread(threadId);
-        } catch {
-          cancelled();
-          throw new ClaudeRuntimeError("thread_save_failed");
-        }
-      }
-      cancelled();
+  const run = Effect.fn("june.coding.claude.run")(function* (
+    input: Parameters<CodingRuntime["run"]>[0],
+  ) {
+    const cancelled = () => input.signal.aborted;
+    if (cancelled()) return yield* failure("cancelled");
+    if (input.threadId !== undefined && !UUID.test(input.threadId))
+      return yield* failure("thread_mismatch");
+    const home = yield* prepareState(stateDirectory, input.cwd);
+    if (cancelled()) return yield* failure("cancelled");
+    const threadId = input.threadId ?? randomUUID();
+    // SDK supports choosing a UUID up front: persist before any launch or
+    // external side effect, not merely before reading the second stream item.
+    if (input.threadId === undefined)
+      yield* Effect.tryPromise({
+        try: () => input.onThread(threadId),
+        catch: () => failure(cancelled() ? "cancelled" : "thread_save_failed"),
+      });
+    if (cancelled()) return yield* failure("cancelled");
 
-      const abortController = new AbortController();
-      let stream: ReturnType<ClaudeQuery> | undefined;
-      const abort = () => abortController.abort();
-      input.signal.addEventListener("abort", abort, { once: true });
-      let report: string | undefined;
-      let initialized = false;
-      let closeFailed = false;
-      try {
-        cancelled();
+    const abortController = new AbortController();
+    let stream: ReturnType<ClaudeQuery> | undefined;
+    const abort = () => abortController.abort();
+    let closeFailed = false;
+    const consume = Effect.tryPromise({
+      try: async () => {
+        let report: string | undefined;
+        let initialized = false;
+        if (cancelled()) throw failure("cancelled");
         // Both prepareState and onThread can outlive the originating context.
         // Recheck synchronously at provider admission, including saved resumes.
         input.assertCurrent?.();
@@ -226,11 +231,10 @@ export function createClaudeRuntime(
           },
         });
         for await (const message of stream) {
-          cancelled();
+          if (cancelled()) throw failure("cancelled");
           if (message.type === "system" && message.subtype === "init") {
-            if (message.apiKeySource !== "ANTHROPIC_API_KEY") {
-              throw new ClaudeRuntimeError("unsupported_auth");
-            }
+            if (message.apiKeySource !== "ANTHROPIC_API_KEY")
+              throw failure("unsupported_auth");
             if (
               message.permissionMode !== "dontAsk" ||
               message.tools.some(
@@ -239,51 +243,55 @@ export function createClaudeRuntime(
               message.mcp_servers.length > 0 ||
               message.plugins.length > 0 ||
               message.skills.length > 0
-            ) {
-              throw new ClaudeRuntimeError("invalid_configuration");
-            }
+            )
+              throw failure("invalid_configuration");
             initialized = true;
           }
-          if ("session_id" in message) {
-            if (message.session_id !== threadId) {
-              throw new ClaudeRuntimeError("thread_mismatch");
-            }
-          }
+          if ("session_id" in message && message.session_id !== threadId)
+            throw failure("thread_mismatch");
           if (message.type === "result") {
             if (
               report !== undefined ||
               message.subtype !== "success" ||
               message.is_error
-            ) {
-              throw new ClaudeRuntimeError("execution_failed");
-            }
-            if (!initialized)
-              throw new ClaudeRuntimeError("invalid_configuration");
+            )
+              throw failure("execution_failed");
+            if (!initialized) throw failure("invalid_configuration");
             report = boundedReport(message.result);
           }
         }
-        cancelled();
-        if (report === undefined) {
-          throw new ClaudeRuntimeError("result_not_reported");
-        }
-      } catch (error) {
-        cancelled();
-        if (error instanceof ClaudeRuntimeError) throw error;
-        throw new ClaudeRuntimeError("stream_failed");
-      } finally {
-        input.signal.removeEventListener("abort", abort);
-        abortController.abort();
-        try {
-          stream?.close();
-        } catch {
-          closeFailed = true;
-        }
-      }
-      cancelled();
-      if (closeFailed) throw new ClaudeRuntimeError("stream_failed");
-      // Only return after the stream settles; a result followed by transport
-      // failure is unknown, not success. The report itself is still a claim.
-      return { threadId, report };
-    },
-  };
+        if (cancelled()) throw failure("cancelled");
+        if (report === undefined) throw failure("result_not_reported");
+        return report;
+      },
+      catch: (error) =>
+        cancelled()
+          ? failure("cancelled")
+          : error instanceof ClaudeRuntimeError
+            ? error
+            : failure("stream_failed"),
+    });
+    const report = yield* Effect.acquireUseRelease(
+      Effect.sync(() =>
+        input.signal.addEventListener("abort", abort, { once: true }),
+      ),
+      () => consume,
+      () =>
+        Effect.sync(() => {
+          input.signal.removeEventListener("abort", abort);
+          abortController.abort();
+          try {
+            stream?.close();
+          } catch {
+            closeFailed = true;
+          }
+        }),
+    );
+    if (cancelled()) return yield* failure("cancelled");
+    if (closeFailed) return yield* failure("stream_failed");
+    // Only return after the stream settles; a result followed by transport
+    // failure is unknown, not success. The report itself is still a claim.
+    return { threadId, report } satisfies CodingResult;
+  });
+  return { run: (input) => config.effectRuntime.runPromise(run(input)) };
 }

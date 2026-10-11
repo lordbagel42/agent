@@ -44,6 +44,8 @@ const names = new Set([
   "june.coding.supervise",
   "june.coding.dispatch",
   "june.credentials.resolve",
+  "june.coding.amp.run",
+  "june.coding.claude.run",
   "june.environment.inspect",
   "june.environment.run",
   "june.environment.exec",

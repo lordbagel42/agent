@@ -437,7 +437,7 @@ async function main() {
     let worker: CodingRuntime;
     switch (selection.kind) {
       case "amp":
-        worker = createAmpRuntime();
+        worker = createAmpRuntime({ effectRuntime: juneRuntime });
         break;
       case "codex":
         await privateDirectory(selection.home);
@@ -454,6 +454,7 @@ async function main() {
           model: selection.model,
           allowedTools: selection.allowedTools,
           maxTurns: selection.maxTurns,
+          effectRuntime: juneRuntime,
         });
         break;
       case "pi":
