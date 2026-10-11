@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
 import { isAbsolute } from "node:path";
+import { Effect, Predicate, Schema } from "effect";
+import type { JuneRuntime } from "../effect/runtime.js";
 import type { BrokerOptions, ToolAction } from "../tools/broker.js";
 import type { BrowserOperation } from "../tools/browser.js";
 
@@ -27,14 +29,27 @@ export interface BitwardenOptions {
   appDataDir: string;
   bindings: readonly BitwardenBinding[];
   /** Trusted in-memory/OS-secret provider; no master passwords or login automation. */
-  session(): Promise<BitwardenSession>;
+  session: Effect.Effect<BitwardenSession, CredentialUnavailable>;
   now?: () => number;
 }
 export type BitwardenCommand = (
   executable: string,
   args: readonly string[],
-  options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number },
+  options: {
+    env: NodeJS.ProcessEnv;
+    timeout: number;
+    maxBuffer: number;
+    signal: AbortSignal;
+  },
 ) => Promise<string>;
+
+/** Deliberately carries no cause: CLI errors include command, stdout and stderr. */
+export class CredentialUnavailable extends Schema.TaggedError<CredentialUnavailable>()(
+  "CredentialUnavailable",
+  {},
+) {
+  override readonly message = "credential_unavailable";
+}
 
 export type BitwardenCredentialResolver = BrokerOptions["resolveCredential"] & {
   /** Configuration only. Never obtains a session or reads the vault. */
@@ -60,21 +75,37 @@ const runCommand: BitwardenCommand = (executable, args, options) =>
     );
   });
 
+/** Only the fields June may release; notes, URIs, TOTP seeds and custom fields are never read. */
+const VaultItem = Schema.fromJsonString(
+  Schema.Struct({
+    id: Schema.String,
+    type: Schema.Literal(1),
+    deletedDate: Schema.optional(Schema.Unknown),
+    login: Schema.Struct({
+      password: Schema.NonEmptyString,
+      username: Schema.optional(Schema.Unknown),
+    }),
+  }),
+);
+const decodeVaultItem = Schema.decodeUnknownEffect(VaultItem);
+
+type Scope = Pick<ToolAction, "account" | "item" | "origin">;
+const scopeKey = (scope: Scope) =>
+  JSON.stringify([scope.account, scope.item, scope.origin]);
+
 /** Supported Password Manager `bw get item`, NOT private vault APIs or bws.
  * No cache: one exact item read per authorized use. Session is only in child env.
  * Neither this process nor JavaScript strings provide secure erasure/host isolation.
  */
-export function createBitwardenCredentialResolver(
+export function makeBitwardenCredentials(
   options: BitwardenOptions,
   command: BitwardenCommand = runCommand,
-): BitwardenCredentialResolver {
+) {
   const { executable, appDataDir, session, now = Date.now } = options;
   if (!isAbsolute(executable) || !isAbsolute(appDataDir))
     throw new Error("invalid_credential_configuration");
   const bindings = options.bindings.map((binding) => ({ ...binding }));
   const seen = new Set<string>();
-  const scopeKey = (scope: Pick<ToolAction, "account" | "item" | "origin">) =>
-    JSON.stringify([scope.account, scope.item, scope.origin]);
   for (const binding of bindings) {
     const origin = new URL(binding.origin);
     if (
@@ -91,13 +122,14 @@ export function createBitwardenCredentialResolver(
       throw new Error("invalid_credential_configuration");
     seen.add(scopeKey(binding));
   }
-  const resolve: BrokerOptions["resolveCredential"] = async (scope) => {
-    try {
+  const unavailable = Effect.fail(new CredentialUnavailable());
+  const resolve = Effect.fn("june.credentials.resolve")(
+    function* (scope: Scope) {
       const binding = bindings.find(
         (candidate) => scopeKey(candidate) === scopeKey(scope),
       );
-      if (!binding) throw new Error();
-      const lease = await session();
+      if (!binding) return yield* unavailable;
+      const lease = yield* session;
       // Session provider must issue short local leases. This does NOT change the
       // vault session's validity: owner lock/logout is required to invalidate it.
       const remaining = lease.expiresAt - now();
@@ -107,48 +139,46 @@ export function createBitwardenCredentialResolver(
         remaining <= 0 ||
         remaining > 60_000
       )
-        throw new Error();
-      const result = await command(
-        executable,
-        ["get", "item", binding.vaultItemId, "--nointeraction"],
-        {
-          // Deliberately do not inherit NODE_OPTIONS, BW_SESSION, or unrelated secrets.
-          env: {
-            PATH: "/usr/local/bin:/usr/bin:/bin",
-            BITWARDENCLI_APPDATA_DIR: appDataDir,
-            BW_SESSION: lease.key,
-          },
-          timeout: Math.min(15_000, remaining),
-          maxBuffer: 1_048_576,
-        },
-      );
-      if (now() >= lease.expiresAt) throw new Error();
-      const item = JSON.parse(result);
-      if (
-        !item ||
-        item.id !== binding.vaultItemId ||
-        item.type !== 1 ||
-        item.deletedDate ||
-        typeof item.login?.password !== "string" ||
-        !item.login.password
-      )
-        throw new Error();
+        return yield* unavailable;
+      const result = yield* Effect.tryPromise({
+        try: (signal) =>
+          command(
+            executable,
+            ["get", "item", binding.vaultItemId, "--nointeraction"],
+            {
+              // Deliberately do not inherit NODE_OPTIONS, BW_SESSION, or unrelated secrets.
+              env: {
+                PATH: "/usr/local/bin:/usr/bin:/bin",
+                BITWARDENCLI_APPDATA_DIR: appDataDir,
+                BW_SESSION: lease.key,
+              },
+              timeout: Math.min(15_000, remaining),
+              maxBuffer: 1_048_576,
+              signal,
+            },
+          ),
+        catch: () => new CredentialUnavailable(),
+      });
+      if (now() >= lease.expiresAt) return yield* unavailable;
+      const item = yield* decodeVaultItem(result);
+      if (item.id !== binding.vaultItemId || item.deletedDate)
+        return yield* unavailable;
       if (binding.field === "bearer")
         return Object.freeze({
           bearerToken: item.login.password,
-        }) satisfies Credential;
-      if (typeof item.login.username !== "string") throw new Error();
-      // Only requested login fields, never notes, URIs, TOTP seeds or custom fields.
+        }) satisfies Credential as Credential;
+      if (!Predicate.isString(item.login.username)) return yield* unavailable;
       return Object.freeze({
         kind: "login",
         username: item.login.username,
         password: item.login.password,
-      }) satisfies Credential;
-    } catch {
-      throw new Error("credential_unavailable");
-    }
-  };
-  return Object.assign(resolve, {
+      }) satisfies Credential as Credential;
+    },
+    // Decode failures and defects carry vault data; collapse every failure.
+    Effect.catchCause(() => Effect.fail(new CredentialUnavailable())),
+  );
+  return {
+    resolve,
     inspect: () => ({
       configuredBindings: bindings.length,
       // Ordinals identify configuration order without leaking operator strings,
@@ -173,5 +203,21 @@ export function createBitwardenCredentialResolver(
       )
         throw new Error("invalid_credential_configuration");
     },
-  });
+  };
+}
+
+/** Promise adapter for the capability broker, run on the process runtime. */
+export function createBitwardenCredentialResolver(
+  options: BitwardenOptions & { effectRuntime: JuneRuntime },
+  command?: BitwardenCommand,
+): BitwardenCredentialResolver {
+  const credentials = makeBitwardenCredentials(options, command);
+  return Object.assign(
+    (scope: Scope) =>
+      options.effectRuntime.runPromise(credentials.resolve(scope)),
+    {
+      inspect: credentials.inspect,
+      assertBrowserBinding: credentials.assertBrowserBinding,
+    },
+  );
 }

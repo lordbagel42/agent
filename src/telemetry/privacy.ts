@@ -43,6 +43,7 @@ const names = new Set([
   "june.mcp.call",
   "june.coding.supervise",
   "june.coding.dispatch",
+  "june.credentials.resolve",
   "june.reflection.run",
   "june.slack.ingress",
   "june.slack.oauth",

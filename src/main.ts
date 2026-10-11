@@ -353,6 +353,7 @@ async function main() {
       appDataDir: config.credentials.appDataDir,
       bindings: config.credentials.bindings,
       session: createBitwardenFileSession(config.credentials.sessionFile),
+      effectRuntime: juneRuntime,
     });
   }
   let coding: Dependencies["coding"];
