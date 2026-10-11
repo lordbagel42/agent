@@ -37,6 +37,7 @@ import {
   type SyncState,
   safePath,
 } from "./repo.js";
+import type { MindReport } from "./reports.js";
 import { MindSafety } from "./safety.js";
 import { SELF_SEEDS } from "./seed.js";
 import { localTime } from "./time.js";
@@ -64,8 +65,8 @@ export interface MindOptions {
   deletionRevision?: () => number;
   /** The DEBUGSHARE amp-task inbox; absent disables self-improvement. */
   selfImprovement?: AmpInbox;
-  /** Best-effort DM to Raygen; failures are logged, never retried. */
-  notify?: (text: string) => Promise<void>;
+  /** Best-effort event admission; the normal conversation outbox owns delivery. */
+  notify?: (report: MindReport, contextToken: string) => Promise<void>;
 }
 
 /** What a prompt receives: June's self plus notes projected for the place. */
@@ -689,6 +690,15 @@ export class Mind {
     return this.safety.blocked;
   }
 
+  /** Host ancestry, separate from untrusted report data and archive markers. */
+  get contextToken() {
+    return `volatile-context:mind:${this.options.deletionRevision?.() ?? 0}`;
+  }
+
+  contextCurrent(token: string) {
+    return this.safety.readable && token === this.contextToken;
+  }
+
   /** Persist intent before dispatch; only a provider receipt can clear it.
    * A process death between dispatch and receipt therefore never causes replay. */
   private trackedModel(): ModelProvider {
@@ -755,14 +765,15 @@ export class Mind {
 
   private readonly notify = Effect.fnUntraced(function* (
     this: Mind,
-    notices: string[],
+    notices: MindReport[],
   ) {
-    for (const text of notices) {
+    for (const report of notices) {
       if (!this.live()) return;
       const notify = this.options.notify;
+      const token = this.contextToken;
       if (notify)
         yield* Effect.promise(() =>
-          notify(text).catch(() => this.log("mind_notify_failed")),
+          notify(report, token).catch(() => this.log("mind_notify_failed")),
         );
     }
   });
@@ -791,8 +802,8 @@ export class Mind {
           ),
         );
         if (update) {
-          yield* this.save(update.changes, update.subject);
-          yield* this.notify(update.notices);
+          const sha = yield* this.save(update.changes, update.subject);
+          if (sha) yield* this.notify(update.notices);
         }
       }
     }).pipe(
@@ -874,10 +885,26 @@ export class Mind {
             ...(request ? { fulfilledRequest: request.id } : {}),
           });
           outcome = sha ? "committed" : "nothing_to_change";
-          if (selfChanged && sha)
+          if (selfChanged && sha) {
+            const diff = yield* this.repo.diff(
+              `${sha}~1`,
+              ["self/identity.md", "self/values.md"],
+              sha,
+            );
             yield* this.notify([
-              `i revised how i see myself. here's the diff to my identity and values (commit ${sha.slice(0, 7)}):\n\n${clip(yield* this.repo.diff(`${sha}~1`, ["self/identity.md", "self/values.md"], sha), 3_000)}`,
+              {
+                id: `${sha}:self-changed`,
+                source: "mind",
+                type: "self-changed",
+                occurredAt: Date.now(),
+                data: {
+                  revision: sha,
+                  diff: clip(diff, 1_500),
+                  truncated: diff.length > 1_500,
+                },
+              },
             ]);
+          }
         }
       }),
     ).pipe(

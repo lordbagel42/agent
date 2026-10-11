@@ -33,6 +33,7 @@ import {
 import type { CuratedPersonalityStore } from "../memory/curated.js";
 import type { EvidenceStore, Source } from "../memory/store.js";
 import { personId } from "../mind/places.js";
+import { MIND_REPORT_FAILURE } from "../mind/reports.js";
 import type { JevObserver, JevQuestion } from "../models/jev.js";
 import { ModelError, parseReply } from "../models/provider.js";
 import type { createJuryTool } from "../reflection/jury.js";
@@ -509,9 +510,11 @@ export function createJuneRegistry(deps: Dependencies) {
       );
     }) &&
     (reference.contextSourceIds ?? []).every((id) =>
-      id.startsWith("volatile-context:continuity:")
-        ? deps.continuity?.valid(id) === true
-        : !deps.memory?.store.isDeleted(id),
+      id.startsWith("volatile-context:mind:")
+        ? deps.mind?.contextCurrent(id) === true
+        : id.startsWith("volatile-context:continuity:")
+          ? deps.continuity?.valid(id) === true
+          : !deps.memory?.store.isDeleted(id),
     );
   function prune(state: ConversationState, audience: string) {
     const revision = deps.memory?.store.deletionRevision() ?? 0;
@@ -1575,8 +1578,17 @@ export function createJuneRegistry(deps: Dependencies) {
               c.state.forgottenEvents?.includes(id)
             )
               return;
+            const wakeupContext =
+              input.type === "wakeup" && deps.wakeups
+                ? await c
+                    .client<JuneClientRegistry>()
+                    .wakeups.getOrCreate([deps.owner.id])
+                    .runContext(input.wakeup.runId)
+                : undefined;
+            if (input.type === "wakeup" && !wakeupContext) return;
             const source =
-              input.type === "wakeup" && input.wakeup.mode === "decision"
+              input.type === "wakeup" &&
+              (input.wakeup.mode === "decision" || wakeupContext?.report)
                 ? undefined
                 : deps.memory?.source(input.source, JSON.stringify(c.key));
             if (source && deps.memory?.store.isDeleted(source.id)) return;
@@ -2083,6 +2095,10 @@ export function createJuneRegistry(deps: Dependencies) {
           );
           const handoffVersion = await loop.getVersion("activity-handoff", 2);
           const activityVersion = await loop.getVersion("activity-routing", 2);
+          const wakeupContextVersion = await loop.getVersion(
+            "wakeup-context",
+            2,
+          );
           const body = message.body;
           if (body.type === "session_tick") {
             const release = await deps.lifecycle?.enter(ctx.abortSignal);
@@ -2187,22 +2203,57 @@ export function createJuneRegistry(deps: Dependencies) {
                 if (!sessionControl) return;
               } else if (lane !== "legacy") return;
             }
+            let wakeupContext:
+              | Awaited<ReturnType<SessionHost["wakeupContext"]>>
+              | undefined;
             if (body.type === "wakeup") {
               const eligible =
                 deps.wakeups && event.address.channel === "slack";
-              const claimed = eligible
-                ? await loop.step({
-                    name: "claim-wakeup",
-                    timeout: 0,
-                    run: async (step) =>
-                      !ownsLegacyInput(step.state, conversationInputId(body))
-                        ? false
-                        : step
-                            .client<JuneClientRegistry>()
-                            .wakeups.getOrCreate([deps.owner.id])
-                            .claim(body.wakeup.runId, body.wakeup.mode),
-                  })
-                : false;
+              if (eligible && wakeupContextVersion >= 2)
+                wakeupContext = await loop.step({
+                  name: "read-wakeup-context",
+                  timeout: 0,
+                  run: async (step) => {
+                    const context = await step
+                      .client<JuneClientRegistry>()
+                      .wakeups.getOrCreate([deps.owner.id])
+                      .runContext(body.wakeup.runId);
+                    if (context && deps.memory) {
+                      const id = conversationInputId(body);
+                      step.state.memoryContexts ??= {};
+                      const previous = step.state.memoryContexts[id];
+                      step.state.memoryContexts[id] = {
+                        sourceIds: previous?.sourceIds ?? [],
+                        personality: personalityDigest(
+                          JSON.stringify(scope.key),
+                        ),
+                        deletionTracked: true,
+                        contextSourceIds: [
+                          ...new Set([
+                            ...(previous?.contextSourceIds ?? []),
+                            ...context.evidenceIds,
+                          ]),
+                        ],
+                      };
+                      await step.vars.persist();
+                    }
+                    return context;
+                  },
+                });
+              const claimed =
+                eligible && (wakeupContextVersion < 2 || wakeupContext)
+                  ? await loop.step({
+                      name: "claim-wakeup",
+                      timeout: 0,
+                      run: async (step) =>
+                        !ownsLegacyInput(step.state, conversationInputId(body))
+                          ? false
+                          : step
+                              .client<JuneClientRegistry>()
+                              .wakeups.getOrCreate([deps.owner.id])
+                              .claim(body.wakeup.runId, body.wakeup.mode),
+                    })
+                  : false;
               if (!claimed) {
                 // No effect is being settled here. A rejected/duplicate wakeup
                 // must not retain its unpublished body forever on every restart.
@@ -2309,6 +2360,17 @@ export function createJuneRegistry(deps: Dependencies) {
               )
                 return false;
               if (state.clearedInputs?.[eventId]) return false;
+              // Producer invalidation cannot retract an admitted model call.
+              // Recheck captured host ancestry at every existing effect fence,
+              // including deployments with no legacy evidence store.
+              if (
+                wakeupContext?.evidenceIds.some(
+                  (id) =>
+                    id.startsWith("volatile-context:mind:") &&
+                    deps.mind?.contextCurrent(id) !== true,
+                )
+              )
+                return false;
               if (
                 deletionRevision !==
                 (deps.memory?.store.deletionRevision() ?? 0)
@@ -2342,7 +2404,12 @@ export function createJuneRegistry(deps: Dependencies) {
                   !Object.values(state.agents ?? {}).includes(body.agentId))
               )
                 return false;
-              if (deps.memory && event.type === "message" && !decisionTurn) {
+              if (
+                deps.memory &&
+                event.type === "message" &&
+                !decisionTurn &&
+                !wakeupContext?.report
+              ) {
                 const source = deps.memory.source(event, audience);
                 if (source && deps.memory.store.isDeleted(source.id))
                   return false;
@@ -2474,7 +2541,11 @@ export function createJuneRegistry(deps: Dependencies) {
                     step.state.lastInbound[addressId] ?? 0,
                     event.occurredAt,
                   );
-                } else if (body.type === "wakeup" && retainHistory) {
+                } else if (
+                  body.type === "wakeup" &&
+                  retainHistory &&
+                  !wakeupContext?.report
+                ) {
                   // Explicit machine provenance, never a forged owner message.
                   step.state.history.push({
                     id: eventId,
@@ -2855,6 +2926,19 @@ export function createJuneRegistry(deps: Dependencies) {
                     retryable: false,
                   };
                 if (
+                  wakeupContext?.report &&
+                  (outbound.address.channel !== event.address.channel ||
+                    outbound.address.accountId !== event.address.accountId ||
+                    outbound.address.conversationId !==
+                      event.address.conversationId ||
+                    outbound.address.threadId !== event.address.threadId)
+                )
+                  return {
+                    status: "rejected",
+                    code: "report_destination_mismatch",
+                    retryable: false,
+                  };
+                if (
                   conversationalReply &&
                   !reply.interrupt &&
                   superseded(state)
@@ -2921,7 +3005,9 @@ export function createJuneRegistry(deps: Dependencies) {
                     : body.type === "execution_result"
                       ? "A worker result arrived, but I couldn't summarize it. Ask me for its status."
                       : body.type === "wakeup"
-                        ? "Your wakeup fired, but I couldn't generate its notification. Inspect the wakeup for its recorded event; I won't retry it automatically."
+                        ? wakeupContext?.report
+                          ? MIND_REPORT_FAILURE
+                          : "Your wakeup fired, but I couldn't generate its notification. Inspect the wakeup for its recorded event; I won't retry it automatically."
                         : "I couldn't reach my model. Your message is saved; please try again shortly.",
               };
               let interruptionProposal:
@@ -4243,6 +4329,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                       phase !== "synthesis" &&
                                       !!deps.artifacts,
                                     messagingAvailable:
+                                      !wakeupContext?.report &&
                                       event.address.channel === "slack" &&
                                       !!deps.channels.slack,
                                     turnTakingAvailable:
@@ -6323,9 +6410,14 @@ export function createJuneRegistry(deps: Dependencies) {
                       : []),
                   ];
                   const reactionId = `${eventId}:reaction`;
-                  const directed = valid(step.state)
-                    ? messageDestinations(reply.sendMessages, event, deps.owner)
-                    : [];
+                  const directed =
+                    valid(step.state) && !wakeupContext?.report
+                      ? messageDestinations(
+                          reply.sendMessages,
+                          event,
+                          deps.owner,
+                        )
+                      : [];
                   const directedIds = [
                     ...new Set([
                       ...directed.map((_, index) => `${eventId}:send:${index}`),
@@ -6342,15 +6434,22 @@ export function createJuneRegistry(deps: Dependencies) {
                   // Settlement must not disappear when synthesis is silent or
                   // interrupted. Reuse the same per-attempt outbox identity and
                   // host report, with its unknown/verification caveats intact.
+                  const reportFallback =
+                    wakeupContext?.report &&
+                    !reply.text.trim() &&
+                    !reply.question &&
+                    !reply.messages?.some((text) => text.trim());
                   const text = reply.question
                     ? questionText(reply.question)
                     : body.type === "job_result" &&
                         !reply.text.trim() &&
                         !reply.sendMessages?.length
                       ? body.text
-                      : reply.text;
+                      : reportFallback
+                        ? MIND_REPORT_FAILURE
+                        : reply.text;
                   const texts =
-                    turnVersion >= 2 && reply.messages
+                    turnVersion >= 2 && reply.messages && !reportFallback
                       ? reply.messages
                       : [text];
                   for (const [index, text] of texts.entries()) {
@@ -6737,6 +6836,9 @@ export function createJuneRegistry(deps: Dependencies) {
               await loop.step("record-reply", async (step) => {
                 if (sessionControl) return;
                 if (!valid(step.state)) return;
+                // Without reference tracking, do not retain report-derived
+                // speech that could outlive a later Mind quarantine.
+                if (wakeupContext?.report && !deps.memory) return;
                 if (
                   !readHistory(step.state).some(
                     (entry) => entry.id === `${eventId}:reply`,
@@ -7013,6 +7115,14 @@ export function createJuneRegistry(deps: Dependencies) {
                     uncertain || results.includes("unknown")
                       ? "unknown"
                       : wakeupFailed ||
+                          (wakeupContext?.report &&
+                            Object.entries(readDeliveries(step.state)).some(
+                              ([id, delivery]) =>
+                                id.startsWith(`${eventId}:`) &&
+                                delivery.message.content.type === "text" &&
+                                delivery.message.content.text ===
+                                  MIND_REPORT_FAILURE,
+                            )) ||
                           results.includes("rejected") ||
                           !valid(step.state)
                         ? "failed"
@@ -7181,6 +7291,7 @@ export function createJuneRegistry(deps: Dependencies) {
               lifecycle: deps.lifecycle,
               memory: deps.memory,
               continuity: deps.continuity,
+              mind: deps.mind,
             }),
           }
         : {}),

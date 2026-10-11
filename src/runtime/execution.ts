@@ -223,10 +223,12 @@ export function createExecutionActor(
       // archive exclusion is not a retained source requiring that store.
       id === "volatile-context:mind"
         ? !!deps.mind
-        : !!deps.memory &&
-          (id.startsWith("volatile-context:continuity:")
-            ? deps.continuity?.valid(id) === true
-            : !deps.memory.store.isDeleted(id)),
+        : id.startsWith("volatile-context:mind:")
+          ? deps.mind?.contextCurrent(id) === true
+          : !!deps.memory &&
+            (id.startsWith("volatile-context:continuity:")
+              ? deps.continuity?.valid(id) === true
+              : !deps.memory.store.isDeleted(id)),
     );
   const definition = actor({
     state: {

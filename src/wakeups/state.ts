@@ -95,6 +95,8 @@ export interface WakeupJob {
   id: string;
   /** Only the host can create decision subscriptions. Absent means notification. */
   mode?: "decision";
+  /** Host reporting policy: notification-only, one run per status event. */
+  report?: true;
   /** Conversation provenance; legacy direct jobs used id for both identities. */
   originEventId?: string;
   /** Host-authenticated JSON scope key, including the requester for guest scopes. */
@@ -270,7 +272,16 @@ export function applyAction(
             source: event.source,
             type: event.type,
             occurredAt: event.occurredAt,
-            untrustedDataPreview: JSON.stringify(event.data).slice(0, 1500),
+            // Inspection binds job ancestry, not a particular run snapshot.
+            // Report receipts must not create another untracked private copy.
+            ...(!job.report
+              ? {
+                  untrustedDataPreview: JSON.stringify(event.data).slice(
+                    0,
+                    1500,
+                  ),
+                }
+              : {}),
           },
         })),
       deploymentIssue: state.deploymentIssue ?? null,
@@ -315,6 +326,7 @@ function enqueue(
   if (Object.hasOwn(state.runs, id)) return;
   if (
     job.mode !== "decision" &&
+    !job.report &&
     Object.values(state.runs).some(
       (run) => run.jobId === job.id && pending(run),
     )
@@ -383,7 +395,8 @@ export function acceptEvent(
     if (
       job.status !== "active" ||
       trigger.kind !== "event" ||
-      ((job.mode !== "decision" || event.source === "deployment") &&
+      (((!job.report && job.mode !== "decision") ||
+        event.source === "deployment") &&
         event.occurredAt < job.updatedAt) ||
       trigger.source !== event.source ||
       (trigger.type !== "*" && trigger.type !== event.type) ||
@@ -414,9 +427,12 @@ export function acceptEvent(
       ),
   );
   if (
-    admitted.some((job) => job.mode === "decision") &&
+    admitted.some((job) => job.mode === "decision" || job.report) &&
     Object.values(state.runs).filter(
-      (run) => pending(run) && state.jobs[run.jobId]?.mode === "decision",
+      (run) =>
+        pending(run) &&
+        (state.jobs[run.jobId]?.mode === "decision" ||
+          state.jobs[run.jobId]?.report),
     ).length >= 100
   )
     throw new Error("event_decision_capacity");
@@ -475,6 +491,7 @@ function prune(state: WakeupState, now: number) {
   for (const job of Object.values(state.jobs))
     if (
       job.mode !== "decision" &&
+      !job.report &&
       ["cancelled", "completed"].includes(job.status) &&
       job.updatedAt < cutoff &&
       !Object.values(state.runs).some(

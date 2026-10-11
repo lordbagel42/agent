@@ -7,6 +7,7 @@ import type {
 } from "../core/contracts.js";
 import { isMemoryCorrectionCommand } from "../memory/correction.js";
 import { personId } from "../mind/places.js";
+import { MIND_REPORT_FAILURE } from "../mind/reports.js";
 import type { MindRecall } from "../mind/service.js";
 import {
   delegationRecord,
@@ -123,6 +124,7 @@ export interface SessionHost {
   publishNative(event: WakeupEvent, contextSourceIds: string[]): Promise<void>;
   wakeupContext(id: string): Promise<{
     mode?: "decision";
+    report?: true;
     evidenceIds: string[];
     retentionTracked: boolean;
   } | null>;
@@ -603,7 +605,10 @@ export function createSessionCatalog(
     const decision = input.type === "wakeup" && wakeup?.mode === "decision";
     const scope = audience(host);
     const revision = deps.memory.store.deletionRevision();
-    const original = decision ? undefined : deps.memory.source(source, scope);
+    const original =
+      decision || wakeup?.report
+        ? undefined
+        : deps.memory.source(source, scope);
     if (original && deps.memory.store.isDeleted(original.id)) return suppress();
     const originId =
       input.type === "job_result"
@@ -778,6 +783,7 @@ export function createSessionCatalog(
     const context: Interaction = {
       source,
       ...(decision ? { decision: true as const } : {}),
+      ...(wakeup?.report ? { report: true as const } : {}),
       ...(original && input?.type === "event" ? { sourceId: original.id } : {}),
       replyAddress:
         turn.context?.replyAddress ??
@@ -805,9 +811,8 @@ export function createSessionCatalog(
         owner: deps.owner,
         now: new Date(),
         globalPersonality,
-        ...(decision
-          ? { wakeup: input.wakeup }
-          : { agentRole: "interaction" as const }),
+        ...(!decision ? { agentRole: "interaction" as const } : {}),
+        ...(input.type === "wakeup" ? { wakeup: input.wakeup } : {}),
         models: deps.models ?? {
           current: { provider: "configured", model: "configured" },
         },
@@ -820,7 +825,7 @@ export function createSessionCatalog(
             }
           : {
               ...turn.capabilities,
-              messagingAvailable: !!deps.channels.slack,
+              messagingAvailable: !wakeup?.report && !!deps.channels.slack,
               executionAvailable: input?.type === "event" && !!deps.execution,
               researchAvailable:
                 input.type === "event" &&
@@ -1006,13 +1011,24 @@ export function createSessionCatalog(
       !reply.question &&
       !reply.sendMessages?.length &&
       !reply.messages?.some((text) => text.trim());
+    const reportFallback =
+      context.report &&
+      !reply.text.trim() &&
+      !reply.question &&
+      !reply.messages?.some((text) => text.trim());
     let output = {
-      text: codingFallback ? input.text : reply.text,
+      text: codingFallback
+        ? input.text
+        : reportFallback
+          ? MIND_REPORT_FAILURE
+          : reply.text,
       ...(reply.question ? { question: reply.question } : {}),
-      ...(reply.messages && !codingFallback
+      ...(reply.messages && !codingFallback && !reportFallback
         ? { messages: reply.messages }
         : {}),
-      ...(reply.sendMessages ? { sendMessages: reply.sendMessages } : {}),
+      ...(reply.sendMessages && !context.report
+        ? { sendMessages: reply.sendMessages }
+        : {}),
       ...(reply.reaction ? { reaction: reply.reaction } : {}),
     };
     if (reply.execution && assignment.kind === "message") {
@@ -1117,6 +1133,8 @@ export function createSessionCatalog(
         input.wakeup.runId,
         "control" in outcome ||
           outcome.failed ||
+          (turn.context?.report &&
+            turn.applied?.text === MIND_REPORT_FAILURE) ||
           outcome.deliveries.some(
             (delivery) => delivery.result?.status !== "sent",
           )

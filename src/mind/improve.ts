@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 import type { createAmpInbox } from "../runtime/debug-dispatch.js";
 import { clip, splitFrontmatter, withFrontmatter } from "./markdown.js";
 import type { Change, MindRepo } from "./repo.js";
+import type { MindReport } from "./reports.js";
 
 /** The existing DEBUGSHARE/amp-task inbox (createAmpInbox(..., "amp-task")). */
 export type AmpInbox = ReturnType<typeof createAmpInbox>;
@@ -10,7 +11,7 @@ export type AmpInbox = ReturnType<typeof createAmpInbox>;
 export interface Update {
   changes: Change[];
   subject: string;
-  notices: string[];
+  notices: MindReport[];
 }
 
 const THREAD_URL = "https://ampcode.com/threads/";
@@ -48,7 +49,7 @@ export const advanceImprovements = Effect.fn("june.mind.improve")(function* (
   current: () => boolean,
 ) {
   const changes: Change[] = [];
-  const notices: string[] = [];
+  const notices: MindReport[] = [];
   const subjects: string[] = [];
   for (const path of yield* repo.list("improvements/")) {
     if (!current()) break;
@@ -57,6 +58,14 @@ export const advanceImprovements = Effect.fn("june.mind.improve")(function* (
     const { meta, body } = splitFrontmatter(text);
     const title = (/^#\s+(.+)$/m.exec(body)?.[1]?.trim() ?? path).slice(0, 110);
     const slug = path.replace(/^improvements\/|\.md$/g, "");
+    const details = {
+      improvement: path.slice(0, 300),
+      title,
+      provenance: {
+        place: meta.filedFrom?.slice(0, 200) ?? null,
+        withRaygen: meta.withRaygen === "true",
+      },
+    };
     if (meta.status === "ready") {
       // Commit the intent first. Reflection/dream policies cannot rewrite a
       // dispatching brief, including after publication but before its receipt.
@@ -97,9 +106,13 @@ export const advanceImprovements = Effect.fn("june.mind.improve")(function* (
         ),
       });
       subjects.push(`dispatch ${slug}`);
-      notices.push(
-        `i noticed something about myself worth fixing ("${title}") and queued an amp request for it. request ${id}; i'll send the thread link if it starts.`,
-      );
+      notices.push({
+        id: `${id}:dispatched`,
+        source: "mind",
+        type: "dispatched",
+        occurredAt: Date.now(),
+        data: { ...details, request: id },
+      });
       continue;
     }
     if (!["dispatched", "in-progress"].includes(meta.status ?? "")) continue;
@@ -114,7 +127,6 @@ export const advanceImprovements = Effect.fn("june.mind.improve")(function* (
     if (receipt.threadId && !meta.thread) {
       next.thread = `${THREAD_URL}${receipt.threadId}`;
       next.status = "in-progress";
-      notices.push(`amp is working on "${title}": ${next.thread}`);
     }
     if (receipt.status === "completed" || receipt.status === "unknown") {
       next.status = receipt.status === "completed" ? "reported" : "unknown";
@@ -130,13 +142,34 @@ export const advanceImprovements = Effect.fn("june.mind.improve")(function* (
         section =
           "\n\n## Outcome\n\nThread ended; this does not establish resolution. Its report is available only in Raygen's DM.";
       }
-      notices.push(
-        receipt.status === "completed"
-          ? `the amp thread for "${title}" finished${next.thread ? `: ${next.thread}` : ""}. its report isn't proof of a live fix, so i'll keep an eye on it.`
-          : `i lost track of the amp thread for "${title}" (outcome unknown)${next.thread ? `: ${next.thread}` : ""}. it may still have run.`,
-      );
     }
     if (next.status === meta.status && next.thread === meta.thread) continue;
+    // A terminal receipt that first supplies its thread link is one update,
+    // not a stale "working" notification followed by "finished".
+    notices.push({
+      id: `${request}:${next.status}`,
+      source: "mind",
+      type: next.status as "in-progress" | "reported" | "unknown",
+      occurredAt: Date.now(),
+      data: {
+        ...details,
+        request,
+        thread: next.thread ?? null,
+        receiptStatus: receipt.status,
+        ...(receipt.result
+          ? {
+              report: {
+                path: next.report,
+                text: clip(receipt.result.text, 1_500),
+                truncated:
+                  receipt.result.truncated ||
+                  receipt.result.text.length > 1_500,
+                verified: false,
+              },
+            }
+          : {}),
+      },
+    });
     changes.push({
       path,
       content: withFrontmatter(next, `${body.trim()}${section}`),

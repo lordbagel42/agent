@@ -80,6 +80,7 @@ import {
 } from "./imports/index.js";
 import { CuratedPersonalityStore } from "./memory/curated.js";
 import { EvidenceStore, extractMemory } from "./memory/store.js";
+import { MIND_REPORT_INSTRUCTION, type MindReport } from "./mind/reports.js";
 import { Mind } from "./mind/service.js";
 import { createHotCodexProvider } from "./models/codex-hot.js";
 import { createDecisionProvider } from "./models/decision.js";
@@ -1409,6 +1410,15 @@ async function main() {
             ...(githubWebhookSecret ? ["github"] : []),
             ...Object.keys(webhookSecrets).map((name) => `webhook.${name}`),
           ],
+          ...(config.mind && mindModel
+            ? {
+                reportSources: {
+                  mind: {
+                    instruction: MIND_REPORT_INSTRUCTION,
+                  },
+                },
+              }
+            : {}),
           readDeployment: readDeployment
             ? () => readDeployment(config.owner.id)
             : undefined,
@@ -1564,10 +1574,6 @@ async function main() {
   });
   if (config.mind && mindModel) {
     startupStage = "mind repository";
-    const ownerSlack = owner.identities.find(
-      (identity) => identity.channel === "slack",
-    );
-    const slack = channels.slack;
     mind = new Mind(
       config.mind,
       owner,
@@ -1581,21 +1587,18 @@ async function main() {
         ...(config.debugShare && process.env.JUNE_ALLOW_DEBUGSHARE === "1"
           ? { selfImprovement: createAmpInbox(config.debugShare, "amp-task") }
           : {}),
-        ...(slack && ownerSlack
+        ...(wakeupOptions?.reportSources
           ? {
-              // Slack accepts the owner's user ID as a DM destination.
-              notify: async (text: string) => {
-                const result = await slack.send({
-                  id: crypto.randomUUID(),
-                  address: {
-                    channel: "slack",
-                    accountId: ownerSlack.accountId,
-                    conversationId: ownerSlack.senderId,
-                  },
-                  lastInboundAt: Date.now(),
-                  content: { type: "text", text },
-                });
-                if (result.status !== "sent") throw new Error(result.status);
+              // Called only by the scheduler after runtime readiness. Publish
+              // facts, never a second direct Slack notice alongside synthesis.
+              notify: async (report: MindReport, contextToken: string) => {
+                await client.wakeups
+                  .getOrCreate([owner.id])
+                  .publish(
+                    report,
+                    [contextToken],
+                    JSON.stringify(["private", owner.id]),
+                  );
               },
             }
           : {}),

@@ -20,6 +20,7 @@ import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
 import type { JuneRuntime } from "../effect/runtime.js";
 import type { EvidenceStore } from "../memory/store.js";
+import { MIND_REPORT_FAILURE } from "../mind/reports.js";
 import { beginModelReply } from "../models/invocation.js";
 import { parseReply } from "../models/provider.js";
 import { type Delivery, deliver } from "../runtime/delivery.js";
@@ -65,6 +66,8 @@ interface TurnContext {
   source: MessageEvent;
   /** Only the stable catalog can classify a scheduler-verified decision. */
   decision?: true;
+  /** Required host report, not optional event-awareness commentary. */
+  report?: true;
   sourceId?: string;
   reference: MemoryReference;
   deletionRevision: number;
@@ -1000,7 +1003,9 @@ export function createActivityActor(deps: ActivityDependencies) {
                         // native calls even when answer validation or delivery fails.
                         if (!turn.reply && valid()) {
                           turn.reply = {
-                            text: "I couldn't complete that answer. I won't repeat the model request automatically.",
+                            text: context.report
+                              ? MIND_REPORT_FAILURE
+                              : "I couldn't complete that answer. I won't repeat the model request automatically.",
                           };
                           await step.vars.persist();
                         }
@@ -1052,6 +1057,8 @@ export function createActivityActor(deps: ActivityDependencies) {
                         // Revocation prevents new effects, but a prospective known
                         // settlement can still account for omitted receipts. Never
                         // upgrade a sending/unknown outbox or invent stoppage.
+                        // Withholding a required report is not successful delivery.
+                        if (context.report) turn.failed = true;
                         turn.deliveries ??= [];
                         for (const delivery of turn.deliveries) {
                           if (delivery.message.content.type === "text")
@@ -1120,6 +1127,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                                   failed: turn.failed,
                                 }
                               : {}),
+                            ...(context.report ? { failed: turn.failed } : {}),
                             deliveries: turn.deliveries,
                             archivedThrough: turn.archivedThrough,
                           });
@@ -1290,6 +1298,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                       ...(context.decision
                         ? { effectsSettled: true as const, failed: turn.failed }
                         : {}),
+                      ...(context.report ? { failed: turn.failed } : {}),
                       deliveries: turn.deliveries,
                       archivedThrough: turn.archivedThrough,
                     });
@@ -1430,7 +1439,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                             },
                           }));
                         for (const message of messageDestinations(
-                          output.sendMessages,
+                          context.report ? undefined : output.sendMessages,
                           context.source,
                           deps.owner,
                         ))
@@ -1476,6 +1485,11 @@ export function createActivityActor(deps: ActivityDependencies) {
                                 "active" ||
                               signal.aborted ||
                               turn.stopped ||
+                              (turn.context.report &&
+                                !isDeepStrictEqual(
+                                  outbound.address,
+                                  turn.context.source.address,
+                                )) ||
                               !current(assignment, turn.context)
                             ) {
                               if (outbound.content.type === "text")
