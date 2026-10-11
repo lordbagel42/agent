@@ -78,16 +78,20 @@ const envelope = Schema.Struct({
   response_metadata: Schema.optional(
     Schema.Struct({ next_cursor: Schema.optional(Schema.String) }),
   ),
+  // auth.test returns a username here; users.info returns a profile object.
   user: Schema.optional(
-    Schema.Struct({
-      id: Schema.String,
-      profile: Schema.optional(
-        Schema.Struct({
-          display_name: Schema.optional(Schema.String),
-          real_name: Schema.optional(Schema.String),
-        }),
-      ),
-    }),
+    Schema.Union([
+      Schema.String,
+      Schema.Struct({
+        id: Schema.String,
+        profile: Schema.optional(
+          Schema.Struct({
+            display_name: Schema.optional(Schema.String),
+            real_name: Schema.optional(Schema.String),
+          }),
+        ),
+      }),
+    ]),
   ),
 });
 
@@ -379,7 +383,7 @@ export class WebConversations extends Context.Service<
           );
           names.set(
             id,
-            user?.user?.id === id
+            typeof user?.user !== "string" && user?.user?.id === id
               ? clean(
                   user.user.profile?.display_name ||
                     user.user.profile?.real_name ||
