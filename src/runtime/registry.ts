@@ -133,6 +133,11 @@ import {
   executionCapabilities,
 } from "./execution-context.js";
 import {
+  type ContinuationHost,
+  dispatchExecutionContinuation,
+  readExecutionContinuation,
+} from "./execution-continuation.js";
+import {
   type ConversationIngress,
   type ConversationInput,
   conversationInputId,
@@ -2554,6 +2559,22 @@ export function createJuneRegistry(deps: Dependencies) {
                 deps.latency?.mark(event, "deferred");
               return false;
             };
+            const continuationHost = (
+              state: ConversationState,
+              persist: () => Promise<void>,
+              worker: ContinuationHost["worker"],
+              signal: AbortSignal,
+            ): ContinuationHost => ({
+              state,
+              key: ctx.key,
+              eventId,
+              current: () =>
+                !signal.aborted && !!deps.execution && canStartAction(state),
+              authority: (id, expanded) =>
+                delegatedScope(state, ctx.key, id, expanded),
+              persist,
+              worker,
+            });
             const addressId = JSON.stringify([
               event.address.channel,
               event.address.accountId,
@@ -4386,7 +4407,34 @@ export function createJuneRegistry(deps: Dependencies) {
                                     reply: { text: "" },
                                     retryable: false,
                                   };
+                                const executionContinuation =
+                                  body.type === "execution_result" &&
+                                  phase === "reply" &&
+                                  deps.effectRuntime
+                                    ? await deps.effectRuntime.runPromise(
+                                        readExecutionContinuation(
+                                          continuationHost(
+                                            step.state,
+                                            step.vars.persist,
+                                            (id) =>
+                                              step
+                                                .client<JuneClientRegistry>()
+                                                .execution.getOrCreate(
+                                                  executionKey(scope.key, id),
+                                                ),
+                                            step.abortSignal,
+                                          ),
+                                          body,
+                                        ),
+                                        { signal: step.abortSignal },
+                                      )
+                                    : undefined;
                                 modelRequest = buildModelRequest({
+                                  configuredCapabilities: executionCapabilities(
+                                    deps,
+                                    event,
+                                  ),
+                                  executionContinuation,
                                   mind: mindNotes,
                                   continuity,
                                   liveInput: body.type === "event",
@@ -5801,6 +5849,9 @@ export function createJuneRegistry(deps: Dependencies) {
               if (version >= 7 && body.type !== "event") {
                 reply = {
                   text: reply.text,
+                  ...(body.type === "execution_result" && reply.execution
+                    ? { execution: reply.execution }
+                    : {}),
                   ...(reply.sendMessages
                     ? { sendMessages: reply.sendMessages }
                     : {}),
@@ -6059,7 +6110,10 @@ export function createJuneRegistry(deps: Dependencies) {
                         event.address.channel === "slack" &&
                         !!deps.channels.slack,
                       executionAvailable:
-                        body.type === "event" && !!plan.execution,
+                        (body.type === "event" && !!plan.execution) ||
+                        (body.type === "execution_result" &&
+                          !!deps.execution &&
+                          !!deps.effectRuntime),
                       turnTakingAvailable:
                         turnVersion >= 2 && body.type === "event",
                     },
@@ -6068,27 +6122,49 @@ export function createJuneRegistry(deps: Dependencies) {
                   name: "dispatch-execution",
                   timeout: 0,
                   run: async (step) =>
-                    dispatchScopeExecution(
-                      {
-                        state: step.state,
-                        conversationKey: ctx.key,
-                        scopeKey: scope.key,
-                        audience,
-                        eventId,
-                        event,
-                        replyAddress,
-                        plan,
-                        enabled: () => !!deps.execution,
-                        canStartAction: () => canStartAction(step.state),
-                        personalityDigest: () => personalityDigest(audience),
-                        persist: step.vars.persist,
-                        worker: (id) =>
-                          step
-                            .client<JuneClientRegistry>()
-                            .execution.getOrCreate(executionKey(scope.key, id)),
-                      },
-                      commands,
-                    ),
+                    body.type === "execution_result" && deps.effectRuntime
+                      ? deps.effectRuntime.runPromise(
+                          dispatchExecutionContinuation(
+                            continuationHost(
+                              step.state,
+                              step.vars.persist,
+                              (id) =>
+                                step
+                                  .client<JuneClientRegistry>()
+                                  .execution.getOrCreate(
+                                    executionKey(scope.key, id),
+                                  ),
+                              step.abortSignal,
+                            ),
+                            body,
+                            commands,
+                          ),
+                          { signal: step.abortSignal },
+                        )
+                      : dispatchScopeExecution(
+                          {
+                            state: step.state,
+                            conversationKey: ctx.key,
+                            scopeKey: scope.key,
+                            audience,
+                            eventId,
+                            event,
+                            replyAddress,
+                            plan,
+                            enabled: () => !!deps.execution,
+                            canStartAction: () => canStartAction(step.state),
+                            personalityDigest: () =>
+                              personalityDigest(audience),
+                            persist: step.vars.persist,
+                            worker: (id) =>
+                              step
+                                .client<JuneClientRegistry>()
+                                .execution.getOrCreate(
+                                  executionKey(scope.key, id),
+                                ),
+                          },
+                          commands,
+                        ),
                 });
                 reply = {
                   ...(reply.sendMessages

@@ -66,6 +66,8 @@ export interface ActivityAssignment {
 
 interface TurnContext {
   source: MessageEvent;
+  /** Prospective host-bound continuation, never inferred from a model reply. */
+  executionContinuation?: { agent: string };
   /** Only the stable catalog can classify a scheduler-verified decision. */
   decision?: true;
   /** Required host report, not optional event-awareness commentary. */
@@ -238,6 +240,33 @@ class ActivityStopError extends Schema.TaggedError<ActivityStopError>()(
   "ActivityStopError",
   { cause: Schema.Defect() },
 ) {}
+
+class ActivityContinuationError extends Schema.TaggedError<ActivityContinuationError>()(
+  "ActivityContinuationError",
+  { cause: Schema.Defect() },
+) {}
+
+const applyContinuation = Effect.fn("june.activity.continuation.apply")(
+  function* (
+    catalog: ActivityCatalog,
+    assignment: ActivityAssignment,
+    reply: CompanionReply,
+    current: () => boolean,
+  ) {
+    // Reconcile one lost ACK in-step, or the same saved intent after wake.
+    // Persistent unavailability retains the existing catalog hold.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!current()) return undefined;
+      const output = yield* Effect.tryPromise({
+        try: () => catalog.apply(assignment, reply),
+        catch: (cause) => new ActivityContinuationError({ cause }),
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+      if (output) return output;
+    }
+    return undefined;
+  },
+  Effect.uninterruptible,
+);
 
 /** New actor only: no legacy journal is reinterpreted as an activity workflow.
  * Owns interaction state, never a worker/proposal catalog. Runtime registration
@@ -1421,7 +1450,20 @@ export function createActivityActor(deps: ActivityDependencies) {
                       )
                         return;
                       if (!turn.deliveries) {
-                        if (!turn.stopTracked || turn.catalog?.apply) {
+                        const continuationApply =
+                          assignment.kind === "notification" &&
+                          !!turn.context.executionContinuation &&
+                          turn.reply.execution?.length === 1 &&
+                          turn.reply.execution[0]?.action === "run" &&
+                          turn.reply.execution[0].agent ===
+                            turn.context.executionContinuation.agent &&
+                          Object.keys(turn.reply).every((key) =>
+                            ["text", "execution", "sendMessages"].includes(key),
+                          );
+                        if (
+                          !turn.stopTracked ||
+                          (turn.catalog?.apply && !continuationApply)
+                        ) {
                           turn.hold = "catalog";
                           await step.vars.persist();
                           return;
@@ -1438,10 +1480,28 @@ export function createActivityActor(deps: ActivityDependencies) {
                           await step.vars.persist();
                           return;
                         }
-                        const output = await catalog.apply(
-                          assignment,
-                          turn.reply,
-                        );
+                        const savedReply = turn.reply;
+                        const output =
+                          continuationApply && deps.effectRuntime
+                            ? await deps.effectRuntime.runPromise(
+                                applyContinuation(
+                                  catalog,
+                                  assignment,
+                                  savedReply,
+                                  () =>
+                                    !!turn?.context &&
+                                    !turn.stopped &&
+                                    !signal.aborted &&
+                                    current(assignment, turn.context),
+                                ),
+                                { signal: step.abortSignal },
+                              )
+                            : await catalog.apply(assignment, savedReply);
+                        if (!output) {
+                          turn.hold = "catalog";
+                          await step.vars.persist();
+                          return;
+                        }
                         turn.catalog.apply = "returned";
                         if (
                           turn.stopped ||

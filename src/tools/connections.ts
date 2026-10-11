@@ -1028,6 +1028,7 @@ export class McpConnections {
           const {
             mcpReadScope: _scope,
             onMcpObservation: _observation,
+            onMcpUse: _use,
             onSentinelObservation: _sentinelObservation,
             effectGuard: _guard,
             ...providerInput
@@ -1036,6 +1037,13 @@ export class McpConnections {
           let reply = await model.reply(...args);
           if (readScope)
             reply = parseReply(JSON.stringify(reply), input.workspaces, input);
+          if (
+            reply.mcp ||
+            reply.mcpCatalog ||
+            reply.mcpPermission ||
+            reply.mcpProposal
+          )
+            request.onMcpUse?.();
           if (reply.typingEnabled !== undefined && input.onTypingPreference) {
             reply = parseReply(JSON.stringify(reply), input.workspaces, input);
             if (!current() || canStartAction?.() === false) return { text: "" };

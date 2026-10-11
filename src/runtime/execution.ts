@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
+import { Effect } from "effect";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import { AUDIO_HELP } from "../audio/contracts.js";
@@ -153,6 +155,8 @@ export interface ExecutionRequest {
   deletionTracked?: true;
   /** Absent on legacy queued work, which keeps its original web/coding ceiling. */
   context?: ExecutionContext;
+  /** Host-bound lineage. A continuation cannot produce another continuation. */
+  continuationOf?: string;
 }
 interface RequestState extends ExecutionRequest {
   status:
@@ -175,6 +179,16 @@ interface RequestState extends ExecutionRequest {
     observation?: { status: "unknown" | "settled"; code?: string };
   };
   deliveries?: Record<string, Delivery>;
+  /** Written only after a new, clean final report; absent history fails closed. */
+  continuationEligible?: true;
+  /** Reserve the exact child before submission; lost acknowledgments reuse it. */
+  continuationReservation?: ExecutionRequest;
+  continuationRevoked?: true;
+}
+/** Read projection adds provenance and host-confirmed delivery silence. */
+export interface ExecutionResult extends Omit<RequestState, "reportOrigin"> {
+  reportOrigin: string;
+  silent: boolean;
 }
 interface ExecutionState {
   requests: Record<string, RequestState>;
@@ -337,6 +351,84 @@ export function createExecutionActor(
         });
         await c.vars.persist();
       },
+      reserveContinuation: async (
+        c,
+        parentId: string,
+        childId: string,
+        task: string,
+        reference: { sourceIds: string[]; contextSourceIds: string[] },
+      ): Promise<ExecutionRequest | null> => {
+        if (!deps.effectRuntime) return null;
+        return deps.effectRuntime.runPromise(
+          Effect.gen(function* () {
+            const parent = c.state.requests[parentId];
+            if (
+              !deps.execution ||
+              !current(c.state) ||
+              !parent?.context ||
+              parent.status !== "completed" ||
+              parent.continuationOf ||
+              parent.continuationRevoked ||
+              parent.coding ||
+              parent.skillCodingProposal ||
+              parent.operation?.status === "started" ||
+              Object.keys(parent.deliveries ?? {}).length > 0 ||
+              deps.channels[parent.source.address.channel]?.sourceActive?.(
+                parent.source,
+              ) === false ||
+              !/^[a-f0-9]{64}:[a-z][a-z0-9-]{0,47}$/.test(childId) ||
+              childId === parentId ||
+              !task.trim() ||
+              task.length > 2000
+            )
+              return null;
+            if (parent.continuationReservation)
+              return parent.continuationReservation.id === childId
+                ? parent.continuationReservation
+                : null;
+            if (!parent.continuationEligible) return null;
+            const evidenceIds = [
+              ...new Set([
+                ...c.state.evidenceIds,
+                ...reference.sourceIds,
+                ...reference.contextSourceIds,
+              ]),
+            ];
+            const child: ExecutionRequest = {
+              id: childId,
+              continuationOf: parentId,
+              source: parent.source,
+              replyAddress: parent.replyAddress,
+              task,
+              workspaces: parent.workspaces,
+              web: parent.web,
+              deletionTracked: true,
+              evidenceIds,
+              context: {
+                ...parent.context,
+                sourceIds: [
+                  ...new Set([
+                    ...parent.context.sourceIds,
+                    ...reference.sourceIds,
+                  ]),
+                ],
+                contextSourceIds: [
+                  ...new Set([
+                    ...parent.context.contextSourceIds,
+                    ...evidenceIds,
+                  ]),
+                ],
+              },
+            };
+            parent.continuationReservation = child;
+            delete parent.continuationEligible;
+            // This is an intent, not submission or completion. Persist before
+            // returning it to the stable authority catalog, even if its RPC dies.
+            yield* Effect.promise(() => c.vars.persist());
+            return child;
+          }).pipe(Effect.uninterruptible),
+        );
+      },
       submit: async (c, input: ExecutionRequest): Promise<boolean> => {
         const scope = routeEvent(input.source, deps.owner);
         if (
@@ -352,7 +444,13 @@ export function createExecutionActor(
                 JSON.stringify(scope.key))) ||
           !/^[a-f0-9]{64}:[a-z][a-z0-9-]{0,47}$/.test(input.id) ||
           !input.task.trim() ||
-          input.task.length > 2000
+          input.task.length > 2000 ||
+          (input.continuationOf &&
+            (c.state.requests[input.continuationOf]?.continuationRevoked ||
+              !isDeepStrictEqual(
+                c.state.requests[input.continuationOf]?.continuationReservation,
+                input,
+              )))
         )
           return false;
         if (!c.state.requests[input.id]) {
@@ -390,6 +488,8 @@ export function createExecutionActor(
         if (!c.state.cancellations.includes(id)) c.state.cancellations.push(id);
         if (revoke) c.state.revoked = true;
         for (const request of Object.values(c.state.requests)) {
+          delete request.continuationEligible;
+          request.continuationRevoked = true;
           if (request.status === "queued" || request.status === "running") {
             request.status = "cancelled";
             request.report = "Execution cancelled; no completion is claimed.";
@@ -398,6 +498,7 @@ export function createExecutionActor(
           if (revoke) {
             request.task = "";
             request.source.text = "";
+            delete request.continuationReservation;
             delete request.report;
             delete request.reportOrigin;
             delete request.coding;
@@ -573,6 +674,10 @@ export function createExecutionActor(
                                 .catch(() => ({ notes: "" }))
                             : undefined;
                         let reportOnly = false;
+                        // MCP can enter an internal report-only sequence that
+                        // isn't represented by the final reply. Do not grant a
+                        // continuation without a host-observed clean tool exit.
+                        let mcpUsed = false;
                         for (let turn = 0; turn < 6; turn++) {
                           if (!usable())
                             throw new Error("Execution invalidated");
@@ -630,6 +735,12 @@ export function createExecutionActor(
                                 },
                               },
                               capabilities,
+                              configuredCapabilities:
+                                currentExecutionCapabilities(
+                                  deps,
+                                  request.source,
+                                  request.context.capabilities,
+                                ),
                               social: deps.social?.view(request.source),
                             });
                             // Operational history is already isolated by the authenticated
@@ -647,6 +758,11 @@ export function createExecutionActor(
                             signal,
                             usable,
                           );
+                          // Wrapper refusals and cached-result synthesis may have
+                          // no external-effect receipt, but must still fence a child.
+                          input.onMcpUse = () => {
+                            mcpUsed = true;
+                          };
                           phase = "model";
                           let toolSequence = 0;
                           const generated = await deps.execution.model.reply(
@@ -655,6 +771,7 @@ export function createExecutionActor(
                             usable,
                             usable,
                             async (kind, outcome) => {
+                              if (kind === "mcp") mcpUsed = true;
                               // MCP dispatch occurs inside the model wrapper.
                               // Use the same durable intent boundary as other
                               // worker tools; a completed model reply is not an
@@ -1210,6 +1327,18 @@ export function createExecutionActor(
                           if (reply.skillCodingProposal)
                             request.skillCodingProposal =
                               reply.skillCodingProposal;
+                          if (
+                            request.context &&
+                            !request.continuationOf &&
+                            !request.continuationRevoked &&
+                            !mcpUsed &&
+                            !reportOnly &&
+                            !withheld &&
+                            !request.coding &&
+                            !request.skillCodingProposal &&
+                            Object.keys(request.deliveries ?? {}).length === 0
+                          )
+                            request.continuationEligible = true;
                           break;
                         }
                       } catch (error) {

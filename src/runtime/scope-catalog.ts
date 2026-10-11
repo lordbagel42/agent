@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type {
   ChannelEvent,
   CodingRequest,
@@ -80,8 +81,27 @@ export function createScopeCatalogAuthority(
     state: CatalogAuthorityState,
     key: string[],
     requestId: string,
+    expanded?: ExecutionContext,
   ) {
-    const context = delegationRecord(state, requestId);
+    const frozen = delegationRecord(state, requestId);
+    const context = expanded ?? frozen;
+    if (
+      expanded &&
+      (!frozen ||
+        !isDeepStrictEqual(
+          {
+            ...expanded,
+            sourceIds: frozen.sourceIds,
+            contextSourceIds: frozen.contextSourceIds,
+          },
+          frozen,
+        ) ||
+        frozen.sourceIds.some((id) => !expanded.sourceIds.includes(id)) ||
+        frozen.contextSourceIds.some(
+          (id) => !expanded.contextSourceIds.includes(id),
+        ))
+    )
+      throw new Error("Execution authority cannot be expanded");
     const id = context?.originEventId ?? "";
     const event = eventRecord(state, id)?.event;
     const scope = event && routeEvent(event, deps.owner);

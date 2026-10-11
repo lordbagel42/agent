@@ -521,6 +521,9 @@ export interface ModelRequest {
   mcpReadScope?: { connections: string[] };
   /** Host-only transient MCP observation; never serialize into prompts/journals. */
   onMcpObservation?: (text: string) => void;
+  /** Host-only directive observation, including refusals and cached results.
+   * Not an effect-start/settlement receipt; strip before calling a provider. */
+  onMcpUse?: () => void;
   /** Host-only sentinel evidence, including untrusted catalog pages. */
   onSentinelObservation?: (text: string) => void;
   latencyAvailable?: boolean;
