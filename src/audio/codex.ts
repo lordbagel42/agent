@@ -70,6 +70,8 @@ export async function createVoice(options: {
     "features.code_mode.direct_only_tool_namespaces": ["functions"],
     // Catalog-selected multi-agent v2 also overrides disabled feature flags.
     "agents.enabled": false,
+    // Discovery/instruction flags do not prevent installation into the auth home.
+    "skills.bundled.enabled": false,
     sqlite_home: diagnostics,
     log_dir: diagnostics,
     "history.persistence": "none",
