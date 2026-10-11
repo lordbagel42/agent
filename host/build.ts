@@ -3,6 +3,8 @@
  * `node_modules`, plus a manifest of SHA-256 digests for installation
  * provenance. Run from a clean checkout of the exact reviewed revision.
  */
+
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -59,7 +61,12 @@ const files = Object.fromEntries(
         .digest("hex"),
     ]),
 );
+// Installation requires a clean checkout so the revision names the bytes.
+const git = (...args: string[]) =>
+  execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+const revision = git("rev-parse", "HEAD");
+const clean = git("status", "--porcelain", "--untracked-files=all", ".") === "";
 writeFileSync(
   join(out, "manifest.json"),
-  `${JSON.stringify({ sha256: files }, null, 2)}\n`,
+  `${JSON.stringify({ revision, clean, sha256: files }, null, 2)}\n`,
 );
