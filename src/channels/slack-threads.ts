@@ -36,6 +36,21 @@ export class SlackThreads {
       .run(team, bot, channel, thread);
   }
 
+  /** Discovery only. Subscription is never proof of the viewer's membership. */
+  list(team: string, bot: string, before: number | null, limit = 12) {
+    return this.db
+      .prepare(
+        `SELECT rowid AS cursor, channel, thread FROM slack_threads
+         WHERE team = ? AND bot = ? AND (? IS NULL OR rowid < ?)
+         ORDER BY rowid DESC LIMIT ?`,
+      )
+      .all(team, bot, before, before, Math.min(12, Math.max(1, limit))) as {
+      cursor: number;
+      channel: string;
+      thread: string;
+    }[];
+  }
+
   hasRecentChannelReply(
     team: string,
     bot: string,

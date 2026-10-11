@@ -142,6 +142,7 @@ import { createGitHubOAuth } from "./tools/github-oauth.js";
 import { createPuckConsoleOAuth } from "./tools/puck-oauth.js";
 import { createSlackMcpOAuth } from "./tools/slack-mcp-oauth.js";
 import { createWebSearchProvider } from "./tools/web-search.js";
+import { WebConversations } from "./web/slack.js";
 import { createWorkflowTools } from "./workflows/tools.js";
 
 let startupStage = "configuration (JUNE_CONFIG, default config.local.json)";
@@ -1768,6 +1769,7 @@ async function main() {
       credentials: credentials ? { inspect: credentials.inspect } : undefined,
       capabilities: () =>
         [
+          `Conversation web app: ${!config.console ? "disabled; configure the private console" : !config.slack || !slackThreads ? "mounted at /app, blocked: Slack is not configured" : !config.owner.identities.some((identity) => identity.channel === "slack" && identity.accountId === config.slack?.teamId) ? "mounted at /app, blocked: no owner Slack identity in the configured workspace" : "mounted at /app with a configured bot reader; owner-only and read-only"}. Dashboard sessions authorize this app, never Slack participants. Build readiness, Slack history scopes, workspace/bot identity and channel membership require a fresh read and are not attested by this inspection. Replies continue in Slack; no web posting, participant login or background synchronization. Existing Slack read tools remain subject to this turn's grants.`,
           capabilities
             ? `Generic capability routes are mounted at /operator/capabilities. Registered tools: ${capabilities.registeredToolCount}. GET /status and /audit inspect metadata; POST /proposals validates only; POST /grants requires owner bearer authority and an exact action. Execution requires an unexpired, unrevoked, single-use grant. Registration and mounting are not grants or live verification. June cannot mint grants or access credentials through inspection.`
             : "Generic capabilities are disabled; no generic capability routes or tools are mounted. Inspection grants nothing and does not enable them.",
@@ -1997,6 +1999,26 @@ async function main() {
     consumeAgentQuestion: (event) =>
       agents?.questions.consume(event) ?? Promise.resolve(false),
     sandboxes: () => inspectSandboxes(environments, release?.revision),
+    web: {
+      runtime: juneRuntime,
+      conversations:
+        config.slack && slackThreads
+          ? WebConversations.layer({
+              teamId: config.slack.teamId,
+              botUserId: config.slack.botUserId,
+              botToken: secret(config.slack.botTokenEnv),
+              ownerUserIds: config.owner.identities
+                .filter(
+                  (identity) =>
+                    identity.channel === "slack" &&
+                    identity.accountId === config.slack?.teamId,
+                )
+                .map((identity) => identity.senderId),
+              threads: slackThreads,
+              redact: (text) => loginLinks?.redact(text) ?? text,
+            })
+          : undefined,
+    },
     resolveDebugShare: dependencies.debugShare?.resolve,
     capabilities,
     browserCompanion,

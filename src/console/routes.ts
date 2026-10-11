@@ -48,6 +48,7 @@ export interface ConsoleAction {
 export interface ConsoleDependencies {
   security: PrivateRouteSecurity;
   connectionsAvailable?: boolean;
+  conversationsAvailable?: boolean;
   /** Read-only: surfaces pending requests and connection problems on the overview. */
   connections?: McpConnections;
   inspect(principal: string): Promise<ConsoleSnapshot>;
@@ -190,7 +191,7 @@ export function createConsoleRoutes(deps: ConsoleDependencies) {
         {
           description:
             "What June reports right now, with decisions first. Viewing never approves or runs anything.",
-          actions: html`<p class="section-note">Observed ${when(snapshot.observedAt)} · ${actions ? "Actions need explicit confirmation" : "Read-only"}</p>`,
+          actions: html`${deps.conversationsAvailable ? html`<a class="button secondary" href="/app">Conversations</a>` : ""}<p class="section-note">Observed ${when(snapshot.observedAt)} · ${actions ? "Actions need explicit confirmation" : "Read-only"}</p>`,
           navigation: consoleNavigation(
             base,
             "overview",

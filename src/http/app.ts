@@ -53,6 +53,7 @@ import {
   createWakeupWebhooks,
   type WakeupWebhooks,
 } from "../wakeups/webhooks.js";
+import { createWebRoutes, type WebDependencies } from "../web/routes.js";
 
 export interface HttpDependencies {
   channels: Partial<Record<Channel, ChannelAdapter>>;
@@ -82,6 +83,7 @@ export interface HttpDependencies {
   latency?: LatencyDiagnostics;
   telemetry?: Telemetry;
   sandboxes?: () => Promise<unknown>;
+  web?: WebDependencies;
   wakeups?: WakeupWebhooks & { inspect(): Promise<unknown> };
   github?: GitHubWebhooks;
   console?: {
@@ -305,6 +307,14 @@ export function createHttpApp(deps: HttpDependencies) {
     // Session routes must precede console authentication. Cookies never authorize
     // Bearer-only operator endpoints; action forms additionally require a proof.
     app.route("/console/session", sessions.routes);
+    if (deps.web)
+      app.route(
+        "/app",
+        createWebRoutes(
+          { ...security, authenticate: sessions.authenticate },
+          deps.web,
+        ),
+      );
     if (deps.browserCompanion)
       app.route(
         "/console/browser",
@@ -343,6 +353,7 @@ export function createHttpApp(deps: HttpDependencies) {
         inspect: deps.console.inspect,
         usage: deps.console.usage,
         connectionsAvailable: !!deps.console.connections,
+        conversationsAvailable: !!deps.web,
         connections: deps.console.connections?.store,
         // No action inspection/confirmation callbacks until domain guarantees exist.
       }),
