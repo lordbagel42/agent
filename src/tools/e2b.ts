@@ -1,15 +1,25 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import { z } from "zod";
+import { Schema } from "effect";
+import { decodeStrict } from "../effect/schema.js";
 
-export const e2bRequestSchema = z.strictObject({
-  language: z.enum(["python", "javascript", "bash"]),
-  code: z
-    .string()
-    .min(1)
-    .max(24000)
-    .refine((code) => Buffer.byteLength(code) <= 24000),
+export const e2bRequestSchema = Schema.Struct({
+  language: Schema.Literals(["python", "javascript", "bash"]),
+  code: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(24000),
+    Schema.makeFilter((code: string) => Buffer.byteLength(code) <= 24000),
+  ),
 });
-export type E2BRequest = z.infer<typeof e2bRequestSchema>;
+export type E2BRequest = typeof e2bRequestSchema.Type;
+const decodeRequest = decodeStrict(e2bRequestSchema);
+const validRequest = (request: unknown) => {
+  try {
+    decodeRequest(request);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 export interface E2BResult {
   status: "ok" | "error" | "unavailable";
@@ -89,8 +99,7 @@ export function createE2BProvider(options: { apiKey?: string }): E2BProvider {
           status: "unavailable",
           code: "unsupported_environment",
         };
-      if (!e2bRequestSchema.safeParse(request).success)
-        return { ...result, code: "invalid_request" };
+      if (!validRequest(request)) return { ...result, code: "invalid_request" };
       if (signal?.aborted) return { ...result, code: "cancelled" };
       if (active && Date.now() < heldUntil)
         return { ...result, status: "unavailable", code: "busy" };

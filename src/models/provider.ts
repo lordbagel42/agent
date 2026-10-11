@@ -428,7 +428,7 @@ const companionReplyFields = {
     }),
   ),
   jury: optional(zodLeaf(juryRequestSchema)),
-  e2b: optional(zodLeaf(e2bRequestSchema)),
+  e2b: optional(e2bRequestSchema),
   environment: optional(environmentCommandSchema),
   browserTask: optional(browserCommandSchema),
   research: optional(zodLeaf(researchCommandSchema)),
