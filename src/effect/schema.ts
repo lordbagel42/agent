@@ -1,4 +1,13 @@
-import { Effect, Schema, SchemaTransformation } from "effect";
+import {
+  Cause,
+  Effect,
+  Exit,
+  Option,
+  Schema,
+  type SchemaAST,
+  type SchemaIssue,
+  SchemaTransformation,
+} from "effect";
 
 /** Zod-compatible building blocks for the Zod → Effect Schema migration. They
  * keep validation and the JSON Schema given to models identical to Zod 4's:
@@ -198,4 +207,101 @@ function emptyProperties(node: unknown): unknown {
     !("patternProperties" in result)
     ? { type: "object", properties: {}, ...result }
     : result;
+}
+
+/** A predicate check, the Effect form of Zod's `.refine(predicate, message)`. */
+export const check = <T>(predicate: (value: T) => boolean, message?: string) =>
+  Schema.makeFilter<T>(
+    (value) => predicate(value),
+    message === undefined ? undefined : { message },
+  );
+
+const discriminator = "june/schema/discriminator";
+
+/** Zod's `discriminatedUnion`. Decoding is an ordinary union; `issuePaths`
+ * reports issues from the member selected by `key`, as Zod did. */
+export const discriminated = <
+  const Members extends ReadonlyArray<Schema.Constraint>,
+>(
+  key: string,
+  members: Members,
+) => Schema.Union(members).annotate({ [discriminator]: key });
+
+/** Strict decoding that reports every issue and records inputs, so
+ * `issuePaths` can select a discriminated union member. Never format these
+ * issues with their inputs. */
+export const strictWithInputs = {
+  errors: "all",
+  onExcessProperty: "error",
+  reportInput: true,
+} as const satisfies SchemaAST.ParseOptions;
+
+/** Dotted issue paths in Zod's convention, so error messages naming them keep
+ * their meaning: an excess key in a struct is reported at the struct, and an
+ * invalid record key at the key. Duplicate paths are reported once. */
+export function issuePaths(issue: SchemaIssue.Issue): string[] {
+  const paths = new Set<string>();
+  const add = (path: readonly PropertyKey[]) => {
+    paths.add(path.join("."));
+  };
+  const visit = (node: SchemaIssue.Issue, path: readonly PropertyKey[]) => {
+    switch (node._tag) {
+      case "Pointer":
+        return visit(node.issue, [...path, ...node.path]);
+      case "Filter":
+      case "Encoding":
+        return visit(node.issue, path);
+      case "Composite":
+        for (const child of node.issues) visit(child, path);
+        return;
+      case "AnyOf": {
+        const key = node.ast.annotations?.[discriminator];
+        if (typeof key === "string" && "input" in node)
+          return visitMember(node.ast, key, node.input, path);
+        for (const child of node.issues) visit(child, path);
+        if (!node.issues.length) add(path);
+        return;
+      }
+      case "UnexpectedKey":
+        return add(
+          node.ast._tag === "Objects" && node.ast.indexSignatures.length === 0
+            ? path.slice(0, -1)
+            : path,
+        );
+      default:
+        return add(path);
+    }
+  };
+  // Zod rejected a non-object at the union, an unknown discriminator at the
+  // key, and otherwise reported only the selected member's issues.
+  const visitMember = (
+    union: SchemaAST.Union,
+    key: string,
+    input: unknown,
+    path: readonly PropertyKey[],
+  ) => {
+    if (typeof input !== "object" || input === null || Array.isArray(input))
+      return add(path);
+    const value: unknown = Reflect.get(input, key);
+    const member = union.types.find(
+      (ast) =>
+        ast._tag === "Objects" &&
+        ast.propertySignatures.some(
+          (property) =>
+            property.name === key &&
+            Schema.is(Schema.make(property.type))(value),
+        ),
+    );
+    if (!member) return add([...path, key]);
+    const result = Schema.decodeUnknownExit(
+      Schema.make<Schema.Decoder<unknown>>(member),
+    )(input, strictWithInputs);
+    const error = Exit.isFailure(result)
+      ? Cause.findErrorOption(result.cause)
+      : Option.none();
+    if (Option.isNone(error)) return add(path);
+    visit(error.value.issue, path);
+  };
+  visit(issue, []);
+  return [...paths];
 }

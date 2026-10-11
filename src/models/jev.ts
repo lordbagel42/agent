@@ -1,6 +1,12 @@
+import { Schema } from "effect";
 import { z } from "zod";
+import {
+  check,
+  decodeStrict,
+  discriminated,
+  TrimmedString,
+} from "../effect/schema.js";
 
-const text = z.string().trim().min(1).max(4_096);
 const key = z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/);
 const probability = z.number().finite().min(0).max(1);
 
@@ -17,33 +23,52 @@ function record<Value extends z.ZodType>(valueSchema: Value) {
     .pipe(z.record(key, valueSchema));
 }
 
-export const jevQuestionSchema = z.discriminatedUnion("type", [
-  z
-    .strictObject({
-      type: z.literal("choice"),
-      instructions: text,
-      criteria: record(text).refine(
-        (v) => Object.keys(v).length >= 2 && Object.keys(v).length <= 255,
-      ),
-      abstainChoice: key,
-    })
-    .refine((v) => Object.hasOwn(v.criteria, v.abstainChoice)),
-  z.strictObject({
-    type: z.literal("score"),
-    instructions: text,
-    criteria: z.array(text).min(2).max(10),
+const questionText = TrimmedString({ min: 1, max: 4_096 });
+const questionKey = Schema.String.check(
+  Schema.isPattern(/^[a-zA-Z0-9_-]{1,80}$/),
+);
+// Reject an own __proto__ before decoding a map, as the Zod record above does.
+const questionRecord = <Value extends Schema.Constraint>(value: Value) =>
+  Schema.Unknown.check(
+    check(
+      (input) =>
+        input === null ||
+        typeof input !== "object" ||
+        !Object.hasOwn(input, "__proto__"),
+    ),
+  ).pipe(Schema.decodeTo(Schema.Record(questionKey, value)));
+
+export const jevQuestionSchema = discriminated("type", [
+  Schema.Struct({
+    type: Schema.Literal("choice"),
+    instructions: questionText,
+    criteria: questionRecord(questionText).check(
+      check((v) => Object.keys(v).length >= 2 && Object.keys(v).length <= 255),
+    ),
+    abstainChoice: questionKey,
+  }).check(check((v) => Object.hasOwn(v.criteria, v.abstainChoice))),
+  Schema.Struct({
+    type: Schema.Literal("score"),
+    instructions: questionText,
+    criteria: Schema.Array(questionText).check(
+      Schema.isMinLength(2),
+      Schema.isMaxLength(10),
+    ),
   }),
-  z.strictObject({
-    type: z.literal("noul"),
-    instructions: text,
-    criteria: z
-      .strictObject({ true: text.optional(), false: text.optional() })
-      .optional(),
+  Schema.Struct({
+    type: Schema.Literal("noul"),
+    instructions: questionText,
+    criteria: Schema.optional(
+      Schema.Struct({
+        true: Schema.optional(questionText),
+        false: Schema.optional(questionText),
+      }),
+    ),
   }),
 ]);
 
 /** Trusted operator rubrics, not imported instructions. This is a narrow API subset. */
-export type JevQuestion = z.infer<typeof jevQuestionSchema>;
+export type JevQuestion = typeof jevQuestionSchema.Type;
 export interface JevObservationInput {
   /** Already authorized/minimized by the caller. Text is data, never authority. */
   state: string;
@@ -222,7 +247,9 @@ export function createJevObserver(options: JevObserverOptions): JevObserver {
       timeoutMs > 300_000
     )
       throw new Error();
-    questions = record(jevQuestionSchema).parse(options.questions);
+    questions = decodeStrict(questionRecord(jevQuestionSchema))(
+      options.questions,
+    );
     if (Object.keys(questions).length < 1 || Object.keys(questions).length > 16)
       throw new Error();
   } catch {

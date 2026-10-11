@@ -1,5 +1,7 @@
+import { Schema } from "effect";
 import { z } from "zod";
 import type { Address, MessageEvent, SendResult } from "../core/contracts.js";
+import { withDefault } from "../effect/schema.js";
 import type { Source } from "../memory/store.js";
 import type { CapabilityContext } from "../runtime/capabilities.js";
 import type { ExecutionContext } from "../runtime/execution-context.js";
@@ -22,8 +24,8 @@ export const capabilityTurnSchema = z.enum([
 ]);
 export type CapabilityTurn = z.infer<typeof capabilityTurnSchema>;
 /** Software activation only; it grants no account, effect or provider access. */
-export const capabilityModuleConfigSchema = z.strictObject({
-  enabled: z.boolean().default(true),
+export const capabilityModuleConfigSchema = Schema.Struct({
+  enabled: Schema.Boolean.pipe(withDefault(true)),
 });
 
 /** Safe metadata only. Freshness is a projection, never a persisted attestation.

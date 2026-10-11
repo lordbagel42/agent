@@ -1,34 +1,37 @@
+import { Schema } from "effect";
 import { z } from "zod";
+import { check, Url } from "../effect/schema.js";
+
+function publicDisplayUrl(value: string): boolean {
+  const url = URL.parse(value);
+  if (!url) return false;
+  return (
+    url.protocol === "https:" &&
+    !url.username &&
+    !url.password &&
+    !url.port &&
+    !url.search &&
+    !url.hash &&
+    !/[\s<>`\\]/.test(value) &&
+    /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/i.test(url.hostname) &&
+    !/\.(?:local|localhost|internal|lan|home|test|invalid|onion)$/i.test(
+      url.hostname,
+    ) &&
+    !url.hostname.endsWith(".slack.com")
+  );
+}
 
 /** Public display URLs only. This is not permission to fetch from June's host. */
-export const webEmbedUrlSchema = z
-  .string()
-  .max(1000)
-  .url()
-  .refine((value) => {
-    const url = URL.parse(value);
-    if (!url) return false;
-    return (
-      url.protocol === "https:" &&
-      !url.username &&
-      !url.password &&
-      !url.port &&
-      !url.search &&
-      !url.hash &&
-      !/[\s<>`\\]/.test(value) &&
-      /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$/i.test(
-        url.hostname,
-      ) &&
-      !/\.(?:local|localhost|internal|lan|home|test|invalid|onion)$/i.test(
-        url.hostname,
-      ) &&
-      !url.hostname.endsWith(".slack.com")
-    );
-  });
+export const webEmbedUrlSchema = Schema.String.check(Schema.isMaxLength(1000))
+  .pipe(Schema.decodeTo(Url))
+  .check(check(publicDisplayUrl));
+
+// Zod until models/provider.ts, which embeds webEmbedSchema, moves to Effect.
+const webEmbedUrl = z.string().max(1000).url().refine(publicDisplayUrl);
 
 export const webEmbedSchema = z.strictObject({
-  url: webEmbedUrlSchema,
-  thumbnailUrl: webEmbedUrlSchema,
+  url: webEmbedUrl,
+  thumbnailUrl: webEmbedUrl,
   title: z
     .string()
     .trim()

@@ -73,7 +73,19 @@ built-in tracing everywhere, without changing what June does.
   service ownership as its callers migrate, not in one rewrite.
 - **Functions** use `Effect.fn("Service.method")` so every call is a named span.
 - **Config** uses Effect `Config` and `Redacted` for secrets, reading the
-  existing `config.json` and environment with no format change.
+  existing `config.json` and environment with no format change. The config
+  schema is Effect Schema; its parsed output must stay byte-identical as JSON,
+  because the settings store fingerprints it to keep operator overrides.
+  `Invalid June configuration at <paths>` keeps Zod's path convention
+  (`issuePaths` in `src/effect/schema.ts`), but lists each path once and omits Zod's extra
+  parent paths from refinements Zod still ran over already-invalid children;
+  `audio` names the invalid field instead of only `audio`, and an
+  unparseable URL is a configuration error rather than a thrown
+  `TypeError: Invalid URL`. Otherwise a single failure reports the same path. Two accepted input
+  differences, unreachable from JSON written by operators: explicit
+  `undefined` is rejected where Zod treated it as absent, and an own
+  `"__proto__"` key in a record section (`imports`, `coding.workspaces` and
+  so on) is validated like any other key instead of being silently dropped.
 - **Errors** become `Schema.TaggedError` classes, replacing the 21 `Error`
   subclasses and their `instanceof` checks.
 - **Schema.** Effect Schema replaces Zod (85 files). Tool input schemas given

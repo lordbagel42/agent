@@ -1,39 +1,39 @@
-import { z } from "zod";
+import { Schema } from "effect";
 import { capabilityModules, findCapability } from "./catalog.js";
 
 /** Activation is protected host configuration, not an ordinary settings key.
  * Each source-owned schema stays strict; there is no arbitrary config bag. */
-export const capabilityConfigSchema = z.strictObject({
-  s01: capabilityModules.s01.configSchema.optional(),
-  s02: capabilityModules.s02.configSchema.optional(),
-  s03: capabilityModules.s03.configSchema.optional(),
-  s04: capabilityModules.s04.configSchema.optional(),
-  s05: capabilityModules.s05.configSchema.optional(),
-  s06: capabilityModules.s06.configSchema.optional(),
-  s07: capabilityModules.s07.configSchema.optional(),
-  s08: capabilityModules.s08.configSchema.optional(),
-  s09: capabilityModules.s09.configSchema.optional(),
-  s10: capabilityModules.s10.configSchema.optional(),
-  s11: capabilityModules.s11.configSchema.optional(),
-  s12: capabilityModules.s12.configSchema.optional(),
-  s13: capabilityModules.s13.configSchema.optional(),
-  s14: capabilityModules.s14.configSchema.optional(),
-  s15: capabilityModules.s15.configSchema.optional(),
-  s16: capabilityModules.s16.configSchema.optional(),
-  s17: capabilityModules.s17.configSchema.optional(),
-  s18: capabilityModules.s18.configSchema.optional(),
-  s19: capabilityModules.s19.configSchema.optional(),
-  s20: capabilityModules.s20.configSchema.optional(),
-  s21: capabilityModules.s21.configSchema.optional(),
-  s22: capabilityModules.s22.configSchema.optional(),
-  s23: capabilityModules.s23.configSchema.optional(),
-  s24: capabilityModules.s24.configSchema.optional(),
-  s25: capabilityModules.s25.configSchema.optional(),
-  s26: capabilityModules.s26.configSchema.optional(),
-  s27: capabilityModules.s27.configSchema.optional(),
-  s28: capabilityModules.s28.configSchema.optional(),
+export const capabilityConfigSchema = Schema.Struct({
+  s01: Schema.optional(capabilityModules.s01.configSchema),
+  s02: Schema.optional(capabilityModules.s02.configSchema),
+  s03: Schema.optional(capabilityModules.s03.configSchema),
+  s04: Schema.optional(capabilityModules.s04.configSchema),
+  s05: Schema.optional(capabilityModules.s05.configSchema),
+  s06: Schema.optional(capabilityModules.s06.configSchema),
+  s07: Schema.optional(capabilityModules.s07.configSchema),
+  s08: Schema.optional(capabilityModules.s08.configSchema),
+  s09: Schema.optional(capabilityModules.s09.configSchema),
+  s10: Schema.optional(capabilityModules.s10.configSchema),
+  s11: Schema.optional(capabilityModules.s11.configSchema),
+  s12: Schema.optional(capabilityModules.s12.configSchema),
+  s13: Schema.optional(capabilityModules.s13.configSchema),
+  s14: Schema.optional(capabilityModules.s14.configSchema),
+  s15: Schema.optional(capabilityModules.s15.configSchema),
+  s16: Schema.optional(capabilityModules.s16.configSchema),
+  s17: Schema.optional(capabilityModules.s17.configSchema),
+  s18: Schema.optional(capabilityModules.s18.configSchema),
+  s19: Schema.optional(capabilityModules.s19.configSchema),
+  s20: Schema.optional(capabilityModules.s20.configSchema),
+  s21: Schema.optional(capabilityModules.s21.configSchema),
+  s22: Schema.optional(capabilityModules.s22.configSchema),
+  s23: Schema.optional(capabilityModules.s23.configSchema),
+  s24: Schema.optional(capabilityModules.s24.configSchema),
+  s25: Schema.optional(capabilityModules.s25.configSchema),
+  s26: Schema.optional(capabilityModules.s26.configSchema),
+  s27: Schema.optional(capabilityModules.s27.configSchema),
+  s28: Schema.optional(capabilityModules.s28.configSchema),
 });
-export type CapabilityConfig = z.infer<typeof capabilityConfigSchema>;
+export type CapabilityConfig = typeof capabilityConfigSchema.Type;
 
 /** Default on is software activation, never enrollment or permission. */
 export function isCapabilityEnabled(

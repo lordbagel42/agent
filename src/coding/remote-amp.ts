@@ -1,20 +1,27 @@
 import { spawn } from "node:child_process";
 import { Effect, Schema } from "effect";
-import { z } from "zod";
 import type { JuneRuntime } from "../effect/runtime.js";
+import { Int, withDefault } from "../effect/schema.js";
 
-const path = z.string().regex(/^\/[A-Za-z0-9_./-]+$/);
-export const ampJobsSchema = z.strictObject({
-  enabled: z.boolean().default(false),
-  host: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/),
-  user: z.string().regex(/^[a-z_][a-z0-9_-]*$/),
+const path = Schema.String.check(Schema.isPattern(/^\/[A-Za-z0-9_./-]+$/));
+export const ampJobsSchema = Schema.Struct({
+  enabled: Schema.Boolean.pipe(withDefault(false)),
+  host: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/)),
+  user: Schema.String.check(Schema.isPattern(/^[a-z_][a-z0-9_-]*$/)),
   identityFile: path,
   knownHostsFile: path,
-  policyRevision: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/),
-  workspaces: z.record(z.string().regex(/^amp-[a-zA-Z0-9_-]+$/), path),
-  timeoutMs: z.number().int().min(1000).max(3_600_000).default(3_600_000),
+  policyRevision: Schema.String.check(
+    Schema.isPattern(/^[a-zA-Z0-9_-]{1,80}$/),
+  ),
+  workspaces: Schema.Record(
+    Schema.String.check(Schema.isPattern(/^amp-[a-zA-Z0-9_-]+$/)),
+    path,
+  ),
+  timeoutMs: Int({ minimum: 1000, maximum: 3_600_000 }).pipe(
+    withDefault(3_600_000),
+  ),
 });
-export type AmpJobsConfig = z.infer<typeof ampJobsSchema>;
+export type AmpJobsConfig = typeof ampJobsSchema.Type;
 
 /** Remote transport, deliberately NOT CodingRuntime: no local cwd or verifier. */
 export interface RemoteAmpJobs {

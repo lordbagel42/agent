@@ -1,5 +1,4 @@
 import { Effect, Option, Schema } from "effect";
-import { z } from "zod";
 import type { JuneRuntime } from "../effect/runtime.js";
 import {
   decodeStrict,
@@ -18,18 +17,25 @@ const decodeRequest = Schema.decodeUnknownOption(emojiSearchSchema, {
   onExcessProperty: "error",
 });
 
-/** Operator configuration; converts with Core's config schema. */
-export const emojiSearchUrlSchema = z.url().refine((value) => {
-  const url = new URL(value);
-  return (
-    url.protocol === "https:" &&
-    !url.username &&
-    !url.password &&
-    !url.search &&
-    !url.hash &&
-    url.pathname === "/"
-  );
-}, "Use an HTTPS origin without credentials, path, query, or fragment");
+export const emojiSearchUrlSchema = Url.check(
+  Schema.makeFilter(
+    (value: string) => {
+      const url = new URL(value);
+      return (
+        url.protocol === "https:" &&
+        !url.username &&
+        !url.password &&
+        !url.search &&
+        !url.hash &&
+        url.pathname === "/"
+      );
+    },
+    {
+      message:
+        "Use an HTTPS origin without credentials, path, query, or fragment",
+    },
+  ),
+);
 
 const bounded = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 const name = Schema.String.check(
@@ -117,7 +123,7 @@ export function createEmojiSearch(options: {
   timeoutMs: number;
   effectRuntime: JuneRuntime;
 }): EmojiSearchProvider {
-  const origin = emojiSearchUrlSchema.parse(options.baseUrl);
+  const origin = decodeStrict(emojiSearchUrlSchema)(options.baseUrl);
   const timeoutMs = decodeTimeout(options.timeoutMs);
 
   const search = Effect.fn("june.tool.emoji_search")(function* (

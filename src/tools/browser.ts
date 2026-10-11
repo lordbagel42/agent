@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
+import { Schema } from "effect";
 import { type Browser, type BrowserContext, chromium } from "playwright";
 import { z } from "zod";
+import {
+  check,
+  decodeStrict,
+  discriminated,
+  Int,
+  Url,
+  withDefault,
+} from "../effect/schema.js";
 import type { ToolAction, ToolAdapter } from "./broker.js";
 
 const unsafeEnvironmentVariables = [
@@ -18,53 +27,56 @@ const unsafeEnvironmentVariables = [
 const unsafeEnvironmentAtImport = unsafeEnvironmentVariables.some(
   (name) => process.env[name],
 );
-const selector = z.string().min(1).max(512);
-const step = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("click"), selector }),
-  z.strictObject({
-    kind: z.literal("fill"),
+const selector = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(512),
+);
+const step = discriminated("kind", [
+  Schema.Struct({ kind: Schema.Literal("click"), selector }),
+  Schema.Struct({
+    kind: Schema.Literal("fill"),
     selector,
-    value: z.string().max(4096),
+    value: Schema.String.check(Schema.isMaxLength(4096)),
   }),
-  z.strictObject({
-    kind: z.literal("login"),
+  Schema.Struct({
+    kind: Schema.Literal("login"),
     usernameSelector: selector,
     passwordSelector: selector,
   }),
 ]);
-export const browserOperationSchema = z.strictObject({
-  name: z.string().min(1).max(128),
-  account: z.string().min(1),
-  item: z.string().min(1),
-  origin: z.string().url(),
-  url: z.string().url(),
-  requests: z
-    .array(
-      z.strictObject({
-        url: z.string().url(),
-        method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
-        credential: z.boolean().default(false),
-        maxUses: z.number().int().min(1).max(16).default(1),
-      }),
-    )
-    .min(1)
-    .max(32),
-  steps: z.array(step).max(16).default([]),
-  success: z.strictObject({ selector, text: z.string().min(1).max(4096) }),
+export const browserOperationSchema = Schema.Struct({
+  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  account: Schema.String.check(Schema.isMinLength(1)),
+  item: Schema.String.check(Schema.isMinLength(1)),
+  origin: Url,
+  url: Url,
+  requests: Schema.Array(
+    Schema.Struct({
+      url: Url,
+      method: Schema.Literals(["GET", "POST", "PUT", "PATCH", "DELETE"]),
+      credential: Schema.Boolean.pipe(withDefault(false)),
+      maxUses: Int({ minimum: 1, maximum: 16 }).pipe(withDefault(1)),
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(32)),
+  steps: Schema.Array(step).check(Schema.isMaxLength(16)).pipe(withDefault([])),
+  success: Schema.Struct({
+    selector,
+    text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+  }),
   /** Only available to anonymous operations; all returned text is untrusted data. */
-  outputSelector: selector.optional(),
+  outputSelector: Schema.optional(selector),
 });
 
-export type BrowserOperation = z.input<typeof browserOperationSchema>;
+export type BrowserOperation = typeof browserOperationSchema.Encoded;
 export function browserOperationDigest(recipe: BrowserOperation): string {
   return createHash("sha256")
-    .update(JSON.stringify(browserOperationSchema.parse(recipe)))
+    .update(JSON.stringify(decodeStrict(browserOperationSchema)(recipe)))
     .digest("hex");
 }
 
 /** Host credential recipes contain references/selectors, never literal secrets or output. */
-export const browserCredentialOperationSchema = browserOperationSchema.refine(
-  (recipe) => {
+export const browserCredentialOperationSchema = browserOperationSchema.check(
+  check((recipe) => {
     const logins = recipe.steps.filter(
       (entry) => entry.kind === "login",
     ).length;
@@ -76,8 +88,7 @@ export const browserCredentialOperationSchema = browserOperationSchema.refine(
       recipe.outputSelector === undefined &&
       JSON.stringify(recipe).length <= 1400
     );
-  },
-  "Credential operations require a short lowercase name, one credential kind, no literal fills or output, and at most 1400 JSON characters",
+  }, "Credential operations require a short lowercase name, one credential kind, no literal fills or output, and at most 1400 JSON characters"),
 );
 
 export interface BrowserOptions {
@@ -124,7 +135,7 @@ function denied(): never {
  * See docs/browser.md for the required external process/network isolation.
  */
 export class BrowserAdapter implements ToolAdapter {
-  readonly #operations: z.output<typeof browserOperationSchema>[];
+  readonly #operations: (typeof browserOperationSchema.Type)[];
   readonly #timeout: number;
   readonly #requireRecipeDigest: boolean;
   readonly #environment: Record<string, string>;
@@ -146,11 +157,14 @@ export class BrowserAdapter implements ToolAdapter {
       this.#timeout > 60_000
     )
       denied();
-    this.#operations = z
-      .array(browserOperationSchema)
-      .min(1)
-      .max(64)
-      .parse(options.operations);
+    this.#operations = [
+      ...decodeStrict(
+        Schema.Array(browserOperationSchema).check(
+          Schema.isMinLength(1),
+          Schema.isMaxLength(64),
+        ),
+      )(options.operations),
+    ];
     const names = new Set<string>();
     for (const recipe of this.#operations) {
       const origin = new URL(recipe.origin);

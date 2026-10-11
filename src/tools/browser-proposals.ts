@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { check, decodeStrict } from "../effect/schema.js";
 import type { EffectGuard } from "../sentinel/contracts.js";
 import {
   type CapabilityBroker,
@@ -15,21 +16,25 @@ import {
 } from "./browser.js";
 
 /** Separate opt-in from reads: one literal fill OR one click, never a sequence. */
-export const browserMutationSchema = browserOperationSchema.refine((recipe) => {
-  const step = recipe.steps[0];
-  const writes = recipe.requests.filter((request) => request.method !== "GET");
-  return (
-    /^[a-z][a-z0-9_-]{0,63}$/u.test(recipe.name) &&
-    recipe.steps.length === 1 &&
-    (step?.kind === "fill" || step?.kind === "click") &&
-    !recipe.requests.some((request) => request.credential) &&
-    recipe.outputSelector === undefined &&
-    writes.length <= (step.kind === "click" ? 1 : 0) &&
-    writes.every((request) => request.maxUses === 1) &&
-    // Retain the configured recipe-size bound independently of receipt output.
-    JSON.stringify(recipe).length <= 1400
-  );
-}, "Mutation requires a short lowercase name, one anonymous fill or click, no implicit submit, at most one one-use write endpoint, and a recipe of at most 1400 JSON characters");
+export const browserMutationSchema = browserOperationSchema.check(
+  check((recipe) => {
+    const step = recipe.steps[0];
+    const writes = recipe.requests.filter(
+      (request) => request.method !== "GET",
+    );
+    return (
+      /^[a-z][a-z0-9_-]{0,63}$/u.test(recipe.name) &&
+      recipe.steps.length === 1 &&
+      (step?.kind === "fill" || step?.kind === "click") &&
+      !recipe.requests.some((request) => request.credential) &&
+      recipe.outputSelector === undefined &&
+      writes.length <= (step.kind === "click" ? 1 : 0) &&
+      writes.every((request) => request.maxUses === 1) &&
+      // Retain the configured recipe-size bound independently of receipt output.
+      JSON.stringify(recipe).length <= 1400
+    );
+  }, "Mutation requires a short lowercase name, one anonymous fill or click, no implicit submit, at most one one-use write endpoint, and a recipe of at most 1400 JSON characters"),
+);
 
 // Reversible JSON escapes prevent platform mentions, formatting and link unfurls.
 function reviewJson(value: unknown): string {
@@ -73,11 +78,11 @@ export function createBrowserProposal(options: {
   const { owner, path, broker, browser } = options;
   const recipes = [
     ...options.operations.map((input) => ({
-      recipe: browserMutationSchema.parse(input),
+      recipe: decodeStrict(browserMutationSchema)(input),
       credentialed: false,
     })),
     ...(options.credentialOperations ?? []).map((input) => ({
-      recipe: browserCredentialOperationSchema.parse(input),
+      recipe: decodeStrict(browserCredentialOperationSchema)(input),
       credentialed: true,
     })),
   ];
