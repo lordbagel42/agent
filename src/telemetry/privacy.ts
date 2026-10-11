@@ -118,6 +118,7 @@ const names = new Set([
   "june.mcp.settled",
   "june.whatsapp.receive",
   "june.whatsapp.send",
+  "june.slack.file.read",
 ]);
 const enums: Record<string, readonly string[]> = {
   "june.channel": [

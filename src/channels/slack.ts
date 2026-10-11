@@ -13,6 +13,7 @@ import { DEBUG_COMMAND } from "../core/routing.js";
 import { PRIVATE_SENTINEL_PREFIX } from "../core/sentinel.js";
 import { PRIVATE_SLACK_HISTORY_PREFIX } from "../core/slack-history.js";
 import { allowedWebEmbed } from "../core/web-embed.js";
+import type { JuneRuntime } from "../effect/runtime.js";
 import type { LatencyDiagnostics } from "../runtime/latency.js";
 import {
   createSlackContext,
@@ -544,6 +545,7 @@ export function createSlackAdapter({
   withholdAgentQuestionContext,
   fetch: fetchImpl = globalThis.fetch,
   now = () => Date.now(),
+  effectRuntime,
 }: {
   signingSecret: string;
   botToken: string;
@@ -570,6 +572,7 @@ export function createSlackAdapter({
   >;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
+  effectRuntime: JuneRuntime;
 }): ChannelAdapter {
   const owners = new Set(ownerUserIds);
   const context = createSlackContext({
@@ -611,11 +614,13 @@ export function createSlackAdapter({
       teamId,
       botToken,
       fetch: fetchImpl,
+      effectRuntime,
     }),
     readVideo: createSlackVideoReader({
       teamId,
       botToken,
       fetch: fetchImpl,
+      effectRuntime,
     }),
     async setTyping(event, active, signal) {
       if (sessions?.active(event) === false) return;

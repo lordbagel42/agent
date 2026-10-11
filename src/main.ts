@@ -1267,6 +1267,7 @@ async function main() {
       sessions: slackSessions,
       withholdAgentQuestionContext: (channel, thread) =>
         agents?.questions.withholdContext(channel, thread) ?? false,
+      effectRuntime: juneRuntime,
     });
   }
   if (config.whatsapp) {

@@ -10,6 +10,7 @@ import { parseArgs } from "node:util";
 import { createClient } from "rivetkit/client";
 import { createSlackAdapter } from "../src/channels/slack.js";
 import type { ModelProvider } from "../src/core/contracts.js";
+import { makeJuneRuntime } from "../src/effect/runtime.js";
 import { createHttpApp } from "../src/http/app.js";
 import {
   createLatencyDiagnostics,
@@ -315,6 +316,7 @@ if (mode === "report") {
     ownerUserIds: ["U1"],
     contextEnabled: true,
     latency,
+    effectRuntime: makeJuneRuntime(),
     async fetch(url, init) {
       const method = String(url).split("/").at(-1);
       if (method === "assistant.threads.setStatus") {
