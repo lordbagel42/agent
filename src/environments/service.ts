@@ -1,3 +1,5 @@
+import { Cause, Effect, Schema } from "effect";
+import type { JuneRuntime } from "../effect/runtime.js";
 import {
   type Environment,
   EnvironmentCapacityError,
@@ -20,8 +22,37 @@ interface Lease {
   failed?: boolean;
 }
 
+export class EnvironmentCleanupUnconfirmed extends Schema.TaggedError<EnvironmentCleanupUnconfirmed>()(
+  "EnvironmentCleanupUnconfirmed",
+  {},
+) {
+  override readonly message = "Environment cleanup unconfirmed";
+}
+export class EnvironmentInventoryUnavailable extends Schema.TaggedError<EnvironmentInventoryUnavailable>()(
+  "EnvironmentInventoryUnavailable",
+  {},
+) {
+  override readonly message = "Inventory unavailable";
+}
+/** A provider operation failed; keeps the provider's error and its message. */
+export class EnvironmentProviderError extends Schema.TaggedError<EnvironmentProviderError>()(
+  "EnvironmentProviderError",
+  { cause: Schema.Defect() },
+) {
+  override readonly message =
+    this.cause instanceof Error ? this.cause.message : String(this.cause);
+}
+
+const provider = <A>(work: () => PromiseLike<A>) =>
+  Effect.tryPromise({
+    try: work,
+    catch: (cause) => new EnvironmentProviderError({ cause }),
+  });
+
 /** Owns capacity until provider operations AND VM teardown settle. No timeout
- * race releases an uncertain VM. Durable worker receipts own replay prevention. */
+ * race releases an uncertain VM. Durable worker receipts own replay prevention.
+ * Programs are uninterruptible by design: a caller's abort is observed through
+ * the command signal and becomes a stop request, never an abandoned await. */
 export class EnvironmentService {
   private readonly leases = new Map<string, Lease>();
   private readonly revoked = new Set<string>();
@@ -31,7 +62,10 @@ export class EnvironmentService {
   private sequence = 0;
   readonly available = true;
 
-  constructor(private readonly provider: EnvironmentProvider) {}
+  constructor(
+    private readonly provider: EnvironmentProvider,
+    private readonly effectRuntime: JuneRuntime,
+  ) {}
 
   get binding() {
     return this.provider.binding;
@@ -57,35 +91,43 @@ export class EnvironmentService {
     this.activity.length = Math.min(this.activity.length, 200);
   }
 
-  async inspect() {
-    if (!this.provider.inspect) throw new Error("Inventory unavailable");
-    const boxes = await this.provider.inspect();
-    const leases: SandboxSnapshot["leases"] = [...this.leases].map(
-      ([owner, lease]) => ({
-        worker: workerFingerprint(owner),
-        state: lease.failed
-          ? "needs_review"
-          : lease.releasing || lease.stopping
-            ? "stopping"
-            : lease.running
-              ? "executing"
-              : "active",
-      }),
-    );
-    return {
-      boxes,
-      leases,
-      activity: this.activity.map((entry) => ({ ...entry })),
-      activitySince: this.activitySince,
-    };
+  private readonly inspectEffect = Effect.fn("june.environment.inspect")(
+    function* (this: EnvironmentService) {
+      const inspect = this.provider.inspect?.bind(this.provider);
+      if (!inspect) return yield* new EnvironmentInventoryUnavailable();
+      const boxes = yield* provider(inspect);
+      const leases: SandboxSnapshot["leases"] = [...this.leases].map(
+        ([owner, lease]) => ({
+          worker: workerFingerprint(owner),
+          state: lease.failed
+            ? "needs_review"
+            : lease.releasing || lease.stopping
+              ? "stopping"
+              : lease.running
+                ? "executing"
+                : "active",
+        }),
+      );
+      return {
+        boxes,
+        leases,
+        activity: this.activity.map((entry) => ({ ...entry })),
+        activitySince: this.activitySince,
+      };
+    },
+  );
+
+  inspect() {
+    return this.effectRuntime.runPromise(this.inspectEffect.call(this));
   }
 
-  async run(
+  private readonly runEffect = Effect.fn("june.environment.run")(function* (
+    this: EnvironmentService,
     owner: string,
     raw: EnvironmentCommand,
     signal: AbortSignal,
-    authorized: () => boolean = () => true,
-  ): Promise<EnvironmentResult> {
+    authorized: () => boolean,
+  ) {
     const command = environmentCommandSchema.parse(raw);
     const base = {
       provider: this.provider.name,
@@ -93,18 +135,22 @@ export class EnvironmentService {
     };
     let lease = this.leases.get(owner);
     if (this.closing || this.revoked.has(owner) || lease?.failed)
-      return { ...base, status: "unavailable", code: "needs_review" };
+      return { ...base, status: "unavailable", code: "needs_review" } as const;
     if (signal.aborted || !authorized())
-      return { ...base, status: "error", code: "cancelled" };
+      return { ...base, status: "error", code: "cancelled" } as const;
     if (command.action === "status")
-      return { ...base, status: "ok", state: lease ? "active" : "stopped" };
+      return {
+        ...base,
+        status: "ok",
+        state: lease ? "active" : "stopped",
+      } as const;
     if (
       lease?.running ||
       lease?.stopping ||
       lease?.releasing ||
       (!lease && this.leases.size >= 4)
     )
-      return { ...base, status: "unavailable", code: "busy" };
+      return { ...base, status: "unavailable", code: "busy" } as const;
     if (!lease) {
       lease = {
         opening: Promise.resolve().then(() => this.provider.connect(owner)),
@@ -113,21 +159,38 @@ export class EnvironmentService {
       this.record(owner, "opening");
     }
     const current = lease;
-    const running = this.execute(current, command.command, signal, authorized);
+    // The lease's running promise is shared with release(), which must wait
+    // for this command and its teardown to settle.
+    const running = this.effectRuntime.runPromise(
+      this.execute(current, command.command, signal, authorized),
+    );
     current.running = running;
-    try {
-      const result = await running;
-      this.record(
-        owner,
-        result.status === "ok" && result.exitCode === 0
-          ? "command_completed"
-          : "command_failed",
-        result,
-      );
-      return result;
-    } finally {
-      current.running = undefined;
-    }
+    const result = yield* Effect.promise(() => running).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          current.running = undefined;
+        }),
+      ),
+    );
+    this.record(
+      owner,
+      result.status === "ok" && result.exitCode === 0
+        ? "command_completed"
+        : "command_failed",
+      result,
+    );
+    return result;
+  }, Effect.uninterruptible);
+
+  run(
+    owner: string,
+    raw: EnvironmentCommand,
+    signal: AbortSignal,
+    authorized: () => boolean = () => true,
+  ): Promise<EnvironmentResult> {
+    return this.effectRuntime.runPromise(
+      this.runEffect.call(this, owner, raw, signal, authorized),
+    );
   }
 
   private stop(lease: Lease): Promise<void> {
@@ -135,12 +198,13 @@ export class EnvironmentService {
     return lease.stopping;
   }
 
-  private async execute(
+  private readonly execute = Effect.fn("june.environment.exec")(function* (
+    this: EnvironmentService,
     lease: Lease,
     command: string,
     signal: AbortSignal,
     authorized: () => boolean,
-  ): Promise<EnvironmentResult> {
+  ) {
     const result: EnvironmentResult = {
       provider: this.provider.name,
       persistence: this.provider.persistence,
@@ -156,84 +220,118 @@ export class EnvironmentService {
       // Attach a handler immediately; settlement is still awaited below.
       void this.stop(lease).catch(() => {});
     };
-    interruption.addEventListener("abort", abort, { once: true });
     let bytes = 0;
-    try {
-      const environment = await lease.opening;
+    const attempt = Effect.gen(function* () {
+      const environment = yield* provider(() => lease.opening);
       interruption.throwIfAborted();
       if (!authorized()) {
         result.code = "cancelled";
         throw new Error("Environment authorization changed");
       }
-      result.exitCode = await environment.exec(command, (stream, text) => {
-        if (lease.failed) return;
-        bytes += Buffer.byteLength(text);
-        if (bytes > 8000) {
-          result.code = "output_limit";
-          abort();
-          return;
-        }
-        result[stream] += text;
-      });
+      result.exitCode = yield* provider(() =>
+        environment.exec(command, (stream, text) => {
+          if (lease.failed) return;
+          bytes += Buffer.byteLength(text);
+          if (bytes > 8000) {
+            result.code = "output_limit";
+            abort();
+            return;
+          }
+          result[stream] += text;
+        }),
+      );
       interruption.throwIfAborted();
       if (!lease.failed) result.status = "ok";
-    } catch (error) {
-      if (error instanceof EnvironmentCapacityError) {
-        result.status = "unavailable";
-        result.code ??= "busy";
-        // A proven pre-creation refusal has no resource to stop; other opening
-        // failures retain their rejected stop promise and cannot release capacity.
-        lease.stopping = Promise.resolve();
-      } else {
-        result.code ??= signal.aborted
-          ? "cancelled"
-          : timeout.aborted
-            ? "timeout"
-            : "provider_failure";
-      }
-      lease.failed = true;
-    } finally {
-      interruption.removeEventListener("abort", abort);
-      if (lease.failed) {
-        try {
-          await this.stop(lease);
-          result.cleanup = "confirmed";
-        } catch {
-          result.cleanup = "unknown";
+    }).pipe(
+      Effect.catchCause((cause) => {
+        const error = Cause.squash(cause);
+        if (
+          error instanceof EnvironmentProviderError &&
+          error.cause instanceof EnvironmentCapacityError
+        ) {
+          result.status = "unavailable";
+          result.code ??= "busy";
+          // A proven pre-creation refusal has no resource to stop; other opening
+          // failures retain their rejected stop promise and cannot release capacity.
+          lease.stopping = Promise.resolve();
+        } else {
+          result.code ??= signal.aborted
+            ? "cancelled"
+            : timeout.aborted
+              ? "timeout"
+              : "provider_failure";
         }
-      }
-    }
+        lease.failed = true;
+        return Effect.void;
+      }),
+    );
+    yield* Effect.acquireUseRelease(
+      Effect.sync(() =>
+        interruption.addEventListener("abort", abort, { once: true }),
+      ),
+      () => attempt,
+      () => Effect.sync(() => interruption.removeEventListener("abort", abort)),
+    );
+    if (lease.failed)
+      result.cleanup = yield* provider(() => this.stop(lease)).pipe(
+        Effect.as("confirmed" as const),
+        Effect.catch(() => Effect.succeed("unknown" as const)),
+      );
     return result;
-  }
+  }, Effect.uninterruptible);
 
-  async release(owner: string): Promise<void> {
-    const lease = this.leases.get(owner);
-    if (!lease) return;
-    lease.releasing = true;
-    await lease.running;
-    try {
-      await this.stop(lease);
+  private readonly releaseEffect = Effect.fn("june.environment.release")(
+    function* (this: EnvironmentService, owner: string) {
+      const lease = this.leases.get(owner);
+      if (!lease) return;
+      lease.releasing = true;
+      yield* Effect.promise(async () => {
+        await lease.running;
+      });
+      yield* provider(() => this.stop(lease)).pipe(
+        Effect.catch(() => {
+          lease.failed = true;
+          this.record(owner, "cleanup_unknown");
+          return Effect.fail(new EnvironmentCleanupUnconfirmed());
+        }),
+      );
       this.leases.delete(owner);
       this.record(owner, "stopped");
-    } catch {
-      lease.failed = true;
-      this.record(owner, "cleanup_unknown");
-      throw new Error("Environment cleanup unconfirmed");
-    }
+    },
+    Effect.uninterruptible,
+  );
+
+  release(owner: string): Promise<void> {
+    return this.effectRuntime.runPromise(this.releaseEffect.call(this, owner));
   }
 
-  async revoke(owner: string): Promise<void> {
-    this.revoked.add(owner);
-    await this.release(owner);
-    await this.provider.destroy(owner);
-    this.record(owner, "destroyed");
+  private readonly revokeEffect = Effect.fn("june.environment.revoke")(
+    function* (this: EnvironmentService, owner: string) {
+      this.revoked.add(owner);
+      yield* this.releaseEffect.call(this, owner);
+      yield* provider(() => this.provider.destroy(owner));
+      this.record(owner, "destroyed");
+    },
+    Effect.uninterruptible,
+  );
+
+  revoke(owner: string): Promise<void> {
+    return this.effectRuntime.runPromise(this.revokeEffect.call(this, owner));
   }
 
-  async close(): Promise<void> {
+  private readonly closeEffect = Effect.fn("june.environment.close")(function* (
+    this: EnvironmentService,
+  ) {
     this.closing = true;
-    await Promise.all(
-      [...this.leases.keys()].map((owner) => this.release(owner)),
+    yield* Effect.forEach(
+      [...this.leases.keys()],
+      (owner) => this.releaseEffect.call(this, owner),
+      { concurrency: "unbounded", discard: true },
     );
-    await this.provider.close();
+    yield* provider(() => this.provider.close());
+  }, Effect.uninterruptible);
+
+  close(): Promise<void> {
+    return this.effectRuntime.runPromise(this.closeEffect.call(this));
   }
 }

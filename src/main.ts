@@ -905,6 +905,7 @@ async function main() {
         options,
         host,
       ),
+      juneRuntime,
     );
   }
   let jev: Dependencies["jev"];
