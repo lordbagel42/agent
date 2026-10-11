@@ -7,24 +7,33 @@ import {
 } from "node:crypto";
 import { chmodSync, closeSync, constants, openSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { z } from "zod";
+import { Schema } from "effect";
 import { AGENT_QUESTION_PREFIX } from "../core/agent-question.js";
 import type {
   ChannelAdapter,
   Identity,
   MessageEvent,
 } from "../core/contracts.js";
+import {
+  decodeStrict,
+  isPattern,
+  TrimmedString,
+  Uuid,
+} from "../effect/schema.js";
 
-export const askQuestionSchema = z.strictObject({
-  idempotencyKey: z.uuid(),
-  question: z.string().trim().min(1).max(4000),
-  threadUrl: z
-    .string()
-    .regex(
-      /^https:\/\/ampcode\.com\/threads\/T-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-    )
-    .optional(),
+export const askQuestionSchema = Schema.Struct({
+  idempotencyKey: Uuid,
+  question: TrimmedString({ min: 1, max: 4000 }),
+  threadUrl: Schema.optionalKey(
+    Schema.String.check(
+      isPattern(
+        /^https:\/\/ampcode\.com\/threads\/T-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      ),
+    ),
+  ),
 });
+const decodeAskQuestion = decodeStrict(askQuestionSchema);
+const decodeId = decodeStrict(Uuid);
 
 export interface QuestionDelivery {
   recipient: Identity;
@@ -210,7 +219,7 @@ export class AgentQuestions {
   }
 
   get(client: string, id: string) {
-    const row = this.row(z.uuid().parse(id));
+    const row = this.row(decodeId(id));
     if (!row || row.client !== client) return null;
     const body = row.data ? this.decrypt<Body>(row.data, id) : undefined;
     return {
@@ -261,7 +270,7 @@ export class AgentQuestions {
   async ask(client: string, input: unknown) {
     if (this.closing || !this.options.clientActive(client))
       throw new Error("agent_inactive");
-    const parsed = askQuestionSchema.parse(input);
+    const parsed = decodeAskQuestion(input);
     const digest = createHmac("sha256", this.key)
       .update(`june-question:${JSON.stringify({ client, ...parsed })}`)
       .digest("hex");
@@ -374,7 +383,7 @@ export class AgentQuestions {
   }
 
   cancel(client: string, id: string) {
-    const row = this.row(z.uuid().parse(id));
+    const row = this.row(decodeId(id));
     if (!row || row.client !== client) return null;
     if (["sending", "waiting", "unknown"].includes(row.status))
       this.db

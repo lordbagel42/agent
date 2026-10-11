@@ -8,7 +8,8 @@ import {
 import { chmodSync, closeSync, constants, openSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { SpanStatusCode } from "@opentelemetry/api";
-import { z } from "zod";
+import { Schema, SchemaTransformation } from "effect";
+import { decodeStrict, Int, Uuid } from "../effect/schema.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import {
   httpsWebhookTransport,
@@ -17,14 +18,16 @@ import {
   webhookUrl,
 } from "./webhook-transport.js";
 
-const eventSchema = z.enum(["reply", "message"]);
-const principalSchema = z.string().min(1).max(200);
+const eventSchema = Schema.Literals(["reply", "message"]);
+const decodePrincipal = decodeStrict(
+  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+);
 const MAX_REGISTRATIONS = 256;
 const MAX_DELIVERIES = 4096;
 const MAX_PAYLOAD_BYTES = 64 * 1024;
 const DEADLINE_MS = 10_000;
 
-// Validate iteratively before Zod traverses any caller-supplied recursive input.
+// Validate iteratively before the schema traverses any caller-supplied input.
 // Only ordinary JSON data is allowed, not getters, prototypes, cycles or toJSON.
 function boundedJsonObject(value: unknown): value is Record<string, unknown> {
   const pending = [{ value, depth: 0 }];
@@ -60,7 +63,7 @@ function boundedJsonObject(value: unknown): value is Record<string, unknown> {
       const descriptors = Object.getOwnPropertyDescriptors(item);
       if (Reflect.ownKeys(item).length > 4096) return false;
       for (const [key, descriptor] of Object.entries(descriptors)) {
-        // Zod records omit this key; reject rather than silently change the
+        // Records omit this key; reject rather than silently change the
         // request before its full-input idempotency binding is computed.
         if (key === "__proto__") return false;
         if (Array.isArray(item) && key === "length") continue;
@@ -80,36 +83,50 @@ function boundedJsonObject(value: unknown): value is Record<string, unknown> {
   return Buffer.byteLength(JSON.stringify(value)) <= MAX_PAYLOAD_BYTES;
 }
 
-export const registerWebhookSchema = z.strictObject({
-  idempotencyKey: z.uuid(),
-  name: z.string().min(1).max(120),
-  url: z.string().min(1).max(2048),
+export const registerWebhookSchema = Schema.Struct({
+  idempotencyKey: Uuid,
+  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120)),
+  url: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2048)),
   // Milliseconds since Unix epoch, matching Date.now().
-  expiresAt: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  events: z
-    .array(eventSchema)
-    .min(1)
-    .max(2)
-    .refine((events) => new Set(events).size === events.length),
-  conversationId: z.string().min(1).max(200).optional(),
+  expiresAt: Int({ exclusiveMinimum: 0 }),
+  events: Schema.Array(eventSchema).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(2),
+    Schema.makeFilter((events) => new Set(events).size === events.length),
+  ),
+  conversationId: Schema.optionalKey(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200)),
+  ),
 });
+const decodeRegisterWebhook = decodeStrict(registerWebhookSchema);
 
-export const sendWebhookSchema = z.strictObject({
-  idempotencyKey: z.string().min(1).max(200),
-  webhookId: z.uuid(),
+export const sendWebhookSchema = Schema.Struct({
+  idempotencyKey: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(200),
+  ),
+  webhookId: Uuid,
   type: eventSchema,
-  payload: z
-    .unknown()
-    .refine(boundedJsonObject, "Expected bounded JSON object")
-    .pipe(z.record(z.string(), z.unknown())),
+  payload: Schema.Unknown.check(
+    Schema.makeFilter(boundedJsonObject, {
+      expected: "Expected bounded JSON object",
+    }),
+  ).pipe(
+    Schema.decodeTo(
+      Schema.Record(Schema.String, Schema.Unknown),
+      SchemaTransformation.passthrough({ strict: false }),
+    ),
+  ),
 });
+const decodeSendWebhook = decodeStrict(sendWebhookSchema);
+const decodeId = decodeStrict(Uuid);
 
 export type WebhookRegistration = {
   id: string;
   name: string;
   clientId: string;
   expiresAt: number;
-  events: Array<"reply" | "message">;
+  events: ReadonlyArray<"reply" | "message">;
   conversationId?: string;
   revoked: boolean;
 };
@@ -126,11 +143,11 @@ export type WebhookServiceOptions = {
   clientActive: (id: string) => boolean;
   deletionRevision?: () => number;
 };
-type Registration = z.infer<typeof registerWebhookSchema> & {
+type Registration = typeof registerWebhookSchema.Type & {
   clientId: string;
   signingKey: string;
 };
-type Delivery = z.infer<typeof sendWebhookSchema> & {
+type Delivery = typeof sendWebhookSchema.Type & {
   clientId: string;
   time: number;
   revision?: number;
@@ -292,7 +309,7 @@ export class WebhookService {
   }
 
   private checkClient(clientId: string): void {
-    principalSchema.parse(clientId);
+    decodePrincipal(clientId);
     if (!this.clientActive(clientId))
       throw new Error("webhook_client_inactive");
   }
@@ -316,7 +333,7 @@ export class WebhookService {
   ): WebhookRegistration & { signingKey?: string } {
     this.open();
     this.checkClient(clientId);
-    const parsed = registerWebhookSchema.parse(input);
+    const parsed = decodeRegisterWebhook(input);
     const digest = this.digest(clientId, parsed);
     return this.transaction(() => {
       const previous = this.db
@@ -368,7 +385,7 @@ export class WebhookService {
     this.open();
     const row = this.db
       .prepare("SELECT * FROM webhook_registrations WHERE id=?")
-      .get(z.uuid().parse(id)) as Row | undefined;
+      .get(decodeId(id)) as Row | undefined;
     return row ? this.registration(row) : undefined;
   }
 
@@ -376,7 +393,7 @@ export class WebhookService {
     this.open();
     this.db
       .prepare("UPDATE webhook_registrations SET revoked=1 WHERE id=?")
-      .run(z.uuid().parse(id));
+      .run(decodeId(id));
     return this.get(id);
   }
 
@@ -405,7 +422,7 @@ export class WebhookService {
   enqueue(clientId: string, input: unknown): WebhookReceipt {
     this.open();
     this.checkClient(clientId);
-    const parsed = sendWebhookSchema.parse(input);
+    const parsed = decodeSendWebhook(input);
     const digest = this.digest(clientId, parsed);
     return this.transaction(() => {
       const previous = this.db
@@ -475,7 +492,7 @@ export class WebhookService {
     this.open();
     const exists = this.db
       .prepare("SELECT id FROM webhook_deliveries WHERE id=?")
-      .get(z.uuid().parse(id));
+      .get(decodeId(id));
     return exists ? this.receipt(id) : undefined;
   }
 

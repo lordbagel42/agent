@@ -1,4 +1,11 @@
-import { z } from "zod";
+import { Schema } from "effect";
+import {
+  decodeStrict,
+  Int,
+  isPattern,
+  UnknownRecord,
+  Uuid,
+} from "../effect/schema.js";
 
 /** Closed host-owned catalog. Never use caller input as a URL or HTTP method. */
 const operations = {
@@ -50,31 +57,28 @@ const operations = {
   reconcile_reflection: ["POST", "/operator/reflection/reconcile"],
 } as const;
 
-export const operatorSchema = z.strictObject({
-  operation: z.enum(
-    Object.keys(operations) as [
-      keyof typeof operations,
-      ...Array<keyof typeof operations>,
-    ],
+export const operatorSchema = Schema.Struct({
+  operation: Schema.Literals(
+    Object.keys(operations) as Array<keyof typeof operations>,
   ),
-  id: z
-    .string()
-    .regex(/^[a-zA-Z0-9_:-]{1,2048}$/)
-    .optional(),
-  idempotencyKey: z.uuid().optional(),
-  query: z.string().max(2000).optional(),
-  after: z.number().int().nonnegative().safe().optional(),
-  watermark: z.number().int().nonnegative().safe().optional(),
-  limit: z.number().int().min(1).max(1000).optional(),
-  body: z.record(z.string(), z.unknown()).optional(),
+  id: Schema.optionalKey(
+    Schema.String.check(isPattern(/^[a-zA-Z0-9_:-]{1,2048}$/)),
+  ),
+  idempotencyKey: Schema.optionalKey(Uuid),
+  query: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2000))),
+  after: Schema.optionalKey(Int({ minimum: 0 })),
+  watermark: Schema.optionalKey(Int({ minimum: 0 })),
+  limit: Schema.optionalKey(Int({ minimum: 1, maximum: 1000 })),
+  body: Schema.optionalKey(UnknownRecord),
 });
+const decodeOperator = decodeStrict(operatorSchema);
 
 export function operatorRequest(
   dispatch: (request: Request) => Response | Promise<Response>,
   operatorToken: string,
 ) {
-  return async (input: z.infer<typeof operatorSchema>) => {
-    const parsed = operatorSchema.parse(input);
+  return async (input: typeof operatorSchema.Type) => {
+    const parsed = decodeOperator(input);
     const [method, template] = operations[parsed.operation];
     if (template.includes(":id") !== (parsed.id !== undefined))
       throw new Error("operation_id_required_or_unused");

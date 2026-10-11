@@ -6,8 +6,9 @@ import {
 } from "node:crypto";
 import { chmodSync, closeSync, constants, openSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { z } from "zod";
+import { Schema } from "effect";
 import type { ChannelAdapter, MessageEvent } from "../core/contracts.js";
+import { decodeStrict, Int, Uuid } from "../effect/schema.js";
 import { readHistory } from "../runtime/conversation-storage.js";
 import type { ConversationState } from "../runtime/registry.js";
 import type { ActivityReadProjection } from "../sessions/runtime.js";
@@ -18,11 +19,17 @@ import type {
 } from "./webhook-transport.js";
 import { WebhookService } from "./webhooks.js";
 
-export const sendMessageSchema = z.strictObject({
-  idempotencyKey: z.uuid(),
-  conversationId: z.string().min(1).max(200),
-  text: z.string().min(1).max(32_000),
+export const sendMessageSchema = Schema.Struct({
+  idempotencyKey: Uuid,
+  conversationId: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(200),
+  ),
+  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(32_000)),
 });
+const decodeSendMessage = decodeStrict(sendMessageSchema);
+const decodeId = decodeStrict(Uuid);
+const decodeLimit = decodeStrict(Int({ minimum: 1, maximum: 50 }));
 export type AgentClient = { id: string; token: string; expiresAt: number };
 type Admission = {
   id: string;
@@ -214,7 +221,7 @@ export class AgentService {
 
   async sendMessage(clientId: string, input: unknown) {
     if (!this.clientActive(clientId)) throw new Error("agent_inactive");
-    const parsed = sendMessageSchema.parse(input);
+    const parsed = decodeSendMessage(input);
     const digest = createHmac("sha256", this.key)
       .update(JSON.stringify(parsed))
       .digest("hex");
@@ -298,7 +305,7 @@ export class AgentService {
   async getMessage(id: string) {
     const row = this.db
       .prepare("SELECT id,body,client FROM admissions WHERE id=?")
-      .get(z.uuid().parse(id)) as
+      .get(decodeId(id)) as
       | { id: string; body: string | null; client: string }
       | undefined;
     if (!row) return null;
@@ -405,7 +412,7 @@ export class AgentService {
       : 0;
     if (after && start === 0) throw new Error("cursor_expired");
     const messages = history
-      .slice(start, start + z.number().int().min(1).max(50).parse(limit))
+      .slice(start, start + decodeLimit(limit))
       .map(({ id, role, content }) => ({ id, role, content }));
     return {
       messages,
