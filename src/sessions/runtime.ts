@@ -844,7 +844,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                       if (
                         !sourceScope?.private ||
                         !isOwner(context.source, deps.owner) ||
-                        !["slack", "agent"].includes(
+                        !["slack", "agent", "audio"].includes(
                           context.source.address.channel,
                         ) ||
                         !context.source.direct ||

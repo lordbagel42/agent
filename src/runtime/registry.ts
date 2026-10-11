@@ -238,6 +238,7 @@ export interface Dependencies {
   e2b?: E2BProvider;
   environments?: import("../environments/service.js").EnvironmentService;
   browserCompanion?: import("../browser/companion.js").BrowserCompanion;
+  calling?: import("../audio/contracts.js").Calling["Service"];
   jev?: { observe: JevObserver; question: JevQuestion };
   mcpAvailable?: boolean;
   mcpCommands?: Pick<McpConnections, "cancel" | "reconcile">;
@@ -475,14 +476,14 @@ export function createJuneRegistry(deps: Dependencies) {
   if (
     (deps.sessionHandoff || deps.sessions) &&
     (!deps.memory ||
-      !deps.channels.slack ||
+      !(deps.channels.slack || deps.channels.agent || deps.channels.audio) ||
       (deps.channels.whatsapp &&
         deps.owner.identities.some(
           (identity) => identity.channel === "whatsapp",
         )))
   )
     throw new Error(
-      "Session handoff requires memory and a Slack-only owner ingress",
+      "Session handoff requires memory and Slack, agent or trusted-device audio ingress",
     );
   const priority = createPriorityAdmission();
   const comparePersonality =
@@ -1432,7 +1433,8 @@ export function createJuneRegistry(deps: Dependencies) {
             if (
               c.state.migration &&
               event.address.channel !== "slack" &&
-              event.address.channel !== "agent"
+              event.address.channel !== "agent" &&
+              event.address.channel !== "audio"
             )
               throw new Error(
                 "Session scope cannot admit a linked legacy adapter",
@@ -1568,7 +1570,8 @@ export function createJuneRegistry(deps: Dependencies) {
             if (
               c.state.migration &&
               input.source.address.channel !== "slack" &&
-              input.source.address.channel !== "agent"
+              input.source.address.channel !== "agent" &&
+              input.source.address.channel !== "audio"
             )
               throw new Error(
                 "Session scope cannot admit a linked legacy adapter",
@@ -4580,6 +4583,12 @@ export function createJuneRegistry(deps: Dependencies) {
                                       body.type === "event" &&
                                       phase !== "synthesis" &&
                                       !!deps.browserCompanion,
+                                    audioCallAvailable:
+                                      body.type === "event" &&
+                                      phase !== "synthesis" &&
+                                      ownerTurn &&
+                                      scope.private &&
+                                      !!deps.calling,
                                     environmentAvailable:
                                       body.type === "event" &&
                                       phase !== "synthesis" &&

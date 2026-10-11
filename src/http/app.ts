@@ -405,7 +405,8 @@ export function createHttpApp(deps: HttpDependencies) {
   if (deps.wakeups)
     app.route("/webhooks/events", createWakeupWebhooks(deps.wakeups));
   for (const [channel, adapter] of Object.entries(deps.channels)) {
-    if (channel === "agent") continue;
+    // These adapters admit only host-created authenticated events, never webhooks.
+    if (channel === "agent" || channel === "audio") continue;
     const receive: Handler<HttpEnvironment> = async (c) => {
       const diagnostics =
         channel === "slack" ? deps.slackIngressDiagnostics : undefined;

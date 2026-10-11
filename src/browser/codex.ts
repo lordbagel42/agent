@@ -118,14 +118,17 @@ const dynamicTools = Object.entries(schemas).map(([name, schema]) => ({
 }));
 
 /** Owned stdio process only. No ambient auth, proxy, desktop, SSH or shell env. */
-const runRestrictedServer: CodexRunner = ({
+export const runRestrictedServer = ({
   executable,
   cwd,
   home,
   signal,
-}) => {
+  config = browserCodexConfig,
+}: Parameters<CodexRunner>[0] & {
+  config?: Readonly<Record<string, unknown>>;
+}): ReturnType<CodexRunner> => {
   const args = ["app-server", "--listen", "stdio://"];
-  for (const [key, value] of Object.entries(browserCodexConfig))
+  for (const [key, value] of Object.entries(config))
     args.push("-c", `${key}=${JSON.stringify(value)}`);
   const child = spawn(
     executable ?? process.execPath,

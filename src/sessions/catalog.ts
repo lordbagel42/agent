@@ -833,6 +833,9 @@ export function createSessionCatalog(
               ampThreadsAvailable:
                 input.type === "event" &&
                 turn.capabilities.ampThreadsAvailable === true,
+              audioCallAvailable:
+                input.type === "event" &&
+                turn.capabilities.audioCallAvailable === true,
               turnTakingAvailable: input?.type === "event",
               replyPlacementAvailable:
                 input.type === "event" && source.address.channel === "slack",

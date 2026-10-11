@@ -82,6 +82,9 @@ export function executionCapabilities(
     e2bAvailable: deps.e2b?.available === true,
     environmentAvailable: deps.environments?.available === true,
     browserTaskAvailable: !!deps.browserCompanion,
+    // Expose status even when endpoint, transport or subscription setup is missing.
+    audioCallAvailable:
+      !!deps.calling && isOwner(event, deps.owner) && scope.private,
     researchAvailable: !!deps.research,
     webEmbedAvailable:
       event.address.channel === "slack" &&

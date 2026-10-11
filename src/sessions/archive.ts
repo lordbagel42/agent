@@ -9,7 +9,7 @@ const refs = z
   .max(1000)
   .refine((value) => new Set(value).size === value.length);
 const address = z.strictObject({
-  channel: z.enum(["slack", "whatsapp", "agent"]),
+  channel: z.enum(["slack", "whatsapp", "agent", "audio"]),
   accountId: id,
   conversationId: id,
   threadId: id.optional(),

@@ -17,6 +17,12 @@
     "apiKeyEnv": "MODEL_API_KEY"
   },
   "executionEnabled": true,
+  "audio": {
+    "enabled": true,
+    "voice": "cove",
+    "maxDurationSeconds": 600,
+    "endpoints": {}
+  },
   "environments": {
     "enabled": false,
     "provider": "boxlite",

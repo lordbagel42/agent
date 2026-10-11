@@ -1,7 +1,7 @@
 import type { PersonalityPreview } from "../runtime/personality.js";
 
 /** Platform IDs stay opaque; never parse message timestamps as numbers. */
-export type Channel = "slack" | "whatsapp" | "agent";
+export type Channel = "slack" | "whatsapp" | "agent" | "audio";
 
 export interface Address {
   channel: Channel;
@@ -314,6 +314,8 @@ export interface CompanionReply {
   environment?: import("../environments/contracts.js").EnvironmentCommand;
   /** Browser work owned by the durable execution worker; PINs stay protected. */
   browserTask?: import("../browser/contracts.js").BrowserCommand;
+  /** Owner-private execution only; configured trusted devices, never arbitrary destinations. */
+  audioCall?: import("../audio/contracts.js").AudioCommand;
   /** Source-scoped management of host-owned ongoing public/read-only research. */
   research?: import("../research/contracts.js").ResearchCommand;
   webEmbed?: import("./web-embed.js").WebEmbed;
@@ -530,6 +532,7 @@ export interface ModelRequest {
   e2bAvailable?: boolean;
   environmentAvailable?: boolean;
   browserTaskAvailable?: boolean;
+  audioCallAvailable?: boolean;
   researchAvailable?: boolean;
   webEmbedAvailable?: boolean;
   webEmbedOrigins?: readonly string[];

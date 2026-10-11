@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, open, readFile, realpath, stat } from "node:fs/promises";
+import { mkdtemp, open, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,7 @@ import { createArtifactRoutes } from "./artifacts/routes.js";
 import { ArtifactService } from "./artifacts/service.js";
 import { slackArtifactSecret } from "./artifacts/slack-secret.js";
 import { ArtifactStore } from "./artifacts/store.js";
+import { createCalling } from "./audio/service.js";
 import { BrowserCompanion } from "./browser/companion.js";
 import { createSlackAdapter } from "./channels/slack.js";
 import { createSlackIngressDiagnostics } from "./channels/slack-ingress.js";
@@ -42,6 +43,7 @@ import type {
   Channel,
   ChannelAdapter,
   CodingRuntime,
+  MessageEvent,
   ModelProvider,
   Owner,
 } from "./core/contracts.js";
@@ -226,7 +228,21 @@ async function main() {
   const owner: Owner = {
     ...config.owner,
     identities: [
-      ...config.owner.identities,
+      ...config.owner.identities.filter(
+        (identity) => identity.channel !== "audio",
+      ),
+      ...Object.entries(config.audio.endpoints)
+        .filter(
+          ([, endpoint]) =>
+            !config.setupMode &&
+            config.audio.enabled &&
+            endpoint.trustedOwnerDevice === true,
+        )
+        .map(([name]) => ({
+          channel: "audio" as const,
+          accountId: "audio",
+          senderId: name,
+        })),
       ...Object.keys(config.agentMcp?.clients ?? {}).map((id) => ({
         channel: "agent" as const,
         accountId: config.owner.id,
@@ -541,12 +557,16 @@ async function main() {
     }
   }
   let browserCompanion: BrowserCompanion | undefined;
+  let calling: ReturnType<typeof createCalling> | undefined;
+  let audioWorkDirectory: string | undefined;
+  let audioReady = false;
   let environments: EnvironmentService | undefined;
   let mind: Mind | undefined;
   let mindSettlement: Pick<Mind, "isSettled"> | undefined;
   let mindReady = false;
   const lifecycle = createLifecycle(async () => {
     if (browserCompanion && !browserCompanion.isSettled()) return false;
+    if (calling && !calling.isSettled()) return false;
     if (environments && !environments.isSettled()) return false;
     if (mindSettlement && !(await mindSettlement.isSettled())) return false;
     for (const manager of Object.values(isolation)) {
@@ -1008,19 +1028,20 @@ async function main() {
       personality,
       source(event, scope) {
         if (
-          event.address.channel === "agent" &&
+          (event.address.channel === "agent" ||
+            event.address.channel === "audio") &&
           event.direct &&
           scope === ownerAudience
         ) {
           return {
-            id: `agent:${event.id}`,
+            id: `${event.address.channel}:${event.id}`,
             audiences: [ownerAudience],
-            platform: "agent",
+            platform: event.address.channel,
             account: event.address.accountId,
             conversation: event.address.conversationId,
             author: event.senderId,
             observedAt: event.occurredAt,
-            sourceUrl: `urn:june:agent:${event.id}`,
+            sourceUrl: `urn:june:${event.address.channel}:${event.id}`,
             text: event.text,
           };
         }
@@ -1345,6 +1366,47 @@ async function main() {
       key.fill(0);
     }
   }
+  if (!config.setupMode) {
+    startupStage = "audio calling";
+    // Empty, process-private cwd, never June's repository or a coding workspace.
+    // The calling service owns protected persistent metadata beneath this state root.
+    audioWorkDirectory = await mkdtemp(join(tmpdir(), "june-audio-work-"));
+    await privateDirectory(audioWorkDirectory);
+    const codex = [config.model, config.deepModel].find(
+      (selection) => selection?.protocol === "codex",
+    );
+    calling = createCalling({
+      config: config.audio,
+      directory: join(process.env.RIVETKIT_STORAGE_PATH, "audio"),
+      cwd: audioWorkDirectory,
+      codexHome: codex?.protocol === "codex" ? codex.home : undefined,
+      ownerId: owner.id,
+      runtime: juneRuntime,
+      ready: () => audioReady && lifecycle.ready,
+      async submit(event: MessageEvent) {
+        const scope = routeEvent(event, owner);
+        if (
+          !audioReady ||
+          !scope?.private ||
+          !event.direct ||
+          event.address.channel !== "audio" ||
+          event.address.accountId !== "audio" ||
+          event.address.threadId !== undefined ||
+          !Object.hasOwn(config.audio.endpoints, event.senderId) ||
+          config.audio.endpoints[event.senderId]?.trustedOwnerDevice !== true
+        )
+          throw new Error("audio_scope_denied");
+        const leave = lifecycle.tryEnter();
+        if (!leave) throw new Error("audio_intake_unavailable");
+        try {
+          await submit(scope, event);
+        } finally {
+          leave();
+        }
+      },
+    });
+    channels.audio = calling.adapter;
+  }
   // Start retention/expiry only after the durable memory revision is available.
   if (
     config.browserCompanion?.enabled &&
@@ -1622,6 +1684,7 @@ async function main() {
   }
   const dependencies: Dependencies = {
     effectRuntime: juneRuntime,
+    calling,
     sentinel,
     mind,
     settings,
@@ -2400,6 +2463,8 @@ async function main() {
     () => {
       mindReady = true;
       mind?.startScheduler();
+      audioReady = !config.setupMode;
+      calling?.start();
       console.info(
         `June listening on ${config.host}:${config.port}. Coding ${config.coding.enabled ? "enabled (native, not sandboxed)" : "disabled"}.`,
       );
@@ -2416,6 +2481,11 @@ async function main() {
       try {
         if (pump) clearInterval(pump);
         mindReady = false;
+        audioReady = false;
+        // Settle media and polling before actor/client/provider/runtime teardown.
+        await calling?.close();
+        if (audioWorkDirectory)
+          await rm(audioWorkDirectory, { recursive: true, force: true });
         // Await background settlement; uncertain work retains its durable hold.
         await mind?.close().catch(() => undefined);
         diagnosticLog?.lifecycle("shutdown_http_close_started");

@@ -12,6 +12,7 @@ import {
   ARTIFACT_HELP,
   artifactCommandSchema,
 } from "../artifacts/contracts.js";
+import { AUDIO_HELP, audioCommandSchema } from "../audio/contracts.js";
 import { BROWSER_HELP, browserCommandSchema } from "../browser/contracts.js";
 import { capabilityCommandSchema } from "../capabilities/catalog.js";
 import type {
@@ -475,6 +476,7 @@ const companionReplyFields = {
   e2b: optional(e2bRequestSchema),
   environment: optional(environmentCommandSchema),
   browserTask: optional(browserCommandSchema),
+  audioCall: optional(audioCommandSchema),
   research: optional(zodLeaf(researchCommandSchema)),
   webEmbed: optional(zodLeaf(webEmbedSchema)),
   skillCodingProposal: optional(
@@ -544,6 +546,7 @@ export type ReplyCapabilities = Pick<
   | "settingsAvailable"
   | "debugShareResolveAvailable"
   | "agentRole"
+  | "usageStage"
   | "agentConversation"
   | "agentWebhooksAvailable"
   | "codingJobsAvailable"
@@ -574,6 +577,7 @@ export type ReplyCapabilities = Pick<
   | "e2bAvailable"
   | "environmentAvailable"
   | "browserTaskAvailable"
+  | "audioCallAvailable"
   | "researchAvailable"
   | "webEmbedAvailable"
   | "skillCodingProposalAvailable"
@@ -609,7 +613,9 @@ function replyCapabilities(
 ): ReplyCapabilities {
   return typeof capabilities === "boolean"
     ? { searchAvailable: capabilities }
-    : capabilities;
+    : capabilities.usageStage === "synthesis"
+      ? { ...capabilities, audioCallAvailable: false }
+      : capabilities;
 }
 
 /** Role and turn must agree; a grant list never upgrades legacy or notification
@@ -696,6 +702,7 @@ function rolePermitsField(
   if (key === "mind") return role === "execution";
   if (key === "repository") return role === "execution";
   if (key === "browserTask") return role === "execution";
+  if (key === "audioCall") return role === "execution";
   if (key === "environment") return role === "execution";
   if (key === "ampThread") return role === "execution";
   if (key === "readImage" || key === "readVideo") return role === "execution";
@@ -762,6 +769,7 @@ function legacyReplyJsonSchema(
     e2bAvailable,
     environmentAvailable,
     browserTaskAvailable,
+    audioCallAvailable,
     researchAvailable,
     webEmbedAvailable,
     skillCodingProposalAvailable,
@@ -1514,6 +1522,41 @@ function legacyReplyJsonSchema(
                 { type: "null" },
               ],
               description: BROWSER_HELP,
+            },
+          }
+        : {}),
+      ...(audioCallAvailable
+        ? {
+            audioCall: {
+              anyOf: [
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: { action: { type: "string", enum: ["status"] } },
+                  required: ["action"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    action: { type: "string", enum: ["call"] },
+                    endpoint: { type: "string" },
+                    reason: { type: "string" },
+                  },
+                  required: ["action", "endpoint", "reason"],
+                },
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    action: { type: "string", enum: ["hangup"] },
+                    id: { type: "string" },
+                  },
+                  required: ["action", "id"],
+                },
+                { type: "null" },
+              ],
+              description: `${AUDIO_HELP} Leave text empty and other actions unset.`,
             },
           }
         : {}),
@@ -2594,6 +2637,7 @@ function legacyReplyJsonSchema(
       ...(e2bAvailable ? ["e2b"] : []),
       ...(environmentAvailable ? ["environment"] : []),
       ...(browserTaskAvailable ? ["browserTask"] : []),
+      ...(audioCallAvailable ? ["audioCall"] : []),
       ...(researchAvailable ? ["research"] : []),
       ...(webEmbedAvailable ? ["webEmbed"] : []),
       ...(skillCodingProposalAvailable && permittedWorkspaces.length > 0
@@ -2802,6 +2846,7 @@ export function parseReply(
     e2bAvailable,
     environmentAvailable,
     browserTaskAvailable,
+    audioCallAvailable,
     researchAvailable,
     webEmbedAvailable,
     skillCodingProposalAvailable,
@@ -2904,6 +2949,7 @@ export function parseReply(
     "e2b",
     "environment",
     "browserTask",
+    "audioCall",
     "research",
     "webEmbed",
     "skillCodingProposal",
@@ -3036,6 +3082,7 @@ export function parseReply(
     (reply.e2b !== undefined && !e2bAvailable) ||
     (reply.environment !== undefined && !environmentAvailable) ||
     (reply.browserTask !== undefined && !browserTaskAvailable) ||
+    (reply.audioCall !== undefined && !audioCallAvailable) ||
     (reply.research !== undefined && !researchAvailable) ||
     (reply.webEmbed !== undefined && !webEmbedAvailable) ||
     (reply.skillCodingProposal !== undefined &&
@@ -3116,6 +3163,7 @@ export function parseReply(
     Number(reply.e2b !== undefined) +
     Number(reply.environment !== undefined) +
     Number(reply.browserTask !== undefined) +
+    Number(reply.audioCall !== undefined) +
     Number(reply.research !== undefined) +
     Number(reply.webEmbed !== undefined) +
     Number(reply.skillCodingProposal !== undefined) +
@@ -3189,6 +3237,7 @@ export function parseReply(
       reply.e2b !== undefined ||
       reply.environment !== undefined ||
       reply.browserTask !== undefined ||
+      reply.audioCall !== undefined ||
       reply.research !== undefined ||
       reply.webEmbed !== undefined ||
       reply.skillCodingProposal !== undefined ||

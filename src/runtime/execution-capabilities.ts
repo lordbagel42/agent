@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import type { Client } from "rivetkit";
 import type {
   CompanionReply,
@@ -6,9 +7,12 @@ import type {
   SendResult,
 } from "../core/contracts.js";
 import { PRIVATE_REFLECTION_REVIEW_PREFIX } from "../core/reflection-review.js";
+import { routeEvent } from "../core/routing.js";
+import { isOwner } from "../core/social.js";
 import { parseReply } from "../models/provider.js";
 import { type CapabilityContext, runCapability } from "./capabilities.js";
 import { runModularCapability } from "./capability-dispatch.js";
+import { currentExecutionCapabilities } from "./execution-context.js";
 import type { Dependencies, JuneClientRegistry } from "./registry.js";
 
 /** Results excluded from ordinary model context stay inside the delivery
@@ -39,6 +43,59 @@ export async function runExecutionCapability(
   if (!current()) throw new Error("Execution invalidated");
   if (reply.capability !== undefined)
     return runModularCapability(reply, input, context);
+  if (reply.audioCall !== undefined) {
+    const calling = deps.calling;
+    const runtime = deps.effectRuntime;
+    const authorized = () => {
+      const scope = routeEvent(event, deps.owner);
+      return (
+        current() &&
+        context.canStartAction?.() !== false &&
+        deps.calling === calling &&
+        context.origin === "event" &&
+        context.phase !== "synthesis" &&
+        input.usageStage !== "synthesis" &&
+        input.agentRole === "execution" &&
+        input.audioCallAvailable === true &&
+        isOwner(event, deps.owner) &&
+        scope?.private === true &&
+        context.audience === JSON.stringify(["private", deps.owner.id]) &&
+        context.execution?.audience === context.audience &&
+        JSON.stringify(context.execution.scopeKey) ===
+          JSON.stringify(scope.key) &&
+        currentExecutionCapabilities(
+          deps,
+          event,
+          context.execution.capabilities,
+        ).audioCallAvailable === true
+      );
+    };
+    if (!calling || !runtime || !authorized())
+      throw new Error("Audio calling unavailable");
+    const command = parseReply(
+      JSON.stringify(reply),
+      input.workspaces,
+      input,
+    ).audioCall;
+    if (!command) throw new Error("Invalid audio command");
+    const text = await runtime.runPromise(
+      Effect.suspend(() =>
+        authorized()
+          ? calling.command(command, operationId, authorized)
+          : Effect.succeed(
+              "Audio command withheld: execution is no longer current. Nothing started.",
+            ),
+      ).pipe(
+        Effect.catchTag("AudioError", (error) =>
+          Effect.succeed(
+            `Audio command ${error.code}. Inspect status before any further action; an error is not proof that a call did not start. Never repeat an uncertain call with a new operation.`,
+          ),
+        ),
+      ),
+      { signal },
+    );
+    return { text, terminal: command.action !== "status" };
+  }
   if (reply.debugShareResolve) {
     if (
       !input.debugShareResolveAvailable ||

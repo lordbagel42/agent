@@ -98,6 +98,10 @@ const names = new Set([
   "june.environment.release",
   "june.environment.revoke",
   "june.environment.close",
+  "june.audio.command",
+  "june.audio.call",
+  "june.audio.poll",
+  "june.audio.close",
   "june.reflection.run",
   "june.imports.request",
   "june.imports.slack.page",
@@ -155,6 +159,7 @@ const enums: Record<string, readonly string[]> = {
     "telegram",
     "whatsapp",
     "agent",
+    "audio",
   ],
   "june.phase": [
     ...slackIngressStages,

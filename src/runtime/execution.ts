@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout } from "node:timers/promises";
 import { actor, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
+import { AUDIO_HELP } from "../audio/contracts.js";
 import type {
   CodingRequest,
   CompanionReply,
@@ -581,6 +582,8 @@ export function createExecutionActor(
                               TASK_OWNERSHIP_HELP,
                               TOOL_FAILURE_KNOWLEDGE,
                               ENVIRONMENT_KNOWLEDGE,
+                              AUDIO_HELP,
+                              "Audio knowledge is not a calling grant. This legacy/contextless worker cannot place or manage calls.",
                               // Legacy contextless work gains knowledge only;
                               // its captured web/coding ceiling is unchanged.
                               capabilityKnowledgeForTurn("execution"),

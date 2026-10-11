@@ -1,8 +1,10 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { audioConfigSchema } from "./audio/contracts.js";
 import { capabilityConfigSchema } from "./capabilities/config.js";
 import { ampJobsSchema } from "./coding/remote-amp.js";
 import { webEmbedUrlSchema } from "./core/web-embed.js";
+import { decodeStrict } from "./effect/schema.js";
 import { jevQuestionSchema } from "./models/jev.js";
 import {
   browserCredentialOperationSchema,
@@ -66,6 +68,21 @@ const schema = z
     host: nonempty.default("127.0.0.1"),
     port: z.number().int().min(1024).max(65535).default(3080),
     operatorTokenEnv: envName.default("JUNE_OPERATOR_TOKEN"),
+    // Keep the transport contract in Effect Schema during the config migration.
+    audio: z
+      .unknown()
+      .prefault({})
+      .transform((value, context) => {
+        try {
+          return decodeStrict(audioConfigSchema)(value);
+        } catch {
+          context.addIssue({
+            code: "custom",
+            message: "Invalid audio configuration",
+          });
+          return z.NEVER;
+        }
+      }),
     agentMcp: z
       .strictObject({
         origin: z.url().refine((value) => {
@@ -370,7 +387,7 @@ const schema = z
       identities: z
         .array(
           z.strictObject({
-            channel: z.enum(["slack", "whatsapp"]),
+            channel: z.enum(["slack", "whatsapp", "audio"]),
             accountId: nonempty,
             senderId: nonempty,
           }),
@@ -688,8 +705,13 @@ const schema = z
         ? !config.slack &&
           !config.whatsapp &&
           !config.agentMcp &&
+          !(
+            config.audio.enabled && Object.keys(config.audio.endpoints).length
+          ) &&
           !config.coding.enabled
         : !!config.agentMcp ||
+          (config.audio.enabled &&
+            Object.keys(config.audio.endpoints).length > 0) ||
           (!!(config.slack || config.whatsapp) &&
             config.owner.identities.length > 0),
     "Configure a channel and owner identities, or enable channel-free setup mode with coding disabled",
@@ -710,7 +732,11 @@ const schema = z
       !config.activitySessions.enabled ||
       (!config.setupMode &&
         !!config.memory &&
-        !!config.slack &&
+        !!(
+          config.slack ||
+          config.agentMcp ||
+          (config.audio.enabled && Object.keys(config.audio.endpoints).length)
+        ) &&
         config.executionEnabled &&
         !(
           config.whatsapp &&
@@ -718,7 +744,7 @@ const schema = z
             (identity) => identity.channel === "whatsapp",
           )
         )),
-    "Activity sessions require retained memory, execution workers and Slack-only owner ingress",
+    "Activity sessions require retained memory, execution workers and Slack, agent or trusted-device audio ingress",
   )
   .refine(
     (config) =>
@@ -780,6 +806,21 @@ export function parseConfig(input: unknown): Config {
     );
   }
   const config = result.data;
+  // An explicit audio identity cannot substitute for a trusted-device endpoint.
+  if (
+    config.owner.identities.some(
+      (identity) =>
+        identity.channel === "audio" &&
+        (identity.accountId !== "audio" ||
+          !config.audio.enabled ||
+          !Object.hasOwn(config.audio.endpoints, identity.senderId) ||
+          config.audio.endpoints[identity.senderId]?.trustedOwnerDevice !==
+            true),
+    )
+  )
+    throw new Error(
+      "Audio owner identities require configured trusted owner devices",
+    );
   // June has one Slack owner, explicitly bound by trusted host configuration.
   if (config.slack) {
     const identities = config.owner.identities.filter(

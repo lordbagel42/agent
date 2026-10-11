@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type {
+  Channel,
   MessageEvent,
   ProviderTimingStage,
   SendResult,
@@ -68,7 +69,7 @@ export interface LatencyTrace {
   processId?: string;
   processStartedAt?: number;
   revision?: string;
-  channel: "slack" | "whatsapp" | "agent";
+  channel: Channel;
   threaded: boolean;
   probe?: string;
   transportMs?: number;
