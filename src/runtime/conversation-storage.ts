@@ -1,4 +1,9 @@
-import { gunzipSync, gzipSync } from "node:zlib";
+import {
+  brotliCompressSync,
+  brotliDecompressSync,
+  constants,
+  gunzipSync,
+} from "node:zlib";
 import { Effect, Schema } from "effect";
 import type { LegacyCoverage } from "../sessions/migration.js";
 import type { ConversationState } from "./registry.js";
@@ -8,23 +13,44 @@ import type {
 } from "./session-controls.js";
 
 /** Lossless storage only, never a summary or a new disclosure scope. */
-export interface CompressedJson {
-  bytes: number;
-  gzip: string;
+export type CompressedJson = { bytes: number } & (
+  | { gzip: string; brotli?: never }
+  | { brotli: string; gzip?: never }
+);
+
+function compressBytes(bytes: Buffer): CompressedJson {
+  return {
+    bytes: bytes.length,
+    brotli: brotliCompressSync(bytes, {
+      params: { [constants.BROTLI_PARAM_QUALITY]: 6 },
+    }).toString("base64"),
+  };
 }
 
 function compress(value: unknown): CompressedJson {
-  const bytes = Buffer.from(JSON.stringify(value));
-  return { bytes: bytes.length, gzip: gzipSync(bytes).toString("base64") };
+  return compressBytes(Buffer.from(JSON.stringify(value)));
+}
+
+function expandBytes(value: CompressedJson): Buffer {
+  const options = { maxOutputLength: value.bytes };
+  let bytes: Buffer;
+  if (typeof value.gzip === "string" && value.brotli === undefined)
+    bytes = gunzipSync(Buffer.from(value.gzip, "base64"), options);
+  else if (typeof value.brotli === "string" && value.gzip === undefined)
+    bytes = brotliDecompressSync(Buffer.from(value.brotli, "base64"), options);
+  else throw new Error("Unknown compressed state format");
+  if (bytes.length !== value.bytes)
+    throw new Error("Compressed state size mismatch");
+  return bytes;
 }
 
 function expand<T>(value: CompressedJson): T {
-  const bytes = gunzipSync(Buffer.from(value.gzip, "base64"), {
-    maxOutputLength: value.bytes,
-  });
-  if (bytes.length !== value.bytes)
-    throw new Error("Compressed state size mismatch");
-  return JSON.parse(bytes.toString()) as T;
+  return JSON.parse(expandBytes(value).toString()) as T;
+}
+
+/** Preserve the exact JSON bytes, including legacy marker ordering. */
+function repack(value: CompressedJson): CompressedJson {
+  return value.gzip === undefined ? value : compressBytes(expandBytes(value));
 }
 
 export function readHistory(
@@ -277,6 +303,21 @@ export const readConversationSnapshot = Effect.fn("june.conversation.snapshot")(
 
 /** Run before persistence and synchronously before legacy workflow replay. */
 export function compactConversation(state: ConversationState) {
+  // Repack idle prefixes too: a dirty workflow checkpoint includes actor state
+  // even when there are no new records to trigger ordinary compaction.
+  for (const key of [
+    "historyArchive",
+    "eventsArchive",
+    "deliveriesArchive",
+    "delegationsArchive",
+    "modelInvocationsArchive",
+    "legacyArchive",
+  ] as const) {
+    const archive = state[key];
+    if (archive?.gzip !== undefined) state[key] = repack(archive);
+  }
+  if (state.ingress?.receiptsArchive?.gzip !== undefined)
+    state.ingress.receiptsArchive = repack(state.ingress.receiptsArchive);
   // Keep the live tail below the remaining atomic checkpoint headroom.
   if (Buffer.byteLength(JSON.stringify(state.history)) > 16 * 1024) {
     state.historyArchive = compress(readHistory(state));
@@ -407,6 +448,8 @@ export function compactConversation(state: ConversationState) {
     }
   }
   for (const receipt of Object.values(state.sessionCommands ?? {})) {
+    if (receipt.snapshotCompressed?.gzip !== undefined)
+      receipt.snapshotCompressed = repack(receipt.snapshotCompressed);
     if (receipt.snapshot) {
       receipt.snapshotId = receipt.snapshot.id;
       if (

@@ -863,6 +863,17 @@ Compression provides finite headroom under Rivet's 512 KiB atomic checkpoint
 budget, not unbounded retention. Keep recovery fenced until the affected workflow,
 actual process revision and readiness are verified.
 
+New archive envelopes use Brotli quality 6 and retain the exact uncompressed byte
+count. Readers still accept legacy gzip with bounded, exact-length decompression.
+Before workflow replay, compaction repacks the original JSON bytes of idle gzip
+prefixes too; unchanged converted prefixes need no repacking. Ordinary compaction
+still recompresses changed ledgers. No records, uncertainty markers or journals
+are deleted. This is forward-only: do not attest rollback to a gzip-only reader.
+The native 512 KiB limit covers the combined transaction, not every independent
+state save. Oversized state can appear healthy until a dirty workflow checkpoint
+includes it. Compression provides finite headroom, not an unbounded retention
+guarantee; verify subsequent workflow progress and readiness before reconciliation.
+
 Frozen conversation-catalog authority also uses lossless `delegationsArchive`.
 This includes active workers: RPC gives each worker its own mutable request
 context, while catalog authority stays first-write immutable. Dispatch replay,
