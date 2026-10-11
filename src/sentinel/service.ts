@@ -126,7 +126,9 @@ export class InjectionSentinel {
     current: () => boolean,
   ): EffectGuard {
     // Snapshot host identity before any model/provider can change the object.
-    const source = structuredClone(event);
+    // Persisted events can be Rivet state proxies, which structuredClone rejects.
+    // MessageEvent is JSON-shaped; detach nested state proxies too.
+    const source = JSON.parse(JSON.stringify(event)) as MessageEvent;
     const scope = routeEvent(source, this.options.owner);
     const report = (receipt: SentinelReceipt) =>
       request.agentRole === "execution"
