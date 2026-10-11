@@ -733,6 +733,13 @@ function legacyReplyJsonSchema(
           delete jsonSchema.maximum;
           jsonSchema.description = "Current nonnegative safe-integer version.";
         }
+        // Strict OpenAI/Codex schemas reject optional keys: send apply as
+        // required-and-nullable; parseReply strips null back to absent.
+        const apply = jsonSchema.properties?.apply;
+        if (apply && typeof apply === "object" && apply.type === "boolean") {
+          apply.type = ["boolean", "null"];
+          jsonSchema.required = [...(jsonSchema.required ?? []), "apply"];
+        }
       },
     },
   );
@@ -1981,7 +1988,7 @@ function legacyReplyJsonSchema(
             personalityPreview: {
               ...previewSchema,
               description:
-                "Preview a global public-safe style, or set apply:true to publish it without compulsory human confirmation. Copy unchanged style fields; expectedVersion must match. Missing/false apply is read-only. Leave text empty and other actions unset.",
+                "Preview a global public-safe style, or set apply:true to publish it without compulsory human confirmation. Copy unchanged style fields; expectedVersion must match. Null/false apply is read-only. Leave text empty and other actions unset.",
             },
           }
         : {}),
@@ -2840,6 +2847,11 @@ export function parseReply(
     normalized.emojiSearch.limit === null
   )
     delete normalized.emojiSearch.limit;
+  if (
+    isJsonObject(normalized.personalityPreview) &&
+    normalized.personalityPreview.apply === null
+  )
+    delete normalized.personalityPreview.apply;
   if (isJsonObject(normalized.telemetry)) {
     for (const key of ["traceId", "name", "status", "since", "until", "before"])
       if (normalized.telemetry[key] === null) delete normalized.telemetry[key];
