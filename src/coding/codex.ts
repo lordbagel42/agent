@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { isAbsolute } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import type { CodingRuntime } from "../core/contracts.js";
+import { Effect, Schema } from "effect";
+import type { CodingResult, CodingRuntime } from "../core/contracts.js";
+import type { JuneRuntime } from "../effect/runtime.js";
 
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_REPORT_LENGTH = 32_000;
@@ -10,22 +12,26 @@ const NOTICE = "\n\n[Report truncated]";
 // The pinned stdio server has its own 45-second EOF/SIGTERM watchdog.
 const SHUTDOWN_TIMEOUT_MS = 50_000;
 
-export type CodexRuntimeErrorCode =
-  | "invalid_configuration"
-  | "cancelled"
-  | "authentication_required"
-  | "interaction_required"
-  | "thread_mismatch"
-  | "thread_save_failed"
-  | "execution_failed"
-  | "completion_unknown";
+const ERROR_CODES = [
+  "invalid_configuration",
+  "cancelled",
+  "authentication_required",
+  "interaction_required",
+  "thread_mismatch",
+  "thread_save_failed",
+  "execution_failed",
+  "completion_unknown",
+] as const;
+export type CodexRuntimeErrorCode = (typeof ERROR_CODES)[number];
 
-export class CodexRuntimeError extends Error {
-  constructor(readonly code: CodexRuntimeErrorCode) {
-    super(`Codex coding runtime: ${code}.`);
-    this.name = "CodexRuntimeError";
-  }
+export class CodexRuntimeError extends Schema.TaggedError<CodexRuntimeError>()(
+  "CodexRuntimeError",
+  { code: Schema.Literals(ERROR_CODES) },
+) {
+  override readonly message = `Codex coding runtime: ${this.code}.`;
 }
+export const codexFailure = (code: CodexRuntimeErrorCode) =>
+  new CodexRuntimeError({ code });
 
 /** Private stdio app-server connection, never a desktop/daemon attachment. */
 export interface CodexConnection {
@@ -161,7 +167,7 @@ const runAppServer: CodexRunner = ({ executable, cwd, home, signal }) => {
   return {
     send(message) {
       if (failed || closing || exited || signal.aborted)
-        throw new CodexRuntimeError("completion_unknown");
+        throw codexFailure("completion_unknown");
       child.stdin.write(`${JSON.stringify(message)}\n`);
     },
     messages: (async function* () {
@@ -172,7 +178,7 @@ const runAppServer: CodexRunner = ({ executable, cwd, home, signal }) => {
         destroyOnReturn: false,
       })) {
         count(chunk as Buffer);
-        if (failed) throw new CodexRuntimeError("completion_unknown");
+        if (failed) throw codexFailure("completion_unknown");
         buffer += decoder.write(chunk as Buffer);
         let newline = buffer.indexOf("\n");
         while (newline !== -1) {
@@ -183,8 +189,7 @@ const runAppServer: CodexRunner = ({ executable, cwd, home, signal }) => {
         }
       }
       buffer += decoder.end();
-      if (failed || buffer.trim())
-        throw new CodexRuntimeError("completion_unknown");
+      if (failed || buffer.trim()) throw codexFailure("completion_unknown");
     })(),
     close() {
       closeResult ??= (async () => {
@@ -194,7 +199,7 @@ const runAppServer: CodexRunner = ({ executable, cwd, home, signal }) => {
         child.stdout.on("data", count);
         child.stdout.resume();
         await closed;
-        if (failed) throw new CodexRuntimeError("completion_unknown");
+        if (failed) throw codexFailure("completion_unknown");
       })();
       return closeResult;
     },
@@ -213,12 +218,14 @@ export function createCodexRuntime({
   executable,
   timeoutMs = 30 * 60_000,
   runner = runAppServer,
+  effectRuntime,
 }: {
   home: string;
   model?: string;
   executable?: string;
   timeoutMs?: number;
   runner?: CodexRunner;
+  effectRuntime: JuneRuntime;
 }): CodingRuntime {
   if (
     !nonempty(home) ||
@@ -229,30 +236,51 @@ export function createCodexRuntime({
     timeoutMs <= 0 ||
     timeoutMs > 2_147_483_647
   ) {
-    throw new CodexRuntimeError("invalid_configuration");
+    throw codexFailure("invalid_configuration");
   }
-  return {
-    async run(input) {
-      if (input.signal.aborted) throw new CodexRuntimeError("cancelled");
-      if (
-        !nonempty(input.cwd) ||
-        !isAbsolute(input.cwd) ||
-        (input.threadId !== undefined && !nonempty(input.threadId))
-      )
-        throw new CodexRuntimeError("invalid_configuration");
-      const controller = new AbortController();
-      const cancel = () => controller.abort();
-      input.signal.addEventListener("abort", cancel, { once: true });
-      const timer = setTimeout(cancel, timeoutMs);
-      let connection: CodexConnection | undefined;
-      let threadId: string | undefined;
-      let turnId: string | undefined;
-      let report = "";
-      let expectedResponse = 1;
-      let completed = false;
-      let unsubscribing = false;
-      let threadClosed = false;
-      try {
+  const run = Effect.fn("june.coding.codex.run")(function* (
+    input: Parameters<CodingRuntime["run"]>[0],
+  ) {
+    if (input.signal.aborted) return yield* codexFailure("cancelled");
+    if (
+      !nonempty(input.cwd) ||
+      !isAbsolute(input.cwd) ||
+      (input.threadId !== undefined && !nonempty(input.threadId))
+    )
+      return yield* codexFailure("invalid_configuration");
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    let connection: CodexConnection | undefined;
+    // Released last, after the timer and listener, as the old finally did.
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(async () => {
+        try {
+          await connection?.close();
+        } catch {
+          // Preserve the sanitized primary error (including cancellation).
+        }
+      }),
+    );
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        input.signal.addEventListener("abort", cancel, { once: true });
+        return setTimeout(cancel, timeoutMs);
+      }),
+      (timer) =>
+        Effect.sync(() => {
+          clearTimeout(timer);
+          input.signal.removeEventListener("abort", cancel);
+        }),
+    );
+    return yield* Effect.tryPromise({
+      try: async (): Promise<CodingResult> => {
+        let threadId: string | undefined;
+        let turnId: string | undefined;
+        let report = "";
+        let expectedResponse = 1;
+        let completed = false;
+        let unsubscribing = false;
+        let threadClosed = false;
         input.assertCurrent?.();
         connection = runner({
           executable,
@@ -266,7 +294,7 @@ export function createCodexRuntime({
           params: Record<string, unknown>,
         ) => {
           if (controller.signal.aborted)
-            throw new CodexRuntimeError("completion_unknown");
+            throw codexFailure("completion_unknown");
           expectedResponse = id;
           connection?.send({ id, method, params });
         };
@@ -276,20 +304,18 @@ export function createCodexRuntime({
         });
         for await (const message of connection.messages) {
           if (controller.signal.aborted)
-            throw new CodexRuntimeError("completion_unknown");
-          if (!object(message))
-            throw new CodexRuntimeError("completion_unknown");
+            throw codexFailure("completion_unknown");
+          if (!object(message)) throw codexFailure("completion_unknown");
           if ("id" in message) {
             // Never approve a server request, including command/file changes or login.
-            if ("method" in message)
-              throw new CodexRuntimeError("interaction_required");
+            if ("method" in message) throw codexFailure("interaction_required");
             if (
               expectedResponse === 0 ||
               message.id !== expectedResponse ||
               "error" in message ||
               !object(message.result)
             )
-              throw new CodexRuntimeError("completion_unknown");
+              throw codexFailure("completion_unknown");
             const result = message.result;
             if (message.id === 1) {
               connection.send({ method: "initialized" });
@@ -300,7 +326,7 @@ export function createCodexRuntime({
                 (result.account.type !== "chatgpt" &&
                   result.account.type !== "apiKey")
               )
-                throw new CodexRuntimeError("authentication_required");
+                throw codexFailure("authentication_required");
               input.assertCurrent?.();
               request(
                 3,
@@ -315,19 +341,19 @@ export function createCodexRuntime({
               );
             } else if (message.id === 3) {
               if (!object(result.thread) || !nonempty(result.thread.id))
-                throw new CodexRuntimeError("completion_unknown");
+                throw codexFailure("completion_unknown");
               threadId = result.thread.id;
               if (input.threadId !== undefined && threadId !== input.threadId)
-                throw new CodexRuntimeError("thread_mismatch");
+                throw codexFailure("thread_mismatch");
               if (
                 !object(result.thread.status) ||
                 result.thread.status.type !== "idle"
               )
-                throw new CodexRuntimeError("completion_unknown");
+                throw codexFailure("completion_unknown");
               try {
                 await input.onThread(threadId);
               } catch {
-                throw new CodexRuntimeError("thread_save_failed");
+                throw codexFailure("thread_save_failed");
               }
               // Persistence may yield across deletion before abort reaches us.
               // No await between this host check and the coding turn submission.
@@ -343,12 +369,12 @@ export function createCodexRuntime({
                 !nonempty(result.turn.id) ||
                 (turnId !== undefined && turnId !== result.turn.id)
               )
-                throw new CodexRuntimeError("completion_unknown");
+                throw codexFailure("completion_unknown");
               turnId = result.turn.id;
               expectedResponse = 0;
             } else if (message.id === 5) {
               if (result.status !== "unsubscribed")
-                throw new CodexRuntimeError("completion_unknown");
+                throw codexFailure("completion_unknown");
               expectedResponse = 0;
             }
           } else if (message.method === "thread/closed") {
@@ -357,7 +383,7 @@ export function createCodexRuntime({
               !object(message.params) ||
               message.params.threadId !== threadId
             )
-              throw new CodexRuntimeError("completion_unknown");
+              throw codexFailure("completion_unknown");
             threadClosed = true;
           } else if (
             message.method === "turn/started" ||
@@ -370,13 +396,13 @@ export function createCodexRuntime({
               threadId === undefined ||
               params.threadId !== threadId
             )
-              throw new CodexRuntimeError("completion_unknown");
+              throw codexFailure("completion_unknown");
             if (message.method === "item/completed") {
               if (params.turnId !== turnId || !object(params.item))
-                throw new CodexRuntimeError("completion_unknown");
+                throw codexFailure("completion_unknown");
               if (params.item.type === "agentMessage") {
                 if (typeof params.item.text !== "string")
-                  throw new CodexRuntimeError("completion_unknown");
+                  throw codexFailure("completion_unknown");
                 report =
                   params.item.text.length <= MAX_REPORT_LENGTH
                     ? params.item.text
@@ -388,15 +414,15 @@ export function createCodexRuntime({
                 !nonempty(params.turn.id) ||
                 (turnId !== undefined && params.turn.id !== turnId)
               )
-                throw new CodexRuntimeError("completion_unknown");
+                throw codexFailure("completion_unknown");
               turnId = params.turn.id;
               if (message.method === "turn/completed") {
                 if (params.turn.status === "interrupted")
-                  throw new CodexRuntimeError("cancelled");
+                  throw codexFailure("cancelled");
                 if (params.turn.status === "failed")
-                  throw new CodexRuntimeError("execution_failed");
+                  throw codexFailure("execution_failed");
                 if (params.turn.status !== "completed")
-                  throw new CodexRuntimeError("completion_unknown");
+                  throw codexFailure("completion_unknown");
                 completed = true;
               }
             }
@@ -416,25 +442,19 @@ export function createCodexRuntime({
           expectedResponse !== 0 ||
           threadId === undefined
         )
-          throw new CodexRuntimeError("completion_unknown");
+          throw codexFailure("completion_unknown");
         await connection.close();
         connection = undefined;
-        if (controller.signal.aborted)
-          throw new CodexRuntimeError("completion_unknown");
+        if (controller.signal.aborted) throw codexFailure("completion_unknown");
         return { threadId, report };
-      } catch (error) {
-        if (input.signal.aborted) throw new CodexRuntimeError("cancelled");
-        if (error instanceof CodexRuntimeError) throw error;
-        throw new CodexRuntimeError("completion_unknown");
-      } finally {
-        clearTimeout(timer);
-        input.signal.removeEventListener("abort", cancel);
-        try {
-          await connection?.close();
-        } catch {
-          // Preserve the sanitized primary error (including cancellation).
-        }
-      }
-    },
-  };
+      },
+      catch: (error) =>
+        input.signal.aborted
+          ? codexFailure("cancelled")
+          : error instanceof CodexRuntimeError
+            ? error
+            : codexFailure("completion_unknown"),
+    });
+  }, Effect.scoped);
+  return { run: (input) => effectRuntime.runPromise(run(input)) };
 }

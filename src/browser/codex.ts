@@ -9,6 +9,7 @@ import {
   type CodexConnection,
   type CodexRunner,
   CodexRuntimeError,
+  codexFailure,
 } from "../coding/codex.js";
 import {
   assertHotCodexFiles,
@@ -71,7 +72,7 @@ export const browserCodexConfig: Readonly<Record<string, unknown>> =
     thread_unload_delay_secs: 0,
     cli_auth_credentials_store: "file",
   });
-const unknown = () => new CodexRuntimeError("completion_unknown");
+const unknown = () => codexFailure("completion_unknown");
 const object = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
 const nonempty = (v: unknown): v is string =>
@@ -313,8 +314,8 @@ async function runBrowserOperation(
     (options.threadId !== undefined && !nonempty(options.threadId)) ||
     (options.executable !== undefined && !nonempty(options.executable))
   )
-    throw new CodexRuntimeError("invalid_configuration");
-  if (options.signal.aborted) throw new CodexRuntimeError("cancelled");
+    throw codexFailure("invalid_configuration");
+  if (options.signal.aborted) throw codexFailure("cancelled");
   let connection: CodexConnection | undefined;
   let threadId: string | undefined;
   let turnId: string | undefined;
@@ -351,7 +352,7 @@ async function runBrowserOperation(
           throw Error();
         await assertHotCodexFiles(home);
       } catch {
-        throw new CodexRuntimeError("invalid_configuration");
+        throw codexFailure("invalid_configuration");
       }
     }
     connection = (options.runner ?? runRestrictedServer)(options);
@@ -456,7 +457,7 @@ async function runBrowserOperation(
             !object(result.account) ||
             !["chatgpt", "apiKey"].includes(String(result.account.type))
           )
-            throw new CodexRuntimeError("authentication_required");
+            throw codexFailure("authentication_required");
           request(3, "config/read", { cwd: options.cwd, includeLayers: true });
         } else if (message.id === 3) {
           policy = result;
@@ -465,7 +466,7 @@ async function runBrowserOperation(
           try {
             assertHotCodexPolicy(policy, result, browserCodexConfig);
           } catch {
-            throw new CodexRuntimeError("invalid_configuration");
+            throw codexFailure("invalid_configuration");
           }
           if (operation.kind === "delete") {
             request(5, "thread/delete", { threadId: options.threadId });
@@ -505,7 +506,7 @@ async function runBrowserOperation(
             !object(result.sandbox) ||
             result.sandbox.type !== "readOnly"
           )
-            throw new CodexRuntimeError("invalid_configuration");
+            throw codexFailure("invalid_configuration");
           if (
             !object(result.thread) ||
             !nonempty(result.thread.id) ||
@@ -515,11 +516,11 @@ async function runBrowserOperation(
             throw unknown();
           threadId = result.thread.id;
           if (options.threadId && options.threadId !== threadId)
-            throw new CodexRuntimeError("thread_mismatch");
+            throw codexFailure("thread_mismatch");
           try {
             await operation.options.onThread(threadId);
           } catch {
-            throw new CodexRuntimeError("thread_save_failed");
+            throw codexFailure("thread_save_failed");
           }
           request(6, "turn/start", {
             threadId,
@@ -577,7 +578,7 @@ async function runBrowserOperation(
           turnId = p.turn.id;
           if (message.method === "turn/completed") {
             if (p.turn.status === "failed")
-              throw new CodexRuntimeError("execution_failed");
+              throw codexFailure("execution_failed");
             if (p.turn.status !== "completed") throw unknown();
             completed = true;
           }

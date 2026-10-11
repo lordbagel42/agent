@@ -444,6 +444,7 @@ async function main() {
         worker = createCodexRuntime({
           ...selection,
           timeoutMs: config.coding.timeoutMs,
+          effectRuntime: juneRuntime,
         });
         break;
       case "claude":
@@ -470,6 +471,7 @@ async function main() {
           // Never inherit service credentials or copy subscription tokens.
           env: { HOME: selection.home, PATH: selection.path },
           timeoutMs: config.coding.timeoutMs,
+          effectRuntime: juneRuntime,
         });
     }
     coding = {
@@ -505,7 +507,7 @@ async function main() {
         throw new Error("Local and remote workspaces must have distinct names");
     }
     // Remote directories never enter the local manager/CodingRuntime contract.
-    const remoteAmp = createRemoteAmpJobs(config.ampJobs);
+    const remoteAmp = createRemoteAmpJobs(config.ampJobs, juneRuntime);
     coding = {
       ...coding,
       runtimeKind: coding?.runtimeKind ?? "amp-remote",
