@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
-import { eventSchema, type WakeupEvent } from "./state.js";
+import { decodeWakeupEvent, type WakeupEvent } from "./state.js";
 
 const payload = z.strictObject({
   id: z.string().min(1).max(256),
@@ -60,7 +60,7 @@ export function createWakeupWebhooks(deps: WakeupWebhooks) {
     try {
       // The signature timestamp is transport freshness, not event occurrence.
       // Observe receipt in milliseconds so a new watch works in the same second.
-      event = eventSchema.parse({
+      event = decodeWakeupEvent({
         ...payload.parse(JSON.parse(raw.toString("utf8"))),
         source: `webhook.${source}`,
         occurredAt: Date.now(),

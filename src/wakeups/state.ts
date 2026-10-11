@@ -1,68 +1,94 @@
 import { createHash } from "node:crypto";
 import { CronExpressionParser } from "cron-parser";
-import { z } from "zod";
+import { Exit, Schema, type Types } from "effect";
 import type { ChannelEvent, MessageEvent } from "../core/contracts.js";
+import {
+  decodeStrict,
+  Int,
+  IsoDateTimeOffset,
+  isPattern,
+  TrimmedString,
+  UnknownRecord,
+} from "../effect/schema.js";
 import {
   fenceWakeup,
   inspectWakeupIntent,
   wakeupStopReceipt,
 } from "../intent/wakeups.js";
 
-const name = z.string().min(1).max(100);
+const name = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(100),
+);
 // Plain unions emit provider-supported anyOf; literal tags still disambiguate.
-export const triggerSchema = z.union([
-  z.strictObject({
-    kind: z.literal("at"),
-    at: z.iso.datetime({ offset: true }),
+export const triggerSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("at"), at: IsoDateTimeOffset }),
+  Schema.Struct({
+    kind: Schema.Literal("cron"),
+    expression: name,
+    timezone: name,
   }),
-  z.strictObject({ kind: z.literal("cron"), expression: name, timezone: name }),
-  z.strictObject({
-    kind: z.literal("event"),
+  Schema.Struct({
+    kind: Schema.Literal("event"),
     source: name,
     type: name,
-    filters: z
-      .array(
-        z.strictObject({
-          path: z
-            .string()
-            .regex(/^[a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+){0,4}$/)
-            .max(100),
-          value: z.union([
-            z.string().max(256),
-            z.number().finite(),
-            z.boolean(),
-            z.null(),
-          ]),
-        }),
-      )
-      .max(8),
+    filters: Schema.Array(
+      Schema.Struct({
+        path: Schema.String.check(
+          isPattern(/^[a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+){0,4}$/),
+          Schema.isMaxLength(100),
+        ),
+        value: Schema.Union([
+          Schema.String.check(Schema.isMaxLength(256)),
+          Schema.Finite,
+          Schema.Boolean,
+          Schema.Null,
+        ]),
+      }),
+    ).check(Schema.isMaxLength(8)),
   }),
 ]);
-export const wakeupActionSchema = z.union([
-  z.strictObject({
-    action: z.literal("create"),
+export const wakeupActionSchema = Schema.Union([
+  Schema.Struct({
+    action: Schema.Literal("create"),
     name,
-    instruction: z.string().trim().min(1).max(2000),
+    instruction: TrimmedString({ min: 1, max: 2000 }),
     trigger: triggerSchema,
-    once: z.boolean(),
+    once: Schema.Boolean,
   }),
-  z.strictObject({ action: z.literal("list") }),
-  z.strictObject({
-    action: z.enum(["inspect", "pause", "resume", "cancel"]),
-    id: z.string().min(1).max(256),
+  Schema.Struct({ action: Schema.Literal("list") }),
+  Schema.Struct({
+    action: Schema.Literals(["inspect", "pause", "resume", "cancel"]),
+    id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
   }),
 ]);
-export type WakeupAction = z.infer<typeof wakeupActionSchema>;
-export const eventSchema = z
-  .strictObject({
-    id: z.string().min(1).max(256),
-    source: name,
-    type: name,
-    occurredAt: z.number().int().nonnegative().max(8_640_000_000_000_000),
-    data: z.record(z.string(), z.unknown()),
-  })
-  .refine((event) => Buffer.byteLength(JSON.stringify(event)) <= 16_384);
-export type WakeupEvent = z.infer<typeof eventSchema>;
+export type WakeupAction = typeof wakeupActionSchema.Type;
+export const eventSchema = Schema.Struct({
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  source: name,
+  type: name,
+  occurredAt: Int({ minimum: 0, maximum: 8_640_000_000_000_000 }),
+  data: UnknownRecord,
+}).check(
+  Schema.makeFilter(
+    (event) => Buffer.byteLength(JSON.stringify(event)) <= 16_384,
+  ),
+);
+export type WakeupEvent = Types.Mutable<typeof eventSchema.Type> & {
+  data: Record<string, unknown>;
+};
+/** Strict, like the Zod `parse` it replaces; throws on invalid input. */
+export const decodeWakeupAction = decodeStrict(wakeupActionSchema) as (
+  input: unknown,
+) => WakeupAction;
+/** Strict check, like the Zod `safeParse(...).success` it replaces. */
+export const isWakeupEvent = (input: unknown) =>
+  Exit.isSuccess(
+    Schema.decodeUnknownExit(eventSchema, { onExcessProperty: "error" })(input),
+  );
+export const decodeWakeupEvent = decodeStrict(eventSchema) as (
+  input: unknown,
+) => WakeupEvent;
 
 /** Preserve platform identity/ordering; only wakeup envelopes use whole ms. */
 export function nativeChannelEvent(event: ChannelEvent): WakeupEvent {
@@ -103,7 +129,7 @@ export interface WakeupJob {
   audience?: string;
   name: string;
   instruction: string;
-  trigger: z.infer<typeof triggerSchema>;
+  trigger: Types.DeepMutable<typeof triggerSchema.Type>;
   once: boolean;
   source: MessageEvent;
   /** Transitive evidence used by the turn that registered this job. */
@@ -191,7 +217,7 @@ export function applyAction(
   originEventId?: string,
   audience?: string,
 ): string {
-  const action = wakeupActionSchema.parse(input);
+  const action = decodeWakeupAction(input);
   if (action.action === "list") {
     return JSON.stringify({
       sources,
@@ -215,7 +241,8 @@ export function applyAction(
       throw new Error(
         "Wakeup storage full; retained terminal jobs expire after seven days",
       );
-    const { trigger } = action;
+    // A freshly decoded value; the job owns it from here.
+    const trigger = action.trigger as Types.DeepMutable<typeof action.trigger>;
     let nextAt: number | undefined;
     if (trigger.kind === "event") {
       if (!sources.includes(trigger.source))
@@ -384,7 +411,7 @@ export function acceptEvent(
   contextSourceIds?: string[],
   audience?: string,
 ) {
-  const event = eventSchema.parse(input);
+  const event = decodeWakeupEvent(input);
   const key = createHash("sha256")
     .update(JSON.stringify([event.source, event.id]))
     .digest("hex");

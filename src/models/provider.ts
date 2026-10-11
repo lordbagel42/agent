@@ -35,7 +35,12 @@ import { socialActionSchema } from "../core/social.js";
 import { WEB_EMBED_HELP, webEmbedSchema } from "../core/web-embed.js";
 import { operationInspectionSchema } from "../diagnostics/operation-reader.js";
 import { operationSourceSchema } from "../diagnostics/operations.js";
-import { Int, isPattern, TrimmedString } from "../effect/schema.js";
+import {
+  Int,
+  isPattern,
+  TrimmedString,
+  toJsonSchema,
+} from "../effect/schema.js";
 import {
   ENVIRONMENT_HELP,
   environmentCommandSchema,
@@ -154,6 +159,45 @@ const zodLeaf = <T extends z.ZodType>(schema: T) =>
       }),
     ),
   );
+/** Moves constraints some providers reject into each node's description,
+ * as the Zod `override` callbacks below do. Local decoding still enforces them. */
+function describeConstraints(
+  node: Record<string, unknown>,
+  keys: readonly string[],
+): Record<string, unknown> {
+  const visit = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(visit)
+      : value && typeof value === "object"
+        ? describe(value as Record<string, unknown>)
+        : value;
+  // Maps of named subschemas: visit each schema, never the map itself.
+  const map = (value: unknown) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(
+          Object.entries(value).map(([name, schema]) => [name, visit(schema)]),
+        )
+      : value;
+  const describe = (schema: Record<string, unknown>) => {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(schema))
+      result[key] = ["const", "enum", "default"].includes(key)
+        ? value
+        : ["properties", "$defs", "patternProperties"].includes(key)
+          ? map(value)
+          : visit(value);
+    for (const key of keys) {
+      const limit = result[key];
+      if (limit !== undefined) {
+        result.description =
+          `${result.description ?? ""} ${key}: ${limit}.`.trim();
+        delete result[key];
+      }
+    }
+    return result;
+  };
+  return describe(node);
+}
 const optional = <S extends Schema.Top>(schema: S) => Schema.optional(schema);
 /** Zod's `.nullish().transform((value) => value ?? undefined)`. */
 const nullishAsUndefined = <S extends Schema.Top>(schema: S) =>
@@ -255,7 +299,7 @@ const companionReplyFields = {
     ),
   ),
   social: optional(zodLeaf(socialActionSchema)),
-  wakeup: optional(zodLeaf(wakeupActionSchema)),
+  wakeup: optional(wakeupActionSchema),
   coding: optional(
     Schema.Struct({
       workspace: Schema.String,
@@ -785,27 +829,9 @@ function legacyReplyJsonSchema(
       },
     },
   );
-  const { $schema: _wakeupSchema, ...wakeupSchema } = z.toJSONSchema(
-    wakeupActionSchema.nullable(),
-    {
-      target: "draft-7",
-      override({ jsonSchema }) {
-        for (const key of [
-          "minLength",
-          "maxLength",
-          "maxItems",
-          "pattern",
-          "format",
-        ] as const) {
-          const limit = jsonSchema[key];
-          if (limit !== undefined) {
-            jsonSchema.description =
-              `${jsonSchema.description ?? ""} ${key}: ${limit}.`.trim();
-            delete jsonSchema[key];
-          }
-        }
-      },
-    },
+  const { $schema: _wakeupSchema, ...wakeupSchema } = describeConstraints(
+    toJsonSchema(Schema.NullOr(wakeupActionSchema)),
+    ["minLength", "maxLength", "maxItems", "pattern", "format"],
   );
   const { $schema: _settingsSchema, ...settingsSchema } = z.toJSONSchema(
     settingsCommandSchema,

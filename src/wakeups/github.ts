@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { eventSchema, type WakeupEvent } from "./state.js";
+import { decodeWakeupEvent, type WakeupEvent } from "./state.js";
 
 export interface GitHubWebhooks {
   secret: string;
@@ -159,7 +159,7 @@ function normalize(
     resources.pop();
     omit("resources");
   }
-  return eventSchema.parse(JSON.parse(JSON.stringify(event)));
+  return decodeWakeupEvent(JSON.parse(JSON.stringify(event)));
 }
 
 export function createGitHubWebhooks(deps: GitHubWebhooks) {

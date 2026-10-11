@@ -57,6 +57,20 @@ export const Url = Schema.String.check(
   ),
 );
 
+/** Zod 4's `z.iso.datetime({ offset: true })`: RFC 3339 with seconds and a
+ * `Z` or `±hh:mm` offset; leap days checked; no other date validation. */
+const ISO_DATETIME_OFFSET =
+  /^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|([+-](?:[01]\d|2[0-3]):[0-5]\d)))$/;
+export const IsoDateTimeOffset = Schema.String.check(
+  Schema.isPattern(ISO_DATETIME_OFFSET, {
+    expected: "an ISO date-time with offset",
+    toJsonSchema: () => ({
+      format: "date-time",
+      pattern: ISO_DATETIME_OFFSET.source,
+    }),
+  }),
+);
+
 /** Zod's `z.string().trim().min(min).max(max)`: bounds apply after trimming,
  * but JSON Schema advertises them on the input string as Zod does. */
 export function TrimmedString(bounds: { min?: number; max?: number } = {}) {
@@ -149,6 +163,10 @@ export function toJsonSchema(
   };
 }
 
+/** Zod's order for the keys it emits next to `const`. */
+const keyOrder = (key: string) =>
+  ["default", "type", "const"].indexOf(key) + 1 || 99;
+
 /** Keywords whose values are data, not subschemas. */
 const VALUE_KEYWORDS = new Set(["default", "examples", "const", "enum"]);
 
@@ -162,6 +180,18 @@ function emptyProperties(node: unknown): unknown {
     VALUE_KEYWORDS.has(key) ? value : emptyProperties(value),
   ]);
   const result = Object.fromEntries(entries) as Record<string, unknown>;
+  // Zod emits `const` for a literal; Effect emits a one-value `enum`.
+  if (Array.isArray(result.enum) && result.enum.length === 1) {
+    const {
+      enum: [value],
+      ...rest
+    } = result as { enum: unknown[] };
+    return Object.fromEntries(
+      Object.entries({ ...rest, const: value }).sort(
+        ([a], [b]) => keyOrder(a) - keyOrder(b),
+      ),
+    );
+  }
   return result.type === "object" &&
     result.additionalProperties === false &&
     !("properties" in result) &&

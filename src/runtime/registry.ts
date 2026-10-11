@@ -79,7 +79,7 @@ import {
   type WakeupDependencies,
 } from "../wakeups/runtime.js";
 import {
-  eventSchema,
+  isWakeupEvent,
   nativeChannelEvent,
   type WakeupEvent,
 } from "../wakeups/state.js";
@@ -2624,7 +2624,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 body.type === "event" &&
                 event.address.channel === "slack" &&
                 !Number.isInteger(event.occurredAt) &&
-                eventSchema.safeParse(nativeChannelEvent(event)).success;
+                isWakeupEvent(nativeChannelEvent(event));
               const publication = await loop.tryStep({
                 name: "publish-native-event",
                 timeout: 0,
