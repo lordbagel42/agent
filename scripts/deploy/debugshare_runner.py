@@ -95,6 +95,7 @@ def prompt(identity, snapshot, owner_report=False):
         "does not rerun Amp, and does not prove Slack delivery. Follow docs/deployment.md."
         + runner.deploy.issue_tools_prompt(source=f"debug:{identity}")
         + runner.deploy.SHIPPING_NOTIFICATION_PROMPT
+        + runner.deploy.RECOVERY_TIMING_PROMPT
     )
 
 

@@ -1187,6 +1187,32 @@ SHIPPING_NOTIFICATION_PROMPT = (
 )
 
 
+RECOVERY_TIMING_PROMPT = (
+    " Recovery timing: whenever this assignment restores June, include how long recovery took "
+    "in the same verified-completion Amp-bot DM, including configuration-only or restart-only "
+    "recoveries with no new commit (publication checks apply only when source changed). "
+    "Preserve the shipping notification's verification, ownership, "
+    "privacy and send-deduplication rules; do not send a separate timing DM or backfill a prior "
+    "successful DM. Before reconciliation clears incident state, retain the earliest recorded "
+    "incident start timestamp and its evidence source in this thread/handoff. Prefer the controller's "
+    "incident record/event or automatic incident capturedAt; for a DEBUGSHARE report use capturedAt "
+    "and label it report-to-restoration, not outage duration. If incident timing is unavailable, use "
+    "a recorded recovery assignment/thread creation time and explicitly label it assignment-to-restoration. "
+    "Never infer a timestamp from an opaque incident ID, a revision, or an unverified report. "
+    "Record the UTC completion timestamp when fresh checks verify the triggering fault fixed, "
+    "active /health HTTP 200 with ready:true, loaded MainPID/release revision matching health, "
+    "and, for blue/green, settled cutover with intake forwarding to that ready slot. Finish the "
+    "required reconciliation/poller/queue checks before claiming recovery complete. Compute elapsed "
+    "time by subtracting the recorded start from that verified back-online timestamp, not from "
+    "push, build, Amp return or DM-send time. Include the human-readable duration, both UTC endpoints "
+    "and the timing basis in the DM; retain evidence and timing alongside the send receipt for "
+    "continuations/handoffs. If timestamps are missing, invalid or out of order, say duration "
+    "unavailable and identify the missing/conflicting evidence; do not invent or clamp a duration. "
+    "If June was never offline, say so and label any measured interval repair completion time, "
+    "not downtime. A blocked or unverified recovery must not send a back-online completion DM."
+)
+
+
 def recovery_prompt(number, commit, reason):
     return (
         f"June deployment failed. Incident {number}, revision {commit}, "
@@ -1225,6 +1251,7 @@ def recovery_prompt(number, commit, reason):
         "in any launcher repairs; ordinary jobs keep their existing reasoning modes."
         + issue_tools_prompt(source=f"recovery:{number}")
         + SHIPPING_NOTIFICATION_PROMPT
+        + RECOVERY_TIMING_PROMPT
     )
 
 

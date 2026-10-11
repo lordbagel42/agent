@@ -1719,6 +1719,18 @@ with its shipped revision, once per change, including across continuations.
 An uncertain send must be reconciled before retrying; an unavailable Slack tool
 is a notification blocker, not permission to delegate or claim delivery. This is
 agent prompt guidance, not a new host delivery receipt or exactly-once guarantee.
+Recovery and DEBUGSHARE repair prompts also require recovery elapsed time in that
+same DM, including restorations requiring only configuration or a restart. Retain
+the recorded incident start and source before reconciliation clears ownership;
+use report `capturedAt` or recorded assignment time only with an explicit
+report-to-restoration or assignment-to-restoration label, not an outage claim.
+Subtract that start from the timestamp of fresh verified back-online checks
+(fault fixed, active HTTP 200/ready, loaded process revision, settled cutover and
+forwarding intake). Include the duration, UTC endpoints and basis; preserve them
+with the send receipt across handoffs. Missing, invalid or reversed timestamps
+mean duration unavailable, never an invented estimate. An always-online repair
+is repair completion time, not downtime. No extra timing DM or historical backfill
+is sent, and blocked/unverified recoveries do not announce completion.
 Install matching `deploy.py` on the controller and recovery runner to preserve
 canonical prompt validation, update the DEBUGSHARE/ordinary runner siblings, and
 update the issue companion through its managed updater. Publication alone does
