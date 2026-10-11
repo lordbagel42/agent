@@ -1,5 +1,4 @@
-import { Cause, Effect, Layer, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import { Effect, Layer, Schema } from "effect";
 import {
   HttpApi,
   HttpApiBuilder,
@@ -8,6 +7,7 @@ import {
   HttpApiSchema,
 } from "effect/http-api";
 import type { ReflectionInput } from "../runtime/reflection.js";
+import { attempt, awaited, json, jsonBody, respond } from "./effect.js";
 
 /** The single operator failure body; Hono's `onError` returned the same. */
 const RequestFailed = Schema.Struct({
@@ -82,32 +82,9 @@ export interface ReflectionRouteDependencies {
  * former Zod `strictObject`s did; every failure is a 500 `request_failed`.
  */
 export const reflectionRoutes = (deps: ReflectionRouteDependencies) => {
-  const call = <A>(run: () => Promise<A>) =>
-    Effect.tryPromise({ try: run, catch: (cause) => cause });
-  const body = <A>(schema: Schema.ConstraintDecoder<A, never>) =>
-    HttpServerRequest.schemaBodyJson(schema, { onExcessProperty: "error" });
-  // Serialized here, not by the endpoint encoder, so a value JSON.stringify
-  // rejects fails like Hono's `c.json` did instead of becoming a defect.
-  const failed = <A, E, R>(
-    effect: Effect.Effect<A, E, R>,
-  ): Effect.Effect<
-    HttpServerResponse.HttpServerResponse,
-    typeof requestFailed,
-    R
-  > =>
-    effect.pipe(
-      Effect.flatMap((value) => HttpServerResponse.json(value)),
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? (Effect.failCause(cause) as Effect.Effect<never>)
-          : Effect.sync(deps.report).pipe(
-              Effect.andThen(Effect.fail(requestFailed)),
-            ),
-      ),
-    );
-  // Like the Hono handlers, finish the actor call and keep the admission fence
-  // held even if the client disconnects; aborts must not cancel mutations.
-  const awaited = { uninterruptible: true };
+  const failed = respond(
+    Effect.sync(deps.report).pipe(Effect.as(json(requestFailed, 500))),
+  );
   const handlers = HttpApiBuilder.group(ReflectionApi, "reflection", (h) =>
     Effect.succeed(
       h
@@ -115,7 +92,7 @@ export const reflectionRoutes = (deps: ReflectionRouteDependencies) => {
           "status",
           () =>
             failed(
-              call(() => deps.actor.status()).pipe(
+              attempt(() => deps.actor.status()).pipe(
                 Effect.withSpan("june.http.reflection.status"),
               ),
             ),
@@ -126,12 +103,9 @@ export const reflectionRoutes = (deps: ReflectionRouteDependencies) => {
           () =>
             failed(
               Effect.gen(function* () {
-                const input = yield* body(Enqueue);
-                const scope = yield* Effect.try({
-                  try: () => deps.audience(input.scope),
-                  catch: (cause) => cause,
-                });
-                return yield* call(() =>
+                const input = yield* jsonBody(Enqueue);
+                const scope = yield* attempt(() => deps.audience(input.scope));
+                return yield* attempt(() =>
                   deps.actor.enqueue({ ...input, scope } as ReflectionInput),
                 );
               }).pipe(Effect.withSpan("june.http.reflection.enqueue")),
@@ -143,8 +117,10 @@ export const reflectionRoutes = (deps: ReflectionRouteDependencies) => {
           () =>
             failed(
               Effect.gen(function* () {
-                const { id } = yield* body(ById);
-                return { cancelled: yield* call(() => deps.actor.cancel(id)) };
+                const { id } = yield* jsonBody(ById);
+                return {
+                  cancelled: yield* attempt(() => deps.actor.cancel(id)),
+                };
               }).pipe(Effect.withSpan("june.http.reflection.cancel")),
             ),
           awaited,
@@ -154,8 +130,8 @@ export const reflectionRoutes = (deps: ReflectionRouteDependencies) => {
           () =>
             failed(
               Effect.gen(function* () {
-                const { id } = yield* body(ById);
-                return yield* call(() => deps.actor.candidate(id));
+                const { id } = yield* jsonBody(ById);
+                return yield* attempt(() => deps.actor.candidate(id));
               }).pipe(Effect.withSpan("june.http.reflection.candidate")),
             ),
           awaited,
@@ -165,13 +141,13 @@ export const reflectionRoutes = (deps: ReflectionRouteDependencies) => {
           () =>
             failed(
               Effect.gen(function* () {
-                const input = yield* body(Reconcile);
+                const input = yield* jsonBody(Reconcile);
                 if (input.live) {
-                  yield* call(() => deps.actor.occupancy(input.id, false));
+                  yield* attempt(() => deps.actor.occupancy(input.id, false));
                   return { reconciled: true };
                 }
                 return {
-                  reconciled: yield* call(() =>
+                  reconciled: yield* attempt(() =>
                     deps.actor.reconcile(input.id, true),
                   ),
                 };

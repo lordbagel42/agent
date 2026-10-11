@@ -69,7 +69,7 @@ import { EnvironmentService } from "./environments/service.js";
 import { createHttpApp, type HttpDependencies } from "./http/app.js";
 import { mountEffectRoutes } from "./http/effect.js";
 import { createImportRoutes } from "./http/imports.js";
-import { createMemoryRoutes } from "./http/memory.js";
+import { memoryPaths, memoryRoutes } from "./http/memory.js";
 import { reflectionRoutes } from "./http/reflection-api.js";
 import { ImportedMemoryExtraction } from "./imports/extraction.js";
 import {
@@ -2213,14 +2213,13 @@ async function main() {
     },
   });
   if (memory) {
-    app.route(
-      "/operator/memory",
-      createMemoryRoutes({
-        ...memory,
-        audience,
-        forget: forgetSource,
-      }),
+    const routes = mountEffectRoutes(
+      juneRuntime,
+      memoryRoutes({ ...memory, audience, forget: forgetSource }),
     );
+    const paths = memoryPaths(!!memory.personality);
+    app.on("GET", paths.get, routes);
+    app.on("POST", paths.post, routes);
   }
   if (imports) {
     app.route(

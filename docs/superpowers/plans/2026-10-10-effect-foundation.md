@@ -139,9 +139,11 @@ Superseded the earlier "serve the listener through Effect" task: that put all tr
 
 **As built** (`src/http/effect.ts`, `src/http/reflection-api.ts`): Hono
 registers each migrated method and path exactly and forwards it to
-`mountEffectRoutes`, so unmatched paths and methods keep Hono's 404. The mount
-builds the routes with the process runtime's `memoMap` and `TelemetryLayer`
-(handler spans join June's trace under `june.http.request`), disables Effect's
+`mountEffectRoutes`, so unmatched paths and methods keep Hono's 404. Each
+mount builds its own router (the shared runtime `memoMap` would merge every
+mount into one memoized `HttpRouter`) with `TelemetryLayer`, so handler spans
+join June's trace under `june.http.request`, lifts find-my-way's 100-character
+parameter limit to match Hono, disables Effect's
 per-request server span and logger, and returns the response through
 `c.newResponse` with a buffered body and no explicit `content-length`, so
 earlier middleware headers and the Node adapter's framing match `c.json`.
