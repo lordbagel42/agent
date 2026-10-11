@@ -285,7 +285,7 @@ export interface CompanionReply {
   repository?: string;
   /** Specialist-only reads from the host's pinned public source snapshot. */
   repositoryRead?: import("../repository/contracts.js").RepositoryRead;
-  /** Execution-worker read of June's mind, projected for the origin place. */
+  /** Execution-worker note access, scoped to the original requesting event. */
   mind?: import("../mind/contracts.js").MindQuery;
   /** Background reflection step; never accepted outside agentRole "mind". */
   mindStep?: import("../mind/contracts.js").MindStep;
@@ -557,7 +557,7 @@ export interface ModelRequest {
   readVideoAvailable?: boolean;
   repositoryAvailable?: boolean;
   repositoryReadAvailable?: boolean;
-  /** Execution-worker read access to June's git-backed mind. */
+  /** Execution-worker scoped access to June's git-backed mind. */
   mindAvailable?: boolean;
   /** Background reflection steps only (agentRole "mind"). */
   mindStepAvailable?: boolean;

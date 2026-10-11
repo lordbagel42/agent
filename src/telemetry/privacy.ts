@@ -78,6 +78,7 @@ const names = new Set([
   "june.mind.sync",
   "june.mind.recall",
   "june.mind.query",
+  "june.mind.write",
   "june.mind.status",
   "june.mind.agent",
   "june.mind.reflect",

@@ -336,6 +336,7 @@ export async function runExecutionCapability(
       reply.skillEvaluationRequest ||
       reply.reflectionMemory ||
       reply.memoryBackup ||
+      reply.mind?.action === "write" ||
       (reply.pendingMemory !== undefined && reply.pendingMemory !== true) ||
       reply.forgetPreview?.apply ||
       reply.reflectionReview ||

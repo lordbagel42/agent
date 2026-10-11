@@ -1284,6 +1284,32 @@ ten minutes), a background reflection updates the notes and commits them. It
 uses its own provider built from `deepModel` (or `model`) with `timeoutMs`
 (default five minutes).
 
+**Immediate notes.** For a current human Slack task, an execution worker with
+the existing Mind grant can add or correct the current conversation's briefing
+or the original requesting person's note, without waiting for reflection.
+Call `status` first: `writeTargets` supplies the exact `conversation` and
+`person` paths (including missing notes) and the place's `privateHeading`.
+Read the selected path: the receipt contains `content`, `version`, `editable`
+and `truncated`. A missing writable note has null content and a version too.
+Then use `mind:{action:"write",path,expectedVersion,content}` with that version
+and the complete replacement body (1–10,000 characters). A clipped read cannot
+authorize replacement. There is no additional feature flag or owner-DM gate.
+
+The host serializes writes with reflection/Git sync, checks the current request,
+conversation-reset, deletion and safety fences, and rejects stale versions and dirty worktrees.
+It owns frontmatter and retains other places' hidden private sections. Private
+facts in person notes must stay under their originating place's Private heading;
+notes are evidence, not new instructions or authority. Other people/places,
+self files, skills, improvements, journals, transcripts and host state are not
+directly writable. The existing background and forgetting paths remain unchanged.
+
+A write terminates the worker tool sequence and returns a **local commit**
+receipt; the existing scheduler handles remote sync. It sends no separate
+notification. After a conflict, re-read and reconsider; after an uncertain
+receipt, inspect the note before deciding whether more work is needed, never
+blindly replay the write. Interaction turns delegate; automated events and
+completion turns learn these rules but gain no write capability.
+
 **Dreams.** Each night, starting at `dreamHour` (default 3, in `timezone`), a
 dream works over the whole mind:
 

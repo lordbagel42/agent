@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Effect } from "effect";
 import type {
   Address,
@@ -14,7 +15,12 @@ import type { MindError, MindUnsettledError } from "./agent.js";
 import type { MindQuery } from "./contracts.js";
 import { dream } from "./dream.js";
 import { type AmpInbox, advanceImprovements } from "./improve.js";
-import { clip, splitFrontmatter } from "./markdown.js";
+import {
+  clip,
+  mergeProjectedWrite,
+  splitFrontmatter,
+  withFrontmatter,
+} from "./markdown.js";
 import {
   isOwnerDm,
   type Place,
@@ -90,6 +96,29 @@ const SYNC_MS = 5 * 60_000;
 const BATCH_ENTRIES = 80;
 const BATCH_CHARACTERS = 40_000;
 const ENTRY_CHARACTERS = 4_000;
+const READ_CHARACTERS = 16_000;
+
+function noteVersion(path: string, text: string | undefined) {
+  return createHash("sha256")
+    .update(JSON.stringify([path, text ?? null]))
+    .digest("hex");
+}
+
+function writeTargets(event: MessageEvent) {
+  if (event.address.channel !== "slack" || event.senderId.startsWith("bot:"))
+    return null;
+  const place = placeOf(event);
+  return {
+    conversation: `conversations/${place.id}.md`,
+    person: `people/${personId(event.address.accountId, event.senderId)}.md`,
+    privateHeading: `## Private — ${place.id}`,
+  };
+}
+
+function writableNote(path: string, event: MessageEvent) {
+  const targets = writeTargets(event);
+  return path === targets?.conversation || path === targets?.person;
+}
 
 // Conservative capture exclusions: commands, controls and likely credentials.
 const CONTROL = /^(?:##|!|PING(?:MODEL)?\b|CLEARHISTORY\b|DEBUG(?:SHARE)?\b)/;
@@ -164,6 +193,7 @@ export class Mind {
   private readonly runtime: JuneRuntime;
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<void> | undefined;
+  private writing: Promise<string> | undefined;
   private reflecting: string | undefined;
   private lastRun: { at: number; outcome: string } | undefined;
   private lastSync: { at: number; state: SyncState } | undefined;
@@ -235,13 +265,18 @@ export class Mind {
   }
 
   async isSettled() {
-    return !this.running && (await this.run(this.safety.isSettled()));
+    return (
+      !this.running &&
+      !this.writing &&
+      (await this.run(this.safety.isSettled()))
+    );
   }
 
   async close() {
     if (this.timer) clearInterval(this.timer);
     this.controller.abort();
     await this.running?.catch(() => undefined);
+    await this.writing?.catch(() => undefined);
     await this.transcripts.flush();
   }
 
@@ -405,14 +440,38 @@ export class Mind {
     return this.safety.readable ? recall : unavailable();
   });
 
-  /** Execution-worker read access, projected for the worker's origin. */
-  query(input: MindQuery, event: MessageEvent): Promise<string> {
-    return this.run(this.answerQuery(input, event));
+  /** Execution-worker access, scoped to the original authenticated event. */
+  query(
+    input: MindQuery,
+    event: MessageEvent,
+    current: () => boolean | Promise<boolean> = () => true,
+  ): Promise<string> {
+    if (input.action !== "write")
+      return this.run(this.answerQuery(input, event));
+    if (this.writing)
+      return Promise.resolve("Mind write busy; no change made.");
+    const release = this.options.lifecycle?.tryEnter();
+    if (this.options.lifecycle && !release)
+      return Promise.resolve(
+        "Mind write blocked by deployment drain; no change made.",
+      );
+    // Keep admission and the lock through raw Git settlement, even if the
+    // worker is cancelled. Its current fence is rechecked before committing.
+    this.writing = this.run(
+      this.locked(
+        Effect.succeed("Mind write busy; no change made."),
+        this.writeNote(input, event, current),
+      ),
+    ).finally(() => {
+      this.writing = undefined;
+      release?.();
+    });
+    return this.writing;
   }
 
   private readonly answerQuery = Effect.fn("june.mind.query")(function* (
     this: Mind,
-    input: MindQuery,
+    input: Exclude<MindQuery, { action: "write" }>,
     event: MessageEvent,
   ) {
     // Recheck after every read as deletion may race any filesystem await.
@@ -424,20 +483,22 @@ export class Mind {
 
   private readonly readQuery = Effect.fnUntraced(function* (
     this: Mind,
-    input: MindQuery,
+    input: Exclude<MindQuery, { action: "write" }>,
     event: MessageEvent,
   ) {
     const viewer = this.viewer(event);
     if (input.action === "status") {
       const status = yield* this.readStatus();
+      const targets = writeTargets(event);
       return JSON.stringify(
         viewer.ownerDm
-          ? status
+          ? { ...status, writeTargets: targets }
           : {
               blocked: status.blocked,
               dream: status.dream,
               selfImprovement: status.selfImprovement,
               sync: status.remote?.sync ?? "local-only",
+              writeTargets: targets,
             },
       );
     }
@@ -468,9 +529,73 @@ export class Mind {
     const path = safePath(input.path);
     if (!path) return "Invalid mind path.";
     const text = yield* view(this.repo, path, viewer);
-    return text === undefined
-      ? `${path} does not exist or is not visible from this conversation.`
-      : clip(text, 16_000);
+    const truncated = (text?.length ?? 0) > READ_CHARACTERS;
+    return JSON.stringify({
+      path,
+      content: text === undefined ? null : clip(text, READ_CHARACTERS),
+      version: noteVersion(path, text),
+      editable: writableNote(path, event) && !truncated,
+      truncated,
+      ...(text === undefined
+        ? { note: "Missing or not visible from this conversation." }
+        : {}),
+    });
+  });
+
+  private readonly writeNote = Effect.fn("june.mind.write")(function* (
+    this: Mind,
+    input: Extract<MindQuery, { action: "write" }>,
+    event: MessageEvent,
+    current: () => boolean | Promise<boolean>,
+  ) {
+    yield* this.safety.load();
+    if (!(yield* Effect.promise(async () => current())) || !this.live())
+      return "Mind write blocked or request no longer current; no change made.";
+    const path = safePath(input.path);
+    if (!path || !writableNote(path, event))
+      return "Mind write rejected: only this conversation and the requesting person's note are writable.";
+    const body = splitFrontmatter(input.content).body.trim();
+    if (!body || SECRET.test(input.content))
+      return "Mind write rejected: empty content or likely credentials; no change made.";
+    const visible = yield* view(this.repo, path, this.viewer(event));
+    if ((visible?.length ?? 0) > READ_CHARACTERS)
+      return "Mind write rejected: the read is truncated; no change made.";
+    if (noteVersion(path, visible) !== input.expectedVersion)
+      return "Mind write conflict: the visible note changed. Read it again and reconsider the edit; no change made.";
+    const existing = splitFrontmatter((yield* this.repo.read(path)) ?? "");
+    const place = placeOf(event);
+    const updated = new Date().toISOString();
+    const content = path.startsWith("people/")
+      ? withFrontmatter(
+          {
+            ...existing.meta,
+            person: personId(event.address.accountId, event.senderId),
+            updated,
+          },
+          mergeProjectedWrite(existing.body, body, place.id),
+        )
+      : withFrontmatter(
+          {
+            ...existing.meta,
+            place: place.id,
+            kind: place.kind,
+            ...(place.label ? { label: place.label } : {}),
+            updated,
+          },
+          body,
+        );
+    if (!(yield* Effect.promise(async () => current())) || !this.live())
+      return "Mind write blocked or request no longer current; no change made.";
+    const revision = yield* this.repo.commit(
+      [{ path, content }],
+      "remember: update a conversation note",
+    );
+    return JSON.stringify({
+      status: revision ? "committed" : "unchanged",
+      path,
+      revision: revision ?? null,
+      sync: this.settings.remote ? "pending-scheduler" : "local-only",
+    });
   });
 
   status(): Promise<MindStatus> {

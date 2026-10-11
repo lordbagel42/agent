@@ -10,6 +10,7 @@ export type EffectSink =
   | "social-post"
   | "agent-webhook"
   | "settings"
+  | "mind"
   | "memory-forget";
 
 /** Start at exact-action selection; call commit immediately before the effect.

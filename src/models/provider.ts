@@ -997,19 +997,50 @@ function legacyReplyJsonSchema(
       ...(mindAvailable
         ? {
             mind: {
-              type: ["object", "null"],
-              additionalProperties: false,
-              properties: {
-                action: {
-                  type: "string",
-                  enum: ["status", "list", "read", "search", "log", "dream"],
+              anyOf: [
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    action: {
+                      type: "string",
+                      enum: [
+                        "status",
+                        "list",
+                        "read",
+                        "search",
+                        "log",
+                        "dream",
+                      ],
+                    },
+                    path: { type: "string" },
+                    query: { type: "string" },
+                  },
+                  required: ["action", "path", "query"],
                 },
-                path: { type: "string" },
-                query: { type: "string" },
-              },
-              required: ["action", "path", "query"],
+                {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    action: { type: "string", enum: ["write"] },
+                    path: { type: "string" },
+                    expectedVersion: {
+                      type: "string",
+                      description:
+                        "Exact version from an editable, untruncated read.",
+                    },
+                    content: {
+                      type: "string",
+                      description:
+                        "Complete replacement markdown body, 1–10000 characters; no credentials.",
+                    },
+                  },
+                  required: ["action", "path", "expectedVersion", "content"],
+                },
+                { type: "null" },
+              ],
               description:
-                "Read June's own long-term memory (git-backed notes), projected for the originating conversation. status: what is stored and reflection state. list: path prefix such as people/, conversations/, skills/, improvements/, self/. read: exact path. search: case-insensitive phrase within an optional path prefix. log: recent commits, optionally for one path. dream: ask for a dream on the next scheduler tick instead of waiting for the night. Use empty strings for unused fields. Empty text, no other actions.",
+                "Access June's own long-term memory (git-backed notes), projected for the originating conversation. status: reflection/sync state. list: path prefix. read: exact path, returning content, version, editable and truncated (content null for missing/invisible). search: phrase within optional path prefix. log: recent commits, optionally for one path. dream: request the next background dream. Use empty strings for unused read/query fields. write: after reading, create/update only this conversation's briefing or the original requester's person note, preserving relevant visible content and privacy headings. Hidden private sections are host-preserved. A write ends the tool sequence and reports a local commit, not remote sync. Empty text, no other actions.",
             },
           }
         : {}),
