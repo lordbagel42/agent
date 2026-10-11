@@ -1,5 +1,6 @@
 packages:
   - debug-site
+  - host
   - sandboxes-site
 overrides:
   # Effect packages release in lockstep; keep the transitive one on the same version.
