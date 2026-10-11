@@ -33,10 +33,14 @@ jobs:
         run: |
           # The container user differs from the mounted checkout's owner.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          # The producer is the host package's self-contained bundle. Its own
+          # dependencies stay outside the exported source it prepares.
+          corepack pnpm install --frozen-lockfile --ignore-scripts --filter @raygen/june-host
+          corepack pnpm --dir host build
           if [ "$BUILD_ARTIFACTS" = true ]; then
-            python3 -I scripts/deploy/build_release.py "$REVISION" release.tar.gz
+            node host/dist/build_release.mjs "$REVISION" release.tar.gz
           else
-            python3 -I scripts/deploy/build_release.py "$REVISION" release.tar.gz --check-only
+            node host/dist/build_release.mjs "$REVISION" release.tar.gz --check-only
           fi
       - name: Publish prepared dependencies
         if: vars.JUNE_ACTIONS_ARTIFACTS == 'true'
