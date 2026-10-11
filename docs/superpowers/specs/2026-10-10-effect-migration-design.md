@@ -170,9 +170,9 @@ call-site update forced by its own signature change, and says so in the commit.
 | Stream | Owns |
 | --- | --- |
 | **Core** | `src/main.ts`, `src/config.ts`, `src/effect/`, `src/runtime/`, `src/workflows/`, `src/telemetry/`, `src/core/`, `src/deployment/`, `src/diagnostics/` (non-HTTP), `vitest.config.ts` |
-| **HTTP** | `src/http/`, `src/console/`, `src/links/`, every `routes.ts`/Hono file elsewhere (`src/artifacts/routes.ts`, `src/tools/routes.ts`, `src/apps/` HTTP, `src/wakeups/` webhooks, `src/browser/live-view.ts`, `src/agent/webhooks.ts`), Hono removal and the final `NodeHttpServer` listener |
+| **HTTP** | `src/http/`, `src/console/`, `src/links/`, every `routes.ts`/Hono file elsewhere (`src/artifacts/routes.ts`, `src/tools/routes.ts`, `src/apps/` HTTP, `src/wakeups/` webhooks, `src/browser/live-view.ts`), Hono removal and the final `NodeHttpServer` listener |
 | **Providers** | `src/models/`, `src/coding/`, `src/sentinel/`, `src/environments/`, `src/browser/` (non-HTTP), `src/credentials/` |
-| **Conversation** | `src/channels/`, `src/agent/` (non-HTTP), `src/sessions/`, `src/wakeups/` (non-HTTP), `src/intent/`, `src/tools/` (non-HTTP), `src/capabilities/`, `src/tasks/` |
+| **Conversation** | `src/channels/`, `src/agent/` (non-HTTP, including the `webhooks.ts` callback service), `src/sessions/`, `src/wakeups/` (non-HTTP), `src/intent/`, `src/tools/` (non-HTTP), `src/capabilities/`, `src/tasks/` |
 | **Knowledge** | `src/memory/`, `src/reflection/`, `src/mind/`, `src/imports/`, `src/research/`, `src/repository/`, `src/settings/`, `src/artifacts/` (non-HTTP), `src/apps/` (non-HTTP), `src/operations/`, `src/budgets/`, `src/policy/` |
 | **Host** | `scripts/deploy/`, the new `host/` package, `.github/workflows/`, the installed systemd units and their live cutover |
 
@@ -187,6 +187,16 @@ Shared rules for every stream:
 - Zod → Effect Schema per module, as each module migrates. Schemas sent to
   models as tool or response schemas must generate equivalent JSON Schema;
   compare the generated JSON before and after.
+- Convert Zod with the helpers in `src/effect/schema.ts`, so strictness, UUID
+  patterns, length bounds and defaults stay identical.
+- Zod and Effect Schema cannot nest each other, so a leaf schema embedded in
+  another stream's Zod composite converts in the same slice as its composite,
+  done by the composite's owner (or by the leaf's owner if handed the slice).
+  The leaf stays defined in its own file. `companionReplySchema`
+  (`src/models/provider.ts`) and every leaf it embeds belong to Providers;
+  the config schema (`src/config.ts`) and its leaves to Core. A schema that
+  another stream only calls (decodes with) converts with its own module and
+  the caller is updated mechanically.
 - Persisted and journaled shapes do not change (see "Boundary with Rivet").
 - Each new span name is added to `src/telemetry/privacy.ts` (Core owns the
   file; appending names is allowed for every stream).
