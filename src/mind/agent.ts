@@ -1,8 +1,11 @@
+import { Effect, Schema } from "effect";
 import type { ModelProvider, ModelRequest } from "../core/contracts.js";
 import { beginModelReply } from "../models/invocation.js";
 import { parseReply } from "../models/provider.js";
 import type { MindStep } from "./contracts.js";
 import { clip } from "./markdown.js";
+import type { MindRepoError } from "./repo.js";
+import type { MindStateError } from "./transcripts.js";
 
 export type WriteMode = MindStep["writes"][number]["mode"];
 
@@ -20,36 +23,45 @@ export interface AgentPolicy {
     path: string,
     mode: WriteMode,
     content: string,
-  ): Promise<{ kind: string } | { error: string }>;
-  read(path: string): Promise<string | undefined>;
-  list(prefix: string): Promise<{ path: string; title: string }[]>;
+  ): Effect.Effect<{ kind: string } | { error: string }, MindError>;
+  read(path: string): Effect.Effect<string | undefined, MindError>;
+  list(
+    prefix: string,
+  ): Effect.Effect<{ path: string; title: string }[], MindError>;
   search(
     query: string,
     prefix: string,
-  ): Promise<{ path: string; line: number; text: string }[]>;
+  ): Effect.Effect<{ path: string; line: number; text: string }[], MindError>;
 }
+
+export type MindError = MindRepoError | MindStateError;
 
 export type AgentResult =
   | { outcome: "finished"; staged: Map<string, Staged>; summary: string }
   | { outcome: "unfinished" };
 
-export class MindUnsettledError extends Error {
-  constructor() {
-    super("mind_model_settlement_unknown");
+/** Always fail with `yield*`, never `throw`: a defect skips the pass's
+ * settlement-unknown block. */
+export class MindUnsettledError extends Schema.TaggedError<MindUnsettledError>()(
+  "MindUnsettledError",
+  {},
+) {
+  override get message() {
+    return "mind_model_settlement_unknown";
   }
 }
 
 /** The bounded read/stage/commit loop shared by reflection and dreaming.
  * Nothing is applied here: the caller commits staged writes only on finish. */
-export async function runMindAgent(input: {
+export const runMindAgent = Effect.fn("june.mind.agent")(function* (input: {
   model: ModelProvider;
   system: string;
   context: string;
   policy: AgentPolicy;
   signal: AbortSignal;
   current: () => boolean;
-  heartbeat: () => Promise<void>;
-}): Promise<AgentResult> {
+  heartbeat: () => Effect.Effect<void, MindError>;
+}): Effect.fn.Return<AgentResult, MindError | MindUnsettledError> {
   const { model, policy, signal, current } = input;
   const request: ModelRequest = {
     agentRole: "mind",
@@ -62,7 +74,7 @@ export async function runMindAgent(input: {
   const staged = new Map<string, Staged>();
   for (let turn = 0; turn < policy.maxTurns; turn++) {
     if (!current()) return { outcome: "unfinished" };
-    await input.heartbeat();
+    yield* input.heartbeat();
     const last = turn === policy.maxTurns - 1;
     if (last)
       request.system +=
@@ -74,15 +86,18 @@ export async function runMindAgent(input: {
       current,
       current,
     );
-    let answer: unknown;
-    let failed = false;
-    try {
-      answer = await invocation.answer;
-    } catch {
-      failed = true;
-    }
-    if ((await invocation.settlement) === "unknown")
-      throw new MindUnsettledError();
+    const reply = yield* Effect.promise(() =>
+      invocation.answer.then(
+        (answer): { answer: unknown; failed: false } => ({
+          answer,
+          failed: false,
+        }),
+        () => ({ answer: undefined, failed: true as const }),
+      ),
+    );
+    const { answer, failed } = reply;
+    if ((yield* Effect.promise(() => invocation.settlement)) === "unknown")
+      return yield* new MindUnsettledError();
     if (!current()) return { outcome: "unfinished" };
     if (failed) return { outcome: "unfinished" };
     let step: MindStep | undefined;
@@ -113,7 +128,7 @@ export async function runMindAgent(input: {
         write.mode === "append" && previous?.mode === "append"
           ? `${previous.content.trim()}\n\n${write.content.trim()}`
           : write.content;
-      const verdict = await policy.check(write.path, write.mode, content);
+      const verdict = yield* policy.check(write.path, write.mode, content);
       if ("error" in verdict) errors.push(verdict.error);
       else
         staged.set(write.path, {
@@ -126,22 +141,25 @@ export async function runMindAgent(input: {
       return { outcome: "finished", staged, summary: step.summary };
     const reads = last
       ? []
-      : await Promise.all(
-          step.reads.slice(0, 8).map(async ({ action, path, query }) => {
-            if (action === "list")
-              return { action, path, entries: await policy.list(path) };
-            if (action === "search")
-              return {
-                action,
-                path,
-                query,
-                matches: await policy.search(query, path),
-              };
-            const content = await policy.read(path);
-            return content === undefined
-              ? { action, path, error: "not found or not visible here" }
-              : { action, path, content: clip(content, 12_000) };
-          }),
+      : yield* Effect.forEach(
+          step.reads.slice(0, 8),
+          ({ action, path, query }) =>
+            Effect.gen(function* () {
+              if (action === "list")
+                return { action, path, entries: yield* policy.list(path) };
+              if (action === "search")
+                return {
+                  action,
+                  path,
+                  query,
+                  matches: yield* policy.search(query, path),
+                };
+              const content = yield* policy.read(path);
+              return content === undefined
+                ? { action, path, error: "not found or not visible here" }
+                : { action, path, content: clip(content, 12_000) };
+            }),
+          { concurrency: "unbounded" },
         );
     request.messages.push(
       {
@@ -157,7 +175,7 @@ export async function runMindAgent(input: {
     );
   }
   return { outcome: "unfinished" };
-}
+});
 
 export function stepFormat(maxTurns: number) {
   return `# How to respond

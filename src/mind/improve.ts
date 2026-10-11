@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Effect, Schema } from "effect";
 import type { createAmpInbox } from "../runtime/debug-dispatch.js";
 import { clip, splitFrontmatter, withFrontmatter } from "./markdown.js";
 import type { Change, MindRepo } from "./repo.js";
@@ -30,18 +31,28 @@ Provenance: noticed in ${meta.filedFrom ?? "an unknown place"}; Raygen ${meta.wi
 ${clip(body.trim(), 9_000)}`;
 }
 
+/** The amp-task inbox rejected a publish; its outcome is the inbox's to settle. */
+export class MindImprovementError extends Schema.TaggedError<MindImprovementError>()(
+  "MindImprovementError",
+  { cause: Schema.Defect() },
+) {
+  override get message() {
+    return "mind_improvement_publish_failed";
+  }
+}
+
 /** Hand ready improvements to Amp, and record thread links and outcomes. */
-export async function advanceImprovements(
+export const advanceImprovements = Effect.fn("june.mind.improve")(function* (
   repo: MindRepo,
   inbox: AmpInbox,
   current: () => boolean,
-): Promise<Update | undefined> {
+) {
   const changes: Change[] = [];
   const notices: string[] = [];
   const subjects: string[] = [];
-  for (const path of await repo.list("improvements/")) {
+  for (const path of yield* repo.list("improvements/")) {
     if (!current()) break;
-    const text = await repo.read(path);
+    const text = yield* repo.read(path);
     if (!text) continue;
     const { meta, body } = splitFrontmatter(text);
     const title = (/^#\s+(.+)$/m.exec(body)?.[1]?.trim() ?? path).slice(0, 110);
@@ -69,7 +80,10 @@ export async function advanceImprovements(
         prompt: brief(path, meta, body),
         improvement: path,
       };
-      await inbox.publish(payload, current);
+      yield* Effect.tryPromise({
+        try: () => inbox.publish(payload, current),
+        catch: (cause) => new MindImprovementError({ cause }),
+      });
       changes.push({
         path,
         content: withFrontmatter(
@@ -90,7 +104,10 @@ export async function advanceImprovements(
     }
     if (!["dispatched", "in-progress"].includes(meta.status ?? "")) continue;
     if (!meta.request) continue;
-    const receipt = await inbox.inspect(meta.request).catch(() => undefined);
+    const request = meta.request;
+    const receipt = yield* Effect.promise(() =>
+      inbox.inspect(request).catch(() => undefined),
+    );
     if (!receipt) continue;
     const next = { ...meta };
     let section = "";
@@ -127,9 +144,10 @@ export async function advanceImprovements(
     subjects.push(`${next.status} ${slug}`);
   }
   if (!changes.length) return undefined;
-  return {
+  const update: Update = {
     changes,
     subject: `improve: ${subjects.join(", ")}`.slice(0, 200),
     notices,
   };
-}
+  return update;
+});

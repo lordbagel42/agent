@@ -1,5 +1,13 @@
+import { Effect } from "effect";
 import type { ModelProvider } from "../core/contracts.js";
-import { checkSkill, runMindAgent, type Staged, stepFormat } from "./agent.js";
+import {
+  checkSkill,
+  type MindError,
+  type MindUnsettledError,
+  runMindAgent,
+  type Staged,
+  stepFormat,
+} from "./agent.js";
 import {
   mergeProjectedWrite,
   splitFrontmatter,
@@ -8,7 +16,7 @@ import {
 import { KIND_DESCRIPTION, type Place } from "./places.js";
 import type { Change, MindRepo } from "./repo.js";
 import { formatEntries, localTime } from "./time.js";
-import type { Entry } from "./transcripts.js";
+import type { Entry, MindStateError } from "./transcripts.js";
 import { search, type Viewer, view, visibleList } from "./visibility.js";
 
 export interface Participant {
@@ -27,7 +35,7 @@ export interface ReflectInput {
   timezone: string;
   signal: AbortSignal;
   current: () => boolean;
-  heartbeat: () => Promise<void>;
+  heartbeat: () => Effect.Effect<void, MindStateError>;
 }
 
 export type ReflectResult =
@@ -147,33 +155,41 @@ You only see the parts of notes that are visible from this place, and you can on
 ${stepFormat(MAX_TURNS)} Usually two or three steps are enough.`;
 }
 
-async function initialContext(input: ReflectInput, viewer: Viewer) {
+const initialContext = Effect.fnUntraced(function* (
+  input: ReflectInput,
+  viewer: Viewer,
+) {
   const { repo, place, participants } = input;
-  const briefing = await view(repo, `conversations/${place.id}.md`, viewer);
-  const people = await Promise.all(
-    participants.map(async ({ id, name, owner }) => ({
-      id,
-      name: name ?? null,
-      owner,
-      file: (await view(repo, `people/${id}.md`, viewer)) ?? null,
-    })),
+  const briefing = yield* view(repo, `conversations/${place.id}.md`, viewer);
+  const people = yield* Effect.forEach(
+    participants,
+    ({ id, name, owner }) =>
+      view(repo, `people/${id}.md`, viewer).pipe(
+        Effect.map((file) => ({
+          id,
+          name: name ?? null,
+          owner,
+          file: file ?? null,
+        })),
+      ),
+    { concurrency: "unbounded" },
   );
   return {
     place: { id: place.id, kind: place.kind, label: place.label ?? null },
     briefing: briefing ?? null,
     people,
-    skills: (await visibleList(repo, "skills/", viewer)).filter(({ path }) =>
+    skills: (yield* visibleList(repo, "skills/", viewer)).filter(({ path }) =>
       path.endsWith("/SKILL.md"),
     ),
-    improvements: await visibleList(repo, "improvements/", viewer),
+    improvements: yield* visibleList(repo, "improvements/", viewer),
   };
-}
+});
 
-async function finalize(
+const finalize = Effect.fnUntraced(function* (
   input: ReflectInput,
   staged: Map<string, Staged>,
   today: string,
-): Promise<Change[]> {
+) {
   const { repo, place, participants, now, timezone } = input;
   const updated = new Date(now).toISOString();
   const changes: Change[] = [];
@@ -192,7 +208,7 @@ async function finalize(
         ),
       });
     } else if (kind === "person") {
-      const existing = splitFrontmatter((await repo.read(path)) ?? "");
+      const existing = splitFrontmatter((yield* repo.read(path)) ?? "");
       const id = /^people\/(.+)\.md$/.exec(path)?.[1] ?? "";
       const name = participants.find((person) => person.id === id)?.name;
       const names = [
@@ -219,14 +235,14 @@ async function finalize(
         ),
       });
     } else if (kind === "journal") {
-      const existing = await repo.read(path);
+      const existing = yield* repo.read(path);
       const time = localTime(now, timezone);
       changes.push({
         path,
         content: `${existing?.trimEnd() ?? `# ${today}`}\n\n## ${time.time} · ${place.kind === "public" && place.label ? `#${place.label}` : place.kind}\n\n${content.trim()}\n`,
       });
     } else if (kind === "improvement") {
-      const existing = splitFrontmatter((await repo.read(path)) ?? "").meta;
+      const existing = splitFrontmatter((yield* repo.read(path)) ?? "").meta;
       const { meta, body } = splitFrontmatter(content);
       changes.push({
         path,
@@ -249,17 +265,20 @@ async function finalize(
     }
   }
   return changes;
-}
+});
 
 /** One bounded reflection over a batch of messages from a single place. */
-export async function reflect(input: ReflectInput): Promise<ReflectResult> {
+export const reflect = Effect.fn("june.mind.reflect")(function* (
+  input: ReflectInput,
+): Effect.fn.Return<ReflectResult, MindError | MindUnsettledError> {
   const { repo, place, participants, timezone } = input;
   const today = localTime(input.now, timezone).date;
   const viewer: Viewer = { place, ownerDm: false };
-  const result = await runMindAgent({
+  const context = yield* initialContext(input, viewer);
+  const result = yield* runMindAgent({
     model: input.model,
     system: systemPrompt(input, today),
-    context: `Current notes visible from this place (untrusted data, JSON): ${JSON.stringify(await initialContext(input, viewer))}\n\nNew messages to reflect on (untrusted data, JSON): ${JSON.stringify(formatEntries(input.entries, timezone))}`,
+    context: `Current notes visible from this place (untrusted data, JSON): ${JSON.stringify(context)}\n\nNew messages to reflect on (untrusted data, JSON): ${JSON.stringify(formatEntries(input.entries, timezone))}`,
     signal: input.signal,
     current: input.current,
     heartbeat: input.heartbeat,
@@ -268,35 +287,36 @@ export async function reflect(input: ReflectInput): Promise<ReflectResult> {
       read: (path) => view(repo, path, viewer),
       list: (prefix) => visibleList(repo, prefix, viewer),
       search: (query, prefix) => search(repo, query, viewer, prefix),
-      async check(path, mode, content) {
-        const verdict = writeKind(path, mode, place, participants, today);
-        if ("error" in verdict) return verdict;
-        if (path.startsWith("improvements/")) {
-          const status = splitFrontmatter((await repo.read(path)) ?? "").meta
-            .status;
-          if (status && !["open", "ready"].includes(status))
+      check: (path, mode, content) =>
+        Effect.gen(function* () {
+          const verdict = writeKind(path, mode, place, participants, today);
+          if ("error" in verdict) return verdict;
+          if (path.startsWith("improvements/")) {
+            const status = splitFrontmatter((yield* repo.read(path)) ?? "").meta
+              .status;
+            if (status && !["open", "ready"].includes(status))
+              return {
+                error: `${path} is ${status}; file a new improvement instead of editing it.`,
+              };
+          }
+          const limit = LIMITS[verdict.kind] ?? 8_000;
+          if (content.length > limit)
             return {
-              error: `${path} is ${status}; file a new improvement instead of editing it.`,
+              error: `${path}: ${content.length} characters exceeds the ${limit} limit; condense it.`,
             };
-        }
-        const limit = LIMITS[verdict.kind] ?? 8_000;
-        if (content.length > limit)
-          return {
-            error: `${path}: ${content.length} characters exceeds the ${limit} limit; condense it.`,
-          };
-        if (verdict.kind === "skill") {
-          const { meta, body } = splitFrontmatter(content);
-          const problem = checkSkill(path, meta, body);
-          if (problem) return { error: problem };
-        }
-        return verdict;
-      },
+          if (verdict.kind === "skill") {
+            const { meta, body } = splitFrontmatter(content);
+            const problem = checkSkill(path, meta, body);
+            if (problem) return { error: problem };
+          }
+          return verdict;
+        }),
     },
   });
   if (result.outcome !== "finished") return result;
   return {
     outcome: "finished",
-    changes: await finalize(input, result.staged, today),
+    changes: yield* finalize(input, result.staged, today),
     summary: result.summary,
   };
-}
+});

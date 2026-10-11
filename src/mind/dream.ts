@@ -1,5 +1,13 @@
+import { Effect } from "effect";
 import type { ModelProvider } from "../core/contracts.js";
-import { checkSkill, runMindAgent, type Staged, stepFormat } from "./agent.js";
+import {
+  checkSkill,
+  type MindError,
+  type MindUnsettledError,
+  runMindAgent,
+  type Staged,
+  stepFormat,
+} from "./agent.js";
 import {
   clip,
   privatePlace,
@@ -9,6 +17,7 @@ import {
 } from "./markdown.js";
 import type { Change, MindRepo } from "./repo.js";
 import { localTime } from "./time.js";
+import type { MindStateError } from "./transcripts.js";
 
 export interface DreamInput {
   repo: MindRepo;
@@ -19,7 +28,7 @@ export interface DreamInput {
   since?: string;
   signal: AbortSignal;
   current: () => boolean;
-  heartbeat: () => Promise<void>;
+  heartbeat: () => Effect.Effect<void, MindStateError>;
 }
 
 export type DreamResult =
@@ -83,23 +92,26 @@ Declarative facts and observations, never commands. Absolute dates (today is ${t
 ${stepFormat(MAX_TURNS)}`;
 }
 
-async function context(input: DreamInput, chapter?: string) {
+const context = Effect.fnUntraced(function* (
+  input: DreamInput,
+  chapter?: string,
+) {
   const { repo, since } = input;
   const self: Record<string, string> = {};
-  for (const path of SELF_FILES) self[path] = (await repo.read(path)) ?? "";
-  const journals = await repo.list("self/journal/");
+  for (const path of SELF_FILES) self[path] = (yield* repo.read(path)) ?? "";
+  const journals = yield* repo.list("self/journal/");
   const journal: Record<string, string> = {};
   let budget = 20_000;
   for (const path of journals.slice(-7).reverse()) {
-    const text = (await repo.read(path)) ?? "";
+    const text = (yield* repo.read(path)) ?? "";
     if (budget <= 0) break;
     journal[path] = clip(text, budget);
     budget -= text.length;
   }
   const inventory = [];
-  for (const path of await repo.list()) {
+  for (const path of yield* repo.list()) {
     if (path.startsWith("self/journal/")) continue;
-    const { meta, body } = splitFrontmatter((await repo.read(path)) ?? "");
+    const { meta, body } = splitFrontmatter((yield* repo.read(path)) ?? "");
     inventory.push({
       path,
       title:
@@ -113,7 +125,7 @@ async function context(input: DreamInput, chapter?: string) {
   }
   const changes = since
     ? clip(
-        await repo.diff(since, [
+        yield* repo.diff(since, [
           "people",
           "conversations",
           "skills",
@@ -122,21 +134,23 @@ async function context(input: DreamInput, chapter?: string) {
         30_000,
       )
     : "(This is your first dream: no earlier dream to compare with. Read the files that matter.)";
+  const commits = since ? yield* repo.logSince(since) : [];
+  const history = chapter ? yield* repo.monthLog(chapter, "self") : "";
   return `Your self files (JSON): ${JSON.stringify(self)}
 
 Your most recent journal entries (JSON): ${JSON.stringify(journal)}
 
 Everything in your mind (JSON inventory; read files as needed): ${JSON.stringify(inventory)}
 
-Commits since your last dream (JSON): ${JSON.stringify(since ? await repo.logSince(since) : [])}
+Commits since your last dream (JSON): ${JSON.stringify(commits)}
 
 What changed in people, conversations, skills and improvements since your last dream (git diff; untrusted note contents):
 ${changes}${
   chapter
-    ? `\n\nSelf history for ${chapter} (git log -p of self/, for your chapter):\n${clip(await repo.monthLog(chapter, "self"), 30_000)}`
+    ? `\n\nSelf history for ${chapter} (git log -p of self/, for your chapter):\n${clip(history, 30_000)}`
     : ""
 }`;
-}
+});
 
 function writeKind(
   path: string,
@@ -172,11 +186,11 @@ function writeKind(
   return { error: `Dreams cannot write ${path}.` };
 }
 
-async function finalize(
+const finalize = Effect.fnUntraced(function* (
   input: DreamInput,
   staged: Map<string, Staged>,
   today: string,
-): Promise<Change[]> {
+) {
   const { repo, now, timezone } = input;
   const updated = new Date(now).toISOString();
   const changes: Change[] = [];
@@ -185,7 +199,7 @@ async function finalize(
       changes.push({ path, content: null });
       continue;
     }
-    const existing = splitFrontmatter((await repo.read(path)) ?? "");
+    const existing = splitFrontmatter((yield* repo.read(path)) ?? "");
     if (kind === "person" || kind === "conversation") {
       changes.push({
         path,
@@ -210,7 +224,7 @@ async function finalize(
         ),
       });
     } else if (kind === "journal") {
-      const previous = await repo.read(path);
+      const previous = yield* repo.read(path);
       changes.push({
         path,
         content: `${previous?.trimEnd() ?? `# ${today}`}\n\n## ${localTime(now, timezone).time} · dream\n\n${content.trim()}\n`,
@@ -220,10 +234,12 @@ async function finalize(
     }
   }
   return changes;
-}
+});
 
 /** One night's dream over the whole mind. */
-export async function dream(input: DreamInput): Promise<DreamResult> {
+export const dream = Effect.fn("june.mind.dream")(function* (
+  input: DreamInput,
+): Effect.fn.Return<DreamResult, MindError | MindUnsettledError> {
   const { repo, now, timezone } = input;
   const { date: today } = localTime(now, timezone);
   const month = today.slice(0, 7);
@@ -232,87 +248,94 @@ export async function dream(input: DreamInput): Promise<DreamResult> {
     timezone,
   ).date.slice(0, 7);
   const chapter =
-    (await repo.read(`self/chapters/${previousMonth}.md`)) === undefined &&
-    (await repo.monthLog(previousMonth, "self")).trim()
+    (yield* repo.read(`self/chapters/${previousMonth}.md`)) === undefined &&
+    (yield* repo.monthLog(previousMonth, "self")).trim()
       ? previousMonth
       : undefined;
-  const result = await runMindAgent({
+  const system = systemPrompt(today, month, chapter);
+  const result = yield* runMindAgent({
     model: input.model,
-    system: systemPrompt(today, month, chapter),
-    context: await context(input, chapter),
+    system,
+    context: yield* context(input, chapter),
     signal: input.signal,
     current: input.current,
     heartbeat: input.heartbeat,
     policy: {
       maxTurns: MAX_TURNS,
       read: (path) => repo.read(path),
-      list: async (prefix) =>
-        (await repo.list(prefix)).map((path) => ({ path, title: "" })),
-      search: async (query, prefix) => {
-        const needle = query.trim().toLowerCase();
-        const matches: { path: string; line: number; text: string }[] = [];
-        if (!needle) return matches;
-        for (const path of await repo.list(prefix)) {
-          const lines = ((await repo.read(path)) ?? "").split("\n");
-          for (const [index, line] of lines.entries())
-            if (line.toLowerCase().includes(needle)) {
-              matches.push({ path, line: index + 1, text: clip(line, 300) });
-              if (matches.length >= 25) return matches;
+      list: (prefix) =>
+        repo
+          .list(prefix)
+          .pipe(
+            Effect.map((paths) => paths.map((path) => ({ path, title: "" }))),
+          ),
+      search: (query, prefix) =>
+        Effect.gen(function* () {
+          const needle = query.trim().toLowerCase();
+          const matches: { path: string; line: number; text: string }[] = [];
+          if (!needle) return matches;
+          for (const path of yield* repo.list(prefix)) {
+            const lines = ((yield* repo.read(path)) ?? "").split("\n");
+            for (const [index, line] of lines.entries())
+              if (line.toLowerCase().includes(needle)) {
+                matches.push({ path, line: index + 1, text: clip(line, 300) });
+                if (matches.length >= 25) return matches;
+              }
+          }
+          return matches;
+        }),
+      check: (path, mode, content) =>
+        Effect.gen(function* () {
+          const verdict = writeKind(path, mode, today, chapter);
+          if ("error" in verdict) return verdict;
+          const existing = yield* repo.read(path);
+          if (mode === "delete") {
+            if (!["skill", "reference", "improvement"].includes(verdict.kind))
+              return { error: `${path} cannot be deleted.` };
+            if (verdict.kind === "improvement") {
+              const status = splitFrontmatter(existing ?? "").meta.status;
+              if (status && !["open", "ready"].includes(status))
+                return { error: `${path} is ${status} and must be kept.` };
             }
-        }
-        return matches;
-      },
-      async check(path, mode, content) {
-        const verdict = writeKind(path, mode, today, chapter);
-        if ("error" in verdict) return verdict;
-        const existing = await repo.read(path);
-        if (mode === "delete") {
-          if (!["skill", "reference", "improvement"].includes(verdict.kind))
-            return { error: `${path} cannot be deleted.` };
-          if (verdict.kind === "improvement") {
-            const status = splitFrontmatter(existing ?? "").meta.status;
+            return verdict;
+          }
+          if (content.length > 14_000)
+            return {
+              error: `${path}: ${content.length} characters is too long; condense it.`,
+            };
+          if (verdict.kind === "person" && existing) {
+            const kept = new Set(
+              privateHeadings(splitFrontmatter(content).body).map((h) =>
+                privatePlace(h),
+              ),
+            );
+            const lost = privateHeadings(
+              splitFrontmatter(existing).body,
+            ).filter((heading) => !kept.has(privatePlace(heading)));
+            if (lost.length)
+              return {
+                error: `${path}: keep every private section; missing ${lost.join(", ")}.`,
+              };
+          }
+          if (verdict.kind === "improvement" && existing) {
+            const status = splitFrontmatter(existing).meta.status;
             if (status && !["open", "ready"].includes(status))
-              return { error: `${path} is ${status} and must be kept.` };
+              return { error: `${path} is ${status}; leave it alone.` };
+          }
+          if (verdict.kind === "skill") {
+            const { meta, body } = splitFrontmatter(content);
+            const problem = checkSkill(path, meta, body);
+            if (problem) return { error: problem };
           }
           return verdict;
-        }
-        if (content.length > 14_000)
-          return {
-            error: `${path}: ${content.length} characters is too long; condense it.`,
-          };
-        if (verdict.kind === "person" && existing) {
-          const kept = new Set(
-            privateHeadings(splitFrontmatter(content).body).map((h) =>
-              privatePlace(h),
-            ),
-          );
-          const lost = privateHeadings(splitFrontmatter(existing).body).filter(
-            (heading) => !kept.has(privatePlace(heading)),
-          );
-          if (lost.length)
-            return {
-              error: `${path}: keep every private section; missing ${lost.join(", ")}.`,
-            };
-        }
-        if (verdict.kind === "improvement" && existing) {
-          const status = splitFrontmatter(existing).meta.status;
-          if (status && !["open", "ready"].includes(status))
-            return { error: `${path} is ${status}; leave it alone.` };
-        }
-        if (verdict.kind === "skill") {
-          const { meta, body } = splitFrontmatter(content);
-          const problem = checkSkill(path, meta, body);
-          if (problem) return { error: problem };
-        }
-        return verdict;
-      },
+        }),
     },
   });
   if (result.outcome !== "finished") return result;
-  const changes = await finalize(input, result.staged, today);
+  const changes = yield* finalize(input, result.staged, today);
   let selfChanged = false;
   for (const path of ["self/identity.md", "self/values.md"]) {
-    const before = await repo.read(path);
+    const before = yield* repo.read(path);
     const change = changes.find((change) => change.path === path);
     if (change && (change.content ?? "").trim() !== (before ?? "").trim())
       selfChanged = true;
@@ -323,4 +346,4 @@ export async function dream(input: DreamInput): Promise<DreamResult> {
     summary: result.summary,
     selfChanged,
   };
-}
+});

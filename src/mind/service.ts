@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import type {
   Address,
   MessageEvent,
@@ -6,9 +7,10 @@ import type {
   Owner,
 } from "../core/contracts.js";
 import { isOwner } from "../core/social.js";
+import type { JuneRuntime } from "../effect/runtime.js";
 import { beginModelReply } from "../models/invocation.js";
 import type { Lifecycle } from "../runtime/lifecycle.js";
-import { MindUnsettledError } from "./agent.js";
+import type { MindError, MindUnsettledError } from "./agent.js";
 import type { MindQuery } from "./contracts.js";
 import { dream } from "./dream.js";
 import { type AmpInbox, advanceImprovements } from "./improve.js";
@@ -32,7 +34,12 @@ import {
 import { MindSafety } from "./safety.js";
 import { SELF_SEEDS } from "./seed.js";
 import { localTime } from "./time.js";
-import { type Entry, MindLock, Transcripts } from "./transcripts.js";
+import {
+  type Entry,
+  MindLock,
+  MindStateError,
+  Transcripts,
+} from "./transcripts.js";
 import { search, type Viewer, view, visibleList } from "./visibility.js";
 
 export interface MindSettings {
@@ -45,6 +52,8 @@ export interface MindSettings {
 }
 
 export interface MindOptions {
+  /** The process runtime every Mind program runs on. */
+  effectRuntime: JuneRuntime;
   lifecycle?: Pick<Lifecycle, "tryEnter">;
   deletionRevision?: () => number;
   /** The DEBUGSHARE amp-task inbox; absent disables self-improvement. */
@@ -98,6 +107,21 @@ export function capturable(event: MessageEvent) {
   );
 }
 
+/** Settle a reflection or dream attempt: unknown model settlement still
+ * escapes to the pass; every other failure or defect is a failed attempt. */
+const attempt = <R>(
+  effect: Effect.Effect<void, MindError | MindUnsettledError, R>,
+) =>
+  effect.pipe(
+    Effect.as(false),
+    Effect.catch((error) =>
+      error._tag === "MindUnsettledError"
+        ? Effect.fail(error)
+        : Effect.succeed(true),
+    ),
+    Effect.catchDefect(() => Effect.succeed(true)),
+  );
+
 function kindForAddress(address: Address, event: MessageEvent): PlaceKind {
   if (
     address.accountId === event.address.accountId &&
@@ -130,12 +154,14 @@ export interface MindStatus {
   lastRun: { at: string; outcome: string } | null;
 }
 
-/** June's git-backed long-term memory and its background reflection loop. */
+/** June's git-backed long-term memory and its background reflection loop.
+ * Effect programs inside; Promise methods at the module boundary. */
 export class Mind {
   readonly repo: MindRepo;
   private readonly transcripts: Transcripts;
   private readonly lock: MindLock;
   private readonly safety: MindSafety;
+  private readonly runtime: JuneRuntime;
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<void> | undefined;
   private reflecting: string | undefined;
@@ -148,10 +174,11 @@ export class Mind {
     private readonly owner: Owner,
     private readonly model: ModelProvider,
     private readonly ready: () => boolean,
-    private readonly options: MindOptions = {},
+    private readonly options: MindOptions,
   ) {
+    this.runtime = options.effectRuntime;
     this.repo = new MindRepo(settings.directory, settings.remote);
-    this.transcripts = new Transcripts(settings.directory);
+    this.transcripts = new Transcripts(settings.directory, this.runtime);
     this.lock = new MindLock(settings.directory);
     this.safety = new MindSafety(
       this.transcripts,
@@ -159,26 +186,45 @@ export class Mind {
     );
   }
 
-  async start() {
-    if (!(await this.lock.acquire())) throw new Error("mind_busy");
-    try {
-      const fresh = await this.transcripts.fresh();
-      await this.repo.init();
-      await this.safety.load({
-        fresh:
-          fresh &&
-          !(await this.repo.list()).some((path) => path !== "README.md"),
-      });
-      if (!this.safety.readable) return;
-      const missing: Change[] = [];
-      for (const [path, content] of Object.entries(SELF_SEEDS))
-        if ((await this.repo.read(path)) === undefined)
-          missing.push({ path, content });
-      if (missing.length)
-        await this.repo.commit(missing, "seed(self): who june is today");
-    } finally {
-      await this.lock.release();
-    }
+  private run<A, E>(effect: Effect.Effect<A, E>) {
+    return this.runtime.runPromise(effect);
+  }
+
+  /** Run under MindLock; false when another holder has it. */
+  private locked<A, E>(
+    busy: Effect.Effect<A, E | MindStateError>,
+    body: Effect.Effect<A, E | MindError>,
+  ) {
+    const lock = this.lock;
+    return Effect.gen(function* () {
+      if (!(yield* lock.acquire())) return yield* busy;
+      return yield* body.pipe(
+        Effect.ensuring(lock.release().pipe(Effect.orDie)),
+      );
+    });
+  }
+
+  start() {
+    return this.run(
+      this.locked(
+        Effect.fail(new MindStateError({ reason: "mind_busy" })),
+        Effect.gen({ self: this }, function* () {
+          const fresh = yield* this.transcripts.fresh();
+          yield* this.repo.init();
+          const empty = fresh
+            ? !(yield* this.repo.list()).some((path) => path !== "README.md")
+            : false;
+          yield* this.safety.load({ fresh: fresh && empty });
+          if (!this.safety.readable) return;
+          const missing: Change[] = [];
+          for (const [path, content] of Object.entries(SELF_SEEDS))
+            if ((yield* this.repo.read(path)) === undefined)
+              missing.push({ path, content });
+          if (missing.length)
+            yield* this.repo.commit(missing, "seed(self): who june is today");
+        }),
+      ).pipe(Effect.withSpan("june.mind.start")),
+    );
   }
 
   /** Call only after host startup/recovery and HTTP readiness. */
@@ -189,7 +235,7 @@ export class Mind {
   }
 
   async isSettled() {
-    return !this.running && (await this.safety.isSettled());
+    return !this.running && (await this.run(this.safety.isSettled()));
   }
 
   async close() {
@@ -272,16 +318,24 @@ export class Mind {
   }
 
   /** June's self and notes for the current turn, projected for its place. */
-  async recall(event: MessageEvent, people: string[]): Promise<MindRecall> {
-    const unavailable = () => ({
+  recall(event: MessageEvent, people: string[]): Promise<MindRecall> {
+    return this.run(this.recallNotes(event, people));
+  }
+
+  private readonly recallNotes = Effect.fn("june.mind.recall")(function* (
+    this: Mind,
+    event: MessageEvent,
+    people: string[],
+  ) {
+    const unavailable = (): MindRecall => ({
       notes: "",
       blocked: this.blocked() ?? "unavailable",
     });
     if (!this.safety.readable) return unavailable();
     const self = {
-      identity: await this.repo.read("self/identity.md"),
-      values: await this.repo.read("self/values.md"),
-      curiosities: await this.repo.read("self/curiosities.md"),
+      identity: yield* this.repo.read("self/identity.md"),
+      values: yield* this.repo.read("self/values.md"),
+      curiosities: yield* this.repo.read("self/curiosities.md"),
     };
     const recall: MindRecall = {
       notes: "",
@@ -305,7 +359,7 @@ export class Mind {
       return this.safety.readable ? recall : unavailable();
     const viewer = this.viewer(event);
     const sections: string[] = [];
-    const briefing = await view(
+    const briefing = yield* view(
       this.repo,
       `conversations/${viewer.place.id}.md`,
       viewer,
@@ -322,13 +376,13 @@ export class Mind {
       ]),
     ].slice(0, 5);
     for (const id of ids) {
-      const note = await view(this.repo, `people/${id}.md`, viewer);
+      const note = yield* view(this.repo, `people/${id}.md`, viewer);
       if (note)
         sections.push(
           `## Person ${id}${id === personId(event.address.accountId, event.senderId) ? " (current sender)" : ""}\n${clip(splitFrontmatter(note).body, 4_000)}`,
         );
     }
-    const skills = (await visibleList(this.repo, "skills/", viewer)).filter(
+    const skills = (yield* visibleList(this.repo, "skills/", viewer)).filter(
       ({ path }) => path.endsWith("/SKILL.md"),
     );
     if (skills.length)
@@ -339,9 +393,9 @@ export class Mind {
           .join("\n")}`,
       );
     if (viewer.ownerDm) {
-      const journals = await this.repo.list("self/journal/");
+      const journals = yield* this.repo.list("self/journal/");
       const latest = journals.at(-1);
-      const text = latest ? await this.repo.read(latest) : undefined;
+      const text = latest ? yield* this.repo.read(latest) : undefined;
       if (latest && text)
         sections.push(
           `## Your latest journal (${latest}; only shown in Raygen's DM)\n${clip(text.slice(-3_000), 3_000)}`,
@@ -349,24 +403,33 @@ export class Mind {
     }
     recall.notes = sections.join("\n\n");
     return this.safety.readable ? recall : unavailable();
-  }
+  });
 
   /** Execution-worker read access, projected for the worker's origin. */
-  async query(input: MindQuery, event: MessageEvent): Promise<string> {
+  query(input: MindQuery, event: MessageEvent): Promise<string> {
+    return this.run(this.answerQuery(input, event));
+  }
+
+  private readonly answerQuery = Effect.fn("june.mind.query")(function* (
+    this: Mind,
+    input: MindQuery,
+    event: MessageEvent,
+  ) {
     // Recheck after every read as deletion may race any filesystem await.
-    const result = await this.readQuery(input, event);
+    const result = yield* this.readQuery(input, event);
     return input.action === "status" || this.safety.readable
       ? result
       : `Mind unavailable: ${this.blocked()}. Retained data is quarantined; request operator reconciliation, never clear the watermark or retry forgotten context.`;
-  }
+  });
 
-  private async readQuery(
+  private readonly readQuery = Effect.fnUntraced(function* (
+    this: Mind,
     input: MindQuery,
     event: MessageEvent,
-  ): Promise<string> {
+  ) {
     const viewer = this.viewer(event);
     if (input.action === "status") {
-      const status = await this.status();
+      const status = yield* this.readStatus();
       return JSON.stringify(
         viewer.ownerDm
           ? status
@@ -384,7 +447,7 @@ export class Mind {
         return `Dream blocked: ${this.blocked()}. Check status; a new request cannot clear a safety hold.`;
       // Separate request record prevents an in-flight dream from overwriting
       // a newer request when it records its completion.
-      await this.transcripts.writeState("dream-request", {
+      yield* this.transcripts.writeState("dream-request", {
         id: crypto.randomUUID(),
       });
       return "Dream requested. The minute scheduler will pick it up when ready and no reflection or retry backoff is in the way. Check status for blockers and completion; requesting is not proof a dream ran.";
@@ -394,51 +457,57 @@ export class Mind {
         return "Mind history is only visible in Raygen's DM.";
       const path = input.path ? safePath(input.path) : undefined;
       if (input.path && !path) return "Invalid mind path.";
-      return JSON.stringify(await this.repo.log(20, path));
+      return JSON.stringify(yield* this.repo.log(20, path));
     }
     if (input.action === "list")
-      return JSON.stringify(await visibleList(this.repo, input.path, viewer));
+      return JSON.stringify(yield* visibleList(this.repo, input.path, viewer));
     if (input.action === "search")
       return JSON.stringify(
-        await search(this.repo, input.query, viewer, input.path),
+        yield* search(this.repo, input.query, viewer, input.path),
       );
     const path = safePath(input.path);
     if (!path) return "Invalid mind path.";
-    const text = await view(this.repo, path, viewer);
+    const text = yield* view(this.repo, path, viewer);
     return text === undefined
       ? `${path} does not exist or is not visible from this conversation.`
       : clip(text, 16_000);
+  });
+
+  status(): Promise<MindStatus> {
+    return this.run(this.readStatus());
   }
 
-  async status(): Promise<MindStatus> {
-    const cursors = await this.transcripts.cursors();
+  private readonly readStatus = Effect.fn("june.mind.status")(function* (
+    this: Mind,
+  ) {
+    const cursors = yield* this.transcripts.cursors();
     const pendingPlaces: MindStatus["pendingPlaces"] = [];
-    for (const place of await this.transcripts.places()) {
-      const entries = await this.transcripts.read(place);
+    for (const place of yield* this.transcripts.places()) {
+      const entries = yield* this.transcripts.read(place);
       const pending = entries.length - (cursors[place]?.offset ?? 0);
       if (pending > 0)
         pendingPlaces.push({ place, unreflectedMessages: pending });
     }
     const notes: Record<string, number> = {};
-    for (const path of await this.repo.list()) {
+    for (const path of yield* this.repo.list()) {
       const top = path.split("/")[0] ?? path;
       notes[top] = (notes[top] ?? 0) + 1;
     }
     const improvements: Record<string, number> = {};
-    for (const path of await this.repo.list("improvements/")) {
+    for (const path of yield* this.repo.list("improvements/")) {
       const status =
-        splitFrontmatter((await this.repo.read(path)) ?? "").meta.status ??
+        splitFrontmatter((yield* this.repo.read(path)) ?? "").meta.status ??
         "unknown";
       improvements[status] = (improvements[status] ?? 0) + 1;
     }
-    const dreamState = await this.dreamState();
-    const request = await this.transcripts.readState<{ id: string }>(
+    const dreamState = yield* this.dreamState();
+    const request = yield* this.transcripts.readState<{ id: string }>(
       "dream-request",
     );
-    const commits = await this.repo.commitCount();
-    const lastCommits = await this.repo.log(5);
+    const commits = yield* this.repo.commitCount();
+    const lastCommits = yield* this.repo.log(5);
     const readable = this.safety.readable;
-    return {
+    const status: MindStatus = {
       directory: this.settings.directory,
       blocked: this.blocked(),
       remote: this.settings.remote
@@ -469,7 +538,8 @@ export class Mind {
           }
         : null,
     };
-  }
+    return status;
+  });
 
   /** Run one scheduler pass now (also used by manual verification). */
   tick(): Promise<void> {
@@ -477,7 +547,7 @@ export class Mind {
       return this.running ?? Promise.resolve();
     const release = this.options.lifecycle?.tryEnter();
     if (this.options.lifecycle && !release) return Promise.resolve();
-    this.running = this.pass()
+    this.running = this.run(this.pass())
       .catch(() => this.log("mind_pass_failed"))
       .finally(() => {
         this.running = undefined;
@@ -504,9 +574,9 @@ export class Mind {
           receipt.resolve("not_started");
           throw new Error("mind_not_current");
         }
-        await this.safety.begin();
+        await this.run(this.safety.begin());
         if (!this.live() || args[1]?.aborted) {
-          await this.safety.settle("not_started");
+          await this.run(this.safety.settle("not_started"));
           receipt.resolve("not_started");
           throw new Error("mind_not_current");
         }
@@ -516,7 +586,7 @@ export class Mind {
           (error: unknown) => ({ error }),
         );
         const settlement = await invocation.settlement;
-        await this.safety.settle(settlement);
+        await this.run(this.safety.settle(settlement));
         receipt.resolve(settlement);
         if ("error" in result) throw result.error;
         return result.value;
@@ -530,90 +600,112 @@ export class Mind {
     return { beginReply, reply: (...args) => beginReply(...args).answer };
   }
 
-  private async sync(force = false) {
+  private readonly sync = Effect.fn("june.mind.sync")(function* (
+    this: Mind,
+    force = false,
+  ) {
     if (!this.settings.remote) return;
     if (!force && this.lastSync && Date.now() - this.lastSync.at < SYNC_MS)
       return;
-    await this.safety.syncStarted();
-    const state = await this.repo.sync(() => this.safety.readable);
+    yield* this.safety.syncStarted();
+    const state = yield* this.repo.sync(() => this.safety.readable);
     if (state === "synced" || state === "merged" || state === "conflict")
-      await this.safety.syncFinished(state);
+      yield* this.safety.syncFinished(state);
     if (state !== this.lastSync?.state) this.log("mind_sync", { state });
     this.lastSync = { at: Date.now(), state };
-  }
+  });
 
   /** Commit, then push so GitHub stays current. */
-  private async save(changes: Change[], subject: string, body = "") {
+  private readonly save = Effect.fnUntraced(function* (
+    this: Mind,
+    changes: Change[],
+    subject: string,
+    body = "",
+  ) {
     if (!this.live()) return undefined;
-    const sha = await this.repo.commit(changes, subject, body);
-    if (sha && this.safety.readable) await this.sync(true);
+    const sha = yield* this.repo.commit(changes, subject, body);
+    if (sha && this.safety.readable) yield* this.sync(true);
     return sha;
-  }
+  });
 
-  private async notify(notices: string[]) {
+  private readonly notify = Effect.fnUntraced(function* (
+    this: Mind,
+    notices: string[],
+  ) {
     for (const text of notices) {
       if (!this.live()) return;
-      await this.options
-        .notify?.(text)
-        .catch(() => this.log("mind_notify_failed"));
+      const notify = this.options.notify;
+      if (notify)
+        yield* Effect.promise(() =>
+          notify(text).catch(() => this.log("mind_notify_failed")),
+        );
     }
-  }
+  });
 
-  private async pass() {
-    if (!(await this.lock.acquire())) return;
-    try {
-      await this.safety.load();
+  private readonly pass = Effect.fn("june.mind.pass")(function* (this: Mind) {
+    const body = Effect.gen({ self: this }, function* () {
+      yield* this.safety.load();
       if (!this.safety.readable) return;
-      await this.sync();
+      yield* this.sync();
       if (!this.live()) return;
-      for (const place of await this.transcripts.places()) {
+      for (const place of yield* this.transcripts.places()) {
         if (!this.live()) return;
-        await this.reflectPlace(place);
+        yield* this.reflectPlace(place);
       }
-      if (this.live()) await this.maybeDream();
-      if (this.live() && this.options.selfImprovement) {
-        const update = await advanceImprovements(
-          this.repo,
-          this.options.selfImprovement,
-          () => this.live(),
-        ).catch(() => {
-          this.log("mind_improvements_failed");
-          return undefined;
-        });
+      if (this.live()) yield* this.maybeDream();
+      const inbox = this.options.selfImprovement;
+      if (this.live() && inbox) {
+        const update = yield* advanceImprovements(this.repo, inbox, () =>
+          this.live(),
+        ).pipe(
+          Effect.catchCause(() =>
+            Effect.sync(() => {
+              this.log("mind_improvements_failed");
+              return undefined;
+            }),
+          ),
+        );
         if (update) {
-          await this.save(update.changes, update.subject);
-          await this.notify(update.notices);
+          yield* this.save(update.changes, update.subject);
+          yield* this.notify(update.notices);
         }
       }
-    } catch (error) {
-      if (error instanceof MindUnsettledError) {
-        await this.safety.block("model_settlement_unknown");
-        this.log("mind_model_settlement_unknown");
-      } else throw error;
-    } finally {
-      this.reflecting = undefined;
-      await this.lock.release();
-    }
-  }
+    }).pipe(
+      Effect.catchTag("MindUnsettledError", () =>
+        Effect.gen({ self: this }, function* () {
+          yield* this.safety.block("model_settlement_unknown");
+          this.log("mind_model_settlement_unknown");
+        }),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          this.reflecting = undefined;
+        }),
+      ),
+    );
+    yield* this.locked(Effect.void, body);
+  });
 
-  private async dreamState(): Promise<DreamState> {
-    return (await this.transcripts.readState<DreamState>("dream")) ?? {};
+  private dreamState() {
+    return this.transcripts
+      .readState<DreamState>("dream")
+      .pipe(Effect.map((state) => state ?? {}));
   }
 
   private saveDreamState(state: DreamState) {
     return this.transcripts.writeState("dream", state);
   }
 
-  private async maybeDream() {
+  private readonly maybeDream = Effect.fnUntraced(function* (this: Mind) {
     const now = Date.now();
-    const state = await this.dreamState();
-    const request = await this.transcripts.readState<{ id: string }>(
+    const state = yield* this.dreamState();
+    const request = yield* this.transcripts.readState<{ id: string }>(
       "dream-request",
     );
     const requested = !!request && request.id !== state.fulfilledRequest;
     const local = localTime(now, this.settings.timezone);
     const inWindow = (local.hour - this.settings.dreamHour + 24) % 24 < 3;
-    const head = await this.repo.revision();
+    const head = yield* this.repo.revision();
     if (state.retryAt && state.retryAt > now) return;
     if (!requested) {
       if (!inWindow || head === state.lastHead) return;
@@ -621,7 +713,7 @@ export class Mind {
       if (state.night === local.date && (state.attempts ?? 0) >= 3) return;
     }
     // Dreams rewrite whole files: start from Raygen's latest edits.
-    await this.sync(true);
+    yield* this.sync(true);
     if (this.lastSync?.state === "conflict") return;
     this.reflecting = "dream";
     const started = Date.now();
@@ -632,41 +724,45 @@ export class Mind {
     const current = () => !signal.aborted && this.live();
     let outcome = "unfinished";
     let selfChanged = false;
-    try {
-      const result = await dream({
-        repo: this.repo,
-        model: this.trackedModel(),
-        now,
-        timezone: this.settings.timezone,
-        ...(state.lastHead ? { since: state.lastHead } : {}),
-        signal,
-        current,
-        heartbeat: () => this.lock.heartbeat(),
-      });
-      if (result.outcome === "finished" && current()) {
-        const sha = await this.save(
-          result.changes,
-          `dream(${local.date}): ${result.changes.length} notes`,
-          result.summary,
-        );
-        selfChanged = !!sha && result.selfChanged;
-        await this.saveDreamState({
-          lastAt: now,
-          lastHead: (await this.repo.revision()) ?? head,
-          ...(request ? { fulfilledRequest: request.id } : {}),
+    const failed = yield* attempt(
+      Effect.gen({ self: this }, function* () {
+        const result = yield* dream({
+          repo: this.repo,
+          model: this.trackedModel(),
+          now,
+          timezone: this.settings.timezone,
+          ...(state.lastHead ? { since: state.lastHead } : {}),
+          signal,
+          current,
+          heartbeat: () => this.lock.heartbeat(),
         });
-        outcome = sha ? "committed" : "nothing_to_change";
-        if (selfChanged && sha)
-          await this.notify([
-            `i revised how i see myself. here's the diff to my identity and values (commit ${sha.slice(0, 7)}):\n\n${clip(await this.repo.diff(`${sha}~1`, ["self/identity.md", "self/values.md"], sha), 3_000)}`,
-          ]);
-      }
-    } catch (error) {
-      if (error instanceof MindUnsettledError) throw error;
-      outcome = "failed";
-    } finally {
-      this.reflecting = undefined;
-    }
+        if (result.outcome === "finished" && current()) {
+          const sha = yield* this.save(
+            result.changes,
+            `dream(${local.date}): ${result.changes.length} notes`,
+            result.summary,
+          );
+          selfChanged = !!sha && result.selfChanged;
+          yield* this.saveDreamState({
+            lastAt: now,
+            lastHead: (yield* this.repo.revision()) ?? head,
+            ...(request ? { fulfilledRequest: request.id } : {}),
+          });
+          outcome = sha ? "committed" : "nothing_to_change";
+          if (selfChanged && sha)
+            yield* this.notify([
+              `i revised how i see myself. here's the diff to my identity and values (commit ${sha.slice(0, 7)}):\n\n${clip(yield* this.repo.diff(`${sha}~1`, ["self/identity.md", "self/values.md"], sha), 3_000)}`,
+            ]);
+        }
+      }),
+    ).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          this.reflecting = undefined;
+        }),
+      ),
+    );
+    if (failed) outcome = "failed";
     if (outcome === "unfinished" || outcome === "failed") {
       if (!current() && outcome === "unfinished") {
         this.log("mind_dream_interrupted");
@@ -674,7 +770,7 @@ export class Mind {
       }
       const attempts =
         state.night === local.date ? (state.attempts ?? 0) + 1 : 1;
-      await this.saveDreamState({
+      yield* this.saveDreamState({
         ...state,
         ...(request ? { fulfilledRequest: request.id } : {}),
         night: local.date,
@@ -688,16 +784,19 @@ export class Mind {
       selfChanged,
       ms: Date.now() - started,
     });
-  }
+  });
 
-  private async reflectPlace(id: string) {
+  private readonly reflectPlace = Effect.fnUntraced(function* (
+    this: Mind,
+    id: string,
+  ) {
     const now = Date.now();
-    const cursor = (await this.transcripts.cursors())[id] ?? {
+    const cursor = (yield* this.transcripts.cursors())[id] ?? {
       offset: 0,
       ids: [],
     };
     if (cursor.retryAt && cursor.retryAt > now) return;
-    const entries = await this.transcripts.read(id);
+    const entries = yield* this.transcripts.read(id);
     if (entries.length <= cursor.offset) return;
     const seen = new Set(cursor.ids);
     const pending: { entry: Entry; index: number }[] = [];
@@ -707,7 +806,7 @@ export class Mind {
       seen.add(entry.id);
       pending.push({ entry, index });
     }
-    const quietFor = now - ((await this.transcripts.lastWrite(id)) ?? now);
+    const quietFor = now - ((yield* this.transcripts.lastWrite(id)) ?? now);
     if (
       pending.length > 0 &&
       pending.length < BATCH_ENTRIES &&
@@ -738,7 +837,7 @@ export class Mind {
       });
     const humans = batch.filter(({ entry }) => entry.from !== "june");
     if (humans.length === 0) {
-      await advance();
+      yield* advance();
       return;
     }
     const latest = batch.at(-1)?.entry as Entry;
@@ -764,35 +863,39 @@ export class Mind {
     ]);
     const current = () => !signal.aborted && this.live();
     let outcome = "unfinished";
-    try {
-      const result = await reflect({
-        repo: this.repo,
-        model: this.trackedModel(),
-        place,
-        entries: batch.map(({ entry }) => entry),
-        participants: [...participants.values()],
-        now,
-        timezone: this.settings.timezone,
-        signal,
-        current,
-        heartbeat: () => this.lock.heartbeat(),
-      });
-      if (result.outcome === "finished" && current()) {
-        const date = localTime(now, this.settings.timezone).date;
-        const sha = await this.save(
-          result.changes,
-          `reflect(${place.label ?? id}): ${date}, ${batch.length} messages`,
-          result.summary,
-        );
-        await advance();
-        outcome = sha ? "committed" : "nothing_to_save";
-      }
-    } catch (error) {
-      if (error instanceof MindUnsettledError) throw error;
-      outcome = "failed";
-    } finally {
-      this.reflecting = undefined;
-    }
+    const failed = yield* attempt(
+      Effect.gen({ self: this }, function* () {
+        const result = yield* reflect({
+          repo: this.repo,
+          model: this.trackedModel(),
+          place,
+          entries: batch.map(({ entry }) => entry),
+          participants: [...participants.values()],
+          now,
+          timezone: this.settings.timezone,
+          signal,
+          current,
+          heartbeat: () => this.lock.heartbeat(),
+        });
+        if (result.outcome === "finished" && current()) {
+          const date = localTime(now, this.settings.timezone).date;
+          const sha = yield* this.save(
+            result.changes,
+            `reflect(${place.label ?? id}): ${date}, ${batch.length} messages`,
+            result.summary,
+          );
+          yield* advance();
+          outcome = sha ? "committed" : "nothing_to_save";
+        }
+      }),
+    ).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          this.reflecting = undefined;
+        }),
+      ),
+    );
+    if (failed) outcome = "failed";
     if (outcome === "unfinished" || outcome === "failed") {
       if (!current() && outcome === "unfinished") {
         // Interrupted by drain/shutdown: retry on a later tick, not a failure.
@@ -801,7 +904,7 @@ export class Mind {
       }
       const failures = (cursor.failures ?? 0) + 1;
       // A failure must not silently forget this batch. Back off at most 12h.
-      await advance(
+      yield* advance(
         failures,
         now + Math.min(12 * 3_600_000, 5 * 60_000 * 2 ** Math.min(failures, 8)),
       );
@@ -813,5 +916,5 @@ export class Mind {
       messages: batch.length,
       ms: Date.now() - started,
     });
-  }
+  });
 }

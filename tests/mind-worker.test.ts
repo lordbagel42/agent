@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import type { MessageEvent, Owner } from "../src/core/contracts.js";
+import { makeJuneRuntime } from "../src/effect/runtime.js";
 import { Mind } from "../src/mind/service.js";
 import { executionKey } from "../src/runtime/execution.js";
 import type { ExecutionContext } from "../src/runtime/execution-context.js";
@@ -17,6 +18,7 @@ it("returns Mind status without legacy memory while rejecting untracked evidence
     identities: [{ channel: "slack", accountId: "T1", senderId: "U1" }],
   };
   const directory = await mkdtemp(join(tmpdir(), "june-mind-worker-"));
+  const effectRuntime = makeJuneRuntime();
   const mind = new Mind(
     { directory, reflectIdleMs: 600_000, timezone: "UTC", dreamHour: 3 },
     owner,
@@ -26,10 +28,12 @@ it("returns Mind status without legacy memory while rejecting untracked evidence
       },
     },
     () => true,
+    { effectRuntime },
   );
   await mind.start();
   t.onTestFinished(async () => {
     await mind.close();
+    await effectRuntime.dispose();
     await rm(directory, { recursive: true, force: true });
   });
   const lifecycle = createLifecycle();

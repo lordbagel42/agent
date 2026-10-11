@@ -1572,6 +1572,7 @@ async function main() {
       mindModel,
       () => mindReady && lifecycle.ready,
       {
+        effectRuntime: juneRuntime,
         lifecycle,
         deletionRevision: () => memory?.store.deletionRevision() ?? 0,
         // Self-improvement rides the existing DEBUGSHARE amp-task transport.

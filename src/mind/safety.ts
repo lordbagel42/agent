@@ -1,18 +1,22 @@
-import { z } from "zod";
+import { Effect, Schema } from "effect";
 import type { ModelSettlement } from "../core/contracts.js";
-import type { Transcripts } from "./transcripts.js";
+import { decodeStrict, Int, Uuid, withDefault } from "../effect/schema.js";
+import { MindStateError, type Transcripts } from "./transcripts.js";
 
-const safetySchema = z.strictObject({
-  version: z.literal(1),
-  deletionRevision: z.number().int().nonnegative(),
-  pending: z.strictObject({ id: z.uuid(), at: z.number().int() }).nullable(),
-  settlementUnknown: z.boolean().default(false),
-  sync: z.enum(["pending", "conflict"]).nullable().default(null),
-  blocked: z
-    .enum(["retention_quarantined", "model_settlement_unknown"])
-    .nullable(),
+const Safety = Schema.Struct({
+  version: Schema.Literal(1),
+  deletionRevision: Int({ minimum: 0 }),
+  pending: Schema.NullOr(Schema.Struct({ id: Uuid, at: Int() })),
+  settlementUnknown: Schema.Boolean.pipe(withDefault(false)),
+  sync: Schema.NullOr(Schema.Literals(["pending", "conflict"])).pipe(
+    withDefault(null),
+  ),
+  blocked: Schema.NullOr(
+    Schema.Literals(["retention_quarantined", "model_settlement_unknown"]),
+  ),
 });
-type State = z.infer<typeof safetySchema>;
+type State = typeof Safety.Type;
+const decodeSafety = decodeStrict(Safety);
 
 /** Host-only safety journal, outside Git. Missing/corrupt recovery state never
  * grants replay authority. A deletion quarantines this whole unprovenanced mind;
@@ -27,11 +31,14 @@ export class MindSafety {
     private readonly revision: () => number,
   ) {}
 
-  async load(initial?: { fresh: boolean }) {
-    try {
-      const value = await this.transcripts.readState("safety");
+  readonly load = Effect.fnUntraced(function* (
+    this: MindSafety,
+    initial?: { fresh: boolean },
+  ) {
+    yield* Effect.gen({ self: this }, function* () {
+      const value = yield* this.transcripts.readState("safety");
       if (value === undefined && initial) {
-        await this.save({
+        yield* this.save({
           version: 1,
           deletionRevision: this.revision(),
           pending: null,
@@ -40,21 +47,31 @@ export class MindSafety {
           sync: null,
           blocked: initial.fresh ? null : "retention_quarantined",
         });
-      } else this.state = safetySchema.parse(value);
-    } catch {
-      this.failed = true;
-    }
-  }
+      } else this.state = decodeSafety(value);
+    }).pipe(
+      Effect.catchCause(() =>
+        Effect.sync(() => {
+          this.failed = true;
+        }),
+      ),
+    );
+  });
 
-  private async save(state: State) {
+  private readonly save = Effect.fn("june.mind.safety.save")(function* (
+    this: MindSafety,
+    state: State,
+  ) {
     this.state = state;
-    try {
-      await this.transcripts.writeState("safety", safetySchema.parse(state));
-    } catch (error) {
-      this.failed = true;
-      throw error;
-    }
-  }
+    yield* Effect.suspend(() =>
+      this.transcripts.writeState("safety", decodeSafety(state)),
+    ).pipe(
+      Effect.onError(() =>
+        Effect.sync(() => {
+          this.failed = true;
+        }),
+      ),
+    );
+  });
 
   get readable() {
     return (
@@ -83,8 +100,8 @@ export class MindSafety {
     );
   }
 
-  async isSettled() {
-    await this.load();
+  readonly isSettled = Effect.fnUntraced(function* (this: MindSafety) {
+    yield* this.load();
     return (
       !this.failed &&
       !!this.state &&
@@ -92,20 +109,25 @@ export class MindSafety {
       !this.state.settlementUnknown &&
       this.state.blocked !== "model_settlement_unknown"
     );
-  }
+  });
 
-  async begin() {
-    if (this.blocked || !this.state) throw new Error("mind_blocked");
-    await this.save({
+  readonly begin = Effect.fnUntraced(function* (this: MindSafety) {
+    if (this.blocked || !this.state)
+      return yield* new MindStateError({ reason: "mind_blocked" });
+    yield* this.save({
       ...this.state,
       pending: { id: crypto.randomUUID(), at: Date.now() },
     });
     this.ownsPending = true;
-  }
+  });
 
-  async settle(settlement: ModelSettlement) {
-    if (!this.state?.pending) throw new Error("mind_missing_intent");
-    await this.save({
+  readonly settle = Effect.fnUntraced(function* (
+    this: MindSafety,
+    settlement: ModelSettlement,
+  ) {
+    if (!this.state?.pending)
+      return yield* new MindStateError({ reason: "mind_missing_intent" });
+    yield* this.save({
       ...this.state,
       pending: settlement === "unknown" ? this.state.pending : null,
       blocked:
@@ -114,24 +136,33 @@ export class MindSafety {
           : this.state.blocked,
     });
     this.ownsPending = false;
-  }
+  });
 
-  async block(reason: NonNullable<State["blocked"]>) {
-    if (!this.state) throw new Error("mind_state_unavailable");
-    await this.save({ ...this.state, blocked: reason });
-  }
+  readonly block = Effect.fnUntraced(function* (
+    this: MindSafety,
+    reason: NonNullable<State["blocked"]>,
+  ) {
+    if (!this.state)
+      return yield* new MindStateError({ reason: "mind_state_unavailable" });
+    yield* this.save({ ...this.state, blocked: reason });
+  });
 
   /** Write before Git can merge; a crash or failed fetch cannot erase a hold. */
-  async syncStarted() {
-    if (!this.state) throw new Error("mind_state_unavailable");
-    await this.save({ ...this.state, sync: this.state.sync ?? "pending" });
-  }
+  readonly syncStarted = Effect.fnUntraced(function* (this: MindSafety) {
+    if (!this.state)
+      return yield* new MindStateError({ reason: "mind_state_unavailable" });
+    yield* this.save({ ...this.state, sync: this.state.sync ?? "pending" });
+  });
 
-  async syncFinished(state: "synced" | "merged" | "conflict") {
-    if (!this.state) throw new Error("mind_state_unavailable");
-    await this.save({
+  readonly syncFinished = Effect.fnUntraced(function* (
+    this: MindSafety,
+    state: "synced" | "merged" | "conflict",
+  ) {
+    if (!this.state)
+      return yield* new MindStateError({ reason: "mind_state_unavailable" });
+    yield* this.save({
       ...this.state,
       sync: state === "conflict" ? "conflict" : null,
     });
-  }
+  });
 }
