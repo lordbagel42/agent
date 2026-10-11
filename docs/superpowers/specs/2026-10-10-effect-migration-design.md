@@ -160,6 +160,44 @@ and its runner, `debug_site`, `companions`, `issues`, `operations`,
 Trunk-based, as `AGENTS.md` requires: small Conventional Commits pushed to
 `main`, each deployed and verified live before the next risky slice.
 
+### Workstreams
+
+Phase 0 and the runtime/telemetry bridge are live (`fd942e1`). The rest runs
+as parallel workstreams, each in its own thread and worktree, each owning only
+the paths below. A stream edits another stream's files only for a mechanical
+call-site update forced by its own signature change, and says so in the commit.
+
+| Stream | Owns |
+| --- | --- |
+| **Core** | `src/main.ts`, `src/config.ts`, `src/effect/`, `src/runtime/`, `src/workflows/`, `src/telemetry/`, `src/core/`, `src/deployment/`, `src/diagnostics/` (non-HTTP), `vitest.config.ts` |
+| **HTTP** | `src/http/`, `src/console/`, `src/links/`, every `routes.ts`/Hono file elsewhere (`src/artifacts/routes.ts`, `src/tools/routes.ts`, `src/apps/` HTTP, `src/wakeups/` webhooks, `src/browser/live-view.ts`, `src/agent/webhooks.ts`), Hono removal and the final `NodeHttpServer` listener |
+| **Providers** | `src/models/`, `src/coding/`, `src/sentinel/`, `src/environments/`, `src/browser/` (non-HTTP), `src/credentials/` |
+| **Conversation** | `src/channels/`, `src/agent/` (non-HTTP), `src/sessions/`, `src/wakeups/` (non-HTTP), `src/intent/`, `src/tools/` (non-HTTP), `src/capabilities/`, `src/tasks/` |
+| **Knowledge** | `src/memory/`, `src/reflection/`, `src/mind/`, `src/imports/`, `src/research/`, `src/repository/`, `src/settings/`, `src/artifacts/` (non-HTTP), `src/apps/` (non-HTTP), `src/operations/`, `src/budgets/`, `src/policy/` |
+| **Host** | `scripts/deploy/`, the new `host/` package, `.github/workflows/`, the installed systemd units and their live cutover |
+
+Shared rules for every stream:
+
+- Core owns the seam: services receive the process runtime as
+  `effectRuntime: JuneRuntime` (from `src/effect/runtime.ts`) through their
+  existing dependency objects; nothing creates its own runtime. Until Core's
+  Layer graph lands, a stream converts its module to Effect services/functions
+  and exposes Promise adapters at the module boundary that run on the injected
+  runtime.
+- Zod → Effect Schema per module, as each module migrates. Schemas sent to
+  models as tool or response schemas must generate equivalent JSON Schema;
+  compare the generated JSON before and after.
+- Persisted and journaled shapes do not change (see "Boundary with Rivet").
+- Each new span name is added to `src/telemetry/privacy.ts` (Core owns the
+  file; appending names is allowed for every stream).
+- When behavior June relies on changes, update her runtime instructions in
+  the same commit; a pure refactor needs none.
+- No new committed tests. Only the protected suites change, and only Host
+  ports them.
+- Every push is followed to a verified live deployment per `AGENTS.md`.
+
+### Phases
+
 0. **Foundation and spikes.** Add Effect v4 conventions to `AGENTS.md` (models
    mostly know v3) and dependencies. The three unproven mechanisms passed their
    spikes: `flock` on a Node-held descriptor is already how
