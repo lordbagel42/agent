@@ -155,7 +155,7 @@ export function memoryRoutes(deps: {
   invalidateDeliveries?(): void;
   forget(audience: string, sourceId: string): Promise<void>;
 }) {
-  const rejected = respond(
+  const rejected = respond(() =>
     Effect.succeed(json({ error: "memory_request_rejected" }, 400)),
   );
   // Hono registers the personality paths only when the store exists.

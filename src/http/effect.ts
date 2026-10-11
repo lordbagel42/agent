@@ -76,13 +76,16 @@ export const json = (body: unknown, status = 200) =>
 
 /**
  * Responds like a Hono handler in a group with an `onError`: a value is sent
- * as `c.json(value)`, a response as is, and any failure or defect becomes
- * `onError`. Serializing here keeps a value `JSON.stringify` rejects a handler
- * failure, as it was in `c.json`. Interruption (client abort) passes through.
+ * as `c.json(value)`, a response as is, and any failure or defect goes to
+ * `onError` with the thrown value. Serializing here keeps a value
+ * `JSON.stringify` rejects a handler failure, as it was in `c.json`.
+ * Interruption (client abort) passes through.
  */
 export const respond =
   <R2>(
-    onError: Effect.Effect<HttpServerResponse.HttpServerResponse, never, R2>,
+    onError: (
+      error: unknown,
+    ) => Effect.Effect<HttpServerResponse.HttpServerResponse, never, R2>,
   ) =>
   <A, E, R>(
     effect: Effect.Effect<A, E, R>,
@@ -96,7 +99,7 @@ export const respond =
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? (Effect.failCause(cause) as Effect.Effect<never>)
-          : onError,
+          : onError(Cause.squash(cause)),
       ),
     );
 

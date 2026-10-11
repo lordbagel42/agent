@@ -82,7 +82,7 @@ export interface ReflectionRouteDependencies {
  * former Zod `strictObject`s did; every failure is a 500 `request_failed`.
  */
 export const reflectionRoutes = (deps: ReflectionRouteDependencies) => {
-  const failed = respond(
+  const failed = respond(() =>
     Effect.sync(deps.report).pipe(Effect.as(json(requestFailed, 500))),
   );
   const handlers = HttpApiBuilder.group(ReflectionApi, "reflection", (h) =>

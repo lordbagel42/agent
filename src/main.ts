@@ -68,7 +68,7 @@ import { inspectSandboxes } from "./environments/inspection.js";
 import { EnvironmentService } from "./environments/service.js";
 import { createHttpApp, type HttpDependencies } from "./http/app.js";
 import { mountEffectRoutes } from "./http/effect.js";
-import { createImportRoutes } from "./http/imports.js";
+import { importPaths, importRoutes } from "./http/imports.js";
 import { memoryPaths, memoryRoutes } from "./http/memory.js";
 import { reflectionRoutes } from "./http/reflection-api.js";
 import { ImportedMemoryExtraction } from "./imports/extraction.js";
@@ -2248,10 +2248,12 @@ async function main() {
     app.on("POST", paths.post, routes);
   }
   if (imports) {
-    app.route(
-      "/operator/imports",
-      createImportRoutes(imports, selections, importExtraction),
+    const routes = mountEffectRoutes(
+      juneRuntime,
+      importRoutes(imports, selections, importExtraction),
     );
+    app.on("GET", importPaths.get, routes);
+    app.on("POST", importPaths.post, routes);
   }
   if (reflection) {
     const routes = mountEffectRoutes(
