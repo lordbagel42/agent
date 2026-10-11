@@ -102,7 +102,10 @@ import {
   ConversationContinuity,
   createPrivacyFilter,
 } from "./runtime/continuity.js";
-import { editHistory } from "./runtime/conversation-storage.js";
+import {
+  editHistory,
+  readConversationSnapshot,
+} from "./runtime/conversation-storage.js";
 import {
   createAmpInbox,
   createAutomaticRepairs,
@@ -1321,7 +1324,7 @@ async function main() {
           if (!scope?.private) throw new Error("agent_scope_denied");
           await submit(scope, event);
         },
-        snapshot: () => june.snapshot(),
+        snapshot: () => readSnapshot(),
         activityProjection: async (state, eventId) => {
           const directory = state.sessions?.directory;
           const receipt = eventId ? directory?.receipts[eventId] : undefined;
@@ -1942,6 +1945,8 @@ async function main() {
     poolName: runtime.envoy.poolName,
   });
   const june = client.conversation.getOrCreate(["private", config.owner.id]);
+  const readSnapshot = () =>
+    juneRuntime.runPromise(readConversationSnapshot(june));
   const wakeups = wakeupOptions
     ? client.wakeups.getOrCreate([config.owner.id])
     : undefined;
@@ -2085,7 +2090,7 @@ async function main() {
           async inspect() {
             // Project only allowlisted facts. Never serialize config, messages,
             // job goals/reports, provider paths or arbitrary actor state to HTML.
-            const state = await june.snapshot().catch(() => undefined);
+            const state = await readSnapshot().catch(() => undefined);
             const ingress = slackIngressDiagnostics?.snapshot();
             return {
               observedAt: new Date().toISOString(),
@@ -2191,13 +2196,13 @@ async function main() {
       return (await registry.routes.health()).ok;
     },
     async inspectConversation() {
-      const state = await june.snapshot();
+      const state = await readSnapshot();
       // Expand only the detached RPC response, never persisted actor state.
       editHistory(state);
       return state;
     },
     async inspectJob(id) {
-      const state = await june.snapshot();
+      const state = await readSnapshot();
       if (!Object.hasOwn(state.jobs, id) || state.forgottenEvents?.includes(id))
         return undefined;
       return client.job.getOrCreate([config.owner.id, id]).snapshot();
@@ -2235,7 +2240,7 @@ async function main() {
       return true;
     },
     async cancelJob(id) {
-      if (!Object.hasOwn((await june.snapshot()).jobs, id)) return false;
+      if (!Object.hasOwn((await readSnapshot()).jobs, id)) return false;
       await client.job.getOrCreate([config.owner.id, id]).cancel();
       return true;
     },

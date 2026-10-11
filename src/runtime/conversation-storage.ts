@@ -1,4 +1,5 @@
 import { gunzipSync, gzipSync } from "node:zlib";
+import { Effect, Schema } from "effect";
 import type { LegacyCoverage } from "../sessions/migration.js";
 import type { ConversationState } from "./registry.js";
 import type {
@@ -258,6 +259,21 @@ export function conversationSnapshot(
       : {}),
   };
 }
+
+class ConversationSnapshotError extends Schema.TaggedError<ConversationSnapshotError>()(
+  "ConversationSnapshotError",
+  {},
+) {}
+
+/** Expand only after the compact, privacy-pruned state crosses Rivet's RPC
+ * boundary. This preserves the existing projection without increasing limits. */
+export const readConversationSnapshot = Effect.fn("june.conversation.snapshot")(
+  (conversation: { snapshot(compact: true): Promise<ConversationState> }) =>
+    Effect.tryPromise({
+      try: async () => conversationSnapshot(await conversation.snapshot(true)),
+      catch: () => new ConversationSnapshotError(),
+    }),
+);
 
 /** Run before persistence and synchronously before legacy workflow replay. */
 export function compactConversation(state: ConversationState) {

@@ -25,6 +25,7 @@ const names = new Set([
   "june.scheduler.tick",
   "june.schedule.run",
   "june.schedule.fire",
+  "june.conversation.snapshot",
   "june.automation.run",
   "june.automation.trigger",
   "june.ingress",

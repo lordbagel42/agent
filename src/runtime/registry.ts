@@ -1674,9 +1674,11 @@ export function createJuneRegistry(deps: Dependencies) {
       // Activate a host-crashed actor without adding duplicate inbox entries or
       // transferring its private snapshot to a background poller.
       wake: () => true,
-      snapshot: (c): ConversationState => {
+      snapshot: (c, compact = false): ConversationState => {
         prune(c.state, JSON.stringify(c.key));
-        return conversationSnapshot(c.state);
+        // Keep cold ledgers compressed across the RPC size boundary. Existing
+        // callers retain the expanded response; host readers expand locally.
+        return compact === true ? c.state : conversationSnapshot(c.state);
       },
       outstandingOperations: async (
         c,
