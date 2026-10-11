@@ -1,5 +1,6 @@
 import type { Attributes } from "@opentelemetry/api";
 import { slackIngressStages } from "../channels/slack-ingress.js";
+import { MCP_FAILURE_DETAILS } from "../tools/failure.js";
 import {
   slackOAuthReasons,
   slackOAuthStages,
@@ -241,6 +242,7 @@ const enums: Record<string, readonly string[]> = {
   ],
   // Host-classified execution failures only; never raw error text.
   "error.type": [
+    ...Object.keys(MCP_FAILURE_DETAILS).map((code) => `mcp_${code}`),
     "deadline",
     "unclassified",
     "execution_disabled",

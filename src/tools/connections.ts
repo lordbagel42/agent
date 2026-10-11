@@ -10,9 +10,14 @@ import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { CompanionReply, ModelProvider } from "../core/contracts.js";
 import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { wrapModelProvider } from "../models/invocation.js";
-import { parseReply } from "../models/provider.js";
+import { ModelError, parseReply } from "../models/provider.js";
 import { POLICY_KNOWLEDGE } from "../policy/knowledge.js";
-import { CapabilityBroker, type Json, type ToolAction } from "./broker.js";
+import {
+  CapabilityBroker,
+  type Json,
+  type Receipt,
+  type ToolAction,
+} from "./broker.js";
 import { GITHUB_MCP_URL, type GitHubAuthorization } from "./github-oauth.js";
 import {
   McpAdapterError,
@@ -43,6 +48,8 @@ const RESEARCH_EXCLUDED_ORIGINS = new Set(
 /** Fixed host text only: neither exception messages nor provider bodies belong here. */
 function mcpFailure(
   outcome: "unavailable" | "denied" | "rejected" | "failed" | "unknown",
+  failure?: McpAdapterError,
+  evidence?: "result_received" | "success_receipt",
 ): CompanionReply {
   const reasons = {
     unavailable: "The connection or tool is not currently available.",
@@ -53,8 +60,14 @@ function mcpFailure(
     unknown:
       "I can't determine the tool's outcome; it may have run. Reconcile it externally before considering another request.",
   };
+  const processing =
+    evidence === "result_received"
+      ? " A tool result was received, but subsequent host processing or answer synthesis failed; that does not establish a tool failure."
+      : evidence === "success_receipt"
+        ? " The tool receipt confirms success, but subsequent host processing or answer synthesis failed; no result body was supplied."
+        : "";
   return {
-    text: `MCP request ${outcome}: ${reasons[outcome]} I won't repeat it automatically. This status does not establish that retrying is safe.`,
+    text: `MCP request ${outcome}: ${failure ? failure.message : reasons[outcome]}${processing} This does not establish the health or absence of the service being checked. I won't repeat it automatically. ${outcome === "unknown" ? "A remote effect may have happened; reconcile it externally before considering another request." : "This status does not establish that retrying is safe."}`,
   };
 }
 
@@ -817,6 +830,7 @@ export class McpConnections {
     id: string,
     canExecute?: () => boolean,
     onResult?: (result: McpReadResult) => void,
+    onFailure?: (failure: McpAdapterError) => void,
   ) {
     const row = this.#db
       .prepare("SELECT value FROM proposals WHERE id=?")
@@ -898,6 +912,7 @@ export class McpConnections {
       // Credential lookup owns host refresh; the adapter checks the refreshed
       // connection before dispatch. Rejecting expiry here would block refresh.
       canExecute,
+      onFailure,
     );
     return receipt.status;
   }
@@ -1420,8 +1435,10 @@ export class McpConnections {
                 : "unavailable",
             );
           }
+          let receiptStatus: Receipt["status"] | undefined;
           let resultReceived = false;
           let effectStarted = false;
+          let failure: McpAdapterError | undefined;
           try {
             if (this.generation(call.connection) !== allowed.revision)
               return mcpFailure("denied");
@@ -1476,22 +1493,25 @@ export class McpConnections {
               // Only this fresh model decision executes. Historical pending
               // proposals are never swept, approved or replayed automatically.
               let result: McpReadResult | undefined;
-              const status = await this.#executeProposal(
+              receiptStatus = await this.#executeProposal(
                 proposal.id,
                 () => current() && canStartAction?.() !== false,
                 (value) => {
                   result = value;
+                  resultReceived = true;
+                },
+                (value) => {
+                  failure = value;
                 },
               );
-              resultReceived = true;
               await observeEffect?.(
                 "mcp",
-                status === "unknown" ? "unknown" : "confirmed",
+                receiptStatus === "unknown" ? "unknown" : "confirmed",
               );
               if (!current()) return { text: "" };
-              if (status !== "succeeded")
+              if (receiptStatus !== "succeeded")
                 return {
-                  text: `MCP proposal ${proposal.id}: recorded ${status}. ${mcpFailure("unknown").text}`,
+                  text: `MCP proposal ${proposal.id}: recorded ${receiptStatus}. ${mcpFailure("unknown", failure).text}`,
                 };
               const authorized = () =>
                 this.#authorizationCurrent(
@@ -1538,6 +1558,7 @@ export class McpConnections {
                 await this.#credential(connection),
                 () => authorized() && canStartAction?.() !== false,
               );
+              receiptStatus = "succeeded";
               resultReceived = true;
               await observeEffect?.("mcp", "confirmed");
               if (!current()) return { text: "" };
@@ -1580,25 +1601,37 @@ export class McpConnections {
               this.#active.delete(adapter);
             }
           } catch (error) {
-            if (effectStarted && !resultReceived)
+            if (error instanceof McpAdapterError) failure = error;
+            if (effectStarted && receiptStatus === undefined)
               await observeEffect?.(
                 "mcp",
-                error instanceof McpAdapterError &&
-                  error.outcome === "not_started"
-                  ? "not_started"
-                  : "unknown",
+                failure?.outcome === "not_started" ? "not_started" : "unknown",
               );
             // Revocation withholds stale context, not evidence that a dispatched
             // remote effect failed or never happened. Never alter its receipt.
             if (!current()) return { text: "" };
+            // Preserve the model code for the worker's failure report without
+            // changing a confirmed tool receipt or repeating the effect.
+            if (
+              request.agentRole === "execution" &&
+              error instanceof ModelError
+            )
+              throw error;
             // The adapter only proves not_started or unknown. In particular,
             // server isError and transport failures must not become "rejected".
             return mcpFailure(
-              resultReceived ||
-                (error instanceof McpAdapterError &&
-                  error.outcome === "not_started")
+              receiptStatus === "succeeded" ||
+                receiptStatus === "failed" ||
+                resultReceived ||
+                failure?.outcome === "not_started"
                 ? "failed"
                 : "unknown",
+              failure,
+              resultReceived
+                ? "result_received"
+                : receiptStatus === "succeeded"
+                  ? "success_receipt"
+                  : undefined,
             );
           }
         }

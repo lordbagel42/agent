@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { SpanStatusCode } from "@opentelemetry/api";
 import { correlationId, withSpan } from "../telemetry/index.js";
+import { McpAdapterError } from "./failure.js";
 
 export type Json =
   | null
@@ -376,6 +377,9 @@ export class CapabilityBroker {
     /** Optional live task ceiling, checked across credential lookup and adapter
      * awaits. Losing it never reopens the durable receipt for another attempt. */
     canExecute?: () => boolean,
+    /** Fresh host-classified diagnostic only, never raw adapter errors or replay.
+     * The durable receipt stays unknown even when a server reports an error. */
+    onFailure?: (failure: McpAdapterError) => void,
   ): Promise<Receipt> {
     const action = this.propose(input);
     const adapter = this.#options.tools[action.tool];
@@ -509,8 +513,17 @@ export class CapabilityBroker {
           });
           receipt.status = "succeeded";
           if (releaseResult) onResult?.(result);
-        } catch {
-          /* Never expose errors, credentials, or ambiguous transport payloads. */
+        } catch (error) {
+          if (
+            receipt.status === "unknown" &&
+            error instanceof McpAdapterError
+          ) {
+            try {
+              onFailure?.(error);
+            } catch {
+              // Diagnostic delivery cannot change the receipt or repeat a call.
+            }
+          }
         } finally {
           this.#active.delete(grantId);
         }

@@ -12,6 +12,9 @@ import { RIVET_REPLY_PREFIX } from "../core/rivet.js";
 import { PRIVATE_SENTINEL_PREFIX } from "../core/sentinel.js";
 import { withSpan } from "../telemetry/index.js";
 import type { ToolAction, ToolAdapter } from "./broker.js";
+import { McpAdapterError } from "./failure.js";
+
+export { McpAdapterError } from "./failure.js";
 
 /** Operator-owned configuration. Never construct this from model output. */
 export interface McpToolConfig {
@@ -125,13 +128,6 @@ export function safeToolReadResult(
   return readText(JSON.stringify(value), token);
 }
 
-export class McpAdapterError extends Error {
-  constructor(readonly outcome: "not_started" | "unknown") {
-    super(`mcp_${outcome}`);
-    this.name = "McpAdapterError";
-  }
-}
-
 // Schemas are untrusted executable input to a compiler. Bound complexity and
 // reject regex/reference extensions instead of fetching or executing them.
 function compileSchema(schema: object) {
@@ -192,7 +188,7 @@ export class McpToolAdapter implements ToolAdapter {
     try {
       url = new URL(config.url);
     } catch {
-      throw new McpAdapterError("not_started");
+      throw new McpAdapterError("not_started", "validation", "configuration");
     }
     if (
       url.protocol !== "https:" ||
@@ -213,7 +209,7 @@ export class McpToolAdapter implements ToolAdapter {
           typeof value === "string" && /^[\x21-\x7e]{1,256}$/u.test(value),
       )
     )
-      throw new McpAdapterError("not_started");
+      throw new McpAdapterError("not_started", "validation", "configuration");
     const timeoutMs = config.timeoutMs ?? 30000;
     const maxResponseBytes = config.maxResponseBytes ?? 1048576;
     if (
@@ -226,7 +222,7 @@ export class McpToolAdapter implements ToolAdapter {
       (config.readContractDigest !== undefined &&
         !/^[a-f0-9]{64}$/u.test(config.readContractDigest))
     )
-      throw new McpAdapterError("not_started");
+      throw new McpAdapterError("not_started", "validation", "configuration");
     this.#config = Object.freeze({
       ...config,
       url: url.href,
@@ -287,9 +283,9 @@ export class McpToolAdapter implements ToolAdapter {
     authorized: () => boolean,
   ): Promise<McpReadResult> {
     if (!this.#config.readContractDigest)
-      throw new McpAdapterError("not_started");
+      throw new McpAdapterError("not_started", "validation", "denied");
     const result = await this.#invoke(action, credential, authorized);
-    if (!result) throw new McpAdapterError("unknown");
+    if (!result) throw new McpAdapterError("unknown", "call", "invalid_result");
     return result;
   }
 
@@ -307,7 +303,7 @@ export class McpToolAdapter implements ToolAdapter {
       action.item !== config.item ||
       action.origin !== config.origin
     )
-      throw new McpAdapterError("not_started");
+      throw new McpAdapterError("not_started", "validation", "denied");
     // Snapshot before the first await. Mutation callers must already have gone
     // through the broker's strict JSON canonicalization and exact grant binding.
     let args: Record<string, unknown>;
@@ -318,7 +314,11 @@ export class McpToolAdapter implements ToolAdapter {
       if (!args || typeof args !== "object" || Array.isArray(args))
         throw new Error();
     } catch {
-      throw new McpAdapterError("not_started");
+      throw new McpAdapterError(
+        "not_started",
+        "validation",
+        "invalid_arguments",
+      );
     }
     return this.#run(
       credential,
@@ -345,7 +345,8 @@ export class McpToolAdapter implements ToolAdapter {
     authorized?: () => boolean,
     captureResult = false,
   ): Promise<McpReadResult | undefined> {
-    if (this.#closed) throw new McpAdapterError("not_started");
+    if (this.#closed)
+      throw new McpAdapterError("not_started", "validation", "closed");
     let token = "";
     try {
       if (credential === undefined && this.#config.allowUnauthenticated) {
@@ -365,14 +366,25 @@ export class McpToolAdapter implements ToolAdapter {
         throw new Error();
       token = value;
     } catch {
-      throw new McpAdapterError("not_started");
+      throw new McpAdapterError("not_started", "validation", "credential");
     }
     const config = this.#config;
     const controller = new AbortController();
     const finished = Promise.withResolvers<void>();
     this.#active.set(controller, finished.promise);
-    const timer = setTimeout(() => controller.abort(), config.timeoutMs);
     let dispatched = false;
+    let stage: McpAdapterError["stage"] = "connection";
+    let observedFailure: McpAdapterError | undefined;
+    const fail = (code: McpAdapterError["code"]) =>
+      (observedFailure ??= new McpAdapterError(
+        dispatched ? "unknown" : "not_started",
+        stage,
+        code,
+      ));
+    const timer = setTimeout(() => {
+      fail("timeout");
+      controller.abort();
+    }, config.timeoutMs);
     let remainingBytes = config.maxResponseBytes ?? 1048576;
     // SDK close rejects requests immediately; it does not await transport I/O.
     const pending = new Set<Promise<unknown>>();
@@ -395,7 +407,7 @@ export class McpToolAdapter implements ToolAdapter {
         track(
           (async () => {
             const target = input instanceof Request ? input.url : String(input);
-            if (target !== config.url) throw new Error();
+            if (target !== config.url) throw fail("denied");
             // Unsolicited server streams are unnecessary; never open one.
             if (init?.method === "GET")
               return new Response(null, { status: 405 });
@@ -416,7 +428,7 @@ export class McpToolAdapter implements ToolAdapter {
                   (read && !read()) ||
                   (authorized && !authorized())
                 )
-                  throw new Error();
+                  throw fail("denied");
                 dispatched = true;
               }
             }
@@ -426,7 +438,17 @@ export class McpToolAdapter implements ToolAdapter {
               signal,
               redirect: "error",
               credentials: "omit",
+            }).catch(() => {
+              throw fail(signal.aborted ? "cancelled" : "transport");
             });
+            if (!response.ok && init?.method !== "DELETE")
+              fail(
+                response.status === 401 || response.status === 403
+                  ? "authorization_required"
+                  : response.status === 429
+                    ? "rate_limited"
+                    : "http",
+              );
             // A fetch can settle after abort. Dispose its late body before draining.
             if (signal.aborted) {
               await response.body?.cancel();
@@ -466,12 +488,14 @@ export class McpToolAdapter implements ToolAdapter {
                       }
                       remainingBytes -= chunk.value.byteLength;
                       if (remainingBytes < 0) {
+                        fail("response_too_large");
                         controller.abort();
                         await cancel();
                         throw new Error();
                       }
                       stream.enqueue(chunk.value);
                     } catch {
+                      fail(signal.aborted ? "cancelled" : "transport");
                       stream.error(new Error("mcp_transport_failed"));
                       await cancel();
                     }
@@ -492,19 +516,26 @@ export class McpToolAdapter implements ToolAdapter {
         capabilities: {},
         jsonSchemaValidator: {
           getValidator: <T>(schema: object) => {
-            const validate = compileSchema(schema);
-            return (input: unknown) =>
-              validate(input)
-                ? {
-                    valid: true as const,
-                    data: input as T,
-                    errorMessage: undefined,
-                  }
-                : {
-                    valid: false as const,
-                    data: undefined,
-                    errorMessage: "invalid_output",
-                  };
+            let validate: ReturnType<typeof compileSchema>;
+            try {
+              validate = compileSchema(schema);
+            } catch {
+              throw fail("schema_invalid");
+            }
+            return (input: unknown) => {
+              if (validate(input))
+                return {
+                  valid: true as const,
+                  data: input as T,
+                  errorMessage: undefined,
+                };
+              fail("invalid_result");
+              return {
+                valid: false as const,
+                data: undefined,
+                errorMessage: "invalid_output",
+              };
+            };
           },
         },
       },
@@ -515,15 +546,17 @@ export class McpToolAdapter implements ToolAdapter {
     const options = { signal: controller.signal, timeout: config.timeoutMs };
     try {
       await client.connect(transport, options);
+      stage = "discovery";
       let cursor: string | undefined;
       let selected: Tool | undefined;
       const names = new Set<string>();
       const tools: Tool[] = [];
       for (let page = 0; ; page++) {
-        if (page >= 16) throw new Error();
+        if (page >= 16) throw fail("discovery_limit");
         const result = await client.listTools({ cursor }, options);
         for (const tool of result.tools) {
-          if (names.has(tool.name) || names.size >= 256) throw new Error();
+          if (names.has(tool.name) || names.size >= 256)
+            throw fail("discovery_limit");
           names.add(tool.name);
           tools.push(tool);
           if (tool.name === config.remoteTool) selected = tool;
@@ -535,26 +568,32 @@ export class McpToolAdapter implements ToolAdapter {
         discovered(tools);
         return;
       }
-      if (!selected || selected.execution?.taskSupport === "required")
-        throw new Error();
-      const validate = compileSchema(selected.inputSchema);
+      if (!selected) throw fail("tool_missing");
+      if (selected.execution?.taskSupport === "required")
+        throw fail("task_required");
+      stage = "validation";
+      let validate: ReturnType<typeof compileSchema>;
       // SDK metadata caches are per-page; retain the selected output contract.
-      const validateOutput = selected.outputSchema
-        ? compileSchema(selected.outputSchema)
-        : undefined;
+      let validateOutput: ReturnType<typeof compileSchema> | undefined;
+      try {
+        validate = compileSchema(selected.inputSchema);
+        validateOutput = selected.outputSchema
+          ? compileSchema(selected.outputSchema)
+          : undefined;
+      } catch {
+        throw fail("schema_invalid");
+      }
       if (
         config.readContractDigest &&
         mcpToolContractDigest(selected) !== config.readContractDigest
       )
-        throw new Error();
+        throw fail("contract_changed");
       if (args !== undefined) {
-        if (
-          !validate(args) ||
-          (read && read() !== true) ||
-          (authorized && authorized() !== true)
-        )
-          throw new Error();
+        if (!validate(args)) throw fail("invalid_arguments");
+        if ((read && read() !== true) || (authorized && authorized() !== true))
+          throw fail("denied");
         controller.signal.throwIfAborted();
+        stage = "call";
         const result = await withSpan(
           "june.mcp.call",
           {
@@ -579,12 +618,16 @@ export class McpToolAdapter implements ToolAdapter {
                   "june.outcome",
                   result.isError ? "error" : "invalid_result",
                 );
-                throw new Error();
+                throw fail(result.isError ? "tool_error" : "invalid_result");
               }
               span.setAttribute("june.outcome", "completed");
               return result;
             } catch (error) {
               // A failed RPC does not prove the remote effect did not happen.
+              span.setAttribute(
+                "error.type",
+                `mcp_${observedFailure?.code ?? "unclassified"}`,
+              );
               span.addEvent("june.mcp.settled", {
                 "june.outcome": dispatched ? "unknown" : "not_started",
               });
@@ -619,7 +662,24 @@ export class McpToolAdapter implements ToolAdapter {
         }
       }
     } catch {
-      throw new McpAdapterError(dispatched ? "unknown" : "not_started");
+      const observed =
+        observedFailure ??
+        fail(controller.signal.aborted ? "cancelled" : "unclassified");
+      const failure = new McpAdapterError(
+        dispatched ? "unknown" : "not_started",
+        observed.stage,
+        observed.code,
+      );
+      // Fixed metadata only: no endpoint, arguments, SDK exception or body.
+      console.error(
+        JSON.stringify({
+          event: "mcp_failed",
+          stage: failure.stage,
+          code: failure.code,
+          outcome: failure.outcome,
+        }),
+      );
+      throw failure;
     } finally {
       // Best effort session deletion within the same operation deadline; never retry.
       if (!controller.signal.aborted)
