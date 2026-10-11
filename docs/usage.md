@@ -326,6 +326,20 @@ guarantee of Amp-server connectivity or continued availability. After launch int
 is committed, ambiguous outcomes still require operator reconciliation rather
 than automatic relaunch. Both sides fence duplicate launches; old running/unknown
 receipts are not requeued. Do not issue another DEBUGSHARE to retry pending work.
+
+June's `inspection:"debug-shares"` preserves the dispatcher's `retryAt` deadline
+and distinguishes unavailable receipt reads with
+`inspectionError:"dispatch_receipt_unavailable"` and `status:"unknown"`, rather
+than reporting cached running/completed state as current evidence. Link polling
+continues through inspection failures; it does not replay launches. A queued
+receipt is acceptance, not launch; a running receipt without a thread ID is only
+launch intent. A thread ID confirms creation, not current liveness. Unknown is
+uncertainty, not a verified failed launch; a retry deadline is not a dispatcher
+heartbeat or proof a readiness attempt failed. June acknowledges a reported-broken
+route and inspects existing evidence instead of recommending another capture or
+an alternate-account launch. This guidance reaches interaction, execution and
+automated/completion prompts without granting new tools or changing disclosure.
+
 For new enabled requests, June follows the queued acknowledgment with the Amp
 thread link as soon as its receipt supplies the thread ID. Owner-submitted reports
 return the link to the original conversation/thread, including shared channels;

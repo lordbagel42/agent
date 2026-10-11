@@ -39,6 +39,7 @@ import type { createPriorityAdmission } from "./priority.js";
 import {
   buildModelRequest,
   CONVERSATIONAL_CURIOSITY_HELP,
+  DEBUG_ESCALATION_HELP,
   DEBUG_RESOLUTION_KNOWLEDGE,
   EXECUTION_NOTIFICATION_HELP,
   TASK_OWNERSHIP_HELP,
@@ -568,6 +569,7 @@ export function createExecutionActor(
                               CONVERSATIONAL_CURIOSITY_HELP,
                               EXECUTION_NOTIFICATION_HELP,
                               DEBUG_RESOLUTION_KNOWLEDGE,
+                              DEBUG_ESCALATION_HELP,
                               TASK_OWNERSHIP_HELP,
                               ENVIRONMENT_KNOWLEDGE,
                               // Legacy contextless work gains knowledge only;

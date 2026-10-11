@@ -68,6 +68,7 @@ export interface DebugInvestigator {
         status: "queued" | "running" | "completed" | "unknown";
         threadId?: string;
         resolved?: true;
+        retryAt?: number;
       }
     | undefined
   >;
@@ -583,20 +584,29 @@ export function createDebugShareActor(
         await c.vars.persist();
       },
       inspect: async (c) => {
+        const independent = c.state.independentDispatch && c.state.snapshotRef;
         const external =
-          c.state.independentDispatch &&
-          c.state.snapshotRef &&
-          deps.debugShare?.inspect
+          independent && deps.debugShare?.inspect
             ? await deps.debugShare
-                .inspect(c.state.snapshotRef.id)
+                .inspect(independent.id)
                 .catch(() => undefined)
+            : undefined;
+        // The observer's cached state cannot attest the independent dispatcher's
+        // current receipt. Preserve known thread identity, never stale progress.
+        const inspectionError =
+          independent && !external
+            ? ("dispatch_receipt_unavailable" as const)
             : undefined;
         return {
           id: c.state.snapshotRef?.id,
           sessionId: c.state.snapshotRef?.sessionId,
           capturedAt: c.state.snapshotRef?.capturedAt,
-          status: external?.status ?? c.state.status,
+          status: inspectionError
+            ? ("unknown" as const)
+            : (external?.status ?? c.state.status),
           threadId: external?.threadId ?? c.state.threadId,
+          retryAt: external?.retryAt,
+          inspectionError,
           resolved: external ? external.resolved : c.state.resolved,
           resolutionNotification: c.state.resolutionNotification,
           website: c.state.website,

@@ -155,6 +155,7 @@ import {
   buildModelRequest,
   COMPLETION_HELP,
   CONVERSATIONAL_CURIOSITY_HELP,
+  DEBUG_ESCALATION_HELP,
   DEBUG_RESOLUTION_KNOWLEDGE,
   type PromptInput,
   TASK_OWNERSHIP_HELP,
@@ -792,7 +793,12 @@ export function createJuneRegistry(deps: Dependencies) {
                 const snapshotId = receipt.snapshotId ?? receipt.snapshot?.id;
                 if (!receipt.published || !snapshotId) return;
                 let status:
-                  | { status?: string; threadId?: string; resolved?: true }
+                  | {
+                      status?: string;
+                      threadId?: string;
+                      resolved?: true;
+                      inspectionError?: string;
+                    }
                   | undefined;
                 try {
                   const external =
@@ -826,6 +832,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     );
                 if (
                   !pending &&
+                  !status?.inspectionError &&
                   (receipt.debugResolution?.phase === "settled" ||
                     status?.threadId ||
                     ["unknown", "unavailable", "saved", "completed"].includes(
@@ -1003,6 +1010,8 @@ export function createJuneRegistry(deps: Dependencies) {
           capturedAt?: string;
           status?: string;
           threadId?: string;
+          retryAt?: number;
+          inspectionError?: string;
           resolved?: true;
           website?: DebugSiteOutbox;
           notification?: SendResult;
@@ -3864,7 +3873,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                 searchAvailable,
                                 // Memory is constructed here, never returned to the journal.
                               };
-                              modelRequest.system += `\n\n${CONVERSATIONAL_CURIOSITY_HELP}\n\n${TASK_OWNERSHIP_HELP}\n\n${DEBUG_RESOLUTION_KNOWLEDGE}\n\n${WHATSAPP_KNOWLEDGE}`;
+                              modelRequest.system += `\n\n${CONVERSATIONAL_CURIOSITY_HELP}\n\n${TASK_OWNERSHIP_HELP}\n\n${DEBUG_RESOLUTION_KNOWLEDGE}\n\n${DEBUG_ESCALATION_HELP}\n\n${WHATSAPP_KNOWLEDGE}`;
                               let executionCapacity: CapacityContext["execution"] =
                                 {
                                   enabled: !!deps.execution,
