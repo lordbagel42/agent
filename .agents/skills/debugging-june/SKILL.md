@@ -188,9 +188,14 @@ The private request transport is limited to 64 MiB.
 June's `timeoutMs` limits observation, not remote execution. App restarts do not
 cancel the independent investigation. The updated dispatcher starts distinct UUIDs
 concurrently on its next two-second inbox scan, without waiting for earlier
-investigations to finish. Verify the separately installed dispatcher, not just
-the app revision: older dispatchers serialize through investigation completion.
-Each worker records launch intent before SSH; the runner admits each UUID once.
+investigations to finish. There is no concurrent-launch or hourly-start cap across
+DEBUGSHARE, automatic incidents and ordinary Amp tasks. Historical unknown receipts
+retain their no-replay fence but do not block other UUIDs. Verify the separately
+installed dispatcher, not just the app revision: older versions may serialize
+investigations or apply the removed two-active/four-starts-hourly gates.
+Each worker records durable `running` launch intent after SSH readiness and before
+sending snapshot bytes; the runner admits each UUID once. The daemon lock and
+per-UUID worker tracking prevent competing dispatches without a global capacity cap.
 Concurrent investigations still coordinate live changes through deployment locks
 and operator/recovery ownership. Never
 delete receipts/admission directories to retry, or spawn a second investigator

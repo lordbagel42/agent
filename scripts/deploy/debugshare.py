@@ -19,9 +19,6 @@ UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 THREAD = re.compile(r"T-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 LIMIT = 64 * 1024 * 1024
 READY_TIMEOUT = 30
-MAX_ACTIVE = 2
-MAX_STARTS_PER_HOUR = 4
-launch_lock = threading.Lock()
 
 
 def request_identity(path):
@@ -70,14 +67,14 @@ def private_directory(directory):
     return path
 
 
-def save_receipt(directory, receipt, suffix="receipt"):
+def save_receipt(directory, receipt):
     fd, temporary = tempfile.mkstemp(prefix=".receipt-", dir=directory)
     try:
         with os.fdopen(fd, "w") as file:
             json.dump(receipt, file)
             file.flush()
             os.fsync(file.fileno())
-        os.replace(temporary, directory / f"{receipt['id']}.{suffix}.json")
+        os.replace(temporary, directory / f"{receipt['id']}.receipt.json")
         sync_directory(directory)
     finally:
         Path(temporary).unlink(missing_ok=True)
@@ -93,22 +90,6 @@ def dispatch_due(directory, identity):
     if receipt["id"] != identity:
         raise ValueError("invalid_debug_receipt")
     return receipt["status"] == "queued" and receipt["retryAt"] <= time.time() * 1000
-
-
-def launch_capacity(directory):
-    """Uncertain launches retain capacity until an operator reconciles them."""
-    active = 0
-    recent = 0
-    cutoff = int(time.time() * 1000) - 3_600_000
-    for path in directory.glob("*.receipt.json"):
-        receipt = json.loads(read_private(path, limit=65536))
-        if receipt["status"] in ("running", "unknown"):
-            active += 1
-    for path in directory.glob("*.launch.json"):
-        launch = json.loads(read_private(path, limit=65536))
-        if launch["launchedAt"] > cutoff:
-            recent += 1
-    return active < MAX_ACTIVE and recent < MAX_STARTS_PER_HOUR
 
 
 def operations_reporter(config):
@@ -259,17 +240,8 @@ def dispatch(directory, path, ssh, reporter=None):
                 wait_ready(process.stdout, f"{command}\n".encode())
                 # Never send even buffered bytes before this durable fence. A
                 # crash after it is ambiguous, even if Amp emits no thread ID.
-                with launch_lock:
-                    if not launch_capacity(directory):
-                        raise ValueError("debug_launch_budget_exhausted")
-                    # Separate metadata keeps older app receipt readers compatible.
-                    save_receipt(
-                        directory,
-                        {"id": identity, "launchedAt": int(time.time() * 1000)},
-                        "launch",
-                    )
-                    receipt = {"id": identity, "kind": kind, "status": "running"}
-                    save_receipt(directory, receipt)
+                receipt = {"id": identity, "kind": kind, "status": "running"}
+                save_receipt(directory, receipt)
                 observe_dispatch(
                     reporter, path, receipt, phase="launch", payload=payload
                 )
@@ -395,11 +367,8 @@ def main():
                 if (
                     UUID.fullmatch(identity)
                     and identity not in workers
-                    and len(workers) < MAX_ACTIVE
-                    and launch_capacity(directory)
                     and dispatch_due(directory, identity)
                 ):
-                    # Bounded observers plus durable launch/rate admission.
                     # Track the worker before the next scan, even if it has not
                     # persisted its launch fence yet. The daemon lock excludes
                     # other dispatchers; durable receipts exclude later replay.

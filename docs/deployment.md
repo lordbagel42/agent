@@ -1588,15 +1588,15 @@ to 30 seconds. This local control-socket check is not proof of Amp-server
 connectivity or a reservation. A later failure remains uncertain, even without a
 thread ID. Neither side retries a committed launch automatically.
 
-The runner durably admits each UUID once before starting Amp. The dispatcher
-admits at most two active or uncertain launches and four starts per rolling hour,
-shared across DEBUGSHARE, automatic app incidents and ordinary Amp tasks. A durable
-`<UUID>.launch.json` timestamp and serialized admission enforce the limits across
-workers and restarts without changing the app-facing receipt schema. Queued
-requests wait for capacity on the two-second scan. Unknown outcomes, including
-historical unknown receipts, retain capacity until an operator establishes the
-actual thread outcome and reconciles the receipt; elapsed time is not permission
-to free capacity or replay. The single dispatcher lock excludes competing daemons.
+The runner durably admits each UUID once before starting Amp. The dispatcher has
+no concurrent-launch or hourly-start cap across DEBUGSHARE, automatic app incidents
+and ordinary Amp tasks. Every distinct due request starts on the two-second scan,
+without waiting for earlier investigations or historical unknown outcomes.
+Unknown receipts remain unknown and are never replayed; they do not block other
+UUIDs. Existing `<UUID>.launch.json` quota records are retained but ignored; new
+launches use the durable `running` receipt as their launch-intent fence. The single
+dispatcher lock excludes competing daemons, and its worker map excludes concurrent
+dispatch of the same UUID.
 Each worker publishes its thread ID as soon as Amp emits
 it, independently of completion. Snapshot transfer and Amp startup still take
 time; the initial queued acknowledgment is not a launch receipt.
@@ -1640,9 +1640,10 @@ includes the current release's automatic receipt, or
 missing. Receipts do not prove live thread activity or verified repairs.
 
 Automatic requests use `<UUID>.incident.json`, which old dispatchers ignore;
-they remain queued until the bounded standalone dispatcher is installed. No
-fallback to an unbounded launcher is allowed. Inspect unresolved historical receipts
-before rollout, and never erase them to make capacity available. This companion
+they remain queued until a compatible standalone dispatcher is installed.
+Inspect existing investigation ownership and the queued backlog before rollout:
+removing old capacity gates can start all due requests at once. Never erase or
+requeue historical unknown receipts. This companion
 update is separate from the automatic application deployment. Automatic incidents
 have no Slack origin and do not emit host launch/resolution notices. The spawned
 thread owns its verified-shipping DM; June must not duplicate it.
