@@ -40,6 +40,23 @@ export const UnknownRecord = Schema.Record(Schema.String, Schema.Unknown).pipe(
   ),
 );
 
+/** Zod 4's `z.url()`: accepted when `URL.canParse` accepts the trimmed
+ * string; decodes to that trimmed string without ASCII tabs and newlines. */
+export const Url = Schema.String.check(
+  Schema.makeFilter((value: string) => URL.canParse(value.trim()), {
+    expected: "a URL",
+    toJsonSchema: () => ({ format: "uri" }),
+  }),
+).pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transform({
+      decode: (value) => value.trim().replace(/[\t\n\r]/g, ""),
+      encode: (value) => value,
+    }),
+  ),
+);
+
 /** Zod's `z.string().trim().min(min).max(max)`: bounds apply after trimming,
  * but JSON Schema advertises them on the input string as Zod does. */
 export function TrimmedString(bounds: { min?: number; max?: number } = {}) {

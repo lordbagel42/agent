@@ -140,6 +140,7 @@ const names = new Set([
   "june.whatsapp.receive",
   "june.whatsapp.send",
   "june.slack.file.read",
+  "june.tool.emoji_search",
 ]);
 const enums: Record<string, readonly string[]> = {
   "june.channel": [

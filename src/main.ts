@@ -1701,6 +1701,7 @@ async function main() {
       ? createEmojiSearch({
           baseUrl: config.emojiSearch.baseUrl,
           timeoutMs: config.emojiSearch.timeoutMs,
+          effectRuntime: juneRuntime,
         })
       : undefined,
     jev,
