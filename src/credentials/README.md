@@ -168,7 +168,7 @@ Historical pending proposals stay inert and unknown outcomes never auto-retry.
    Read-only history-import tokens must be separately provisioned, not borrowed
    from these action credentials. Anonymous null/undefined credentials require an
    explicit trusted host policy; the vault resolver never falls back to anonymous.
-5. Mount `createCapabilityRoutes({broker,owner,operatorToken,consoleOrigin?})`
+5. Mount `createCapabilityRoutes({runtime,broker,owner,operatorToken,consoleOrigin?})`
    at `/operator/capabilities`. Use the same trusted owner identifier as the
    broker. It independently verifies bearer authentication and rejects foreign
    Origin/cross-site requests. Omit `consoleOrigin` for non-browser-only use.

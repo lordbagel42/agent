@@ -1996,6 +1996,7 @@ async function main() {
     await client.conversation.getOrCreate(scope.key).receive(event, receivedAt);
   };
   const app = createHttpApp({
+    runtime: juneRuntime,
     owner,
     channels,
     operatorToken,

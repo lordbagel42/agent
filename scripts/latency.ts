@@ -308,6 +308,7 @@ if (mode === "report") {
           return { text: `pong ${expected}` };
         },
       };
+  const runtime = makeJuneRuntime();
   const adapter = createSlackAdapter({
     signingSecret,
     botToken: "fixture-only",
@@ -316,7 +317,7 @@ if (mode === "report") {
     ownerUserIds: ["U1"],
     contextEnabled: true,
     latency,
-    effectRuntime: makeJuneRuntime(),
+    effectRuntime: runtime,
     async fetch(url, init) {
       const method = String(url).split("/").at(-1);
       if (method === "assistant.threads.setStatus") {
@@ -372,6 +373,7 @@ if (mode === "report") {
     poolName: "default",
   });
   const app = createHttpApp({
+    runtime,
     owner,
     channels: { slack: adapter },
     operatorToken,

@@ -32,6 +32,7 @@ import {
   type createDeploymentReader,
   createDeploymentRoutes,
 } from "../deployment/feed.js";
+import type { JuneRuntime } from "../effect/runtime.js";
 import { OpaqueActionLinks } from "../links/opaque.js";
 import { createActionLinkRoutes } from "../links/routes.js";
 import { debugShareResolutionSchema } from "../runtime/debug-dispatch.js";
@@ -56,6 +57,8 @@ import {
 import { createWebRoutes, type WebDependencies } from "../web/routes.js";
 
 export interface HttpDependencies {
+  /** Serves the routes already migrated to Effect. */
+  runtime: JuneRuntime;
   channels: Partial<Record<Channel, ChannelAdapter>>;
   owner: Owner;
   operatorToken: string;
@@ -517,6 +520,7 @@ export function createHttpApp(deps: HttpDependencies) {
     app.route(
       "/operator/capabilities",
       createCapabilityRoutes({
+        runtime: deps.runtime,
         broker: deps.capabilities,
         owner: deps.owner.id,
         operatorToken: deps.operatorToken,
