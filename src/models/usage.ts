@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { budgetReadinessReport } from "../budgets/readiness.js";
 import { withSpan } from "../telemetry/index.js";
+import { ModelError } from "./provider.js";
 
 export type UsageStage =
   | "fast"
@@ -344,11 +345,21 @@ export function observeUsage<T>(
           }
           forward(usage);
         });
-      const result = await (ledger
-        ? ledger.track(identity, observed)
-        : observed(() => {}));
-      span.setAttribute("june.outcome", "completed");
-      return result;
+      try {
+        const result = await (ledger
+          ? ledger.track(identity, observed)
+          : observed(() => {}));
+        span.setAttribute("june.outcome", "completed");
+        return result;
+      } catch (error) {
+        span.setAttribute("june.outcome", "failed");
+        // The span facade accepts only known codes; unknowns keep this fallback.
+        // Never retain exception messages, stacks or model output, or retry here.
+        span.setAttribute("error.type", "unclassified");
+        if (error instanceof ModelError)
+          span.setAttribute("error.type", `model_${error.code}`);
+        throw error;
+      }
     },
   );
 }

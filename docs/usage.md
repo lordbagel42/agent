@@ -2113,6 +2113,17 @@ task relevance and sensitive disclosure to the current audience, not a blanket
 owner/private-DM rule. Automated/completion turns without a grant and
 revoked/stale work do not gain this read capability.
 
+Failed `june.model.call` spans retain the host's allowlisted `error.type`, such as
+`model_timeout`, `model_generation_failed`, `model_malformed_response` or
+`model_invalid_response`; unknown exceptions/codes remain `unclassified`.
+This works with or without the usage ledger and changes neither the rejection
+nor inference retries. No error messages, stacks or generated responses are
+retained. Query error spans by name, then correlate their time, trace and
+originating revision. A provider `terminal` timing also covers failed/interrupted
+turns; token counts do not establish answer validity or truncation. Older spans
+without a classification cannot recover their discarded cause. Never repeat a
+failed operation just to fill an evidence gap.
+
 The inbound owner-trusted MCP exposes the same query as `query_telemetry`; the
 operator API accepts its JSON body at `POST /operator/telemetry/query` under the
 existing bearer authentication. MCP `operator_request` also accepts
