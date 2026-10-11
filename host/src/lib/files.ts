@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -5,7 +6,11 @@ import {
   fsyncSync,
   openSync,
   readFileSync,
+  renameSync,
+  rmSync,
+  writeSync,
 } from "node:fs";
+import { join } from "node:path";
 import { Effect } from "effect";
 import { Denied } from "./main.js";
 import { loads } from "./pyjson.js";
@@ -40,5 +45,36 @@ export function syncDirectory(path: string): void {
     fsyncSync(fd);
   } finally {
     closeSync(fd);
+  }
+}
+
+/** `mkstemp` in `directory`, write, fsync, rename over `name`, fsync the directory. */
+export function atomicWrite(
+  directory: string,
+  name: string,
+  data: string | Uint8Array,
+  prefix = ".tmp-",
+): void {
+  const temporary = join(
+    directory,
+    `${prefix}${randomBytes(6).toString("base64url")}`,
+  );
+  try {
+    const fd = openSync(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o600,
+    );
+    try {
+      if (typeof data === "string") writeSync(fd, data);
+      else writeSync(fd, data);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temporary, join(directory, name));
+    syncDirectory(directory);
+  } finally {
+    rmSync(temporary, { force: true });
   }
 }

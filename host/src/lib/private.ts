@@ -1,20 +1,13 @@
-/** Private-file primitives shared by the DEBUGSHARE dispatcher and its runner. */
-import { randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
   fstatSync,
-  fsyncSync,
   lstatSync,
   openSync,
   readSync,
   realpathSync,
-  renameSync,
-  rmSync,
-  writeSync,
 } from "node:fs";
-import { join } from "node:path";
-import { syncDirectory } from "./files.js";
+import { atomicWrite } from "./files.js";
 import { purePath } from "./py.js";
 import { dumps } from "./pyjson.js";
 
@@ -95,25 +88,10 @@ export function saveReceipt(
   receipt: { readonly id: string } & Record<string, unknown>,
   suffix = "receipt",
 ): void {
-  const temporary = join(
+  atomicWrite(
     directory,
-    `.receipt-${randomBytes(6).toString("base64url")}`,
+    `${receipt.id}.${suffix}.json`,
+    dumps(receipt),
+    ".receipt-",
   );
-  try {
-    const fd = openSync(
-      temporary,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-      0o600,
-    );
-    try {
-      writeSync(fd, dumps(receipt));
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(temporary, join(directory, `${receipt.id}.${suffix}.json`));
-    syncDirectory(directory);
-  } finally {
-    rmSync(temporary, { force: true });
-  }
 }

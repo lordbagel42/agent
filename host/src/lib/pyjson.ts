@@ -146,6 +146,119 @@ export function compareCodePoints(left: string, right: string): number {
   return a.length - b.length;
 }
 
+export class StrictJsonError extends Error {}
+
+/**
+ * `json.loads` with `object_pairs_hook` rejecting duplicate keys and
+ * `parse_constant` rejecting NaN/Infinity. Integral-valued float tokens become
+ * `PyFloat` so Python `type(value) is int` checks keep rejecting them.
+ */
+export function loadsStrict(text: string | Uint8Array): unknown {
+  let source: string;
+  try {
+    source =
+      typeof text === "string"
+        ? text
+        : new TextDecoder("utf-8", { fatal: true }).decode(text);
+  } catch {
+    throw new StrictJsonError("invalid_json");
+  }
+  let index = 0;
+  const fail = (): never => {
+    throw new StrictJsonError("invalid_json");
+  };
+  const skip = () => {
+    while (" \t\n\r".includes(source[index] ?? "x")) index++;
+  };
+  const stringToken = (): string => {
+    const start = index;
+    index++;
+    while (index < source.length) {
+      const character = source[index];
+      if (character === "\\") index += 2;
+      else if (character === '"') {
+        index++;
+        return JSON.parse(source.slice(start, index)) as string;
+      } else index++;
+    }
+    return fail();
+  };
+  const value = (depth: number): unknown => {
+    if (depth > 900) fail();
+    skip();
+    const character = source[index];
+    if (character === "{") {
+      index++;
+      const result: Record<string, unknown> = {};
+      skip();
+      if (source[index] === "}") {
+        index++;
+        return result;
+      }
+      for (;;) {
+        skip();
+        if (source[index] !== '"') fail();
+        const key = stringToken();
+        if (Object.hasOwn(result, key)) fail();
+        skip();
+        if (source[index++] !== ":") fail();
+        result[key] = value(depth + 1);
+        skip();
+        const next = source[index++];
+        if (next === "}") return result;
+        if (next !== ",") fail();
+      }
+    }
+    if (character === "[") {
+      index++;
+      const result: unknown[] = [];
+      skip();
+      if (source[index] === "]") {
+        index++;
+        return result;
+      }
+      for (;;) {
+        result.push(value(depth + 1));
+        skip();
+        const next = source[index++];
+        if (next === "]") return result;
+        if (next !== ",") fail();
+      }
+    }
+    if (character === '"') return stringToken();
+    const literal =
+      /^(?:true|false|null|-?(?:0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?)/.exec(
+        source.slice(index, index + 400),
+      );
+    if (!literal) return fail();
+    index += literal[0].length;
+    if (literal[0] === "true") return true;
+    if (literal[0] === "false") return false;
+    if (literal[0] === "null") return null;
+    if (literal[1] === undefined && literal[2] === undefined) {
+      const number = Number(literal[0]);
+      return Number.isSafeInteger(number) ? number : BigInt(literal[0]);
+    }
+    const number = Number(literal[0]);
+    if (!Number.isFinite(number)) return fail();
+    return Number.isInteger(number) ? new PyFloat(number) : number;
+  };
+  try {
+    JSON.parse(source);
+  } catch {
+    fail();
+  }
+  const result = value(0);
+  skip();
+  if (index !== source.length) fail();
+  return result;
+}
+
+/** Python `type(value) is int` for a decoded JSON value. */
+export const isInt = (value: unknown): value is number | bigint =>
+  (typeof value === "number" && Number.isInteger(value)) ||
+  typeof value === "bigint";
+
 /**
  * Like `json.loads`: integers beyond 2^53 stay exact as `bigint` (controller
  * attempt IDs are nanosecond timestamps). Callers validate shapes.
