@@ -132,10 +132,28 @@ Superseded the earlier "serve the listener through Effect" task: that put all tr
 - `POST /operator/reflection/cancel` `{ id }` (1..250000 chars) → 200 `{ cancelled }`; `/candidate` `{ id }` → 200 `actor.candidate(id)`; `/reconcile` `{ id, confirmedStopped: true, live?: boolean = false }` → 200 `{ reconciled }` with the existing `live` branch.
 - Unknown keys, invalid bodies and thrown actor errors all currently reach `app.onError`: `automaticRepairs.report("http")` and 500 `{"error":"request_failed"}`. Keep that. Hono's `/operator/*` auth, `cache-control: no-store`, lifecycle fence and `june.http.request` span stay in front because Hono still routes the request.
 
-- [ ] **Step 1:** Read `node_modules/effect/ai-docs/src/51_http-server/` (basics, testing, fixtures) for v4 `HttpApi`, `HttpApiGroup`, `HttpApiEndpoint`, `HttpApiBuilder` and `toWebHandler` usage. Write `src/http/reflection-api.ts`: Schema structs mirroring the zod bodies (strict: reject excess properties), handlers calling the reflection actor passed in, every failure (decode or handler) mapped to a single 500 `{"error":"request_failed"}` response that also calls the `report` callback passed in. Handlers use `Effect.fn("june.http.reflection.<endpoint>")`; add those names to `privacy.ts`.
-- [ ] **Step 2:** In `src/main.ts`, build the web handler once and replace the five routes with `app.all("/operator/reflection", h)` and `app.all("/operator/reflection/*", h)`, where `h = (c) => handler(c.req.raw)`.
-- [ ] **Step 3:** Throwaway parity probe `.amp/in/probes/reflection.ts`: build the old Hono routes and the new mount around the same fake actor and compare status, headers and JSON for: valid status/enqueue/cancel/candidate/reconcile (live and not); missing field; extra field; wrong enum; empty `evidenceIds`; 101 IDs; non-JSON body; actor throwing. Every pair must match, including the repair-report call count. Delete the probe.
-- [ ] **Step 4:** `pnpm format && pnpm lint && pnpm typecheck` and the protected suites; Oracle review; commit `refactor(http): serve operator reflection routes through Effect HttpApi`.
+- [x] **Step 1:** Read `node_modules/effect/ai-docs/src/51_http-server/` (basics, testing, fixtures) for v4 `HttpApi`, `HttpApiGroup`, `HttpApiEndpoint`, `HttpApiBuilder` and `toWebHandler` usage. Write `src/http/reflection-api.ts`: Schema structs mirroring the zod bodies (strict: reject excess properties), handlers calling the reflection actor passed in, every failure (decode or handler) mapped to a single 500 `{"error":"request_failed"}` response that also calls the `report` callback passed in. Handlers use `Effect.fn("june.http.reflection.<endpoint>")`; add those names to `privacy.ts`.
+- [x] **Step 2:** In `src/main.ts`, build the web handler once and replace the five routes with `app.all("/operator/reflection", h)` and `app.all("/operator/reflection/*", h)`, where `h = (c) => handler(c.req.raw)`.
+- [x] **Step 3:** Throwaway parity probe `.amp/in/probes/reflection.ts`: build the old Hono routes and the new mount around the same fake actor and compare status, headers and JSON for: valid status/enqueue/cancel/candidate/reconcile (live and not); missing field; extra field; wrong enum; empty `evidenceIds`; 101 IDs; non-JSON body; actor throwing. Every pair must match, including the repair-report call count. Delete the probe.
+- [x] **Step 4:** `pnpm format && pnpm lint && pnpm typecheck` and the protected suites; Oracle review; commit `refactor(http): serve operator reflection routes through Effect HttpApi`.
+
+**As built** (`src/http/effect.ts`, `src/http/reflection-api.ts`): Hono
+registers each migrated method and path exactly and forwards it to
+`mountEffectRoutes`, so unmatched paths and methods keep Hono's 404. The mount
+builds the routes with the process runtime's `memoMap` and `TelemetryLayer`
+(handler spans join June's trace under `june.http.request`), disables Effect's
+per-request server span and logger, and returns the response through
+`c.newResponse` with a buffered body and no explicit `content-length`, so
+earlier middleware headers and the Node adapter's framing match `c.json`.
+Endpoints with bodies use `handleRaw` and `HttpServerRequest.schemaBodyJson`
+with `onExcessProperty: "error"`: Hono's `c.req.json()` ignored
+`content-type`, which HttpApi's payload decoder enforces (415). Handlers
+serialize with `HttpServerResponse.json` inside the failure mapping, so a value
+`JSON.stringify` rejects still fails as `request_failed`. Mutating handlers
+are `uninterruptible`, so a client abort still finishes the actor call inside
+the admission fence as Hono did; the mount's scope closes with the process
+runtime, and null-body statuses stay null. The parity probe
+matched all 41 cases (status, headers, body, actor calls and repair reports).
 
 ### Delivery
 

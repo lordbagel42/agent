@@ -67,8 +67,10 @@ import { openBoxLiteHost } from "./environments/boxlite-host.js";
 import { inspectSandboxes } from "./environments/inspection.js";
 import { EnvironmentService } from "./environments/service.js";
 import { createHttpApp, type HttpDependencies } from "./http/app.js";
+import { mountEffectRoutes } from "./http/effect.js";
 import { createImportRoutes } from "./http/imports.js";
 import { createMemoryRoutes } from "./http/memory.js";
+import { reflectionRoutes } from "./http/reflection-api.js";
 import { ImportedMemoryExtraction } from "./imports/extraction.js";
 import {
   createGmailHistoryFetcher,
@@ -2225,47 +2227,17 @@ async function main() {
     );
   }
   if (reflection) {
-    const actor = client.reflection.getOrCreate([config.owner.id]);
-    app.get("/operator/reflection", async (c) => c.json(await actor.status()));
-    app.post("/operator/reflection/enqueue", async (c) => {
-      const input = z
-        .strictObject({
-          scope: z.string().optional(),
-          evidenceIds: z.array(z.string().min(1).max(2048)).min(1).max(100),
-          kind: z.enum(["curiosity", "reflection"]),
-          mode: z.enum(["interaction", "idle", "deep"]),
-        })
-        .parse(await c.req.json());
-      return c.json(
-        await actor.enqueue({ ...input, scope: audience(input.scope) }),
-      );
-    });
-    app.post("/operator/reflection/cancel", async (c) => {
-      const { id } = z
-        .strictObject({ id: z.string().min(1).max(250000) })
-        .parse(await c.req.json());
-      return c.json({ cancelled: await actor.cancel(id) });
-    });
-    app.post("/operator/reflection/candidate", async (c) => {
-      const { id } = z
-        .strictObject({ id: z.string().min(1).max(250000) })
-        .parse(await c.req.json());
-      return c.json(await actor.candidate(id));
-    });
-    app.post("/operator/reflection/reconcile", async (c) => {
-      const input = z
-        .strictObject({
-          id: z.string().min(1).max(250000),
-          confirmedStopped: z.literal(true),
-          live: z.boolean().default(false),
-        })
-        .parse(await c.req.json());
-      if (input.live) {
-        await actor.occupancy(input.id, false);
-        return c.json({ reconciled: true });
-      }
-      return c.json({ reconciled: await actor.reconcile(input.id, true) });
-    });
+    const routes = mountEffectRoutes(
+      juneRuntime,
+      reflectionRoutes({
+        actor: client.reflection.getOrCreate([config.owner.id]),
+        audience,
+        report: () => void automaticRepairs.report("http"),
+      }),
+    );
+    app.get("/operator/reflection", routes);
+    for (const path of ["enqueue", "cancel", "candidate", "reconcile"])
+      app.post(`/operator/reflection/${path}`, routes);
   }
   if (agents && config.agentMcp) {
     const handler = createAgentMcp({
