@@ -1,55 +1,64 @@
-import { z } from "zod";
-import type { PageFetcher, Source } from "../memory/store.js";
+import { Effect, Schema } from "effect";
+import type { ImportPage, PageFetcher, Source } from "../memory/store.js";
 import {
   bindCoverage,
   type ConnectorConfig,
   decode,
   getJson,
+  ImportError,
   limited,
   nextCursor,
   ProviderError,
+  pageFetcher,
   readCursor,
 } from "./common.js";
 import { gmailSourceId } from "./identity.js";
 
-const messageId = z.string().regex(/^[a-f0-9]+$/i);
-const listSchema = z.object({
-  messages: z
-    .array(z.object({ id: messageId, threadId: messageId }))
-    .max(1)
-    .optional(),
-  nextPageToken: z.string().optional(),
+const messageId = Schema.String.check(Schema.isPattern(/^[a-f0-9]+$/i));
+const List = Schema.Struct({
+  messages: Schema.optional(
+    Schema.Array(Schema.Struct({ id: messageId, threadId: messageId })).check(
+      Schema.isMaxLength(1),
+    ),
+  ),
+  nextPageToken: Schema.optional(Schema.String),
 });
-const messageSchema = z.object({
+const Message = Schema.Struct({
   id: messageId,
   threadId: messageId,
-  labelIds: z.array(z.string()),
-  internalDate: z.string().regex(/^\d+$/),
-  payload: z.unknown().optional(),
+  labelIds: Schema.Array(Schema.String),
+  internalDate: Schema.String.check(Schema.isPattern(/^\d+$/)),
+  payload: Schema.optional(Schema.Unknown),
 });
 interface Part {
-  mimeType?: string;
-  filename?: string;
-  headers?: { name: string; value: string }[];
-  body?: { data?: string; attachmentId?: string };
-  parts?: Part[];
+  readonly mimeType?: string | undefined;
+  readonly filename?: string | undefined;
+  readonly headers?:
+    | ReadonlyArray<{ readonly name: string; readonly value: string }>
+    | undefined;
+  readonly body?:
+    | {
+        readonly data?: string | undefined;
+        readonly attachmentId?: string | undefined;
+      }
+    | undefined;
+  readonly parts?: ReadonlyArray<Part> | undefined;
 }
-const partSchema: z.ZodType<Part> = z.lazy(() =>
-  z.object({
-    mimeType: z.string().optional(),
-    filename: z.string().optional(),
-    headers: z
-      .array(z.object({ name: z.string(), value: z.string() }))
-      .optional(),
-    body: z
-      .object({
-        data: z.string().optional(),
-        attachmentId: z.string().optional(),
-      })
-      .optional(),
-    parts: z.array(partSchema).optional(),
-  }),
-);
+const Part: Schema.Codec<Part> = Schema.Struct({
+  mimeType: Schema.optional(Schema.String),
+  filename: Schema.optional(Schema.String),
+  headers: Schema.optional(
+    Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.String })),
+  ),
+  body: Schema.optional(
+    Schema.Struct({
+      data: Schema.optional(Schema.String),
+      attachmentId: Schema.optional(Schema.String),
+    }),
+  ),
+  parts: Schema.optional(Schema.Array(Schema.suspend(() => Part))),
+});
+const fail = (message: string) => new ImportError({ message });
 
 /** Gmail only; conversations are explicitly selected label IDs, not search text. */
 export function createGmailHistoryFetcher(
@@ -66,11 +75,17 @@ export function createGmailHistoryFetcher(
     throw new Error(
       "Select one Gmail label, explicit email account and whole-second dates",
     );
-  return async ({ coverage, cursor, signal }) => {
-    authorize(coverage);
-    const { index, token } = readCursor(cursor, 1);
+  const fetchPage = Effect.fn("june.imports.gmail.page")(function* ({
+    coverage,
+    cursor,
+  }: Parameters<PageFetcher>[0]): Effect.fn.Return<
+    ImportPage,
+    ImportError | ProviderError
+  > {
+    yield* authorize(coverage);
+    const { index, token } = yield* readCursor(cursor, 1);
     const conversation = coverage.conversations[0];
-    if (!conversation) throw new Error("Missing selected label");
+    if (!conversation) return yield* fail("Missing selected label");
     const base = `https://gmail.googleapis.com/gmail/v1/users/${encodeURIComponent(coverage.account)}/messages`;
     const url = new URL(base);
     url.searchParams.set("labelIds", conversation);
@@ -81,125 +96,117 @@ export function createGmailHistoryFetcher(
     url.searchParams.set("maxResults", "1");
     url.searchParams.set("includeSpamTrash", "true");
     if (token) url.searchParams.set("pageToken", token);
-    try {
-      const list = decode(listSchema, await getJson(config, url, signal));
-      const sources: Source[] = [];
-      const gaps: string[] = token
-        ? []
-        : [
-            `${conversation}: Gmail API search interval; exact lower-bound messages may be excluded by after. Deleted mail and unavailable content are not imported. Attachments, attached messages and non-plain-text MIME content returned by full reads are discarded; separate attachment bodies are never fetched. Labels and search results can change during pagination; this is not a snapshot.`,
-          ];
-      for (const ref of list.messages ?? []) {
-        try {
-          // Validate date/label before fetching any body; list query alone is not authorization.
-          const metadataUrl = new URL(
-            `${base}/${ref.id}?format=metadata&fields=id,threadId,labelIds,internalDate`,
-          );
-          const metadata = decode(
-            messageSchema,
-            await getJson(config, metadataUrl, signal),
-          );
-          const observedAt = Number(metadata.internalDate);
-          if (metadata.id !== ref.id || metadata.threadId !== ref.threadId)
-            throw new Error("Gmail identity mismatch");
+    const list = yield* decode(List, yield* getJson(config, url));
+    const sources: Source[] = [];
+    const gaps: string[] = token
+      ? []
+      : [
+          `${conversation}: Gmail API search interval; exact lower-bound messages may be excluded by after. Deleted mail and unavailable content are not imported. Attachments, attached messages and non-plain-text MIME content returned by full reads are discarded; separate attachment bodies are never fetched. Labels and search results can change during pagination; this is not a snapshot.`,
+        ];
+    for (const ref of list.messages ?? []) {
+      const gap = yield* Effect.gen(function* () {
+        // Validate date/label before fetching any body; list query alone is not authorization.
+        const metadataUrl = new URL(
+          `${base}/${ref.id}?format=metadata&fields=id,threadId,labelIds,internalDate`,
+        );
+        const metadata = yield* decode(
+          Message,
+          yield* getJson(config, metadataUrl),
+        );
+        const observedAt = Number(metadata.internalDate);
+        if (metadata.id !== ref.id || metadata.threadId !== ref.threadId)
+          return yield* fail("Gmail identity mismatch");
+        if (
+          !metadata.labelIds.includes(conversation) ||
+          observedAt < coverage.from ||
+          observedAt >= coverage.to
+        )
+          return `${ref.id}: no longer inside selected label/date coverage.`;
+        const message = yield* decode(
+          Message,
+          yield* getJson(config, new URL(`${base}/${ref.id}?format=full`)),
+        );
+        if (
+          message.id !== metadata.id ||
+          message.threadId !== metadata.threadId ||
+          message.internalDate !== metadata.internalDate ||
+          !message.labelIds.includes(conversation)
+        )
+          return yield* fail("Gmail message changed coverage during fetch");
+        const payload = yield* decode(Part, message.payload);
+        const text: string[] = [];
+        const visit = (part: Part) => {
           if (
-            !metadata.labelIds.includes(conversation) ||
-            observedAt < coverage.from ||
-            observedAt >= coverage.to
-          ) {
-            gaps.push(
-              `${ref.id}: no longer inside selected label/date coverage.`,
-            );
-            continue;
-          }
-          const message = decode(
-            messageSchema,
-            await getJson(
-              config,
-              new URL(`${base}/${ref.id}?format=full`),
-              signal,
-            ),
-          );
-          if (
-            message.id !== metadata.id ||
-            message.threadId !== metadata.threadId ||
-            message.internalDate !== metadata.internalDate ||
-            !message.labelIds.includes(conversation)
-          )
-            throw new Error("Gmail message changed coverage during fetch");
-          const payload = decode(partSchema, message.payload);
-          const text: string[] = [];
-          const visit = (part: Part) => {
-            if (
-              part.filename ||
-              part.body?.attachmentId ||
-              part.headers?.some(
-                (h) =>
-                  h.name.toLowerCase() === "content-disposition" &&
-                  /^\s*attachment(?:\s*;|\s*$)/i.test(h.value),
-              )
+            part.filename ||
+            part.body?.attachmentId ||
+            part.headers?.some(
+              (h) =>
+                h.name.toLowerCase() === "content-disposition" &&
+                /^\s*attachment(?:\s*;|\s*$)/i.test(h.value),
             )
-              return;
-            const mimeType = part.mimeType?.toLowerCase();
-            if (mimeType === "text/plain" && part.body?.data)
-              text.push(
-                Buffer.from(part.body.data, "base64url").toString("utf8"),
-              );
-            // Only body containers; never descend into attached/embedded mail.
-            if (mimeType?.startsWith("multipart/"))
-              for (const child of part.parts ?? []) visit(child);
-          };
-          visit(payload);
-          const headers = (payload.headers ?? []).filter((h) =>
-            [
-              "from",
-              "to",
-              "cc",
-              "bcc",
-              "subject",
-              "message-id",
-              "date",
-              "reply-to",
-            ].includes(h.name.toLowerCase()),
-          );
-          if (!text.length) gaps.push(`${ref.id}: no inline plain-text body.`);
-          sources.push({
-            id: gmailSourceId(coverage.account, message.id),
-            platform: "gmail",
-            account: coverage.account,
-            conversation: `thread:${message.threadId}`,
-            audiences: [...coverage.audiences],
-            observedAt,
-            author:
-              headers.find((h) => h.name.toLowerCase() === "from")?.value ||
-              "unknown",
-            sourceUrl: `https://mail.google.com/mail/u/${encodeURIComponent(coverage.account)}/#all/${message.threadId}`,
-            text: JSON.stringify({
-              kind: "historical-evidence",
-              text: text.join("\n"),
-              headers,
-              thread: message.threadId,
-              message: message.id,
-              method: "gmail.users.messages.get",
-            }),
-          });
-        } catch (error) {
-          if (error instanceof ProviderError && error.status === 404)
-            gaps.push(`${ref.id}: message disappeared or is unavailable.`);
-          else throw error;
-        }
-      }
-      return {
-        sources,
-        gmailLabel: conversation,
-        gaps,
-        nextCursor: nextCursor(index, list.nextPageToken ?? "", 1),
-        retryAfterMs: 1000,
-      };
-    } catch (error) {
-      const page = limited(error, cursor);
-      if (page) return page;
-      throw error;
+          )
+            return;
+          const mimeType = part.mimeType?.toLowerCase();
+          if (mimeType === "text/plain" && part.body?.data)
+            text.push(
+              Buffer.from(part.body.data, "base64url").toString("utf8"),
+            );
+          // Only body containers; never descend into attached/embedded mail.
+          if (mimeType?.startsWith("multipart/"))
+            for (const child of part.parts ?? []) visit(child);
+        };
+        visit(payload);
+        const headers = (payload.headers ?? []).filter((h) =>
+          [
+            "from",
+            "to",
+            "cc",
+            "bcc",
+            "subject",
+            "message-id",
+            "date",
+            "reply-to",
+          ].includes(h.name.toLowerCase()),
+        );
+        if (!text.length) gaps.push(`${ref.id}: no inline plain-text body.`);
+        sources.push({
+          id: gmailSourceId(coverage.account, message.id),
+          platform: "gmail",
+          account: coverage.account,
+          conversation: `thread:${message.threadId}`,
+          audiences: [...coverage.audiences],
+          observedAt,
+          author:
+            headers.find((h) => h.name.toLowerCase() === "from")?.value ||
+            "unknown",
+          sourceUrl: `https://mail.google.com/mail/u/${encodeURIComponent(coverage.account)}/#all/${message.threadId}`,
+          text: JSON.stringify({
+            kind: "historical-evidence",
+            text: text.join("\n"),
+            headers,
+            thread: message.threadId,
+            message: message.id,
+            method: "gmail.users.messages.get",
+          }),
+        });
+      }).pipe(
+        Effect.catchIf(
+          (error) => error instanceof ProviderError && error.status === 404,
+          () =>
+            Effect.succeed(`${ref.id}: message disappeared or is unavailable.`),
+        ),
+      );
+      if (gap) gaps.push(gap);
     }
-  };
+    return {
+      sources,
+      gmailLabel: conversation,
+      gaps,
+      nextCursor: yield* nextCursor(index, list.nextPageToken ?? "", 1),
+      retryAfterMs: 1000,
+    };
+  });
+  return pageFetcher(config, (request) =>
+    limited(fetchPage(request), request.cursor),
+  );
 }

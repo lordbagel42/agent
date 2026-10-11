@@ -1095,6 +1095,7 @@ async function main() {
             async accessToken() {
               return secret(credentialAccount);
             },
+            effectRuntime: juneRuntime,
           });
           return [
             id,
