@@ -704,10 +704,14 @@ export function createJuneRegistry(deps: Dependencies) {
     }),
     worker: (id) => client.execution.getOrCreate(executionKey(c.key, id)),
     personality: () => client.personality.getOrCreate([deps.owner.id]).read(),
-    publish: (assignment) =>
-      client.activity
+    publish: (assignment) => {
+      const notification = c.state.pendingNotifications?.[assignment.eventId];
+      if (notification)
+        deps.latency?.link(assignment.eventId, notification.source);
+      return client.activity
         .getOrCreate(sessionActorKey(c.key, assignment.sessionId))
-        .receive(assignment),
+        .receive(assignment);
+    },
     // Stop only the existing exact owner; absence is not a completed stop.
     stopActivity: (assignment) =>
       client.activity
@@ -1193,6 +1197,7 @@ export function createJuneRegistry(deps: Dependencies) {
               (event.address.channel === "slack" && event.text.startsWith("##"))
             ) {
               await c.queue.send("inbox", { type: "event", event });
+              if (event.type === "message") deps.latency?.mark(event, "queued");
               return;
             }
             c.state.session ??= { id: randomUUID(), startedAt: 0 };
@@ -1524,8 +1529,11 @@ export function createJuneRegistry(deps: Dependencies) {
               c.queue.send("inbox", input),
             );
             const pending = c.state.pendingInputs?.[id];
-            if (pending)
+            if (pending) {
               await c.queue.send("inbox", { type: "event", event: pending });
+              if (pending.type === "message")
+                deps.latency?.mark(pending, "queued");
+            }
           },
           event.type === "message" ? event : undefined,
         );
@@ -2229,6 +2237,7 @@ export function createJuneRegistry(deps: Dependencies) {
           let stopParticipation: (() => void) | undefined;
           let releasePriority: (() => void) | undefined;
           let stopPing: (() => Promise<void>) | undefined;
+          let processing = false;
           let typingCleanup = Promise.resolve();
           const deferTypingCleanup = (cleanup: Promise<void>) => {
             typingCleanup = cleanup;
@@ -2281,6 +2290,14 @@ export function createJuneRegistry(deps: Dependencies) {
                 if (!sessionControl) return;
               } else if (lane !== "legacy") return;
             }
+            processing = true;
+            if (event.type === "message")
+              deps.latency?.mark(
+                event,
+                body.type === "event"
+                  ? "processing_started"
+                  : "followup_started",
+              );
             let wakeupContext:
               | Awaited<ReturnType<SessionHost["wakeupContext"]>>
               | undefined;
@@ -2533,6 +2550,8 @@ export function createJuneRegistry(deps: Dependencies) {
               if (!superseded(state)) return true;
               const record = editEvent(state, eventId);
               if (record) record.deferred = true;
+              if (event.type === "message")
+                deps.latency?.mark(event, "deferred");
               return false;
             };
             const addressId = JSON.stringify([
@@ -3024,6 +3043,7 @@ export function createJuneRegistry(deps: Dependencies) {
                 ) {
                   const record = editEvent(state, eventId);
                   if (record) record.deferred = true;
+                  deps.latency?.mark(event, "deferred");
                   return {
                     status: "rejected",
                     code: "superseded_input",
@@ -3054,6 +3074,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     outbound.content.type === "text" &&
                     outbound.content.text.trim().toLowerCase() ===
                       `pong ${probe}`,
+                  outbound.address,
                 );
                 return result;
               };
@@ -6906,6 +6927,7 @@ export function createJuneRegistry(deps: Dependencies) {
                     attempt === 2
                   )
                     break;
+                  deps.latency?.mark(event, "delivery_retry_wait");
                   await loop.sleep(
                     `send-backoff-${id}-${attempt}`,
                     Math.min(
@@ -7242,6 +7264,13 @@ export function createJuneRegistry(deps: Dependencies) {
               );
             if (body.type === "event" && event.type === "message")
               deps.latency?.mark(event, "finished");
+            if (event.type === "message")
+              deps.latency?.mark(
+                event,
+                body.type === "event"
+                  ? "processing_finished"
+                  : "followup_finished",
+              );
           } finally {
             try {
               // Status cleanup may overlap delivery, never a following turn or
@@ -7254,7 +7283,11 @@ export function createJuneRegistry(deps: Dependencies) {
                 releasePriority?.();
                 stopParticipation?.();
                 release?.();
-                if (body.type === "event" && event.type === "message")
+                if (
+                  processing &&
+                  body.type === "event" &&
+                  event.type === "message"
+                )
                   deps.latency?.mark(event, "released");
               }
             }
@@ -7285,6 +7318,7 @@ export function createJuneRegistry(deps: Dependencies) {
         model: deps.model,
         webSearch: deps.webSearch,
         lifecycle: deps.lifecycle,
+        latency: deps.latency,
         channel: {
           sourceActive: (source) =>
             deps.channels[source.address.channel]?.sourceActive?.(source) !==

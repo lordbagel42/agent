@@ -64,6 +64,7 @@ import {
   debugShareResolutionSchema,
 } from "../runtime/debug-dispatch.js";
 import { importTaskSchema } from "../runtime/import-task.js";
+import { latencyQuerySchema } from "../runtime/latency-report.js";
 import {
   globalStyleSchema,
   personalityPreviewSchema,
@@ -354,13 +355,7 @@ const companionReplyFields = {
       id: LowercaseUuidV4,
     }),
   ),
-  latency: optional(
-    Schema.Union([
-      Schema.Literal("recent"),
-      Schema.Literal("logs"),
-      LowercaseUuidV4,
-    ]),
-  ),
+  latency: optional(latencyQuerySchema),
   telemetry: optional(zodLeaf(telemetryQuerySchema)),
   replyInThread: optional(Schema.Boolean),
   apps: optional(zodLeaf(appsRequestSchema)),
@@ -2480,7 +2475,7 @@ function legacyReplyJsonSchema(
             latency: {
               type: ["string", "null"],
               description:
-                "Read-only diagnostics: logs for persistent lifecycle/Slack ingress logs, recent for the last five retained timing traces (including previous processes), or an exact ping UUIDv4. Judge task relevance, sensitive contents and destination before requesting or sharing. Leave text empty and other actions unset. The host returns a bounded report without a new probe or retry; workers inspect observations before reporting.",
+                "Read-only diagnostics: logs for persistent lifecycle/Slack ingress logs, recent for the last five retained timing traces (including previous processes), trace:<UUIDv4> for an ordinary trace ID returned by diagnostics, or an exact ping UUIDv4. Judge task relevance, sensitive contents and destination before requesting or sharing. Leave text empty and other actions unset. The host returns a bounded report without a new probe or retry; workers inspect observations before reporting.",
             },
           }
         : {}),

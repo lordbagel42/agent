@@ -178,15 +178,18 @@ export class DiagnosticLog {
     });
   }
 
-  traces(probe?: string, excludeId = ""): LatencyTrace[] {
+  traces(probe?: string, excludeId = "", traceId?: string): LatencyTrace[] {
     const rows = this.db
       .prepare(`SELECT data FROM traces WHERE at >= ? AND id != ?
-        AND (? IS NULL OR probe = ?) ORDER BY at DESC, rowid DESC LIMIT 128`)
+        AND (? IS NULL OR probe = ?) AND (? IS NULL OR id = ?)
+        ORDER BY at DESC, rowid DESC LIMIT 128`)
       .all(
         Date.now() - retentionMs,
         excludeId,
         probe ?? null,
         probe ?? null,
+        traceId ?? null,
+        traceId ?? null,
       ) as {
       data: string;
     }[];

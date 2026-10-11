@@ -172,7 +172,7 @@ export function createHttpApp(deps: HttpDependencies) {
       },
     ),
   );
-  app.use("/webhooks/*", async (c, next) => {
+  app.use("*", async (c, next) => {
     c.set("arrival", { at: Date.now(), monotonic: performance.now() });
     await next();
   });
@@ -437,7 +437,10 @@ export function createHttpApp(deps: HttpDependencies) {
           )
             continue;
           if (event.type === "message") {
-            deps.latency?.begin(event, c.get("arrival"));
+            deps.latency?.begin(event, {
+              ...c.get("arrival"),
+              ...(intake ? { intakeReceivedAt: intake.receivedAt } : {}),
+            });
             deps.latency?.mark(event, "submission_started");
           }
           diagnostics?.record(c.req.raw, "submission_started");
@@ -494,7 +497,8 @@ export function createHttpApp(deps: HttpDependencies) {
           c.req.header("x-june-intake-redaction") === "artifact-pin-v1",
         );
         c.set("intake", { receivedAt: at });
-        c.set("arrival", { at, monotonic: performance.now() });
+        // Preserve this request's paired wall/monotonic origin. The original
+        // intake receipt belongs to a separate clock, potentially before boot.
         c.set("slackRequest", c.req.raw);
         deps.slackIngressDiagnostics?.record(c.req.raw, "arrival");
         return receive(c, next);

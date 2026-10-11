@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { Schema } from "effect";
 import type {
   Channel,
   MessageEvent,
@@ -8,6 +9,7 @@ import type {
 import { correlationId, recordEvent } from "../telemetry/index.js";
 import type { DiagnosticLog } from "./diagnostics.js";
 import { conversationInputId } from "./inbox.js";
+import { latencyQuerySchema, replyLifecycleReport } from "./latency-report.js";
 
 const providerStages = [
   "submitted",
@@ -23,8 +25,17 @@ const stages = [
   "submitted",
   "submission_failed",
   "http_ack",
+  "ingress_retry",
+  "queued",
   "dequeued",
   "admitted",
+  "processing_started",
+  "processing_finished",
+  "activity_held",
+  "deferred",
+  "delivery_retry_wait",
+  "followup_started",
+  "followup_finished",
   "context_started",
   "context_memory_ready",
   "context_platform_ready",
@@ -65,7 +76,12 @@ export type ReplyKind = "ack" | "text" | "reaction" | "search";
 
 export interface LatencyTrace {
   id: string;
+  /** Original host receipt, including the authenticated durable intake. */
   receivedAt: number;
+  /** App HTTP receipt is the origin of all monotonic ms offsets. */
+  appReceivedAt?: number;
+  sourceAt?: number;
+  intake?: boolean;
   processId?: string;
   processStartedAt?: number;
   revision?: string;
@@ -76,6 +92,7 @@ export interface LatencyTrace {
   observations: {
     stage: LatencyStage;
     ms: number;
+    at?: number;
     providerCall?: number;
     providerPhase?: ProviderPhase;
   }[];
@@ -83,6 +100,12 @@ export interface LatencyTrace {
     kind: ReplyKind;
     status: SendResult["status"];
     ms: number;
+    at?: number;
+    startedMs?: number;
+    retryable?: boolean;
+    retryAfterMs?: number;
+    /** Same requesting conversation; chosen reply threads also qualify. */
+    reply?: boolean;
     platformMs?: number;
     pong?: boolean;
   }[];
@@ -108,41 +131,74 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
   const salt = randomBytes(32);
   const traces = new Map<
     string,
-    { start: number; trace: LatencyTrace; nextProviderCall: number }
+    {
+      start: number;
+      trace: LatencyTrace;
+      nextProviderCall: number;
+      operationId: string;
+    }
   >();
-  const key = (event: MessageEvent) =>
+  // A catalog assignment can refer to the existing trace without retaining a
+  // message body or changing the durable assignment. Neither hash is exported.
+  const key = (event: MessageEvent | string) =>
     createHmac("sha256", salt)
       .update(
-        JSON.stringify([
-          event.address.channel,
-          event.address.accountId,
-          event.id,
-        ]),
+        typeof event === "string"
+          ? event
+          : conversationInputId({ type: "event", event }),
       )
       .digest("hex");
-  const find = (event: MessageEvent) => traces.get(key(event));
-  const mark = (event: MessageEvent, stage: LatencyStage) => {
+  const aliases = new Map<string, { source: string; traceId: string }>();
+  const find = (event: MessageEvent | string) => {
+    const id = key(event);
+    const direct = traces.get(id);
+    if (direct) return direct;
+    const alias = aliases.get(id);
+    const entry = alias && traces.get(alias.source);
+    return entry?.trace.id === alias?.traceId ? entry : undefined;
+  };
+  const mark = (event: MessageEvent | string, stage: LatencyStage) => {
     if (!stages.includes(stage)) return;
     const entry = find(event);
     if (!entry || entry.trace.observations.length >= 128) return;
     recordEvent("june.latency.stage", {
-      "june.operation.id": correlationId(event.id),
-      "june.channel": event.address.channel,
+      "june.operation.id": entry.operationId,
+      "june.channel": entry.trace.channel,
       "june.phase": stage,
     });
     entry.trace.observations.push({
       stage,
       ms: performance.now() - entry.start,
+      at: Date.now(),
     });
     log?.saveTrace(entry.trace);
   };
   return {
+    /** Volatile notification identity only; never reconstruct an evicted clock. */
+    link(inputId: string, source: MessageEvent) {
+      const alias = key(inputId);
+      if (aliases.has(alias)) return;
+      const id = key(source);
+      const entry = traces.get(id);
+      if (!entry) return;
+      if (aliases.size >= 128) {
+        const oldest = aliases.keys().next().value;
+        if (oldest !== undefined) aliases.delete(oldest);
+      }
+      aliases.set(alias, { source: id, traceId: entry.trace.id });
+    },
     begin(
       event: MessageEvent,
-      arrival = { at: Date.now(), monotonic: performance.now() },
+      arrival: { at: number; monotonic: number; intakeReceivedAt?: number } = {
+        at: Date.now(),
+        monotonic: performance.now(),
+      },
     ) {
       const id = key(event);
-      if (traces.has(id)) return; // Callback retries cannot reset the clock.
+      if (traces.has(id)) {
+        mark(event, "ingress_retry");
+        return; // Callback retries cannot reset either clock.
+      }
       if (traces.size >= 128) {
         const oldest = traces.keys().next().value;
         if (oldest !== undefined) traces.delete(oldest);
@@ -152,19 +208,25 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
           ? slackMicros(event.messageId)
           : undefined;
       const probe = latencyProbe(event.text);
+      const receivedAt = arrival.intakeReceivedAt ?? arrival.at;
+      const sourceAt =
+        timestamp === undefined ? undefined : Number(timestamp / 1000n);
       traces.set(id, {
         start: arrival.monotonic,
         nextProviderCall: 0,
+        operationId: correlationId(event.id),
         trace: {
           id: randomUUID(),
-          receivedAt: arrival.at,
+          receivedAt,
+          appReceivedAt: arrival.at,
+          intake: arrival.intakeReceivedAt !== undefined,
           ...log?.session,
           channel: event.address.channel,
           threaded: !!event.address.threadId,
           ...(probe ? { probe } : {}),
-          ...(timestamp === undefined
+          ...(sourceAt === undefined
             ? {}
-            : { transportMs: arrival.at - Number(timestamp / 1000n) }),
+            : { sourceAt, transportMs: receivedAt - sourceAt }),
           observations: [],
           deliveries: [],
         },
@@ -187,7 +249,7 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
         )
           return;
         recordEvent("june.latency.provider", {
-          "june.operation.id": correlationId(event.id),
+          "june.operation.id": entry.operationId,
           "june.channel": event.address.channel,
           "june.phase": `${phase}.${stage}`,
           ...(providerCall === undefined
@@ -197,6 +259,7 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
         entry.trace.observations.push({
           stage: `provider_${stage}`,
           ms: performance.now() - entry.start,
+          at: Date.now(),
           providerCall,
           providerPhase: phase,
         });
@@ -208,6 +271,7 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
       kind: ReplyKind,
       result: SendResult,
       pong: boolean,
+      address?: MessageEvent["address"],
     ) {
       mark(
         event,
@@ -223,11 +287,37 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
         result.status === "sent" && kind !== "reaction"
           ? slackMicros(result.messageId)
           : undefined;
+      const startedMs = entry.trace.observations.findLast(
+        (observation) => observation.stage === `${kind}_started`,
+      )?.ms;
+      const previousMs = entry.trace.deliveries.findLast(
+        (delivery) => delivery.kind === kind,
+      )?.ms;
+      const reply =
+        address &&
+        address.channel === event.address.channel &&
+        address.accountId === event.address.accountId &&
+        address.conversationId === event.address.conversationId;
       entry.trace.deliveries.push({
         kind,
         status: result.status,
         ms: performance.now() - entry.start,
-        ...(source === undefined || destination === undefined
+        at: Date.now(),
+        ...(reply === undefined ? {} : { reply }),
+        // A capped/missing start must not reuse an earlier attempt's start.
+        ...(startedMs !== undefined && startedMs > (previousMs ?? -Infinity)
+          ? { startedMs }
+          : {}),
+        ...(result.status === "rejected"
+          ? {
+              retryable: result.retryable,
+              ...(Number.isFinite(result.retryAfterMs) &&
+              (result.retryAfterMs ?? -1) >= 0
+                ? { retryAfterMs: result.retryAfterMs }
+                : {}),
+            }
+          : {}),
+        ...(reply !== true || source === undefined || destination === undefined
           ? {}
           : { platformMs: Number(destination - source) / 1000 }),
         ...(entry.trace.probe && kind === "text" ? { pong } : {}),
@@ -266,12 +356,15 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
      * normal reply content; raw observations remain outside prompts/journals. */
     report(query: string, event: MessageEvent, revision?: string) {
       const probe = latencyProbe(`ping ${query}`);
-      if (query !== "recent" && query !== "logs" && !probe)
-        return "Use logs, recent or an exact ping UUIDv4 for diagnostics.";
+      if (!Schema.is(latencyQuerySchema)(query))
+        return "Use logs, recent, trace:<UUIDv4> or an exact ping UUIDv4 for diagnostics.";
+      const traceId = query.startsWith("trace:") ? query.slice(6) : undefined;
       const live = [...traces.entries()]
         .filter(
           ([id, { trace }]) =>
-            id !== key(event) && (!probe || trace.probe === probe),
+            id !== key(event) &&
+            (!probe || trace.probe === probe) &&
+            (!traceId || trace.id === traceId),
         )
         .map(([, { trace }]) => trace);
       let retained = live;
@@ -281,7 +374,7 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
         if (log) {
           const combined = new Map(
             log
-              .traces(probe, find(event)?.trace.id)
+              .traces(probe, find(event)?.trace.id, traceId)
               .map((trace) => [trace.id, trace]),
           );
           // Include in-memory observations even if the persistence write failed.
@@ -305,10 +398,20 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
         const span = (start: LatencyStage, end: LatencyStage) => {
           const a = time(start),
             b = time(end);
-          return a === undefined || b === undefined ? undefined : b - a;
+          // A repeated start before the first end can belong to a retry or
+          // follow-up. Do not present the combined interval as one operation.
+          const starts = trace.observations.filter(
+            (o) => o.stage === start && b !== undefined && o.ms <= b,
+          );
+          return a === undefined ||
+            b === undefined ||
+            b < a ||
+            starts.length !== 1
+            ? undefined
+            : b - a;
         };
         const sent = trace.deliveries.find(
-          (d) => d.kind === "text" && d.status === "sent",
+          (d) => d.kind === "text" && d.status === "sent" && d.reply === true,
         );
         const state =
           time("finished") !== undefined && time("released") !== undefined
@@ -341,12 +444,13 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
         const parallelRoster = time("context_reads_ready") !== undefined;
         return [
           `${new Date(trace.receivedAt).toISOString()} ${trace.channel} ${trace.threaded ? "thread" : "top-level"}; ${state}${trace.probe ? `; probe ${trace.probe}; pong ${sent?.pong === true ? "accepted" : "not confirmed"}` : ""}`,
+          replyLifecycleReport(trace),
           ...(trace.processId
             ? [
                 `Recorded by process ${trace.processId}, startedAt ${trace.processStartedAt}; revision ${trace.revision ?? "unknown"}.`,
               ]
             : []),
-          `Slack E2E ${ms(sent?.platformMs)}; host text ${ms(time("text_sent"))}; HTTP ack ${ms(time("http_ack"))}; typing ack ${ms(time("typing_accepted"))}; textual ack ${ms(time("ack_sent"))}.`,
+          `Slack reply E2E ${ms(sent?.platformMs)}; app reply acceptance ${ms(sent?.ms)}; HTTP ack ${ms(time("http_ack"))}; typing ack ${ms(time("typing_accepted"))}; textual ack ${ms(time("ack_sent"))}.`,
           `Queue ${ms(span("submission_started", "dequeued"))}; context ${ms(span("context_started", "context_ready"))}; provider fast/deep/synthesis ${ms(span("fast_started", "fast_finished"))}/${ms(span("deep_started", "deep_finished"))}/${ms(span("synthesis_started", "synthesis_finished"))}; send ${ms(span("text_started", "text_sent"))}.`,
           `Context preparation: memory ${ms(span("context_started", "context_memory_ready"))}; platform ${ms(span("context_memory_ready", "context_platform_ready"))}; ${parallelRoster ? `parallel roster wait ${ms(span("context_platform_ready", "context_reads_ready"))}; ` : ""}continuity ${ms(span(parallelRoster ? "context_reads_ready" : "context_platform_ready", "context_continuity_ready"))}; prompt/typing preference ${ms(span("context_continuity_ready", "context_prompt_ready"))}; ${parallelRoster ? "roster merge" : "worker roster"} ${ms(span("context_prompt_ready", "context_roster_ready"))}; host status ${ms(span("context_roster_ready", "context_ready"))}.`,
           `Provider first observed call (${firstProvider?.providerPhase ?? "unobserved"}): submitted→terminal ${ms(providerSpan("submitted", "terminal"))}; validation ${ms(providerSpan("terminal", "validated"))}; answer-ready ${ms(providerTime("validated"))} since arrival; submitted→answer-ready ${ms(providerSpan("submitted", "validated"))}; cleanup ${ms(providerSpan("validated", "retired"))}; missing stages: ${missing.length ? missing.map((stage) => `provider_${stage}`).join(", ") : "none"}.`,
@@ -358,7 +462,7 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
           ? `${selected.length} retained sample(s), newest first, excluding this request:`
           : "No matching retained samples. Missing is not proof no reply occurred; do not resend a probe.",
         ...rows,
-        "Times are first spans, not additive totals. Provider includes process/transport, not TTFT or inference alone; acknowledgments overlap. Provider retirement can arrive after turn completion; missing stages are unobserved, not zero, and do not prove success or failure. E2E means Slack timestamp delta, not human read time. Model settings and cold-provider state are not measured; do not infer a speedup from one sample.",
+        "Times are first spans, not additive totals. E2E is never time spent reasoning or inspecting an image. Provider includes process/transport, not TTFT or inference alone; acknowledgments overlap. Follow-ups may arrive after the original turn finishes. Provider retirement can arrive after turn completion; missing stages are unobserved, not zero, and do not prove success or failure. E2E means Slack timestamp delta, not human read time. Model settings and cold-provider state are not measured; do not infer a speedup from one sample.",
         log
           ? "Persistent traces survive process restarts; retention is 30 days / 10,000 traces. Each sample keeps its original process and revision; never merge timings across runs. Retention, write failures or host power loss can leave gaps."
           : "At most 128 volatile traces; restarts/eviction lose data.",

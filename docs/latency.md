@@ -39,7 +39,10 @@ No attempt is made to recover observations from before this feature was enabled.
 In an admitted conversation, ask June to "show your recent reply timings"
 or "check the timing for ping <UUID>", including after a restart. Ask "show your
 logs" for recent lifecycle and Slack ingress records. Her output schema and
-instructions expose the read-only `latency` action (`"logs"`, `"recent"` or a UUIDv4).
+instructions expose the read-only `latency` action (`"logs"`, `"recent"`,
+`"trace:<UUIDv4>"` or a bare ping UUIDv4). Recent reports expose random trace IDs
+for ordinary messages; exact lookup searches the retained log, not just its
+latest 128 samples. An ID is a selector, never a credential.
 An owner identity or private DM is not a tool prerequisite. June judges task
 legitimacy, sensitive contents and the destination before requesting or sharing
 diagnostics; broad tool availability does not make logs public. Only capabilities
@@ -70,6 +73,43 @@ zero. A report requested before retirement can show cleanup as unobserved;
 request timings again later without resending the original message. Unsupported
 providers, failed calls, restarts, eviction, and observation limits also leave
 stages missing. Missing retirement is not proof the answer failed.
+
+## Ordinary-message lifecycle
+
+New traces preserve source time, original host receipt (`receivedAt`), app HTTP
+receipt (`appReceivedAt`), queue-publication acknowledgment, processing start/end
+and each transport outcome's wall time. Monotonic `ms` offsets start at app HTTP
+receipt, **not** the earlier durable-intake receipt. Authenticated replay carries
+that original receipt separately; public headers cannot supply it. Thus an intake
+buffer wait cannot silently disappear from the report. `intake→app` includes
+buffering/forwarding, not proof of a deployment or any other particular cause.
+Source→host uses Slack and host clocks; their alignment is not verified.
+
+Legacy and activity-session turns use the same bounded trace. Queue acknowledgment
+can race dequeue, so reversed/missing endpoints are unknown rather than negative
+queue time. The app→processing interval also includes submission and admission.
+Processing completion is the recorded interaction's completion, not a claim that
+all background work or a later follow-up reply has finished. Repeated callbacks,
+supersession deferrals, delivery-backoff observations, follow-up processing and
+activity holds are explicit. Each recorded delivery retains its own start/outcome
+and retryability, without raw errors, message contents or platform IDs. A missing
+start cannot inherit a previous retry's transport duration. Intake forwarding
+attempt counts and provider-internal waits remain unobserved.
+
+Reply E2E requires a recorded same-conversation destination (a selected reply
+thread qualifies). Sends elsewhere remain delivery observations, not replies;
+historical unclassified destinations stay unknown. No destination IDs are stored.
+Same-process activity notifications use a bounded volatile alias to the original
+message trace, including preparation and holds; eviction/restart loses that link.
+
+The report's signed platform/app residual is an arithmetic discrepancy, not an
+observed wait or a diagnosis. Old traces lack app-arrival and wall-stage timing;
+they are never backfilled. Clock discontinuities, incomplete traces, failed writes,
+caps and process boundaries remain explicit. Traces admitted before a restart are
+not reconnected to a new monotonic clock. End-to-end latency must never be described
+as time spent reasoning or inspecting an image. This instrumentation is automatic
+and uses the existing diagnostics store and callable action, with no new service,
+configuration gate, provider call, effect retry or permission change.
 
 ## Genuine Slack ping/pong
 

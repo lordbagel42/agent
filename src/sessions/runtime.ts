@@ -24,6 +24,7 @@ import { MIND_REPORT_FAILURE } from "../mind/reports.js";
 import { beginModelReply } from "../models/invocation.js";
 import { parseReply } from "../models/provider.js";
 import { type Delivery, deliver } from "../runtime/delivery.js";
+import { type LatencyDiagnostics, latencyProbe } from "../runtime/latency.js";
 import {
   type ConversationActivity,
   guardWorkflowActor,
@@ -202,6 +203,7 @@ export interface ActivityDependencies {
   /** Live host authentication; agent traffic fails closed when absent. */
   agentActive?(clientId: string): boolean;
   webSearch?: WebSearchProvider;
+  latency?: LatencyDiagnostics;
   channel: Pick<
     ChannelAdapter,
     "send" | "setTyping" | "sourceActive" | "watchSource"
@@ -628,6 +630,7 @@ export function createActivityActor(deps: ActivityDependencies) {
             await c.queue.send("turns", {
               eventId: assignment.eventId,
             });
+            deps.latency?.mark(assignment.eventId, "queued");
           },
         );
         c.vars.receiving = receive.catch(() => {});
@@ -738,6 +741,12 @@ export function createActivityActor(deps: ActivityDependencies) {
                       await step.vars.persist();
                       controller.abort();
                     } else if (status !== "active") return;
+                    deps.latency?.mark(
+                      assignment.eventId,
+                      assignment.kind === "message"
+                        ? "processing_started"
+                        : "followup_started",
+                    );
                     if (assignment.conversation)
                       stopParticipation = deps.lifecycle?.participate?.(
                         assignment.conversation,
@@ -821,6 +830,10 @@ export function createActivityActor(deps: ActivityDependencies) {
                         ReturnType<ActivityCatalog["prepare"]>
                       >;
                       try {
+                        deps.latency?.mark(
+                          assignment.eventId,
+                          "context_started",
+                        );
                         prepared = await catalog.prepare(assignment, history);
                       } catch {
                         turn.hold = "catalog";
@@ -933,12 +946,20 @@ export function createActivityActor(deps: ActivityDependencies) {
                       const sourceSignal = sourceWatch
                         ? AbortSignal.any([signal, sourceWatch.signal])
                         : signal;
+                      deps.latency?.mark(context.source, "context_ready");
+                      deps.latency?.mark(context.source, "fast_started");
                       const invocation = beginModelReply(
                         deps.model,
                         withSentinelContext(
                           deps.sentinel,
                           context.source,
-                          request,
+                          {
+                            ...request,
+                            onProviderTiming: deps.latency?.providerTiming(
+                              context.source,
+                              "fast",
+                            ),
+                          },
                           sourceSignal,
                           valid,
                         ),
@@ -950,6 +971,7 @@ export function createActivityActor(deps: ActivityDependencies) {
                       const settlements = [invocation.settlement];
                       try {
                         let answer = await invocation.answer;
+                        deps.latency?.mark(context.source, "fast_finished");
                         if (context.decision && valid()) {
                           answer = parseReply(
                             JSON.stringify(answer),
@@ -1330,6 +1352,14 @@ export function createActivityActor(deps: ActivityDependencies) {
                     delete turn.hold;
                     step.state.acknowledgedThrough = assignment.sequence;
                     await step.vars.persist();
+                    deps.latency?.mark(
+                      context.source,
+                      assignment.kind === "message"
+                        ? "processing_finished"
+                        : "followup_finished",
+                    );
+                    if (assignment.kind === "message")
+                      deps.latency?.mark(context.source, "finished");
 
                     async function observeEffect(
                       kind: "mcp" | "web",
@@ -1524,7 +1554,27 @@ export function createActivityActor(deps: ActivityDependencies) {
                                 retryable: false,
                               };
                             }
-                            return deps.channel.send(outbound);
+                            const source = turn.context.source;
+                            const kind = outbound.content.type;
+                            deps.latency?.mark(source, `${kind}_started`);
+                            try {
+                              const result = await deps.channel.send(outbound);
+                              const probe = latencyProbe(source.text);
+                              deps.latency?.delivered(
+                                source,
+                                kind,
+                                result,
+                                !!probe &&
+                                  outbound.content.type === "text" &&
+                                  outbound.content.text.trim().toLowerCase() ===
+                                    `pong ${probe}`,
+                                outbound.address,
+                              );
+                              return result;
+                            } catch (error) {
+                              deps.latency?.mark(source, "send_unknown");
+                              throw error;
+                            }
                           },
                         );
                         if (delivery.result?.status !== "sent") {
@@ -1556,6 +1606,8 @@ export function createActivityActor(deps: ActivityDependencies) {
                     }
                   },
                 ).finally(() => {
+                  if (turn.hold)
+                    deps.latency?.mark(message.body.eventId, "activity_held");
                   // Keep occupancy through all raw RPC/provider settlement, not
                   // merely until an abort signal or action deadline fires.
                   if (
@@ -1570,6 +1622,7 @@ export function createActivityActor(deps: ActivityDependencies) {
             try {
               await stopPing?.();
             } finally {
+              deps.latency?.mark(message.body.eventId, "released");
               stopParticipation?.();
               release?.();
             }
