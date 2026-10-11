@@ -75,6 +75,12 @@ import type {
   WebSearchResult,
 } from "../tools/web-search.js";
 import {
+  boundedReportReceipt,
+  decodeReportRunIds,
+  type ReportIngressReceipt,
+  reportDeliveries,
+} from "../wakeups/receipts.js";
+import {
   createWakeupActor,
   type WakeupDependencies,
 } from "../wakeups/runtime.js";
@@ -131,6 +137,7 @@ import {
   type ConversationInput,
   conversationInputId,
   recordConversationIngress,
+  wakeupInputId,
 } from "./inbox.js";
 import {
   type CapacityContext,
@@ -1682,6 +1689,72 @@ export function createJuneRegistry(deps: Dependencies) {
         // Keep cold ledgers compressed across the RPC size boundary. Existing
         // callers retain the expanded response; host readers expand locally.
         return compact === true ? c.state : conversationSnapshot(c.state);
+      },
+      wakeupReceipts: async (
+        c,
+        runIds: string[],
+      ): Promise<ReportIngressReceipt[]> => {
+        if (
+          JSON.stringify(c.key) !== JSON.stringify(["private", deps.owner.id])
+        )
+          throw new Error(
+            "Report receipts require the owner-private conversation",
+          );
+        const ids = decodeReportRunIds(runIds);
+        const ingress = readIngressReceipts(c.state.ingress);
+        const deliveries = readDeliveries(c.state);
+        const observations = ids.map((runId) => {
+          const inputId = wakeupInputId(runId);
+          const receipt = ingress[inputId];
+          const session = c.state.sessions?.directory.receipts[inputId];
+          const view: ReportIngressReceipt = {
+            runId,
+            inputId,
+            observedAt: Date.now(),
+            ingress: receipt
+              ? {
+                  sequence: receipt.sequence,
+                  receivedAt: receipt.receivedAt,
+                  kind: receipt.kind,
+                  ...(receipt.lane ? { lane: receipt.lane } : {}),
+                }
+              : null,
+            delivery:
+              receipt && receipt.lane !== "session"
+                ? reportDeliveries(
+                    ["", ":1", ":2", ":3"].flatMap((suffix) => {
+                      const delivery = deliveries[`${inputId}:text${suffix}`];
+                      return delivery ? [delivery] : [];
+                    }),
+                  )
+                : null,
+            unavailable: !receipt
+              ? "ingress_not_retained"
+              : receipt.lane === "session"
+                ? "activity_not_retained"
+                : null,
+          };
+          return {
+            view,
+            sessionId:
+              receipt?.lane === "session" &&
+              session &&
+              session.status !== "pending"
+                ? session.sessionId
+                : undefined,
+          };
+        });
+        // Capture local metadata before any yield; never use an active-session
+        // shortcut for an older receipt, or send a full activity projection.
+        for (const { view, sessionId } of observations) {
+          if (!sessionId) continue;
+          view.delivery = await c
+            .client<JuneClientRegistry>()
+            .activity.getOrCreate(sessionActorKey(c.key, sessionId))
+            .deliveryReceipts(c.key, sessionId, view.inputId);
+          if (view.delivery) view.unavailable = null;
+        }
+        return boundedReportReceipt(observations.map(({ view }) => view));
       },
       outstandingOperations: async (
         c,
@@ -7303,6 +7376,7 @@ export function createJuneRegistry(deps: Dependencies) {
               memory: deps.memory,
               continuity: deps.continuity,
               mind: deps.mind,
+              effectRuntime: deps.effectRuntime,
             }),
           }
         : {}),

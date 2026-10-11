@@ -26,7 +26,14 @@ export type ConversationInput =
       text: string;
     };
 
+export function wakeupInputId(runId: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify(["wakeup", runId]))
+    .digest("hex");
+}
+
 export function conversationInputId(input: ConversationInput): string {
+  if (input.type === "wakeup") return wakeupInputId(input.wakeup.runId);
   return createHash("sha256")
     .update(
       JSON.stringify(
@@ -40,9 +47,7 @@ export function conversationInputId(input: ConversationInput): string {
             ? ["execution", input.agentId, input.requestId]
             : input.type === "forget_request"
               ? ["forget", input.token]
-              : input.type === "wakeup"
-                ? ["wakeup", input.wakeup.runId]
-                : ["job", input.jobId, input.attempt],
+              : ["job", input.jobId, input.attempt],
       ),
     )
     .digest("hex");

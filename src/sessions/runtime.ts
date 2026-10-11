@@ -39,6 +39,7 @@ import { startTyping } from "../runtime/typing.js";
 import { withSentinelContext } from "../sentinel/context.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import type { WebSearchProvider } from "../tools/web-search.js";
+import { decodeReportRunIds, reportDeliveries } from "../wakeups/receipts.js";
 import {
   isReceiptOnlyArchive,
   type SessionArchiveInput,
@@ -392,6 +393,29 @@ export function createActivityActor(deps: ActivityDependencies) {
                 c.vars.stops.has(assignment.eventId),
             )
           : { fenced: false, settled: false };
+      },
+      deliveryReceipts: (
+        c,
+        scopeKey: string[],
+        sessionId: string,
+        eventId: string,
+      ): ReturnType<typeof reportDeliveries> | null => {
+        decodeReportRunIds([eventId]);
+        const binding = c.state.binding;
+        const turn = c.state.turns[eventId];
+        if (
+          !binding ||
+          !turn ||
+          binding.sessionId !== sessionId ||
+          !isDeepStrictEqual(scopeKey, ["private", deps.owner.id]) ||
+          !isDeepStrictEqual(binding.scopeKey, scopeKey) ||
+          !isDeepStrictEqual(c.key, sessionActorKey(scopeKey, sessionId)) ||
+          !keyMatches(c.key, turn.assignment)
+        )
+          return null;
+        // Outcome metadata only, including privacy-excluded or revoked turns.
+        // Never return the reply, context, history, or outbound message body.
+        return reportDeliveries(turn.deliveries ?? []);
       },
       readProjection: (
         c,

@@ -309,7 +309,7 @@ export async function runExecutionCapability(
         [...new Set([...deletionIds, ...dependencies])],
         eventId,
       ),
-      terminal: !["list", "inspect"].includes(reply.wakeup.action),
+      terminal: !["list", "inspect", "receipts"].includes(reply.wakeup.action),
     };
   }
   if (reply.social) {

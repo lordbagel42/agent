@@ -1,4 +1,4 @@
-import { actor, queue } from "rivetkit";
+import { actor, type Client, queue } from "rivetkit";
 import { workflow } from "rivetkit/workflow";
 import type { MessageEvent, Owner } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
@@ -14,6 +14,11 @@ import {
 } from "../runtime/lifecycle.js";
 import type { Dependencies, JuneClientRegistry } from "../runtime/registry.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
+import {
+  type MindReportReceipts,
+  ReportReceiptError,
+  readMindReportReceipts,
+} from "./receipts.js";
 import {
   acceptEvent,
   applyAction,
@@ -45,6 +50,7 @@ export function createWakeupActor(
     memory?: Dependencies["memory"];
     continuity?: Dependencies["continuity"];
     mind?: Dependencies["mind"];
+    effectRuntime?: Dependencies["effectRuntime"];
   },
 ) {
   const decisionSources = deps.decisionSources ?? [];
@@ -225,6 +231,22 @@ export function createWakeupActor(
       }
     }
   };
+  const reportReceipts = (
+    state: WakeupState,
+    client: Client<JuneClientRegistry>,
+    signal: AbortSignal,
+  ): Promise<MindReportReceipts> => {
+    if (!deps.effectRuntime)
+      throw new ReportReceiptError({ reason: "unavailable" });
+    return deps.effectRuntime.runPromise(
+      readMindReportReceipts(state, (ids) =>
+        client.conversation
+          .getOrCreate(["private", deps.owner.id])
+          .wakeupReceipts(ids),
+      ),
+      { signal },
+    );
+  };
   const definition = actor({
     state: initialState(),
     createVars: (
@@ -238,6 +260,14 @@ export function createWakeupActor(
     }),
     queues: { wake: queue<{ wake: true }>() },
     actions: {
+      reportReceipts(c): Promise<MindReportReceipts> {
+        guard(c.key);
+        return reportReceipts(
+          c.state,
+          c.client<JuneClientRegistry>(),
+          c.abortSignal,
+        );
+      },
       async snapshot(c) {
         guard(c.key);
         invalidate(c.state);
@@ -245,10 +275,23 @@ export function createWakeupActor(
         return c.state;
       },
       /** Metadata only. Bind these tombstone dependencies before retaining reads. */
-      async dependencies(c, action: WakeupAction, source?: MessageEvent) {
+      async dependencies(
+        c,
+        action: WakeupAction,
+        source?: MessageEvent,
+      ): Promise<string[]> {
         guard(c.key);
         if (!source || !authorized(source))
           throw new Error("wakeup_requires_authenticated_source");
+        // Receipt-only reads retain no payload ancestry and must not enroll jobs.
+        if (action.action === "receipts") {
+          if (
+            !source.direct ||
+            routeEvent(source, deps.owner)?.private !== true
+          )
+            throw new Error("Wakeup not found");
+          return [];
+        }
         invalidate(c.state);
         await c.vars.persist();
         const jobs = Object.values(c.state.jobs).filter(
@@ -274,10 +317,25 @@ export function createWakeupActor(
         commandId: string,
         evidenceIds: string[] = [],
         originEventId?: string,
-      ) {
+      ): Promise<string> {
         guard(c.key);
         if (!authorized(source, evidenceIds))
           throw new Error("wakeup_requires_authenticated_source");
+        if (action.action === "receipts") {
+          if (
+            action.id !== "report:mind" ||
+            !source.direct ||
+            routeEvent(source, deps.owner)?.private !== true
+          )
+            throw new Error("Wakeup not found");
+          return JSON.stringify(
+            await reportReceipts(
+              c.state,
+              c.client<JuneClientRegistry>(),
+              c.abortSignal,
+            ),
+          );
+        }
         invalidate(c.state);
         const targetId =
           action.action === "create"

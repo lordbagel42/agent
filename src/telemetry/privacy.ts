@@ -26,6 +26,7 @@ const names = new Set([
   "june.schedule.run",
   "june.schedule.fire",
   "june.conversation.snapshot",
+  "june.wakeup.report_receipts",
   "june.automation.run",
   "june.automation.trigger",
   "june.ingress",

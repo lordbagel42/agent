@@ -89,7 +89,10 @@ export interface HttpDependencies {
   telemetry?: Telemetry;
   sandboxes?: () => Promise<unknown>;
   web?: WebDependencies;
-  wakeups?: WakeupWebhooks & { inspect(): Promise<unknown> };
+  wakeups?: WakeupWebhooks & {
+    inspect(): Promise<unknown>;
+    reportReceipts?(): Promise<unknown>;
+  };
   github?: GitHubWebhooks;
   console?: {
     origin: string;
@@ -567,6 +570,18 @@ export function createHttpApp(deps: HttpDependencies) {
   if (deps.wakeups) {
     const wakeups = deps.wakeups;
     app.get("/operator/wakeups", async (c) => c.json(await wakeups.inspect()));
+    if (wakeups.reportReceipts) {
+      const inspect = wakeups.reportReceipts;
+      app.get("/operator/wakeups/reports/mind", async (c) => {
+        if (!(await deps.ready()))
+          return c.json({ error: "report_receipts_unavailable" }, 503);
+        try {
+          return c.json(await inspect());
+        } catch {
+          return c.json({ error: "report_receipts_unavailable" }, 503);
+        }
+      });
+    }
   }
   if (deps.latency) {
     const latency = deps.latency;

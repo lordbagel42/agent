@@ -2132,6 +2132,7 @@ async function main() {
           sources: webhookSecrets,
           publish: (event) => wakeups.publish(event),
           inspect: () => wakeups.snapshot(),
+          reportReceipts: () => wakeups.reportReceipts(),
         }
       : undefined,
     console: config.console

@@ -15,6 +15,7 @@ const operations = {
   logs: ["GET", "/operator/logs"],
   telemetry: ["POST", "/operator/telemetry/query"],
   wakeups: ["GET", "/operator/wakeups"],
+  mind_report_receipts: ["GET", "/operator/wakeups/reports/mind"],
   deployment_events: ["GET", "/operator/deployment/events"],
   console_login_link: ["POST", "/operator/console/login-links"],
   agents: ["GET", "/operator/agents"],

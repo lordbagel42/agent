@@ -58,6 +58,10 @@ export const wakeupActionSchema = Schema.Union([
   }),
   Schema.Struct({ action: Schema.Literal("list") }),
   Schema.Struct({
+    action: Schema.Literal("receipts"),
+    id: Schema.Literal("report:mind"),
+  }),
+  Schema.Struct({
     action: Schema.Literals(["inspect", "pause", "resume", "cancel"]),
     id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
   }),
@@ -218,6 +222,8 @@ export function applyAction(
   audience?: string,
 ): string {
   const action = decodeWakeupAction(input);
+  if (action.action === "receipts")
+    throw new Error("Report receipts require the runtime reader");
   if (action.action === "list") {
     return JSON.stringify({
       sources,
