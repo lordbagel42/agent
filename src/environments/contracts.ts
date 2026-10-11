@@ -1,17 +1,19 @@
-import { z } from "zod";
+import { Schema } from "effect";
 
-export const environmentCommandSchema = z.discriminatedUnion("action", [
-  z.strictObject({ action: z.literal("status") }),
-  z.strictObject({
-    action: z.literal("exec"),
-    command: z
-      .string()
-      .min(1)
-      .max(24000)
-      .refine((s) => Buffer.byteLength(s) <= 24000 && !s.includes("\0")),
+export const environmentCommandSchema = Schema.Union([
+  Schema.Struct({ action: Schema.Literal("status") }),
+  Schema.Struct({
+    action: Schema.Literal("exec"),
+    command: Schema.String.check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(24000),
+      Schema.makeFilter(
+        (s: string) => Buffer.byteLength(s) <= 24000 && !s.includes("\0"),
+      ),
+    ),
   }),
 ]);
-export type EnvironmentCommand = z.infer<typeof environmentCommandSchema>;
+export type EnvironmentCommand = typeof environmentCommandSchema.Type;
 
 export type EnvironmentOutput = (
   stream: "stdout" | "stderr",

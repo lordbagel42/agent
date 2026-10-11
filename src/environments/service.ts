@@ -1,5 +1,6 @@
 import { Cause, Effect, Schema } from "effect";
 import type { JuneRuntime } from "../effect/runtime.js";
+import { decodeStrict } from "../effect/schema.js";
 import {
   type Environment,
   EnvironmentCapacityError,
@@ -128,7 +129,7 @@ export class EnvironmentService {
     signal: AbortSignal,
     authorized: () => boolean,
   ) {
-    const command = environmentCommandSchema.parse(raw);
+    const command = decodeStrict(environmentCommandSchema)(raw);
     const base = {
       provider: this.provider.name,
       persistence: this.provider.persistence,

@@ -9,6 +9,7 @@ import type {
 } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
 import { isOwner } from "../core/social.js";
+import { decodeStrict } from "../effect/schema.js";
 import { deleteBrowserThread, runBrowserTurn } from "./codex.js";
 import { type BrowserCommand, browserCommandSchema } from "./contracts.js";
 import { type BrowserSession, createBrowserSession } from "./session.js";
@@ -355,7 +356,7 @@ export class BrowserCompanion {
     }
   }
   private async execute(raw: BrowserCommand, context: Context) {
-    const command = browserCommandSchema.parse(raw);
+    const command = decodeStrict(browserCommandSchema)(raw);
     let task: Task | undefined;
     const usable = () =>
       !this.closed &&
