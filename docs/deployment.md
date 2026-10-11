@@ -640,6 +640,12 @@ not removal of the hard cap. These limits require installation of the controller
 an app push alone does not change the installed build policy. Verify effective
 cgroup limits on the host.
 
+Isolated startup readiness has a 60-second observation window per start, including
+cold TypeScript imports, engine registration and recovery on the two-core host.
+The receipt/restart case has a 150-second total budget; the capability startup
+cases have 75 seconds. This does not change live readiness, the build cgroup limits,
+the ten-minute build deadline, or the assertions requiring durable receipts.
+
 Build output and fixed `june_preflight` phase markers are retained in the private
 system journal under `june-build-stage-<id>.service`, instead of discarded. Use
 `journalctl -u <exact-build-unit>` for operator diagnosis and phase timestamps;
