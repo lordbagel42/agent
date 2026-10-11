@@ -1,3 +1,10 @@
+import {
+  Effect,
+  Exit,
+  Schema,
+  SchemaIssue,
+  SchemaTransformation,
+} from "effect";
 import { z } from "zod";
 import { agentWebhookSchema } from "../agent/actions.js";
 import { appsRequestSchema } from "../apps/client.js";
@@ -28,6 +35,7 @@ import { socialActionSchema } from "../core/social.js";
 import { WEB_EMBED_HELP, webEmbedSchema } from "../core/web-embed.js";
 import { operationInspectionSchema } from "../diagnostics/operation-reader.js";
 import { operationSourceSchema } from "../diagnostics/operations.js";
+import { Int, isPattern, TrimmedString } from "../effect/schema.js";
 import {
   ENVIRONMENT_HELP,
   environmentCommandSchema,
@@ -128,149 +136,194 @@ export function encodeModelImages(images: ModelRequest["images"]) {
   }));
 }
 
-const searchQuerySchema = z
-  .string()
-  .trim()
-  .min(1)
-  .refine((value) => Array.from(value).length <= 500);
+/** Transitional bridge: embeds a not-yet-migrated Zod leaf, with its own
+ * strictness and transforms, in the Effect reply schema. Each leaf replaces
+ * its bridge when it migrates; reply parsing only distinguishes success. */
+const zodLeaf = <T extends z.ZodType>(schema: T) =>
+  Schema.Unknown.pipe(
+    Schema.decodeTo(
+      Schema.declare((_: unknown): _ is z.output<T> => true),
+      SchemaTransformation.transformEffect({
+        decode: (input: unknown) => {
+          const result = schema.safeParse(input);
+          return result.success
+            ? Effect.succeed(result.data as z.output<T>)
+            : Effect.fail(new SchemaIssue.InvalidValue(undefined, input));
+        },
+        encode: (value) => Effect.succeed(value as unknown),
+      }),
+    ),
+  );
+const optional = <S extends Schema.Top>(schema: S) => Schema.optional(schema);
+/** Zod's `.nullish().transform((value) => value ?? undefined)`. */
+const nullishAsUndefined = <S extends Schema.Top>(schema: S) =>
+  Schema.optional(
+    Schema.NullishOr(schema).pipe(
+      Schema.decodeTo(
+        Schema.UndefinedOr(Schema.toType(schema)),
+        SchemaTransformation.transform<
+          S["Type"] | undefined,
+          S["Type"] | null | undefined
+        >({
+          decode: (value) => (value === null ? undefined : value),
+          encode: (value) => value,
+        }),
+      ),
+    ),
+  );
+const refine = <T>(predicate: (value: T) => boolean) =>
+  Schema.makeFilter<T>(predicate);
+const BoundedString = (min: number, max?: number) =>
+  max === undefined
+    ? Schema.String.check(Schema.isMinLength(min))
+    : Schema.String.check(Schema.isMinLength(min), Schema.isMaxLength(max));
+const Pattern = (regExp: RegExp) => Schema.String.check(isPattern(regExp));
+const codePoints =
+  (max: number) =>
+  (value: string): boolean =>
+    Array.from(value).length <= max;
+/** Zod's `z.uuid({ version: "v4" }).transform((value) => value.toLowerCase())`. */
+const LowercaseUuidV4 = Pattern(
+  /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$/,
+).pipe(Schema.decodeTo(Schema.String, SchemaTransformation.toLowerCase()));
 
-const recallCategorySchema = z.enum([
+const searchQuerySchema = TrimmedString({ min: 1 }).check(
+  refine(codePoints(500)),
+);
+
+const recallCategorySchema = Schema.Literals([
   "claim",
   "preference",
   "commitment",
   "pattern",
 ]);
-const recallTimestampSchema = z
-  .number()
-  .int()
-  .nonnegative()
-  .safe()
-  .nullish()
-  .transform((value) => value ?? undefined);
+const recallTimestampSchema = nullishAsUndefined(Int({ minimum: 0 }));
+const ClaimId = BoundedString(1, 2048);
+const recallObservedOrder = <
+  T extends { observedFrom?: number; observedTo?: number },
+>() =>
+  refine<T>(
+    (value) =>
+      value.observedFrom === undefined ||
+      value.observedTo === undefined ||
+      value.observedFrom < value.observedTo,
+  );
+const unique = <T>(values: readonly T[]) =>
+  new Set(values).size === values.length;
 
-const companionReplySchema = z.strictObject({
-  settings: settingsCommandSchema.optional(),
-  debugShareResolve: debugShareResolutionSchema.optional(),
-  agentWebhook: agentWebhookSchema.optional(),
-  ampThread: ampThreadSchema.optional(),
-  text: z.string(),
-  sendMessages: sendMessagesSchema.optional(),
-  question: questionSchema.optional(),
-  messages: z
-    .array(
-      z
-        .string()
-        .trim()
-        .min(1)
-        .refine((text) => Array.from(text).length <= 3_500),
-    )
-    .min(1)
-    .max(4)
-    .optional(),
-  interrupt: z.boolean().optional(),
-  typingEnabled: z.boolean().optional(),
-  workflow: workflowCommandSchema.optional(),
-  javascript: javascriptSchema.optional(),
-  emojiSearch: emojiSearchSchema.optional(),
-  readImage: readImageSchema.optional(),
-  readVideo: readImageSchema.optional(),
-  repository: repositoryQuestionSchema.optional(),
-  repositoryRead: repositoryReadSchema.optional(),
-  mind: mindQuerySchema.optional(),
-  mindStep: mindStepSchema.optional(),
-  execution: z
-    .array(
-      z
-        .strictObject({
-          agent: z.string().regex(/^[a-z][a-z0-9-]{0,47}$/),
-          action: z.enum(["run", "cancel"]),
-          task: z.string().trim().max(2000),
-        })
-        .refine(
-          (command) => command.action === "cancel" || command.task.length > 0,
+const companionReplyFields = {
+  settings: optional(zodLeaf(settingsCommandSchema)),
+  debugShareResolve: optional(zodLeaf(debugShareResolutionSchema)),
+  agentWebhook: optional(zodLeaf(agentWebhookSchema)),
+  ampThread: optional(zodLeaf(ampThreadSchema)),
+  text: Schema.String,
+  sendMessages: optional(zodLeaf(sendMessagesSchema)),
+  question: optional(zodLeaf(questionSchema)),
+  messages: optional(
+    Schema.mutable(
+      Schema.Array(TrimmedString({ min: 1 }).check(refine(codePoints(3_500)))),
+    ).check(Schema.isMinLength(1), Schema.isMaxLength(4)),
+  ),
+  interrupt: optional(Schema.Boolean),
+  typingEnabled: optional(Schema.Boolean),
+  workflow: optional(zodLeaf(workflowCommandSchema)),
+  javascript: optional(zodLeaf(javascriptSchema)),
+  emojiSearch: optional(zodLeaf(emojiSearchSchema)),
+  readImage: optional(zodLeaf(readImageSchema)),
+  readVideo: optional(zodLeaf(readImageSchema)),
+  repository: optional(zodLeaf(repositoryQuestionSchema)),
+  repositoryRead: optional(zodLeaf(repositoryReadSchema)),
+  mind: optional(zodLeaf(mindQuerySchema)),
+  mindStep: optional(zodLeaf(mindStepSchema)),
+  execution: optional(
+    Schema.mutable(
+      Schema.Array(
+        Schema.Struct({
+          agent: Pattern(/^[a-z][a-z0-9-]{0,47}$/),
+          action: Schema.Literals(["run", "cancel"]),
+          task: TrimmedString({ max: 2000 }),
+        }).check(
+          refine(
+            (command) => command.action === "cancel" || command.task.length > 0,
+          ),
         ),
-    )
-    .min(1)
-    .max(4)
-    .refine(
-      (commands) =>
-        new Set(commands.map((c) => c.agent)).size === commands.length,
-    )
-    .optional(),
-  social: socialActionSchema.optional(),
-  wakeup: wakeupActionSchema.optional(),
-  coding: z
-    .strictObject({
-      workspace: z.string(),
-      goal: z.string().refine((goal) => goal.trim().length > 0),
-    })
-    .optional(),
-  codingJob: z
-    .strictObject({
-      action: z.enum(["list", "inspect", "diff", "report", "cancel"]),
-      id: z
-        .string()
-        .regex(/^[a-f0-9]{12,64}$/)
-        .nullable(),
-    })
-    .refine((value) => (value.action === "list") === (value.id === null))
-    .optional(),
-  reaction: z.string().optional(),
-  search: searchQuerySchema.optional(),
-  slackHistory: slackHistorySchema.optional(),
-  escalate: z.boolean().optional(),
-  webSearch: searchQuerySchema.optional(),
-  release: z
-    .strictObject({
-      action: z.literal("inspect"),
-      revision: z
-        .string()
-        .regex(/^[a-f0-9]{40}$/)
-        .nullable(),
-    })
-    .optional(),
-  mcp: z
-    .strictObject({
-      connection: z.string().min(1).max(256),
-      tool: z.string().min(1).max(256),
-      argumentsJson: z.string().max(4000),
-    })
-    .optional(),
-  mcpPermission: z
-    .strictObject({
-      connection: z.string().min(1).max(256),
-      tool: z.string().min(1).max(256),
-    })
-    .optional(),
-  mcpCatalog: z
-    .strictObject({
-      connection: z.string().min(1).max(256).nullable(),
-      tool: z.string().min(1).max(256).nullable(),
-      offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-    })
-    .refine((value) => value.tool === null || value.connection !== null)
-    .optional(),
-  mcpProposal: z
-    .strictObject({
-      action: z.enum(["inspect", "result"]),
-      id: z.uuid({ version: "v4" }).transform((value) => value.toLowerCase()),
-    })
-    .optional(),
-  latency: z
-    .union([
-      z.literal("recent"),
-      z.literal("logs"),
-      z.uuid({ version: "v4" }).transform((value) => value.toLowerCase()),
-    ])
-    .optional(),
-  telemetry: telemetryQuerySchema.optional(),
-  replyInThread: z.boolean().optional(),
-  apps: appsRequestSchema.optional(),
-  artifact: artifactCommandSchema.optional(),
-  memoryBackup: z.literal(true).optional(),
-  inspection: z
-    .union([
-      z.enum([
+      ),
+    ).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(4),
+      refine((commands) => unique(commands.map((command) => command.agent))),
+    ),
+  ),
+  social: optional(zodLeaf(socialActionSchema)),
+  wakeup: optional(zodLeaf(wakeupActionSchema)),
+  coding: optional(
+    Schema.Struct({
+      workspace: Schema.String,
+      goal: Schema.String.check(refine((goal) => goal.trim().length > 0)),
+    }),
+  ),
+  codingJob: optional(
+    Schema.Struct({
+      action: Schema.Literals(["list", "inspect", "diff", "report", "cancel"]),
+      id: Schema.NullOr(Pattern(/^[a-f0-9]{12,64}$/)),
+    }).check(
+      refine((value) => (value.action === "list") === (value.id === null)),
+    ),
+  ),
+  reaction: optional(Schema.String),
+  search: optional(searchQuerySchema),
+  slackHistory: optional(zodLeaf(slackHistorySchema)),
+  escalate: optional(Schema.Boolean),
+  webSearch: optional(searchQuerySchema),
+  release: optional(
+    Schema.Struct({
+      action: Schema.Literal("inspect"),
+      revision: Schema.NullOr(Pattern(/^[a-f0-9]{40}$/)),
+    }),
+  ),
+  mcp: optional(
+    Schema.Struct({
+      connection: BoundedString(1, 256),
+      tool: BoundedString(1, 256),
+      argumentsJson: Schema.String.check(Schema.isMaxLength(4000)),
+    }),
+  ),
+  mcpPermission: optional(
+    Schema.Struct({
+      connection: BoundedString(1, 256),
+      tool: BoundedString(1, 256),
+    }),
+  ),
+  mcpCatalog: optional(
+    Schema.Struct({
+      connection: Schema.NullOr(BoundedString(1, 256)),
+      tool: Schema.NullOr(BoundedString(1, 256)),
+      offset: Int({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+    }).check(
+      refine((value) => value.tool === null || value.connection !== null),
+    ),
+  ),
+  mcpProposal: optional(
+    Schema.Struct({
+      action: Schema.Literals(["inspect", "result"]),
+      id: LowercaseUuidV4,
+    }),
+  ),
+  latency: optional(
+    Schema.Union([
+      Schema.Literal("recent"),
+      Schema.Literal("logs"),
+      LowercaseUuidV4,
+    ]),
+  ),
+  telemetry: optional(zodLeaf(telemetryQuerySchema)),
+  replyInThread: optional(Schema.Boolean),
+  apps: optional(zodLeaf(appsRequestSchema)),
+  artifact: optional(zodLeaf(artifactCommandSchema)),
+  memoryBackup: optional(Schema.Literal(true)),
+  inspection: optional(
+    Schema.Union([
+      Schema.Literals([
         "tombstones",
         "sentinel",
         "capability-matrix",
@@ -298,170 +351,141 @@ const companionReplySchema = z.strictObject({
         "mcp-enrollment",
         "capacity",
       ]),
-      operationInspectionSchema,
-      z.strictObject({
-        target: z.literal("imports"),
-        selection: z.string().min(1).nullable(),
-        offset: z.number().int().nonnegative().safe(),
+      zodLeaf(operationInspectionSchema),
+      Schema.Struct({
+        target: Schema.Literal("imports"),
+        selection: Schema.NullOr(BoundedString(1)),
+        offset: Int({ minimum: 0 }),
       }),
-      z.strictObject({
-        target: z.literal("import-approval"),
-        selection: z.string().min(1),
+      Schema.Struct({
+        target: Schema.Literal("import-approval"),
+        selection: BoundedString(1),
       }),
-    ])
-    .optional(),
-  recall: z
-    .union([
+    ]),
+  ),
+  recall: optional(
+    Schema.Union([
       searchQuerySchema,
-      z.strictObject({
-        kind: z.literal("session"),
-        sessionId: z.string().regex(/^[a-f0-9]{64}$/),
+      Schema.Struct({
+        kind: Schema.Literal("session"),
+        sessionId: Pattern(/^[a-f0-9]{64}$/),
         afterSequence: recallTimestampSchema,
       }),
-      z
-        .strictObject({
-          kind: z.literal("sessions"),
-          query: z
-            .string()
-            .trim()
-            .refine((value) => Array.from(value).length <= 500),
-          observedFrom: recallTimestampSchema,
-          observedTo: recallTimestampSchema,
-        })
-        .refine(
-          (value) =>
-            value.observedFrom === undefined ||
-            value.observedTo === undefined ||
-            value.observedFrom < value.observedTo,
-        ),
-      z.strictObject({
-        kind: z.literal("dependents"),
-        sourceId: z.string().min(1).max(2048),
+      Schema.Struct({
+        kind: Schema.Literal("sessions"),
+        query: TrimmedString().check(refine(codePoints(500))),
+        observedFrom: recallTimestampSchema,
+        observedTo: recallTimestampSchema,
+      }).check(recallObservedOrder()),
+      Schema.Struct({
+        kind: Schema.Literal("dependents"),
+        sourceId: ClaimId,
       }),
-      z
-        .strictObject({
-          kind: z.literal("search"),
-          query: z
-            .string()
-            .trim()
-            .refine((value) => Array.from(value).length <= 500),
-          category: recallCategorySchema
-            .nullish()
-            .transform((value) => value ?? undefined),
-          cursor: z
-            .string()
-            .regex(/^[A-Za-z0-9_-]{43}$/)
-            .nullish()
-            .transform((value) => value ?? undefined),
-          entity: z
-            .string()
-            .min(1)
-            .max(2048)
-            .nullish()
-            .transform((value) => value ?? undefined),
-          observedFrom: recallTimestampSchema,
-          observedTo: recallTimestampSchema,
-          validAt: recallTimestampSchema,
-        })
-        .refine(
-          (value) =>
-            value.observedFrom === undefined ||
-            value.observedTo === undefined ||
-            value.observedFrom < value.observedTo,
-        ),
-      z.strictObject({
-        kind: z.literal("source"),
-        sourceId: z.string().min(1).max(2048),
+      Schema.Struct({
+        kind: Schema.Literal("search"),
+        query: TrimmedString().check(refine(codePoints(500))),
+        category: nullishAsUndefined(recallCategorySchema),
+        cursor: nullishAsUndefined(Pattern(/^[A-Za-z0-9_-]{43}$/)),
+        entity: nullishAsUndefined(BoundedString(1, 2048)),
+        observedFrom: recallTimestampSchema,
+        observedTo: recallTimestampSchema,
+        validAt: recallTimestampSchema,
+      }).check(recallObservedOrder()),
+      Schema.Struct({ kind: Schema.Literal("source"), sourceId: ClaimId }),
+      Schema.Struct({
+        kind: Schema.Literal("contradictions"),
+        claimId: ClaimId,
       }),
-      z.strictObject({
-        kind: z.literal("contradictions"),
-        claimId: z.string().min(1).max(2048),
+      Schema.Struct({
+        kind: Schema.Literal("supersession"),
+        claimId: ClaimId,
       }),
-      z.strictObject({
-        kind: z.literal("supersession"),
-        claimId: z.string().min(1).max(2048),
+      Schema.Struct({ kind: Schema.Literal("claim"), claimId: ClaimId }),
+    ]),
+  ),
+  pendingMemory: optional(
+    Schema.Union([
+      Schema.Literal(true),
+      Schema.Struct({
+        action: Schema.Literals(["accept", "reject"]),
+        id: Pattern(/^proposal:[a-f0-9]{64}$/),
       }),
-      z.strictObject({
-        kind: z.literal("claim"),
-        claimId: z.string().min(1).max(2048),
-      }),
-    ])
-    .optional(),
-  pendingMemory: z
-    .union([
-      z.literal(true),
-      z.strictObject({
-        action: z.enum(["accept", "reject"]),
-        id: z.string().regex(/^proposal:[a-f0-9]{64}$/),
-      }),
-    ])
-    .optional(),
-  personalitySuggestion: globalProposalInputSchema.optional(),
-  reflectionPersonalitySuggestion:
-    reflectionPersonalitySuggestionSchema.optional(),
-  jevObservation: z.boolean().optional(),
-  reflectionReview: reflectionReviewSchema.optional(),
-  reflectionRequest: z
-    .strictObject({
-      evidenceIds: z.array(z.string().trim().min(1).max(2048)).min(1).max(20),
-      mode: z.enum(["idle", "deep"]),
-      kind: z.enum(["reflection", "curiosity"]).optional(),
-    })
-    .optional(),
-  jury: juryRequestSchema.optional(),
-  e2b: e2bRequestSchema.optional(),
-  environment: environmentCommandSchema.optional(),
-  browserTask: browserCommandSchema.optional(),
-  research: researchCommandSchema.optional(),
-  webEmbed: webEmbedSchema.optional(),
-  skillCodingProposal: z
-    .strictObject({
-      candidateId: z.string().regex(/^[a-f0-9]{64}$/),
-      workspace: z.string().min(1),
-    })
-    .optional(),
-  reflectionMemory: z
-    .strictObject({
-      id: z.string().regex(/^[a-f0-9]{64}$/),
-      subjectSourceId: z.string().regex(/^\S{1,2048}$/),
-    })
-    .optional(),
-  rivet: rivetRequestSchema.optional(),
-  browserProposal: z
-    .strictObject({ operation: z.string().min(1).max(128).nullable() })
-    .optional(),
-  personalityPreview: personalityPreviewSchema.optional(),
-  forgetPreview: z
-    .strictObject({
-      sourceId: z.string().min(1).max(2048),
-      apply: z
-        .string()
-        .regex(/^[a-f0-9]{64}$/)
-        .optional(),
-    })
-    .optional(),
-  personalityEvaluate: personalityEvaluateSchema.optional(),
-  importCancel: z
-    .union([z.string().min(1).max(2048), importTaskSchema])
-    .optional(),
-  skillEvaluationRequest: z
-    .strictObject({
-      candidateId: z.string().regex(/^[a-f0-9]{64}$/),
-      heldOutEvidenceIds: z
-        .array(z.string().trim().min(1).max(2048))
-        .min(2)
-        .max(5)
-        .refine((ids) => new Set(ids).size === ids.length),
-    })
-    .optional(),
-  analytics: z
-    .strictObject({
-      days: z.union([z.literal(1), z.literal(7), z.literal(30)]),
-    })
-    .optional(),
-  modelStatus: z.boolean().optional(),
-  dashboardLogin: z.boolean().optional(),
-});
+    ]),
+  ),
+  personalitySuggestion: optional(zodLeaf(globalProposalInputSchema)),
+  reflectionPersonalitySuggestion: optional(
+    zodLeaf(reflectionPersonalitySuggestionSchema),
+  ),
+  jevObservation: optional(Schema.Boolean),
+  reflectionReview: optional(zodLeaf(reflectionReviewSchema)),
+  reflectionRequest: optional(
+    Schema.Struct({
+      evidenceIds: Schema.mutable(
+        Schema.Array(TrimmedString({ min: 1, max: 2048 })),
+      ).check(Schema.isMinLength(1), Schema.isMaxLength(20)),
+      mode: Schema.Literals(["idle", "deep"]),
+      kind: optional(Schema.Literals(["reflection", "curiosity"])),
+    }),
+  ),
+  jury: optional(zodLeaf(juryRequestSchema)),
+  e2b: optional(zodLeaf(e2bRequestSchema)),
+  environment: optional(zodLeaf(environmentCommandSchema)),
+  browserTask: optional(zodLeaf(browserCommandSchema)),
+  research: optional(zodLeaf(researchCommandSchema)),
+  webEmbed: optional(zodLeaf(webEmbedSchema)),
+  skillCodingProposal: optional(
+    Schema.Struct({
+      candidateId: Pattern(/^[a-f0-9]{64}$/),
+      workspace: BoundedString(1),
+    }),
+  ),
+  reflectionMemory: optional(
+    Schema.Struct({
+      id: Pattern(/^[a-f0-9]{64}$/),
+      subjectSourceId: Pattern(/^\S{1,2048}$/),
+    }),
+  ),
+  rivet: optional(zodLeaf(rivetRequestSchema)),
+  browserProposal: optional(
+    Schema.Struct({ operation: Schema.NullOr(BoundedString(1, 128)) }),
+  ),
+  personalityPreview: optional(zodLeaf(personalityPreviewSchema)),
+  forgetPreview: optional(
+    Schema.Struct({
+      sourceId: BoundedString(1, 2048),
+      apply: optional(Pattern(/^[a-f0-9]{64}$/)),
+    }),
+  ),
+  personalityEvaluate: optional(zodLeaf(personalityEvaluateSchema)),
+  importCancel: optional(
+    Schema.Union([BoundedString(1, 2048), zodLeaf(importTaskSchema)]),
+  ),
+  skillEvaluationRequest: optional(
+    Schema.Struct({
+      candidateId: Pattern(/^[a-f0-9]{64}$/),
+      heldOutEvidenceIds: Schema.mutable(
+        Schema.Array(TrimmedString({ min: 1, max: 2048 })),
+      ).check(Schema.isMinLength(2), Schema.isMaxLength(5), refine(unique)),
+    }),
+  ),
+  analytics: optional(Schema.Struct({ days: Schema.Literals([1, 7, 30]) })),
+  modelStatus: optional(Schema.Boolean),
+  dashboardLogin: optional(Schema.Boolean),
+};
+
+type CapabilitySchema = z.ZodType<NonNullable<CompanionReply["capability"]>>;
+function replySchema(capability: CapabilitySchema | undefined) {
+  return Schema.Struct({
+    ...companionReplyFields,
+    capability: optional(capability ? zodLeaf(capability) : Schema.Never),
+  });
+}
+const baseReplySchema = replySchema(undefined);
+/** Every reply object is strict, like the Zod `strictObject`s it replaces. */
+function decodeReply(capability: CapabilitySchema | undefined, value: unknown) {
+  const schema = capability ? replySchema(capability) : baseReplySchema;
+  return Schema.decodeUnknownExit(schema, { onExcessProperty: "error" })(value);
+}
 
 type JsonObject = Record<string, unknown>;
 
@@ -1718,7 +1742,7 @@ function legacyReplyJsonSchema(
                     },
                     category: {
                       type: ["string", "null"],
-                      enum: [...recallCategorySchema.options, null],
+                      enum: [...recallCategorySchema.literals, null],
                       description:
                         "Exact stored claim category; null preserves unfiltered recall. Raw sources have no category.",
                     },
@@ -2904,21 +2928,20 @@ export function parseReply(
       if (normalized.inspection[key] === null)
         delete normalized.inspection[key];
   }
-  const parsed = companionReplySchema
-    .extend({ capability: (capabilitySchema ?? z.never()).optional() })
-    .safeParse(normalized);
-  if (!parsed.success) {
+  const parsed = decodeReply(capabilitySchema, normalized);
+  if (Exit.isFailure(parsed)) {
     if (
       recallAvailable &&
       isJsonObject(normalized.recall) &&
       normalized.recall.kind === "search" &&
-      !recallCategorySchema.nullish().safeParse(normalized.recall.category)
-        .success
+      !Schema.is(Schema.NullishOr(recallCategorySchema))(
+        normalized.recall.category,
+      )
     )
       throw new ModelError("invalid_recall_category", false);
     throw new ModelError("invalid_response", false);
   }
-  const reply = parsed.data;
+  const reply = parsed.value;
   const grants = replyCapabilities(capabilities);
   if (
     (reply.agentWebhook && !grants.agentWebhooksAvailable) ||

@@ -197,6 +197,12 @@ Shared rules for every stream:
   the config schema (`src/config.ts`) and its leaves to Core. A schema that
   another stream only calls (decodes with) converts with its own module and
   the caller is updated mechanically.
+- An Effect composite may embed a not-yet-converted Zod leaf through a
+  decode-only bridge (`zodLeaf` in `src/models/provider.ts`) that runs the
+  leaf's own `safeParse`. This lets `companionReplySchema` convert first and
+  its leaves follow one per slice, each slice removing one bridge entry.
+  Bridges are only for decode; model-facing JSON Schema still comes from the
+  leaf until it converts.
 - Persisted and journaled shapes do not change (see "Boundary with Rivet").
 - Each new span name is added to `src/telemetry/privacy.ts` (Core owns the
   file; appending names is allowed for every stream).
