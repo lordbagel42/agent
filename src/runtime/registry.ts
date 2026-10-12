@@ -3129,7 +3129,9 @@ export function createJuneRegistry(deps: Dependencies) {
                         ? wakeupContext?.report
                           ? MIND_REPORT_FAILURE
                           : "Your wakeup fired, but I couldn't generate its notification. Inspect the wakeup for its recorded event; I won't retry it automatically."
-                        : "I couldn't reach my model. Your message is saved; please try again shortly.",
+                        : event.address.channel === "slack"
+                          ? ""
+                          : "I couldn't reach my model. Your message is saved; please try again shortly.",
               };
               let interruptionProposal:
                 | { candidateId: string; userId: string; text: string }
@@ -3827,7 +3829,11 @@ export function createJuneRegistry(deps: Dependencies) {
                   }
                   if (phase !== "reply")
                     reply = {
-                      text: "I couldn't finish that answer. Please try again shortly.",
+                      text:
+                        body.type === "event" &&
+                        event.address.channel === "slack"
+                          ? ""
+                          : "I couldn't finish that answer. Please try again shortly.",
                     };
                   // Legacy retries remain exactly where their journals expect them.
                   // New calls are single-shot, including ambiguous provider failures.
@@ -5564,6 +5570,7 @@ export function createJuneRegistry(deps: Dependencies) {
                                       version >= 3 &&
                                         body.type === "event" &&
                                         phase === "reply" &&
+                                        event.address.channel !== "slack" &&
                                         !signal.aborted &&
                                         valid(step.state) &&
                                         error instanceof ModelError &&
