@@ -26,6 +26,7 @@ import {
   ampJobArgv,
   CONTROLLER_COMMAND,
   issueToolsPrompt,
+  RECOVERY_TIMING_PROMPT,
   SHIPPING_NOTIFICATION_PROMPT,
 } from "./lib/prompts.js";
 import { isBlank, length } from "./lib/py.js";
@@ -105,7 +106,8 @@ export function prompt(
     "credentials or post diagnostic details. This idempotent endpoint records resolution only, " +
     "does not rerun Amp, and does not prove Slack delivery. Follow docs/deployment.md." +
     issueToolsPrompt({ source: `debug:${identity}` }) +
-    SHIPPING_NOTIFICATION_PROMPT
+    SHIPPING_NOTIFICATION_PROMPT +
+    RECOVERY_TIMING_PROMPT
   );
 }
 
