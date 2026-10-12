@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { serve } from "@hono/node-server";
+import { Schema } from "effect";
 import { setup } from "rivetkit";
 import { createClient } from "rivetkit/client";
 import { z } from "zod";
@@ -64,6 +65,7 @@ import { OperationJournal } from "./diagnostics/operation-journal.js";
 import { createOperationReader } from "./diagnostics/operation-reader.js";
 import { createDebugSitePublisher } from "./diagnostics/publisher.js";
 import { type JuneRuntime, makeJuneRuntime } from "./effect/runtime.js";
+import { decodeStrict, isPattern } from "./effect/schema.js";
 import { createBoxLiteProvider } from "./environments/boxlite.js";
 import { openBoxLiteHost } from "./environments/boxlite-host.js";
 import { inspectSandboxes } from "./environments/inspection.js";
@@ -265,14 +267,14 @@ async function main() {
   const release =
     marker === undefined
       ? undefined
-      : z
-          .strictObject({
-            revision: z.string().regex(/^[a-f0-9]{40}$/),
-            compatibility: z.string().regex(/^[a-f0-9]{64}$/),
-            binding: z.string().regex(/^[a-f0-9]{64}$/),
-            artifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
-          })
-          .parse(JSON.parse(marker));
+      : decodeStrict(
+          Schema.Struct({
+            revision: Schema.String.check(isPattern(/^[a-f0-9]{40}$/)),
+            compatibility: Schema.String.check(isPattern(/^[a-f0-9]{64}$/)),
+            binding: Schema.String.check(isPattern(/^[a-f0-9]{64}$/)),
+            artifactSha256: Schema.String.check(isPattern(/^[a-f0-9]{64}$/)),
+          }),
+        )(JSON.parse(marker));
   startupStage = "slot launcher and standby barrier";
   const slot = validateSlotLauncher({
     enabled: config.deployment?.blueGreen ?? false,

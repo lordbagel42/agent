@@ -1,39 +1,36 @@
-import { z } from "zod";
+import { Schema } from "effect";
+// Tool argument schemas stay Zod until agent/actions.ts migrates.
+import type { z } from "zod";
 import type { EffectOutcome } from "../capabilities/contracts.js";
 import type { MessageEvent } from "../core/contracts.js";
+import { check, Int, isPattern } from "../effect/schema.js";
 import type { Json } from "../tools/broker.js";
 
-export const workflowCommandSchema = z
-  .strictObject({
-    action: z.enum([
-      "help",
-      "define",
-      "start",
-      "list",
-      "inspect",
-      "signal",
-      "cancel",
-    ]),
-    name: z
-      .string()
-      .regex(/^[a-z][a-z0-9-]{0,47}$/)
-      .nullable(),
-    source: z.string().max(24_000).nullable(),
-    dataJson: z.string().max(16_384).nullable(),
-    runId: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .nullable(),
-    offset: z.number().int().min(0).max(1_000_000),
-  })
-  .refine(
+export const workflowCommandSchema = Schema.Struct({
+  action: Schema.Literals([
+    "help",
+    "define",
+    "start",
+    "list",
+    "inspect",
+    "signal",
+    "cancel",
+  ]),
+  name: Schema.NullOr(Schema.String.check(isPattern(/^[a-z][a-z0-9-]{0,47}$/))),
+  source: Schema.NullOr(Schema.String.check(Schema.isMaxLength(24_000))),
+  dataJson: Schema.NullOr(Schema.String.check(Schema.isMaxLength(16_384))),
+  runId: Schema.NullOr(Schema.String.check(isPattern(/^[a-f0-9]{64}$/))),
+  offset: Int({ minimum: 0, maximum: 1_000_000 }),
+}).check(
+  check(
     (c) =>
       (c.action !== "define" || !!(c.name && c.source)) &&
       (c.action !== "start" || !!c.name) &&
       (!["signal", "cancel"].includes(c.action) || !!c.runId) &&
       (c.action !== "inspect" || !!(c.name || c.runId)),
-  );
-export type WorkflowCommand = z.infer<typeof workflowCommandSchema>;
+  ),
+);
+export type WorkflowCommand = typeof workflowCommandSchema.Type;
 
 export type WorkflowRunStatus =
   | "empty"

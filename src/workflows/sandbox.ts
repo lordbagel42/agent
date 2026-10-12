@@ -1,45 +1,49 @@
 import { Script } from "node:vm";
-import { z } from "zod";
+import { Schema } from "effect";
+import {
+  decodeStrict,
+  discriminated,
+  Int,
+  isPattern,
+  ZodJson,
+} from "../effect/schema.js";
 import type { Json } from "../tools/broker.js";
 import { runSandboxWorker } from "../tools/sandbox-worker.js";
 
 export type { Json };
-export const workflowName = z
-  .string()
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/);
-const toolCall = z.strictObject({
+export const workflowName = Schema.String.check(
+  isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/),
+);
+const toolCallFields = {
   name: workflowName,
   tool: workflowName,
-  args: z.json(),
-});
-export const operationSchema = z.discriminatedUnion("kind", [
-  toolCall.extend({ kind: z.literal("step") }),
-  z.strictObject({
-    kind: z.literal("sleep"),
+  args: ZodJson,
+};
+const toolCall = Schema.Struct(toolCallFields);
+const delay = Int({ minimum: 0, maximum: 30 * 86400_000 });
+export const operationSchema = discriminated("kind", [
+  Schema.Struct({ ...toolCallFields, kind: Schema.Literal("step") }),
+  Schema.Struct({
+    kind: Schema.Literal("sleep"),
     name: workflowName,
-    ms: z
-      .number()
-      .int()
-      .min(0)
-      .max(30 * 86400_000),
+    ms: delay,
   }),
-  z.strictObject({
-    kind: z.literal("wait"),
+  Schema.Struct({
+    kind: Schema.Literal("wait"),
     name: workflowName,
-    timeout: z
-      .number()
-      .int()
-      .min(0)
-      .max(30 * 86400_000)
-      .nullable(),
+    timeout: Schema.NullOr(delay),
   }),
-  z.strictObject({
-    kind: z.literal("parallel"),
+  Schema.Struct({
+    kind: Schema.Literal("parallel"),
     name: workflowName,
-    calls: z.array(toolCall).min(1).max(8),
+    calls: Schema.Array(toolCall).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(8),
+    ),
   }),
 ]);
-export type WorkflowOperation = z.infer<typeof operationSchema>;
+export type WorkflowOperation = typeof operationSchema.Type;
+export const decodeOperation = decodeStrict(operationSchema);
 
 export function jsonValue(value: unknown): Json {
   const encoded = JSON.stringify(value);
@@ -67,7 +71,6 @@ export async function runWorkflowSource(
     "workflow",
     { source, input: jsonValue(input), createdAt },
     signal,
-    async (operation) =>
-      jsonValue(await dispatch(operationSchema.parse(operation))),
+    async (operation) => jsonValue(await dispatch(decodeOperation(operation))),
   );
 }

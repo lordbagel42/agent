@@ -5,8 +5,8 @@ import {
 } from "quickjs-emscripten";
 import type { Json } from "../tools/broker.js";
 import {
+  decodeOperation,
   jsonValue,
-  operationSchema,
   validateSource,
   type WorkflowOperation,
 } from "./sandbox.js";
@@ -72,7 +72,7 @@ export async function runWorkflowSource(
       const raw = vm.getString(handle);
       if (Buffer.byteLength(raw) > 16_384)
         throw new Error("workflow_json_limit");
-      const operation = operationSchema.parse(JSON.parse(raw));
+      const operation = decodeOperation(JSON.parse(raw));
       deferred = vm.newPromise();
       const pending = deferred;
       // Dispatch after leaving the guest stack; all guest execution stays in

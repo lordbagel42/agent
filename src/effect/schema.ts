@@ -305,3 +305,26 @@ export function issuePaths(issue: SchemaIssue.Issue): string[] {
   visit(issue, []);
   return [...paths];
 }
+
+const withoutProto = (value: Schema.Json): Schema.Json =>
+  Array.isArray(value)
+    ? value.map(withoutProto)
+    : value !== null && typeof value === "object"
+      ? Object.fromEntries(
+          Object.entries(value)
+            .filter(([key]) => key !== "__proto__")
+            .map(([key, entry]) => [key, withoutProto(entry)]),
+        )
+      : value;
+
+/** Zod's `z.json()`: like `Schema.Json`, but an own `__proto__` key (for
+ * example from `JSON.parse`) is dropped at every depth, as Zod's record does. */
+export const ZodJson = Schema.Json.pipe(
+  Schema.decodeTo(
+    Schema.Json,
+    SchemaTransformation.transform({
+      decode: withoutProto,
+      encode: (value) => value,
+    }),
+  ),
+);

@@ -4,6 +4,7 @@ import { Loop, workflow } from "rivetkit/workflow";
 import { z } from "zod";
 import type { MessageEvent } from "../core/contracts.js";
 import { routeEvent } from "../core/routing.js";
+import { decodeStrict, Int } from "../effect/schema.js";
 import type { Dependencies } from "../runtime/registry.js";
 import { correlationId, withSpan } from "../telemetry/index.js";
 import {
@@ -702,7 +703,7 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
       },
       invalidate: async (c, beforeDeletionRevision?: number) => {
         if (beforeDeletionRevision !== undefined)
-          z.number().int().nonnegative().parse(beforeDeletionRevision);
+          decodeStrict(Int({ minimum: 0 }))(beforeDeletionRevision);
         const previous = c.vars.tail;
         const lock = Promise.withResolvers<void>();
         c.vars.tail = lock.promise;
@@ -764,7 +765,7 @@ export function createWorkflowLibraryActor(deps: Dependencies) {
               spec.origin,
               spec.scopeKey ?? ["private", deps.owner.id],
             );
-          const command = workflowCommandSchema.parse(raw);
+          const command = decodeStrict(workflowCommandSchema)(raw);
           const receiptId = hash([requestId, command]);
           const write = ["define", "start", "signal", "cancel"].includes(
             command.action,
