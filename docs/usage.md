@@ -182,8 +182,14 @@ workflow may still wait for its current provider call to settle before answering
 the next message. Linked owner DMs share one conversation; channel threads are
 separate. Quoted commands, attachments, edited messages and guests cannot reset it.
 
-Anyone can send `DEBUGSHARE` or `DEBUGSHARE a short explanation` in any Slack
+Except for the restriction below, anyone can send `DEBUGSHARE` or `DEBUGSHARE a short explanation` in any Slack
 conversation June receives: public/private channels, threads, DMs and group DMs.
+Slack user `U08EYPB2W3F` is denied new DEBUGSHARE commands before capture or
+dispatch on all those surfaces. Commands are silently ignored, not sent to the
+model. Ordinary June access, `DEBUG` capture-only snapshots and other users'
+access are unchanged. Existing investigations are not cancelled. This is a
+source-level routing policy activated by deploying June, not a runtime setting;
+removing it also requires an authorized code change and deployment.
 June's actual mention may appear at either end, separated by a space; no mention
 is required for a plain command. The reason may span multiple lines and may contain inline code
 (for example, a code-formatted identifier), but `DEBUGSHARE` itself must stay

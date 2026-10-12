@@ -15,6 +15,16 @@ export function routeEvent(
   filterIgnoredMessages = true,
 ): Scope | undefined {
   const { address } = event;
+  // Operator-requested DEBUGSHARE-only restriction. Keep DEBUG capture and
+  // ordinary conversation access unchanged; reject before capture or inference.
+  if (
+    address.channel === "slack" &&
+    event.type === "message" &&
+    event.senderId === "U08EYPB2W3F" &&
+    event.sessionCommandEligible === true &&
+    DEBUG_COMMAND.exec(event.text)?.[1] === "DEBUGSHARE"
+  )
+    return undefined;
   if (
     filterIgnoredMessages &&
     address.channel === "slack" &&
