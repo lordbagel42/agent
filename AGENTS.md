@@ -104,7 +104,8 @@
   and lint instead. Do not add tests for features, bug fixes or refactors.
 - The only tests kept protect June's ability to self-heal: deploy controller,
   Actions build gate and recovery dispatch (`scripts/deploy/test_deploy.py`,
-  `test_runner.py`, `test_actions.py`, `test_issues.py`),
+  `test_runner.py`, `test_actions.py`, `test_issues.py`, and their
+  `@effect/vitest` ports in `host/test/` as they land),
   standby/rollback (`src/deployment/`), the lifecycle failure latch and drain,
   engine slot handoff, and isolated startup. Change them only when that core
   behavior intentionally changes. A new test is justified only if a change

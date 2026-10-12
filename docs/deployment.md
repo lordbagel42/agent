@@ -1304,9 +1304,22 @@ prerequisite, not something this controller silently creates.
 
 #### Restricted runner SSH endpoint
 
-Install reviewed `scripts/deploy/runner.py` and its matching `deploy.py` as
-root-owned, non-writable files in `/usr/local/lib/june-recovery/` on the runner.
-The forced command imports only that installed sibling, never checkout code.
+Install the reviewed `host/` bundle `runner.mjs` with the host installer, which
+places it root-owned and non-writable under `/usr/local/lib/june-host/recovery/`
+beside a pinned Node 24.21.0 (`/usr/local/lib/june-host/node/bin/node`) and
+records its source revision and SHA-256 in `manifest.json`:
+
+```sh
+pnpm --dir host build   # from a clean checkout of the reviewed revision
+sudo flock /run/lock/june-host-install.lock node host/dist/install.mjs node <official node binary>
+sudo flock /run/lock/june-host-install.lock node host/dist/install.mjs group recovery host/dist <revision> runner.mjs
+```
+
+The bundle is self-contained and never imports checkout or release code. Its
+recovery prompt is compiled in, so install it from the same revision as the
+controller that dispatches recovery; a mismatch fails closed. The Python
+`runner.py` in `/usr/local/lib/june-recovery/` is kept for one release as a
+rollback and is no longer the forced command.
 Create root-owned, non-writable `/etc/june-recovery/runner.json`, readable by the
 Amp account, with the same `command` (one absolute Amp executable) and
 `runnerDirectory` as June's `ampRecovery` configuration. Verify the checkout's
@@ -1318,7 +1331,7 @@ authorized keys without replacing existing keys. Restrict it to June's source
 address and this forced command:
 
 ```text
-restrict,from="192.168.0.215",command="/usr/bin/python3 -I /usr/local/lib/june-recovery/runner.py" ssh-ed25519 PUBLIC_KEY june-recovery
+restrict,from="192.168.0.215",command="/usr/bin/env -u NODE_OPTIONS -u NODE_PATH /usr/local/lib/june-host/node/bin/node /usr/local/lib/june-host/recovery/runner.mjs" ssh-ed25519 PUBLIC_KEY june-recovery
 ```
 
 The endpoint rejects shell commands, changed modes/runners/directories, extra
@@ -1763,10 +1776,12 @@ of pushing source. Preserve existing recovery and ordinary-job keys/config:
    user, with pinned host verification, `BatchMode yes`, `IdentitiesOnly yes`,
    no agent/forwarding, connection timeout and server-alive limits. Do not reuse
    the recovery or ordinary-job identity or provision Amp credentials on June.
-3. On `homelab-amp`, install `debugshare_runner.py`, `debugshare.py`, `runner.py`
-   and `deploy.py` together root-owned outside releases. The dedicated SSH key
+3. On `homelab-amp`, install the `host/` bundle `debugshare_runner.mjs` with the
+   host installer (`install.mjs group debugshare host/dist <revision>
+   debugshare_runner.mjs`, as for the recovery runner). The dedicated SSH key
    must have `restrict`, the expected source restriction, and forced command
-   `/usr/bin/python3 -I /usr/local/lib/june-deploy/debugshare_runner.py`.
+   `/usr/bin/env -u NODE_OPTIONS -u NODE_PATH /usr/local/lib/june-host/node/bin/node /usr/local/lib/june-host/debugshare/debugshare_runner.mjs`.
+   The Python `debugshare_runner.py` stays installed for one release as a rollback.
    That endpoint accepts `june-debugshare-ready UUID SHA256`, echoes that exact
    command plus newline after its read-only runner check, then reads the snapshot
    on stdin through EOF (maximum 64 MiB). Empty, partial or digest-invalid input
