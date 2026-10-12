@@ -33,6 +33,6 @@ ReadWritePaths=/var/lib/june /run/june-runtime/owner.lock
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 # No Install section: only the controller/operator starts standby slots.
