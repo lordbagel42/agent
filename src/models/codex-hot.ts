@@ -92,6 +92,9 @@ interface ActiveTurn {
   answer?: string;
   usage?: TokenUsage;
   bytes: number;
+  prompt: string;
+  promptBytes: number;
+  promptEchoes: Set<string>;
   responseByteLimit: number;
   terminal: boolean;
   completed?: true;
@@ -211,8 +214,6 @@ export function createHotCodexProvider(
         ? active.get(params.threadId)
         : undefined;
     if (!a) return;
-    a.bytes += bytes;
-    if (a.bytes > a.responseByteLimit) return fail("response_too_large");
     if (params.turnId !== undefined) {
       if (
         typeof params.turnId !== "string" ||
@@ -222,8 +223,25 @@ export function createHotCodexProvider(
         return fail("malformed_response");
       a.turn = params.turnId;
     }
+    const item = object(params.item);
+    // Codex echoes the submitted text in userMessage start/completion. Credit
+    // only one exact copy per notification kind, not spare generated-output budget.
+    if (
+      (msg.method === "item/started" || msg.method === "item/completed") &&
+      item.type === "userMessage" &&
+      !a.promptEchoes.has(msg.method) &&
+      Array.isArray(item.content) &&
+      item.content.some(
+        (part) =>
+          object(part).type === "text" && object(part).text === a.prompt,
+      )
+    ) {
+      bytes -= a.promptBytes;
+      a.promptEchoes.add(msg.method);
+    }
+    a.bytes += bytes;
+    if (a.bytes > a.responseByteLimit) return fail("response_too_large");
     if (msg.method === "item/started" || msg.method === "item/completed") {
-      const item = object(params.item);
       if (
         !["userMessage", "agentMessage", "reasoning"].includes(
           String(item.type),
@@ -374,7 +392,10 @@ export function createHotCodexProvider(
         buffer = Buffer.concat([buffer, chunk]);
         const limit = Math.max(
           MAX_BYTES,
-          ...Array.from(active.values(), (a) => a.responseByteLimit),
+          ...Array.from(
+            active.values(),
+            (a) => a.responseByteLimit + a.promptBytes,
+          ),
         );
         if (buffer.length > limit) return fail("response_too_large");
         while (buffer.includes(10)) {
@@ -393,7 +414,17 @@ export function createHotCodexProvider(
       });
       await rpc("initialize", {
         clientInfo: { name: "june_hot_inference", version: "0.1.0" },
-        capabilities: { experimentalApi: true },
+        capabilities: {
+          experimentalApi: true,
+          // Only completed items are consumed; unused token-sized deltas can
+          // exhaust the wire budget for an otherwise small, valid answer.
+          optOutNotificationMethods: [
+            "item/agentMessage/delta",
+            "item/reasoning/summaryTextDelta",
+            "item/reasoning/textDelta",
+            "item/reasoning/summaryPartAdded",
+          ],
+        },
       });
       child.stdin.write(`${JSON.stringify({ method: "initialized" })}\n`);
       await Promise.all(Array.from({ length: CAPACITY }, () => replenish()));
@@ -511,6 +542,10 @@ export function createHotCodexProvider(
             const a: ActiveTurn = {
               ...done,
               bytes: 0,
+              prompt,
+              // Match the UTF-8 JSON string payload, including escape sequences.
+              promptBytes: Buffer.byteLength(JSON.stringify(prompt)) - 2,
+              promptEchoes: new Set(),
               // User-message start/completion and a turn snapshot can echo
               // native inline inputs. Bound that allowance to this request;
               // text-only turns and the 64 KiB answer cap remain unchanged.

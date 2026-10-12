@@ -55,11 +55,18 @@ Pinned official source, tag `rust-v0.157.1`:
   stops admission and terminates remaining work, waits for process close, and
   settles tracked cleanup/accounting before removing the empty temporary
   workspace. Startup failure also closes providers.
-- One MiB framing/per-turn output bound, 64 KiB final-message bound, existing
-  structured reply validation, bounded RPC/turn/cleanup deadlines. Diagnostics
-  are drained but not retained. Usage records contain only numeric accounting;
-  latest measured usage is retained for failed/cancelled calls too, including
-  usage notifications received during cleanup.
+- The per-turn output budget remains one MiB, with the existing request-bound
+  inline-media allowance and separate 64 KiB final-message bound. Codex echoes
+  the prompt in `userMessage` start/completion; only one exact text copy in each
+  notification is deducted, using its serialized UTF-8 JSON bytes. Duplicate or
+  different text still counts. Framing allows that bounded input copy without
+  granting its unused space to generated output. Unused agent/reasoning text
+  deltas are disabled at initialization; completed items, terminal notifications,
+  tool detection and usage remain enabled. No output truncation or replay is added.
+  Structured reply validation and RPC/turn/cleanup deadlines remain unchanged.
+  Diagnostics are drained but not retained. Usage records contain only numeric
+  accounting; latest measured usage is retained for failed/cancelled calls too,
+  including usage notifications received during cleanup.
 - No adapter retry after inference submission. Codex's own built-in provider
   transport retries still apply: in this pinned release, user provider entries
   [cannot override built-in OpenAI retry settings](https://github.com/openai/codex/blob/rust-v0.157.1/codex-rs/model-provider-info/src/lib.rs#L679-L719).
