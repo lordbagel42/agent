@@ -95,6 +95,17 @@ Outside group DMs, subscribing, being named, or being pinged does not obligate
 June to reply. This uses the existing `message.channels` / `message.groups`
 subscriptions and channel-history scopes; it adds no Slack permissions.
 
+On all shared surfaces, including group DMs, June judges the intended recipient
+before replying, acknowledging or starting work. Explicit address, the supplied
+thread root, surrounding exchanges and corrections take precedence over her
+subscription or earlier participation. Requests clearly only for another person
+or bot require silence, not an announcement that she is stepping aside. Direct
+or shared invitations and genuine unmentioned follow-ups to June remain eligible;
+mentioning someone as the subject of a task does not exclude June. This is runtime
+model guidance, not a deterministic ingress filter or a new Slack permission.
+It does not replay messages, cancel existing work, or discard authorized automated
+notifications. Source publication alone does not prove live activation.
+
 ## Group DMs
 
 Group DMs (`mpim`) use the existing signed HTTP webhook, not Socket Mode.
@@ -102,10 +113,13 @@ Subscribe the live app to `message.mpim` with `mpim:history` and `mpim:read`;
 the checked-in manifest alone does not enable delivery. June accepts ordinary
 messages from every participant without a ping or name reference. Guests remain
 in separate guest queues with host-bound task scopes. June is instructed to
-reply to each ordinary group-DM message, especially one naming her; a brief
-acknowledgment or follow-up is enough. Multipart messages may still be answered
-together. Explicit wait/stop requests, `##` and `<>` opt-outs, group-ping silence
-rules, self-message suppression and repetitive bot-loop prevention take precedence.
+reply to each ordinary group-DM message that includes her, especially one
+addressing her by name; ordinary group conversation needs no explicit invitation.
+A brief acknowledgment or follow-up is enough. Messages clearly addressed only
+to someone else are excluded from this reply policy. Multipart messages may still
+be answered together. Explicit wait/stop requests, `##` and `<>` opt-outs,
+group-ping silence rules, self-message suppression and repetitive bot-loop
+prevention take precedence.
 Plain `DEBUG`/`DEBUGSHARE` and other recognized host commands keep their existing
 command path; this policy does not add acknowledgments to commands, worker
 completions or automated notifications.
