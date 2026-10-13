@@ -146,6 +146,18 @@ Catalog registration does not establish live health or installed scopes; every
 invocation verifies bot identity and, for org installs, workspace assignment.
 Slack still enforces resource access and workspace policy.
 
+Public-only reads are separate contracts: `public.conversations.info`,
+`public.conversations.history` and `public.conversations.replies`. They verify
+current channel metadata (not an ID prefix), reject private/DM/unknown visibility,
+and recheck visibility before releasing history. Pages default to 50 messages,
+at most 100, with explicit cursors. Existing broad-reader disables remain intact.
+These tools never join channels, change permissions or use user credentials.
+For a public channel where Slack returns `not_in_channel`, use public RTS search
+with a fresh message action token instead; public visibility alone does not grant
+bot history access. Public search defaults on, but explicit `searchEnabled: false`
+still disables it. Search bodies retain their direct-delivery/no-model/no-storage
+rules; a search delivery receipt does not let June claim she assessed its contents.
+
 To reconnect after explicitly disconnecting the bot, use the existing **Add
 connection** form with URL `https://slack.com/api/`, a descriptive name and no
 bearer token. This enrolls the host adapter, not a remote MCP endpoint. Replaying

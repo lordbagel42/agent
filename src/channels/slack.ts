@@ -533,7 +533,7 @@ export function createSlackAdapter({
   ownerUserIds = [],
   participateInOwnerChannels = false,
   contextEnabled = false,
-  searchEnabled = false,
+  searchEnabled = true,
   webEmbedOrigins = [],
   artifactOrigin,
   experimentalArtifactEmbed = false,

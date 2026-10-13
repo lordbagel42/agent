@@ -487,7 +487,7 @@ const schema = Schema.Struct({
       )
         .check(Schema.isMaxLength(20))
         .pipe(withDefault([])),
-      searchEnabled: flag(false),
+      searchEnabled: flag(true),
       participateInOwnerChannels: flag(false),
       contextEnabled: flag(false),
       workspaceUrl: Schema.optionalKey(

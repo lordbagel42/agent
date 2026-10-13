@@ -1,4 +1,5 @@
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { Schema } from "effect";
 import type { ToolAction } from "./broker.js";
 import {
   McpAdapterError,
@@ -14,7 +15,8 @@ export interface SlackBotCredential {
 }
 
 // This is an allowlist, not an arbitrary Slack/HTTP proxy. Scopes separated by
-// | are alternatives determined by conversation type. Slack enforces resource
+// | are alternatives determined by conversation type, except public-only reads
+// which require every listed scope. Slack enforces resource
 // ownership, membership, plan and workspace policy in addition to these scopes.
 const methods: [
   name: string,
@@ -23,6 +25,19 @@ const methods: [
   required: string,
 ][] = [
   ["slack.capabilities", true, "", ""],
+  ["public.conversations.info", true, "channels:read", "channel"],
+  [
+    "public.conversations.history",
+    true,
+    "channels:read|channels:history",
+    "channel",
+  ],
+  [
+    "public.conversations.replies",
+    true,
+    "channels:read|channels:history",
+    "channel ts",
+  ],
   ["auth.test", true, "", ""],
   ["pins.list", true, "pins:read", "channel"],
   ["pins.add", false, "pins:write", "channel timestamp"],
@@ -230,15 +245,33 @@ const methods: [
   ["views.update", false, "", "view"],
 ];
 
+const publicReadArguments = Schema.Struct({
+  channel: Schema.String.check(Schema.isPattern(/^C[A-Z0-9]+$/)),
+  ts: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^\d+\.\d+$/))),
+  cursor: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2048))),
+  oldest: Schema.optionalKey(
+    Schema.String.check(Schema.isPattern(/^\d+\.\d+$/)),
+  ),
+  latest: Schema.optionalKey(
+    Schema.String.check(Schema.isPattern(/^\d+\.\d+$/)),
+  ),
+  inclusive: Schema.optionalKey(Schema.Boolean),
+  limit: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
+  ),
+});
+
 export const slackBotTools: Tool[] = methods.map(
   ([name, read, scopes, required]) => ({
     name,
     description:
       name === "slack.capabilities"
         ? "Check June's bot identity and currently granted OAuth scopes. Optionally supply method to inspect missing scope alternatives for an exact tool. Use mcpCatalog to list tools. Does not grant permissions."
-        : name === "files.uploadContent"
-          ? "Upload a small file as June. Executes immediately with a durable receipt; judge intent and audience first and never retry an unknown outcome. filename and content are strings; encoding is utf8 (default) or base64. Optional title, channel_id, initial_comment and thread_ts. Maximum 48 KiB decoded content; whole arguments must fit the 64 KiB broker limit. Never accepts local paths or source URLs."
-          : `As June's bot: ${name}. ${read ? "Read-only." : "Executes immediately with a durable receipt; may change Slack state. Judge intent and audience first; never retry an unknown outcome."} Scope alternatives: ${scopes || "none additional"}. API parameters and limits: https://docs.slack.dev/reference/methods/${name}/ . Pass Slack arguments directly; never include a token. Pagination is explicit (cursor); results are bounded.`,
+        : name.startsWith("public.conversations.")
+          ? `As June's bot: ${name.slice(7)}, public channels only. Rechecks Slack metadata before and after reading; denies private channels, DMs and unknown visibility. Requires channels:read and, for history/replies, channels:history plus Slack access. Never joins a channel or uses owner credentials. Arguments: channel (C… ID), ts for replies, optional cursor, oldest/latest timestamps, inclusive boolean, limit 1–100 (default 50). A not_in_channel response means use the separate public search route with a fresh message action token, not that the channel is private. Pagination is explicit; a page is not complete history.`
+          : name === "files.uploadContent"
+            ? "Upload a small file as June. Executes immediately with a durable receipt; judge intent and audience first and never retry an unknown outcome. filename and content are strings; encoding is utf8 (default) or base64. Optional title, channel_id, initial_comment and thread_ts. Maximum 48 KiB decoded content; whole arguments must fit the 64 KiB broker limit. Never accepts local paths or source URLs."
+            : `As June's bot: ${name}. ${read ? "Read-only." : "Executes immediately with a durable receipt; may change Slack state. Judge intent and audience first; never retry an unknown outcome."} Scope alternatives: ${scopes || "none additional"}. API parameters and limits: https://docs.slack.dev/reference/methods/${name}/ . Pass Slack arguments directly; never include a token. Pagination is explicit (cursor); results are bounded.`,
     inputSchema: {
       type: "object",
       properties:
@@ -517,17 +550,83 @@ export class SlackBotAdapter {
           .map(([name, readOnly, scopes]) => ({
             name,
             readOnly,
-            scopeAlternatives: scopes.split("|").filter(Boolean),
-            missingScopeAlternatives: granted
-              ? scopes
-                  .split("|")
-                  .filter((scope) => scope && !granted.includes(scope))
-              : null,
+            ...(name.startsWith("public.conversations.")
+              ? {
+                  requiredScopes: scopes.split("|"),
+                  missingRequiredScopes: granted
+                    ? scopes
+                        .split("|")
+                        .filter((scope) => !granted.includes(scope))
+                    : null,
+                }
+              : {
+                  scopeAlternatives: scopes.split("|").filter(Boolean),
+                  missingScopeAlternatives: granted
+                    ? scopes
+                        .split("|")
+                        .filter((scope) => scope && !granted.includes(scope))
+                    : null,
+                }),
           })),
       };
     }
     if (method[0] === "files.uploadContent")
       return this.#upload(args, authorized);
+    if (method[0].startsWith("public.conversations.")) {
+      if (
+        Schema.decodeUnknownOption(publicReadArguments, {
+          onExcessProperty: "error",
+        })(args)._tag === "None"
+      )
+        throw new McpAdapterError("not_started");
+      const failure = (result: Record<string, unknown>) => ({
+        ok: false,
+        error:
+          typeof result.error === "string" &&
+          /^[a-z_]{1,80}$/.test(result.error)
+            ? result.error
+            : "public_read_unavailable",
+        next: "Inspect slack.capabilities for missing scopes. Public history still requires Slack access; not_in_channel is not private visibility. Use public search with a fresh message action token when available. Do not join automatically or switch credentials.",
+      });
+      const isPublic = (result: Record<string, unknown>) => {
+        const channel = result.channel as Record<string, unknown> | undefined;
+        return (
+          result.ok === true &&
+          !!channel &&
+          channel.id === args.channel &&
+          channel.is_channel === true &&
+          channel.is_private === false &&
+          channel.is_im === false &&
+          channel.is_mpim === false
+        );
+      };
+      const before = await this.#request("conversations.info", {
+        channel: args.channel,
+      });
+      if (!authorized() || this.#abort.signal.aborted)
+        throw new McpAdapterError("not_started");
+      if (before.result.ok !== true) return failure(before.result);
+      if (!isPublic(before.result))
+        return { ok: false, error: "public_channel_required" };
+      if (method[0] === "public.conversations.info") return before.result;
+      const { result } = await this.#request(method[0].slice(7), {
+        ...args,
+        limit: args.limit ?? 50,
+      });
+      if (!authorized() || this.#abort.signal.aborted)
+        throw new McpAdapterError("not_started");
+      // Do not release a page if the channel became private during the read.
+      const after = await this.#request("conversations.info", {
+        channel: args.channel,
+      });
+      if (!authorized() || this.#abort.signal.aborted)
+        throw new McpAdapterError("not_started");
+      if (after.result.ok !== true) return failure(after.result);
+      if (!isPublic(after.result))
+        return { ok: false, error: "public_channel_required" };
+      if (result.ok !== true) return failure(result);
+      return result;
+    }
     const { result } =
       method[0] === "auth.test"
         ? identity

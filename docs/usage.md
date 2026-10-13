@@ -904,9 +904,11 @@ even if their user ID matches the owner.
 ### Optional Slack Real-time Search (RTS)
 
 RTS is `assistant.search.context`, not the legacy RTM transport. The existing
-signed Events API still delivers messages. To enable search, add and approve the
-bot scope `search:read.public`, reinstall the app if Slack requires it, and set
-`slack.searchEnabled: true`. It defaults to false and normal chat does not need it.
+signed Events API still delivers messages. Public search defaults on; an explicit
+`slack.searchEnabled: false` disables it. It still requires the installed bot scope
+`search:read.public` and a fresh message action token. Missing scopes require the
+deployment owner's approval and Slack installation update; enabling the runtime
+does not grant them. Normal chat does not depend on search availability.
 
 Ask June whether public Slack search is ready. The read-only action
 `{"text":"","inspection":"slack-search"}` reports the runtime flag and local
