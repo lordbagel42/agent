@@ -459,6 +459,8 @@ export interface CompanionReply {
 
 export type ProviderTimingStage =
   | "submitted"
+  | "first_output"
+  | "completed"
   | "terminal"
   | "validated"
   | "retired";

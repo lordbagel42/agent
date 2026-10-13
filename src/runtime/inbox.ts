@@ -26,6 +26,37 @@ export type ConversationInput =
       text: string;
     };
 
+/** Only optional, plain bot chatter can yield its inference to a later message
+ * from that same bot/surface. Callers retain every original history record.
+ * Human turns, addressed requests, attachments and already-started work never
+ * enter this path. A bounded burst cannot swallow an entire conversation. */
+export function newerBotChatter(
+  event: MessageEvent,
+  pending: readonly MessageEvent[],
+): boolean {
+  if (
+    event.address.channel !== "slack" ||
+    !event.address.threadId ||
+    !event.senderId.startsWith("bot:") ||
+    event.direct ||
+    event.botMentioned ||
+    event.questionAnswered ||
+    event.metadata?.files?.length
+  )
+    return false;
+  return pending.some(
+    (next) =>
+      next.id !== event.id &&
+      next.senderId === event.senderId &&
+      next.address.channel === event.address.channel &&
+      next.address.accountId === event.address.accountId &&
+      next.address.conversationId === event.address.conversationId &&
+      next.address.threadId === event.address.threadId &&
+      next.occurredAt > event.occurredAt &&
+      next.occurredAt - event.occurredAt <= 30_000,
+  );
+}
+
 export function wakeupInputId(runId: string): string {
   return createHash("sha256")
     .update(JSON.stringify(["wakeup", runId]))

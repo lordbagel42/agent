@@ -220,6 +220,8 @@ const enums: Record<string, readonly string[]> = {
     "synthesis_started",
     "synthesis_finished",
     "provider_submitted",
+    "provider_first_output",
+    "provider_completed",
     "provider_terminal",
     "provider_validated",
     "provider_retired",
@@ -240,9 +242,14 @@ const enums: Record<string, readonly string[]> = {
     "finished",
     "released",
     ...["fast", "deep", "synthesis"].flatMap((phase) =>
-      ["submitted", "terminal", "validated", "retired"].map(
-        (stage) => `${phase}.${stage}`,
-      ),
+      [
+        "submitted",
+        "first_output",
+        "completed",
+        "terminal",
+        "validated",
+        "retired",
+      ].map((stage) => `${phase}.${stage}`),
     ),
     "interaction",
     "execution",
@@ -427,6 +434,9 @@ const enums: Record<string, readonly string[]> = {
   ],
 };
 const numbers = new Set([
+  "june.model.first_output_ms",
+  "june.model.completed_ms",
+  "june.model.terminal_ms",
   "gen_ai.usage.input_tokens",
   "gen_ai.usage.output_tokens",
   "gen_ai.usage.cached_tokens",

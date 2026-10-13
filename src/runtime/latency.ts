@@ -13,6 +13,8 @@ import { latencyQuerySchema, replyLifecycleReport } from "./latency-report.js";
 
 const providerStages = [
   "submitted",
+  "first_output",
+  "completed",
   "terminal",
   "validated",
   "retired",
@@ -51,6 +53,8 @@ const stages = [
   "synthesis_started",
   "synthesis_finished",
   "provider_submitted",
+  "provider_first_output",
+  "provider_completed",
   "provider_terminal",
   "provider_validated",
   "provider_retired",
@@ -453,7 +457,7 @@ export function createLatencyDiagnostics(log?: DiagnosticLog) {
           `Slack reply E2E ${ms(sent?.platformMs)}; app reply acceptance ${ms(sent?.ms)}; HTTP ack ${ms(time("http_ack"))}; typing ack ${ms(time("typing_accepted"))}; textual ack ${ms(time("ack_sent"))}.`,
           `Queue ${ms(span("submission_started", "dequeued"))}; context ${ms(span("context_started", "context_ready"))}; provider fast/deep/synthesis ${ms(span("fast_started", "fast_finished"))}/${ms(span("deep_started", "deep_finished"))}/${ms(span("synthesis_started", "synthesis_finished"))}; send ${ms(span("text_started", "text_sent"))}.`,
           `Context preparation: memory ${ms(span("context_started", "context_memory_ready"))}; platform ${ms(span("context_memory_ready", "context_platform_ready"))}; ${parallelRoster ? `parallel roster wait ${ms(span("context_platform_ready", "context_reads_ready"))}; ` : ""}continuity ${ms(span(parallelRoster ? "context_reads_ready" : "context_platform_ready", "context_continuity_ready"))}; prompt/typing preference ${ms(span("context_continuity_ready", "context_prompt_ready"))}; ${parallelRoster ? "roster merge" : "worker roster"} ${ms(span("context_prompt_ready", "context_roster_ready"))}; host status ${ms(span("context_roster_ready", "context_ready"))}.`,
-          `Provider first observed call (${firstProvider?.providerPhase ?? "unobserved"}): submitted→terminal ${ms(providerSpan("submitted", "terminal"))}; validation ${ms(providerSpan("terminal", "validated"))}; answer-ready ${ms(providerTime("validated"))} since arrival; submitted→answer-ready ${ms(providerSpan("submitted", "validated"))}; cleanup ${ms(providerSpan("validated", "retired"))}; missing stages: ${missing.length ? missing.map((stage) => `provider_${stage}`).join(", ") : "none"}.`,
+          `Provider first observed call (${firstProvider?.providerPhase ?? "unobserved"}): submitted→first output ${ms(providerSpan("submitted", "first_output"))}; submitted→completion ${ms(providerSpan("submitted", "completed"))}; submitted→terminal ${ms(providerSpan("submitted", "terminal"))}; validation ${ms(providerSpan("terminal", "validated"))}; answer-ready ${ms(providerTime("validated"))} since arrival; submitted→answer-ready ${ms(providerSpan("submitted", "validated"))}; cleanup ${ms(providerSpan("validated", "retired"))}; missing stages: ${missing.length ? missing.map((stage) => `provider_${stage}`).join(", ") : "none"}. First output is answer text, not reasoning or a completed/valid answer; terminal includes failures.`,
         ].join("\n");
       });
       return [

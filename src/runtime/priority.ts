@@ -6,10 +6,12 @@ export function createPriorityAdmission() {
   let guests = 0;
   let background = 0;
   let lastGuestScope: string | undefined;
+  let lastGuestCompletion = false;
   const guestScopes: string[] = [];
   const waiting: {
     owner: boolean | "background";
     scope: string;
+    completion: boolean;
     wake: () => void;
   }[] = [];
   const recent = new Map<
@@ -28,6 +30,18 @@ export function createPriorityAdmission() {
         guestScopes[0] === lastGuestScope
       )
         guestScopes.push(guestScopes.shift() as string);
+      // A ready result can use the next guest slot, then ordinary round-robin
+      // resumes. Never preempt running work or consume the owner's reserve.
+      if (
+        index < 0 &&
+        !lastGuestCompletion &&
+        guests === 0 &&
+        guests + background < 2 &&
+        active - background < 2
+      )
+        index = waiting.findIndex(
+          (item) => item.owner === false && item.completion,
+        );
       if (index < 0 && guests + background < 2)
         index = waiting.findIndex(
           (item) =>
@@ -44,7 +58,8 @@ export function createPriorityAdmission() {
       if (item.owner === false) {
         guests++;
         lastGuestScope = item.scope;
-        guestScopes.shift();
+        lastGuestCompletion = item.completion;
+        guestScopes.splice(guestScopes.indexOf(item.scope), 1);
         if (
           waiting.some(
             (entry) => entry.owner === false && entry.scope === item.scope,
@@ -114,6 +129,7 @@ export function createPriorityAdmission() {
       owner: boolean | "background",
       signal: AbortSignal,
       scope = "",
+      completion = false,
     ): Promise<(() => void) | undefined> {
       signal.throwIfAborted();
       if (
@@ -125,6 +141,7 @@ export function createPriorityAdmission() {
         const item = {
           owner,
           scope,
+          completion,
           wake: () => {
             signal.removeEventListener("abort", abort);
             resolve();

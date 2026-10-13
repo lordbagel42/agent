@@ -557,13 +557,21 @@ contextual acknowledgment; the deep pass cannot escalate again. Interrupted
 model/search calls remain uncertain rather than being automatically repeated.
 API providers accept `maxOutputTokens` and `timeoutMs`; OpenAI also accepts
 `reasoningEffort`. Codex accepts `reasoningEffort` and `serviceTier` (`fast` or
-`default`), but has no hard output-token cap. Defaults are unchanged.
+`default`), but has no hard output-token cap. An omitted `deepModel.timeoutMs`
+defaults to 180000ms; explicit limits are preserved (maximum 300000ms).
+Execution retains its separate five-minute deadline, including tool work.
 
 For the existing dedicated Codex login, configure Astra
-`low`/`fast`/45000ms for `model` and Astra `high`/`fast`/75000ms for `deepModel`.
+`low`/`fast`/45000ms for `model` and Astra `high`/`fast`/180000ms for `deepModel`.
+Existing installations explicitly configured at 75000ms **stay at 75000ms**
+until that configuration (and any saved override) is updated and activated through
+the coordinated deployment workflow. Publishing code alone does not raise it.
+Inspect effective and desired `deepModel.timeoutMs` before and after activation;
+do not clear another operator's hold or change settings during a deployment.
 The earlier 15000ms fast limit cut off the provider's latency tail: about 1% of
-live fast calls hit it while completed calls reached 14.8 s. A timed-out reply
-sends "My model took too long to answer…" and is not retried.
+live fast calls hit it while completed calls reached 14.8 s. Ordinary Slack
+inference timeouts stay silent; worker failures retain their result notifications.
+Neither path automatically retries failed or uncertain work.
 Web-search synthesis uses the primary model, so these settings request fast tier
 for every active conversational pass. Memory, reflection and coding have separate
 model configurations and remain disabled in this deployment.
@@ -573,6 +581,25 @@ supported effort, not no-thinking mode. Fast-tier requests succeeded in controll
 provider probes, but a real Slack end-to-end speedup has not been established.
 There is no extra classifier invocation. Coordinate live settings changes with
 the [deployment controller](deployment.md); releases bind the exact config.
+
+Codex model spans retain `june.model.first_output_ms` from submission to the first
+nonempty answer text, `june.model.completed_ms` to a successful provider terminal,
+and `june.model.terminal_ms` to any terminal (including interruption/failure).
+Reasoning and item-start events do not count as first output; provider completion
+is not schema validation or Slack delivery. Ordinary latency inspection also
+shows these stages. Missing values remain unknown, including old records and
+providers without these observations. Workers can query the existing telemetry
+interface; no raw answer text, new probe, or replay is needed.
+
+Conversational debate stays in the interaction pass unless it needs a separate
+lookup, substantive deliverable, or action. In legacy queues, waiting unaddressed
+plain bot messages in the same thread/sender can be retained as context rather
+than invoking the model separately when a newer message is pending within 30s.
+At most four consecutive turns yield this way; human messages, explicit mentions,
+DMs, attachments, and started work are not coalesced. Migration/session ordering
+is unchanged. Ready execution/coding completions can alternate with the original
+inbox, and get bounded guest priority without preempting work or starving normal
+traffic. These host rules do not authorize additional retries.
 
 #### Hack Club AI interaction model
 

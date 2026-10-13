@@ -794,6 +794,9 @@ export function parseConfig(input: unknown): Config {
     );
   }
   const config = result.value as Config;
+  // Deep reasoning needs a bounded budget distinct from conversational latency.
+  // Preserve explicit operator settings, including deliberately shorter limits.
+  if (config.deepModel) config.deepModel.timeoutMs ??= 180_000;
   // An explicit audio identity cannot substitute for a trusted-device endpoint.
   if (
     config.owner.identities.some(

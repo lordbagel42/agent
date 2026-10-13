@@ -141,6 +141,7 @@ import {
   type ConversationIngress,
   type ConversationInput,
   conversationInputId,
+  newerBotChatter,
   recordConversationIngress,
   wakeupInputId,
 } from "./inbox.js";
@@ -370,6 +371,10 @@ export interface ConversationState extends ScopeCatalog {
     string,
     Exclude<ConversationInput, { type: "event" }>
   >;
+  /** At most one promoted completion before consuming the original FIFO again. */
+  completionPromoted?: boolean;
+  /** Force an answer opportunity after four context-only bot turns. */
+  botChatterDeferred?: number;
   /** Prospective host receipts, not proof of legacy effect coverage. */
   ingress?: ConversationIngress;
   legacyCoverage?: LegacyCoverage;
@@ -1201,6 +1206,30 @@ export function createJuneRegistry(deps: Dependencies) {
               (!isOwner(event, deps.owner) && command?.kind !== "debug") ||
               (event.address.channel === "slack" && event.text.startsWith("##"))
             ) {
+              // Guest bots otherwise bypass durable owner ingress. Retain their
+              // queued bodies too, so a later same-bot turn can coalesce chatter
+              // without changing owner/session latest-input semantics.
+              if (
+                event.type === "message" &&
+                event.address.channel === "slack" &&
+                event.senderId.startsWith("bot:") &&
+                !event.text.startsWith("##")
+              ) {
+                if (
+                  eventRecord(c.state, id) ||
+                  c.state.clearedInputs?.[id] ||
+                  c.state.forgottenEvents?.includes(id)
+                )
+                  return;
+                const source = deps.memory?.source(
+                  event,
+                  JSON.stringify(c.key),
+                );
+                if (source && deps.memory?.store.isDeleted(source.id)) return;
+                c.state.pendingInputs ??= {};
+                c.state.pendingInputs[id] ??= event;
+                await c.vars.persist();
+              }
               await c.queue.send("inbox", { type: "event", event });
               if (event.type === "message") deps.latency?.mark(event, "queued");
               return;
@@ -2149,10 +2178,54 @@ export function createJuneRegistry(deps: Dependencies) {
           // An absent version marker resolves to 1 during old-journal replay.
           const backupVersion = await loop.getVersion("memory-backup", 2);
           const pingVersion = await loop.getVersion("ping-feedback", 2);
-          const [message] = await loop.queue.nextBatch("inbox", {
-            names: ["inbox"],
-            count: 1,
-          });
+          const schedulingVersion = await loop.getVersion(
+            "conversation-fairness",
+            2,
+          );
+          const completion =
+            schedulingVersion >= 2
+              ? await loop.step("select-ready-completion", async (step) => {
+                  // Pending bodies are the durable source of truth. Leave the
+                  // original queue untouched; its later duplicate is a no-op.
+                  // Do not reorder a frozen migration or an assigned session.
+                  if (step.state.migration || step.state.completionPromoted)
+                    return null;
+                  const receipts = readIngressReceipts(step.state.ingress);
+                  const selected = Object.entries(
+                    step.state.pendingNotifications ?? {},
+                  )
+                    .filter(
+                      ([id, input]) =>
+                        (input.type === "execution_result" ||
+                          input.type === "job_result") &&
+                        receipts[id]?.lane === "legacy" &&
+                        !eventRecord(step.state, id) &&
+                        !step.state.clearedInputs?.[id] &&
+                        !step.state.forgottenEvents?.includes(id),
+                    )
+                    .sort(
+                      ([a], [b]) =>
+                        (receipts[a]?.sequence ?? 0) -
+                        (receipts[b]?.sequence ?? 0),
+                    )[0];
+                  return selected?.[1] ?? null;
+                })
+              : null;
+          if (schedulingVersion >= 2)
+            await loop.step("record-completion-priority", async (step) => {
+              // Assign from the journaled selection, not a toggle: a crash
+              // between state persistence and checkpoint must preserve fairness.
+              step.state.completionPromoted = completion !== null;
+              await step.vars.persist();
+            });
+          const message = completion
+            ? { body: completion }
+            : (
+                await loop.queue.nextBatch("inbox", {
+                  names: ["inbox"],
+                  count: 1,
+                })
+              )[0];
           if (!message) return;
           // After receipt: an upgraded actor parked on the inbox can review its
           // first new message, while already-journaled turns keep the old path.
@@ -2409,12 +2482,31 @@ export function createJuneRegistry(deps: Dependencies) {
                   admissionScope,
                 ),
               );
-              if (!admitted) return;
+              if (!admitted) {
+                if (schedulingVersion >= 2)
+                  await loop.step("retire-rejected-input", async (step) => {
+                    const id = conversationInputId(body);
+                    if (
+                      !ownsLegacyInput(step.state, id) ||
+                      sessionControl ||
+                      eventRecord(step.state, id)
+                    )
+                      return;
+                    // Rejection is final, not a deferred retry. Retain a receipt
+                    // so saved bodies and queued duplicates cannot resurrect it.
+                    step.state.events[id] = { event, done: true };
+                    delete step.state.pendingInputs?.[id];
+                    delete step.state.pendingNotifications?.[id];
+                    await step.vars.persist();
+                  });
+                return;
+              }
             }
             releasePriority = await priority.enter(
               ownerTurn,
               ctx.abortSignal,
               admissionScope,
+              body.type === "execution_result" || body.type === "job_result",
             );
             let grantFingerprint: string | undefined;
             let deletionRevision = deps.memory?.store.deletionRevision() ?? 0;
@@ -2600,6 +2692,23 @@ export function createJuneRegistry(deps: Dependencies) {
                 return false;
               }
               prune(step.state, audience);
+              const coalesce =
+                schedulingVersion >= 2 &&
+                !step.state.migration &&
+                !sessionControl &&
+                (step.state.botChatterDeferred ?? 0) < 4 &&
+                body.type === "event" &&
+                event.type === "message" &&
+                !eventRecord(step.state, eventId) &&
+                newerBotChatter(
+                  event,
+                  Object.values(step.state.pendingInputs ?? {}).filter(
+                    (next) =>
+                      !step.state.clearedInputs?.[
+                        conversationInputId({ type: "event", event: next })
+                      ],
+                  ),
+                );
               if (!eventRecord(step.state, eventId)) {
                 // Older Slack versions keyed turns by callback ID. A delayed
                 // callback with the new stable message ID is still the same turn.
@@ -2690,8 +2799,23 @@ export function createJuneRegistry(deps: Dependencies) {
                 delete step.state.pendingInputs?.[eventId];
                 delete step.state.pendingNotifications?.[eventId];
               }
+              if (coalesce) {
+                // Context is already retained above. This turn has dispatched
+                // no inference or external effect; a newer bot turn reads it.
+                const record = editEvent(step.state, eventId);
+                if (record) {
+                  record.done = true;
+                  record.deferred = true;
+                }
+                if (event.type === "message")
+                  deps.latency?.mark(event, "deferred");
+              }
+              if (schedulingVersion >= 2 && body.type === "event")
+                step.state.botChatterDeferred = coalesce
+                  ? (step.state.botChatterDeferred ?? 0) + 1
+                  : 0;
               await step.vars.persist();
-              return true;
+              return !coalesce;
             });
             if (!accepted) {
               if (sessionControl)

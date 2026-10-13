@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { budgetReadinessReport } from "../budgets/readiness.js";
+import type { ProviderTimingStage } from "../core/contracts.js";
 import { withSpan } from "../telemetry/index.js";
 import { ModelError } from "./provider.js";
 
@@ -318,7 +319,10 @@ export class UsageLedger {
 export function observeUsage<T>(
   ledger: UsageLedger | undefined,
   identity: UsageIdentity,
-  run: (report: (usage: TokenUsage) => void) => Promise<T>,
+  run: (
+    report: (usage: TokenUsage) => void,
+    timing: (stage: ProviderTimingStage) => void,
+  ) => Promise<T>,
 ): Promise<T> {
   return withSpan(
     "june.model.call",
@@ -331,6 +335,21 @@ export function observeUsage<T>(
       "june.phase": identity.stage,
     },
     async (span) => {
+      let submitted: number | undefined;
+      const seen = new Set<ProviderTimingStage>();
+      const timing = (stage: ProviderTimingStage) => {
+        if (seen.has(stage)) return;
+        seen.add(stage);
+        if (stage === "submitted") submitted = performance.now();
+        if (
+          submitted !== undefined &&
+          ["first_output", "completed", "terminal"].includes(stage)
+        )
+          span.setAttribute(
+            `june.model.${stage}_ms`,
+            Math.round(performance.now() - submitted),
+          );
+      };
       const observed = (forward: (usage: TokenUsage) => void) =>
         run((usage) => {
           for (const [key, value] of [
@@ -344,7 +363,7 @@ export function observeUsage<T>(
               span.setAttribute(`gen_ai.usage.${key}`, value as number);
           }
           forward(usage);
-        });
+        }, timing);
       try {
         const result = await (ledger
           ? ledger.track(identity, observed)

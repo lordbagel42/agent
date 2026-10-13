@@ -97,6 +97,8 @@ interface ActiveTurn {
   promptEchoes: Set<string>;
   responseByteLimit: number;
   terminal: boolean;
+  firstOutput?: true;
+  deltaBytes?: number;
   completed?: true;
   timing?: ModelRequest["onProviderTiming"];
   ended: PromiseWithResolvers<void>;
@@ -239,8 +241,29 @@ export function createHotCodexProvider(
       bytes -= a.promptBytes;
       a.promptEchoes.add(msg.method);
     }
-    a.bytes += bytes;
+    // Streaming envelopes repeat IDs for every fragment. Budget them separately
+    // so a valid <=64 KiB answer split into one-byte deltas cannot exhaust the
+    // completed-message budget. Both streams and individual buffers stay bounded.
+    if (msg.method === "item/agentMessage/delta") {
+      a.deltaBytes = (a.deltaBytes ?? 0) + bytes;
+      if (a.deltaBytes > 32 * MAX_BYTES) return fail("response_too_large");
+    } else a.bytes += bytes;
     if (a.bytes > a.responseByteLimit) return fail("response_too_large");
+    // Item-start and reasoning notifications are not answer bytes. Record only
+    // the first non-empty answer delta (or a completed non-streamed message).
+    if (
+      !a.firstOutput &&
+      ((msg.method === "item/agentMessage/delta" &&
+        typeof params.delta === "string" &&
+        params.delta.length > 0) ||
+        (msg.method === "item/completed" &&
+          item.type === "agentMessage" &&
+          typeof item.text === "string" &&
+          item.text.length > 0))
+    ) {
+      a.firstOutput = true;
+      a.timing?.("first_output");
+    }
     if (msg.method === "item/started" || msg.method === "item/completed") {
       if (
         !["userMessage", "agentMessage", "reasoning"].includes(
@@ -287,6 +310,7 @@ export function createHotCodexProvider(
       a.ended.resolve();
       if (turn.status === "completed") {
         a.completed = true;
+        a.timing?.("completed");
         a.resolve();
       } else a.reject(failure());
     }
@@ -416,10 +440,9 @@ export function createHotCodexProvider(
         clientInfo: { name: "june_hot_inference", version: "0.1.0" },
         capabilities: {
           experimentalApi: true,
-          // Only completed items are consumed; unused token-sized deltas can
-          // exhaust the wire budget for an otherwise small, valid answer.
+          // Answer deltas establish first-output time without retaining text.
+          // Keep unused reasoning deltas out of the bounded wire budget.
           optOutNotificationMethods: [
-            "item/agentMessage/delta",
             "item/reasoning/summaryTextDelta",
             "item/reasoning/textDelta",
             "item/reasoning/summaryPartAdded",
@@ -520,20 +543,26 @@ export function createHotCodexProvider(
         if (audio && !(await provider.supportsAudio()))
           throw failure("audio_input_unsupported");
         signal?.throwIfAborted();
-        // Telemetry must never change inference or retirement behavior.
-        const timing: NonNullable<ModelRequest["onProviderTiming"]> = (
-          stage,
-        ) => {
-          try {
-            request.onProviderTiming?.(stage);
-          } catch {
-            /* observational only */
-          }
-        };
         return observeUsage(
           options.usage,
           { provider: "codex", model, stage: request.usageStage ?? "fast" },
-          async (report) => {
+          async (report, observeTiming) => {
+            // Include workers without an ordinary-message latency trace. Neither
+            // observer may change inference, cancellation or retirement.
+            const timing: NonNullable<ModelRequest["onProviderTiming"]> = (
+              stage,
+            ) => {
+              try {
+                observeTiming(stage);
+              } catch {
+                /* observational only */
+              }
+              try {
+                request.onProviderTiming?.(stage);
+              } catch {
+                /* observational only */
+              }
+            };
             const slot = idle.shift();
             if (!slot) throw new ModelError("provider_busy", true); // No inference submitted.
             consumed++;
